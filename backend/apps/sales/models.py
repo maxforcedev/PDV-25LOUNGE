@@ -1,0 +1,520 @@
+from decimal import Decimal
+
+from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.db import models
+from django.db.models import F, Q
+from django.db.models.functions import Lower
+
+from apps.base.models import BaseModel
+from apps.cash.models import CashSession
+from apps.companies.models import Branch, Company, Status, UserCompanyAccess
+from apps.products.models import Product, Unit
+
+
+class OperationType(models.TextChoices):
+    SALE = 'sale', 'Venda'
+    CONSUMPTION = 'consumption', 'Consumacao'
+
+
+class SaleStatus(models.TextChoices):
+    FINALIZED = 'finalized', 'Finalizada'
+    CANCELLED = 'cancelled', 'Cancelada'
+
+
+class PaymentMethodCode(models.TextChoices):
+    CASH = 'cash', 'Dinheiro'
+    PIX = 'pix', 'PIX'
+    CREDIT_CARD = 'credit_card', 'Cartao de credito'
+    DEBIT_CARD = 'debit_card', 'Cartao de debito'
+
+
+class PromotionDiscountType(models.TextChoices):
+    PERCENTAGE = 'percentage', 'Percentual'
+    FIXED_AMOUNT = 'fixed_amount', 'Valor fixo'
+
+
+class Promotion(BaseModel):
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='promotions'
+    )
+    name = models.CharField(max_length=150)
+    discount_type = models.CharField(max_length=20, choices=PromotionDiscountType.choices)
+    discount_value = models.DecimalField(max_digits=14, decimal_places=2)
+    starts_at = models.DateTimeField()
+    ends_at = models.DateTimeField()
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
+    products = models.ManyToManyField(Product, related_name='promotions', blank=True)
+    categories = models.ManyToManyField(
+        'products.Category', related_name='promotions', blank=True
+    )
+
+    class Meta:
+        ordering = ('-starts_at', 'name', 'id')
+        constraints = [
+            models.UniqueConstraint(
+                'company', Lower('name'), name='sales_promotion_company_name_ci_unique'
+            ),
+            models.CheckConstraint(
+                condition=Q(starts_at__lt=F('ends_at')),
+                name='sales_promotion_period_valid',
+            ),
+            models.CheckConstraint(
+                condition=Q(discount_value__gt=0),
+                name='sales_promotion_value_positive',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(discount_type=PromotionDiscountType.FIXED_AMOUNT)
+                    | Q(
+                        discount_type=PromotionDiscountType.PERCENTAGE,
+                        discount_value__lte=100,
+                    )
+                ),
+                name='sales_promotion_percentage_lte_100',
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        self.name = ' '.join((self.name or '').split())
+        errors = {}
+        if not self.name:
+            errors['name'] = 'Informe o nome da promocao.'
+        if self.starts_at and self.ends_at and self.starts_at >= self.ends_at:
+            errors['ends_at'] = 'A data final deve ser posterior a data inicial.'
+        if self.discount_value is not None and self.discount_value <= 0:
+            errors['discount_value'] = 'O desconto deve ser maior que zero.'
+        if (
+            self.discount_type == PromotionDiscountType.PERCENTAGE
+            and self.discount_value is not None
+            and self.discount_value > 100
+        ):
+            errors['discount_value'] = 'O percentual nao pode ser maior que 100.'
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f'{self.company} - {self.name}'
+
+
+class PaymentMethod(BaseModel):
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='payment_methods'
+    )
+    code = models.SlugField(max_length=50)
+    name = models.CharField(max_length=100)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
+    is_system = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ('name', 'id')
+        constraints = [
+            models.UniqueConstraint(
+                fields=('company', 'code'), name='sales_payment_method_company_code_unique'
+            )
+        ]
+
+    def clean(self):
+        super().clean()
+        self.code = (self.code or '').strip().lower()
+        self.name = ' '.join((self.name or '').split())
+        if not self.code:
+            raise ValidationError({'code': 'Informe o codigo da forma de pagamento.'})
+        if not self.name:
+            raise ValidationError({'name': 'Informe o nome da forma de pagamento.'})
+        if self.pk:
+            original = PaymentMethod.objects.get(pk=self.pk)
+            if self.company_id != original.company_id:
+                raise ValidationError({'company': 'A empresa nao pode ser alterada.'})
+            if self.code != original.code:
+                raise ValidationError({'code': 'O codigo nao pode ser alterado.'})
+            if original.is_system and self.name != original.name:
+                raise ValidationError({'name': 'O nome de um metodo padrao nao pode ser alterado.'})
+            if self.is_system != original.is_system:
+                raise ValidationError({'is_system': 'A origem do metodo nao pode ser alterada.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f'{self.company} - {self.name}'
+
+
+class Sale(BaseModel):
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='sales')
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='sales')
+    cash_session = models.ForeignKey(
+        CashSession, on_delete=models.PROTECT, related_name='sales', blank=True, null=True
+    )
+    sale_number = models.CharField(max_length=20)
+    operation_type = models.CharField(
+        max_length=20, choices=OperationType.choices, default=OperationType.SALE
+    )
+    status = models.CharField(
+        max_length=10, choices=SaleStatus.choices, default=SaleStatus.FINALIZED
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='created_sales'
+    )
+    beneficiary_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='beneficiary_sales',
+        blank=True,
+        null=True,
+    )
+    subtotal = models.DecimalField(max_digits=14, decimal_places=2)
+    promotion_discount_total = models.DecimalField(
+        max_digits=14, decimal_places=2, default=Decimal('0.00')
+    )
+    discount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
+    charged_amount = models.DecimalField(
+        max_digits=14, decimal_places=2, blank=True, null=True
+    )
+    total = models.DecimalField(max_digits=14, decimal_places=2)
+    cancelled_at = models.DateTimeField(blank=True, null=True)
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='cancelled_sales',
+        blank=True,
+        null=True,
+    )
+    cancellation_reason = models.TextField(blank=True, null=True)
+
+    class Meta:
+        ordering = ('-created_at', '-id')
+        constraints = [
+            models.UniqueConstraint(
+                fields=('company', 'sale_number'), name='sales_sale_company_number_unique'
+            ),
+            models.CheckConstraint(condition=Q(subtotal__gte=0), name='sales_sale_subtotal_nonnegative'),
+            models.CheckConstraint(condition=Q(discount__gte=0), name='sales_sale_discount_nonnegative'),
+            models.CheckConstraint(
+                condition=Q(promotion_discount_total__gte=0),
+                name='sales_sale_promotion_discount_nonnegative',
+            ),
+            models.CheckConstraint(
+                condition=Q(promotion_discount_total__lte=F('subtotal')),
+                name='sales_sale_promotion_discount_lte_subtotal',
+            ),
+            models.CheckConstraint(condition=Q(total__gte=0), name='sales_sale_total_nonnegative'),
+            models.CheckConstraint(
+                condition=Q(discount__lte=F('subtotal') - F('promotion_discount_total')),
+                name='sales_sale_discount_lte_remaining',
+            ),
+            models.CheckConstraint(
+                condition=Q(charged_amount__isnull=True) | Q(charged_amount__gte=0),
+                name='sales_sale_charged_nonnegative',
+            ),
+            models.CheckConstraint(
+                condition=Q(charged_amount__isnull=True) | Q(charged_amount__lte=F('subtotal')),
+                name='sales_sale_charged_lte_subtotal',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(
+                        operation_type=OperationType.SALE,
+                        total=F('subtotal') - F('promotion_discount_total') - F('discount'),
+                    )
+                    | Q(
+                        operation_type=OperationType.CONSUMPTION,
+                        beneficiary_user__isnull=False,
+                        charged_amount__isnull=False,
+                        promotion_discount_total=0,
+                        discount=0,
+                        total=F('charged_amount'),
+                    )
+                ),
+                name='sales_sale_operation_amounts_coherent',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(
+                        operation_type=OperationType.SALE,
+                        cash_session__isnull=False,
+                        charged_amount__isnull=True,
+                    )
+                    | Q(
+                        operation_type=OperationType.CONSUMPTION,
+                        charged_amount=0,
+                    )
+                    | Q(
+                        operation_type=OperationType.CONSUMPTION,
+                        charged_amount__gt=0,
+                        cash_session__isnull=False,
+                    )
+                ),
+                name='sales_sale_cash_session_coherent',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(
+                        status=SaleStatus.FINALIZED,
+                        cancelled_at__isnull=True,
+                        cancelled_by__isnull=True,
+                        cancellation_reason__isnull=True,
+                    )
+                    | Q(
+                        status=SaleStatus.CANCELLED,
+                        cancelled_at__isnull=False,
+                        cancelled_by__isnull=False,
+                        cancellation_reason__isnull=False,
+                    )
+                ),
+                name='sales_sale_cancellation_coherent',
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
+            errors['branch'] = 'A filial deve pertencer a empresa da venda.'
+        if self.cash_session_id and self.branch_id and self.cash_session.branch_id != self.branch_id:
+            errors['cash_session'] = 'A sessao de caixa deve pertencer a filial da venda.'
+        if self.beneficiary_user_id and self.company_id and not UserCompanyAccess.objects.filter(
+            user_id=self.beneficiary_user_id, company_id=self.company_id, is_active=True
+        ).exists():
+            errors['beneficiary_user'] = 'O beneficiario deve possuir acesso ativo a empresa.'
+        if self.operation_type == OperationType.CONSUMPTION:
+            if not self.beneficiary_user_id:
+                errors['beneficiary_user'] = 'Informe o beneficiario da consumacao.'
+            if self.charged_amount is None:
+                errors['charged_amount'] = 'Informe o valor cobrado.'
+            if self.discount != Decimal('0'):
+                errors['discount'] = 'Consumacao nao aceita desconto.'
+            if self.promotion_discount_total != Decimal('0'):
+                errors['promotion_discount_total'] = 'Consumacao nao aceita promocao.'
+            if self.charged_amount is not None and self.total != self.charged_amount:
+                errors['total'] = 'O total deve ser igual ao valor cobrado.'
+            if self.charged_amount and not self.cash_session_id:
+                errors['cash_session'] = 'Consumacao cobrada exige sessao de caixa.'
+        else:
+            if self.charged_amount is not None:
+                errors['charged_amount'] = 'Venda normal nao possui valor cobrado.'
+            if not self.cash_session_id:
+                errors['cash_session'] = 'Venda normal exige sessao de caixa.'
+            remaining = self.subtotal - self.promotion_discount_total
+            if self.promotion_discount_total < 0 or remaining < 0:
+                errors['promotion_discount_total'] = 'O desconto promocional excede o subtotal.'
+            if self.discount < 0 or self.discount > remaining:
+                errors['discount'] = 'O desconto manual excede o saldo apos promocoes.'
+            if self.total != remaining - self.discount:
+                errors['total'] = 'O total deve considerar promocao e desconto manual.'
+        if self.status == SaleStatus.FINALIZED and any(
+            value is not None and value != ''
+            for value in (self.cancelled_at, self.cancelled_by_id, self.cancellation_reason)
+        ):
+            errors['status'] = 'Venda finalizada nao pode possuir cancelamento.'
+        if self.status == SaleStatus.CANCELLED and not all(
+            (self.cancelled_at, self.cancelled_by_id)
+        ):
+            errors['status'] = 'Os dados de cancelamento sao obrigatorios.'
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+
+class ImmutableHistoricalModel(BaseModel):
+    class Meta:
+        abstract = True
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError('Registros historicos nao podem ser excluidos.')
+
+
+class SaleItem(ImmutableHistoricalModel):
+    sale = models.ForeignKey(Sale, on_delete=models.PROTECT, related_name='items')
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name='sale_items')
+    quantity = models.DecimalField(max_digits=14, decimal_places=3)
+    product_name = models.CharField(max_length=200)
+    internal_code = models.CharField(max_length=100)
+    unit = models.CharField(max_length=5, choices=Unit.choices)
+    unit_cost = models.DecimalField(max_digits=14, decimal_places=2)
+    unit_price = models.DecimalField(max_digits=14, decimal_places=2)
+    subtotal = models.DecimalField(max_digits=14, decimal_places=2)
+    promotion = models.ForeignKey(
+        Promotion,
+        on_delete=models.PROTECT,
+        related_name='sale_items',
+        blank=True,
+        null=True,
+    )
+    promotion_name = models.CharField(max_length=150, blank=True, null=True)
+    promotion_discount_type = models.CharField(
+        max_length=20, choices=PromotionDiscountType.choices, blank=True, null=True
+    )
+    promotion_discount_value = models.DecimalField(
+        max_digits=14, decimal_places=2, blank=True, null=True
+    )
+    promotion_benefit = models.DecimalField(
+        max_digits=14, decimal_places=2, default=Decimal('0.00')
+    )
+    net_subtotal = models.DecimalField(
+        max_digits=14, decimal_places=2, default=Decimal('0.00')
+    )
+
+    class Meta:
+        ordering = ('id',)
+        constraints = [
+            models.CheckConstraint(condition=Q(quantity__gt=0), name='sales_item_quantity_positive'),
+            models.CheckConstraint(condition=Q(unit_cost__gte=0), name='sales_item_cost_nonnegative'),
+            models.CheckConstraint(condition=Q(unit_price__gte=0), name='sales_item_price_nonnegative'),
+            models.CheckConstraint(condition=Q(subtotal__gte=0), name='sales_item_subtotal_nonnegative'),
+            models.CheckConstraint(
+                condition=Q(promotion_benefit__gte=0),
+                name='sales_item_promotion_benefit_nonnegative',
+            ),
+            models.CheckConstraint(
+                condition=Q(promotion_benefit__lte=F('subtotal')),
+                name='sales_item_promotion_benefit_lte_subtotal',
+            ),
+            models.CheckConstraint(
+                condition=Q(net_subtotal=F('subtotal') - F('promotion_benefit')),
+                name='sales_item_net_subtotal_coherent',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(
+                        promotion__isnull=True,
+                        promotion_name__isnull=True,
+                        promotion_discount_type__isnull=True,
+                        promotion_discount_value__isnull=True,
+                        promotion_benefit=0,
+                    )
+                    | Q(
+                        promotion__isnull=False,
+                        promotion_name__isnull=False,
+                        promotion_discount_type__isnull=False,
+                        promotion_discount_value__isnull=False,
+                    )
+                ),
+                name='sales_item_promotion_snapshot_coherent',
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.sale_id and self.product_id and self.sale.company_id != self.product.company_id:
+            errors['product'] = 'O produto deve pertencer a empresa da venda.'
+        if self.promotion_id and self.sale_id and self.promotion.company_id != self.sale.company_id:
+            errors['promotion'] = 'A promocao deve pertencer a empresa da venda.'
+        snapshots = (
+            self.promotion_name,
+            self.promotion_discount_type,
+            self.promotion_discount_value,
+        )
+        if self.promotion_id and any(value is None for value in snapshots):
+            errors['promotion'] = 'Os snapshots da promocao sao obrigatorios.'
+        if not self.promotion_id and (
+            any(value is not None for value in snapshots) or self.promotion_benefit != 0
+        ):
+            errors['promotion'] = 'Item sem promocao nao pode possuir beneficio promocional.'
+        if self.promotion_benefit < 0 or self.promotion_benefit > self.subtotal:
+            errors['promotion_benefit'] = 'O beneficio deve estar entre zero e o subtotal.'
+        if self.net_subtotal != self.subtotal - self.promotion_benefit:
+            errors['net_subtotal'] = 'O subtotal liquido deve descontar o beneficio promocional.'
+        if self.unit == Unit.UNIT and self.quantity != self.quantity.to_integral_value():
+            errors['quantity'] = 'A quantidade de produto UN deve ser inteira.'
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError('Itens de venda sao imutaveis.')
+        if isinstance(self.quantity, (float, bool)):
+            raise ValidationError({'quantity': 'Informe a quantidade como decimal exato.'})
+        try:
+            self.quantity = Decimal(self.quantity)
+        except (TypeError, ValueError):
+            raise ValidationError({'quantity': 'Informe uma quantidade valida.'})
+        if self.product_id:
+            self.product_name = self.product.name
+            self.internal_code = self.product.internal_code
+            self.unit = self.product.unit
+            self.unit_cost = self.product.cost
+            self.unit_price = self.product.sale_price
+            self.subtotal = (self.unit_price * self.quantity).quantize(Decimal('0.01'))
+        self.net_subtotal = self.subtotal - self.promotion_benefit
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+
+class Payment(ImmutableHistoricalModel):
+    sale = models.ForeignKey(Sale, on_delete=models.PROTECT, related_name='payments')
+    payment_method = models.ForeignKey(
+        PaymentMethod, on_delete=models.PROTECT, related_name='payments'
+    )
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    received_amount = models.DecimalField(max_digits=14, decimal_places=2, blank=True, null=True)
+    change_amount = models.DecimalField(max_digits=14, decimal_places=2, blank=True, null=True)
+    payment_method_name = models.CharField(max_length=100)
+    payment_method_code = models.CharField(max_length=50)
+
+    class Meta:
+        ordering = ('id',)
+        constraints = [
+            models.CheckConstraint(condition=Q(amount__gt=0), name='sales_payment_amount_positive'),
+            models.CheckConstraint(
+                condition=Q(received_amount__isnull=True) | Q(received_amount__gte=0),
+                name='sales_payment_received_nonnegative',
+            ),
+            models.CheckConstraint(
+                condition=Q(change_amount__isnull=True) | Q(change_amount__gte=0),
+                name='sales_payment_change_nonnegative',
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.amount is not None and self.amount <= 0:
+            errors['amount'] = 'O valor deve ser maior que zero.'
+        if self.sale_id and self.payment_method_id and self.sale.company_id != self.payment_method.company_id:
+            errors['payment_method'] = 'A forma de pagamento deve pertencer a empresa da venda.'
+        if self.payment_method_id and self.payment_method.status != Status.ACTIVE:
+            errors['payment_method'] = 'A forma de pagamento esta inativa.'
+        if self.payment_method_id and self.payment_method.code == PaymentMethodCode.CASH:
+            if self.received_amount is not None and self.received_amount < self.amount:
+                errors['received_amount'] = 'O valor recebido nao pode ser menor que o pagamento.'
+            expected_change = (
+                self.received_amount - self.amount if self.received_amount is not None else None
+            )
+            if self.change_amount != expected_change:
+                errors['change_amount'] = 'O troco deve ser calculado a partir do valor recebido.'
+        elif self.received_amount is not None or self.change_amount is not None:
+            errors['received_amount'] = 'Somente pagamento em dinheiro aceita valor recebido e troco.'
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError('Pagamentos sao imutaveis.')
+        for field in ('amount', 'received_amount'):
+            value = getattr(self, field)
+            if value is None:
+                continue
+            if isinstance(value, (float, bool)):
+                raise ValidationError({field: 'Informe o valor como decimal exato.'})
+            try:
+                setattr(self, field, Decimal(value))
+            except (TypeError, ValueError):
+                raise ValidationError({field: 'Informe um valor valido.'})
+        if self.payment_method_id:
+            self.payment_method_name = self.payment_method.name
+            self.payment_method_code = self.payment_method.code
+            if self.payment_method.code == PaymentMethodCode.CASH and self.received_amount is not None:
+                self.change_amount = self.received_amount - self.amount
+        self.full_clean()
+        return super().save(*args, **kwargs)
