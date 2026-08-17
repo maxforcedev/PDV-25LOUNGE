@@ -38,6 +38,8 @@ class StockSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_state(self, obj):
+        if obj.current_quantity < 0:
+            return 'negative'
         if obj.current_quantity == 0:
             return 'zero'
         if obj.current_quantity < obj.minimum_quantity:
@@ -92,6 +94,8 @@ class StockMovementSerializer(serializers.ModelSerializer):
     movement_quantity = serializers.DecimalField(
         source='quantity', max_digits=14, decimal_places=3, read_only=True
     )
+    sale_number = serializers.SerializerMethodField()
+    sale_operation_type = serializers.SerializerMethodField()
 
     class Meta:
         model = StockMovement
@@ -99,12 +103,19 @@ class StockMovementSerializer(serializers.ModelSerializer):
             'id', 'stock', 'product', 'product_name', 'internal_code', 'branch',
             'branch_name', 'company', 'company_name', 'unit', 'movement_type', 'type',
              'previous_quantity', 'quantity', 'movement_quantity', 'final_quantity',
-             'user', 'user_name', 'reason', 'sale', 'original_movement', 'created_at',
+             'user', 'user_name', 'reason', 'sale', 'sale_number', 'sale_operation_type',
+             'original_movement', 'created_at',
         )
         read_only_fields = fields
 
     def get_user_name(self, obj):
         return obj.user.get_full_name().strip() or obj.user.email
+
+    def get_sale_number(self, obj):
+        return obj.sale.sale_number if obj.sale_id else None
+
+    def get_sale_operation_type(self, obj):
+        return obj.sale.operation_type if obj.sale_id else None
 
 
 class MovementRequestSerializer(serializers.Serializer):

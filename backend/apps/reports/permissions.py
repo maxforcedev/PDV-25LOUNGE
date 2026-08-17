@@ -10,6 +10,7 @@ REPORT_PERMISSIONS = (
     'reports.view_cash',
     'reports.view_withdrawals',
     'reports.view_inventory',
+    'reports.view_operational_result',
 )
 
 

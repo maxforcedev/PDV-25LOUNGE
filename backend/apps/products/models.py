@@ -211,3 +211,38 @@ class ProductComponent(BaseModel):
 
     def __str__(self):
         return f'{self.parent_product} <- {self.component_product}'
+
+
+class BranchProductPrice(BaseModel):
+    product = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name='branch_prices'
+    )
+    branch = models.ForeignKey(
+        'companies.Branch', on_delete=models.CASCADE, related_name='product_prices'
+    )
+    sale_price = models.DecimalField(max_digits=12, decimal_places=2)
+
+    class Meta:
+        ordering = ('branch__name', 'product__name')
+        constraints = [
+            models.UniqueConstraint(
+                fields=('product', 'branch'),
+                name='products_branch_price_product_branch_unique',
+            ),
+            models.CheckConstraint(
+                condition=Q(sale_price__gte=0),
+                name='products_branch_price_nonnegative',
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.product_id and self.branch_id and self.product.company_id != self.branch.company_id:
+            raise ValidationError({'branch': 'A filial deve pertencer a empresa do produto.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f'{self.product.name} @ {self.branch.name}: {self.sale_price}'

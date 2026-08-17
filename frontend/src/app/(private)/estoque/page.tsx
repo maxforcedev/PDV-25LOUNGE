@@ -39,6 +39,7 @@ import type { Category, Paginated, Product, Stock } from "@/types";
 
 type Action = "entry" | "exit" | "adjustment" | "minimum";
 type Summary = {
+  negative_count?: number;
   below_minimum_count?: number;
   zero_count?: number;
   estimated_value?: string;
@@ -56,13 +57,14 @@ const emptyFilters: StockFilters = {
   behavior: "",
 };
 function StateBadge({ state }: { state: Stock["state"] }) {
+  const negative = state === "negative";
   const zero = state === "zero";
   const below = state === "below_minimum";
   return (
     <span
-      className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${zero ? "bg-danger/10 text-red-700" : below ? "bg-warning/15 text-amber-700" : "bg-success/10 text-emerald-700"}`}
+      className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${negative ? "bg-red-700 text-white" : zero ? "bg-danger/10 text-red-700" : below ? "bg-warning/15 text-amber-700" : "bg-success/10 text-emerald-700"}`}
     >
-      {zero ? "Zerado" : below ? "Abaixo do mínimo" : "Normal"}
+      {negative ? "Negativo" : zero ? "Zerado" : below ? "Abaixo do mínimo" : "Normal"}
     </span>
   );
 }
@@ -171,8 +173,11 @@ function Inventory() {
     }
   }
   useEffect(() => {
+    const requestedState = new URLSearchParams(window.location.search).get("state") || "";
+    const initialState = ["normal", "below_minimum", "zero", "negative"].includes(requestedState) ? requestedState : "";
+    const initialFilters = { ...emptyFilters, state: initialState };
     setSearch("");
-    setState("");
+    setState(initialState);
     setCategory("");
     setStatus("");
     setBehavior("");
@@ -184,7 +189,8 @@ function Inventory() {
       setLoading(false);
       return;
     }
-    void load(undefined, params(emptyFilters, ""), context);
+    setDraft(initialFilters);
+    void load(undefined, params(initialFilters, ""), context);
     let active = true;
     http
       .getAll<Category>(
@@ -341,9 +347,18 @@ function Inventory() {
         {error && !action && <Alert message={error} />}
         {success && <Alert type="success" message={success} />}
         {(canViewKpis || canViewCosts) && (
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {canViewKpis && (
               <>
+                <button type="button" className="card flex items-center gap-4 p-5 text-left" onClick={() => { const filters = { state: "negative", category, status, behavior }; setState("negative"); setDraft(filters); void load(undefined, params(filters)); }}>
+                  <span className="flex size-10 items-center justify-center rounded-lg bg-red-700 text-white">
+                    <TriangleAlert className="size-5" />
+                  </span>
+                  <div>
+                    <strong className="text-xl">{loading ? "..." : (summary?.negative_count ?? 0)}</strong>
+                    <p className="text-[11px] text-slate-500">Produtos com saldo negativo</p>
+                  </div>
+                </button>
                 <div className="card flex items-center gap-4 p-5">
                   <span className="flex size-10 items-center justify-center rounded-lg bg-warning/15 text-amber-700">
                     <TriangleAlert className="size-5" />
@@ -480,6 +495,7 @@ function Inventory() {
                     >
                       <option value="">Todos</option>
                       <option value="normal">Normal</option>
+                      <option value="negative">Negativo</option>
                       <option value="below_minimum">Abaixo do mínimo</option>
                       <option value="zero">Zerado</option>
                     </Select>

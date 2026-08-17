@@ -174,6 +174,7 @@ export const http = {
   logout: () => request<void>("auth/logout/", { method: "POST", suppressUnauthorizedEvent: true }),
   patch: <T>(path: string, body: unknown) => request<T>(path, { method: "PATCH", body }),
   put: <T>(path: string, body: unknown) => request<T>(path, { method: "PUT", body }),
+  delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };
 
 export function clearCsrfToken() {

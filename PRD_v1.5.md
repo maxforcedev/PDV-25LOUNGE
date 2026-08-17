@@ -1,8 +1,8 @@
 # PRD — CORE PDV: Sistema de Gestão Empresarial e Ponto de Venda
 
-> **Versão:** 1.6
+> **Versão:** 1.5
 > **Data:** 2026-08-16  
-> **Status:** PRD técnico — V1 fechada em escopo funcional, com núcleo operacional, auditoria reforçada, bloqueios individuais de permissão, CMV por snapshot, relatório de produtos/insumos consumidos, validação manual final e deploy previstos antes da V2  
+> **Status:** PRD técnico — MVP em validação operacional avançada, com PDV/consumação unificados, RBAC por filial, promoções, relatórios, dashboard gerencial e novas sprints previstas para correções, configurações por filial, preços, atendentes, taxa de serviço, comissões e resultado operacional  
 > **Domínio de produção:** `corepdv.com`  
 > **Idioma do código:** inglês  
 > **Idioma da interface:** português brasileiro  
@@ -329,10 +329,6 @@ Os principais problemas que o CORE PDV pretende resolver no MVP são:
 - Docker Compose local;
 - healthcheck;
 - infraestrutura de produção documentada em Docker Swarm + Traefik.
-- auditoria reforçada de ações críticas com trilha append-only de antes/depois quando aplicável;
-- bloqueios individuais de permissão por usuário/filial, sem alterar o perfil-base;
-- CMV histórico baseado em snapshot de custo do item no momento da operação;
-- relatório de produtos e insumos efetivamente consumidos, derivado dos movimentos reais de estoque.
 
 ## 4.2 Fora do MVP funcional
 
@@ -392,12 +388,6 @@ Não implementar agora:
 - backup automatizado;
 - MKDocs;
 - testes automatizados.
-- fornecedores e compras;
-- despesas/financeiro completo além do resultado operacional estimado;
-- metas e rankings avançados;
-- comparativo entre eventos/noites como módulo próprio;
-- eventos, reservas, clientes e listas/promoters avançados;
-- autorização por cartão físico/código de barras;
 
 ## 4.3 Importante sobre infraestrutura de produção
 
@@ -1757,41 +1747,6 @@ O catálogo deve contemplar, no mínimo, capacidades equivalentes a:
 
 A implementação pode mapear nomes técnicos para permissões Django específicas, desde que o comportamento acima seja preservado.
 
-### Bloqueios individuais de permissão — V1
-
-Além das permissões herdadas do `AccessProfile`, a V1 deve permitir bloquear uma permissão específica para um `User` em uma `Branch`, sem precisar criar um novo perfil apenas para uma exceção.
-
-Modelagem sugerida: `UserPermissionBlock` (ou equivalente), com:
-
-- `company`;
-- `branch`;
-- `user`;
-- `permission`;
-- `blocked_by`;
-- `reason` opcional;
-- `created_at`;
-- `revoked_at` opcional.
-
-Regras mandatórias:
-
-- bloqueio explícito prevalece sobre a permissão herdada do perfil;
-- bloqueio não concede nenhuma capacidade;
-- o bloqueio só vale no escopo da Company/Branch correspondente;
-- remover o bloqueio restaura a avaliação normal do perfil;
-- criar, revogar ou alterar bloqueio deve ser auditado;
-- o frontend deve mostrar claramente quando uma permissão veio do perfil, mas está bloqueada para aquele usuário;
-- o backend continua sendo a fonte de verdade.
-
-Ordem mínima de resolução para operações de Branch:
-
-```text
-Company/Branch ativa e autorizada
-→ permissão existente no catálogo
-→ bloqueio individual explícito
-→ permissão herdada do AccessProfile
-→ demais regras de domínio
-```
-
 ### Permissões financeiras de estoque
 
 Definir capacidades equivalentes a:
@@ -1881,43 +1836,6 @@ A API não deve expor:
 - detalhes internos desnecessários.
 
 ---
-
-## 18.7 Regra obrigatória para novas permissões na V1
-
-Toda funcionalidade administrativa, financeira ou operacional nova deve passar por revisão explícita de autorização antes de ser considerada concluída.
-
-Regras mandatórias:
-
-- nenhuma funcionalidade nova pode ser concluída sem verificar se exige permissão própria;
-- quando exigir, a permissão deve ser registrada no catálogo do backend;
-- o perfil de sistema `Administrador` deve receber automaticamente novas permissões do catálogo;
-- perfis não administrativos, inclusive `Gerente`, **não recebem automaticamente todas as novas permissões**; devem possuir conjunto inicial explícito e editável pela Company;
-- a nova permissão deve aparecer na matriz de `AccessProfile`;
-- frontend e backend devem utilizar a mesma capacidade técnica; esconder botão não substitui 403 no backend;
-- incluir, quando aplicável, capacidades equivalentes a `branches.change_settings`, `products.change_branch_price`, `sales.remove_service_fee`, `commissions.view`, `commissions.change_branch_default`, `commissions.change_profile`, `commissions.change_user_override` e permissões dedicadas dos novos relatórios.
-
-### Comissão configurada por perfil e usuário
-
-`AccessProfile` deve possuir configuração operacional de comissão distinta do catálogo de permissões:
-
-- `receives_commission` — indica se Users que utilizam o perfil recebem comissão;
-- opção para utilizar o percentual padrão da Branch;
-- percentual próprio do perfil quando configurado.
-
-O User pode possuir override individual de comissão quando autorizado. Precedência:
-
-```text
-Override do User
-→ configuração do AccessProfile
-→ percentual padrão da Branch
-```
-
-Regras:
-
-- `receives_commission=False` resulta em comissão zero, ainda que a Branch possua percentual padrão;
-- editar comissão padrão da Branch, perfil ou override individual exige permissões distintas;
-- a venda salva snapshot do percentual e valor efetivamente utilizados;
-- alterar configuração futura não altera venda histórica.
 
 # 19. Categorias e Produtos
 
@@ -2421,28 +2339,6 @@ Regras:
 - composição recursiva;
 - custo médio/FIFO/LIFO.
 
-## 20.14 Valorização quando existe estoque negativo
-
-Saldo negativo continua sendo exibido e auditado quando a Branch permite venda sem estoque, porém **não reduz o valor físico existente em estoque**.
-
-Para o KPI `Valor em estoque` e custo total físico atual, utilizar:
-
-```text
-SUM(max(current_quantity, 0) × Product.cost)
-```
-
-Exemplo:
-
-```text
-Água      12 × R$ 0,90 = R$ 10,80
-Red Bull  -2 × R$ 6,50 = R$ 0,00 para valorização física
-Valor em estoque = R$ 10,80
-```
-
-O saldo negativo deve permanecer visível em KPI/filtro próprio `Produtos negativos`. Opcionalmente, exibir `Déficit de estoque estimado`, calculado com o módulo da quantidade negativa × custo atual, desde que o usuário possua permissão de custos.
-
-Não apresentar `Valor em estoque` negativo como se a empresa possuísse patrimônio físico negativo.
-
 # 21. Caixa
 
 ## 21.1 Caixa físico
@@ -2588,36 +2484,6 @@ Venda/consumação relacionada deve ser clicável. O histórico não pode depend
 - não permitir cancelamento operacional de venda de sessão encerrada, mesmo que o usuário tenha permissão de cancelamento;
 - eventuais estornos pós-fechamento futuros deverão possuir fluxo financeiro específico fora deste MVP.
 
-## 21.10 Resumo financeiro completo da CashSession
-
-A operação de caixa deve distinguir **dinheiro físico da gaveta** de **recebimentos da sessão por todas as formas de pagamento**.
-
-O cálculo `Esperado em dinheiro` continua usando somente abertura, entradas, pagamentos em dinheiro, sangrias e reversões em dinheiro. PIX, crédito e débito não entram no dinheiro esperado.
-
-A tela da sessão e o fechamento devem também exibir resumo por forma de pagamento, por exemplo:
-
-```text
-Faturamento/recebimentos da sessão
-Dinheiro                R$ 300,00
-PIX                     R$ 400,00
-Cartão de crédito       R$   0,00
-Cartão de débito        R$  40,00
-
-Movimentações de gaveta
-Abertura                R$  50,00
-Entradas                R$   0,00
-Sangrias               -R$ 100,00
-Esperado em dinheiro    R$ 250,00
-Informado               R$ 248,00
-Diferença              -R$   2,00
-```
-
-A timeline cronológica deve continuar focada nos eventos que alteram a gaveta ou o estado da sessão; não deve ficar poluída com centenas de vendas de PIX/cartão. O resumo por forma de pagamento fica separado acima da timeline.
-
-### Fechamento 404 como bloqueador
-
-Qualquer retorno 404 no fluxo Operação de Caixa → Fechar Caixa é bug bloqueador da V1. Deve ser investigado no frontend e na API até que a rota/tela e as chamadas `cash-sessions/{id}/`, `summary/` e `close/` estejam coerentes com o contexto atual de Branch. Não considerar o fluxo concluído enquanto a validação manual reproduzir o erro.
-
 # 22. Venda / PDV
 
 ## 22.1 Interface
@@ -2757,54 +2623,6 @@ Regras:
 Inputs numéricos do PDV e demais telas operacionais devem aceitar `,` ou `.` como separador decimal. O frontend normaliza antes de enviar, e o backend continua validando Decimal.
 
 Aplicar o mesmo padrão a preço, custo, desconto, recebido, abertura, sangria, estoque, composição, consumação, comissão, taxa e promoções.
-
-## 22.9 Ajustes finais de experiência do PDV — V1
-
-### Favoritos
-
-- a listagem administrativa de Products deve ordenar favoritos antes dos demais quando não houver ordenação explícita conflitante;
-- o PDV deve criar uma categoria **virtual** `Favoritos` quando houver ao menos um Product ativo, vendável e favorito;
-- `Favoritos` aparece sempre antes das Categories persistidas;
-- a categoria virtual não é persistida no banco;
-- o Product favorito pode continuar aparecendo também em sua Category original.
-
-### Remoção opcional da taxa de serviço
-
-A taxa configurada da Branch não deve ser obrigatoriamente aplicada em toda venda. O checkout deve exibir opção clara equivalente a `Cobrar taxa de serviço`.
-
-- valor inicial segue a configuração da Branch;
-- remover a taxa exige permissão específica, por exemplo `sales.remove_service_fee`;
-- usuário sem essa permissão pode solicitar autorização pontual de outro User elegível, no mesmo padrão da autorização de desconto;
-- registrar snapshot e auditoria: taxa configurada, valor efetivamente cobrado, se foi dispensada e por quem;
-- campos históricos recomendados: `service_fee_waived` e `service_fee_waived_by`;
-- comissão do atendente é independente da decisão de cobrar ou dispensar taxa de serviço.
-
-### Comissão não aparece no checkout
-
-A informação `Comissão prevista` não deve ser exibida na tela operacional de fechamento do PDV. Comissão é informação administrativa/gerencial e deve aparecer apenas em detalhe autorizado, relatórios e dashboards gerenciais conforme permissão.
-
-### Abertura rápida de caixa no PDV
-
-Quando não houver CashSession aberta, o PDV deve facilitar a abertura sem obrigar o operador a abandonar o pedido:
-
-```text
-Nenhum caixa aberto nesta filial.
-[Abrir caixa]
-```
-
-O fluxo deve permitir escolher CashRegister, informar fundo inicial e abrir/continuar a venda. A operação exige a mesma permissão de abertura de caixa já existente.
-
-### Divisão por pessoas
-
-Adicionar calculadora simples de apoio ao operador/garçom:
-
-```text
-Total: R$ 330,00
-Dividir por: 6 pessoas
-R$ 55,00 por pessoa
-```
-
-Essa função não cria múltiplas Sales nem Payments automaticamente; é somente auxílio de cálculo. Os pagamentos reais continuam sendo registrados normalmente.
 
 # 23. Pagamentos
 
@@ -3185,50 +3003,6 @@ Filtros:
 
 Exibir saldo/movimentos e, somente com permissão financeira, custo unitário, custo total e valorização.
 
-### Relatório de Produtos e Insumos Consumidos — V1
-
-Criar relatório específico para responder **o que realmente saiu fisicamente do estoque** no período, independentemente de o item ter sido vendido diretamente, consumido internamente ou utilizado como componente de combo.
-
-Fonte de verdade:
-
-- `StockMovement` efetivamente criado pelas operações;
-- movimentos de venda: `sale`;
-- movimentos de consumação: `consumption`;
-- cancelamentos/reversões devem reduzir ou neutralizar o consumo líquido conforme os movimentos inversos correspondentes.
-
-Filtros mínimos:
-
-- data/hora inicial;
-- data/hora final;
-- Branch;
-- Product;
-- Category;
-- origem (`Venda`, `Consumação`, `Todos`);
-- operação/venda relacionada quando aplicável.
-
-Exibir, no mínimo:
-
-- Product/insumo físico;
-- Category;
-- unidade;
-- quantidade bruta consumida;
-- quantidade devolvida por cancelamentos;
-- quantidade líquida consumida;
-- custo histórico/estimado quando tecnicamente disponível e permitido;
-- origem da baixa;
-- número da venda/consumação quando detalhado.
-
-Regra crítica para combos:
-
-> Se foi vendido `1 Combo 5 Águas`, o relatório de consumo físico deve registrar `5 UN` de Água consumidas, e não apenas `1 Combo`.
-
-O relatório pode possuir duas visões:
-
-- **Produtos vendidos/consumidos comercialmente** — baseado em `SaleItem`;
-- **Insumos físicos consumidos** — baseado em `StockMovement`.
-
-Essas visões não devem ser confundidas, porque um combo pode representar um item comercial e vários insumos físicos.
-
 ### Exportação
 
 A primeira versão pode oferecer CSV e/ou XLSX. PDF não é obrigatório nesta fase. A exportação deve utilizar exatamente os filtros e permissões aplicados na tela.
@@ -3387,108 +3161,6 @@ Regras:
 Relatórios de sessão de caixa devem incluir sessões que **intersectam** o período consultado, e não apenas sessões cujo `opened_at` esteja dentro do intervalo.
 
 Exemplo: sessão aberta `16/08 23:00` e fechada `17/08 05:00` deve aparecer em consulta `17/08 00:00 → 05:00`.
-
-## 26.12 Direção final do Dashboard e da Central de Relatórios — V1
-
-### Dashboard principal enxuto
-
-O Dashboard principal é uma **visão executiva rápida da operação** e não um BI completo. Deve evitar excesso de cards, rankings e tabelas concorrendo pela atenção.
-
-Hierarquia recomendada:
-
-```text
-Linha 1 — período + Branch
-Linha 2 — 5 ou 6 KPIs principais
-Linha 3 — gráfico principal de faturamento/vendas por hora/período
-Linha 4 — formas de pagamento + produtos mais vendidos
-Linha 5 — vendas por atendente + consumação
-Linha 6 — alertas compactos de estoque/caixa
-```
-
-KPIs principais recomendados, conforme permissão:
-
-- Faturamento efetivo;
-- Vendas;
-- Ticket médio;
-- Consumação cobrada, exibindo também **quantidade de pedidos de consumação**;
-- Descontos;
-- Resultado estimado.
-
-O bloco de consumação deve permitir leitura equivalente a:
-
-```text
-CONSUMAÇÕES
-12 pedidos
-Valor de referência     R$ 780,00
-Valor cobrado           R$ 240,00
-Benefício concedido     R$ 540,00
-```
-
-KPIs e gráficos devem ser clicáveis e navegar para o relatório/tela correspondente preservando `start_datetime`, `end_datetime` e Branch. Estoque no dashboard deve aparecer apenas como alertas resumidos, por exemplo `1 negativo`, `3 abaixo do mínimo`, `2 zerados`, levando a `/estoque`. Caixa deve aparecer como estado/resumo da sessão atual, não como relatório completo.
-
-### Central de Relatórios
-
-A rota `/relatorios` deixa de tentar renderizar todos os dados em uma única página e passa a ser uma **Central de Relatórios** com cards/categorias.
-
-Agrupamentos funcionais da V1:
-
-- **Visão Gerencial:** resumo de vendas, faturamento por período/filial, ticket médio e resultado estimado;
-- **Produtos & Performance:** produtos, categorias, produtos por atendente/operador e consumo de estoque;
-- **Recebimentos:** formas de pagamento e resumo por CashSession;
-- **Equipe & Comissão:** operador, atendente e comissão;
-- **Custos & Resultado:** CMV, consumo físico, margem e resultado estimado;
-- **Auditoria & Controle:** cancelamentos, descontos, promoções, movimentações e sangrias.
-
-Rotas dedicadas iniciais:
-
-```text
-/relatorios/visao-geral
-/relatorios/vendas
-/relatorios/produtos
-/relatorios/recebimentos
-/relatorios/operadores
-/relatorios/atendentes
-/relatorios/comissoes
-/relatorios/descontos
-/relatorios/consumacoes
-/relatorios/caixa
-/relatorios/sangrias
-/relatorios/consumo-estoque
-/relatorios/cancelamentos
-/relatorios/precos
-/relatorios/resultado
-```
-
-Cada relatório deve possuir seus próprios KPIs, filtros adequados, gráficos quando úteis, tabela de detalhes e exportação quando já prevista. Todos os relatórios históricos respeitam data/hora inicial/final.
-
-### Consumo de Estoque
-
-`/relatorios/consumo-estoque` deve possuir no mínimo duas visões:
-
-1. **Resumo por produto físico**, mostrando a saída líquida real por Product/unidade;
-2. **Movimentações detalhadas**, permitindo rastrear Venda, Consumação, saída manual e respectivos cancelamentos/reversões.
-
-A visão física deve usar `StockMovement` como fonte de verdade. Venda de `1 Combo 5 Águas` aparece como `5 UN Água` para conferência física.
-
-### Resultado operacional dedicado
-
-`/relatorios/resultado` deve ser uma rota própria e permitir recorte por período e, quando útil, CashSession. Deve exibir claramente bruto, promoções, desconto manual, faturamento efetivo, CMV, comissão, despesas que afetam resultado, custo fixo rateado, resultado estimado e margem estimada.
-
-### Português obrigatório
-
-Nenhum enum/chave técnica pode aparecer diretamente ao usuário. Criar mapeamentos centralizados de domínio, incluindo no mínimo:
-
-```text
-sale_cancellation        → Cancelamento de venda
-consumption_cancellation → Cancelamento de consumação
-manual_entry             → Entrada manual
-withdrawal               → Sangria
-sale                     → Venda
-consumption              → Consumação
-fixed_amount              → Valor fixo
-```
-
-Não usar transformação genérica de chave como `replaceAll('_', ' ')` para títulos de UI.
 
 # 27. API REST
 
@@ -3714,37 +3386,6 @@ Empresa Z
 
 A edição efetiva continua respeitando permissões e contexto.
 
-## 28.10 Dark mode e contraste global
-
-A validação visual da V1 deve revisar toda a aplicação nos modos claro e escuro. Nenhum `label`, placeholder, descrição, texto secundário, badge, campo disabled, tabela, filtro, select, card, dropdown ou modal pode ficar com contraste insuficiente.
-
-Referência de hierarquia:
-
-- rótulo principal (`CNPJ`) com contraste normal/forte;
-- complemento (`opcional`) pode usar tom secundário, porém ainda legível;
-- não corrigir somente componentes isolados: revisar padrões compartilhados de `Field`, `Modal`, tabelas e formulários.
-
-## 28.11 Tabela de preços como edição em lote
-
-A tela de Tabela de Preços deve deixar explícita a diferença entre preço padrão da Company e override da Branch.
-
-Exemplo:
-
-```text
-Produto       Preço padrão     Matriz
-Água          R$ 5,00          R$ 6,00
-Red Bull      R$ 15,00         R$ 17,00
-```
-
-Regras:
-
-- editar a coluna da Branch altera `BranchProductPrice`;
-- editar `Preço padrão` altera `Product.sale_price`, quando a ação estiver disponível e autorizada;
-- permitir edição de vários Products e ação única `Salvar alterações`;
-- o backend deve oferecer operação de atualização em lote segura ou o frontend deve coordenar alterações sem deixar o estado parcialmente ambíguo;
-- o PDV deve refletir imediatamente o preço efetivo da Branch após salvar;
-- a UI do cadastro de Product deve deixar claro quando existe override de preço na Branch atual para evitar a impressão de que a alteração “não salvou”.
-
 # 29. Design System
 
 Antes de construir componentes visuais, ler:
@@ -3811,17 +3452,6 @@ Tratar com:
 - validação de status dentro da transação.
 
 ---
-
-## 30.3 Integridade do atendente obrigatório
-
-Além da validação em service/serializer, o banco deve reforçar quando tecnicamente viável que venda comercial possua atendente:
-
-```text
-operation_type = sale        → seller_user IS NOT NULL
-operation_type = consumption → seller_user pode ser NULL
-```
-
-Preferir `CheckConstraint` condicional ou mecanismo equivalente compatível com PostgreSQL. O campo não deve simplesmente virar `null=False`, pois a mesma tabela representa consumação.
 
 # 31. Regras Financeiras
 
@@ -3949,25 +3579,6 @@ Regras:
 - cancelamento válido remove a operação das comissões realizadas ou registra reversão equivalente;
 - não recalcular venda histórica usando configuração atual.
 
-### CMV histórico por snapshot — V1
-
-O CMV da V1 deve ser calculado exclusivamente a partir do custo histórico preservado em `SaleItem.unit_cost`, nunca pelo `Product.cost` atual.
-
-Para vendas comerciais válidas:
-
-```text
-item_cmv = SaleItem.unit_cost × SaleItem.quantity
-cmv_periodo = SUM(item_cmv das vendas comerciais não canceladas no período)
-```
-
-Regras:
-
-- `SaleItem.unit_cost` é preenchido no momento da finalização;
-- alterar `Product.cost` depois não modifica CMV histórico;
-- venda cancelada não compõe CMV líquido do período, devendo ser excluída ou tratada por reversão equivalente;
-- consumação deve preservar seu próprio custo histórico para relatório de consumo, mas não deve ser misturada silenciosamente ao CMV de vendas comerciais;
-- relatórios devem identificar claramente quando o indicador é **CMV de vendas** e quando é **custo de consumação**.
-
 ### Resultado operacional estimado
 
 ```text
@@ -3992,47 +3603,22 @@ Registrar em log de aplicação:
 - tentativas relevantes de operação inválida, sem vazar dados sensíveis;
 - inicialização e falhas do serviço.
 
-## 32.2 Auditoria de domínio reforçada — V1
+## 32.2 Auditoria de domínio
 
-A V1 deve possuir trilha de auditoria explícita para ações críticas. Além do histórico natural das próprias entidades, implementar `AuditLog` append-only (ou mecanismo equivalente) para alterações que exigem rastreabilidade de antes/depois.
+O próprio modelo deve preservar informações como:
 
-Campos mínimos do `AuditLog`:
+- usuário que abriu/fechou caixa;
+- usuário que movimentou estoque;
+- usuário que realizou venda;
+- usuário que cancelou venda;
+- usuário beneficiário de consumação;
+- usuário beneficiário de sangria quando aplicável;
+- categoria da sangria;
+- valor de referência e valor cobrado em consumação;
+- motivo de cancelamento;
+- timestamps.
 
-- `company`;
-- `branch` quando aplicável;
-- `actor_user`;
-- `action`;
-- `object_type`;
-- `object_id`;
-- `before_data` quando aplicável;
-- `after_data` quando aplicável;
-- `reason` opcional;
-- `ip_address` quando disponível;
-- `user_agent` quando disponível;
-- `created_at`.
-
-A auditoria reforçada deve cobrir, no mínimo:
-
-- alteração de preço e custo de Product;
-- ativação/inativação de Product;
-- mudanças em composição de Product;
-- movimentações manuais e ajustes de estoque;
-- abertura, sangria, entrada e fechamento de caixa;
-- desconto manual e autorização pontual;
-- cancelamento de venda/consumação;
-- alterações de BranchSettings;
-- alterações de taxa de serviço/comissão;
-- alterações de preço por Branch;
-- mudanças em AccessProfile;
-- criação/revogação de bloqueios individuais de permissão;
-- ativações/inativações relevantes de User e acessos.
-
-Regras:
-
-- `AuditLog` é append-only e não pode ser editado/excluído pelo fluxo operacional;
-- senhas, hashes, cookies, tokens e segredos nunca entram em `before_data`/`after_data`;
-- logs técnicos 5xx continuam separados da auditoria de negócio;
-- não duplicar integralmente dados transacionais imutáveis quando a própria entidade já é a fonte oficial; o AuditLog registra a ação e as mudanças relevantes.
+Não criar framework de auditoria complexo no MVP se os próprios registros históricos forem suficientes.
 
 ---
 
@@ -5063,24 +4649,6 @@ Não utilizar SQLite como banco funcional do ambiente Docker do MVP.
 
 **Decisão:** `/estoque` é a visão oficial do saldo atual; relatórios temporais ficam nas movimentações.
 
-## ADR-049 — Auditoria reforçada na V1
-
-**Decisão:** ações críticas possuem `AuditLog` append-only com ator, escopo, objeto e antes/depois quando aplicável.
-**Motivo:** garantir rastreabilidade operacional antes do primeiro deploy real.
-
-## ADR-050 — Bloqueio individual de permissão na V1
-
-**Decisão:** um User pode receber bloqueio explícito de permissão por Branch, prevalecendo sobre a permissão herdada do perfil.
-**Não implementar na V1:** concessões individuais positivas adicionais; exceções positivas ficam para V2 para evitar expansão desnecessária do RBAC.
-
-## ADR-051 — CMV sempre por snapshot histórico
-
-**Decisão:** CMV de vendas usa `SaleItem.unit_cost` histórico e nunca o custo atual do Product.
-
-## ADR-052 — Consumo físico deriva dos movimentos reais de estoque
-
-**Decisão:** relatório de insumos consumidos usa `StockMovement` como fonte de verdade, permitindo representar corretamente componentes de combos e reversões.
-
 # 48. Definition of Done
 
 O MVP somente pode ser considerado concluído se TODOS os cenários abaixo funcionarem ponta a ponta.
@@ -5173,35 +4741,6 @@ O MVP somente pode ser considerado concluído se TODOS os cenários abaixo funci
 - [ ] AC-68 — Dashboard possui gráficos gerenciais seguindo design system.
 - [ ] AC-69 — Modo claro/escuro, fullscreen e sidebar recolhível funcionam conforme suporte do navegador.
 - [ ] AC-70 — `/consumacoes` usa filtros compactos.
-- [ ] AC-71 — Alterações críticas previstas na V1 geram `AuditLog` append-only com ator, Company/Branch e antes/depois quando aplicável.
-- [ ] AC-72 — Senhas, tokens e segredos não aparecem em registros de auditoria.
-- [ ] AC-73 — Bloqueio individual de permissão por User/Branch prevalece sobre a permissão herdada do AccessProfile.
-- [ ] AC-74 — Revogar o bloqueio individual restaura a avaliação normal do perfil sem alterar o perfil-base.
-- [ ] AC-75 — CMV histórico de vendas usa `SaleItem.unit_cost` e não muda quando `Product.cost` é alterado posteriormente.
-- [ ] AC-76 — Venda cancelada não permanece compondo CMV líquido do período.
-- [ ] AC-77 — Relatório de Produtos e Insumos Consumidos apresenta quantidade física líquida baseada em StockMovement.
-- [ ] AC-78 — Venda de `1 Combo 5 Águas` aparece como `1 Combo` na visão comercial e `5 UN Água` na visão de insumos físicos.
-- [ ] AC-79 — Cancelamento reduz corretamente o consumo líquido no relatório sem recalcular a composição atual.
-
-
-- [ ] AC-80 — Dashboard de consumação exibe quantidade de pedidos, referência, cobrado e benefício no mesmo período.
-- [ ] AC-81 — Dark mode possui contraste legível em labels, modais, tabelas, filtros, selects, cards e estados disabled.
-- [ ] AC-82 — Toda nova funcionalidade protegida possui permissão correspondente no catálogo/matriz; Administrador recebe novas permissões e Gerente não recebe tudo automaticamente.
-- [ ] AC-83 — Perfil pode definir se recebe comissão; User pode possuir override autorizado com precedência User → Perfil → Branch.
-- [ ] AC-84 — Products favoritos aparecem primeiro na listagem e o PDV possui categoria virtual Favoritos quando aplicável.
-- [ ] AC-85 — Tabela de preços permite edição em lote e diferencia claramente preço padrão de override da Branch.
-- [ ] AC-86 — Taxa de serviço pode ser dispensada com permissão/autorização e a dispensa fica auditada.
-- [ ] AC-87 — Comissão prevista não aparece no checkout operacional do PDV.
-- [ ] AC-88 — Sem caixa aberto, usuário autorizado consegue abrir CashSession dentro do fluxo do PDV e continuar o pedido.
-- [ ] AC-89 — Divisão por pessoas calcula valor por pessoa sem criar vendas/pagamentos artificiais.
-- [ ] AC-90 — CashSession exibe resumo de Dinheiro/PIX/Crédito/Débito sem incluir não-dinheiro no esperado da gaveta.
-- [ ] AC-91 — Fluxo de fechamento de caixa não retorna 404 em navegação ou chamadas da API.
-- [ ] AC-92 — Valor em estoque ignora saldo negativo na valorização física e negativos continuam visíveis em KPI próprio.
-- [ ] AC-93 — `/relatorios` funciona como Central de Relatórios e cada relatório principal possui rota dedicada.
-- [ ] AC-94 — Nenhum enum/chave técnica em inglês aparece nas telas ou exportações da V1.
-- [ ] AC-95 — `/relatorios/consumo-estoque` possui resumo físico e detalhamento por origem, incluindo cancelamentos.
-- [ ] AC-96 — Dashboard principal permanece enxuto e não tenta reproduzir todos os relatórios na mesma tela.
-- [ ] AC-97 — Venda comercial possui constraint/regra estrutural de `seller_user` obrigatório sem impedir consumação.
 
 # 49. Roadmap
 
@@ -5226,10 +4765,7 @@ O MVP somente pode ser considerado concluído se TODOS os cenários abaixo funci
 | Atendentes, taxa e comissão | 11.6 | seller obrigatório, autorização de desconto, taxa de serviço e comissão |
 | Gestão e resultado | 11.7 | gráficos, relatórios V2, comissão por atendente, preços e resultado operacional estimado |
 | UX avançada | 11.8 | tema claro/escuro, fullscreen, sidebar recolhível e refinamentos finais |
-| Fechamento técnico da V1 | 11.9 | auditoria reforçada, bloqueios individuais, CMV por snapshot e relatório de produtos/insumos consumidos |
-| Correções da validação | 12.1 | bugs/UX/RBAC/comissão/taxa/caixa/favoritos/preços/estoque identificados manualmente |
-| Dashboard e Relatórios finais | 12.2 | dashboard enxuto, Central de Relatórios, rotas dedicadas e consumo físico |
-| Validação final | 12.3 | validação manual final conduzida pelo responsável pelo produto; OpenCode não marca como concluída sozinho |
+| Validação | 12 | validação manual conduzida pelo responsável pelo produto; OpenCode apenas corrige problemas reportados |
 | Produção | 13 | deploy somente após autorização expressa |
 
 # 50. Sprints de Implementação
@@ -6309,180 +5845,7 @@ PDV-25LOUNGE/
 
 ---
 
-## Sprint 11.9 — Auditoria, Bloqueios Individuais, CMV e Consumo Físico
-
-**Objetivo:** fechar o escopo funcional da V1 antes da validação manual final e do deploy.
-
-### Auditoria reforçada
-
-- [ ] Criar `AuditLog` append-only ou mecanismo equivalente.
-- [ ] Registrar Company, Branch, ator, ação, tipo/ID do objeto e timestamp.
-- [ ] Registrar antes/depois em mudanças críticas quando aplicável.
-- [ ] Auditar alteração de preço/custo/status/composição de Product.
-- [ ] Auditar movimentações manuais de estoque e alterações de mínimo quando aplicável.
-- [ ] Auditar abertura, entrada, sangria e fechamento de caixa.
-- [ ] Auditar descontos, autorizações e cancelamentos.
-- [ ] Auditar BranchSettings, preço por Branch, taxa e comissão.
-- [ ] Auditar alterações de AccessProfile e bloqueios individuais.
-- [ ] Garantir que senhas, tokens e segredos nunca sejam persistidos no AuditLog.
-- [ ] Criar consulta/tela de auditoria simples, protegida por permissão específica.
-
-### Bloqueios individuais de permissão
-
-- [ ] Criar `UserPermissionBlock` ou equivalente por Company/Branch/User/Permission.
-- [ ] Fazer bloqueio explícito prevalecer sobre permissão herdada do perfil.
-- [ ] Permitir criar/revogar bloqueio sem alterar o AccessProfile-base.
-- [ ] Exibir na administração do usuário as permissões herdadas que estão bloqueadas.
-- [ ] Proteger criação/revogação de bloqueio com permissão administrativa específica.
-- [ ] Auditar criação e revogação dos bloqueios.
-- [ ] Validar que bloqueio em uma Branch não vaza para outra Branch.
-
-### CMV por snapshot
-
-- [ ] Confirmar/preencher `SaleItem.unit_cost` na finalização de venda.
-- [ ] Garantir imutabilidade histórica do custo do item finalizado.
-- [ ] Calcular CMV de vendas a partir de `unit_cost × quantity`.
-- [ ] Excluir/reverter vendas canceladas do CMV líquido.
-- [ ] Separar CMV de vendas do custo de consumação.
-- [ ] Expor CMV nos relatórios/resultado somente para usuários com permissão financeira adequada.
-
-### Relatório de Produtos e Insumos Consumidos
-
-- [ ] Criar relatório com período data/hora obrigatório.
-- [ ] Adicionar filtros por Branch, Product, Category e origem Venda/Consumação.
-- [ ] Criar visão comercial baseada em SaleItem.
-- [ ] Criar visão física baseada em StockMovement.
-- [ ] Exibir quantidade bruta, devoluções e quantidade líquida.
-- [ ] Para Products `components`, exibir os componentes físicos realmente baixados.
-- [ ] Validar que `1 Combo 5 Águas` resulta em `5 UN Água` na visão de insumos.
-- [ ] Garantir que cancelamento use os movimentos inversos históricos e ajuste o relatório corretamente.
-- [ ] Respeitar permissão de custos ao exibir valores financeiros.
-- [ ] Permitir exportação conforme o mecanismo já adotado na V1, sem criar processamento assíncrono.
-
-### Validação técnica da sprint
-
-- [ ] Executar `python manage.py check`.
-- [ ] Verificar migrations pendentes.
-- [ ] Executar build do frontend.
-- [ ] Validar API sem vazamento cross-Branch/cross-Company.
-- [ ] Validar auditoria, bloqueios, CMV e consumo físico em cenários manuais.
-
-**Entrega:** escopo funcional definitivo da V1 pronto para Sprint 12 e deploy.
-
----
-
-## Sprint 12.1 — Correções da Validação Manual
-
-**Objetivo:** corrigir os comportamentos encontrados na validação real antes de redesenhar a camada final de relatórios. Esta sprint é nova; não reabrir nem apagar os `[X]` históricos das Sprints 11.3–11.8.
-
-### Bugs e coerência operacional
-
-- [ ] Corrigir definitivamente o 404 no fechamento de caixa e validar rota Next + chamadas da API no contexto da Branch.
-- [ ] Revisar contraste de toda a aplicação em modo escuro, não somente campos isolados.
-- [ ] Centralizar labels pt-BR e eliminar `sale_cancellation`, `consumption_cancellation`, `manual_entry`, `fixed_amount` e demais chaves técnicas da UI.
-- [ ] Alterar valorização física para não produzir `Valor em estoque` negativo; manter KPI/filtro de produtos negativos.
-- [ ] Revisar `seller_user` obrigatório em venda também em constraint/regra estrutural de banco.
-
-### Permissões
-
-- [ ] Revisar todas as funcionalidades introduzidas nas Sprints 11.4–11.9 e criar permissões ausentes.
-- [ ] Garantir sincronização automática de novas permissões para Administrador.
-- [ ] Remover regra que conceda automaticamente todas as novas permissões ao perfil Gerente; usar conjunto explícito configurável.
-- [ ] Expor todas as novas capacidades na matriz de AccessProfile.
-- [ ] Manter bloqueio individual de permissão com precedência sobre perfil.
-
-### Comissão
-
-- [ ] Adicionar `receives_commission` ao AccessProfile ou configuração equivalente.
-- [ ] Permitir perfil usar percentual padrão da Branch ou percentual próprio.
-- [ ] Permitir override individual de comissão no User quando autorizado.
-- [ ] Aplicar precedência User → Perfil → Branch e salvar snapshot na Sale.
-- [ ] Criar permissões independentes para visualizar comissão, alterar padrão da Branch, alterar perfil e override de User.
-
-### PDV
-
-- [ ] Criar categoria virtual `Favoritos` quando houver Products elegíveis e exibi-la primeiro.
-- [ ] Priorizar favoritos também na listagem administrativa de Products.
-- [ ] Permitir retirar taxa de serviço com permissão específica ou autorização pontual.
-- [ ] Salvar `service_fee_waived`/autorizador ou histórico equivalente.
-- [ ] Remover `Comissão prevista` do checkout do PDV.
-- [ ] Quando não houver CashSession aberta, permitir ao usuário autorizado abrir caixa no próprio fluxo do PDV e continuar o pedido.
-- [ ] Adicionar calculadora `Dividir por pessoas` sem alterar Sale/Payment.
-
-### Caixa
-
-- [ ] Exibir resumo da sessão por Dinheiro, PIX, Crédito e Débito.
-- [ ] Manter `Esperado em dinheiro` restrito à gaveta física.
-- [ ] Manter timeline de caixa focada nos eventos que alteram gaveta/estado, com links para operações relacionadas.
-- [ ] Revisar fechamento para apresentar resumo por forma de pagamento + abertura/entradas/sangrias/esperado/informado/diferença.
-
-### Tabela de preços
-
-- [ ] Transformar a tela em edição em lote por Branch.
-- [ ] Diferenciar visualmente `Preço padrão` de `Preço da filial`.
-- [ ] Salvar múltiplas alterações de BranchProductPrice de forma segura.
-- [ ] Deixar claro no cadastro do Product quando a Branch atual possui override.
-
-**Entrega:** erros e regras operacionais encontradas na validação manual corrigidos antes da reorganização final de gestão.
-
----
-
-## Sprint 12.2 — Dashboard Executivo e Central de Relatórios
-
-**Objetivo:** reduzir o excesso de informação do Dashboard e transformar Relatórios em uma estrutura escalável por tema, inspirada na organização funcional observada nos concorrentes, sem copiar sua identidade visual.
-
-### Dashboard
-
-- [ ] Reduzir Dashboard para visão executiva rápida.
-- [ ] Manter filtro global de Branch + data/hora.
-- [ ] Limitar topo a KPIs essenciais: Faturamento, Vendas, Ticket médio, Consumação, Descontos e Resultado estimado, conforme permissão.
-- [ ] No KPI/bloco de Consumação, exibir quantidade de pedidos, referência, cobrado e benefício.
-- [ ] Usar um gráfico principal de faturamento/vendas por hora/período.
-- [ ] Manter no máximo blocos complementares úteis: Formas de pagamento, Produtos mais vendidos, Vendas por atendente e Consumação.
-- [ ] Transformar estoque/caixa em alertas/resumos compactos, não relatórios completos no Dashboard.
-- [ ] Tornar KPIs e blocos clicáveis, preservando período/Branch ao abrir detalhe.
-- [ ] Adicionar ação `Ver relatório` nos blocos relevantes.
-
-### Central de Relatórios
-
-- [ ] Transformar `/relatorios` em Central de Relatórios com cards/categorias.
-- [ ] Organizar em Visão Gerencial, Produtos & Performance, Recebimentos, Equipe & Comissão, Custos & Resultado e Auditoria & Controle.
-- [ ] Criar/validar `/relatorios/visao-geral`.
-- [ ] Criar/validar `/relatorios/vendas`.
-- [ ] Criar/validar `/relatorios/produtos`.
-- [ ] Criar/validar `/relatorios/recebimentos`.
-- [ ] Criar/validar `/relatorios/operadores`.
-- [ ] Criar/validar `/relatorios/atendentes`.
-- [ ] Criar/validar `/relatorios/comissoes`.
-- [ ] Criar/validar `/relatorios/descontos`.
-- [ ] Criar/validar `/relatorios/consumacoes`.
-- [ ] Criar/validar `/relatorios/caixa`.
-- [ ] Criar/validar `/relatorios/sangrias`.
-- [ ] Criar/validar `/relatorios/consumo-estoque`.
-- [ ] Criar/validar `/relatorios/cancelamentos`.
-- [ ] Criar/validar `/relatorios/precos`.
-- [ ] Criar/validar `/relatorios/resultado`.
-- [ ] Cada relatório deve possuir filtros específicos, KPIs, visualização tabular e gráficos somente quando agregarem compreensão.
-- [ ] Preservar filtros com data/hora e Branch em todas as rotas históricas.
-
-### Consumo físico
-
-- [ ] Exibir Resumo por produto físico.
-- [ ] Exibir Movimentações detalhadas.
-- [ ] Separar Venda, Consumação, Saída manual e reversões/cancelamentos.
-- [ ] Usar StockMovement como fonte de verdade física; combos devem expandir para seus componentes reais.
-
-### Resultado
-
-- [ ] Manter `/relatorios/resultado` como relatório gerencial dedicado.
-- [ ] Exibir bruto, promoções, desconto manual, faturamento efetivo, CMV histórico, comissão, despesas que afetam resultado, custo fixo, resultado e margem estimados.
-- [ ] Permitir filtro por CashSession como recorte opcional da noite/operação.
-
-**Entrega:** Dashboard simples para decisão rápida e relatórios aprofundados em rotas próprias.
-
----
-
-## Sprint 12.3 — Validação Manual Final pelo Responsável do Produto
+## Sprint 12 — Validação Manual pelo Responsável do Produto
 
 **Objetivo:** validar o sistema em uso real antes do deploy. Esta sprint é conduzida pelo responsável pelo produto, não pelo OpenCode.
 
@@ -6522,10 +5885,6 @@ Checklist manual mínimo:
 - [ ] Dashboard com KPIs clicáveis e gráficos.
 - [ ] Modo claro/escuro, fullscreen e sidebar recolhível.
 - [ ] Responsividade em desktop e celular.
-- [ ] Auditoria de alterações críticas e consulta dos logs.
-- [ ] Bloqueio individual de permissão em uma Branch sem afetar outra.
-- [ ] CMV permanece histórico após alteração posterior do custo do Product.
-- [ ] Relatório de produtos/insumos consumidos reconcilia venda, consumação, combo e cancelamento.
 
 Verificações técnicas permitidas ao agente durante correções:
 
@@ -6805,7 +6164,7 @@ A **Sprint 7.1** consolidou os ajustes de Caixa, usuários, permissões, filtros
 
 Após as Sprints 8–10, a **Sprint 10.1** corrige os problemas encontrados em uso real antes de ampliar o escopo: contrato monetário do PDV, criação de consumação dentro do checkout, filtros temporais com data/hora, restauração de acesso administrativo, acesso à configuração de formas de pagamento e remoção dos testes automatizados incidentais.
 
-A **Sprint 11** entrega o dashboard operacional; a **Sprint 11.1** entrega relatórios operacionais; a **Sprint 11.2** entrega Promoções V1. As **Sprints 12.1 e 12.2** consolidam as correções e a reorganização de Dashboard/Relatórios descobertas na validação real. A **Sprint 12.3** é a validação manual final do responsável pelo produto e não deve ser concluída automaticamente pelo OpenCode. A Sprint 13 somente inicia mediante autorização expressa para deploy.
+A **Sprint 11** entrega o dashboard operacional; a **Sprint 11.1** entrega relatórios operacionais; a **Sprint 11.2** entrega Promoções V1. A **Sprint 12** é validação manual do responsável pelo produto e não deve ser concluída automaticamente pelo OpenCode. A Sprint 13 somente inicia mediante autorização expressa para deploy.
 
 ---
 

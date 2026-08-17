@@ -4,7 +4,7 @@ from rest_framework import serializers
 
 from apps.companies.selectors import user_has_branch_permission
 
-from .models import Category, InventoryBehavior, Product, ProductComponent, Unit
+from .models import BranchProductPrice, Category, InventoryBehavior, Product, ProductComponent, Unit
 from .services import create_product, replace_composition
 
 
@@ -253,3 +253,37 @@ class CompositionSerializer(serializers.Serializer):
         return replace_composition(
             product=self.context['product'], components=self.validated_data['components']
         )
+
+
+class BranchProductPriceSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.name', read_only=True)
+    internal_code = serializers.CharField(source='product.internal_code', read_only=True)
+    branch_name = serializers.CharField(source='branch.name', read_only=True)
+    default_price = serializers.DecimalField(
+        source='product.sale_price', max_digits=12, decimal_places=2, read_only=True,
+        coerce_to_string=True,
+    )
+    sale_price = serializers.DecimalField(
+        max_digits=12, decimal_places=2, min_value=Decimal('0.00'), coerce_to_string=True
+    )
+
+    class Meta:
+        model = BranchProductPrice
+        fields = (
+            'id', 'product', 'product_name', 'internal_code', 'branch', 'branch_name',
+            'default_price', 'sale_price', 'created_at', 'updated_at',
+        )
+        read_only_fields = ('id', 'product_name', 'internal_code', 'branch_name', 'default_price', 'created_at', 'updated_at')
+
+    def validate(self, attrs):
+        product = attrs.get('product', getattr(self.instance, 'product', None))
+        branch = attrs.get('branch', getattr(self.instance, 'branch', None))
+        if product and branch and product.company_id != branch.company_id:
+            raise serializers.ValidationError({'branch': 'A filial deve pertencer a empresa do produto.'})
+        request = self.context.get('request')
+        context_branch = getattr(request, 'branch_context', None) if request else None
+        if context_branch and product and product.company_id != context_branch.company_id:
+            raise serializers.ValidationError({'product': 'Produto fora do contexto autorizado.'})
+        if context_branch and branch and branch.pk != context_branch.pk:
+            raise serializers.ValidationError({'branch': 'Selecione a filial ativa.'})
+        return attrs

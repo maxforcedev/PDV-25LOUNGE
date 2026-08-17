@@ -1,22 +1,23 @@
+from datetime import datetime, time
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
-from django.db.models import IntegerField, Max
+from django.db.models import IntegerField, Max, Q
 from django.db.models.functions import Cast, Substr
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
 
 from apps.cash.models import CashSession, CashSessionStatus
-from apps.companies.models import Branch, Company, Status, UserCompanyAccess
-from apps.companies.selectors import user_has_branch_permission
+from apps.companies.models import Branch, BranchSettings, Company, Status, UserCompanyAccess
+from apps.companies.selectors import eligible_branch_users, user_has_branch_permission
 from apps.inventory.models import MovementType, Stock, StockMovement
 from apps.inventory.services import apply_locked_stock
-from apps.products.models import InventoryBehavior, Product, ProductComponent, Unit
+from apps.products.models import BranchProductPrice, InventoryBehavior, Product, ProductComponent, Unit
 
 from .models import (
     OperationType, Payment, PaymentMethod, PaymentMethodCode, Promotion,
-    PromotionDiscountType, Sale, SaleItem, SaleStatus,
+    PromotionDiscountType, PromotionSchedule, Sale, SaleItem, SaleStatus, Weekday,
 )
 
 
@@ -51,6 +52,52 @@ def ensure_default_payment_methods(company):
     return methods
 
 
+def _percentage_amount(base, rate, field):
+    amount = (base * rate / Decimal('100')).quantize(CENT, rounding=ROUND_HALF_UP)
+    ensure_money_fits(amount, field)
+    return amount
+
+
+def _financial_snapshots(branch, net_subtotal, *, lock=False):
+    queryset = BranchSettings.objects
+    if lock:
+        queryset = queryset.select_for_update()
+    settings = queryset.filter(branch=branch).first()
+    service_fee_rate = settings.service_fee_rate if settings else Decimal('0.00')
+    commission_rate = settings.commission_rate if settings else Decimal('0.00')
+    service_fee_amount = _percentage_amount(
+        net_subtotal, service_fee_rate, 'service_fee_amount'
+    )
+    commission_amount = _percentage_amount(
+        net_subtotal, commission_rate, 'commission_amount'
+    )
+    return service_fee_rate, service_fee_amount, commission_rate, commission_amount
+
+
+def _eligible_sale_user(branch, user, permission_code, field):
+    user_id = _pk(user) if user else None
+    candidate = eligible_branch_users(branch, permission_code).filter(pk=user_id).first()
+    if not candidate:
+        raise ValidationError({field: 'Usuario sem acesso ativo e permissao nesta filial.'})
+    return candidate
+
+
+def _discount_approver(branch, operator, discount, authorization):
+    if not discount or operator.is_superuser or user_has_branch_permission(
+        operator, branch.pk, 'sales.apply_discount'
+    ):
+        return None
+    if not authorization or authorization.get('method') != 'password':
+        raise ValidationError({'discount_authorization': 'Autorizacao de desconto invalida.'})
+    approver = _eligible_sale_user(
+        branch, authorization.get('user'), 'sales.apply_discount',
+        'discount_authorization',
+    )
+    if not approver.check_password(authorization.get('credential') or ''):
+        raise ValidationError({'discount_authorization': 'Autorizacao de desconto invalida.'})
+    return approver
+
+
 def strict_decimal(value, *, field, decimal_places, max_digits, allow_none=False):
     if value is None and allow_none:
         return None
@@ -76,7 +123,19 @@ def ensure_money_fits(value, field):
     return value
 
 
-def _consolidate_items(raw_items, products):
+def _branch_price_map(branch, product_ids):
+    if not branch or not product_ids:
+        return {}
+    return {
+        price.product_id: price.sale_price
+        for price in BranchProductPrice.objects.filter(
+            branch=branch, product_id__in=product_ids
+        )
+    }
+
+
+def _consolidate_items(raw_items, products, *, price_overrides=None):
+    price_overrides = price_overrides or {}
     if not isinstance(raw_items, list) or not raw_items:
         raise ValidationError({'items': 'Informe ao menos um item.'})
     quantities = {}
@@ -107,7 +166,8 @@ def _consolidate_items(raw_items, products):
     for product_id in ordered_ids:
         product = products_by_id[product_id]
         quantity = quantities[product_id]
-        item_subtotal = (product.sale_price * quantity).quantize(Decimal('0.01'))
+        unit_price = price_overrides.get(product_id, product.sale_price)
+        item_subtotal = (unit_price * quantity).quantize(Decimal('0.01'))
         ensure_money_fits(item_subtotal, 'items')
         subtotal += item_subtotal
         ensure_money_fits(subtotal, 'subtotal')
@@ -118,22 +178,59 @@ def _consolidate_items(raw_items, products):
             'product_name': product.name,
             'internal_code': product.internal_code,
             'unit': product.unit,
-            'unit_price': product.sale_price,
+            'unit_cost': product.cost,
+            'unit_price': unit_price,
             'subtotal': item_subtotal,
         })
     return provisional, subtotal
 
 
-def _eligible_promotions(company, timestamp, *, lock=False):
+def _eligible_promotions(company, timestamp, *, branch=None, lock=False):
     queryset = Promotion.objects.filter(
         company=company,
         status=Status.ACTIVE,
         starts_at__lte=timestamp,
-        ends_at__gt=timestamp,
+    ).filter(
+        Q(ends_at__isnull=True) | Q(ends_at__gt=timestamp)
+    ).filter(
+        Q(branch__isnull=True) | Q(branch=branch)
     ).order_by('pk')
     if lock:
         queryset = queryset.select_for_update()
-    return list(queryset.prefetch_related('products', 'categories'))
+    promotions = list(queryset.prefetch_related('products', 'categories', 'schedules'))
+    from datetime import datetime, time
+
+    local_ts = timestamp.astimezone(timezone.get_current_timezone())
+    weekday = local_ts.weekday()
+    # Python weekday(): Monday=0..Sunday=6; our Weekday uses Sunday=0..Saturday=6.
+    weekday_map = {0: Weekday.MONDAY, 1: Weekday.TUESDAY, 2: Weekday.WEDNESDAY,
+                   3: Weekday.THURSDAY, 4: Weekday.FRIDAY, 5: Weekday.SATURDAY,
+                   6: Weekday.SUNDAY}
+    today_code = weekday_map[weekday]
+    now_time = local_ts.time()
+    eligible = []
+    for promotion in promotions:
+        schedules = list(promotion.schedules.all())
+        if not schedules:
+            # No weekly schedule: valid all day within the starts_at/ends_at window.
+            eligible.append(promotion)
+            continue
+        active = False
+        for schedule in schedules:
+            if schedule.weekday != today_code:
+                continue
+            if schedule.start_time <= schedule.end_time:
+                if schedule.start_time <= now_time < schedule.end_time:
+                    active = True
+                    break
+            else:
+                # Overnight interval wrapping midnight.
+                if now_time >= schedule.start_time or now_time < schedule.end_time:
+                    active = True
+                    break
+        if active:
+            eligible.append(promotion)
+    return eligible
 
 
 def _apply_promotions(operation_type, items, promotions):
@@ -153,7 +250,10 @@ def _apply_promotions(operation_type, items, promotions):
                         item['subtotal'] * promotion.discount_value / Decimal('100')
                     ).quantize(CENT, rounding=ROUND_HALF_UP)
                 else:
-                    benefit = promotion.discount_value.quantize(CENT, rounding=ROUND_HALF_UP)
+                    # Fixed amount is a per-unit benefit: multiply by the item quantity.
+                    benefit = (
+                        promotion.discount_value * item['quantity']
+                    ).quantize(CENT, rounding=ROUND_HALF_UP)
                 benefit = min(benefit, item['subtotal'])
                 candidates.append((promotion, benefit, direct_target))
             if candidates:
@@ -178,7 +278,7 @@ def _apply_promotions(operation_type, items, promotions):
     return sum((item['promotion_benefit'] for item in items), Decimal('0.00'))
 
 
-def calculate_preview(*, company, operation_type, raw_items, discount, charged_amount, beneficiary_user):
+def calculate_preview(*, company, operation_type, raw_items, discount, charged_amount, beneficiary_user, branch=None):
     if operation_type not in OperationType.values:
         raise ValidationError({'operation_type': 'Tipo de operacao invalido.'})
     if not isinstance(raw_items, list) or not raw_items:
@@ -192,10 +292,11 @@ def calculate_preview(*, company, operation_type, raw_items, discount, charged_a
             pk__in=product_ids, company=company, status=Status.ACTIVE, is_sellable=True
         )
     }
-    provisional, subtotal = _consolidate_items(raw_items, products)
+    price_overrides = _branch_price_map(branch, [pid for pid in product_ids if str(pid).isdigit()])
+    provisional, subtotal = _consolidate_items(raw_items, products, price_overrides=price_overrides)
     operation_timestamp = timezone.now()
     promotions = (
-        _eligible_promotions(company, operation_timestamp)
+        _eligible_promotions(company, operation_timestamp, branch=branch)
         if operation_type == OperationType.SALE else []
     )
     promotion_discount_total = _apply_promotions(operation_type, provisional, promotions)
@@ -212,6 +313,10 @@ def calculate_preview(*, company, operation_type, raw_items, discount, charged_a
         if charged < 0 or charged > subtotal:
             raise ValidationError({'charged_amount': 'O valor cobrado deve estar entre zero e o subtotal.'})
         discount_value = Decimal('0.00')
+        service_fee_rate = Decimal('0.00')
+        service_fee_amount = Decimal('0.00')
+        commission_rate = Decimal('0.00')
+        commission_amount = Decimal('0.00')
         total = charged
     else:
         discount_value = strict_decimal(
@@ -222,7 +327,15 @@ def calculate_preview(*, company, operation_type, raw_items, discount, charged_a
         if discount_value < 0 or discount_value > remaining:
             raise ValidationError({'discount': 'O desconto deve estar entre zero e o saldo apos promocoes.'})
         charged = None
-        total = remaining - discount_value
+        net_subtotal = remaining - discount_value
+        (
+            service_fee_rate,
+            service_fee_amount,
+            commission_rate,
+            commission_amount,
+        ) = _financial_snapshots(branch, net_subtotal)
+        total = net_subtotal + service_fee_amount
+        ensure_money_fits(total, 'total')
     for item in provisional:
         item.pop('product_object')
         item.pop('promotion_object')
@@ -232,6 +345,10 @@ def calculate_preview(*, company, operation_type, raw_items, discount, charged_a
         'subtotal': subtotal,
         'promotion_discount_total': promotion_discount_total,
         'discount': discount_value,
+        'service_fee_rate': service_fee_rate,
+        'service_fee_amount': service_fee_amount,
+        'commission_rate': commission_rate,
+        'commission_amount': commission_amount,
         'charged_amount': charged,
         'reference_total': subtotal,
         'total': total,
@@ -253,6 +370,104 @@ def next_sale_number(company):
         except IntegrityError:
             if attempt == 2:
                 raise
+
+
+def _pk(value):
+    return value.pk if hasattr(value, 'pk') else value
+
+
+def _promotion_effective_products(promotion):
+    product_ids = set(promotion.products.values_list('pk', flat=True))
+    if promotion.categories.exists():
+        from apps.products.models import Product
+        category_ids = set(promotion.categories.values_list('pk', flat=True))
+        product_ids = product_ids | set(
+            Product.objects.filter(category_id__in=category_ids).values_list('pk', flat=True)
+        )
+    return product_ids
+
+
+def _branches_overlap(branch_a, branch_b):
+    # null branch means "all branches". Overlap when equal, or either is null.
+    if branch_a is None or branch_b is None:
+        return True
+    return branch_a == branch_b
+
+
+def _date_windows_overlap(start_a, end_a, start_b, end_b):
+    # end=None means open-ended (infinite). Windows [start, end) overlap.
+    far_future = datetime(9999, 12, 31, 23, 59, tzinfo=timezone.get_default_timezone())
+    a_end = end_a if end_a is not None else far_future
+    b_end = end_b if end_b is not None else far_future
+    return start_a < b_end and start_b < a_end
+
+
+def _schedules_overlap(schedules_a, schedules_b):
+    # If either side has no schedule, it is active all day on every weekday it exists.
+    if not schedules_a or not schedules_b:
+        return True
+    by_day_a = {}
+    for s in schedules_a:
+        by_day_a.setdefault(s.weekday, []).append((s.start_time, s.end_time))
+    by_day_b = {}
+    for s in schedules_b:
+        by_day_b.setdefault(s.weekday, []).append((s.start_time, s.end_time))
+    for weekday, intervals_a in by_day_a.items():
+        intervals_b = by_day_b.get(weekday)
+        if not intervals_b:
+            continue
+        for (a_start, a_end) in intervals_a:
+            for (b_start, b_end) in intervals_b:
+                # Normalize overnight intervals into [start, 24:00) + [00:00, end).
+                def span(start, end):
+                    if start <= end:
+                        return [(start, end)]
+                    return [(start, time(23, 59, 59)), (time(0, 0), end)]
+                for a_s, a_e in span(a_start, a_end):
+                    for b_s, b_e in span(b_start, b_end):
+                        if a_s < b_e and b_s < a_e:
+                            return True
+    return False
+
+
+def detect_promotion_conflict(promotion):
+    """Return a conflict description string if promotion conflicts with another active
+    promotion in the same company; otherwise return None."""
+    promotion._effective_products = _promotion_effective_products(promotion)
+    if not promotion._effective_products:
+        return None
+    competitors = (
+        Promotion.objects.filter(
+            company_id=promotion.company_id, status=Status.ACTIVE
+        ).exclude(pk=promotion.pk)
+        .prefetch_related('products', 'categories', 'schedules')
+    )
+    for other in competitors:
+        if not _branches_overlap(promotion.branch_id, other.branch_id):
+            continue
+        other_products = _promotion_effective_products(other)
+        if not other_products or not (promotion._effective_products & other_products):
+            continue
+        if not _date_windows_overlap(promotion.starts_at, promotion.ends_at, other.starts_at, other.ends_at):
+            continue
+        own_schedules = list(promotion.schedules.all())
+        other_schedules = list(other.schedules.all())
+        if not _schedules_overlap(own_schedules, other_schedules):
+            continue
+        branch_label = (
+            'Todas as filiais' if promotion.branch_id is None
+            else promotion.branch.name
+        )
+        other_branch_label = (
+            'Todas as filiais' if other.branch_id is None
+            else other.branch.name
+        )
+        return (
+            f'Conflito com a promocao "{other.name}" ({other_branch_label}). '
+            f'Esta promocao ({branch_label}) compartilha produtos/categorias, '
+            'vigencia e horario sobrepostos. Ajuste alvos, filial, vigencia ou agenda.'
+        )
+    return None
 
 
 def _pk(value):
@@ -287,7 +502,7 @@ def _lock_cash_session(raw_session, branch, *, required):
     return session
 
 
-def _prepare_products(company, raw_items):
+def _prepare_products(company, raw_items, *, branch=None):
     if not isinstance(raw_items, list) or not raw_items:
         raise ValidationError({'items': 'Informe ao menos um item.'})
     parent_ids = []
@@ -323,7 +538,8 @@ def _prepare_products(company, raw_items):
     for row in component_rows:
         rows_by_parent.setdefault(row.parent_product_id, []).append(row)
 
-    snapshots, subtotal = _consolidate_items(raw_items, parents)
+    price_overrides = _branch_price_map(branch, parent_ids)
+    snapshots, subtotal = _consolidate_items(raw_items, parents, price_overrides=price_overrides)
     requirements = {}
     for index, snapshot in enumerate(snapshots):
         product = snapshot['product_object']
@@ -361,6 +577,10 @@ def _prepare_products(company, raw_items):
 def _lock_required_stocks(branch, requirements):
     if not requirements:
         return {}
+    allow_negative = False
+    from apps.companies.models import BranchSettings
+    branch_settings = BranchSettings.objects.filter(branch=branch).first()
+    allow_negative = bool(branch_settings and branch_settings.allow_negative_stock)
     stocks = {
         stock.product_id: stock
         for stock in Stock.objects.select_for_update().select_related('product')
@@ -370,7 +590,7 @@ def _lock_required_stocks(branch, requirements):
         if product_id not in stocks:
             # Product rows are already locked, serializing this defensive materialization.
             stocks[product_id] = Stock.objects.create(product_id=product_id, branch=branch)
-        if stocks[product_id].current_quantity < requirements[product_id]:
+        if not allow_negative and stocks[product_id].current_quantity < requirements[product_id]:
             raise ValidationError({
                 'stock': f'Saldo insuficiente para o produto {stocks[product_id].product.name} '
                          f'({product_id}).',
@@ -398,24 +618,58 @@ def _prepare_payments(company, raw_payments, total, *, free_consumption):
             pk__in=method_ids
         ).order_by('pk')
     }
-    prepared = []
-    paid = Decimal('0.00')
+    explicit_rows = []
+    remaining_cash_rows = []
     for index, raw_payment in enumerate(raw_payments):
         method = methods.get(str(raw_payment['payment_method']))
         if not method or method.company_id != company.pk or method.status != Status.ACTIVE:
             raise ValidationError({'payments': f'Pagamento {index + 1}: metodo inativo ou invalido para esta empresa.'})
-        amount = strict_decimal(raw_payment.get('amount'), field='amount', decimal_places=2, max_digits=14)
-        if amount <= 0:
-            raise ValidationError({'payments': f'Pagamento {index + 1}: o valor deve ser maior que zero.'})
+        raw_amount = raw_payment.get('amount')
+        is_remaining_cash = (
+            method.code == PaymentMethodCode.CASH
+            and (raw_amount in (None, '', 'auto', 'remaining'))
+        )
         received = strict_decimal(
             raw_payment.get('received_amount'), field='received_amount', decimal_places=2,
             max_digits=14, allow_none=True,
         )
-        if method.code == PaymentMethodCode.CASH:
-            if received is None or received < amount:
-                raise ValidationError({'payments': f'Pagamento {index + 1}: dinheiro exige valor recebido igual ou maior.'})
-        elif received is not None:
+        if method.code != PaymentMethodCode.CASH and received is not None:
             raise ValidationError({'payments': f'Pagamento {index + 1}: somente dinheiro aceita valor recebido.'})
+        if is_remaining_cash:
+            if received is None:
+                raise ValidationError({'payments': f'Pagamento {index + 1}: informe o valor recebido em dinheiro.'})
+            remaining_cash_rows.append((index, method, received))
+            continue
+        amount = strict_decimal(raw_amount, field='amount', decimal_places=2, max_digits=14)
+        if amount <= 0:
+            raise ValidationError({'payments': f'Pagamento {index + 1}: o valor deve ser maior que zero.'})
+        if method.code == PaymentMethodCode.CASH and (received is None or received < amount):
+            raise ValidationError({'payments': f'Pagamento {index + 1}: dinheiro exige valor recebido igual ou maior.'})
+        explicit_rows.append((index, method, amount, received))
+
+    explicit_total = sum((row[2] for row in explicit_rows), Decimal('0.00'))
+    ensure_money_fits(explicit_total, 'payments')
+    if explicit_total > total:
+        raise ValidationError({'payments': 'A soma dos pagamentos informados excede o total.'})
+    remaining = (total - explicit_total).quantize(CENT)
+    if remaining < 0:
+        raise ValidationError({'payments': 'A soma dos pagamentos informados excede o total.'})
+    if not remaining_cash_rows and remaining != 0:
+        raise ValidationError({'payments': f'A soma dos pagamentos deve ser {total:.2f}.'})
+    if len(remaining_cash_rows) > 1:
+        raise ValidationError({'payments': 'Informe o valor de cada pagamento em dinheiro quando houver mais de um.'})
+    prepared = []
+    paid = Decimal('0.00')
+    for index, method, amount, received in explicit_rows:
+        paid += amount
+        ensure_money_fits(paid, 'payments')
+        prepared.append((method, amount, received))
+    for index, method, received in remaining_cash_rows:
+        amount = remaining
+        if amount <= 0 and total > 0:
+            raise ValidationError({'payments': f'Pagamento {index + 1}: o saldo restante em dinheiro deve ser maior que zero.'})
+        if received < amount:
+            raise ValidationError({'payments': f'Pagamento {index + 1}: dinheiro exige valor recebido igual ou maior.'})
         paid += amount
         ensure_money_fits(paid, 'payments')
         prepared.append((method, amount, received))
@@ -426,7 +680,8 @@ def _prepare_payments(company, raw_payments, total, *, free_consumption):
 
 @transaction.atomic
 def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiary_user=None,
-                  items=None, discount=None, charged_amount=None, payments=None):
+                  seller_user=None, discount_authorization=None, items=None, discount=None,
+                  charged_amount=None, payments=None):
     operation_timestamp = timezone.now()
     permission = 'sales.create_consumption' if operation_type == OperationType.CONSUMPTION else 'sales.create'
     if operation_type not in OperationType.values:
@@ -450,19 +705,23 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         if not beneficiary_access:
             raise ValidationError({'beneficiary_user': 'Beneficiario sem acesso ativo a empresa.'})
         beneficiary_user = beneficiary_access.user
+        seller_user = None
         session = _lock_cash_session(cash_session, branch, required=charged > 0)
     else:
         if charged_amount not in (None, ''):
             raise ValidationError({'charged_amount': 'Venda normal nao aceita valor cobrado.'})
         charged = None
         beneficiary_user = None
+        seller_user = _eligible_sale_user(
+            branch, seller_user, 'sales.create', 'seller_user'
+        )
         session = _lock_cash_session(cash_session, branch, required=True)
 
     company = Company.objects.select_for_update().get(pk=branch.company_id)
-    snapshots, requirements, subtotal = _prepare_products(company, items)
+    snapshots, requirements, subtotal = _prepare_products(company, items, branch=branch)
     stocks = _lock_required_stocks(branch, requirements)
     promotions = (
-        _eligible_promotions(company, operation_timestamp, lock=True)
+        _eligible_promotions(company, operation_timestamp, branch=branch, lock=True)
         if operation_type == OperationType.SALE else []
     )
     promotion_discount_total = _apply_promotions(operation_type, snapshots, promotions)
@@ -472,6 +731,11 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             raise ValidationError({'charged_amount': 'O valor cobrado deve estar entre zero e o subtotal.'})
         discount_value = Decimal('0.00')
         promotion_discount_total = Decimal('0.00')
+        discount_approved_by = None
+        service_fee_rate = Decimal('0.00')
+        service_fee_amount = Decimal('0.00')
+        commission_rate = Decimal('0.00')
+        commission_amount = Decimal('0.00')
         total = charged
     else:
         discount_value = strict_decimal(
@@ -481,11 +745,18 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         remaining = subtotal - promotion_discount_total
         if discount_value < 0 or discount_value > remaining:
             raise ValidationError({'discount': 'O desconto deve estar entre zero e o saldo apos promocoes.'})
-        if discount_value and not user.is_superuser and not user_has_branch_permission(
-            user, branch.pk, 'sales.apply_discount',
-        ):
-            raise PermissionDenied('Voce nao possui permissao para aplicar desconto.')
-        total = remaining - discount_value
+        discount_approved_by = _discount_approver(
+            branch, user, discount_value, discount_authorization
+        )
+        net_subtotal = remaining - discount_value
+        (
+            service_fee_rate,
+            service_fee_amount,
+            commission_rate,
+            commission_amount,
+        ) = _financial_snapshots(branch, net_subtotal, lock=True)
+        total = net_subtotal + service_fee_amount
+        ensure_money_fits(total, 'total')
 
     prepared_payments = _prepare_payments(
         company, payments or [], total,
@@ -494,9 +765,12 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
     sale = Sale.objects.create(
         company=company, branch=branch, cash_session=session,
         sale_number=next_sale_number(company), operation_type=operation_type,
-        status=SaleStatus.FINALIZED, created_by=user, beneficiary_user=beneficiary_user,
+        status=SaleStatus.FINALIZED, created_by=user, seller_user=seller_user,
+        discount_approved_by=discount_approved_by, beneficiary_user=beneficiary_user,
         subtotal=subtotal, promotion_discount_total=promotion_discount_total,
-        discount=discount_value, charged_amount=charged, total=total,
+        discount=discount_value, service_fee_rate=service_fee_rate,
+        service_fee_amount=service_fee_amount, commission_rate=commission_rate,
+        commission_amount=commission_amount, charged_amount=charged, total=total,
     )
     for snapshot in snapshots:
         promotion = snapshot['promotion_object']
@@ -504,6 +778,8 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             sale=sale,
             product=snapshot['product_object'],
             quantity=snapshot['quantity'],
+            unit_cost=snapshot.get('unit_cost'),
+            unit_price=snapshot.get('unit_price'),
             promotion=promotion,
             promotion_name=snapshot['promotion_name'],
             promotion_discount_type=snapshot['promotion_discount_type'],
@@ -542,7 +818,11 @@ def cancel_sale(*, sale, branch, user, reason=''):
     if sale.status == SaleStatus.CANCELLED:
         raise ValidationError({'status': 'Esta venda ja foi cancelada.'})
     if sale.cash_session_id:
-        CashSession.objects.select_for_update().get(pk=sale.cash_session_id)
+        session = CashSession.objects.select_for_update().get(pk=sale.cash_session_id)
+        if session.status != CashSessionStatus.OPEN:
+            raise ValidationError(
+                {'cash_session': 'Nao e possivel cancelar uma operacao apos o fechamento da sessao de caixa.'}
+            )
 
     original_type = (
         MovementType.CONSUMPTION

@@ -34,6 +34,12 @@ class WithdrawalCategory(models.TextChoices):
     OTHER = 'other', 'Outros'
 
 
+class ResultEffect(models.TextChoices):
+    UNCLASSIFIED = 'unclassified', 'Não classificado'
+    OPERATING_EXPENSE = 'operating_expense', 'Despesa operacional'
+    NEUTRAL = 'neutral', 'Não afeta o resultado'
+
+
 class CashRegister(BaseModel):
     branch = models.ForeignKey(
         Branch, on_delete=models.PROTECT, related_name='cash_registers'
@@ -219,6 +225,11 @@ class CashMovement(BaseModel):
         blank=True,
         null=True,
     )
+    result_effect = models.CharField(
+        max_length=24,
+        choices=ResultEffect.choices,
+        default=ResultEffect.UNCLASSIFIED,
+    )
 
     class Meta:
         ordering = ('-created_at', '-pk')
@@ -235,6 +246,7 @@ class CashMovement(BaseModel):
                         movement_type=CashMovementType.MANUAL_ENTRY,
                         withdrawal_category__isnull=True,
                         beneficiary_user__isnull=True,
+                        result_effect=ResultEffect.NEUTRAL,
                     )
                     | Q(
                         movement_type=CashMovementType.WITHDRAWAL,
@@ -283,6 +295,7 @@ class CashMovement(BaseModel):
                 raise ValidationError(
                     {'withdrawal_category': 'Entradas nao aceitam classificacao de sangria.'}
                 )
+            self.result_effect = ResultEffect.NEUTRAL
         elif self.movement_type == CashMovementType.WITHDRAWAL:
             if not self.withdrawal_category:
                 raise ValidationError(

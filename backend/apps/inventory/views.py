@@ -57,7 +57,9 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
                 | Q(product__internal_code__icontains=params['search'])
             )
         state = params.get('state')
-        if state == 'zero':
+        if state == 'negative':
+            queryset = queryset.filter(current_quantity__lt=0)
+        elif state == 'zero':
             queryset = queryset.filter(current_quantity=0)
         elif state == 'below_minimum':
             queryset = queryset.filter(
@@ -97,6 +99,7 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
         result = {}
         if can_view_kpis:
             result.update(queryset.aggregate(
+                negative_count=Count('id', filter=Q(current_quantity__lt=0)),
                 below_minimum_count=Count(
                 'id',
                 filter=Q(
@@ -150,7 +153,8 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
         if current:
             branches = branches.filter(pk=current.pk)
         queryset = StockMovement.objects.select_related(
-            'stock', 'stock__product', 'stock__branch', 'stock__branch__company', 'user'
+            'stock', 'stock__product', 'stock__branch', 'stock__branch__company',
+            'user', 'sale',
         ).filter(stock__branch__in=branches)
         params = self.request.query_params
         query = InventoryQuerySerializer(data=params)

@@ -44,4 +44,9 @@ class ProductFunctionalPermission(BasePermission):
         branch = getattr(request, 'branch_context', None)
         if request.user.is_superuser and branch is None:
             return True
-        return bool(branch and branch.company_id == obj.company_id)
+        if branch and getattr(obj, 'branch_id', None) and getattr(obj, 'product_id', None):
+            return obj.branch_id == branch.pk
+        company_id = getattr(obj, 'company_id', None)
+        if company_id is None and getattr(obj, 'product_id', None):
+            company_id = obj.product.company_id
+        return bool(branch and branch.company_id == company_id)

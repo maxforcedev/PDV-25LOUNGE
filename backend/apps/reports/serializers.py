@@ -2,7 +2,7 @@ from rest_framework import serializers
 
 from apps.accounts.models import User
 from apps.base.constants import MAX_BIGINT
-from apps.cash.models import CashRegister, CashSessionStatus, WithdrawalCategory
+from apps.cash.models import CashRegister, CashSession, CashSessionStatus, WithdrawalCategory
 from apps.inventory.models import MovementType
 from apps.products.models import Category, Product
 from apps.sales.models import Payment, PaymentMethod, Sale, SaleItem, SaleStatus
@@ -23,6 +23,9 @@ class BaseReportQuerySerializer(serializers.Serializer):
             'operator': User.objects.filter(
                 company_accesses__company_id=branch.company_id,
             ),
+            'seller': User.objects.filter(
+                branch_accesses__branch=branch,
+            ),
             'beneficiary': User.objects.filter(
                 company_accesses__company_id=branch.company_id,
             ),
@@ -33,6 +36,7 @@ class BaseReportQuerySerializer(serializers.Serializer):
             'category': Category.objects.filter(company_id=branch.company_id),
             'payment_method': PaymentMethod.objects.filter(company_id=branch.company_id),
             'cash_register': CashRegister.objects.filter(branch=branch),
+            'cash_session': CashSession.objects.filter(branch=branch),
         }
         errors = {}
         for field in fields:
@@ -46,6 +50,7 @@ class BaseReportQuerySerializer(serializers.Serializer):
 
 class SalesReportQuerySerializer(BaseReportQuerySerializer):
     operator = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    seller = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
     product = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
     category = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
     payment_method = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
@@ -55,8 +60,15 @@ class SalesReportQuerySerializer(BaseReportQuerySerializer):
 
     def validate(self, attrs):
         return self.validate_scoped_ids(
-            attrs, ('operator', 'product', 'category', 'payment_method')
+            attrs, ('operator', 'seller', 'product', 'category', 'payment_method')
         )
+
+
+class OperationalResultQuerySerializer(BaseReportQuerySerializer):
+    cash_session = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+
+    def validate(self, attrs):
+        return self.validate_scoped_ids(attrs, ('cash_session',))
 
 
 class ConsumptionsReportQuerySerializer(BaseReportQuerySerializer):
@@ -121,6 +133,8 @@ class ReportPaymentSerializer(serializers.ModelSerializer):
 
 class ReportSaleSerializer(serializers.ModelSerializer):
     operator = serializers.SerializerMethodField()
+    seller = serializers.SerializerMethodField()
+    discount_approved_by = serializers.SerializerMethodField()
     beneficiary = serializers.SerializerMethodField()
     items = ReportSaleItemSerializer(many=True, read_only=True)
     payments = ReportPaymentSerializer(many=True, read_only=True)
@@ -128,13 +142,28 @@ class ReportSaleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Sale
         fields = (
-            'id', 'sale_number', 'operation_type', 'status', 'operator', 'beneficiary',
-            'subtotal', 'promotion_discount_total', 'discount', 'total', 'created_at',
+            'id', 'sale_number', 'operation_type', 'status', 'operator', 'seller',
+            'discount_approved_by', 'beneficiary', 'subtotal',
+            'promotion_discount_total', 'discount', 'service_fee_rate',
+            'service_fee_amount', 'commission_rate', 'commission_amount', 'total', 'created_at',
             'cancelled_at', 'items', 'payments',
         )
 
     def get_operator(self, sale):
         return {'id': sale.created_by_id, 'name': readable_user_name(sale.created_by)}
+
+    def get_seller(self, sale):
+        if sale.seller_user is None:
+            return None
+        return {'id': sale.seller_user_id, 'name': readable_user_name(sale.seller_user)}
+
+    def get_discount_approved_by(self, sale):
+        if sale.discount_approved_by is None:
+            return None
+        return {
+            'id': sale.discount_approved_by_id,
+            'name': readable_user_name(sale.discount_approved_by),
+        }
 
     def get_beneficiary(self, sale):
         if sale.beneficiary_user is None:
@@ -182,6 +211,7 @@ class WithdrawalReportSerializer(serializers.Serializer):
     operator = serializers.SerializerMethodField()
     cash_register = serializers.SerializerMethodField()
     reason = serializers.CharField()
+    result_effect = serializers.CharField()
 
     def get_beneficiary(self, movement):
         if movement.beneficiary_user is None:

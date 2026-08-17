@@ -1,7 +1,7 @@
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
-from .models import Company
+from .models import Branch, BranchSettings, Company
 from .services import ensure_default_access_profiles
 
 
@@ -12,3 +12,9 @@ def create_company_access_profiles(sender, instance, created, **kwargs):
         from apps.sales.services import ensure_default_payment_methods
 
         ensure_default_payment_methods(instance)
+
+
+@receiver(post_save, sender=Branch)
+def create_branch_settings(sender, instance, created, **kwargs):
+    if created and not kwargs.get('raw'):
+        BranchSettings.objects.get_or_create(branch=instance)

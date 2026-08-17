@@ -27,10 +27,6 @@ class Stock(BaseModel):
                 fields=('product', 'branch'), name='inventory_stock_product_branch_unique'
             ),
             models.CheckConstraint(
-                condition=Q(current_quantity__gte=0),
-                name='inventory_stock_current_nonnegative',
-            ),
-            models.CheckConstraint(
                 condition=Q(minimum_quantity__gte=0),
                 name='inventory_stock_minimum_nonnegative',
             ),
@@ -95,14 +91,6 @@ class StockMovement(BaseModel):
     class Meta:
         ordering = ('-created_at', '-pk')
         constraints = [
-            models.CheckConstraint(
-                condition=Q(previous_quantity__gte=0),
-                name='inventory_movement_previous_nonnegative',
-            ),
-            models.CheckConstraint(
-                condition=Q(final_quantity__gte=0),
-                name='inventory_movement_final_nonnegative',
-            ),
             models.CheckConstraint(
                 condition=~Q(quantity=0), name='inventory_movement_quantity_nonzero'
             ),

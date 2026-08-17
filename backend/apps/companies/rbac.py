@@ -44,6 +44,7 @@ PERMISSION_CATALOG = (
     ('reports.view_cash', 'reports', 'Visualizar relatorio de caixa', 'Visualizar relatorio operacional de caixa.'),
     ('reports.view_withdrawals', 'reports', 'Visualizar relatorio de sangrias', 'Visualizar relatorio operacional de sangrias.'),
     ('reports.view_inventory', 'reports', 'Visualizar relatorio de estoque', 'Visualizar relatorio de movimentacoes de estoque.'),
+    ('reports.view_operational_result', 'reports', 'Visualizar resultado operacional', 'Visualizar resultado operacional estimado da filial.'),
     ('reports.export', 'reports', 'Exportar relatorios', 'Exportar relatorios operacionais.'),
 )
 

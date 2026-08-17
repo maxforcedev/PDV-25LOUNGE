@@ -110,6 +110,7 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
         'withdrawal': 'cash_registers.withdraw',
         'close': 'cash_registers.close',
         'summary': ('cash_registers.view', 'cash_registers.close'),
+        'timeline': ('cash_registers.view', 'cash_registers.close'),
     }
 
     def get_queryset(self):
@@ -224,6 +225,98 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
                 'status': session.status,
             }
         )
+
+    @action(detail=True, methods=('get',))
+    def timeline(self, request, pk=None):
+        from apps.sales.models import (
+            OperationType, Payment, PaymentMethodCode, Sale, SaleStatus,
+        )
+
+        session = self.get_object()
+        events = []
+        events.append({
+            'id': f'open-{session.pk}',
+            'timestamp': session.opened_at.isoformat(),
+            'kind': 'open',
+            'label': 'Abertura de caixa',
+            'amount': f'{session.opening_amount:.2f}',
+            'sale': None,
+            'details': f'Aberta por {session.opened_by.get_full_name().strip() or session.opened_by.email}',
+        })
+        for movement in CashMovement.objects.filter(cash_session=session).select_related(
+            'user', 'beneficiary_user'
+        ).order_by('created_at', 'pk'):
+            is_entry = movement.movement_type == CashMovementType.MANUAL_ENTRY
+            events.append({
+                'id': f'movement-{movement.pk}',
+                'timestamp': movement.created_at.isoformat(),
+                'kind': 'manual_entry' if is_entry else 'withdrawal',
+                'label': 'Entrada manual' if is_entry else f"Sangria · {movement.get_withdrawal_category_display() or 'Sangria'}",
+                'amount': f'{movement.amount:.2f}',
+                'sale': None,
+                'details': (
+                    f"{movement.reason}"
+                    f"{' · ' + movement.beneficiary_user.get_full_name().strip() if movement.beneficiary_user_id else ''}"
+                    f"{' · ' + movement.user.get_full_name().strip() if movement.user_id else ''}"
+                ),
+            })
+        sales = list(
+            Sale.objects.filter(cash_session=session).select_related(
+                'created_by', 'beneficiary_user', 'cancelled_by'
+            ).prefetch_related('payments').order_by('created_at', 'pk')
+        )
+        cash_code = PaymentMethodCode.CASH
+        for sale in sales:
+            has_cash = sale.payments.filter(payment_method_code=cash_code).exists()
+            is_cancelled = sale.status == SaleStatus.CANCELLED
+            charged = sale.charged_amount or Decimal('0.00')
+            show = (
+                (sale.operation_type == OperationType.SALE and has_cash and not is_cancelled)
+                or (sale.operation_type == OperationType.CONSUMPTION and charged > 0 and not is_cancelled)
+                or is_cancelled
+            )
+            if not show:
+                continue
+            if is_cancelled:
+                kind = 'cancellation'
+                label = f"Cancelamento · {'Consumação' if sale.operation_type == OperationType.CONSUMPTION else 'Venda'} {sale.sale_number}"
+                timestamp = sale.cancelled_at or sale.created_at
+                amount = f'{sale.total:.2f}'
+            elif sale.operation_type == OperationType.CONSUMPTION:
+                kind = 'charged_consumption'
+                label = f"Consumação cobrada {sale.sale_number}"
+                timestamp = sale.created_at
+                amount = f'{charged:.2f}'
+            else:
+                kind = 'cash_sale'
+                label = f"Venda em dinheiro {sale.sale_number}"
+                timestamp = sale.created_at
+                amount = f'{sale.total:.2f}'
+            events.append({
+                'id': f'sale-{sale.pk}',
+                'timestamp': (timestamp or sale.created_at).isoformat(),
+                'kind': kind,
+                'label': label,
+                'amount': amount,
+                'sale': {'id': sale.pk, 'number': sale.sale_number, 'operation_type': sale.operation_type, 'status': sale.status},
+                'details': f"Operador {sale.created_by.get_full_name().strip() or sale.created_by.email}",
+            })
+        if session.status == CashSessionStatus.CLOSED and session.closed_at:
+            events.append({
+                'id': f'close-{session.pk}',
+                'timestamp': session.closed_at.isoformat(),
+                'kind': 'close',
+                'label': 'Fechamento de caixa',
+                'amount': f'{session.closing_amount_informed or Decimal("0.00"):.2f}',
+                'sale': None,
+                'details': (
+                    f"Esperado {session.closing_expected_amount or Decimal('0.00'):.2f} · "
+                    f"diferença {session.closing_difference or Decimal('0.00'):.2f} · "
+                    f"por {session.closed_by.get_full_name().strip() if session.closed_by_id else ''}"
+                ),
+            })
+        events.sort(key=lambda item: item['timestamp'])
+        return Response({'count': len(events), 'results': events})
 
 
 class CashMovementViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewSet):

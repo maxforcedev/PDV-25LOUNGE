@@ -5,9 +5,10 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from apps.companies.models import Company, Status
-from .models import Category, InventoryBehavior, Product
+from .models import BranchProductPrice, Category, InventoryBehavior, Product
 from .permissions import ProductFunctionalPermission
 from .serializers import (
+    BranchProductPriceSerializer,
     CategorySerializer,
     CompositionSerializer,
     ProductComponentSerializer,
@@ -28,6 +29,7 @@ class CatalogViewSet(viewsets.ModelViewSet):
         'activate': 'products.change_status',
         'deactivate': 'products.change_status',
         'reorder': 'products.change',
+        'price_comparison': 'products.view',
     }
 
     def filter_common(self, queryset):
@@ -153,3 +155,67 @@ class ProductViewSet(CatalogViewSet):
         product = serializer.save()
         product = self.get_queryset().get(pk=product.pk)
         return Response(ProductComponentSerializer(product.components.all(), many=True).data)
+
+    @action(detail=False, methods=['get'], url_path='price-comparison')
+    def price_comparison(self, request):
+        company_id = request.branch_context.company_id
+        products = list(
+            Product.objects.filter(company_id=company_id).order_by('name', 'id')
+        )
+        from apps.companies.models import Branch
+        branches = list(
+            Branch.objects.filter(company_id=company_id, status=Status.ACTIVE).order_by('name', 'id')
+        )
+        prices = {}
+        for price in BranchProductPrice.objects.filter(
+            product__in=products, branch__in=branches
+        ):
+            prices[(price.product_id, price.branch_id)] = price.sale_price
+        return Response({
+            'branches': [{'id': b.pk, 'name': b.name} for b in branches],
+            'products': [
+                {
+                    'id': product.pk,
+                    'name': product.name,
+                    'internal_code': product.internal_code,
+                    'default_price': f'{product.sale_price:.2f}',
+                    'prices': {
+                        str(branch.pk): (
+                            f'{prices[(product.pk, branch.pk)]:.2f}'
+                            if (product.pk, branch.pk) in prices else None
+                        )
+                        for branch in branches
+                    },
+                }
+                for product in products
+            ],
+        })
+
+
+class BranchProductPriceViewSet(viewsets.ModelViewSet):
+    serializer_class = BranchProductPriceSerializer
+    permission_classes = [ProductFunctionalPermission]
+    http_method_names = ('get', 'post', 'patch', 'put', 'delete', 'head', 'options')
+    permission_codes = {
+        'list': 'products.view', 'retrieve': 'products.view',
+        'create': 'products.change', 'update': 'products.change',
+        'partial_update': 'products.change', 'destroy': 'products.change',
+    }
+
+    def get_queryset(self):
+        branch = self.request.branch_context
+        queryset = BranchProductPrice.objects.select_related('product', 'branch').filter(
+            product__company_id=branch.company_id
+        )
+        params = self.request.query_params
+        if params.get('product'):
+            queryset = queryset.filter(product_id=params['product'])
+        if params.get('branch'):
+            queryset = queryset.filter(branch_id=params['branch'])
+        return queryset
+
+    def perform_create(self, serializer):
+        serializer.save()
+
+    def perform_update(self, serializer):
+        serializer.save()

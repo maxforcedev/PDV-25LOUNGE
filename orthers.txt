@@ -13,11 +13,11 @@ opencode -s ses_ff9d0e215ffeTtoqj8gL2pSXeo
 
 
 
-
+nossa conexao caiu, volte a fazer o que foi pedido e 
 Analise com cuidado todos os detalhes do@PRD.md, do
 @design_system/design-system.html e do código, implementações e padrões
 já realizados no projeto, e em seguida execute as sprints
-"Sprint 10.1 — Correções Pós-Validação de PDV, Permissões e UX" até "Sprint 11.2 — Promoções Simples" descritas
+"Sprint 11.5 — Configurações por Filial e Preços" até "Sprint 11.8 — UX Avançada e Acabamento" descritas
 na sessão "50. Sprints de Implementação" do @PRD.md.
 Marque X nas tarefas conforme finalize as mesmas. Ignore tarefas já marcadas
 com X.
@@ -61,19 +61,17 @@ EM EMPRESAS LISTA FILIAIS E SUAS CONFIGURAÇÕES, EXEMPLO EMPRESA Z FILIAL A POD
 
 
 
-
-ACHEI MAIS UMA, EM PDV (DINHEIRO APARECE O CAMPO RECEBIDO, SE TIVER VAZIO N FINALIZA, EM VALOR JA É O RECEBIDO E DEVE SER CALCULADO O TROCO ENCIMA DELE)
-OPERAÇÃO DE CAIXA HIISTORICO DE SESSAO NAO FUNCIONA.
-E SOBRE OS SEUS PONTOS CONCORDO COM TODOS MAS SUGIRO MAIS MUDANÇAS COMO:
-1 = SIM, E SE FOR EMAIL E SENHA, O EMAIL PODE SER UM SELECT COM AQLS Q JA POSSUEM ESSAS PERMISSOES
-7 - PROMOÇOES  ALEM DO Q TU FALOUS OBRE BRANCHES APLICADAS E TALS , NAO PODEMOS DEIXAR DA O CONFLITO!!!!
-30 - CONCORDO, MAS SO PERMITE NEGATIVO SE PERMITIR VENDA SEM ESTOQUE
-23 - VC TA CERTO, NN DIMINUIR 2 VEZES O DESCONTO
-
-Faturamento efetivo     R$ 10.000
-- custo mercadoria      R$  5.000
-- comissão              R$    700
-- despesas              R$    600
-- custo fixo rateado    R$    400
-────────────────────────────────
-Resultado estimado      R$  3.300
+- Dashboard > consumação cobrada - referencia e adicionar ao lado a qnd de pedidodsa de consumação
+- Geral > Em modo escuro, umas fontes ficam apagadas por ser escura, exemplo na label de editar empresas cnpj e outras estao escuros, mas opcional ta bom <span class="label">CNPJ<span class="ml-1 font-normal text-slate-400">(opcional)</span></span>  a fonte da cor editar empresa no drop tb ta bom (branco)
+- Geral > verificar TODA parte de permissoes do sistema e sempre adicionar no perfils de permissoes
+- Perfils de permissoes > poderia ter exemplo: recebe comissao ? sim  (ja cobra automatico e o usuario desse perfil recebe o valopr cadastrado na filial, se o usuario tiver esse cargo tambem em usuarios na conta dele vai aparecer a opção de trocar (diferente do padrao da filial))
+tem q ter permissao para isso tambe, pode editar permissao padrao, do usuario, do perfil e etc... tudo tem que ter permissao 
+- Produtos > Favoritos estarem primeiro na lista e no pdv criar uma categoria favoritos (caso tenha produtos) e mostrar em primeiro
+- Tabela de preços > o ideal se trocar o preço e salvar deve alterar no sistem a (ali é onde o cara pode mudar tipo em lote rs), va verdade em configs do produto nao mudou,, mas no pdv vendas mudou certo.
+- PDV > Tem q ter a opção de tirar os 10% ; Tirar essa comissao prevista ; se o caixa estiver fechado, faciliar e poder abrir ali mesmo, aparecer o dropdown para abriar colocar fundo e tals ; Opção de dividir por pessoas (facilitar divisao na cabeça do garçom); 
+- Operação de caixa > So  contrrola dinheiro ? nao deveria contar todas as formas de pagamento, entradas e saidas para quando fecharmos ter o acesso de ah 300 dinheiro (esperado agr), 400 pix e 40 debito.
+- Operação de caixa > Ao fechar caixa erro 404 dnv 
+- Estoque > valor em estoque negativo ? 
+- Em relatorios eu acho melhor fazer uma rota por relatorio separado e dedicado com todos os filtros, exemplo (visao geral, a atual ou tipo um dashboard de relatorios) e rellarotios/comissoes ou relatorios/descontos 
+- Relatorios TEM INFOS EM INGLES como sale_cancellation,  consumption_cancellation e entre outras....
+- Uma forma de saber exemplo, tudo que saiu de produtos insumos em determinado periodo, pq isso ? pq quando acaba o evento vai poder conferrir oq saiu do estooque (vendas conumações e etc...)

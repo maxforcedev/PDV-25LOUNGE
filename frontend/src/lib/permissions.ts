@@ -12,7 +12,7 @@ export const permissions = {
   createSale: "sales.create", viewSale: "sales.view", cancelSale: "sales.cancel", applyDiscount: "sales.apply_discount",
   createConsumption: "sales.create_consumption", viewConsumption: "sales.view_consumption", cancelConsumption: "sales.cancel_consumption",
   viewPaymentMethod: "payment_methods.view", changePaymentMethod: "payment_methods.change",
-  viewSalesReport: "reports.view_sales", viewConsumptionsReport: "reports.view_consumptions", viewCashReport: "reports.view_cash", viewWithdrawalsReport: "reports.view_withdrawals", viewInventoryReport: "reports.view_inventory", exportReports: "reports.export",
+  viewSalesReport: "reports.view_sales", viewConsumptionsReport: "reports.view_consumptions", viewCashReport: "reports.view_cash", viewWithdrawalsReport: "reports.view_withdrawals", viewInventoryReport: "reports.view_inventory", viewOperationalResult: "reports.view_operational_result", exportReports: "reports.export",
   viewPromotion: "promotions.view", changePromotion: "promotions.change",
 } as const;
 

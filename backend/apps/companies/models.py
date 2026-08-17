@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.db import models
 from django.db.models import Q
 from django.db.models.functions import Lower
@@ -110,6 +112,57 @@ class Branch(BaseModel):
 
     def __str__(self):
         return f'{self.company.trade_name} - {self.name}'
+
+
+class BranchSettings(BaseModel):
+    branch = models.OneToOneField(
+        Branch, on_delete=models.CASCADE, related_name='settings'
+    )
+    allow_negative_stock = models.BooleanField(default=False)
+    service_fee_rate = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal('0.00')
+    )
+    commission_rate = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal('0.00')
+    )
+    fixed_daily_cost = models.DecimalField(
+        max_digits=14, decimal_places=2, default=Decimal('0.00')
+    )
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(service_fee_rate__gte=0) & Q(service_fee_rate__lte=100),
+                name='companies_branchsettings_service_fee_range',
+            ),
+            models.CheckConstraint(
+                condition=Q(commission_rate__gte=0) & Q(commission_rate__lte=100),
+                name='companies_branchsettings_commission_range',
+            ),
+            models.CheckConstraint(
+                condition=Q(fixed_daily_cost__gte=0),
+                name='companies_branchsettings_fixed_cost_nonnegative',
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.service_fee_rate is not None and not (Decimal('0') <= self.service_fee_rate <= Decimal('100')):
+            errors['service_fee_rate'] = 'A taxa de serviço deve estar entre 0 e 100.'
+        if self.commission_rate is not None and not (Decimal('0') <= self.commission_rate <= Decimal('100')):
+            errors['commission_rate'] = 'A comissão deve estar entre 0 e 100.'
+        if self.fixed_daily_cost is not None and self.fixed_daily_cost < 0:
+            errors['fixed_daily_cost'] = 'O custo fixo não pode ser negativo.'
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f'Configurações de {self.branch}'
 
 
 class FunctionalPermission(BaseModel):

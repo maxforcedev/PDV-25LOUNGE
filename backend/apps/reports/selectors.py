@@ -13,9 +13,11 @@ from django.db.models import (
     Value,
     When,
 )
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, TruncHour
+from django.utils import timezone
 
-from apps.cash.models import CashMovement, CashMovementType, CashSession, CashSessionStatus
+from apps.cash.models import CashMovement, CashMovementType, CashSession, CashSessionStatus, ResultEffect
+from apps.companies.models import BranchSettings
 from apps.inventory.models import Stock, StockMovement
 from apps.sales.models import OperationType, Payment, Sale, SaleItem, SaleStatus
 
@@ -38,6 +40,7 @@ def filtered_sales(*, branch, start, end, operation_type, filters):
     )
     mappings = {
         'operator': 'created_by_id',
+        'seller': 'seller_user_id',
         'product': 'items__product_id',
         'category': 'items__product__category_id',
         'payment_method': 'payments__payment_method_id',
@@ -62,21 +65,26 @@ def filtered_sales(*, branch, start, end, operation_type, filters):
 
 def sale_rows(queryset):
     return queryset.select_related(
-        'created_by', 'beneficiary_user'
+        'created_by', 'seller_user', 'discount_approved_by', 'beneficiary_user'
     ).prefetch_related('items', 'payments').order_by('-created_at', '-id')
 
 
 def commercial_summary(queryset):
     finalized = queryset.filter(status=SaleStatus.FINALIZED)
     totals = finalized.aggregate(
-        revenue=Coalesce(Sum('total'), ZERO_MONEY),
+        customer_total=Coalesce(Sum('total'), ZERO_MONEY),
+        gross=Coalesce(Sum('subtotal'), ZERO_MONEY),
         count=Count('id'),
         manual_discount=Coalesce(Sum('discount'), ZERO_MONEY),
         promotion_discount=Coalesce(Sum('promotion_discount_total'), ZERO_MONEY),
+        service_fee=Coalesce(Sum('service_fee_amount'), ZERO_MONEY),
+        commission=Coalesce(Sum('commission_amount'), ZERO_MONEY),
     )
     totals['total_discount'] = totals['manual_discount'] + totals['promotion_discount']
+    totals['effective_revenue'] = totals['gross'] - totals['total_discount']
+    totals['revenue'] = totals['customer_total']
     totals['average'] = (
-        totals['revenue'] / totals['count'] if totals['count'] else Decimal('0.00')
+        totals['customer_total'] / totals['count'] if totals['count'] else Decimal('0.00')
     )
     cancelled = queryset.filter(status=SaleStatus.CANCELLED).aggregate(
         count=Count('id'), value=Coalesce(Sum('total'), ZERO_MONEY)
@@ -129,23 +137,146 @@ def payment_totals(queryset, filters=None):
 
 
 def sale_rankings(queryset, *, limit=10, filters=None):
-    items = filtered_sale_items(
-        queryset.filter(status=SaleStatus.FINALIZED), filters
-    )
-    products = list(
-        items.values('product_id', 'product_name', 'internal_code')
-        .annotate(quantity=Sum('quantity'), revenue=Sum('net_subtotal'))
-        .order_by('-quantity', '-revenue', 'product_name')[:limit]
-    )
-    categories = list(
-        items.values('product__category_id', 'product__category__name')
-        .annotate(quantity=Sum('quantity'), revenue=Sum('net_subtotal'))
-        .order_by('-quantity', '-revenue', 'product__category__name')[:limit]
-    )
-    for row in categories:
-        row['category_id'] = row.pop('product__category_id')
-        row['category_name'] = row.pop('product__category__name') or 'Sem categoria'
+    finalized = queryset.filter(status=SaleStatus.FINALIZED)
+    items = filtered_sale_items(finalized, filters).select_related('sale', 'product__category')
+    by_product = {}
+    by_category = {}
+    for item in items:
+        sale = item.sale
+        net = item.net_subtotal
+        # Allocate the sale's manual discount proportionally to the item's net subtotal
+        # so that the ranking revenue reconciles with the effective revenue (Sale.total sum).
+        sale_net_total = sale.subtotal - sale.promotion_discount_total
+        if sale_net_total > 0 and sale.discount > 0:
+            allocated_discount = (sale.discount * net / sale_net_total).quantize(Decimal('0.01'))
+        else:
+            allocated_discount = Decimal('0.00')
+        revenue = (net - allocated_discount).quantize(Decimal('0.01'))
+        product_key = item.product_id
+        category_key = item.product.category_id
+        product_entry = by_product.setdefault(product_key, {
+            'product_id': product_key,
+            'product_name': item.product_name,
+            'internal_code': item.internal_code,
+            'quantity': Decimal('0.000'),
+            'revenue': Decimal('0.00'),
+        })
+        product_entry['quantity'] += item.quantity
+        product_entry['revenue'] += revenue
+        category_entry = by_category.setdefault(category_key, {
+            'category_id': category_key,
+            'category_name': item.product.category.name if item.product.category_id else 'Sem categoria',
+            'quantity': Decimal('0.000'),
+            'revenue': Decimal('0.00'),
+        })
+        category_entry['quantity'] += item.quantity
+        category_entry['revenue'] += revenue
+    products = sorted(by_product.values(), key=lambda row: (-row['quantity'], -row['revenue'], row['product_name']))[:limit]
+    categories = sorted(by_category.values(), key=lambda row: (-row['quantity'], -row['revenue'], row['category_name']))[:limit]
     return products, categories
+
+
+def hourly_sales(queryset):
+    rows = queryset.filter(status=SaleStatus.FINALIZED).annotate(
+        hour=TruncHour('created_at', tzinfo=timezone.get_current_timezone())
+    ).values('hour').annotate(
+        count=Count('id'),
+        gross=Coalesce(Sum('subtotal'), ZERO_MONEY),
+        discounts=Coalesce(
+            Sum(F('discount') + F('promotion_discount_total'), output_field=MONEY_FIELD),
+            ZERO_MONEY,
+        ),
+        service_fee=Coalesce(Sum('service_fee_amount'), ZERO_MONEY),
+        customer_total=Coalesce(Sum('total'), ZERO_MONEY),
+    ).order_by('hour')
+    return [
+        {**row, 'effective_revenue': row['gross'] - row['discounts']}
+        for row in rows
+    ]
+
+
+def sale_user_groups(queryset, user_field):
+    if user_field not in ('created_by', 'seller_user'):
+        raise ValueError('Campo de agrupamento invalido.')
+    rows = queryset.filter(status=SaleStatus.FINALIZED).values(
+        f'{user_field}_id', f'{user_field}__first_name',
+        f'{user_field}__last_name', f'{user_field}__email',
+    ).annotate(
+        count=Count('id'),
+        gross=Coalesce(Sum('subtotal'), ZERO_MONEY),
+        manual_discount=Coalesce(Sum('discount'), ZERO_MONEY),
+        promotion_discount=Coalesce(Sum('promotion_discount_total'), ZERO_MONEY),
+        service_fee=Coalesce(Sum('service_fee_amount'), ZERO_MONEY),
+        commission=Coalesce(Sum('commission_amount'), ZERO_MONEY),
+        customer_total=Coalesce(Sum('total'), ZERO_MONEY),
+    ).order_by('-customer_total', f'{user_field}__first_name', f'{user_field}_id')
+    result = []
+    for row in rows:
+        first_name = row.pop(f'{user_field}__first_name') or ''
+        last_name = row.pop(f'{user_field}__last_name') or ''
+        email = row.pop(f'{user_field}__email') or ''
+        user_id = row.pop(f'{user_field}_id')
+        row['user'] = {'id': user_id, 'name': f'{first_name} {last_name}'.strip() or email}
+        row['total_discount'] = row['manual_discount'] + row['promotion_discount']
+        row['effective_revenue'] = row['gross'] - row['total_discount']
+        row['average'] = row['customer_total'] / row['count'] if row['count'] else Decimal('0.00')
+        result.append(row)
+    return result
+
+
+def operational_result(*, branch, start, end, sales, cash_session=None):
+    finalized = sales.filter(status=SaleStatus.FINALIZED)
+    summary, _ = commercial_summary(finalized)
+    cost_expression = ExpressionWrapper(
+        F('unit_cost') * F('quantity'), output_field=MONEY_FIELD
+    )
+    cogs = SaleItem.objects.filter(sale_id__in=finalized.values('id')).aggregate(
+        value=Coalesce(Sum(cost_expression), ZERO_MONEY)
+    )['value']
+    withdrawals = period_filter(
+        CashMovement.objects.filter(
+            cash_session__branch=branch,
+            movement_type=CashMovementType.WITHDRAWAL,
+        ),
+        'created_at', start, end,
+    )
+    if cash_session:
+        withdrawals = withdrawals.filter(cash_session=cash_session)
+    expense = withdrawals.filter(result_effect=ResultEffect.OPERATING_EXPENSE).aggregate(
+        value=Coalesce(Sum('amount'), ZERO_MONEY)
+    )['value']
+    unclassified = withdrawals.filter(result_effect=ResultEffect.UNCLASSIFIED).aggregate(
+        count=Count('id'), amount=Coalesce(Sum('amount'), ZERO_MONEY)
+    )
+    scoped_start, scoped_end = start, end
+    if cash_session:
+        scoped_start = max(start, cash_session.opened_at)
+        scoped_end = min(end, cash_session.closed_at or end)
+    seconds = max(Decimal('0'), Decimal(str((scoped_end - scoped_start).total_seconds())))
+    settings = BranchSettings.objects.filter(branch=branch).first()
+    daily_cost = settings.fixed_daily_cost if settings else Decimal('0.00')
+    fixed_cost = (daily_cost * seconds / Decimal('86400')).quantize(Decimal('0.01'))
+    result = (
+        summary['effective_revenue'] - cogs - summary['commission'] - expense - fixed_cost
+    )
+    margin = (
+        result * Decimal('100') / summary['effective_revenue']
+        if summary['effective_revenue'] else Decimal('0.00')
+    )
+    return {
+        'gross': summary['gross'],
+        'discounts': summary['total_discount'],
+        'effective_revenue': summary['effective_revenue'],
+        'service_fee': summary['service_fee'],
+        'customer_total': summary['customer_total'],
+        'cogs': cogs,
+        'commission': summary['commission'],
+        'operating_expenses': expense,
+        'fixed_cost': fixed_cost,
+        'result': result,
+        'margin': margin.quantize(Decimal('0.01')),
+        'unclassified_withdrawals': unclassified,
+    }
 
 
 def filtered_cash_sessions(*, branch, start, end, filters):
@@ -161,9 +292,16 @@ def filtered_cash_sessions(*, branch, start, end, filters):
         sale__status=SaleStatus.FINALIZED,
         payment_method_code='cash',
     ).values('sale__cash_session').annotate(value=Sum('amount')).values('value')
-    queryset = period_filter(
-        CashSession.objects.filter(branch=branch), 'opened_at', start, end
-    ).select_related('cash_register', 'opened_by').annotate(
+    queryset = CashSession.objects.filter(branch=branch)
+    # Intersect the session's [opened_at, closed_at] with the requested period, so
+    # sessions opened before the period or still open are included when relevant.
+    if start or end:
+        queryset = queryset.filter(opened_at__lte=end) if end else queryset
+        if start:
+            queryset = queryset.filter(
+                Q(closed_at__isnull=True) | Q(closed_at__gte=start)
+            )
+    queryset = queryset.select_related('cash_register', 'opened_by').annotate(
         manual_entries=Coalesce(Subquery(manual, output_field=MONEY_FIELD), ZERO_MONEY),
         withdrawals=Coalesce(Subquery(withdrawals, output_field=MONEY_FIELD), ZERO_MONEY),
         cash_payments=Coalesce(Subquery(cash, output_field=MONEY_FIELD), ZERO_MONEY),
@@ -255,6 +393,7 @@ def inventory_kpis(branch, *, include_value=False):
     stocks = Stock.objects.filter(branch=branch)
     result = {
         'zero_count': stocks.filter(current_quantity=0).count(),
+        'negative_count': stocks.filter(current_quantity__lt=0).count(),
         'below_minimum_count': stocks.filter(
             current_quantity__gt=0, current_quantity__lt=F('minimum_quantity')
         ).count(),

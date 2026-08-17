@@ -1,6 +1,8 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 
-from .models import AccessProfile, Branch, Company, FunctionalPermission, Status
+from .models import AccessProfile, Branch, BranchSettings, Company, FunctionalPermission, Status
 from .selectors import (
     accessible_branches,
     company_permission_codes,
@@ -12,6 +14,7 @@ from .validators import normalize_cnpj, validate_cnpj
 
 class BranchSerializer(serializers.ModelSerializer):
     company_name = serializers.CharField(source='company.trade_name', read_only=True)
+    settings_summary = serializers.SerializerMethodField()
     cnpj = serializers.CharField(
         allow_blank=True,
         allow_null=True,
@@ -37,6 +40,7 @@ class BranchSerializer(serializers.ModelSerializer):
             'address',
             'status',
             'is_matrix',
+            'settings_summary',
             'created_at',
             'updated_at',
         )
@@ -45,9 +49,22 @@ class BranchSerializer(serializers.ModelSerializer):
             'company_name',
             'status',
             'is_matrix',
+            'settings_summary',
             'created_at',
             'updated_at',
         )
+
+    def get_settings_summary(self, branch):
+        try:
+            settings = branch.settings
+        except BranchSettings.DoesNotExist:
+            return None
+        return {
+            'allow_negative_stock': settings.allow_negative_stock,
+            'service_fee_rate': f'{settings.service_fee_rate:.2f}',
+            'commission_rate': f'{settings.commission_rate:.2f}',
+            'fixed_daily_cost': f'{settings.fixed_daily_cost:.2f}',
+        }
 
     def validate(self, attrs):
         request = self.context['request']
@@ -111,6 +128,30 @@ class BranchSerializer(serializers.ModelSerializer):
             creator=self.context['request'].user,
             **validated_data,
         )
+
+
+class BranchSettingsSerializer(serializers.ModelSerializer):
+    allow_negative_stock = serializers.BooleanField(required=False)
+    service_fee_rate = serializers.DecimalField(
+        max_digits=5, decimal_places=2, min_value=Decimal('0.00'), max_value=Decimal('100.00'),
+        coerce_to_string=True, required=False,
+    )
+    commission_rate = serializers.DecimalField(
+        max_digits=5, decimal_places=2, min_value=Decimal('0.00'), max_value=Decimal('100.00'),
+        coerce_to_string=True, required=False,
+    )
+    fixed_daily_cost = serializers.DecimalField(
+        max_digits=14, decimal_places=2, min_value=Decimal('0.00'),
+        coerce_to_string=True, required=False,
+    )
+
+    class Meta:
+        model = BranchSettings
+        fields = (
+            'id', 'branch', 'allow_negative_stock', 'service_fee_rate',
+            'commission_rate', 'fixed_daily_cost', 'created_at', 'updated_at',
+        )
+        read_only_fields = ('id', 'branch', 'created_at', 'updated_at')
 
 
 class CompanySerializer(serializers.ModelSerializer):

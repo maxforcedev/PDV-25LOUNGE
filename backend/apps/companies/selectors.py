@@ -1,3 +1,5 @@
+from apps.accounts.models import User
+
 from .models import Branch, Company, UserBranchAccess, UserCompanyAccess
 
 
@@ -123,6 +125,21 @@ def user_has_branch_permission(user, branch_id, code):
         branch__company__user_accesses__is_active=True,
         branch__company__user_accesses__access_profile__status='active',
     ).exists()
+
+
+def eligible_branch_users(branch, permission_code):
+    return User.objects.filter(
+        is_active=True,
+        can_login=True,
+        branch_accesses__branch=branch,
+        branch_accesses__is_active=True,
+        branch_accesses__access_profile__status='active',
+        branch_accesses__access_profile__permissions__status='active',
+        branch_accesses__access_profile__permissions__code=permission_code,
+        company_accesses__company_id=branch.company_id,
+        company_accesses__is_active=True,
+        company_accesses__access_profile__status='active',
+    ).distinct().order_by('first_name', 'last_name', 'email', 'id')
 
 
 def branch_permission_codes(user, branch_id):

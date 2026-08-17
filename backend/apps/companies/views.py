@@ -4,7 +4,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
 
-from .models import AccessProfile, Branch, Company, FunctionalPermission, Status
+from .models import AccessProfile, Branch, BranchSettings, Company, FunctionalPermission, Status
 from .permissions import CanCreateCompany, FunctionalCompanyPermission
 from .selectors import (
     accessible_branches,
@@ -14,6 +14,7 @@ from .selectors import (
 from .serializers import (
     AccessProfileSerializer,
     BranchSerializer,
+    BranchSettingsSerializer,
     CompanySerializer,
     FunctionalPermissionSerializer,
 )
@@ -40,7 +41,7 @@ class CompanyViewSet(viewsets.ModelViewSet):
                 'branches',
                 queryset=accessible_branches(
                     self.request.user, 'branches.view'
-                ).select_related('company'),
+                ).select_related('company', 'settings'),
                 to_attr='visible_branches',
             )
         )
@@ -76,6 +77,7 @@ class BranchViewSet(viewsets.ModelViewSet):
         'partial_update': 'branches.change',
         'activate': 'branches.change',
         'deactivate': 'branches.change',
+        'branch_settings': 'branches.change',
     }
     http_method_names = ('get', 'post', 'patch', 'put', 'head', 'options')
 
@@ -83,7 +85,7 @@ class BranchViewSet(viewsets.ModelViewSet):
         permission_code = self.permission_codes.get(self.action, 'branches.view')
         return accessible_branches(
             self.request.user, permission_code
-        ).select_related('company')
+        ).select_related('company', 'settings')
 
     @action(detail=True, methods=['post'])
     def activate(self, request, pk=None):
@@ -97,6 +99,17 @@ class BranchViewSet(viewsets.ModelViewSet):
         branch.status = Status.INACTIVE
         branch.save(update_fields=['status', 'updated_at'])
         return Response(self.get_serializer(branch).data)
+
+    @action(detail=True, methods=['get', 'put', 'patch'], url_path='settings')
+    def branch_settings(self, request, pk=None):
+        branch = self.get_object()
+        instance, _ = BranchSettings.objects.get_or_create(branch=branch)
+        if request.method == 'GET':
+            return Response(BranchSettingsSerializer(instance).data)
+        serializer = BranchSettingsSerializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(BranchSettingsSerializer(instance).data)
 
 
 class CanViewPermissionCatalog(BasePermission):

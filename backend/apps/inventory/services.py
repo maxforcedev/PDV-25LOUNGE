@@ -86,9 +86,14 @@ def apply_locked_stock(*, stock, quantity, user, movement_type, reason='', sale=
     previous = stock.current_quantity
     final = previous + quantity
     if final < 0:
-        raise ValidationError({
-            'stock': f'Saldo insuficiente para o produto {stock.product_id}.',
-        })
+        from apps.companies.models import BranchSettings
+        allow_negative = BranchSettings.objects.filter(
+            branch_id=stock.branch_id, allow_negative_stock=True
+        ).exists()
+        if not allow_negative:
+            raise ValidationError({
+                'stock': f'Saldo insuficiente para o produto {stock.product_id}.',
+            })
     stock.current_quantity = final
     stock.save(update_fields=('current_quantity', 'updated_at'))
     return StockMovement.objects.create(
@@ -121,7 +126,7 @@ def exit(product, branch, quantity, user, reason=''):
 
 
 def adjustment(product, branch, final_quantity, user, reason=''):
-    final_quantity = _decimal(final_quantity, 'final_quantity', nonnegative=True)
+    final_quantity = _decimal(final_quantity, 'final_quantity')
     with transaction.atomic():
         locked_branch = _authorized_branch(branch, user, 'inventory.move')
         try:

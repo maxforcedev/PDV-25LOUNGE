@@ -1,16 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { GitBranch, MapPin, Pencil, Plus, Power } from "lucide-react";
+import { GitBranch, MapPin, Pencil, Plus, Power, Settings2 } from "lucide-react";
 import { AdminGuard } from "@/components/admin-guard";
 import { PageHeader } from "@/components/page-header";
-import { Alert, Button, ConfirmDialog, EmptyState, Field, Input, Modal, Pagination, Select, Spinner, StatusBadge, TableLoading } from "@/components/ui";
+import { Alert, Button, ConfirmDialog, EmptyState, Field, Input, Modal, MoneyInput, Pagination, Select, Spinner, StatusBadge, TableLoading } from "@/components/ui";
 import { fieldError, formatDate } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { formatZipCode, lookupAddressByZipCode, ViaCepError, zipCodeDigits } from "@/lib/viacep";
 import { useAuth } from "@/providers/auth-provider";
-import type { Address, Branch, BranchPayload, Company, Paginated } from "@/types";
+import type { Address, Branch, BranchPayload, BranchSettings, Company, Paginated } from "@/types";
 
 const emptyAddress: Address = {
   zip_code: "",
@@ -56,6 +56,11 @@ function BranchesAdministration() {
   const [zipCodeLoading, setZipCodeLoading] = useState(false);
   const [zipCodeError, setZipCodeError] = useState("");
   const [zipLookupEnabled, setZipLookupEnabled] = useState(false);
+  const [settingsBranch, setSettingsBranch] = useState<Branch | null>(null);
+  const [settings, setSettings] = useState<BranchSettings | null>(null);
+  const [settingsFields, setSettingsFields] = useState<Record<string, string[]>>({});
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
 
   async function load(path = currentCompany ? `branches/?company=${currentCompany.id}` : "branches/") {
     setLoading(true);
@@ -209,6 +214,48 @@ function BranchesAdministration() {
     }
   }
 
+  async function openSettings(branch: Branch) {
+    if (!canChange) return;
+    setSettingsBranch(branch);
+    setSettings(null);
+    setSettingsFields({});
+    setError("");
+    setSettingsLoading(true);
+    try {
+      setSettings(await http.get<BranchSettings>(`branches/${branch.id}/settings/`));
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar as configurações da filial.");
+      setSettingsBranch(null);
+    } finally {
+      setSettingsLoading(false);
+    }
+  }
+
+  async function saveSettings(event: React.FormEvent) {
+    event.preventDefault();
+    if (!settingsBranch || !settings || !canChange) return;
+    setSettingsSaving(true);
+    setSettingsFields({});
+    setError("");
+    try {
+      setSettings(await http.patch<BranchSettings>(`branches/${settingsBranch.id}/settings/`, {
+        allow_negative_stock: settings.allow_negative_stock,
+        service_fee_rate: settings.service_fee_rate,
+        commission_rate: settings.commission_rate,
+        fixed_daily_cost: settings.fixed_daily_cost,
+      }));
+      setSettingsBranch(null);
+      setSuccess("Configurações da filial salvas com sucesso.");
+    } catch (caught) {
+      if (caught instanceof ApiError) {
+        setError(caught.message);
+        setSettingsFields(caught.fields);
+      } else setError("Não foi possível salvar as configurações da filial.");
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
+
   return (
     <>
       <PageHeader
@@ -235,7 +282,7 @@ function BranchesAdministration() {
                         <td><span className="flex max-w-64 items-center gap-1.5 text-slate-500"><MapPin className="size-3.5 shrink-0 text-primary" /><span className="truncate">{addressText(branch.address)}</span></span></td>
                         <td><StatusBadge active={branch.status === "active"} /></td>
                         <td className="text-slate-500">{formatDate(branch.updated_at)}</td>
-                        <td><div className="flex justify-end gap-1"><button className="icon-button" disabled={!canChange} title={canChange ? "Editar" : "Sem permissão para editar filiais"} onClick={() => openEdit(branch)}><Pencil className="size-4" /></button><button disabled={!canChange} className={`icon-button ${branch.status === "active" ? "hover:bg-danger/10 hover:text-danger" : "hover:bg-success/10 hover:text-success"}`} title={canChange ? (branch.status === "active" ? "Inativar" : "Ativar") : "Sem permissão para alterar filiais"} onClick={() => canChange && setConfirming(branch)}><Power className="size-4" /></button></div></td>
+                        <td><div className="flex justify-end gap-1"><button className="icon-button" disabled={!canChange} title={canChange ? "Configurações operacionais" : "Sem permissão para configurar filiais"} onClick={() => void openSettings(branch)}><Settings2 className="size-4" /></button><button className="icon-button" disabled={!canChange} title={canChange ? "Editar" : "Sem permissão para editar filiais"} onClick={() => openEdit(branch)}><Pencil className="size-4" /></button><button disabled={!canChange} className={`icon-button ${branch.status === "active" ? "hover:bg-danger/10 hover:text-danger" : "hover:bg-success/10 hover:text-success"}`} title={canChange ? (branch.status === "active" ? "Inativar" : "Ativar") : "Sem permissão para alterar filiais"} onClick={() => canChange && setConfirming(branch)}><Power className="size-4" /></button></div></td>
                       </tr>
                     ))}
                   </tbody>
@@ -275,6 +322,25 @@ function BranchesAdministration() {
           </div>
           <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4 sm:px-6"><Button type="button" variant="secondary" disabled={saving} onClick={() => setModalOpen(false)}>Cancelar</Button><Button type="submit" loading={saving} disabled={editing ? !canChange : !canAdd}>{editing ? "Salvar alterações" : "Criar filial"}</Button></div>
         </form>
+      </Modal>
+      <Modal open={!!settingsBranch} title={`Configurações de ${settingsBranch?.name || "filial"}`} description="Defina as regras operacionais específicas desta unidade." onClose={() => !settingsSaving && setSettingsBranch(null)}>
+        {settingsLoading || !settings ? <div className="flex min-h-48 items-center justify-center text-primary"><Spinner className="size-6" /></div> : (
+          <form onSubmit={saveSettings}>
+            <div className="space-y-5 p-5 sm:p-6">
+              {error && <Alert message={error} />}
+              <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-4">
+                <input type="checkbox" className="mt-0.5 size-4 accent-primary" checked={settings.allow_negative_stock} onChange={(event) => setSettings((value) => value ? { ...value, allow_negative_stock: event.target.checked } : value)} disabled={settingsSaving} />
+                <span><strong className="block text-xs">Permitir estoque negativo</strong><small className="mt-1 block text-[11px] text-slate-500">Vendas e saídas poderão deixar o saldo abaixo de zero nesta filial.</small></span>
+              </label>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Taxa de serviço (%)" error={fieldError(settingsFields, "service_fee_rate")}><Input required type="number" min="0" max="100" step="0.01" value={settings.service_fee_rate} onChange={(event) => setSettings((value) => value ? { ...value, service_fee_rate: event.target.value } : value)} disabled={settingsSaving} /></Field>
+                <Field label="Comissão padrão (%)" error={fieldError(settingsFields, "commission_rate")}><Input required type="number" min="0" max="100" step="0.01" value={settings.commission_rate} onChange={(event) => setSettings((value) => value ? { ...value, commission_rate: event.target.value } : value)} disabled={settingsSaving} /></Field>
+              </div>
+              <Field label="Custo fixo diário" error={fieldError(settingsFields, "fixed_daily_cost")}><MoneyInput required value={settings.fixed_daily_cost} onValueChange={(value) => setSettings((current) => current ? { ...current, fixed_daily_cost: value } : current)} disabled={settingsSaving} /></Field>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4 sm:px-6"><Button type="button" variant="secondary" disabled={settingsSaving} onClick={() => setSettingsBranch(null)}>Cancelar</Button><Button type="submit" loading={settingsSaving}>Salvar configurações</Button></div>
+          </form>
+        )}
       </Modal>
       <ConfirmDialog open={!!confirming} title={`${confirming?.status === "active" ? "Inativar" : "Ativar"} filial`} message={`Confirma a alteração de status de “${confirming?.name || ""}”?`} confirmLabel={confirming?.status === "active" ? "Inativar" : "Ativar"} danger={confirming?.status === "active"} loading={changingStatus} onClose={() => !changingStatus && setConfirming(null)} onConfirm={changeStatus} />
     </>

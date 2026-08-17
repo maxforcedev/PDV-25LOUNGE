@@ -110,7 +110,7 @@ def open_session(cash_register, opening_amount, user, current_branch):
 
 def _record_movement(
     *, cash_session, amount, user, reason, current_branch, movement_type, permission_code,
-    withdrawal_category=None, beneficiary_user=None,
+    withdrawal_category=None, beneficiary_user=None, result_effect=None,
 ):
     amount = parse_money(amount, 'amount', positive=True)
     reason = (reason or '').strip()
@@ -167,6 +167,7 @@ def _record_movement(
             reason=reason,
             withdrawal_category=withdrawal_category,
             beneficiary_user=beneficiary,
+            result_effect=result_effect or 'neutral',
         )
 
 
@@ -183,7 +184,8 @@ def record_manual_entry(cash_session, amount, user, reason, current_branch):
 
 
 def record_withdrawal(
-    cash_session, amount, user, reason, current_branch, category, beneficiary_user=None
+    cash_session, amount, user, reason, current_branch, category, result_effect,
+    beneficiary_user=None,
 ):
     return _record_movement(
         cash_session=cash_session,
@@ -195,6 +197,7 @@ def record_withdrawal(
         permission_code='cash_registers.withdraw',
         withdrawal_category=category,
         beneficiary_user=beneficiary_user,
+        result_effect=result_effect,
     )
 
 

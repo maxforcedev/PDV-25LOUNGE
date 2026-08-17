@@ -38,11 +38,15 @@ class Promotion(BaseModel):
     company = models.ForeignKey(
         Company, on_delete=models.PROTECT, related_name='promotions'
     )
+    branch = models.ForeignKey(
+        Branch, on_delete=models.PROTECT, related_name='promotions',
+        blank=True, null=True,
+    )
     name = models.CharField(max_length=150)
     discount_type = models.CharField(max_length=20, choices=PromotionDiscountType.choices)
     discount_value = models.DecimalField(max_digits=14, decimal_places=2)
     starts_at = models.DateTimeField()
-    ends_at = models.DateTimeField()
+    ends_at = models.DateTimeField(blank=True, null=True)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
     products = models.ManyToManyField(Product, related_name='promotions', blank=True)
     categories = models.ManyToManyField(
@@ -56,7 +60,7 @@ class Promotion(BaseModel):
                 'company', Lower('name'), name='sales_promotion_company_name_ci_unique'
             ),
             models.CheckConstraint(
-                condition=Q(starts_at__lt=F('ends_at')),
+                condition=Q(ends_at__isnull=True) | Q(starts_at__lt=F('ends_at')),
                 name='sales_promotion_period_valid',
             ),
             models.CheckConstraint(
@@ -91,6 +95,8 @@ class Promotion(BaseModel):
             and self.discount_value > 100
         ):
             errors['discount_value'] = 'O percentual nao pode ser maior que 100.'
+        if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
+            errors['branch'] = 'A filial deve pertencer a empresa da promocao.'
         if errors:
             raise ValidationError(errors)
 
@@ -100,6 +106,52 @@ class Promotion(BaseModel):
 
     def __str__(self):
         return f'{self.company} - {self.name}'
+
+
+class Weekday(models.IntegerChoices):
+    SUNDAY = 0, 'Domingo'
+    MONDAY = 1, 'Segunda'
+    TUESDAY = 2, 'Terca'
+    WEDNESDAY = 3, 'Quarta'
+    THURSDAY = 4, 'Quinta'
+    FRIDAY = 5, 'Sexta'
+    SATURDAY = 6, 'Sabado'
+
+
+class PromotionSchedule(BaseModel):
+    promotion = models.ForeignKey(
+        Promotion, on_delete=models.CASCADE, related_name='schedules'
+    )
+    weekday = models.SmallIntegerField(choices=Weekday.choices)
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+
+    class Meta:
+        ordering = ('weekday', 'start_time', 'id')
+        constraints = [
+            models.UniqueConstraint(
+                fields=('promotion', 'weekday', 'start_time', 'end_time'),
+                name='sales_promotion_schedule_interval_unique',
+            ),
+            models.CheckConstraint(
+                condition=~Q(start_time=F('end_time')),
+                name='sales_promotion_schedule_interval_nonempty',
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.start_time and self.end_time:
+            # Allow overnight intervals where end_time < start_time (wraps midnight).
+            if self.start_time == self.end_time:
+                raise ValidationError({'end_time': 'O horario final deve diferir do inicial.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f'{self.get_weekday_display()} {self.start_time}-{self.end_time}'
 
 
 class PaymentMethod(BaseModel):
@@ -162,6 +214,20 @@ class Sale(BaseModel):
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='created_sales'
     )
+    seller_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='seller_sales',
+        blank=True,
+        null=True,
+    )
+    discount_approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='approved_discount_sales',
+        blank=True,
+        null=True,
+    )
     beneficiary_user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -174,6 +240,18 @@ class Sale(BaseModel):
         max_digits=14, decimal_places=2, default=Decimal('0.00')
     )
     discount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
+    service_fee_rate = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal('0.00')
+    )
+    service_fee_amount = models.DecimalField(
+        max_digits=14, decimal_places=2, default=Decimal('0.00')
+    )
+    commission_rate = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal('0.00')
+    )
+    commission_amount = models.DecimalField(
+        max_digits=14, decimal_places=2, default=Decimal('0.00')
+    )
     charged_amount = models.DecimalField(
         max_digits=14, decimal_places=2, blank=True, null=True
     )
@@ -206,6 +284,22 @@ class Sale(BaseModel):
             ),
             models.CheckConstraint(condition=Q(total__gte=0), name='sales_sale_total_nonnegative'),
             models.CheckConstraint(
+                condition=Q(service_fee_rate__gte=0, service_fee_rate__lte=100),
+                name='sales_sale_service_fee_rate_range',
+            ),
+            models.CheckConstraint(
+                condition=Q(service_fee_amount__gte=0),
+                name='sales_sale_service_fee_nonnegative',
+            ),
+            models.CheckConstraint(
+                condition=Q(commission_rate__gte=0, commission_rate__lte=100),
+                name='sales_sale_commission_rate_range',
+            ),
+            models.CheckConstraint(
+                condition=Q(commission_amount__gte=0),
+                name='sales_sale_commission_nonnegative',
+            ),
+            models.CheckConstraint(
                 condition=Q(discount__lte=F('subtotal') - F('promotion_discount_total')),
                 name='sales_sale_discount_lte_remaining',
             ),
@@ -221,7 +315,9 @@ class Sale(BaseModel):
                 condition=(
                     Q(
                         operation_type=OperationType.SALE,
-                        total=F('subtotal') - F('promotion_discount_total') - F('discount'),
+                        seller_user__isnull=False,
+                        total=(F('subtotal') - F('promotion_discount_total') - F('discount')
+                               + F('service_fee_amount')),
                     )
                     | Q(
                         operation_type=OperationType.CONSUMPTION,
@@ -229,10 +325,22 @@ class Sale(BaseModel):
                         charged_amount__isnull=False,
                         promotion_discount_total=0,
                         discount=0,
+                        seller_user__isnull=True,
+                        service_fee_rate=0,
+                        service_fee_amount=0,
+                        commission_rate=0,
+                        commission_amount=0,
                         total=F('charged_amount'),
                     )
                 ),
                 name='sales_sale_operation_amounts_coherent',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(discount=0, discount_approved_by__isnull=True)
+                    | Q(discount__gt=0)
+                ),
+                name='sales_sale_discount_approval_coherent',
             ),
             models.CheckConstraint(
                 condition=(
@@ -292,11 +400,20 @@ class Sale(BaseModel):
                 errors['discount'] = 'Consumacao nao aceita desconto.'
             if self.promotion_discount_total != Decimal('0'):
                 errors['promotion_discount_total'] = 'Consumacao nao aceita promocao.'
+            if self.seller_user_id:
+                errors['seller_user'] = 'Consumacao nao possui atendente.'
+            if any(value != Decimal('0') for value in (
+                self.service_fee_rate, self.service_fee_amount,
+                self.commission_rate, self.commission_amount,
+            )):
+                errors['service_fee_amount'] = 'Consumacao nao possui taxa ou comissao.'
             if self.charged_amount is not None and self.total != self.charged_amount:
                 errors['total'] = 'O total deve ser igual ao valor cobrado.'
             if self.charged_amount and not self.cash_session_id:
                 errors['cash_session'] = 'Consumacao cobrada exige sessao de caixa.'
         else:
+            if not self.seller_user_id:
+                errors['seller_user'] = 'Informe o atendente da venda.'
             if self.charged_amount is not None:
                 errors['charged_amount'] = 'Venda normal nao possui valor cobrado.'
             if not self.cash_session_id:
@@ -306,8 +423,11 @@ class Sale(BaseModel):
                 errors['promotion_discount_total'] = 'O desconto promocional excede o subtotal.'
             if self.discount < 0 or self.discount > remaining:
                 errors['discount'] = 'O desconto manual excede o saldo apos promocoes.'
-            if self.total != remaining - self.discount:
-                errors['total'] = 'O total deve considerar promocao e desconto manual.'
+            net_subtotal = remaining - self.discount
+            if self.total != net_subtotal + self.service_fee_amount:
+                errors['total'] = 'O total deve considerar descontos e taxa de servico.'
+        if self.discount == 0 and self.discount_approved_by_id:
+            errors['discount_approved_by'] = 'Venda sem desconto nao possui aprovador.'
         if self.status == SaleStatus.FINALIZED and any(
             value is not None and value != ''
             for value in (self.cancelled_at, self.cancelled_by_id, self.cancellation_reason)
@@ -443,8 +563,10 @@ class SaleItem(ImmutableHistoricalModel):
             self.product_name = self.product.name
             self.internal_code = self.product.internal_code
             self.unit = self.product.unit
-            self.unit_cost = self.product.cost
-            self.unit_price = self.product.sale_price
+            if self.unit_cost is None:
+                self.unit_cost = self.product.cost
+            if self.unit_price is None:
+                self.unit_price = self.product.sale_price
             self.subtotal = (self.unit_price * self.quantity).quantize(Decimal('0.01'))
         self.net_subtotal = self.subtotal - self.promotion_benefit
         self.full_clean()

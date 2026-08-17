@@ -6,13 +6,16 @@ from rest_framework import serializers
 
 from apps.accounts.models import User
 from apps.base.constants import MAX_BIGINT
+from apps.companies.models import Branch
 from apps.companies.selectors import user_has_branch_permission
 from apps.products.models import Category, Product
 from apps.products.serializers import ProductSerializer
 
 from .models import (
-    Payment, PaymentMethod, Promotion, PromotionDiscountType, Sale, SaleItem,
+    Payment, PaymentMethod, Promotion, PromotionDiscountType, PromotionSchedule,
+    Sale, SaleItem, Weekday,
 )
+from .services import detect_promotion_conflict
 
 
 def readable_user_name(user):
@@ -55,6 +58,20 @@ class CanonicalDateTimeField(serializers.DateTimeField):
         return value.astimezone(timezone.get_default_timezone()).isoformat()
 
 
+class PromotionScheduleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PromotionSchedule
+        fields = ('id', 'weekday', 'start_time', 'end_time')
+        read_only_fields = ('id',)
+
+    def validate(self, attrs):
+        start = attrs.get('start_time', getattr(self.instance, 'start_time', None))
+        end = attrs.get('end_time', getattr(self.instance, 'end_time', None))
+        if start and end and start == end:
+            raise serializers.ValidationError({'end_time': 'O horario final deve diferir do inicial.'})
+        return attrs
+
+
 class PromotionSerializer(serializers.ModelSerializer):
     product_ids = serializers.PrimaryKeyRelatedField(
         source='products', many=True, queryset=Product.objects.all(),
@@ -65,12 +82,19 @@ class PromotionSerializer(serializers.ModelSerializer):
         queryset=Category.objects.all(),
         required=False,
     )
+    branch = serializers.PrimaryKeyRelatedField(
+        queryset=Branch.objects.all(), pk_field=serializers.IntegerField(min_value=1, max_value=MAX_BIGINT),
+        required=False, allow_null=True,
+    )
+    branch_name = serializers.CharField(source='branch.name', read_only=True, default='Todas as filiais')
+    broker_all_branches = serializers.SerializerMethodField()
+    schedules = PromotionScheduleSerializer(many=True, required=False)
     product_names = serializers.SerializerMethodField()
     category_names = serializers.SerializerMethodField()
     product_count = serializers.SerializerMethodField()
     category_count = serializers.SerializerMethodField()
     starts_at = CanonicalDateTimeField()
-    ends_at = CanonicalDateTimeField()
+    ends_at = CanonicalDateTimeField(allow_null=True, required=False)
     discount_value = serializers.DecimalField(
         max_digits=14, decimal_places=2, min_value=Decimal('0.01'),
         coerce_to_string=True,
@@ -79,14 +103,20 @@ class PromotionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Promotion
         fields = (
-            'id', 'name', 'discount_type', 'discount_value', 'starts_at', 'ends_at',
-            'status', 'product_ids', 'category_ids', 'product_names', 'category_names',
-            'product_count', 'category_count', 'created_at', 'updated_at',
+            'id', 'name', 'branch', 'branch_name', 'broker_all_branches',
+            'discount_type', 'discount_value', 'starts_at', 'ends_at',
+            'schedules', 'status', 'product_ids', 'category_ids',
+            'product_names', 'category_names', 'product_count', 'category_count',
+            'created_at', 'updated_at',
         )
         read_only_fields = (
-            'id', 'status', 'product_names', 'category_names', 'product_count',
-            'category_count', 'created_at', 'updated_at',
+            'id', 'status', 'branch_name', 'broker_all_branches',
+            'product_names', 'category_names', 'product_count', 'category_count',
+            'created_at', 'updated_at',
         )
+
+    def get_broker_all_branches(self, promotion):
+        return promotion.branch_id is None
 
     def get_product_names(self, promotion):
         return [product.name for product in promotion.products.all()]
@@ -101,8 +131,9 @@ class PromotionSerializer(serializers.ModelSerializer):
         return len(promotion.categories.all())
 
     def validate(self, attrs):
-        branch = self.context['request'].branch_context
-        company_id = branch.company_id
+        branch_context = self.context['request'].branch_context
+        company_id = branch_context.company_id
+        chosen_branch = attrs.get('branch', getattr(self.instance, 'branch', None))
         products = attrs.get(
             'products', list(self.instance.products.all()) if self.instance else []
         )
@@ -116,6 +147,8 @@ class PromotionSerializer(serializers.ModelSerializer):
             errors['product_ids'] = 'Todos os produtos devem pertencer a empresa atual.'
         if any(category.company_id != company_id for category in categories):
             errors['category_ids'] = 'Todas as categorias devem pertencer a empresa atual.'
+        if chosen_branch is not None and chosen_branch.company_id != company_id:
+            errors['branch'] = 'A filial deve pertencer a empresa atual.'
         starts_at = attrs.get('starts_at', getattr(self.instance, 'starts_at', None))
         ends_at = attrs.get('ends_at', getattr(self.instance, 'ends_at', None))
         if starts_at and ends_at and starts_at >= ends_at:
@@ -128,8 +161,16 @@ class PromotionSerializer(serializers.ModelSerializer):
         )
         if discount_value is not None and discount_value <= 0:
             errors['discount_value'] = 'O desconto deve ser maior que zero.'
-        if discount_type == PromotionDiscountType.PERCENTAGE and discount_value > 100:
+        if discount_type == PromotionDiscountType.PERCENTAGE and discount_value and discount_value > 100:
             errors['discount_value'] = 'O percentual nao pode ser maior que 100.'
+        schedules = attrs.get('schedules', [])
+        seen = set()
+        for schedule in schedules:
+            key = (schedule.get('weekday'), str(schedule.get('start_time')), str(schedule.get('end_time')))
+            if key in seen:
+                errors.setdefault('schedules', []).append('Nao repita intervalos de agenda.')
+                break
+            seen.add(key)
         name = ' '.join(attrs.get('name', getattr(self.instance, 'name', '')).split())
         attrs['name'] = name
         duplicate = Promotion.objects.filter(company_id=company_id, name__iexact=name)
@@ -141,16 +182,25 @@ class PromotionSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(errors)
         return attrs
 
+    def _validate_conflict(self, promotion):
+        conflict = detect_promotion_conflict(promotion)
+        if conflict:
+            raise serializers.ValidationError({'targets': conflict})
+
     @transaction.atomic
     def create(self, validated_data):
         products = validated_data.pop('products', [])
         categories = validated_data.pop('categories', [])
+        schedules_data = validated_data.pop('schedules', [])
         promotion = Promotion.objects.create(
             company=self.context['request'].branch_context.company,
             **validated_data,
         )
         promotion.products.set(products)
         promotion.categories.set(categories)
+        for item in schedules_data:
+            PromotionSchedule.objects.create(promotion=promotion, **item)
+        self._validate_conflict(promotion)
         return promotion
 
     @transaction.atomic
@@ -158,6 +208,7 @@ class PromotionSerializer(serializers.ModelSerializer):
         instance = Promotion.objects.select_for_update().get(pk=instance.pk)
         products = validated_data.pop('products', None)
         categories = validated_data.pop('categories', None)
+        schedules_data = validated_data.pop('schedules', None)
         for field, value in validated_data.items():
             setattr(instance, field, value)
         instance.save()
@@ -165,6 +216,11 @@ class PromotionSerializer(serializers.ModelSerializer):
             instance.products.set(products)
         if categories is not None:
             instance.categories.set(categories)
+        if schedules_data is not None:
+            instance.schedules.all().delete()
+            for item in schedules_data:
+                PromotionSchedule.objects.create(promotion=instance, **item)
+        self._validate_conflict(instance)
         return instance
 
 
@@ -226,7 +282,10 @@ class SaleSerializer(serializers.ModelSerializer):
     payments = PaymentSerializer(many=True, read_only=True)
     branch_name = serializers.CharField(source='branch.name', read_only=True)
     company_name = serializers.CharField(source='company.trade_name', read_only=True)
+    cash_session_status = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
+    seller_user_name = serializers.SerializerMethodField()
+    discount_approved_by_name = serializers.SerializerMethodField()
     beneficiary_user_name = serializers.SerializerMethodField()
     cancelled_by_name = serializers.SerializerMethodField()
     subtotal = serializers.DecimalField(
@@ -236,6 +295,18 @@ class SaleSerializer(serializers.ModelSerializer):
         max_digits=14, decimal_places=2, read_only=True, coerce_to_string=True
     )
     promotion_discount_total = serializers.DecimalField(
+        max_digits=14, decimal_places=2, read_only=True, coerce_to_string=True
+    )
+    service_fee_rate = serializers.DecimalField(
+        max_digits=5, decimal_places=2, read_only=True, coerce_to_string=True
+    )
+    service_fee_amount = serializers.DecimalField(
+        max_digits=14, decimal_places=2, read_only=True, coerce_to_string=True
+    )
+    commission_rate = serializers.DecimalField(
+        max_digits=5, decimal_places=2, read_only=True, coerce_to_string=True
+    )
+    commission_amount = serializers.DecimalField(
         max_digits=14, decimal_places=2, read_only=True, coerce_to_string=True
     )
     charged_amount = serializers.DecimalField(
@@ -250,9 +321,13 @@ class SaleSerializer(serializers.ModelSerializer):
         model = Sale
         fields = (
             'id', 'company', 'company_name', 'branch', 'branch_name', 'cash_session',
-            'sale_number', 'operation_type', 'status', 'created_by', 'created_by_name',
-            'beneficiary_user', 'beneficiary_user_name', 'subtotal',
-            'promotion_discount_total', 'discount',
+            'cash_session_status', 'sale_number', 'operation_type', 'status',
+            'created_by', 'created_by_name', 'seller_user', 'seller_user_name',
+            'discount_approved_by', 'discount_approved_by_name',
+            'beneficiary_user', 'beneficiary_user_name',
+            'subtotal', 'promotion_discount_total', 'discount',
+            'service_fee_rate', 'service_fee_amount',
+            'commission_rate', 'commission_amount',
             'charged_amount', 'total', 'cancelled_at', 'cancelled_by', 'cancelled_by_name',
             'cancellation_reason', 'items', 'payments', 'created_at', 'updated_at',
         )
@@ -260,11 +335,22 @@ class SaleSerializer(serializers.ModelSerializer):
     def get_created_by_name(self, sale):
         return readable_user_name(sale.created_by)
 
+    def get_seller_user_name(self, sale):
+        return readable_user_name(sale.seller_user)
+
+    def get_discount_approved_by_name(self, sale):
+        return readable_user_name(sale.discount_approved_by)
+
     def get_beneficiary_user_name(self, sale):
         return readable_user_name(sale.beneficiary_user)
 
     def get_cancelled_by_name(self, sale):
         return readable_user_name(sale.cancelled_by)
+
+    def get_cash_session_status(self, sale):
+        if not sale.cash_session_id:
+            return None
+        return sale.cash_session.status
 
 
 class SaleBeneficiarySerializer(serializers.ModelSerializer):
@@ -279,9 +365,27 @@ class SaleBeneficiarySerializer(serializers.ModelSerializer):
         return readable_user_name(user)
 
 
+class SaleUserOptionSerializer(serializers.ModelSerializer):
+    name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ('id', 'name', 'email')
+        read_only_fields = fields
+
+    def get_name(self, user):
+        return readable_user_name(user)
+
+
 class SaleCatalogProductSerializer(ProductSerializer):
+    sale_price = serializers.SerializerMethodField()
+
     class Meta(ProductSerializer.Meta):
         read_only_fields = ProductSerializer.Meta.fields
+
+    def get_sale_price(self, product):
+        price = getattr(product, 'effective_sale_price', product.sale_price)
+        return f'{price:.2f}'
 
 
 class StrictDecimalField(serializers.DecimalField):
@@ -307,9 +411,7 @@ class ItemInputSerializer(serializers.Serializer):
 
 class PaymentInputSerializer(serializers.Serializer):
     payment_method = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
-    amount = StrictDecimalField(
-        max_digits=14, decimal_places=2, min_value=Decimal('0.01')
-    )
+    amount = serializers.JSONField(required=False, allow_null=True)
     received_amount = StrictDecimalField(
         max_digits=14, decimal_places=2, min_value=Decimal('0.00'),
         required=False, allow_null=True,
@@ -373,6 +475,18 @@ class CalculationOutputSerializer(serializers.Serializer):
     discount = InternalDecimalField(
         max_digits=14, decimal_places=2, coerce_to_string=True
     )
+    service_fee_rate = InternalDecimalField(
+        max_digits=5, decimal_places=2, coerce_to_string=True
+    )
+    service_fee_amount = InternalDecimalField(
+        max_digits=14, decimal_places=2, coerce_to_string=True
+    )
+    commission_rate = InternalDecimalField(
+        max_digits=5, decimal_places=2, coerce_to_string=True
+    )
+    commission_amount = InternalDecimalField(
+        max_digits=14, decimal_places=2, coerce_to_string=True
+    )
     charged_amount = InternalDecimalField(
         max_digits=14, decimal_places=2, allow_null=True, coerce_to_string=True
     )
@@ -385,6 +499,12 @@ class CalculationOutputSerializer(serializers.Serializer):
 
 
 class FinalizeSaleSerializer(CalculationSerializer):
+    seller_user = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.all(),
+        pk_field=serializers.IntegerField(min_value=1, max_value=MAX_BIGINT),
+        required=False,
+        allow_null=True,
+    )
     cash_session = serializers.PrimaryKeyRelatedField(
         queryset=Sale._meta.get_field('cash_session').remote_field.model.objects.all(),
         pk_field=serializers.IntegerField(min_value=1, max_value=MAX_BIGINT),
@@ -392,6 +512,26 @@ class FinalizeSaleSerializer(CalculationSerializer):
         allow_null=True,
     )
     payments = PaymentInputSerializer(many=True, required=False, default=list)
+    discount_authorization = serializers.DictField(required=False, write_only=True)
+
+    def validate_discount_authorization(self, value):
+        allowed = {'user', 'method', 'credential'}
+        if set(value) - allowed:
+            raise serializers.ValidationError('A autorizacao possui campos desconhecidos.')
+        try:
+            user_id = int(value.get('user'))
+        except (TypeError, ValueError):
+            raise serializers.ValidationError('Informe o autorizador.')
+        if value.get('method') != 'password':
+            raise serializers.ValidationError('Metodo de autorizacao invalido.')
+        credential = value.get('credential')
+        if not isinstance(credential, str) or not credential:
+            raise serializers.ValidationError('Informe a credencial do autorizador.')
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            raise serializers.ValidationError('Autorizacao de desconto invalida.')
+        return {'user': user, 'method': 'password', 'credential': credential}
 
 
 class SalesQuerySerializer(serializers.Serializer):

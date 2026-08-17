@@ -12,7 +12,7 @@
 }
 
 * { box-sizing: border-box; }
-html { background: #f0f2f8; }
+html { background: #f0f2f8; color-scheme: light; }
 body { margin: 0; color: #283c50; font-family: var(--font-sans); background: #f0f2f8; }
 button, input, select, textarea { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
@@ -42,3 +42,33 @@ button:not(:disabled), a { cursor: pointer; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes fade-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
 .animate-enter { animation: fade-in 180ms ease-out; }
+
+html[data-theme="dark"] { background: #101722; color-scheme: dark; }
+html[data-theme="dark"] body,
+html[data-theme="dark"] .bg-canvas { background-color: #101722; color: #dbe5f0; }
+html[data-theme="dark"] .card,
+html[data-theme="dark"] .bg-white,
+html[data-theme="dark"] .bg-white\/95 { background-color: #182230; border-color: #2c3a4b; }
+html[data-theme="dark"] .bg-slate-50,
+html[data-theme="dark"] .bg-slate-50\/70,
+html[data-theme="dark"] .bg-slate-50\/80,
+html[data-theme="dark"] .bg-slate-100 { background-color: #222f40; }
+html[data-theme="dark"] .text-dark,
+html[data-theme="dark"] .text-slate-600,
+html[data-theme="dark"] .text-slate-700 { color: #e4ebf3; }
+html[data-theme="dark"] .text-slate-400,
+html[data-theme="dark"] .text-slate-500 { color: #93a4b8; }
+html[data-theme="dark"] .border-slate-100,
+html[data-theme="dark"] .border-slate-200,
+html[data-theme="dark"] .border-slate-200\/90,
+html[data-theme="dark"] .border-slate-300 { border-color: #2c3a4b; }
+html[data-theme="dark"] .input,
+html[data-theme="dark"] .textarea { background-color: #111a26; border-color: #344458; color: #e4ebf3; }
+html[data-theme="dark"] .input:disabled,
+html[data-theme="dark"] .textarea:disabled { background-color: #222f40; color: #8292a6; }
+html[data-theme="dark"] .btn-secondary { background-color: #1d2a3a; border-color: #3a4b60; color: #e4ebf3; }
+html[data-theme="dark"] .icon-button { color: #a9b7c8; }
+html[data-theme="dark"] .data-table thead { background-color: #111a26; color: #9cadc1; }
+html[data-theme="dark"] .data-table th,
+html[data-theme="dark"] .data-table td { border-color: #2c3a4b; }
+html[data-theme="dark"] .data-table tbody tr:hover { background-color: #1d2a3a; }

@@ -12,8 +12,8 @@ from rest_framework.views import APIView
 from apps.accounts.models import User
 from apps.base.datetimes import canonical_datetime_range, parse_datetime_range
 from apps.base.pagination import StandardPagination
-from apps.cash.models import CashRegister, WithdrawalCategory
-from apps.companies.selectors import branch_permission_codes
+from apps.cash.models import CashRegister, CashSession, WithdrawalCategory
+from apps.companies.selectors import branch_permission_codes, eligible_branch_users
 from apps.inventory.models import MovementType
 from apps.products.models import Category, Product
 from apps.sales.models import OperationType, PaymentMethod, SaleStatus
@@ -29,9 +29,12 @@ from .selectors import (
     filtered_sales,
     filtered_withdrawals,
     inventory_kpis,
+    hourly_sales,
+    operational_result,
     payment_totals,
     sale_rankings,
     sale_rows,
+    sale_user_groups,
     withdrawal_summary,
 )
 from .serializers import (
@@ -40,6 +43,7 @@ from .serializers import (
     ConsumptionsReportQuerySerializer,
     InventoryMovementReportSerializer,
     InventoryReportQuerySerializer,
+    OperationalResultQuerySerializer,
     ReportSaleSerializer,
     SalesReportQuerySerializer,
     WithdrawalReportSerializer,
@@ -58,9 +62,61 @@ def user_has_code(request, code):
     )
 
 
+CSV_LABELS = {
+    'id': 'ID', 'sale_number': 'Numero', 'operation_type': 'Operacao',
+    'status': 'Status', 'operator': 'Operador', 'seller': 'Atendente',
+    'beneficiary': 'Beneficiario', 'subtotal': 'Valor bruto',
+    'promotion_discount_total': 'Desconto promocional',
+    'discount': 'Desconto manual', 'service_fee_amount': 'Taxa de servico',
+    'commission_amount': 'Comissao', 'total': 'Total cobrado',
+    'created_at': 'Criado em', 'cancelled_at': 'Cancelado em',
+    'items': 'Itens', 'payments': 'Pagamentos', 'opened_at': 'Aberto em',
+    'closed_at': 'Fechado em', 'register': 'Caixa', 'opening': 'Abertura',
+    'manual_entries': 'Entradas manuais', 'cash_payments': 'Pagamentos em dinheiro',
+    'withdrawals': 'Sangrias', 'expected': 'Esperado', 'informed': 'Informado',
+    'difference': 'Diferenca', 'amount': 'Valor', 'category': 'Categoria',
+    'category_label': 'Categoria', 'cash_register': 'Caixa', 'reason': 'Motivo',
+    'result_effect': 'Impacto no resultado', 'movement_type': 'Movimento',
+    'product': 'Produto', 'previous_quantity': 'Saldo anterior',
+    'quantity': 'Quantidade', 'final_quantity': 'Saldo final', 'user': 'Usuario',
+    'sale': 'Venda', 'name': 'Nome', 'code': 'Codigo',
+    'product_name': 'Nome do produto', 'internal_code': 'Codigo interno',
+    'unit': 'Unidade', 'promotion': 'Promocao',
+    'promotion_discount_type': 'Tipo do desconto promocional',
+    'promotion_discount_value': 'Valor do desconto promocional',
+    'payment_method_name': 'Forma de pagamento', 'payment_method_code': 'Identificador',
+    'unit_price': 'Preco unitario', 'promotion_name': 'Promocao',
+    'promotion_benefit': 'Beneficio promocional', 'net_subtotal': 'Subtotal liquido',
+}
+CSV_VALUES = {
+    'finalized': 'Finalizada', 'cancelled': 'Cancelada', 'sale': 'Venda',
+    'consumption': 'Consumacao', 'open': 'Aberta', 'closed': 'Fechada',
+    'manual_entry': 'Entrada manual', 'withdrawal': 'Sangria', 'entry': 'Entrada',
+    'exit': 'Saida', 'adjustment': 'Ajuste', 'operating_expense': 'Despesa operacional',
+    'neutral': 'Nao afeta o resultado', 'unclassified': 'Nao classificado',
+    'cash': 'Dinheiro', 'credit_card': 'Cartao de credito',
+    'debit_card': 'Cartao de debito', 'fixed_amount': 'Valor fixo',
+    'percentage': 'Percentual',
+}
+
+
+def translated_export_value(value):
+    if isinstance(value, dict):
+        return {
+            CSV_LABELS.get(key, key): translated_export_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [translated_export_value(item) for item in value]
+    if isinstance(value, str):
+        return CSV_VALUES.get(value, value)
+    return value
+
+
 def safe_csv_cell(value):
     if value is None:
         return ''
+    value = translated_export_value(value)
     if isinstance(value, (dict, list)):
         value = json.dumps(value, ensure_ascii=False, separators=(',', ':'))
     value = str(value)
@@ -72,7 +128,7 @@ def safe_csv_cell(value):
 def csv_response(filename, headers, rows):
     output = io.StringIO(newline='')
     writer = csv.writer(output)
-    writer.writerow(headers)
+    writer.writerow(CSV_LABELS.get(header, header) for header in headers)
     for row in rows:
         writer.writerow(safe_csv_cell(row.get(header)) for header in headers)
     response = HttpResponse(
@@ -92,6 +148,11 @@ class ReportsOptionsView(APIView):
             company_accesses__company_id=branch.company_id,
             company_accesses__is_active=True,
         ).distinct().order_by('first_name', 'last_name', 'id')
+        operators = User.objects.filter(
+            is_active=True,
+            branch_accesses__branch=branch,
+            branch_accesses__is_active=True,
+        ).distinct().order_by('first_name', 'last_name', 'id')
         products = Product.objects.filter(company_id=branch.company_id).order_by('name', 'id')
         categories = Category.objects.filter(company_id=branch.company_id).order_by(
             'sort_order', 'name', 'id'
@@ -100,11 +161,17 @@ class ReportsOptionsView(APIView):
             company_id=branch.company_id
         ).order_by('name', 'id')
         registers = CashRegister.objects.filter(branch=branch).order_by('name', 'id')
-        user_options = [
-            {'id': user.pk, 'name': readable_user_name(user)} for user in users
-        ]
+        sessions = CashSession.objects.filter(branch=branch).select_related(
+            'cash_register'
+        ).order_by('-opened_at', '-id')
         return Response({
-            'operators': user_options,
+            'operators': [
+                {'id': user.pk, 'name': readable_user_name(user)} for user in operators
+            ],
+            'sellers': [
+                {'id': user.pk, 'name': readable_user_name(user)}
+                for user in eligible_branch_users(branch, 'sales.create')
+            ],
             'beneficiaries': [
                 {
                     'id': user.pk,
@@ -138,6 +205,16 @@ class ReportsOptionsView(APIView):
             'cash_registers': [
                 {'id': register.pk, 'name': register.name, 'status': register.status}
                 for register in registers
+            ],
+            'cash_sessions': [
+                {
+                    'id': session.pk,
+                    'name': f'#{session.pk} · {session.cash_register.name}',
+                    'status': session.status,
+                    'opened_at': session.opened_at,
+                    'closed_at': session.closed_at,
+                }
+                for session in sessions
             ],
             'movement_types': [
                 {'value': value, 'label': label} for value, label in MovementType.choices
@@ -215,13 +292,30 @@ class DashboardView(APIView):
             )
             summary, _ = commercial_summary(sales)
             products, categories = sale_rankings(sales)
+            operator_groups = sale_user_groups(sales, 'created_by')
+            seller_groups = sale_user_groups(sales, 'seller_user')
             response['sales'] = {
-                'revenue': decimal_string(summary['revenue']),
+                'revenue': decimal_string(summary['effective_revenue']),
+                'gross': decimal_string(summary['gross']),
+                'effective_revenue': decimal_string(summary['effective_revenue']),
                 'count': summary['count'],
                 'average': decimal_string(summary['average']),
                 'manual_discount': decimal_string(summary['manual_discount']),
                 'promotion_discount': decimal_string(summary['promotion_discount']),
                 'total_discount': decimal_string(summary['total_discount']),
+                'service_fee': decimal_string(summary['service_fee']),
+                'commission': decimal_string(summary['commission']),
+                'customer_total': decimal_string(summary['customer_total']),
+                'hourly_sales': [
+                    {
+                        'hour': row['hour'],
+                        'count': row['count'],
+                        'effective_revenue': decimal_string(row['effective_revenue']),
+                        'service_fee': decimal_string(row['service_fee']),
+                        'customer_total': decimal_string(row['customer_total']),
+                    }
+                    for row in hourly_sales(sales)
+                ],
                 'payment_distribution': [
                     {
                         'code': row['payment_method_code'],
@@ -238,6 +332,8 @@ class DashboardView(APIView):
                     {**row, 'quantity': decimal_string(row['quantity'], 3), 'revenue': decimal_string(row['revenue'])}
                     for row in categories
                 ],
+                'top_sellers': [_group_json(row) for row in seller_groups[:10]],
+                'top_operators': [_group_json(row) for row in operator_groups[:10]],
                 'latest_sales': ReportSaleSerializer(
                     sale_rows(sales)[:10], many=True, context={'request': request}
                 ).data,
@@ -289,10 +385,11 @@ class SalesReportView(BaseReportView):
     required_permission = 'reports.view_sales'
     query_serializer_class = SalesReportQuerySerializer
     row_serializer_class = ReportSaleSerializer
-    csv_filename = 'sales-report.csv'
+    csv_filename = 'relatorio-vendas.csv'
     csv_headers = (
-        'id', 'sale_number', 'status', 'operator', 'subtotal',
-        'promotion_discount_total', 'discount', 'total', 'created_at', 'cancelled_at',
+        'id', 'sale_number', 'status', 'operator', 'seller', 'subtotal',
+        'promotion_discount_total', 'discount', 'service_fee_amount',
+        'commission_amount', 'total', 'created_at', 'cancelled_at',
         'items', 'payments',
     )
 
@@ -307,14 +404,19 @@ class SalesReportView(BaseReportView):
         )
         summary, cancellations = commercial_summary(sales)
         products, categories = sale_rankings(sales, filters=filters)
+        operator_groups = sale_user_groups(sales, 'created_by')
+        seller_groups = sale_user_groups(sales, 'seller_user')
         result = {
-            'revenue': decimal_string(summary['revenue']),
+            'gross': decimal_string(summary['gross']),
+            'effective_revenue': decimal_string(summary['effective_revenue']),
             'count': summary['count'],
             'average': decimal_string(summary['average']),
-            'discount': decimal_string(summary['manual_discount']),
             'manual_discount': decimal_string(summary['manual_discount']),
             'promotion_discount': decimal_string(summary['promotion_discount']),
             'total_discount': decimal_string(summary['total_discount']),
+            'service_fee': decimal_string(summary['service_fee']),
+            'commission': decimal_string(summary['commission']),
+            'customer_total': decimal_string(summary['customer_total']),
             'cancellations': {
                 'count': cancellations['count'],
                 'value': decimal_string(cancellations['value']),
@@ -335,6 +437,8 @@ class SalesReportView(BaseReportView):
                 {**row, 'quantity': decimal_string(row['quantity'], 3), 'revenue': decimal_string(row['revenue'])}
                 for row in categories
             ],
+            'operator_groups': [_group_json(row) for row in operator_groups],
+            'seller_groups': [_group_json(row) for row in seller_groups],
         }
         return self.respond(
             request,
@@ -344,11 +448,76 @@ class SalesReportView(BaseReportView):
         )
 
 
+def _group_json(row):
+    return {
+        **row,
+        **{
+            field: decimal_string(row[field])
+            for field in (
+                'gross', 'manual_discount', 'promotion_discount', 'total_discount',
+                'effective_revenue', 'service_fee', 'commission', 'customer_total',
+                'average',
+            )
+        },
+    }
+
+
+class OperationalResultReportView(BaseReportView):
+    required_permission = 'reports.view_operational_result'
+    query_serializer_class = OperationalResultQuerySerializer
+    row_serializer_class = ReportSaleSerializer
+    csv_filename = 'resultado-operacional-estimado.csv'
+    csv_headers = SalesReportView.csv_headers
+
+    def get(self, request):
+        filters, start, end = self.parse_query(request)
+        session = None
+        if filters.get('cash_session'):
+            session = CashSession.objects.get(
+                pk=filters['cash_session'], branch=request.branch_context
+            )
+        sales = filtered_sales(
+            branch=request.branch_context,
+            start=start,
+            end=end,
+            operation_type=OperationType.SALE,
+            filters={},
+        )
+        if session:
+            sales = sales.filter(cash_session=session)
+        summary = operational_result(
+            branch=request.branch_context,
+            start=start,
+            end=end,
+            sales=sales,
+            cash_session=session,
+        )
+        data = {
+            key: (
+                {
+                    'count': value['count'],
+                    'amount': decimal_string(value['amount']),
+                }
+                if key == 'unclassified_withdrawals'
+                else decimal_string(value)
+            )
+            for key, value in summary.items()
+        }
+        data['cash_session'] = session.pk if session else None
+        data['notice'] = 'Estimativa operacional; não constitui DRE contábil.'
+        return self.respond(
+            request,
+            rows=sale_rows(sales),
+            period=canonical_datetime_range(start, end),
+            summary=data,
+        )
+
+
 class ConsumptionsReportView(BaseReportView):
     required_permission = 'reports.view_consumptions'
     query_serializer_class = ConsumptionsReportQuerySerializer
     row_serializer_class = ReportSaleSerializer
-    csv_filename = 'consumptions-report.csv'
+    csv_filename = 'relatorio-consumacoes.csv'
     csv_headers = (
         'id', 'sale_number', 'status', 'beneficiary', 'subtotal', 'total',
         'created_at', 'cancelled_at', 'items', 'payments',
@@ -388,7 +557,7 @@ class CashReportView(BaseReportView):
     required_permission = 'reports.view_cash'
     query_serializer_class = CashReportQuerySerializer
     row_serializer_class = CashSessionReportSerializer
-    csv_filename = 'cash-report.csv'
+    csv_filename = 'relatorio-caixa.csv'
     csv_headers = (
         'id', 'opened_at', 'closed_at', 'status', 'register', 'operator', 'opening',
         'manual_entries', 'cash_payments', 'withdrawals', 'expected', 'informed', 'difference',
@@ -441,10 +610,10 @@ class WithdrawalsReportView(BaseReportView):
     required_permission = 'reports.view_withdrawals'
     query_serializer_class = WithdrawalsReportQuerySerializer
     row_serializer_class = WithdrawalReportSerializer
-    csv_filename = 'withdrawals-report.csv'
+    csv_filename = 'relatorio-sangrias.csv'
     csv_headers = (
         'id', 'created_at', 'amount', 'category', 'category_label', 'beneficiary',
-        'operator', 'cash_register', 'reason',
+        'operator', 'cash_register', 'result_effect', 'reason',
     )
 
     def get(self, request):
@@ -464,7 +633,7 @@ class InventoryMovementsReportView(BaseReportView):
     required_permission = 'reports.view_inventory'
     query_serializer_class = InventoryReportQuerySerializer
     row_serializer_class = InventoryMovementReportSerializer
-    csv_filename = 'inventory-movements-report.csv'
+    csv_filename = 'relatorio-movimentacoes-estoque.csv'
     csv_headers = (
         'id', 'created_at', 'movement_type', 'product', 'previous_quantity', 'quantity',
         'final_quantity', 'reason', 'user', 'sale',

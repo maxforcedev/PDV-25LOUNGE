@@ -5,6 +5,7 @@ from .views import (
     ConsumptionsReportView,
     DashboardView,
     InventoryMovementsReportView,
+    OperationalResultReportView,
     ReportsOptionsView,
     SalesReportView,
     WithdrawalsReportView,
@@ -14,6 +15,11 @@ from .views import (
 urlpatterns = [
     path('dashboard/', DashboardView.as_view(), name='dashboard'),
     path('reports/sales/', SalesReportView.as_view(), name='report-sales'),
+    path(
+        'reports/operational-result/',
+        OperationalResultReportView.as_view(),
+        name='report-operational-result',
+    ),
     path('reports/options/', ReportsOptionsView.as_view(), name='report-options'),
     path('reports/consumptions/', ConsumptionsReportView.as_view(), name='report-consumptions'),
     path('reports/cash/', CashReportView.as_view(), name='report-cash'),
