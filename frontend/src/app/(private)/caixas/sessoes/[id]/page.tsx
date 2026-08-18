@@ -88,6 +88,7 @@ function SessionDetail() {
   const [beneficiariesLoading, setBeneficiariesLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [period, setPeriod] = useState<PeriodValue>({ start: "", end: "" });
+  const movementIdempotencyKey = useRef("");
 
   function movementsPath(selectedPeriod = period) {
     const params = new URLSearchParams({ cash_session: id });
@@ -184,6 +185,7 @@ function SessionDetail() {
     setResultEffect("");
     setBeneficiaryId("");
     setError("");
+    movementIdempotencyKey.current = crypto.randomUUID();
     if (next === "withdrawal") {
       setBeneficiariesLoading(true);
       http
@@ -231,10 +233,11 @@ function SessionDetail() {
       await http.post(
         `cash-sessions/${id}/${action}/`,
         action === "entry"
-          ? { amount: normalizeMoney(amount), reason: reason.trim() }
+          ? { amount: normalizeMoney(amount), reason: reason.trim(), idempotency_key: movementIdempotencyKey.current }
           : {
               amount: normalizeMoney(amount),
               reason: reason.trim(),
+              idempotency_key: movementIdempotencyKey.current,
               category,
               result_effect: resultEffect,
               ...(beneficiaryId

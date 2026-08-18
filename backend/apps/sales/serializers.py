@@ -225,6 +225,7 @@ class PromotionSerializer(serializers.ModelSerializer):
 
 
 class SaleItemSerializer(serializers.ModelSerializer):
+    discount_approved_by_name = serializers.SerializerMethodField()
     quantity = serializers.DecimalField(
         max_digits=14, decimal_places=3, read_only=True, coerce_to_string=True
     )
@@ -239,6 +240,9 @@ class SaleItemSerializer(serializers.ModelSerializer):
         coerce_to_string=True,
     )
     promotion_benefit = serializers.DecimalField(
+        max_digits=14, decimal_places=2, read_only=True, coerce_to_string=True
+    )
+    manual_discount = serializers.DecimalField(
         max_digits=14, decimal_places=2, read_only=True, coerce_to_string=True
     )
     net_subtotal = serializers.DecimalField(
@@ -256,7 +260,11 @@ class SaleItemSerializer(serializers.ModelSerializer):
             )
         ):
             fields.pop('unit_cost', None)
+            fields.pop('component_cost_snapshot', None)
         return fields
+
+    def get_discount_approved_by_name(self, item):
+        return readable_user_name(item.discount_approved_by)
 
     class Meta:
         model = SaleItem
@@ -264,7 +272,8 @@ class SaleItemSerializer(serializers.ModelSerializer):
             'id', 'product', 'quantity', 'product_name', 'internal_code', 'unit',
             'unit_cost', 'unit_price', 'subtotal', 'promotion', 'promotion_name',
             'promotion_discount_type', 'promotion_discount_value', 'promotion_benefit',
-            'net_subtotal', 'created_at',
+            'manual_discount', 'discount_approved_by', 'discount_approved_by_name',
+            'component_cost_snapshot', 'net_subtotal', 'created_at',
         )
 
 
@@ -298,6 +307,9 @@ class SaleSerializer(serializers.ModelSerializer):
     promotion_discount_total = serializers.DecimalField(
         max_digits=14, decimal_places=2, read_only=True, coerce_to_string=True
     )
+    item_discount_total = serializers.DecimalField(
+        max_digits=14, decimal_places=2, read_only=True, coerce_to_string=True
+    )
     service_fee_rate = serializers.DecimalField(
         max_digits=5, decimal_places=2, read_only=True, coerce_to_string=True
     )
@@ -323,16 +335,31 @@ class SaleSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'company', 'company_name', 'branch', 'branch_name', 'cash_session',
             'cash_session_status', 'sale_number', 'operation_type', 'status',
+            'idempotency_key',
             'created_by', 'created_by_name', 'seller_user', 'seller_user_name',
             'discount_approved_by', 'discount_approved_by_name',
             'service_fee_waived', 'service_fee_waived_by', 'service_fee_waived_by_name',
             'beneficiary_user', 'beneficiary_user_name',
-            'subtotal', 'promotion_discount_total', 'discount',
+            'subtotal', 'promotion_discount_total', 'item_discount_total', 'discount',
             'service_fee_rate', 'service_fee_amount',
             'commission_rate', 'commission_amount',
             'charged_amount', 'total', 'cancelled_at', 'cancelled_by', 'cancelled_by_name',
             'cancellation_reason', 'items', 'payments', 'created_at', 'updated_at',
         )
+
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if not request or not (
+            request.user.is_superuser
+            or branch and user_has_branch_permission(
+                request.user, branch.pk, 'commissions.view'
+            )
+        ):
+            fields.pop('commission_rate', None)
+            fields.pop('commission_amount', None)
+        return fields
 
     def get_created_by_name(self, sale):
         return readable_user_name(sale.created_by)
@@ -412,6 +439,7 @@ class ItemInputSerializer(serializers.Serializer):
     quantity = StrictDecimalField(
         max_digits=14, decimal_places=3, min_value=Decimal('0.001')
     )
+    discount = serializers.JSONField(required=False, default='0.00')
 
 
 class PaymentInputSerializer(serializers.Serializer):
@@ -464,6 +492,9 @@ class CalculationItemOutputSerializer(serializers.Serializer):
     promotion_benefit = InternalDecimalField(
         max_digits=14, decimal_places=2, coerce_to_string=True
     )
+    manual_discount = InternalDecimalField(
+        max_digits=14, decimal_places=2, coerce_to_string=True
+    )
     net_subtotal = InternalDecimalField(
         max_digits=14, decimal_places=2, coerce_to_string=True
     )
@@ -476,6 +507,9 @@ class CalculationOutputSerializer(serializers.Serializer):
         max_digits=14, decimal_places=2, coerce_to_string=True
     )
     promotion_discount_total = InternalDecimalField(
+        max_digits=14, decimal_places=2, coerce_to_string=True
+    )
+    item_discount_total = InternalDecimalField(
         max_digits=14, decimal_places=2, coerce_to_string=True
     )
     discount = InternalDecimalField(
@@ -506,6 +540,7 @@ class CalculationOutputSerializer(serializers.Serializer):
 
 
 class FinalizeSaleSerializer(CalculationSerializer):
+    idempotency_key = serializers.UUIDField()
     seller_user = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.all(),
         pk_field=serializers.IntegerField(min_value=1, max_value=MAX_BIGINT),
@@ -520,6 +555,7 @@ class FinalizeSaleSerializer(CalculationSerializer):
     )
     payments = PaymentInputSerializer(many=True, required=False, default=list)
     discount_authorization = serializers.DictField(required=False, write_only=True)
+    item_discount_authorization = serializers.DictField(required=False, write_only=True)
     service_fee_authorization = serializers.DictField(required=False, write_only=True)
 
     def validate_discount_authorization(self, value):
@@ -542,6 +578,9 @@ class FinalizeSaleSerializer(CalculationSerializer):
         return {'user': user, 'method': 'password', 'credential': credential}
 
     def validate_service_fee_authorization(self, value):
+        return self.validate_discount_authorization(value)
+
+    def validate_item_discount_authorization(self, value):
         return self.validate_discount_authorization(value)
 
 

@@ -1,7 +1,11 @@
 from rest_framework.permissions import BasePermission
 
 from apps.companies.models import Branch, Status
-from apps.companies.selectors import user_has_branch_permission
+from apps.companies.rbac import OPERATING_PERMISSION_CODES
+from apps.companies.selectors import (
+    user_has_branch_permission,
+    user_has_company_permission,
+)
 
 
 REPORT_PERMISSIONS = (
@@ -18,11 +22,18 @@ REPORT_PERMISSIONS = (
     'reports.view_discounts',
     'reports.view_cancellations',
     'reports.view_prices',
+    'commissions.view',
 )
 
 
 class ReportsPermission(BasePermission):
     message = 'Voce nao possui permissao para este relatorio nesta filial.'
+
+    @staticmethod
+    def _has_code(user, branch, code):
+        if code in OPERATING_PERMISSION_CODES:
+            return user_has_branch_permission(user, branch.pk, code)
+        return user_has_company_permission(user, branch.company_id, code)
 
     def has_permission(self, request, view):
         user = request.user
@@ -45,14 +56,15 @@ class ReportsPermission(BasePermission):
             codes = (required,) if required else ()
         elif codes is None:
             codes = REPORT_PERMISSIONS if required is None else (required,)
+        mandatory = 'dashboard.view' if 'dashboard.view' in codes else None
         if user.is_superuser:
             allowed = True
+        elif mandatory:
+            allowed = self._has_code(user, branch, mandatory)
         else:
-            allowed = any(user_has_branch_permission(user, branch.pk, code) for code in codes)
+            allowed = any(self._has_code(user, branch, code) for code in codes)
         if not allowed:
             return False
         if request.query_params.get('export') == 'csv':
-            return user.is_superuser or user_has_branch_permission(
-                user, branch.pk, 'reports.export'
-            )
+            return user.is_superuser or self._has_code(user, branch, 'reports.export')
         return True

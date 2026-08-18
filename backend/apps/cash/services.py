@@ -113,7 +113,7 @@ def open_session(cash_register, opening_amount, user, current_branch):
 
 def _record_movement(
     *, cash_session, amount, user, reason, current_branch, movement_type, permission_code,
-    withdrawal_category=None, beneficiary_user=None, result_effect=None,
+    operation_reference, withdrawal_category=None, beneficiary_user=None, result_effect=None,
 ):
     amount = parse_money(amount, 'amount', positive=True)
     reason = (reason or '').strip()
@@ -131,12 +131,36 @@ def _record_movement(
             user, session.branch_id, 'cash_registers.administer_others'
         ):
             raise PermissionDenied('Voce nao pode operar uma sessao aberta por outro usuario.')
+        effective_result = result_effect or 'neutral'
+        beneficiary_id = _pk(beneficiary_user) if beneficiary_user is not None else None
+        existing = CashMovement.objects.filter(
+            cash_session=session,
+            movement_type=movement_type,
+            operation_reference=operation_reference,
+        ).first()
+        if existing:
+            coherent = (
+                existing.amount == amount
+                and existing.reason == reason
+                and existing.withdrawal_category == withdrawal_category
+                and existing.beneficiary_user_id == beneficiary_id
+                and existing.result_effect == effective_result
+                and existing.user_id == user.pk
+            )
+            if not coherent:
+                from apps.base.exceptions import DomainValidationError
+                raise DomainValidationError(
+                    code='idempotency_key_conflict',
+                    message='A chave de idempotencia ja foi usada com outros dados.',
+                    details={'operation_reference': str(operation_reference)},
+                )
+            existing._idempotency_replayed = True
+            return existing
         _validate_operational(session.cash_register)
         if session.status != CashSessionStatus.OPEN:
             raise ValidationError({'cash_session': 'A sessao de caixa esta fechada.'})
         beneficiary = None
         if beneficiary_user is not None:
-            beneficiary_id = _pk(beneficiary_user)
             access = UserCompanyAccess.objects.select_related('user').filter(
                 user_id=beneficiary_id,
                 user__is_active=True,
@@ -175,12 +199,18 @@ def _record_movement(
             withdrawal_category=withdrawal_category,
             beneficiary_user=beneficiary,
             result_effect=result_effect or 'neutral',
+            operation_reference=operation_reference,
         )
-        audit_log(actor=user, action=f'cash_movement.{movement_type}', obj=movement, company=session.branch.company, branch=session.branch, after=model_snapshot(movement, ('movement_type', 'amount', 'reason', 'withdrawal_category', 'result_effect')))
+        audit_log(
+            actor=user, action=f'cash_movement.{movement_type}', obj=movement,
+            company=session.branch.company, branch=session.branch,
+            after=model_snapshot(movement, ('movement_type', 'amount', 'reason', 'withdrawal_category', 'beneficiary_user_id', 'result_effect')),
+            metadata={'operation_reference': str(operation_reference)},
+        )
         return movement
 
 
-def record_manual_entry(cash_session, amount, user, reason, current_branch):
+def record_manual_entry(cash_session, amount, user, reason, current_branch, idempotency_key):
     return _record_movement(
         cash_session=cash_session,
         amount=amount,
@@ -189,12 +219,13 @@ def record_manual_entry(cash_session, amount, user, reason, current_branch):
         current_branch=current_branch,
         movement_type=CashMovementType.MANUAL_ENTRY,
         permission_code='cash_registers.manual_entry',
+        operation_reference=idempotency_key,
     )
 
 
 def record_withdrawal(
     cash_session, amount, user, reason, current_branch, category, result_effect,
-    beneficiary_user=None,
+    idempotency_key, beneficiary_user=None,
 ):
     return _record_movement(
         cash_session=cash_session,
@@ -207,6 +238,7 @@ def record_withdrawal(
         withdrawal_category=category,
         beneficiary_user=beneficiary_user,
         result_effect=result_effect,
+        operation_reference=idempotency_key,
     )
 
 
@@ -263,11 +295,13 @@ def session_operational_summary(session):
         count=Count('id'),
         gross=Coalesce(Sum('subtotal'), Decimal('0.00'), output_field=money),
         promotion_discount=Coalesce(Sum('promotion_discount_total'), Decimal('0.00'), output_field=money),
-        manual_discount=Coalesce(Sum('discount'), Decimal('0.00'), output_field=money),
+        item_discount=Coalesce(Sum('item_discount_total'), Decimal('0.00'), output_field=money),
+        account_discount=Coalesce(Sum('discount'), Decimal('0.00'), output_field=money),
         service_fee=Coalesce(Sum('service_fee_amount'), Decimal('0.00'), output_field=money),
         commission=Coalesce(Sum('commission_amount'), Decimal('0.00'), output_field=money),
         customer_total=Coalesce(Sum('total'), Decimal('0.00'), output_field=money),
     )
+    sales['manual_discount'] = sales['item_discount'] + sales['account_discount']
     sales['effective_revenue'] = sales['gross'] - sales['promotion_discount'] - sales['manual_discount']
     consumptions = finalized.filter(operation_type=OperationType.CONSUMPTION).aggregate(
         count=Count('id'),
@@ -356,8 +390,9 @@ def close_session(cash_session, closing_amount_informed, user, current_branch):
 
 
 @transaction.atomic
-def set_register_status(register, status):
+def set_register_status(register, status, user):
     register = CashRegister.objects.select_for_update().get(pk=_pk(register))
+    before = model_snapshot(register, ('status',))
     if (
         status == CashRegisterStatus.INACTIVE
         and CashSession.objects.filter(
@@ -367,4 +402,10 @@ def set_register_status(register, status):
         raise ValidationError({'status': 'Nao e possivel inativar um caixa aberto.'})
     register.status = status
     register.save(update_fields=('status', 'updated_at'))
+    audit_log(
+        actor=user,
+        action='cash_register.activate' if status == CashRegisterStatus.ACTIVE else 'cash_register.deactivate',
+        obj=register, company=register.branch.company, branch=register.branch,
+        before=before, after=model_snapshot(register, ('status',)),
+    )
     return register

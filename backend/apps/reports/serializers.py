@@ -63,9 +63,18 @@ class SalesReportQuerySerializer(BaseReportQuerySerializer):
     number = serializers.CharField(max_length=20, required=False, allow_blank=False)
 
     def validate(self, attrs):
-        return self.validate_scoped_ids(
+        attrs = self.validate_scoped_ids(
             attrs, ('operator', 'seller', 'product', 'category', 'payment_method')
         )
+        code = attrs.get('payment_method_code')
+        if code and not PaymentMethod.objects.filter(
+            company_id=self.context['request'].branch_context.company_id,
+            code=code,
+        ).exists():
+            raise serializers.ValidationError({
+                'payment_method_code': 'Forma de pagamento invalida para a empresa atual.'
+            })
+        return attrs
 
 
 class OperationalResultQuerySerializer(BaseReportQuerySerializer):
@@ -134,16 +143,17 @@ class ReportSaleItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = SaleItem
         fields = (
-            'product', 'product_name', 'internal_code', 'unit', 'quantity', 'unit_price',
+            'id', 'product', 'product_name', 'internal_code', 'unit', 'quantity', 'unit_price',
             'subtotal', 'promotion', 'promotion_name', 'promotion_discount_type',
-            'promotion_discount_value', 'promotion_benefit', 'net_subtotal',
+            'promotion_discount_value', 'promotion_benefit', 'manual_discount',
+            'net_subtotal',
         )
 
 
 class ReportPaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
-        fields = ('payment_method_name', 'payment_method_code', 'amount')
+        fields = ('payment_method', 'payment_method_name', 'payment_method_code', 'amount')
 
 
 class ReportSaleSerializer(serializers.ModelSerializer):
@@ -159,7 +169,7 @@ class ReportSaleSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'sale_number', 'operation_type', 'status', 'operator', 'seller',
             'discount_approved_by', 'beneficiary', 'subtotal',
-            'promotion_discount_total', 'discount', 'service_fee_rate',
+            'promotion_discount_total', 'item_discount_total', 'discount', 'service_fee_rate',
             'service_fee_amount', 'commission_rate', 'commission_amount', 'total', 'created_at',
             'cancelled_at', 'items', 'payments',
         )
@@ -193,10 +203,67 @@ class ReportSaleSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         request = self.context.get('request')
         branch = getattr(request, 'branch_context', None) if request else None
-        if request and branch and not request.user.is_superuser:
-            from apps.companies.selectors import user_has_company_permission
+        if request and (request.query_params.get('product') or request.query_params.get('category')):
+            from .selectors import _scoped_payment_rows, _scoped_sale_values
 
-            if not user_has_company_permission(request.user, branch.company_id, 'commissions.view'):
+            filters = {}
+            for key in ('product', 'category'):
+                try:
+                    if request.query_params.get(key):
+                        filters[key] = int(request.query_params[key])
+                except (TypeError, ValueError):
+                    pass
+            scoped = _scoped_sale_values(instance, filters)
+            data.update({
+                'subtotal': f"{scoped['gross']:.2f}",
+                'promotion_discount_total': f"{scoped['promotion_discount']:.2f}",
+                'item_discount_total': f"{scoped['item_discount']:.2f}",
+                'discount': f"{scoped['account_discount']:.2f}",
+                'service_fee_amount': f"{scoped['service_fee']:.2f}",
+                'commission_amount': f"{scoped['commission']:.2f}",
+                'total': f"{scoped['customer_total']:.2f}",
+            })
+            category_by_id = {
+                item.pk: item.product.category_id for item in instance.items.all()
+            }
+            data['items'] = [
+                item for item in data['items']
+                if (
+                    filters.get('product') is None
+                    or item['product'] == filters['product']
+                ) and (
+                    filters.get('category') is None
+                    or category_by_id[item['id']] == filters['category']
+                )
+            ]
+            data['payments'] = [
+                {
+                    'payment_method': payment['payment_method_id'],
+                    'payment_method_name': payment['payment_method_name'],
+                    'payment_method_code': payment['payment_method_code'],
+                    'amount': f"{payment['amount']:.2f}",
+                }
+                for payment in _scoped_payment_rows(instance, filters)
+                if payment['amount']
+            ]
+        payment_method = request.query_params.get('payment_method') if request else None
+        payment_code = request.query_params.get('payment_method_code') if request else None
+        if payment_method:
+            data['payments'] = [
+                payment for payment in data['payments']
+                if str(payment.get('payment_method')) == payment_method
+            ]
+        if payment_code:
+            data['payments'] = [
+                payment for payment in data['payments']
+                if payment.get('payment_method_code') == payment_code
+            ]
+        for payment in data['payments']:
+            payment.pop('payment_method', None)
+        if request and branch and not request.user.is_superuser:
+            from apps.companies.selectors import user_has_branch_permission
+
+            if not user_has_branch_permission(request.user, branch.pk, 'commissions.view'):
                 data.pop('commission_rate', None)
                 data.pop('commission_amount', None)
         return data
@@ -230,6 +297,14 @@ class CashSessionReportSerializer(serializers.Serializer):
 
     def get_operational_summary(self, session):
         summary = session_operational_summary(session)
+        request = self.context.get('request')
+        if request and not request.user.is_superuser:
+            from apps.companies.selectors import user_has_branch_permission
+
+            if not user_has_branch_permission(
+                request.user, session.branch_id, 'commissions.view'
+            ):
+                summary['sales'].pop('commission', None)
 
         def serialize(value):
             from decimal import Decimal

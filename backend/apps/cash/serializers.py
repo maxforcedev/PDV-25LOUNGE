@@ -157,7 +157,8 @@ class CashMovementSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'cash_session', 'cash_register', 'register_name', 'branch',
             'branch_name', 'movement_type', 'amount', 'user', 'user_name', 'reason',
-            'category', 'category_label', 'beneficiary', 'result_effect', 'created_at',
+            'category', 'category_label', 'beneficiary', 'result_effect',
+            'operation_reference', 'created_at',
         )
         read_only_fields = fields
 
@@ -184,6 +185,7 @@ class OpenSessionSerializer(serializers.Serializer):
 
 
 class ManualEntryRequestSerializer(serializers.Serializer):
+    idempotency_key = serializers.UUIDField()
     amount = StrictMoneyField(
         max_digits=14, decimal_places=2, min_value=Decimal('0.01')
     )

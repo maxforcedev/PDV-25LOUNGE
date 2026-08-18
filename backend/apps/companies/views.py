@@ -1,10 +1,15 @@
+import uuid
+
+from django.db import transaction
 from django.db.models import Prefetch
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
 
+from apps.accounts.models import User
 from apps.base.audit import audit_log, model_snapshot
 
 from .models import (
@@ -15,6 +20,8 @@ from .permissions import CanCreateCompany, FunctionalCompanyPermission
 from .selectors import (
     accessible_branches,
     accessible_companies,
+    blockable_permission_codes,
+    user_has_branch_permission,
     user_has_company_permission,
 )
 from .serializers import (
@@ -59,17 +66,61 @@ class CompanyViewSet(viewsets.ModelViewSet):
             return [CanCreateCompany()]
         return super().get_permissions()
 
+    def perform_create(self, serializer):
+        company = serializer.save()
+        fields = ('trade_name', 'legal_name', 'cnpj', 'email', 'phone', 'status')
+        audit_log(
+            actor=self.request.user, action='company.create', obj=company,
+            company=company, after=model_snapshot(company, fields),
+        )
+        matrix = company.branches.filter(is_matrix=True).first()
+        if matrix:
+            audit_log(
+                actor=self.request.user, action='branch.create', obj=matrix,
+                company=company, branch=matrix,
+                after=model_snapshot(matrix, ('name', 'status', 'is_matrix', 'address_pending')),
+                metadata={'source': 'company.create'},
+            )
+
+    def perform_update(self, serializer):
+        fields = ('trade_name', 'legal_name', 'cnpj', 'email', 'phone', 'status')
+        before = model_snapshot(serializer.instance, fields)
+        company = serializer.save()
+        audit_log(
+            actor=self.request.user, action='company.update', obj=company,
+            company=company, before=before, after=model_snapshot(company, fields),
+        )
+
     @action(detail=True, methods=['post'])
     def activate(self, request, pk=None):
         company = self.get_object()
+        before = model_snapshot(company, ('status',))
         company = activate_company(company=company)
+        audit_log(
+            actor=request.user, action='company.activate', obj=company,
+            company=company, before=before, after=model_snapshot(company, ('status',)),
+        )
         company = self.get_queryset().get(pk=company.pk)
         return Response(self.get_serializer(company).data)
 
     @action(detail=True, methods=['post'])
     def deactivate(self, request, pk=None):
         company = self.get_object()
+        before = model_snapshot(company, ('status',))
+        active_branches = list(company.branches.filter(status=Status.ACTIVE))
         company = deactivate_company(company=company)
+        audit_log(
+            actor=request.user, action='company.deactivate', obj=company,
+            company=company, before=before, after=model_snapshot(company, ('status',)),
+        )
+        for branch in active_branches:
+            branch.status = Status.INACTIVE
+            audit_log(
+                actor=request.user, action='branch.deactivate', obj=branch,
+                company=company, branch=branch,
+                before={'status': Status.ACTIVE}, after={'status': Status.INACTIVE},
+                metadata={'source': 'company.deactivate'},
+            )
         company = self.get_queryset().get(pk=company.pk)
         return Response(self.get_serializer(company).data)
 
@@ -116,14 +167,26 @@ class BranchViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def activate(self, request, pk=None):
         branch = self.get_object()
+        before = model_snapshot(branch, ('status',))
         branch = activate_branch(branch=branch)
+        audit_log(
+            actor=request.user, action='branch.activate', obj=branch,
+            company=branch.company, branch=branch, before=before,
+            after=model_snapshot(branch, ('status',)),
+        )
         return Response(self.get_serializer(branch).data)
 
     @action(detail=True, methods=['post'])
     def deactivate(self, request, pk=None):
         branch = self.get_object()
+        before = model_snapshot(branch, ('status',))
         branch.status = Status.INACTIVE
         branch.save(update_fields=['status', 'updated_at'])
+        audit_log(
+            actor=request.user, action='branch.deactivate', obj=branch,
+            company=branch.company, branch=branch, before=before,
+            after=model_snapshot(branch, ('status',)),
+        )
         return Response(self.get_serializer(branch).data)
 
     @action(detail=True, methods=['get', 'put', 'patch'], url_path='settings')
@@ -160,12 +223,7 @@ class CanViewPermissionCatalog(BasePermission):
         company_id = request.query_params.get('company')
         if company_id:
             return user_has_company_permission(user, company_id, 'access_profiles.view')
-        return user.company_accesses.filter(
-            is_active=True,
-            access_profile__status=Status.ACTIVE,
-            access_profile__permissions__status=Status.ACTIVE,
-            access_profile__permissions__code='access_profiles.view',
-        ).exists()
+        return accessible_companies(user, 'access_profiles.view').exists()
 
 
 class FunctionalPermissionViewSet(viewsets.ReadOnlyModelViewSet):
@@ -206,12 +264,7 @@ class AccessProfilePermission(BasePermission):
         )
         if company_id:
             return user_has_company_permission(user, company_id, code)
-        return user.company_accesses.filter(
-            is_active=True,
-            access_profile__status=Status.ACTIVE,
-            access_profile__permissions__status=Status.ACTIVE,
-            access_profile__permissions__code=code,
-        ).exists()
+        return accessible_companies(user, code).exists()
 
     def has_object_permission(self, request, view, obj):
         return user_has_company_permission(
@@ -236,12 +289,8 @@ class AccessProfileViewSet(viewsets.ModelViewSet):
                 self.action, 'access_profiles.view'
             )
             queryset = queryset.filter(
-                company__user_accesses__user=user,
-                company__user_accesses__is_active=True,
-                company__user_accesses__access_profile__status=Status.ACTIVE,
-                company__user_accesses__access_profile__permissions__status=Status.ACTIVE,
-                company__user_accesses__access_profile__permissions__code=permission_code,
-            ).distinct()
+                company__in=accessible_companies(user, permission_code)
+            )
         company_id = self.request.query_params.get('company')
         profile_status = self.request.query_params.get('status')
         if company_id:
@@ -252,24 +301,31 @@ class AccessProfileViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         profile = serializer.save()
+        after = model_snapshot(profile, ('name', 'description', 'status', 'receives_commission', 'commission_rate'))
+        after['permission_codes'] = sorted(profile.permissions.values_list('code', flat=True))
         audit_log(
             actor=self.request.user,
             action='access_profile.create',
             obj=profile,
             company=profile.company,
-            after=model_snapshot(profile, ('name', 'description', 'status', 'receives_commission', 'commission_rate')),
+            after=after,
         )
 
     def perform_update(self, serializer):
         before = model_snapshot(serializer.instance, ('name', 'description', 'status', 'receives_commission', 'commission_rate'))
+        before['permission_codes'] = sorted(
+            serializer.instance.permissions.values_list('code', flat=True)
+        )
         profile = serializer.save()
+        after = model_snapshot(profile, ('name', 'description', 'status', 'receives_commission', 'commission_rate'))
+        after['permission_codes'] = sorted(profile.permissions.values_list('code', flat=True))
         audit_log(
             actor=self.request.user,
             action='access_profile.update',
             obj=profile,
             company=profile.company,
             before=before,
-            after=model_snapshot(profile, ('name', 'description', 'status', 'receives_commission', 'commission_rate')),
+            after=after,
         )
 
     @action(detail=True, methods=['post'])
@@ -302,13 +358,21 @@ class AccessProfileViewSet(viewsets.ModelViewSet):
 class UserPermissionBlockPermission(BasePermission):
     message = 'Voce nao possui permissao para bloqueios individuais.'
 
+    @staticmethod
+    def code_for_action(action_name):
+        return (
+            'user_permission_blocks.view'
+            if action_name in ('list', 'retrieve')
+            else 'user_permission_blocks.change'
+        )
+
     def has_permission(self, request, view):
         user = request.user
         if not user.is_authenticated or not user.can_login or not user.is_active:
             return False
         if user.is_superuser:
             return True
-        code = 'user_permission_blocks.view' if view.action in ('list', 'retrieve') else 'user_permission_blocks.change'
+        code = self.code_for_action(view.action)
         company_id = request.query_params.get('company') or request.data.get('company')
         branch_id = request.query_params.get('branch') or request.data.get('branch')
         if branch_id and not company_id:
@@ -316,12 +380,14 @@ class UserPermissionBlockPermission(BasePermission):
             company_id = branch.company_id if branch else None
         if company_id:
             return user_has_company_permission(user, company_id, code)
-        return user.company_accesses.filter(
-            is_active=True,
-            access_profile__status=Status.ACTIVE,
-            access_profile__permissions__status=Status.ACTIVE,
-            access_profile__permissions__code=code,
-        ).exists()
+        return accessible_companies(user, code).exists()
+
+    def has_object_permission(self, request, view, obj):
+        return user_has_company_permission(
+            request.user,
+            obj.company_id,
+            self.code_for_action(view.action),
+        )
 
 
 class UserPermissionBlockViewSet(viewsets.ModelViewSet):
@@ -335,9 +401,9 @@ class UserPermissionBlockViewSet(viewsets.ModelViewSet):
         )
         user = self.request.user
         if not user.is_superuser:
-            company_ids = accessible_companies(user, 'user_permission_blocks.view').values_list('id', flat=True)
-            branch_ids = accessible_branches(user, 'user_permission_blocks.view').values_list('id', flat=True)
-            queryset = queryset.filter(company_id__in=company_ids) | queryset.filter(branch_id__in=branch_ids)
+            permission_code = UserPermissionBlockPermission.code_for_action(self.action)
+            company_ids = accessible_companies(user, permission_code).values_list('id', flat=True)
+            queryset = queryset.filter(company_id__in=company_ids)
         params = self.request.query_params
         for field in ('company', 'branch', 'user'):
             if params.get(field):
@@ -346,10 +412,13 @@ class UserPermissionBlockViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(permission__code=params['permission'])
         if params.get('active') in ('true', 'false'):
             queryset = queryset.filter(is_active=params['active'] == 'true')
-        return queryset.distinct()
+        return queryset
 
     def perform_create(self, serializer):
         block = serializer.save()
+        self._audit_create(block, uuid.uuid4())
+
+    def _audit_create(self, block, operation_reference):
         audit_log(
             actor=self.request.user,
             action='user_permission_block.create',
@@ -357,7 +426,113 @@ class UserPermissionBlockViewSet(viewsets.ModelViewSet):
             company=block.company,
             branch=block.branch,
             after=model_snapshot(block, ('user_id', 'permission_id', 'reason', 'is_active')),
+            metadata={'operation_reference': str(operation_reference)},
         )
+
+    def _audit_revoke(self, block, before, operation_reference):
+        audit_log(
+            actor=self.request.user,
+            action='user_permission_block.revoke',
+            obj=block,
+            company=block.company,
+            branch=block.branch,
+            before=before,
+            after=model_snapshot(block, ('is_active', 'revoked_at', 'revoked_by_id')),
+            metadata={'operation_reference': str(operation_reference)},
+        )
+
+    @action(detail=False, methods=('get',), url_path='options')
+    def block_options(self, request):
+        company_id = request.query_params.get('company')
+        try:
+            company_id = int(company_id)
+        except (TypeError, ValueError) as error:
+            raise ValidationError({'company': 'Informe uma empresa valida.'}) from error
+        company = Company.objects.filter(pk=company_id).first()
+        if not company:
+            raise ValidationError({'company': 'Informe uma empresa valida.'})
+
+        users = User.objects.filter(
+            is_active=True,
+            can_login=True,
+            is_superuser=False,
+            company_accesses__company=company,
+            company_accesses__is_active=True,
+            company_accesses__access_profile__status=Status.ACTIVE,
+        ).distinct().order_by('first_name', 'last_name', 'email', 'id')
+        branches = Branch.objects.filter(
+            company=company, status=Status.ACTIVE
+        ).order_by('name', 'id')
+        permissions = FunctionalPermission.objects.none()
+
+        target_id = request.query_params.get('user')
+        branch_id = request.query_params.get('branch')
+        if target_id:
+            try:
+                target_id = int(target_id)
+                branch_id = int(branch_id) if branch_id else None
+            except (TypeError, ValueError) as error:
+                raise ValidationError({'detail': 'Usuario ou filial invalida.'}) from error
+            target = users.filter(pk=target_id).first()
+            if not target:
+                raise ValidationError({'user': 'Usuario fora das opcoes de bloqueio.'})
+            branches = branches.filter(
+                user_accesses__user=target,
+                user_accesses__is_active=True,
+                user_accesses__access_profile__status=Status.ACTIVE,
+            ).distinct()
+            if branch_id and not branches.filter(pk=branch_id).exists():
+                raise ValidationError({'branch': 'Filial fora da empresa selecionada.'})
+            codes = blockable_permission_codes(target, company.id, branch_id)
+            permissions = FunctionalPermission.objects.filter(
+                status=Status.ACTIVE, code__in=codes
+            ).order_by('module', 'label', 'code')
+
+        return Response({
+            'users': [
+                {'id': target.pk, 'name': str(target), 'email': target.email}
+                for target in users
+            ],
+            'branches': [
+                {'id': branch.pk, 'name': branch.name}
+                for branch in branches
+            ],
+            'permissions': FunctionalPermissionSerializer(permissions, many=True).data,
+        })
+
+    @action(detail=False, methods=('post',), url_path='batch-apply')
+    def batch_apply(self, request):
+        permission_codes = request.data.get('permission_codes')
+        if not isinstance(permission_codes, list) or not permission_codes:
+            raise ValidationError({'permission_codes': 'Selecione ao menos uma permissao.'})
+        if (
+            any(not isinstance(code, str) or not code for code in permission_codes)
+            or len(permission_codes) != len(set(permission_codes))
+        ):
+            raise ValidationError({'permission_codes': 'Informe codigos validos e sem repeticao.'})
+
+        operation_reference = uuid.uuid4()
+        with transaction.atomic():
+            serializers = []
+            for code in permission_codes:
+                serializer = self.get_serializer(data={
+                    'company': request.data.get('company'),
+                    'branch': request.data.get('branch'),
+                    'user': request.data.get('user'),
+                    'permission_code': code,
+                    'reason': request.data.get('reason', ''),
+                })
+                serializer.is_valid(raise_exception=True)
+                serializers.append(serializer)
+            blocks = [serializer.save() for serializer in serializers]
+            for block in blocks:
+                self._audit_create(block, operation_reference)
+
+        return Response({
+            'operation_reference': str(operation_reference),
+            'count': len(blocks),
+            'results': self.get_serializer(blocks, many=True).data,
+        }, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=('post',))
     def revoke(self, request, pk=None):
@@ -369,16 +544,43 @@ class UserPermissionBlockViewSet(viewsets.ModelViewSet):
         block.revoked_by = request.user
         block.revoked_at = timezone.now()
         block.save(update_fields=('is_active', 'revoked_by', 'revoked_at', 'updated_at'))
-        audit_log(
-            actor=request.user,
-            action='user_permission_block.revoke',
-            obj=block,
-            company=block.company,
-            branch=block.branch,
-            before=before,
-            after=model_snapshot(block, ('is_active', 'revoked_at', 'revoked_by_id')),
-        )
+        self._audit_revoke(block, before, uuid.uuid4())
         return Response(self.get_serializer(block).data)
+
+    @action(detail=False, methods=('post',), url_path='batch-revoke')
+    def batch_revoke(self, request):
+        block_ids = request.data.get('block_ids')
+        if not isinstance(block_ids, list) or not block_ids:
+            raise ValidationError({'block_ids': 'Selecione ao menos um bloqueio.'})
+        if (
+            any(not isinstance(block_id, int) or isinstance(block_id, bool) or block_id < 1 for block_id in block_ids)
+            or len(block_ids) != len(set(block_ids))
+        ):
+            raise ValidationError({'block_ids': 'Informe bloqueios validos e sem repeticao.'})
+
+        operation_reference = uuid.uuid4()
+        with transaction.atomic():
+            blocks = list(
+                self.get_queryset().select_for_update(of=('self',)).filter(pk__in=block_ids)
+            )
+            if len(blocks) != len(block_ids):
+                raise PermissionDenied('Um ou mais bloqueios estao fora do seu escopo autorizado.')
+            if any(not block.is_active for block in blocks):
+                raise ValidationError({'block_ids': 'Um ou mais bloqueios ja foram revogados.'})
+            revoked_at = timezone.now()
+            for block in blocks:
+                before = model_snapshot(block, ('is_active', 'revoked_at', 'revoked_by_id'))
+                block.is_active = False
+                block.revoked_by = request.user
+                block.revoked_at = revoked_at
+                block.save(update_fields=('is_active', 'revoked_by', 'revoked_at', 'updated_at'))
+                self._audit_revoke(block, before, operation_reference)
+
+        return Response({
+            'operation_reference': str(operation_reference),
+            'count': len(blocks),
+            'results': self.get_serializer(blocks, many=True).data,
+        })
 
 
 class CommissionOverridePermission(BasePermission):
@@ -393,15 +595,14 @@ class CommissionOverridePermission(BasePermission):
         code = view.permission_codes.get(view.action, 'commissions.view')
         branch_id = request.data.get('branch') or request.query_params.get('branch')
         if branch_id:
-            branch = Branch.objects.filter(pk=branch_id).only('company_id').first()
-            return bool(branch) and user_has_company_permission(user, branch.company_id, code)
-        return accessible_companies(user, code).exists()
+            return user_has_branch_permission(user, branch_id, code)
+        return accessible_branches(user, code).exists()
 
     def has_object_permission(self, request, view, obj):
         if request.user.is_superuser:
             return True
-        return user_has_company_permission(
-            request.user, obj.branch.company_id, view.permission_codes.get(view.action, 'commissions.view')
+        return user_has_branch_permission(
+            request.user, obj.branch_id, view.permission_codes.get(view.action, 'commissions.view')
         )
 
 
@@ -423,9 +624,7 @@ class UserCommissionOverrideViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if user.is_superuser:
             return queryset
-        return queryset.filter(
-            branch__company__in=accessible_companies(user, permission_code)
-        )
+        return queryset.filter(branch__in=accessible_branches(user, permission_code))
 
     def perform_create(self, serializer):
         override = serializer.save()

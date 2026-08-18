@@ -136,29 +136,24 @@ function Products() {
       const composition = components.map(({ component_product, quantity }) => ({ component_product, quantity }));
       if (form.inventory_behavior === "components" && !canCompose && !editing) throw new ApiError("Você não possui permissão para configurar composição de produtos.", 403);
       if (editing) {
-        const { inventory_behavior: _inventoryBehavior, is_sellable: desiredSellable, ...commonFields } = form;
+        const { inventory_behavior: _inventoryBehavior, ...commonFields } = form;
         await http.patch(`products/${editing.id}/`, {
           ...commonFields,
           image: form.image || null,
-          ...(editing.inventory_behavior !== "components" || !desiredSellable ? { is_sellable: desiredSellable } : {}),
+          ...(editing.inventory_behavior === "components" && canCompose ? { components: composition } : {}),
         });
-        if (editing.inventory_behavior === "components" && canCompose) {
-          await http.put(`products/${editing.id}/components/`, { components: composition });
-          if (desiredSellable) await http.patch(`products/${editing.id}/`, { is_sellable: true });
-        }
       } else {
-        const desiredSellable = form.is_sellable;
-        const created = await http.post<Product>("products/", { ...form, image: form.image || null, is_sellable: form.inventory_behavior === "components" ? false : desiredSellable });
-        if (form.inventory_behavior === "components") {
-          await http.put(`products/${created.id}/components/`, { components: composition });
-          if (desiredSellable) await http.patch(`products/${created.id}/`, { is_sellable: true });
-        }
+        await http.post<Product>("products/", {
+          ...form,
+          image: form.image || null,
+          ...(form.inventory_behavior === "components" ? { components: composition } : {}),
+        });
       }
       setOpen(false);
       setSuccess(editing ? editing.inventory_behavior === "components" && !canCompose ? "Produto atualizado. A composição permaneceu inalterada por falta de permissão." : "Produto atualizado com sucesso." : "Produto criado com sucesso.");
       await load();
     } catch (caught) {
-      if (caught instanceof ApiError) { setError(caught.message); setFields(caught.fields); }
+      if (caught instanceof ApiError) { setError(`${caught.message} ${Object.values(caught.fields).flat().join(" ")}`.trim()); setFields(caught.fields); }
       else setError("Não foi possível salvar o produto.");
     } finally { setSaving(false); }
   }

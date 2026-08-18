@@ -50,6 +50,7 @@ PERMISSION_CATALOG = (
     ('sales.view', 'sales', 'Visualizar vendas', 'Visualizar vendas.'),
     ('sales.cancel', 'sales', 'Cancelar vendas', 'Cancelar vendas.'),
     ('sales.apply_discount', 'sales', 'Aplicar desconto', 'Aplicar descontos em vendas.'),
+    ('sales.apply_item_discount', 'sales', 'Aplicar desconto por item', 'Aplicar desconto manual em itens de venda, independente do desconto na conta.'),
     ('sales.waive_service_fee', 'sales', 'Retirar taxa de servico', 'Retirar taxa de servico com permissao ou autorizacao pontual.'),
     ('sales.create_consumption', 'sales', 'Criar consumacao', 'Criar consumacoes.'),
     ('sales.view_consumption', 'sales', 'Visualizar consumacao', 'Visualizar consumacoes.'),
@@ -85,8 +86,15 @@ ALL_PERMISSION_CODES = frozenset(item[0] for item in PERMISSION_CATALOG)
 OPERATING_PERMISSION_CODES = frozenset(
     code
     for code in ALL_PERMISSION_CODES
-    if code.split('.', 1)[0]
-    in {'products', 'categories', 'inventory', 'cash_registers', 'sales', 'payment_methods', 'promotions', 'reports', 'dashboard', 'branch_prices', 'audit_logs'}
+    if (
+        code.split('.', 1)[0]
+        in {'products', 'categories', 'inventory', 'cash_registers', 'sales', 'payment_methods', 'promotions', 'reports', 'dashboard', 'branch_prices', 'audit_logs'}
+        or code in {
+            'commissions.view',
+            'commissions.change_branch_default',
+            'commissions.change_user_override',
+        }
+    )
 )
 
 DEFAULT_PROFILE_PERMISSIONS = {

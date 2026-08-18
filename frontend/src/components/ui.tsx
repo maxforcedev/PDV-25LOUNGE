@@ -58,7 +58,7 @@ export function Field({ label, error, optional, children }: FieldProps) {
       <span className="label">
         {label}
         {optional && (
-          <span className="ml-1 font-normal text-slate-400">(opcional)</span>
+          <span className="ml-1 font-normal text-muted">(opcional)</span>
         )}
       </span>
       {children}
@@ -149,7 +149,7 @@ export function Alert({
   return (
     <div
       role={success ? "status" : "alert"}
-      className={`animate-enter flex items-start gap-2.5 rounded-md border px-3.5 py-3 text-[13px] ${success ? "border-success/20 bg-success/8 text-emerald-800" : "border-danger/20 bg-danger/8 text-red-700"}`}
+      className={`animate-enter flex items-start gap-2.5 rounded-md border px-3.5 py-3 text-[13px] ${success ? "border-success/30 bg-success/10 text-success-strong" : "border-danger/30 bg-danger/10 text-danger-strong"}`}
     >
       {success ? (
         <CheckCircle2 className="mt-0.5 size-4 shrink-0" />
@@ -279,15 +279,15 @@ export function Modal({
       onMouseDown={(event) => event.target === event.currentTarget && onClose()}
     >
       <div
-        className={`animate-enter max-h-[92vh] w-full overflow-y-auto rounded-t-xl bg-white shadow-2xl sm:rounded-xl ${sizes[size]}`}
+        className={`modal-panel animate-enter max-h-[92vh] w-full overflow-y-auto rounded-t-xl shadow-2xl sm:rounded-xl ${sizes[size]}`}
       >
-        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-slate-100 bg-white px-5 py-4 sm:px-6">
+        <div className="modal-header sticky top-0 z-10 flex items-start justify-between gap-4 border-b px-5 py-4 sm:px-6">
           <div>
             <h2 id="modal-title" className="text-base font-bold text-dark">
               {title}
             </h2>
             {description && (
-              <p className="mt-1 text-xs text-slate-500">{description}</p>
+              <p className="mt-1 text-xs text-muted">{description}</p>
             )}
           </div>
           <button
@@ -327,7 +327,7 @@ export function ConfirmDialog({
   return (
     <Modal open={open} title={title} onClose={onClose} size="md">
       <div className="p-5 sm:p-6">
-        <p className="text-[13px] leading-6 text-slate-600">{message}</p>
+        <p className="text-[13px] leading-6 text-muted">{message}</p>
       </div>
       <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4 sm:px-6">
         <Button variant="secondary" onClick={onClose} disabled={loading}>

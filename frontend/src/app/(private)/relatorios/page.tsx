@@ -1,5 +1,7 @@
 import { redirect } from "next/navigation";
+import { AdminGuard } from "@/components/admin-guard";
 import { ReportsCenter } from "@/components/reports-center";
+import { reportMenuPermissions } from "@/lib/permissions";
 
 const legacy: Record<string, string> = {
   sales: "vendas", consumptions: "consumacoes", cash: "caixa",
@@ -17,5 +19,5 @@ export default async function ReportsPage({ searchParams }: { searchParams: Prom
     });
     redirect(`/relatorios/${legacy[report]}${query.size ? `?${query}` : ""}`);
   }
-  return <ReportsCenter />;
+  return <AdminGuard requiredPermissions={reportMenuPermissions}><ReportsCenter /></AdminGuard>;
 }

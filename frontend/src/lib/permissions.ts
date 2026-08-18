@@ -16,7 +16,7 @@ export const permissions = {
   viewStockKpis: "inventory.view_stock_kpis", viewStockCosts: "inventory.view_stock_costs",
   viewCashRegister: "cash_registers.view", openCashRegister: "cash_registers.open", manualCashEntry: "cash_registers.manual_entry", withdrawCash: "cash_registers.withdraw", closeCashRegister: "cash_registers.close",
   addCashRegister: "cash_registers.add", changeCashRegister: "cash_registers.change", changeCashRegisterStatus: "cash_registers.change_status", administerOtherCash: "cash_registers.administer_others",
-  createSale: "sales.create", viewSale: "sales.view", cancelSale: "sales.cancel", applyDiscount: "sales.apply_discount", waiveServiceFee: "sales.waive_service_fee",
+  createSale: "sales.create", viewSale: "sales.view", cancelSale: "sales.cancel", applyDiscount: "sales.apply_discount", applyItemDiscount: "sales.apply_item_discount", waiveServiceFee: "sales.waive_service_fee",
   createConsumption: "sales.create_consumption", viewConsumption: "sales.view_consumption", cancelConsumption: "sales.cancel_consumption",
   viewPaymentMethod: "payment_methods.view", changePaymentMethod: "payment_methods.change",
   viewSalesReport: "reports.view_sales", viewConsumptionsReport: "reports.view_consumptions", viewCashReport: "reports.view_cash", viewWithdrawalsReport: "reports.view_withdrawals", viewInventoryReport: "reports.view_inventory", viewOperationalResult: "reports.view_operational_result", viewStockConsumptionReport: "reports.view_stock_consumption", exportReports: "reports.export",
@@ -26,6 +26,23 @@ export const permissions = {
   viewAuditLog: "audit_logs.view",
   viewCommission: "commissions.view", changeBranchCommission: "commissions.change_branch_default", changeProfileCommission: "commissions.change_profile", changeUserCommission: "commissions.change_user_override",
 } as const;
+
+export const reportMenuPermissions = [
+  permissions.viewSalesReport,
+  permissions.viewConsumptionsReport,
+  permissions.viewCashReport,
+  permissions.viewWithdrawalsReport,
+  permissions.viewInventoryReport,
+  permissions.viewOperationalResult,
+  permissions.viewStockConsumptionReport,
+  permissions.viewProductsReport,
+  permissions.viewReceiptsReport,
+  permissions.viewTeamReport,
+  permissions.viewDiscountsReport,
+  permissions.viewCancellationsReport,
+  permissions.viewPricesReport,
+  permissions.viewCommission,
+] as const;
 
 export function hasPermission(user: User | null, company: UserCompany | null, permission: string) {
   return !!user && (user.is_superuser || !!company?.permissions.includes(permission));

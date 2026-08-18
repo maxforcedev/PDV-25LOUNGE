@@ -41,6 +41,7 @@ function Profiles() {
   const canAdd = hasPermission(permissions.addAccessProfile);
   const canChange = hasPermission(permissions.changeAccessProfile);
   const canStatus = hasPermission(permissions.changeAccessProfileStatus);
+  const canChangeCommission = hasPermission(permissions.changeProfileCommission);
   const [data, setData] = useState<Paginated<AccessProfile> | null>(null);
   const [catalog, setCatalog] = useState<FunctionalPermission[]>([]);
   const [loading, setLoading] = useState(true);
@@ -83,7 +84,7 @@ function Profiles() {
     try {
       const detail = await http.get<AccessProfile>(`access-profiles/${profile.id}/`);
       if (companyIdRef.current !== requestedCompanyId || detail.company !== requestedCompanyId) return;
-      setEditing(detail); setForm({ company: detail.company, name: detail.name, description: detail.description || "", receives_commission: detail.receives_commission, commission_rate: detail.commission_rate, permission_codes: detail.permission_codes }); setFields({}); setOpen(true);
+      setEditing(detail); setForm({ company: detail.company, name: detail.name, description: detail.description || "", receives_commission: detail.receives_commission ?? true, commission_rate: detail.commission_rate ?? null, permission_codes: detail.permission_codes }); setFields({}); setOpen(true);
     } catch (caught) { setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar o perfil."); }
   }
 
@@ -94,8 +95,9 @@ function Profiles() {
   async function submit(event: React.FormEvent) {
     event.preventDefault(); setSaving(true); setError(""); setFields({}); setSuccess("");
     try {
-      if (editing) await http.patch(`access-profiles/${editing.id}/`, form);
-      else await http.post("access-profiles/", form);
+      const payload = canChangeCommission ? form : { company: form.company, name: form.name, description: form.description, permission_codes: form.permission_codes };
+      if (editing) await http.patch(`access-profiles/${editing.id}/`, payload);
+      else await http.post("access-profiles/", payload);
       setOpen(false); setSuccess(editing ? "Perfil atualizado com sucesso." : "Perfil criado com sucesso."); await load();
     } catch (caught) { if (caught instanceof ApiError) { setError(caught.message); setFields(caught.fields); } else setError("Não foi possível salvar o perfil."); }
     finally { setSaving(false); }

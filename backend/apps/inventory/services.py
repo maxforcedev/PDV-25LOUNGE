@@ -50,11 +50,20 @@ def _authorized_branch(branch, user, permission_code):
 
 def _validate_operational_stock(product, branch):
     if branch.company.status != Status.ACTIVE:
-        raise ValidationError({'company': 'A empresa deve estar ativa.'})
+        raise DomainValidationError(
+            code='inactive_company', message='A empresa deve estar ativa.',
+            details={'company_id': branch.company_id},
+        )
     if branch.status != Status.ACTIVE:
-        raise ValidationError({'branch': 'A filial deve estar ativa.'})
+        raise DomainValidationError(
+            code='inactive_branch', message='A filial deve estar ativa.',
+            details={'branch_id': branch.pk},
+        )
     if product.status != Status.ACTIVE:
-        raise ValidationError({'product': 'O produto deve estar ativo.'})
+        raise DomainValidationError(
+            code='inactive_product', message='O produto deve estar ativo.',
+            details={'product_id': product.pk},
+        )
     if product.company_id != branch.company_id:
         raise ValidationError({'branch': 'A filial deve pertencer a empresa do produto.'})
     if product.inventory_behavior != InventoryBehavior.DIRECT:
@@ -84,9 +93,16 @@ def _move(*, product, branch, quantity, user, reason, movement_type, nature,
             operation_reference=operation_reference,
         )
         audit_log(
-            actor=user, action=f'inventory.{movement_type}', obj=movement,
+            actor=user,
+            action=(
+                'inventory.regularize'
+                if nature == MovementNature.REGULARIZATION
+                else f'inventory.{movement_type}'
+            ),
+            obj=movement,
             company=branch.company, branch=branch,
-            after=model_snapshot(movement, ('movement_type', 'quantity', 'previous_quantity', 'final_quantity', 'reason')),
+            after=model_snapshot(movement, ('movement_type', 'nature', 'quantity', 'previous_quantity', 'final_quantity', 'reason')),
+            metadata={'operation_reference': str(movement.operation_reference)},
         )
         return movement
 
@@ -167,6 +183,12 @@ def adjustment(product, branch, final_quantity, user, reason='',
         delta = final_quantity - current
         if delta == 0:
             raise ValidationError({'final_quantity': 'O ajuste deve alterar o saldo atual.'})
+        if current < 0 and delta > 0 and permission_code != 'inventory.regularize':
+            raise DomainValidationError(
+                code='regularization_permission_required',
+                message='Use o fluxo Regularizar negativos para corrigir este saldo.',
+                details={'stock_id': stock.pk if stock else None, 'current_quantity': str(current)},
+            )
         return _move(
             product=locked_product, branch=locked_branch, quantity=delta, user=user,
             reason=reason, movement_type=MovementType.ADJUSTMENT, nature=nature,
@@ -175,8 +197,36 @@ def adjustment(product, branch, final_quantity, user, reason='',
 
 
 @transaction.atomic
-def group_entry(*, branch, items, user, nature=MovementNature.NORMAL, reason=''):
-    reference = uuid.uuid4()
+def group_entry(*, branch, items, user, operation_reference,
+                nature=MovementNature.NORMAL, reason=''):
+    branch = _authorized_branch(branch, user, 'inventory.entry')
+    branch = Branch.objects.select_for_update().select_related('company').get(pk=branch.pk)
+    reference = operation_reference
+    requested = sorted(
+        (int(_pk(item.get('product'))), _decimal(item.get('quantity'), 'quantity', nonnegative=True))
+        for item in items if _decimal(item.get('quantity'), 'quantity', nonnegative=True) > 0
+    )
+    existing = list(StockMovement.objects.select_related('stock').filter(
+        stock__branch=branch, operation_reference=reference,
+    ).order_by('stock__product_id'))
+    if existing:
+        persisted = [(movement.stock.product_id, movement.quantity) for movement in existing]
+        coherent = (
+            persisted == requested
+            and all(movement.movement_type == MovementType.ENTRY for movement in existing)
+            and all(movement.nature == nature for movement in existing)
+            and all(movement.reason == (reason or '').strip() for movement in existing)
+            and all(movement.user_id == user.pk for movement in existing)
+        )
+        if not coherent:
+            raise DomainValidationError(
+                code='idempotency_key_conflict',
+                message='A chave de idempotencia ja foi usada com outros dados.',
+                details={'operation_reference': str(reference)},
+            )
+        for movement in existing:
+            movement._idempotency_replayed = True
+        return existing
     movements = []
     for item in items:
         quantity = _decimal(item.get('quantity'), 'quantity', nonnegative=True)
@@ -197,11 +247,29 @@ def group_entry(*, branch, items, user, nature=MovementNature.NORMAL, reason='')
 @transaction.atomic
 def regularize_negatives(*, branch, items, user, reason=''):
     reference = uuid.uuid4()
+    branch = _authorized_branch(branch, user, 'inventory.regularize')
     movements = []
     for item in items:
-        stock = Stock.objects.select_for_update().select_related('product', 'branch').get(
-            pk=item['stock'], branch_id=_pk(branch), current_quantity__lt=0,
-        )
+        try:
+            stock = Stock.objects.select_for_update().select_related(
+                'product', 'branch', 'branch__company'
+            ).get(pk=item['stock'], branch=branch)
+        except Stock.DoesNotExist as error:
+            raise DomainValidationError(
+                code='regularization_stock_not_found',
+                message='Um saldo informado nao pertence a filial atual.',
+                details={'stock_id': item['stock']},
+            ) from error
+        if stock.current_quantity >= 0:
+            raise DomainValidationError(
+                code='regularization_stale_stock',
+                message='Um saldo ja foi regularizado ou deixou de ser negativo.',
+                details={
+                    'stock_id': stock.pk,
+                    'product_id': stock.product_id,
+                    'current_quantity': str(stock.current_quantity),
+                },
+            )
         movements.append(adjustment(
             product=stock.product, branch=stock.branch,
             final_quantity=item['final_quantity'], user=user,

@@ -109,19 +109,22 @@ def _eligible_sale_user(branch, user, permission_code, field):
     return candidate
 
 
-def _discount_approver(branch, operator, discount, authorization):
-    if not discount or operator.is_superuser or user_has_branch_permission(
-        operator, branch.pk, 'sales.apply_discount'
-    ):
+def _discount_approver(
+    branch, operator, discount, authorization, *, permission_code, authorization_field
+):
+    if not discount:
         return None
+    if operator.is_superuser or user_has_branch_permission(
+        operator, branch.pk, permission_code
+    ):
+        return operator
     if not authorization or authorization.get('method') != 'password':
-        raise ValidationError({'discount_authorization': 'Autorizacao de desconto invalida.'})
+        raise ValidationError({authorization_field: 'Autorizacao de desconto invalida.'})
     approver = _eligible_sale_user(
-        branch, authorization.get('user'), 'sales.apply_discount',
-        'discount_authorization',
+        branch, authorization.get('user'), permission_code, authorization_field,
     )
     if not approver.check_password(authorization.get('credential') or ''):
-        raise ValidationError({'discount_authorization': 'Autorizacao de desconto invalida.'})
+        raise ValidationError({authorization_field: 'Autorizacao de desconto invalida.'})
     return approver
 
 
@@ -184,6 +187,7 @@ def _consolidate_items(raw_items, products, *, price_overrides=None):
     if not isinstance(raw_items, list) or not raw_items:
         raise ValidationError({'items': 'Informe ao menos um item.'})
     quantities = {}
+    discounts = {}
     ordered_ids = []
     for index, raw_item in enumerate(raw_items):
         if not isinstance(raw_item, dict) or raw_item.get('product') in ('', None):
@@ -201,7 +205,18 @@ def _consolidate_items(raw_items, products, *, price_overrides=None):
         if product.pk not in quantities:
             ordered_ids.append(product.pk)
             quantities[product.pk] = Decimal('0.000')
+            discounts[product.pk] = Decimal('0.00')
         quantities[product.pk] += quantity
+        item_discount = strict_decimal(
+            raw_item.get('discount', '0'),
+            field=f'items.{index}.discount', decimal_places=2, max_digits=14,
+        )
+        if item_discount < 0:
+            raise ValidationError(
+                {'items': f'Item {index + 1}: o desconto nao pode ser negativo.'}
+            )
+        discounts[product.pk] += item_discount
+        ensure_money_fits(discounts[product.pk], 'items')
         if quantities[product.pk] > Decimal('99999999999.999'):
             raise ValidationError({'items': 'A quantidade consolidada excede o limite permitido.'})
 
@@ -226,6 +241,7 @@ def _consolidate_items(raw_items, products, *, price_overrides=None):
             'unit_cost': product.cost,
             'unit_price': unit_price,
             'subtotal': item_subtotal,
+            'manual_discount_requested': discounts[product_id],
         })
     return provisional, subtotal
 
@@ -311,6 +327,13 @@ def _apply_promotions(operation_type, items, promotions):
                 )
 
         promotion, benefit, _direct = selected or (None, Decimal('0.00'), False)
+        manual_discount = item['manual_discount_requested']
+        if operation_type == OperationType.CONSUMPTION and manual_discount:
+            raise ValidationError({'items': 'Consumacao nao aceita desconto por item.'})
+        if manual_discount > item['subtotal'] - benefit:
+            raise ValidationError({
+                'items': f'O desconto do item {item["product_name"]} excede o saldo apos a promocao.'
+            })
         item.update({
             'promotion': promotion.pk if promotion else None,
             'promotion_object': promotion,
@@ -318,9 +341,13 @@ def _apply_promotions(operation_type, items, promotions):
             'promotion_discount_type': promotion.discount_type if promotion else None,
             'promotion_discount_value': promotion.discount_value if promotion else None,
             'promotion_benefit': benefit,
-            'net_subtotal': item['subtotal'] - benefit,
+            'manual_discount': manual_discount,
+            'net_subtotal': item['subtotal'] - benefit - manual_discount,
         })
-    return sum((item['promotion_benefit'] for item in items), Decimal('0.00'))
+    return (
+        sum((item['promotion_benefit'] for item in items), Decimal('0.00')),
+        sum((item['manual_discount'] for item in items), Decimal('0.00')),
+    )
 
 
 def calculate_preview(*, company, operation_type, raw_items, discount, charged_amount, beneficiary_user, branch=None, service_fee_waived=False):
@@ -344,7 +371,9 @@ def calculate_preview(*, company, operation_type, raw_items, discount, charged_a
         _eligible_promotions(company, operation_timestamp, branch=branch)
         if operation_type == OperationType.SALE else []
     )
-    promotion_discount_total = _apply_promotions(operation_type, provisional, promotions)
+    promotion_discount_total, item_discount_total = _apply_promotions(
+        operation_type, provisional, promotions
+    )
     if operation_type == 'consumption':
         if discount not in (None, '', 0, '0', '0.00'):
             raise ValidationError({'discount': 'Consumacao nao aceita desconto.'})
@@ -368,7 +397,7 @@ def calculate_preview(*, company, operation_type, raw_items, discount, charged_a
             discount if discount not in (None, '') else '0',
             field='discount', decimal_places=2, max_digits=14,
         )
-        remaining = subtotal - promotion_discount_total
+        remaining = subtotal - promotion_discount_total - item_discount_total
         if discount_value < 0 or discount_value > remaining:
             raise ValidationError({'discount': 'O desconto deve estar entre zero e o saldo apos promocoes.'})
         charged = None
@@ -386,11 +415,13 @@ def calculate_preview(*, company, operation_type, raw_items, discount, charged_a
     for item in provisional:
         item.pop('product_object')
         item.pop('promotion_object')
+        item.pop('manual_discount_requested')
     return {
         'operation_type': operation_type,
         'items': provisional,
         'subtotal': subtotal,
         'promotion_discount_total': promotion_discount_total,
+        'item_discount_total': item_discount_total,
         'discount': discount_value,
         'service_fee_rate': service_fee_rate,
         'service_fee_amount': service_fee_amount,
@@ -592,6 +623,7 @@ def _prepare_products(company, raw_items, *, branch=None):
     for index, snapshot in enumerate(snapshots):
         product = snapshot['product_object']
         quantity = snapshot['quantity']
+        snapshot['component_cost_snapshot'] = []
         if product.company_id != company.pk:
             raise PermissionDenied('Produto fora da empresa da filial.')
         if product.status != Status.ACTIVE or not product.is_sellable:
@@ -605,6 +637,8 @@ def _prepare_products(company, raw_items, *, branch=None):
         rows = rows_by_parent.get(product.pk, [])
         if not rows:
             raise ValidationError({'items': f'Item {index + 1}: produto composto sem composicao.'})
+        compound_unit_cost = Decimal('0.00')
+        component_cost_snapshot = []
         for row in rows:
             component = components.get(row.component_product_id)
             if (
@@ -619,6 +653,21 @@ def _prepare_products(company, raw_items, *, branch=None):
                 raise ValidationError({'items': f'Item {index + 1}: a composicao gera quantidade com mais de tres casas.'})
             required = rounded_required
             requirements[component.pk] = requirements.get(component.pk, Decimal('0')) + required
+            cost_contribution = component.cost * row.quantity
+            compound_unit_cost += cost_contribution
+            component_cost_snapshot.append({
+                'product': component.pk,
+                'product_name': component.name,
+                'internal_code': component.internal_code,
+                'unit': component.unit,
+                'quantity_per_unit': format(row.quantity, 'f'),
+                'consumed_quantity': format(required, 'f'),
+                'unit_cost': f'{component.cost:.2f}',
+                'unit_cost_contribution': f'{cost_contribution.quantize(CENT):.2f}',
+            })
+        snapshot['unit_cost'] = compound_unit_cost.quantize(CENT, rounding=ROUND_HALF_UP)
+        ensure_money_fits(snapshot['unit_cost'], 'unit_cost')
+        snapshot['component_cost_snapshot'] = component_cost_snapshot
     return snapshots, requirements, subtotal
 
 
@@ -730,12 +779,25 @@ def _prepare_payments(company, raw_payments, total, *, free_consumption):
 def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiary_user=None,
                   seller_user=None, discount_authorization=None, items=None, discount=None,
                   charged_amount=None, payments=None, service_fee_waived=False,
-                  service_fee_authorization=None):
+                  service_fee_authorization=None, item_discount_authorization=None,
+                  idempotency_key=None):
     operation_timestamp = timezone.now()
     permission = 'sales.create_consumption' if operation_type == OperationType.CONSUMPTION else 'sales.create'
     if operation_type not in OperationType.values:
         raise ValidationError({'operation_type': 'Tipo de operacao invalido.'})
     branch = _active_branch(branch, user, permission)
+    if not idempotency_key:
+        raise ValidationError({'idempotency_key': 'Informe a chave de idempotencia.'})
+    company = Company.objects.select_for_update().get(pk=branch.company_id)
+    replay = Sale.objects.filter(
+        company=company,
+        branch=branch,
+        operation_type=operation_type,
+        idempotency_key=idempotency_key,
+    ).first()
+    if replay:
+        replay._idempotency_replayed = True
+        return replay
 
     if operation_type == OperationType.CONSUMPTION:
         charged = strict_decimal(charged_amount, field='charged_amount', decimal_places=2, max_digits=14)
@@ -766,21 +828,24 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         )
         session = _lock_cash_session(cash_session, branch, required=True)
 
-    company = Company.objects.select_for_update().get(pk=branch.company_id)
     snapshots, requirements, subtotal = _prepare_products(company, items, branch=branch)
     stocks = _lock_required_stocks(branch, requirements)
     promotions = (
         _eligible_promotions(company, operation_timestamp, branch=branch, lock=True)
         if operation_type == OperationType.SALE else []
     )
-    promotion_discount_total = _apply_promotions(operation_type, snapshots, promotions)
+    promotion_discount_total, item_discount_total = _apply_promotions(
+        operation_type, snapshots, promotions
+    )
 
     if operation_type == OperationType.CONSUMPTION:
         if charged > subtotal:
             raise ValidationError({'charged_amount': 'O valor cobrado deve estar entre zero e o subtotal.'})
         discount_value = Decimal('0.00')
         promotion_discount_total = Decimal('0.00')
+        item_discount_total = Decimal('0.00')
         discount_approved_by = None
+        item_discount_approved_by = None
         service_fee_waived = False
         service_fee_waived_by = None
         service_fee_rate = Decimal('0.00')
@@ -793,11 +858,18 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             discount if discount not in (None, '') else '0', field='discount',
             decimal_places=2, max_digits=14,
         )
-        remaining = subtotal - promotion_discount_total
+        remaining = subtotal - promotion_discount_total - item_discount_total
         if discount_value < 0 or discount_value > remaining:
             raise ValidationError({'discount': 'O desconto deve estar entre zero e o saldo apos promocoes.'})
         discount_approved_by = _discount_approver(
-            branch, user, discount_value, discount_authorization
+            branch, user, discount_value, discount_authorization,
+            permission_code='sales.apply_discount',
+            authorization_field='discount_authorization',
+        )
+        item_discount_approved_by = _discount_approver(
+            branch, user, item_discount_total, item_discount_authorization,
+            permission_code='sales.apply_item_discount',
+            authorization_field='item_discount_authorization',
         )
         service_fee_waived_by = _service_fee_waiver(
             branch, user, bool(service_fee_waived), service_fee_authorization
@@ -822,9 +894,11 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
     sale = Sale.objects.create(
         company=company, branch=branch, cash_session=session,
         sale_number=next_sale_number(company), operation_type=operation_type,
+        idempotency_key=idempotency_key,
         status=SaleStatus.FINALIZED, created_by=user, seller_user=seller_user,
         discount_approved_by=discount_approved_by, beneficiary_user=beneficiary_user,
         subtotal=subtotal, promotion_discount_total=promotion_discount_total,
+        item_discount_total=item_discount_total,
         discount=discount_value, service_fee_rate=service_fee_rate,
         service_fee_amount=service_fee_amount, commission_rate=commission_rate,
         commission_amount=commission_amount, charged_amount=charged, total=total,
@@ -843,6 +917,11 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             promotion_discount_type=snapshot['promotion_discount_type'],
             promotion_discount_value=snapshot['promotion_discount_value'],
             promotion_benefit=snapshot['promotion_benefit'],
+            manual_discount=snapshot['manual_discount'],
+            discount_approved_by=(
+                item_discount_approved_by if snapshot['manual_discount'] else None
+            ),
+            component_cost_snapshot=snapshot['component_cost_snapshot'],
         )
     for method, amount, received in prepared_payments:
         Payment.objects.create(
@@ -857,6 +936,23 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             stock=stocks[product_id], quantity=-requirements[product_id], user=user,
             movement_type=movement_type, sale=sale,
         )
+    item_snapshots = [
+        {
+            'product': snapshot['product'],
+            'product_name': snapshot['product_name'],
+            'quantity': format(snapshot['quantity'], 'f'),
+            'unit_cost': f'{snapshot["unit_cost"]:.2f}',
+            'unit_price': f'{snapshot["unit_price"]:.2f}',
+            'promotion_discount': f'{snapshot["promotion_benefit"]:.2f}',
+            'manual_item_discount': f'{snapshot["manual_discount"]:.2f}',
+            'item_discount_approved_by': (
+                item_discount_approved_by.pk
+                if snapshot['manual_discount'] and item_discount_approved_by else None
+            ),
+            'component_cost_snapshot': snapshot['component_cost_snapshot'],
+        }
+        for snapshot in snapshots
+    ]
     audit_log(
         actor=user,
         action='sale.finalize' if operation_type == OperationType.SALE else 'consumption.finalize',
@@ -865,12 +961,27 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         branch=branch,
         after=model_snapshot(
             sale,
-            ('sale_number', 'operation_type', 'subtotal', 'promotion_discount_total', 'discount',
+            ('sale_number', 'operation_type', 'idempotency_key', 'subtotal',
+             'promotion_discount_total', 'item_discount_total', 'discount',
              'service_fee_rate', 'service_fee_amount', 'service_fee_waived', 'commission_rate',
              'commission_amount', 'total', 'seller_user_id', 'discount_approved_by_id',
              'service_fee_waived_by_id'),
         ),
-        metadata={'discount_authorization': discount_authorization, 'service_fee_authorization': service_fee_authorization},
+        metadata={
+            'items': item_snapshots,
+            'discount_authorization': {
+                'method': (discount_authorization or {}).get('method'),
+                'approved_by': discount_approved_by.pk if discount_approved_by else None,
+            } if discount_value else None,
+            'item_discount_authorization': {
+                'method': (item_discount_authorization or {}).get('method'),
+                'approved_by': item_discount_approved_by.pk if item_discount_approved_by else None,
+            } if item_discount_total else None,
+            'service_fee_authorization': {
+                'method': (service_fee_authorization or {}).get('method'),
+                'approved_by': service_fee_waived_by.pk if service_fee_waived_by else None,
+            } if service_fee_waived else None,
+        },
     )
     return sale
 

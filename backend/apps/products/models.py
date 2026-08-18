@@ -1,4 +1,5 @@
 from decimal import Decimal
+import unicodedata
 
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -7,6 +8,15 @@ from django.db.models.functions import Lower
 
 from apps.base.models import BaseModel
 from apps.companies.models import Company, Status
+
+
+def normalize_product_name(value):
+    display_name = ' '.join((value or '').split())
+    decomposed = unicodedata.normalize('NFKD', display_name)
+    normalized_name = ''.join(
+        character for character in decomposed if not unicodedata.combining(character)
+    ).casefold()
+    return display_name, normalized_name
 
 
 class Category(BaseModel):
@@ -62,6 +72,7 @@ class Product(BaseModel):
         related_name='products',
     )
     name = models.CharField(max_length=200)
+    normalized_name = models.CharField(max_length=400, editable=False)
     description = models.TextField(blank=True)
     internal_code = models.CharField(max_length=100)
     barcode = models.CharField(max_length=100, blank=True)
@@ -85,6 +96,11 @@ class Product(BaseModel):
         constraints = [
             models.UniqueConstraint(
                 'company',
+                Lower('normalized_name'),
+                name='products_product_company_normalized_name_unique',
+            ),
+            models.UniqueConstraint(
+                'company',
                 Lower('internal_code'),
                 name='products_product_company_internal_code_ci_unique',
             ),
@@ -105,7 +121,19 @@ class Product(BaseModel):
 
     def clean(self):
         super().clean()
-        self.name = ' '.join(self.name.split())
+        self.name, self.normalized_name = normalize_product_name(self.name)
+        if not self.name:
+            raise ValidationError({'name': 'Informe o nome do produto.'})
+        if self.company_id and self.normalized_name:
+            duplicate = Product.objects.filter(
+                company_id=self.company_id, normalized_name=self.normalized_name
+            )
+            if self.pk:
+                duplicate = duplicate.exclude(pk=self.pk)
+            if duplicate.exists():
+                raise ValidationError(
+                    {'name': 'Ja existe um produto com este nome nesta empresa.'}
+                )
         self.internal_code = self.internal_code.strip()
         self.barcode = self.barcode.strip()
         if self.category_id and self.company_id:

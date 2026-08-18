@@ -6,9 +6,10 @@ from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from apps.companies.selectors import accessible_branches
+from apps.companies.selectors import accessible_branches, user_has_branch_permission
 from apps.accounts.models import User
 from apps.base.datetimes import parse_datetime_range
+from apps.base.audit import audit_log, model_snapshot
 
 from .models import (
     CashMovement,
@@ -89,14 +90,31 @@ class CashRegisterViewSet(CurrentBranchQuerysetMixin, viewsets.ModelViewSet):
             queryset = queryset.filter(name__icontains=params['search'])
         return queryset
 
+    def perform_create(self, serializer):
+        register = serializer.save()
+        audit_log(
+            actor=self.request.user, action='cash_register.create', obj=register,
+            company=register.branch.company, branch=register.branch,
+            after=model_snapshot(register, ('branch_id', 'name', 'status')),
+        )
+
+    def perform_update(self, serializer):
+        before = model_snapshot(serializer.instance, ('name', 'status'))
+        register = serializer.save()
+        audit_log(
+            actor=self.request.user, action='cash_register.update', obj=register,
+            company=register.branch.company, branch=register.branch,
+            before=before, after=model_snapshot(register, ('name', 'status')),
+        )
+
     @action(detail=True, methods=('post',))
     def activate(self, request, pk=None):
-        register = set_register_status(self.get_object(), CashRegisterStatus.ACTIVE)
+        register = set_register_status(self.get_object(), CashRegisterStatus.ACTIVE, request.user)
         return Response(self.get_serializer(register).data)
 
     @action(detail=True, methods=('post',))
     def deactivate(self, request, pk=None):
-        register = set_register_status(self.get_object(), CashRegisterStatus.INACTIVE)
+        register = set_register_status(self.get_object(), CashRegisterStatus.INACTIVE, request.user)
         return Response(self.get_serializer(register).data)
 
 
@@ -177,11 +195,16 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
             user=request.user,
             current_branch=getattr(request, 'branch_context', None),
         )
+        replayed = bool(getattr(movement, '_idempotency_replayed', False))
         movement = CashMovement.objects.select_related(
             'cash_session', 'cash_session__cash_register', 'cash_session__branch', 'user',
             'beneficiary_user',
         ).get(pk=movement.pk)
-        return Response(CashMovementSerializer(movement).data, status=status.HTTP_201_CREATED)
+        request.audit_fallback_suppressed = replayed
+        return Response(
+            CashMovementSerializer(movement).data,
+            status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED,
+        )
 
     @action(detail=True, methods=('post',))
     def entry(self, request, pk=None):
@@ -212,6 +235,13 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
     def summary(self, request, pk=None):
         session = self.get_object()
         summary = session_operational_summary(session)
+        if not (
+            request.user.is_superuser
+            or user_has_branch_permission(
+                request.user, session.branch_id, 'commissions.view'
+            )
+        ):
+            summary['sales'].pop('commission', None)
 
         def serialize(value):
             if isinstance(value, Decimal):

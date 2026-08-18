@@ -1,3 +1,5 @@
+import uuid
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count, Q
 from django.db import IntegrityError, transaction
@@ -32,7 +34,7 @@ class CatalogViewSet(viewsets.ModelViewSet):
         'activate': 'products.change_status',
         'deactivate': 'products.change_status',
         'reorder': 'products.change',
-        'price_comparison': 'products.view',
+        'price_comparison': 'reports.view_prices',
     }
 
     def filter_common(self, queryset):
@@ -93,6 +95,24 @@ class CategoryViewSet(CatalogViewSet):
         search = self.request.query_params.get('search')
         return queryset.filter(name__icontains=search) if search else queryset
 
+    def perform_create(self, serializer):
+        category = serializer.save()
+        audit_log(
+            actor=self.request.user, action='category.create', obj=category,
+            company=category.company,
+            after=model_snapshot(category, ('name', 'description', 'sort_order', 'status')),
+        )
+
+    def perform_update(self, serializer):
+        fields = ('name', 'description', 'sort_order', 'status')
+        before = model_snapshot(serializer.instance, fields)
+        category = serializer.save()
+        audit_log(
+            actor=self.request.user, action='category.update', obj=category,
+            company=category.company, before=before,
+            after=model_snapshot(category, fields),
+        )
+
     @action(detail=False, methods=['post'])
     def reorder(self, request):
         company_id = request.data.get('company')
@@ -112,10 +132,21 @@ class CategoryViewSet(CatalogViewSet):
             company = Company.objects.get(pk=company_id)
             if branch and company.pk != branch.company_id:
                 raise Company.DoesNotExist
-            reorder_categories(company=company, category_ids=category_ids)
+            before = dict(Category.objects.filter(company=company).values_list('id', 'sort_order'))
+            categories = reorder_categories(company=company, category_ids=category_ids)
         except (Company.DoesNotExist, DjangoValidationError) as error:
             detail = getattr(error, 'message_dict', {'company': ['Empresa invalida.']})
             return Response(detail, status=status.HTTP_400_BAD_REQUEST)
+        reference = uuid.uuid4()
+        for category in categories:
+            if before.get(category.pk) != category.sort_order:
+                audit_log(
+                    actor=request.user, action='category.reorder', obj=category,
+                    company=company,
+                    before={'sort_order': before.get(category.pk)},
+                    after={'sort_order': category.sort_order},
+                    metadata={'operation_reference': str(reference)},
+                )
         return Response(
             self.get_serializer(
                 self.get_queryset().filter(company=company), many=True
@@ -130,6 +161,20 @@ class ProductViewSet(CatalogViewSet):
         'name', 'internal_code', 'cost', 'sale_price', 'status',
         'inventory_behavior', 'is_sellable', 'is_favorite',
     )
+
+    @staticmethod
+    def composition_snapshot(product):
+        return [
+            {
+                'component_product': item.component_product_id,
+                'component_name': item.component_product.name,
+                'component_unit': item.component_product.unit,
+                'quantity': format(item.quantity, 'f'),
+            }
+            for item in product.components.select_related('component_product').order_by(
+                'component_product_id'
+            )
+        ]
 
     def get_queryset(self):
         queryset = Product.objects.select_related('company', 'category').prefetch_related(
@@ -165,20 +210,27 @@ class ProductViewSet(CatalogViewSet):
             )
         return queryset.order_by('-is_favorite', 'name', 'id')
 
+    @transaction.atomic
     def perform_create(self, serializer):
         product = serializer.save()
+        after = model_snapshot(product, self.audit_fields)
+        after['components'] = self.composition_snapshot(product)
         audit_log(
             actor=self.request.user, action='product.create', obj=product,
-            company=product.company, after=model_snapshot(product, self.audit_fields),
+            company=product.company, after=after,
         )
 
+    @transaction.atomic
     def perform_update(self, serializer):
         before = model_snapshot(serializer.instance, self.audit_fields)
+        before['components'] = self.composition_snapshot(serializer.instance)
         product = serializer.save()
+        after = model_snapshot(product, self.audit_fields)
+        after['components'] = self.composition_snapshot(product)
         audit_log(
             actor=self.request.user, action='product.update', obj=product,
             company=product.company, before=before,
-            after=model_snapshot(product, self.audit_fields),
+            after=after,
         )
 
     @action(detail=False, methods=('post',), url_path='bulk-create')
@@ -194,6 +246,7 @@ class ProductViewSet(CatalogViewSet):
         normalized = []
         seen_codes = set()
         seen_barcodes = set()
+        seen_names = set()
         duplicate_errors = {}
         for row in rows:
             item = dict(row) if isinstance(row, dict) else row
@@ -202,6 +255,8 @@ class ProductViewSet(CatalogViewSet):
                     if isinstance(item.get(field), str):
                         item[field] = item[field].replace(',', '.')
                 company = str(item.get('company', ''))
+                from .models import normalize_product_name
+                _display_name, name = normalize_product_name(str(item.get('name') or ''))
                 code = str(item.get('internal_code') or '').strip().casefold()
                 barcode = str(item.get('barcode') or '').strip().casefold()
                 for field, value, seen in (
@@ -215,6 +270,12 @@ class ProductViewSet(CatalogViewSet):
                             'Valor repetido dentro deste lote.'
                         ]
                     seen.add(key)
+                name_key = (company, name)
+                if name and name_key in seen_names:
+                    duplicate_errors.setdefault(str(len(normalized)), {})['name'] = [
+                        'Nome repetido dentro deste lote.'
+                    ]
+                seen_names.add(name_key)
             normalized.append(item)
         if duplicate_errors:
             raise ValidationError({'products': duplicate_errors})
@@ -239,6 +300,7 @@ class ProductViewSet(CatalogViewSet):
         )
 
     @action(detail=True, methods=['get', 'put'], url_path='components')
+    @transaction.atomic
     def components(self, request, pk=None):
         product = self.get_object()
         if request.method == 'GET':
@@ -252,13 +314,14 @@ class ProductViewSet(CatalogViewSet):
             context={'request': request, 'product': product},
         )
         serializer.is_valid(raise_exception=True)
-        before = list(product.components.values('component_product_id', 'quantity'))
+        before = self.composition_snapshot(product)
         product = serializer.save()
         product = self.get_queryset().get(pk=product.pk)
+        after = self.composition_snapshot(product)
         audit_log(
             actor=request.user, action='product.composition.update', obj=product,
             company=product.company, before={'components': before},
-            after={'components': list(product.components.values('component_product_id', 'quantity'))},
+            after={'components': after},
         )
         return Response(ProductComponentSerializer(product.components.all(), many=True).data)
 
@@ -336,3 +399,12 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
             company=price.branch.company, branch=price.branch,
             before=before, after=model_snapshot(price, ('sale_price',)),
         )
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        before = model_snapshot(instance, ('product_id', 'branch_id', 'sale_price'))
+        audit_log(
+            actor=self.request.user, action='branch_price.delete', obj=instance,
+            company=instance.branch.company, branch=instance.branch, before=before,
+        )
+        instance.delete()

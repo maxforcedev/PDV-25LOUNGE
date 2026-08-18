@@ -133,8 +133,10 @@ CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = (
     *default_headers,
     'x-branch-id',
+    'x-correlation-id',
+    'x-request-id',
 )
-CORS_EXPOSE_HEADERS = ['X-CSRFToken']
+CORS_EXPOSE_HEADERS = ['X-CSRFToken', 'X-Request-ID', 'X-Correlation-ID']
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
 

@@ -266,6 +266,17 @@ export function SaleDetail({
                             {formatBRL(item.promotion_benefit)}
                           </span>
                         )}
+                        {item.manual_discount !== "0.00" && (
+                          <span className="mt-1 block text-[10px] font-bold text-amber-700">
+                            Desconto do item {formatBRL(item.manual_discount)}
+                            {item.discount_approved_by_name ? ` · autorizado por ${item.discount_approved_by_name}` : ""}
+                          </span>
+                        )}
+                        {!!item.component_cost_snapshot?.length && (
+                          <span className="mt-1 block text-[10px] text-slate-500">
+                            CMV composto: {item.component_cost_snapshot.map((component) => `${formatQuantity(component.quantity_per_unit)} ${component.unit.toUpperCase()} de ${component.product_name} a ${formatBRL(component.unit_cost)}`).join("; ")}
+                          </span>
+                        )}
                       </td>
                       <td>
                         {formatQuantity(item.quantity)}{" "}
@@ -276,14 +287,14 @@ export function SaleDetail({
                       <td className="text-right">
                         <strong
                           className={
-                            item.promotion_name
+                            item.promotion_name || item.manual_discount !== "0.00"
                               ? "text-slate-400 line-through"
                               : ""
                           }
                         >
                           {formatBRL(item.subtotal)}
                         </strong>
-                        {item.promotion_name && (
+                        {(item.promotion_name || item.manual_discount !== "0.00") && (
                           <strong className="block text-emerald-700">
                             {formatBRL(item.net_subtotal)}
                           </strong>
@@ -313,9 +324,15 @@ export function SaleDetail({
                   <span>- {formatBRL(sale.promotion_discount_total)}</span>
                 </div>
               )}
+              {!consumption && sale.item_discount_total !== "0.00" && (
+                <div className="flex justify-between text-sm text-amber-700">
+                  <span>Descontos por item</span>
+                  <span>- {formatBRL(sale.item_discount_total)}</span>
+                </div>
+              )}
               {!consumption && (
                 <div className="flex justify-between text-sm text-slate-500">
-                  <span>Desconto manual</span>
+                  <span>Desconto na conta</span>
                   <span>- {formatBRL(sale.discount)}</span>
                 </div>
               )}

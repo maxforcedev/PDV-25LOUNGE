@@ -1,6 +1,6 @@
 from rest_framework.permissions import BasePermission
 
-from .selectors import user_has_branch_permission, user_has_company_permission
+from .selectors import accessible_companies, user_has_company_permission
 
 
 class CanCreateCompany(BasePermission):
@@ -35,12 +35,7 @@ class FunctionalCompanyPermission(BasePermission):
             company_id = request.data.get('company')
             return bool(company_id) and user_has_company_permission(user, company_id, code)
 
-        return user.company_accesses.filter(
-            is_active=True,
-            access_profile__status='active',
-            access_profile__permissions__status='active',
-            access_profile__permissions__code=code,
-        ).exists()
+        return accessible_companies(user, code).exists()
 
     def has_object_permission(self, request, view, obj):
         code = self._code(view)

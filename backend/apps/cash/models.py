@@ -1,4 +1,5 @@
 from decimal import Decimal
+import uuid
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -230,6 +231,9 @@ class CashMovement(BaseModel):
         choices=ResultEffect.choices,
         default=ResultEffect.UNCLASSIFIED,
     )
+    operation_reference = models.UUIDField(
+        default=uuid.uuid4, db_index=True, editable=False
+    )
 
     class Meta:
         ordering = ('-created_at', '-pk')
@@ -268,6 +272,10 @@ class CashMovement(BaseModel):
                     | Q(beneficiary_user__isnull=False)
                 ),
                 name='cash_movement_required_beneficiary_coherent',
+            ),
+            models.UniqueConstraint(
+                fields=('cash_session', 'movement_type', 'operation_reference'),
+                name='cash_movement_operation_reference_unique',
             ),
         ]
 

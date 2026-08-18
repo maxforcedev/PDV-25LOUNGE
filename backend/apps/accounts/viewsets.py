@@ -4,7 +4,8 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from apps.base.audit import audit_log, model_snapshot
-from apps.companies.selectors import user_has_company_permission
+from apps.companies.models import Company
+from apps.companies.selectors import accessible_companies, user_has_company_permission
 
 from .models import User
 from .permissions import UserFunctionalPermission
@@ -41,12 +42,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 ).distinct()
             return queryset.order_by('email')
         permission_code = UserFunctionalPermission.codes.get(self.action, 'users.view')
-        company_ids = user.company_accesses.filter(
-            is_active=True,
-            access_profile__status='active',
-            access_profile__permissions__status='active',
-            access_profile__permissions__code=permission_code,
-        ).values_list('company_id', flat=True)
+        company_ids = accessible_companies(user, permission_code).values_list('id', flat=True)
         queryset = queryset.filter(
             company_accesses__company_id__in=company_ids,
             company_accesses__is_active=True,
@@ -55,14 +51,47 @@ class UserViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(company_accesses__company_id=company_id)
         return queryset.distinct().order_by('email')
 
+    audit_fields = ('email', 'can_login', 'user_type', 'first_name', 'last_name', 'is_active')
+
+    @staticmethod
+    def access_snapshot(user):
+        return {
+            'company_accesses': list(user.company_accesses.order_by('company_id').values(
+                'company_id', 'access_profile_id', 'is_active'
+            )),
+            'branch_accesses': list(user.branch_accesses.order_by('branch_id').values(
+                'branch_id', 'access_profile_id', 'is_active'
+            )),
+        }
+
+    def audit_user(self, user, action, before=None, after=None):
+        company_ids = {
+            item['company_id']
+            for snapshot in (before or {}, after or {})
+            for item in snapshot.get('company_accesses', [])
+        }
+        companies = Company.objects.in_bulk(company_ids)
+        scopes = [companies[company_id] for company_id in sorted(companies)] or [None]
+        for company in scopes:
+            audit_log(
+                actor=self.request.user, action=action, obj=user, company=company,
+                before=before, after=after,
+                metadata={'scope_company_id': company.pk if company else None},
+            )
+
     def perform_create(self, serializer):
         user = serializer.save()
-        audit_log(actor=self.request.user, action='user.create', obj=user, after=model_snapshot(user, ('email', 'can_login', 'user_type', 'first_name', 'last_name', 'is_active')))
+        after = model_snapshot(user, self.audit_fields)
+        after.update(self.access_snapshot(user))
+        self.audit_user(user, 'user.create', after=after)
 
     def perform_update(self, serializer):
-        before = model_snapshot(serializer.instance, ('email', 'can_login', 'user_type', 'first_name', 'last_name', 'is_active'))
+        before = model_snapshot(serializer.instance, self.audit_fields)
+        before.update(self.access_snapshot(serializer.instance))
         user = serializer.save()
-        audit_log(actor=self.request.user, action='user.update', obj=user, before=before, after=model_snapshot(user, ('email', 'can_login', 'user_type', 'first_name', 'last_name', 'is_active')))
+        after = model_snapshot(user, self.audit_fields)
+        after.update(self.access_snapshot(user))
+        self.audit_user(user, 'user.update', before=before, after=after)
 
     def _check_status_context(self, target):
         actor = self.request.user
@@ -87,7 +116,12 @@ class UserViewSet(viewsets.ModelViewSet):
         self._check_status_context(user)
         user.is_active = True
         user.save(update_fields=['is_active', 'updated_at'])
-        audit_log(actor=request.user, action='user.activate', obj=user, before={'is_active': False}, after={'is_active': True})
+        snapshot = self.access_snapshot(user)
+        self.audit_user(
+            user, 'user.activate',
+            before={'is_active': False, **snapshot},
+            after={'is_active': True, **snapshot},
+        )
         return Response(self.get_serializer(user).data)
 
     @action(detail=True, methods=['post'])
@@ -101,5 +135,10 @@ class UserViewSet(viewsets.ModelViewSet):
         self._check_status_context(user)
         user.is_active = False
         user.save(update_fields=['is_active', 'updated_at'])
-        audit_log(actor=request.user, action='user.deactivate', obj=user, before={'is_active': True}, after={'is_active': False})
+        snapshot = self.access_snapshot(user)
+        self.audit_user(
+            user, 'user.deactivate',
+            before={'is_active': True, **snapshot},
+            after={'is_active': False, **snapshot},
+        )
         return Response(self.get_serializer(user).data)

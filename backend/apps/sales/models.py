@@ -205,6 +205,7 @@ class Sale(BaseModel):
         CashSession, on_delete=models.PROTECT, related_name='sales', blank=True, null=True
     )
     sale_number = models.CharField(max_length=20)
+    idempotency_key = models.UUIDField(blank=True, null=True, editable=False)
     operation_type = models.CharField(
         max_length=20, choices=OperationType.choices, default=OperationType.SALE
     )
@@ -246,6 +247,9 @@ class Sale(BaseModel):
     promotion_discount_total = models.DecimalField(
         max_digits=14, decimal_places=2, default=Decimal('0.00')
     )
+    item_discount_total = models.DecimalField(
+        max_digits=14, decimal_places=2, default=Decimal('0.00')
+    )
     discount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     service_fee_rate = models.DecimalField(
         max_digits=5, decimal_places=2, default=Decimal('0.00')
@@ -280,11 +284,20 @@ class Sale(BaseModel):
             models.UniqueConstraint(
                 fields=('company', 'sale_number'), name='sales_sale_company_number_unique'
             ),
+            models.UniqueConstraint(
+                fields=('company', 'branch', 'operation_type', 'idempotency_key'),
+                condition=Q(idempotency_key__isnull=False),
+                name='sales_sale_finalize_idempotency_unique',
+            ),
             models.CheckConstraint(condition=Q(subtotal__gte=0), name='sales_sale_subtotal_nonnegative'),
             models.CheckConstraint(condition=Q(discount__gte=0), name='sales_sale_discount_nonnegative'),
             models.CheckConstraint(
                 condition=Q(promotion_discount_total__gte=0),
                 name='sales_sale_promotion_discount_nonnegative',
+            ),
+            models.CheckConstraint(
+                condition=Q(item_discount_total__gte=0),
+                name='sales_sale_item_discount_nonnegative',
             ),
             models.CheckConstraint(
                 condition=Q(promotion_discount_total__lte=F('subtotal')),
@@ -308,7 +321,11 @@ class Sale(BaseModel):
                 name='sales_sale_commission_nonnegative',
             ),
             models.CheckConstraint(
-                condition=Q(discount__lte=F('subtotal') - F('promotion_discount_total')),
+                condition=Q(
+                    discount__lte=(
+                        F('subtotal') - F('promotion_discount_total') - F('item_discount_total')
+                    )
+                ),
                 name='sales_sale_discount_lte_remaining',
             ),
             models.CheckConstraint(
@@ -324,7 +341,8 @@ class Sale(BaseModel):
                     Q(
                         operation_type=OperationType.SALE,
                         seller_user__isnull=False,
-                        total=(F('subtotal') - F('promotion_discount_total') - F('discount')
+                        total=(F('subtotal') - F('promotion_discount_total')
+                               - F('item_discount_total') - F('discount')
                                + F('service_fee_amount')),
                     )
                     | Q(
@@ -332,6 +350,7 @@ class Sale(BaseModel):
                         beneficiary_user__isnull=False,
                         charged_amount__isnull=False,
                         promotion_discount_total=0,
+                        item_discount_total=0,
                         discount=0,
                         seller_user__isnull=True,
                         service_fee_rate=0,
@@ -415,6 +434,8 @@ class Sale(BaseModel):
                 errors['discount'] = 'Consumacao nao aceita desconto.'
             if self.promotion_discount_total != Decimal('0'):
                 errors['promotion_discount_total'] = 'Consumacao nao aceita promocao.'
+            if self.item_discount_total != Decimal('0'):
+                errors['item_discount_total'] = 'Consumacao nao aceita desconto por item.'
             if self.seller_user_id:
                 errors['seller_user'] = 'Consumacao nao possui atendente.'
             if any(value != Decimal('0') for value in (
@@ -435,9 +456,12 @@ class Sale(BaseModel):
                 errors['charged_amount'] = 'Venda normal nao possui valor cobrado.'
             if not self.cash_session_id:
                 errors['cash_session'] = 'Venda normal exige sessao de caixa.'
-            remaining = self.subtotal - self.promotion_discount_total
-            if self.promotion_discount_total < 0 or remaining < 0:
+            after_promotion = self.subtotal - self.promotion_discount_total
+            remaining = after_promotion - self.item_discount_total
+            if self.promotion_discount_total < 0 or after_promotion < 0:
                 errors['promotion_discount_total'] = 'O desconto promocional excede o subtotal.'
+            if self.item_discount_total < 0 or remaining < 0:
+                errors['item_discount_total'] = 'O desconto por item excede o saldo apos promocoes.'
             if self.discount < 0 or self.discount > remaining:
                 errors['discount'] = 'O desconto manual excede o saldo apos promocoes.'
             net_subtotal = remaining - self.discount
@@ -501,6 +525,17 @@ class SaleItem(ImmutableHistoricalModel):
     promotion_benefit = models.DecimalField(
         max_digits=14, decimal_places=2, default=Decimal('0.00')
     )
+    manual_discount = models.DecimalField(
+        max_digits=14, decimal_places=2, default=Decimal('0.00')
+    )
+    discount_approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='approved_sale_item_discounts',
+        blank=True,
+        null=True,
+    )
+    component_cost_snapshot = models.JSONField(default=list, blank=True)
     net_subtotal = models.DecimalField(
         max_digits=14, decimal_places=2, default=Decimal('0.00')
     )
@@ -521,8 +556,25 @@ class SaleItem(ImmutableHistoricalModel):
                 name='sales_item_promotion_benefit_lte_subtotal',
             ),
             models.CheckConstraint(
-                condition=Q(net_subtotal=F('subtotal') - F('promotion_benefit')),
+                condition=Q(manual_discount__gte=0),
+                name='sales_item_manual_discount_nonnegative',
+            ),
+            models.CheckConstraint(
+                condition=Q(manual_discount__lte=F('subtotal') - F('promotion_benefit')),
+                name='sales_item_manual_discount_lte_remaining',
+            ),
+            models.CheckConstraint(
+                condition=Q(
+                    net_subtotal=F('subtotal') - F('promotion_benefit') - F('manual_discount')
+                ),
                 name='sales_item_net_subtotal_coherent',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(manual_discount=0, discount_approved_by__isnull=True)
+                    | Q(manual_discount__gt=0, discount_approved_by__isnull=False)
+                ),
+                name='sales_item_discount_approval_coherent',
             ),
             models.CheckConstraint(
                 condition=(
@@ -564,8 +616,15 @@ class SaleItem(ImmutableHistoricalModel):
             errors['promotion'] = 'Item sem promocao nao pode possuir beneficio promocional.'
         if self.promotion_benefit < 0 or self.promotion_benefit > self.subtotal:
             errors['promotion_benefit'] = 'O beneficio deve estar entre zero e o subtotal.'
-        if self.net_subtotal != self.subtotal - self.promotion_benefit:
-            errors['net_subtotal'] = 'O subtotal liquido deve descontar o beneficio promocional.'
+        remaining = self.subtotal - self.promotion_benefit
+        if self.manual_discount < 0 or self.manual_discount > remaining:
+            errors['manual_discount'] = 'O desconto manual excede o saldo do item.'
+        if self.manual_discount and not self.discount_approved_by_id:
+            errors['discount_approved_by'] = 'Informe quem autorizou o desconto do item.'
+        if not self.manual_discount and self.discount_approved_by_id:
+            errors['discount_approved_by'] = 'Item sem desconto nao possui autorizador.'
+        if self.net_subtotal != remaining - self.manual_discount:
+            errors['net_subtotal'] = 'O subtotal liquido deve descontar promocao e desconto do item.'
         if self.unit == Unit.UNIT and self.quantity != self.quantity.to_integral_value():
             errors['quantity'] = 'A quantidade de produto UN deve ser inteira.'
         if errors:
@@ -589,7 +648,7 @@ class SaleItem(ImmutableHistoricalModel):
             if self.unit_price is None:
                 self.unit_price = self.product.sale_price
             self.subtotal = (self.unit_price * self.quantity).quantize(Decimal('0.01'))
-        self.net_subtotal = self.subtotal - self.promotion_benefit
+        self.net_subtotal = self.subtotal - self.promotion_benefit - self.manual_discount
         self.full_clean()
         return super().save(*args, **kwargs)
 

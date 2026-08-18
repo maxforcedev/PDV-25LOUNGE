@@ -35,12 +35,12 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/providers/auth-provider";
 import { initials } from "@/lib/format";
-import { permissions } from "@/lib/permissions";
+import { permissions, reportMenuPermissions } from "@/lib/permissions";
 import { Alert, Spinner } from "@/components/ui";
 
 const mainNavigation = [
-  { href: "/dashboard", label: "Visão geral", icon: LayoutDashboard },
-  { href: "/sobre-mim", label: "Sobre mim", icon: UserRound },
+  { href: "/dashboard", label: "Visão geral", icon: LayoutDashboard, requiredPermissions: [permissions.viewDashboard] },
+  { href: "/sobre-mim", label: "Sobre mim", icon: UserRound, requiredPermissions: [] },
 ];
 
 const adminNavigation = [
@@ -148,15 +148,7 @@ const adminNavigation = [
     href: "/relatorios",
     label: "Relatórios",
     icon: BarChart3,
-    requiredPermissions: [
-      permissions.viewSalesReport,
-      permissions.viewConsumptionsReport,
-      permissions.viewCashReport,
-      permissions.viewWithdrawalsReport,
-      permissions.viewInventoryReport,
-      permissions.viewOperationalResult,
-      permissions.viewStockConsumptionReport,
-    ],
+    requiredPermissions: reportMenuPermissions,
   },
   {
     href: "/auditoria",
@@ -170,7 +162,9 @@ function Sidebar({ onNavigate, collapsed = false }: { onNavigate?: () => void; c
   const pathname = usePathname();
   const { hasAnyPermission } = useAuth();
   const navigation = [
-    ...mainNavigation,
+    ...mainNavigation.filter((item) =>
+      !item.requiredPermissions.length || hasAnyPermission(item.requiredPermissions),
+    ),
     ...adminNavigation.filter((item) =>
       hasAnyPermission(item.requiredPermissions),
     ),

@@ -1,10 +1,15 @@
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from rest_framework import serializers
 
 from apps.companies.selectors import user_has_branch_permission
 
-from .models import BranchProductPrice, Category, InventoryBehavior, Product, ProductComponent, Unit
+from .models import (
+    BranchProductPrice, Category, InventoryBehavior, Product, ProductComponent, Unit,
+    normalize_product_name,
+)
 from .services import create_product, replace_composition
 
 
@@ -107,7 +112,7 @@ class ProductComponentSerializer(serializers.ModelSerializer):
 class ProductSerializer(CompanyBoundSerializer):
     company_name = serializers.CharField(source='company.trade_name', read_only=True)
     category_name = serializers.CharField(source='category.name', read_only=True, default='')
-    components = ProductComponentSerializer(many=True, read_only=True)
+    components = ProductComponentSerializer(many=True, required=False)
     internal_code = serializers.CharField(
         allow_blank=True, required=False, max_length=100
     )
@@ -153,6 +158,19 @@ class ProductSerializer(CompanyBoundSerializer):
         category = attrs.get('category', getattr(self.instance, 'category', None))
         if category and category.company_id != company.id:
             raise serializers.ValidationError({'category': 'A categoria deve pertencer a empresa do produto.'})
+        name, normalized_name = normalize_product_name(
+            attrs.get('name', getattr(self.instance, 'name', ''))
+        )
+        attrs['name'] = name
+        duplicate_name = Product.objects.filter(
+            company=company, normalized_name=normalized_name
+        )
+        if self.instance:
+            duplicate_name = duplicate_name.exclude(pk=self.instance.pk)
+        if duplicate_name.exists():
+            raise serializers.ValidationError(
+                {'name': 'Ja existe um produto com este nome nesta empresa.'}
+            )
         code = attrs.get('internal_code', getattr(self.instance, 'internal_code', '')).strip()
         if code:
             same_code = Product.objects.filter(company=company, internal_code__iexact=code)
@@ -176,8 +194,28 @@ class ProductSerializer(CompanyBoundSerializer):
                 'inventory_behavior': 'O comportamento de estoque nao pode ser alterado.'
             })
         sellable = attrs.get('is_sellable', getattr(self.instance, 'is_sellable', True))
+        components = attrs.get('components')
+        if components is not None:
+            request = self.context.get('request')
+            branch = getattr(request, 'branch_context', None) if request else None
+            if request and not request.user.is_superuser and not (
+                branch and user_has_branch_permission(
+                    request.user, branch.pk, 'products.configure_composition'
+                )
+            ):
+                raise serializers.ValidationError(
+                    {'components': 'Voce nao possui permissao para configurar a composicao.'}
+                )
+            if behavior != InventoryBehavior.COMPONENTS:
+                raise serializers.ValidationError(
+                    {'components': 'Somente produtos com baixa por componentes possuem composicao.'}
+                )
+            self._validate_components(components, company)
         if behavior == InventoryBehavior.COMPONENTS and sellable:
-            if not self.instance or not self.instance.components.exists():
+            has_components = bool(components) if components is not None else bool(
+                self.instance and self.instance.components.exists()
+            )
+            if not has_components:
                 raise serializers.ValidationError(
                     {'is_sellable': 'Informe a composicao antes de habilitar a venda.'}
                 )
@@ -201,6 +239,30 @@ class ProductSerializer(CompanyBoundSerializer):
                 raise serializers.ValidationError({'sale_price': 'Voce nao possui permissao para alterar o preco padrao.'})
         return attrs
 
+    def _validate_components(self, components, company):
+        errors = {}
+        seen = set()
+        for index, item in enumerate(components):
+            component = item['component_product']
+            item_errors = {}
+            if component.pk in seen:
+                item_errors['component_product'] = ['Nao repita produtos na composicao.']
+            seen.add(component.pk)
+            if self.instance and component.pk == self.instance.pk:
+                item_errors['component_product'] = ['Um produto nao pode compor a si mesmo.']
+            if component.company_id != company.pk:
+                item_errors['component_product'] = ['O componente deve pertencer a mesma empresa.']
+            if component.inventory_behavior != InventoryBehavior.DIRECT:
+                item_errors['component_product'] = [
+                    'Somente produtos com estoque proprio podem ser componentes.'
+                ]
+            if component.unit == Unit.UNIT and item['quantity'] != item['quantity'].to_integral_value():
+                item_errors['quantity'] = ['A quantidade de um componente UN deve ser inteira.']
+            if item_errors:
+                errors[index] = item_errors
+        if errors:
+            raise serializers.ValidationError({'components': errors})
+
     def validate_internal_code(self, value):
         value = value.strip()
         if self.instance and not value:
@@ -208,12 +270,33 @@ class ProductSerializer(CompanyBoundSerializer):
         return value
 
     def create(self, validated_data):
-        return create_product(**validated_data)
+        components = validated_data.pop('components', None)
+        try:
+            return create_product(components=components, **validated_data)
+        except DjangoValidationError as error:
+            detail = getattr(error, 'message_dict', {'non_field_errors': error.messages})
+            raise serializers.ValidationError(detail)
 
+    @transaction.atomic
     def update(self, instance, validated_data):
+        instance.company.__class__.objects.select_for_update().get(pk=instance.company_id)
+        components = validated_data.pop('components', None)
         if not validated_data.get('internal_code', instance.internal_code):
             validated_data.pop('internal_code', None)
-        return super().update(instance, validated_data)
+        desired_sellable = validated_data.get('is_sellable', instance.is_sellable)
+        if components is not None and desired_sellable:
+            validated_data['is_sellable'] = False
+        try:
+            instance = super().update(instance, validated_data)
+            if components is not None:
+                instance = replace_composition(product=instance, components=components)
+                if desired_sellable:
+                    instance.is_sellable = True
+                    instance.save(update_fields=('is_sellable', 'updated_at'))
+            return instance
+        except DjangoValidationError as error:
+            detail = getattr(error, 'message_dict', {'non_field_errors': error.messages})
+            raise serializers.ValidationError(detail)
 
     def get_suggested_cost(self, obj):
         if obj.inventory_behavior != InventoryBehavior.COMPONENTS:
@@ -247,26 +330,42 @@ class CompositionSerializer(serializers.Serializer):
         product = self.context['product']
         user = self.context['request'].user
         seen = set()
-        for item in value:
+        errors = {}
+        for index, item in enumerate(value):
             component = item['component_product']
+            item_errors = {}
             if component.pk in seen:
-                raise serializers.ValidationError('Nao repita produtos na composicao.')
+                item_errors['component_product'] = ['Nao repita produtos na composicao.']
             seen.add(component.pk)
             if component.company_id != product.company_id:
-                raise serializers.ValidationError('Todos os componentes devem pertencer a mesma empresa.')
+                item_errors['component_product'] = ['O componente deve pertencer a mesma empresa.']
             branch = getattr(self.context['request'], 'branch_context', None)
             if branch and branch.company_id != component.company_id:
-                raise serializers.ValidationError('Componente fora do contexto autorizado.')
+                item_errors['component_product'] = ['Componente fora do contexto autorizado.']
             if component.inventory_behavior != InventoryBehavior.DIRECT:
-                raise serializers.ValidationError('Somente produtos com estoque proprio podem ser componentes.')
+                item_errors['component_product'] = ['Somente produtos com estoque proprio podem ser componentes.']
             if component.pk == product.pk:
-                raise serializers.ValidationError('Um produto nao pode compor a si mesmo.')
+                item_errors['component_product'] = ['Um produto nao pode compor a si mesmo.']
+            if component.unit == Unit.UNIT and item['quantity'] != item['quantity'].to_integral_value():
+                item_errors['quantity'] = ['A quantidade de um componente UN deve ser inteira.']
+            if item_errors:
+                errors[index] = item_errors
+        if errors:
+            raise serializers.ValidationError(errors)
+        if product.is_sellable and not value:
+            raise serializers.ValidationError(
+                'Um produto composto vendavel deve possuir componentes.'
+            )
         return value
 
     def save(self, **kwargs):
-        return replace_composition(
-            product=self.context['product'], components=self.validated_data['components']
-        )
+        try:
+            return replace_composition(
+                product=self.context['product'], components=self.validated_data['components']
+            )
+        except DjangoValidationError as error:
+            detail = getattr(error, 'message_dict', {'non_field_errors': error.messages})
+            raise serializers.ValidationError(detail)
 
 
 class BranchProductPriceSerializer(serializers.ModelSerializer):

@@ -3,6 +3,7 @@ from decimal import Decimal
 from rest_framework import serializers
 
 from apps.base.constants import MAX_BIGINT
+from apps.base.exceptions import DomainValidationError
 from apps.companies.selectors import user_has_branch_permission
 
 from .models import MovementNature, Stock, StockMovement
@@ -139,7 +140,10 @@ class AdjustmentRequestSerializer(serializers.Serializer):
     reason = serializers.CharField(
         allow_blank=True, required=False, default='', trim_whitespace=True
     )
-    nature = serializers.ChoiceField(choices=MovementNature.values, required=False)
+    nature = serializers.ChoiceField(choices=(
+        MovementNature.INVENTORY, MovementNature.BALANCE_CORRECTION,
+        MovementNature.OTHER,
+    ), required=False)
 
 
 class GroupMovementItemSerializer(serializers.Serializer):
@@ -150,6 +154,7 @@ class GroupMovementItemSerializer(serializers.Serializer):
 
 
 class GroupEntrySerializer(serializers.Serializer):
+    idempotency_key = serializers.UUIDField()
     branch = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
     category = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
     nature = serializers.ChoiceField(choices=(
@@ -162,6 +167,9 @@ class GroupEntrySerializer(serializers.Serializer):
     def validate_items(self, items):
         if not any(item['quantity'] > 0 for item in items):
             raise serializers.ValidationError('Informe quantidade para ao menos um produto.')
+        product_ids = [item['product'] for item in items]
+        if len(product_ids) != len(set(product_ids)):
+            raise serializers.ValidationError('Nao repita produtos na mesma entrada em grupo.')
         return items
 
 
@@ -176,3 +184,13 @@ class RegularizeNegativesSerializer(serializers.Serializer):
     branch = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
     reason = serializers.CharField(min_length=3, max_length=500)
     items = RegularizationItemSerializer(many=True, allow_empty=False)
+
+    def validate_items(self, items):
+        stock_ids = [item['stock'] for item in items]
+        if len(stock_ids) != len(set(stock_ids)):
+            raise DomainValidationError(
+                code='duplicate_regularization_stock',
+                message='Nao repita saldos na mesma regularizacao.',
+                details={'stock_ids': stock_ids},
+            )
+        return items

@@ -11,9 +11,10 @@ from rest_framework.response import Response
 
 from apps.accounts.models import User
 from apps.base.datetimes import parse_datetime_range
+from apps.base.audit import audit_log, model_snapshot
 from apps.base.exceptions import InternalContractError
 from apps.cash.models import CashSession, CashSessionStatus
-from apps.companies.selectors import eligible_branch_users
+from apps.companies.selectors import eligible_branch_users, user_has_branch_permission
 from apps.companies.models import Status
 from apps.products.models import BranchProductPrice, Category, Product
 
@@ -97,10 +98,44 @@ class PromotionViewSet(
                 queryset = queryset.filter(**{lookup: value})
         return queryset.distinct()
 
+    @staticmethod
+    def audit_snapshot(promotion):
+        snapshot = model_snapshot(
+            promotion,
+            ('name', 'branch_id', 'discount_type', 'discount_value', 'starts_at', 'ends_at', 'status'),
+        )
+        snapshot['product_ids'] = sorted(promotion.products.values_list('id', flat=True))
+        snapshot['category_ids'] = sorted(promotion.categories.values_list('id', flat=True))
+        snapshot['schedules'] = list(promotion.schedules.order_by(
+            'weekday', 'start_time', 'id'
+        ).values('weekday', 'start_time', 'end_time'))
+        for schedule in snapshot['schedules']:
+            schedule['start_time'] = str(schedule['start_time'])
+            schedule['end_time'] = str(schedule['end_time'])
+        return snapshot
+
+    def perform_create(self, serializer):
+        promotion = serializer.save()
+        audit_log(
+            actor=self.request.user, action='promotion.create', obj=promotion,
+            company=promotion.company, branch=promotion.branch,
+            after=self.audit_snapshot(promotion),
+        )
+
+    def perform_update(self, serializer):
+        before = self.audit_snapshot(serializer.instance)
+        promotion = serializer.save()
+        audit_log(
+            actor=self.request.user, action='promotion.update', obj=promotion,
+            company=promotion.company, branch=promotion.branch,
+            before=before, after=self.audit_snapshot(promotion),
+        )
+
     @action(detail=True, methods=('post',))
     @transaction.atomic
     def activate(self, request, pk=None):
         promotion = self.get_queryset().select_for_update().get(pk=pk)
+        before = model_snapshot(promotion, ('status',))
         promotion.status = Status.ACTIVE
         promotion.save(update_fields=('status', 'updated_at'))
         conflict = detect_promotion_conflict(promotion)
@@ -108,14 +143,25 @@ class PromotionViewSet(
             promotion.status = Status.INACTIVE
             promotion.save(update_fields=('status', 'updated_at'))
             raise ValidationError({'targets': conflict})
+        audit_log(
+            actor=request.user, action='promotion.activate', obj=promotion,
+            company=promotion.company, branch=promotion.branch, before=before,
+            after=model_snapshot(promotion, ('status',)),
+        )
         return Response(self.get_serializer(promotion).data)
 
     @action(detail=True, methods=('post',))
     @transaction.atomic
     def deactivate(self, request, pk=None):
         promotion = self.get_queryset().select_for_update().get(pk=pk)
+        before = model_snapshot(promotion, ('status',))
         promotion.status = Status.INACTIVE
         promotion.save(update_fields=('status', 'updated_at'))
+        audit_log(
+            actor=request.user, action='promotion.deactivate', obj=promotion,
+            company=promotion.company, branch=promotion.branch, before=before,
+            after=model_snapshot(promotion, ('status',)),
+        )
         return Response(self.get_serializer(promotion).data)
 
     @action(detail=False, methods=('get',), url_path='target-options')
@@ -170,20 +216,41 @@ class PaymentMethodViewSet(
                 queryset = queryset.filter(status=item_status or 'active')
         return queryset
 
+    def perform_update(self, serializer):
+        before = model_snapshot(serializer.instance, ('name', 'status'))
+        method = serializer.save()
+        audit_log(
+            actor=self.request.user, action='payment_method.update', obj=method,
+            company=method.company, before=before,
+            after=model_snapshot(method, ('name', 'status')),
+        )
+
     @action(detail=True, methods=('post',))
     @transaction.atomic
     def activate(self, request, pk=None):
         method = self.get_queryset().select_for_update().get(pk=pk)
+        before = model_snapshot(method, ('status',))
         method.status = 'active'
         method.save(update_fields=('status', 'updated_at'))
+        audit_log(
+            actor=request.user, action='payment_method.activate', obj=method,
+            company=method.company, before=before,
+            after=model_snapshot(method, ('status',)),
+        )
         return Response(self.get_serializer(method).data)
 
     @action(detail=True, methods=('post',))
     @transaction.atomic
     def deactivate(self, request, pk=None):
         method = self.get_queryset().select_for_update().get(pk=pk)
+        before = model_snapshot(method, ('status',))
         method.status = 'inactive'
         method.save(update_fields=('status', 'updated_at'))
+        audit_log(
+            actor=request.user, action='payment_method.deactivate', obj=method,
+            company=method.company, before=before,
+            after=model_snapshot(method, ('status',)),
+        )
         return Response(self.get_serializer(method).data)
 
 
@@ -196,13 +263,16 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
         'beneficiaries': 'sales.create_consumption', 'catalog': 'sales.create',
         'checkout_options': 'sales.create', 'categories': 'sales.create',
         'sellers': 'sales.create', 'discount_authorizers': 'sales.create',
+        'item_discount_authorizers': 'sales.create',
     }
 
     def get_queryset(self):
         queryset = Sale.objects.select_related(
             'company', 'branch', 'cash_session', 'created_by', 'seller_user',
             'discount_approved_by', 'service_fee_waived_by', 'beneficiary_user', 'cancelled_by'
-        ).prefetch_related('items__product', 'payments__payment_method')
+        ).prefetch_related(
+            'items__product', 'items__discount_approved_by', 'payments__payment_method'
+        )
         queryset = queryset.filter(branch=self.request.branch_context)
         if self.action == 'list':
             params = self.request.query_params
@@ -266,6 +336,13 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
     def discount_authorizers(self, request):
         return self._paginated_response(
             eligible_branch_users(request.branch_context, 'sales.apply_discount'),
+            SaleUserOptionSerializer,
+        )
+
+    @action(detail=False, methods=('get',), url_path='item-discount-authorizers')
+    def item_discount_authorizers(self, request):
+        return self._paginated_response(
+            eligible_branch_users(request.branch_context, 'sales.apply_item_discount'),
             SaleUserOptionSerializer,
         )
 
@@ -341,11 +418,20 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
         sale = finalize_sale(
             branch=request.branch_context, user=request.user, **serializer.validated_data,
         )
+        replayed = bool(getattr(sale, '_idempotency_replayed', False))
         sale = Sale.objects.select_related(
             'company', 'branch', 'cash_session', 'created_by', 'seller_user',
             'discount_approved_by', 'service_fee_waived_by', 'beneficiary_user', 'cancelled_by'
-        ).prefetch_related('items__product', 'payments__payment_method').get(pk=sale.pk)
-        return Response(self.get_serializer(sale).data, status=status.HTTP_201_CREATED)
+        ).prefetch_related(
+            'items__product', 'items__discount_approved_by', 'payments__payment_method'
+        ).get(pk=sale.pk)
+        response = Response(
+            self.get_serializer(sale).data,
+            status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED,
+        )
+        if replayed:
+            response['Idempotency-Replayed'] = 'true'
+        return response
 
     @action(detail=True, methods=('post',), url_path='cancel')
     def cancel(self, request, pk=None):
@@ -391,4 +477,13 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
         output = CalculationOutputSerializer(data=result)
         if not output.is_valid():
             raise InternalContractError()
-        return Response(output.data)
+        response_data = dict(output.data)
+        if not (
+            request.user.is_superuser
+            or user_has_branch_permission(
+                request.user, request.branch_context.pk, 'commissions.view'
+            )
+        ):
+            response_data.pop('commission_rate', None)
+            response_data.pop('commission_amount', None)
+        return Response(response_data)

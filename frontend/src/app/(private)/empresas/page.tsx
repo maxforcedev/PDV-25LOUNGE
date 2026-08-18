@@ -223,7 +223,7 @@ function CompaniesAdministration() {
                                       {branch.name}
                                     </strong>
                                     <span className="mt-1 block text-[10px] text-slate-500">
-                                      Negativo: {branch.settings_summary?.allow_negative_stock ? "permitido" : "bloqueado"} · Taxa: {branch.settings_summary?.service_fee_rate || "0.00"}% · Comissão: {branch.settings_summary?.commission_rate || "0.00"}% · Fixo: {formatBRL(branch.settings_summary?.fixed_daily_cost || "0.00")}
+                                       Negativo: {branch.settings_summary?.allow_negative_stock ? "permitido" : "bloqueado"} · Taxa: {branch.settings_summary?.service_fee_rate || "0.00"}%{branch.settings_summary?.commission_rate !== undefined ? ` · Comissão: ${branch.settings_summary.commission_rate}%` : ""} · Fixo: {formatBRL(branch.settings_summary?.fixed_daily_cost || "0.00")}
                                     </span>
                                   </div>
                                 ))}

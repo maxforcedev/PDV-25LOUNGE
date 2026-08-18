@@ -6,7 +6,10 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
 from apps.base.datetimes import parse_datetime_range
+from apps.base.exceptions import DomainValidationError
+from apps.companies.models import BranchSettings, Status
 from apps.companies.selectors import accessible_branches, user_has_branch_permission
+from apps.products.models import Category, Product
 
 from .models import Stock, StockMovement
 from .permissions import InventoryFunctionalPermission
@@ -100,10 +103,21 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
         can_view_costs = request.user.is_superuser or user_has_branch_permission(
             request.user, branch_id, 'inventory.view_stock_costs'
         )
-        result = {}
+        can_regularize = request.user.is_superuser or user_has_branch_permission(
+            request.user, branch_id, 'inventory.regularize'
+        )
+        result = {'allow_negative_stock': False, 'legacy_negative_state': False}
+        if branch:
+            result['allow_negative_stock'] = BranchSettings.objects.filter(
+                branch=branch, allow_negative_stock=True
+            ).exists()
+        if can_view_kpis or can_regularize:
+            result['negative_count'] = queryset.filter(current_quantity__lt=0).count()
+            result['legacy_negative_state'] = bool(
+                result['negative_count'] and not result['allow_negative_stock']
+            )
         if can_view_kpis:
             result.update(queryset.aggregate(
-                negative_count=Count('id', filter=Q(current_quantity__lt=0)),
                 below_minimum_count=Count(
                 'id',
                 filter=Q(
@@ -136,6 +150,9 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
         serializer = RegularizeNegativesSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        current = getattr(request, 'branch_context', None)
+        if current is None or current.pk != data['branch']:
+            raise PermissionDenied('Filial fora do contexto autorizado.')
         movements = regularize_negatives(
             branch=data['branch'], items=data['items'], reason=data['reason'],
             user=request.user,
@@ -172,6 +189,7 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
         'group_entry': 'inventory.entry',
         'exit': 'inventory.exit',
         'adjustment': 'inventory.adjust',
+        'entry_options': 'inventory.entry',
     }
 
     def get_queryset(self):
@@ -251,14 +269,28 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=('post',), url_path='group-entry')
     def group_entry(self, request):
+        current = getattr(request, 'branch_context', None)
+        if current is None or current.status != Status.ACTIVE or current.company.status != Status.ACTIVE:
+            raise DomainValidationError(
+                code='active_branch_context_required',
+                message='Selecione uma filial ativa para registrar a entrada.',
+            )
         serializer = GroupEntrySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        from apps.products.models import Product
-
+        if current.pk != data['branch']:
+            raise PermissionDenied('Filial fora do contexto autorizado.')
         product_ids = [item['product'] for item in data['items'] if item['quantity'] > 0]
+        if not Category.objects.filter(
+            pk=data['category'], company_id=current.company_id, status=Status.ACTIVE
+        ).exists():
+            raise DomainValidationError(
+                code='invalid_inventory_entry_category',
+                message='A categoria informada nao esta ativa nesta empresa.',
+                details={'category_id': data['category']},
+            )
         valid_ids = set(Product.objects.filter(
-            id__in=product_ids, company_id=request.branch_context.company_id,
+            id__in=product_ids, company_id=current.company_id,
             category_id=data['category'], inventory_behavior='direct', status='active',
         ).values_list('id', flat=True))
         if valid_ids != set(product_ids):
@@ -267,10 +299,57 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
         movements = group_entry(
             branch=data['branch'], items=data['items'], nature=data['nature'],
             reason=data['reason'], user=request.user,
+            operation_reference=data['idempotency_key'],
         )
         queryset = self.get_queryset().filter(pk__in=[item.pk for item in movements])
+        replayed = bool(getattr(movements[0], '_idempotency_replayed', False))
+        request.audit_fallback_suppressed = replayed
         return Response({
             'operation_reference': str(movements[0].operation_reference),
             'count': len(movements),
+            'idempotency_replayed': replayed,
             'results': self.get_serializer(queryset, many=True).data,
-        }, status=status.HTTP_201_CREATED)
+        }, status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=('get',), url_path='entry-options')
+    def entry_options(self, request):
+        branch = getattr(request, 'branch_context', None)
+        if branch is None or branch.status != Status.ACTIVE or branch.company.status != Status.ACTIVE:
+            raise DomainValidationError(
+                code='active_branch_context_required',
+                message='Selecione uma filial ativa para carregar as opcoes de entrada.',
+            )
+        categories = Category.objects.filter(
+            company_id=branch.company_id, status=Status.ACTIVE,
+            products__status=Status.ACTIVE,
+            products__inventory_behavior='direct',
+        ).distinct().order_by('sort_order', 'name', 'id')
+        category_id = request.query_params.get('category')
+        products = Product.objects.none()
+        if category_id:
+            try:
+                category = categories.get(pk=category_id)
+            except (Category.DoesNotExist, TypeError, ValueError) as error:
+                raise DomainValidationError(
+                    code='invalid_inventory_entry_category',
+                    message='A categoria nao possui produtos fisicos elegiveis nesta filial.',
+                    details={'category_id': category_id},
+                ) from error
+            products = Product.objects.filter(
+                company_id=branch.company_id, category=category,
+                inventory_behavior='direct', status=Status.ACTIVE,
+            ).order_by('name', 'id')
+        balances = dict(Stock.objects.filter(
+            branch=branch, product__in=products
+        ).values_list('product_id', 'current_quantity'))
+        return Response({
+            'branch': {'id': branch.pk, 'name': branch.name},
+            'categories': [{'id': item.pk, 'name': item.name} for item in categories],
+            'products': [{
+                'id': product.pk,
+                'name': product.name,
+                'internal_code': product.internal_code,
+                'unit': product.unit,
+                'current_quantity': str(balances.get(product.pk, 0)),
+            } for product in products],
+        })

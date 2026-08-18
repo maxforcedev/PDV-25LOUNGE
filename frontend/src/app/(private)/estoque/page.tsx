@@ -43,6 +43,8 @@ type Summary = {
   below_minimum_count?: number;
   zero_count?: number;
   estimated_value?: string;
+  allow_negative_stock: boolean;
+  legacy_negative_state: boolean;
 };
 type StockFilters = {
   state: string;
@@ -105,6 +107,8 @@ function Inventory() {
   const [reason, setReason] = useState("");
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
+  const showRegularize = canRegularize && !!summary?.allow_negative_stock && (summary?.negative_count ?? 0) > 0;
+  const showLegacyRecovery = canRegularize && !!summary?.legacy_negative_state && (summary?.negative_count ?? 0) > 0;
   const contextRef = useRef("");
   contextRef.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}`;
   function params(
@@ -333,7 +337,7 @@ function Inventory() {
         action={
           <div className="flex flex-wrap gap-2">
             {canEntry && <Link href="/estoque/entrada-em-grupo" className="btn btn-secondary"><Plus className="size-4" />Entrada em grupo</Link>}
-            {canRegularize && <Link href="/estoque/regularizar" className="btn btn-secondary"><TriangleAlert className="size-4" />Regularizar negativos</Link>}
+            {showRegularize && <Link href="/estoque/regularizar" className="btn btn-secondary"><TriangleAlert className="size-4" />Regularizar negativos</Link>}
             {canMove && (
               <Button
                 onClick={() => setChooser(true)}
@@ -355,6 +359,7 @@ function Inventory() {
       <div className="space-y-4 p-4 sm:p-6 lg:p-8">
         {error && !action && <Alert message={error} />}
         {success && <Alert type="success" message={success} />}
+        {showLegacyRecovery && <section className="card border-warning/40 bg-warning/10 p-4 text-sm"><strong className="block text-warning-strong">Estado legado incompatível</strong><p className="mt-1 text-muted">A filial bloqueia estoque negativo, mas ainda possui {summary?.negative_count} {summary?.negative_count === 1 ? "produto negativo" : "produtos negativos"}. Use a recuperação administrativa antes de novas saídas.</p><Link href="/estoque/regularizar?legacy=true" className="btn btn-secondary mt-3"><TriangleAlert className="size-4" />Recuperar saldos negativos</Link></section>}
         {(canViewKpis || canViewCosts) && (
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {canViewKpis && (
@@ -794,7 +799,7 @@ function Inventory() {
             {action !== "minimum" && (
               <Field label="Natureza" error={fieldError(fields, "nature")}>
                 <Select value={nature} onChange={(event) => setNature(event.target.value)}>
-                  {action === "entry" ? <><option value="normal">Compra / entrada normal</option><option value="bonus">Bonificada</option><option value="return">Devolução</option><option value="opening_balance">Saldo inicial</option><option value="correction">Correção</option><option value="other">Outros</option></> : action === "exit" ? <><option value="transfer">Transferência</option><option value="damage">Avaria</option><option value="loss">Perda</option><option value="internal_use">Uso interno</option><option value="correction">Correção</option><option value="other">Outros</option></> : <><option value="inventory">Inventário / contagem física</option><option value="regularization">Regularização</option><option value="balance_correction">Correção de saldo</option><option value="other">Outros</option></>}
+                  {action === "entry" ? <><option value="normal">Compra / entrada normal</option><option value="bonus">Bonificada</option><option value="return">Devolução</option><option value="opening_balance">Saldo inicial</option><option value="correction">Correção</option><option value="other">Outros</option></> : action === "exit" ? <><option value="transfer">Transferência</option><option value="damage">Avaria</option><option value="loss">Perda</option><option value="internal_use">Uso interno</option><option value="correction">Correção</option><option value="other">Outros</option></> : <><option value="inventory">Inventário / contagem física</option><option value="balance_correction">Correção de saldo</option><option value="other">Outros</option></>}
                 </Select>
               </Field>
             )}

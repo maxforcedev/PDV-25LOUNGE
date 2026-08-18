@@ -3,12 +3,11 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { clearCsrfToken, getCsrfToken, http } from "@/lib/http";
+import { firstAuthorizedRoute, isOperatingPermission } from "@/lib/authorized-routes";
 import type { User, UserBranch, UserCompany } from "@/types";
 
 const COMPANY_KEY = "pdv.current_company_id";
 const BRANCH_KEY = "pdv.current_branch_id";
-const OPERATING_MODULES = new Set(["products", "categories", "branch_prices", "inventory", "cash_registers", "sales", "payment_methods", "reports", "dashboard", "promotions", "audit_logs"]);
-
 interface AuthContextValue {
   user: User | null;
   loading: boolean;
@@ -75,8 +74,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (loading) return;
     if (!user && pathname !== "/login") router.replace("/login");
-    if (user && pathname === "/login") router.replace("/dashboard");
-  }, [loading, pathname, router, user]);
+    if (user && pathname === "/login") {
+      router.replace(firstAuthorizedRoute(user, currentCompany, currentBranch));
+    }
+  }, [loading, pathname, router, user, currentCompany, currentBranch]);
 
   async function login(email: string, password: string) {
     await getCsrfToken(true);
@@ -116,12 +117,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       },
       hasPermission: (permission) => {
         if (!user) return false;
-        const operating = OPERATING_MODULES.has(permission.split(".")[0]);
+        const operating = isOperatingPermission(permission);
         const source = operating ? currentBranch : currentCompany;
         return !!source && (user.is_superuser || source.permissions.includes(permission));
       },
       hasAnyPermission: (required) => !!user && required.some((permission) => {
-        const source = OPERATING_MODULES.has(permission.split(".")[0]) ? currentBranch : currentCompany;
+        const source = isOperatingPermission(permission) ? currentBranch : currentCompany;
         return !!source && (user.is_superuser || source.permissions.includes(permission));
       }),
     }}>

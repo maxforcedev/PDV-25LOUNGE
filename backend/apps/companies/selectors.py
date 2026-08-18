@@ -228,3 +228,66 @@ def branch_permission_codes(user, branch_id):
         ).values_list('access_profile__permissions__code', flat=True)
     )
     return codes - _branch_blocked_codes(user, branch_id)
+
+
+def inherited_permission_codes(user, company_id, branch_id=None):
+    """Return profile permissions before individual blocks are applied."""
+    if not user.is_authenticated or not user.can_login or not user.is_active:
+        return set()
+    if user.is_superuser:
+        from .rbac import ALL_PERMISSION_CODES
+
+        return set(ALL_PERMISSION_CODES)
+
+    if branch_id:
+        from .rbac import OPERATING_PERMISSION_CODES
+
+        return set(
+            UserBranchAccess.objects.filter(
+                user=user,
+                branch_id=branch_id,
+                branch__company_id=company_id,
+                is_active=True,
+                access_profile__status='active',
+                access_profile__permissions__status='active',
+                branch__company__user_accesses__user=user,
+                branch__company__user_accesses__is_active=True,
+                branch__company__user_accesses__access_profile__status='active',
+            ).values_list('access_profile__permissions__code', flat=True)
+        ) & set(OPERATING_PERMISSION_CODES)
+
+    from .rbac import OPERATING_PERMISSION_CODES
+
+    company_codes = set(
+        UserCompanyAccess.objects.filter(
+            user=user,
+            company_id=company_id,
+            is_active=True,
+            access_profile__status='active',
+            access_profile__permissions__status='active',
+        ).values_list('access_profile__permissions__code', flat=True)
+    )
+    branch_codes = set(
+        UserBranchAccess.objects.filter(
+            user=user,
+            branch__company_id=company_id,
+            is_active=True,
+            access_profile__status='active',
+            access_profile__permissions__status='active',
+            branch__company__user_accesses__user=user,
+            branch__company__user_accesses__is_active=True,
+            branch__company__user_accesses__access_profile__status='active',
+        ).values_list('access_profile__permissions__code', flat=True)
+    )
+    return (
+        company_codes - set(OPERATING_PERMISSION_CODES)
+    ) | (
+        branch_codes & set(OPERATING_PERMISSION_CODES)
+    )
+
+
+def blockable_permission_codes(user, company_id, branch_id=None):
+    codes = inherited_permission_codes(user, company_id, branch_id)
+    if branch_id:
+        return codes - _branch_blocked_codes(user, branch_id)
+    return codes - _company_blocked_codes(user, company_id)

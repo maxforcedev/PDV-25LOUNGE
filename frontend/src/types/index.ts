@@ -87,8 +87,10 @@ export interface BranchSettings {
   branch: number;
   allow_negative_stock: boolean;
   service_fee_rate: string;
-  commission_rate: string;
+  commission_rate?: string;
   fixed_daily_cost: string;
+  negative_stock_count: number;
+  negative_stock_state: "clear" | "enabled_with_negatives" | "legacy_inconsistent";
   created_at: string;
   updated_at: string;
 }
@@ -146,8 +148,8 @@ export interface AccessProfile {
   description: string;
   is_system: boolean;
   status: Status;
-  receives_commission: boolean;
-  commission_rate: string | null;
+  receives_commission?: boolean;
+  commission_rate?: string | null;
   permission_codes: string[];
   created_at: string;
   updated_at: string;
@@ -344,6 +346,7 @@ export interface CashMovement {
   category_label: string | null;
   beneficiary: CashBeneficiary | null;
   result_effect: "unclassified" | "operating_expense" | "neutral";
+  operation_reference: string;
   created_at: string;
 }
 
@@ -365,7 +368,7 @@ export interface CashSummary {
   cash_payments: string;
   closing_amount_informed: string | null;
   closing_difference: string | null;
-  sales: { count: number; gross: string; promotion_discount: string; manual_discount: string; effective_revenue: string; service_fee: string; commission: string; customer_total: string };
+  sales: { count: number; gross: string; promotion_discount: string; item_discount: string; account_discount: string; manual_discount: string; effective_revenue: string; service_fee: string; commission?: string; customer_total: string };
   consumptions: { count: number; reference: string; charged: string; benefit: string };
   payment_totals: Array<{ payment_method_code: string; payment_method_name: string; amount: string }>;
 }
@@ -444,6 +447,19 @@ export interface SaleItem {
   promotion_discount_type: "percentage" | "fixed_amount" | null;
   promotion_discount_value: string | null;
   promotion_benefit: string;
+  manual_discount: string;
+  discount_approved_by: number | null;
+  discount_approved_by_name: string | null;
+  component_cost_snapshot?: Array<{
+    product: number;
+    product_name: string;
+    internal_code: string;
+    unit: string;
+    quantity_per_unit: string;
+    consumed_quantity: string;
+    unit_cost: string;
+    unit_cost_contribution: string;
+  }>;
   net_subtotal: string;
   created_at: string;
 }
@@ -468,6 +484,7 @@ export interface Sale {
   cash_session: number | null;
   cash_session_status: CashSessionStatus | null;
   sale_number: string;
+  idempotency_key: string | null;
   operation_type: SaleOperation;
   status: SaleStatus;
   created_by: number;
@@ -480,14 +497,15 @@ export interface Sale {
   beneficiary_user_name: string | null;
   subtotal: string;
   promotion_discount_total: string;
+  item_discount_total: string;
   discount: string;
   service_fee_rate: string;
   service_fee_amount: string;
   service_fee_waived: boolean;
   service_fee_waived_by: number | null;
   service_fee_waived_by_name: string | null;
-  commission_rate: string;
-  commission_amount: string;
+  commission_rate?: string;
+  commission_amount?: string;
   charged_amount: string | null;
   total: string;
   cancelled_at: string | null;
@@ -527,6 +545,7 @@ export interface SalePreviewItem {
   promotion_discount_type: "percentage" | "fixed_amount" | null;
   promotion_discount_value: string | null;
   promotion_benefit: string;
+  manual_discount: string;
   net_subtotal: string;
 }
 
@@ -535,12 +554,13 @@ export interface SalePreview {
   items: SalePreviewItem[];
   subtotal: string;
   promotion_discount_total: string;
+  item_discount_total: string;
   discount: string;
   service_fee_rate: string;
   service_fee_amount: string;
   service_fee_waived: boolean;
-  commission_rate: string;
-  commission_amount: string;
+  commission_rate?: string;
+  commission_amount?: string;
   charged_amount: string | null;
   reference_total: string;
   total: string;
@@ -580,8 +600,8 @@ export interface ReportSale {
   id: number; sale_number: string; operation_type: SaleOperation; status: SaleStatus;
   operator: { id: number; name: string }; seller: { id: number; name: string } | null;
   discount_approved_by: { id: number; name: string } | null; beneficiary: { id: number; name: string; user_type: UserType } | null;
-  subtotal: string; promotion_discount_total: string; discount: string;
-  service_fee_rate: string; service_fee_amount: string; commission_rate: string; commission_amount: string; total: string;
+  subtotal: string; promotion_discount_total: string; item_discount_total: string; discount: string;
+  service_fee_rate: string; service_fee_amount: string; commission_rate?: string; commission_amount?: string; total: string;
   created_at: string; cancelled_at: string | null;
   items: Array<Record<string, unknown>>; payments: Array<Record<string, unknown>>;
 }
@@ -594,7 +614,7 @@ export interface CashReportRow {
 export interface DashboardData {
   period: ReportPeriod;
   filters?: { category: number | null; categories: Array<{ id: number; name: string }> };
-  sales?: { revenue: string; gross: string; effective_revenue: string; customer_total: string; service_fee: string; commission?: string; count: number; average: string; manual_discount: string; manual_discount_count: number; promotion_discount: string; total_discount: string; cancellations: { count: number; value: string }; payment_distribution: Array<{ code: string; name: string; amount: string }>; hourly_sales: Array<{ hour: string; count: number; effective_revenue: string; service_fee: string; customer_total: string }>; top_products: Array<{ product_id?: number; product_name: string; quantity: string; revenue: string }>; top_categories: Array<{ category_id?: number; category_name: string; quantity: string; revenue: string }>; top_sellers: ReportUserGroup[]; top_operators: ReportUserGroup[]; heatmap: Array<{ weekday: number; hour: number; count: number; revenue: string; average: string }>; weekly_comparison: { current: Array<{ date: string; count: number; revenue: string }>; previous: Array<{ date: string; count: number; revenue: string }> }; latest_sales: ReportSale[] };
+  sales?: { revenue: string; gross: string; effective_revenue: string; customer_total: string; service_fee: string; commission?: string; count: number; average: string; account_discount: string; item_discount: string; manual_discount: string; manual_discount_count: number; promotion_discount: string; total_discount: string; cancellations: { count: number; value: string }; payment_distribution: Array<{ code: string; name: string; amount: string }>; hourly_sales: Array<{ hour: string; count: number; effective_revenue: string; service_fee: string; customer_total: string }>; top_products: Array<{ product_id?: number; product_name: string; quantity: string; revenue: string }>; top_categories: Array<{ category_id?: number; category_name: string; quantity: string; revenue: string }>; top_sellers: ReportUserGroup[]; top_operators: ReportUserGroup[]; heatmap: Array<{ weekday: number; hour: number; count: number; revenue: string; average: string }>; weekly_comparison: { current: Array<{ date: string; count: number; revenue: string }>; previous: Array<{ date: string; count: number; revenue: string }> }; latest_sales: ReportSale[] };
   consumptions?: { count: number; reference: string; charged: string; subsidy: string };
   withdrawals?: { count: number; amount: string };
   current_cash?: CashReportRow[];
@@ -627,6 +647,9 @@ export interface AuditLog {
   actor: number | null;
   actor_name: string | null;
   action: string;
+  action_label: string;
+  module_label: string;
+  object_label: string;
   object_type: string;
   object_id: string;
   before: Record<string, unknown>;
@@ -647,9 +670,17 @@ export interface UserPermissionBlock {
   permission_label: string;
   reason: string;
   is_active: boolean;
+  created_by: number | null;
+  created_by_name: string | null;
   revoked_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface PermissionBlockOptions {
+  users: Array<{ id: number; name: string; email: string | null }>;
+  branches: Array<{ id: number; name: string }>;
+  permissions: FunctionalPermission[];
 }
 
 export interface UserCommissionOverride {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { GitBranch, MapPin, Pencil, Plus, Power, Settings2 } from "lucide-react";
 import { AdminGuard } from "@/components/admin-guard";
 import { PageHeader } from "@/components/page-header";
@@ -38,7 +39,8 @@ function addressText(address: Branch["address"]) {
 }
 
 function BranchesAdministration() {
-  const { user, currentCompany, hasPermission } = useAuth();
+  const router = useRouter();
+  const { user, currentCompany, hasPermission, setCurrentBranchId } = useAuth();
   const canAdd = hasPermission(permissions.addBranch);
   const canChange = hasPermission(permissions.changeBranch);
   const canSettings = hasPermission(permissions.changeBranchSettings);
@@ -63,6 +65,7 @@ function BranchesAdministration() {
   const [settingsFields, setSettingsFields] = useState<Record<string, string[]>>({});
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [negativeRecovery, setNegativeRecovery] = useState<{ count: number; names: string[]; legacy: boolean } | null>(null);
 
   async function load(path = currentCompany ? `branches/?company=${currentCompany.id}` : "branches/") {
     setLoading(true);
@@ -223,10 +226,15 @@ function BranchesAdministration() {
     setSettingsBranch(branch);
     setSettings(null);
     setSettingsFields({});
+    setNegativeRecovery(null);
     setError("");
     setSettingsLoading(true);
     try {
-      setSettings(await http.get<BranchSettings>(`branches/${branch.id}/settings/`));
+      const nextSettings = await http.get<BranchSettings>(`branches/${branch.id}/settings/`);
+      setSettings(nextSettings);
+      if (nextSettings.negative_stock_state === "legacy_inconsistent") {
+        setNegativeRecovery({ count: nextSettings.negative_stock_count, names: [], legacy: true });
+      }
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar as configurações da filial.");
       setSettingsBranch(null);
@@ -256,11 +264,23 @@ function BranchesAdministration() {
         setSettingsFields(caught.fields);
         if (caught.code === "negative_stocks_must_be_regularized") {
           setSettingsFields((current) => ({ ...current, allow_negative_stock: ["Use o fluxo Regularizar negativos na tela de Estoque."] }));
+          const stocks = Array.isArray(caught.details.stocks) ? caught.details.stocks as Array<Record<string, unknown>> : [];
+          setNegativeRecovery({
+            count: typeof caught.details.count === "number" ? caught.details.count : stocks.length,
+            names: stocks.map((stock) => String(stock.product__name || "")).filter(Boolean),
+            legacy: false,
+          });
         }
       } else setError("Não foi possível salvar as configurações da filial.");
     } finally {
       setSettingsSaving(false);
     }
+  }
+
+  function startNegativeRecovery() {
+    if (!settingsBranch) return;
+    setCurrentBranchId(settingsBranch.id);
+    router.push(`/estoque/regularizar?branch=${settingsBranch.id}${negativeRecovery?.legacy ? "&legacy=true" : ""}`);
   }
 
   return (
@@ -336,7 +356,8 @@ function BranchesAdministration() {
                  <input type="checkbox" className="mt-0.5 size-4 accent-primary" checked={settings.allow_negative_stock} onChange={(event) => setSettings((value) => value ? { ...value, allow_negative_stock: event.target.checked } : value)} disabled={settingsSaving} />
                  <span><strong className="block text-xs">Permitir estoque negativo</strong><small className="mt-1 block text-[11px] text-slate-500">Vendas e saídas poderão deixar o saldo abaixo de zero nesta filial.</small></span>
                </label>
-              {fieldError(settingsFields, "allow_negative_stock") && <div><p className="field-error">{fieldError(settingsFields, "allow_negative_stock")}</p><a className="mt-2 inline-block text-xs font-bold text-primary" href="/estoque?state=negative&regularize=true">Regularizar negativos</a></div>}
+              {fieldError(settingsFields, "allow_negative_stock") && <p className="field-error">{fieldError(settingsFields, "allow_negative_stock")}</p>}
+              {negativeRecovery && <div className="rounded-lg border border-warning/35 bg-warning/10 p-4 text-xs"><strong className="block text-warning-strong">{negativeRecovery.legacy ? "Recuperação de estado legado" : "Desativação bloqueada"}</strong><p className="mt-1 text-muted">{negativeRecovery.count} {negativeRecovery.count === 1 ? "produto possui" : "produtos possuem"} saldo negativo. {negativeRecovery.names.length ? `Afetados: ${negativeRecovery.names.slice(0, 5).join(", ")}${negativeRecovery.names.length > 5 ? "…" : ""}.` : "Abra a lista para revisar os afetados."}</p><Button type="button" variant="secondary" className="mt-3" onClick={startNegativeRecovery}>Ver produtos e regularizar</Button></div>}
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Taxa de serviço (%)" error={fieldError(settingsFields, "service_fee_rate")}><Input required type="number" min="0" max="100" step="0.01" value={settings.service_fee_rate} onChange={(event) => setSettings((value) => value ? { ...value, service_fee_rate: event.target.value } : value)} disabled={settingsSaving} /></Field>
                  <Field label="Comissão padrão (%)" error={fieldError(settingsFields, "commission_rate")}><Input required type="number" min="0" max="100" step="0.01" value={settings.commission_rate} onChange={(event) => setSettings((value) => value ? { ...value, commission_rate: event.target.value } : value)} disabled={settingsSaving || !canChangeCommission} /></Field>

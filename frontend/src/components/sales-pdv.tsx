@@ -49,7 +49,7 @@ import type {
   SaleUserOption,
 } from "@/types";
 
-type CartItem = Product & { quantity: string };
+type CartItem = Product & { quantity: string; item_discount: string };
 type PaymentRow = {
   key: number;
   payment_method: string;
@@ -68,6 +68,15 @@ let paymentKey = 1;
 const canonicalDecimal = /^\d+\.\d{2}$/;
 const userTypeLabels: Record<string, string> = { employee: "Funcionário", promoter: "Promoter", dj: "DJ", artist: "Artista", other: "Outro" };
 
+function newIdempotencyKey() {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const value = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
+}
+
 function errorText(caught: unknown, fallback: string) {
   if (!(caught instanceof ApiError)) return fallback;
   return Object.values(caught.fields).flat().join(" ") || caught.message;
@@ -82,14 +91,15 @@ function validPreviewContract(value: unknown): value is SalePreview {
     ![
       preview.subtotal,
       preview.promotion_discount_total,
+      preview.item_discount_total,
       preview.discount,
       preview.service_fee_rate,
       preview.service_fee_amount,
-      preview.commission_rate,
-      preview.commission_amount,
       preview.reference_total,
       preview.total,
     ].every(money)
+    || (preview.commission_rate !== undefined && !money(preview.commission_rate))
+    || (preview.commission_amount !== undefined && !money(preview.commission_amount))
   )
     return false;
   if (preview.charged_amount !== null && !money(preview.charged_amount))
@@ -102,6 +112,7 @@ function validPreviewContract(value: unknown): value is SalePreview {
       money(row.unit_price) &&
       money(row.subtotal) &&
       money(row.promotion_benefit) &&
+      money(row.manual_discount) &&
       money(row.net_subtotal) &&
       (row.promotion_discount_value === null ||
         money(row.promotion_discount_value)) &&
@@ -121,6 +132,7 @@ export function SalesPdv() {
   );
   const consumption = operation === "consumption";
   const canDiscount = !consumption && hasPermission(permissions.applyDiscount);
+  const canItemDiscount = !consumption && hasPermission(permissions.applyItemDiscount);
   const canWaiveServiceFee = !consumption && hasPermission(permissions.waiveServiceFee);
   const contextRef = useRef("");
   contextRef.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}`;
@@ -137,6 +149,7 @@ export function SalesPdv() {
   const [beneficiaries, setBeneficiaries] = useState<SaleBeneficiary[]>([]);
   const [sellers, setSellers] = useState<SaleUserOption[]>([]);
   const [authorizers, setAuthorizers] = useState<SaleUserOption[]>([]);
+  const [itemAuthorizers, setItemAuthorizers] = useState<SaleUserOption[]>([]);
   const [beneficiariesLoading, setBeneficiariesLoading] = useState(false);
   const [consumptionModal, setConsumptionModal] = useState(false);
   const [consumptionError, setConsumptionError] = useState("");
@@ -144,6 +157,8 @@ export function SalesPdv() {
   const [seller, setSeller] = useState("");
   const [authorizer, setAuthorizer] = useState("");
   const [authorizationPassword, setAuthorizationPassword] = useState("");
+  const [itemAuthorizer, setItemAuthorizer] = useState("");
+  const [itemAuthorizationPassword, setItemAuthorizationPassword] = useState("");
   const [serviceFeeWaived, setServiceFeeWaived] = useState(false);
   const [serviceFeeAuthorizer, setServiceFeeAuthorizer] = useState("");
   const [serviceFeePassword, setServiceFeePassword] = useState("");
@@ -164,6 +179,7 @@ export function SalesPdv() {
   const [previewError, setPreviewError] = useState("");
   const [finalizing, setFinalizing] = useState(false);
   const [sale, setSale] = useState<Sale | null>(null);
+  const idempotencyKeyRef = useRef<string | null>(null);
 
   function catalogPath() {
     const params = new URLSearchParams({ operation_type: operation });
@@ -223,6 +239,7 @@ export function SalesPdv() {
     setBeneficiaries([]);
     setSellers([]);
     setAuthorizers([]);
+    setItemAuthorizers([]);
     setCart([]);
     setPreview(null);
     setPreviewSignature(null);
@@ -236,6 +253,8 @@ export function SalesPdv() {
     setSeller("");
     setAuthorizer("");
     setAuthorizationPassword("");
+    setItemAuthorizer("");
+    setItemAuthorizationPassword("");
     setServiceFeeWaived(false);
     setServiceFeeAuthorizer("");
     setServiceFeePassword("");
@@ -251,6 +270,7 @@ export function SalesPdv() {
         received_amount: "",
       },
     ]);
+    idempotencyKeyRef.current = null;
     if (!currentBranch) {
       setCatalogLoading(false);
       return;
@@ -312,11 +332,13 @@ export function SalesPdv() {
     Promise.all([
       http.getAll<SaleUserOption>("sales/sellers/"),
       http.getAll<SaleUserOption>("sales/discount-authorizers/"),
+      http.getAll<SaleUserOption>("sales/item-discount-authorizers/"),
     ])
-      .then(([sellerOptions, authorizerOptions]) => {
+      .then(([sellerOptions, authorizerOptions, itemAuthorizerOptions]) => {
         if (contextRef.current !== context) return;
         setSellers(sellerOptions);
         setAuthorizers(authorizerOptions);
+        setItemAuthorizers(itemAuthorizerOptions);
         const ownOption = sellerOptions.find((item) => item.id === user?.id);
         setSeller(ownOption ? String(ownOption.id) : "");
       })
@@ -335,6 +357,7 @@ export function SalesPdv() {
   const rawItems = cart.map((item) => ({
     product: item.id,
     quantity: item.quantity.replace(",", "."),
+    discount: consumption ? "0.00" : item.item_discount.replace(",", "."),
   }));
   const pricingPayload: PricingPayload = {
     operation_type: operation,
@@ -353,6 +376,7 @@ export function SalesPdv() {
     setPreviewSignature(null);
     setCalculating(false);
     setPreviewError("");
+    idempotencyKeyRef.current = null;
   }
   useEffect(() => {
     invalidatePreview();
@@ -432,7 +456,7 @@ export function SalesPdv() {
           })
         : [
             ...current,
-            { ...product, quantity: product.unit === "un" ? "1" : "1.000" },
+            { ...product, quantity: product.unit === "un" ? "1" : "1.000", item_discount: "0.00" },
           ],
     );
   }
@@ -441,6 +465,14 @@ export function SalesPdv() {
     setCart((current) =>
       current.map((item) =>
         item.id === id ? { ...item, quantity: value } : item,
+      ),
+    );
+  }
+  function itemDiscount(id: number, value: string) {
+    invalidatePreview();
+    setCart((current) =>
+      current.map((item) =>
+        item.id === id ? { ...item, item_discount: value } : item,
       ),
     );
   }
@@ -495,6 +527,7 @@ export function SalesPdv() {
     setCharged(canonical);
     setOperation("consumption");
     setDiscount("0.00");
+    setCart((current) => current.map((item) => ({ ...item, item_discount: "0.00" })));
     setConsumptionModal(false);
     invalidatePreview();
   }
@@ -555,6 +588,12 @@ export function SalesPdv() {
   const discountAuthorizationRequired = Boolean(
     !consumption && !canDiscount && preview && preview.discount !== "0.00",
   );
+  const itemDiscountAuthorizationRequired = Boolean(
+    !consumption &&
+      !canItemDiscount &&
+      preview &&
+      preview.item_discount_total !== "0.00",
+  );
   const serviceFeeAuthorizationRequired = Boolean(
     !consumption && serviceFeeWaived && !canWaiveServiceFee,
   );
@@ -564,6 +603,8 @@ export function SalesPdv() {
         seller &&
           (!discountAuthorizationRequired ||
             (authorizer && authorizationPassword)) &&
+          (!itemDiscountAuthorizationRequired ||
+            (itemAuthorizer && itemAuthorizationPassword)) &&
           (!serviceFeeAuthorizationRequired ||
             (serviceFeeAuthorizer && serviceFeePassword)),
       );
@@ -580,7 +621,11 @@ export function SalesPdv() {
     setFinalizing(true);
     setPreviewError("");
     try {
+      if (!idempotencyKeyRef.current) {
+        idempotencyKeyRef.current = newIdempotencyKey();
+      }
       const result = await http.post<Sale>("sales/finalize/", {
+        idempotency_key: idempotencyKeyRef.current,
         operation_type: operation,
         items: rawItems,
         ...(consumption
@@ -599,6 +644,15 @@ export function SalesPdv() {
                       user: Number(authorizer),
                       method: "password",
                       credential: authorizationPassword,
+                    },
+                  }
+                  : {}),
+              ...(itemDiscountAuthorizationRequired
+                ? {
+                    item_discount_authorization: {
+                      user: Number(itemAuthorizer),
+                      method: "password",
+                      credential: itemAuthorizationPassword,
                     },
                   }
                 : {}),
@@ -640,6 +694,9 @@ export function SalesPdv() {
       setBeneficiary("");
       setAuthorizationPassword("");
       setAuthorizer("");
+      setItemAuthorizationPassword("");
+      setItemAuthorizer("");
+      idempotencyKeyRef.current = null;
       setPayments([
         {
           key: paymentKey++,
@@ -924,6 +981,20 @@ export function SalesPdv() {
                         UN exige quantidade inteira.
                       </p>
                     )}
+                    {!consumption && (
+                      <div className="mt-2 flex items-center gap-2">
+                        <label className="text-[10px] font-semibold text-slate-500" htmlFor={`item-discount-${item.id}`}>
+                          Desconto do item (R$)
+                        </label>
+                        <Input
+                          id={`item-discount-${item.id}`}
+                          className="ml-auto h-8 w-24 text-right"
+                          inputMode="decimal"
+                          value={item.item_discount}
+                          onChange={(event) => itemDiscount(item.id, event.target.value)}
+                        />
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -983,7 +1054,7 @@ export function SalesPdv() {
                 )}
                 {!consumption && (
                   <Field
-                    label={`Desconto (R$)${canDiscount ? "" : " · exige autorização"}`}
+                    label={`Desconto na conta (R$)${canDiscount ? "" : " · exige autorização"}`}
                   >
                     <Input
                       inputMode="decimal"
@@ -1025,6 +1096,34 @@ export function SalesPdv() {
                         onChange={(event) =>
                           setAuthorizationPassword(event.target.value)
                         }
+                      />
+                    </Field>
+                  </div>
+                )}
+                {itemDiscountAuthorizationRequired && (
+                  <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-4">
+                    <strong className="block text-xs text-amber-800">
+                      Autorização de desconto por item
+                    </strong>
+                    <Field label="Autorizador">
+                      <Select
+                        required
+                        value={itemAuthorizer}
+                        onChange={(event) => setItemAuthorizer(event.target.value)}
+                      >
+                        <option value="" disabled>Selecione quem autoriza</option>
+                        {itemAuthorizers.map((item) => (
+                          <option key={item.id} value={item.id}>{item.name}</option>
+                        ))}
+                      </Select>
+                    </Field>
+                    <Field label="Senha do autorizador">
+                      <Input
+                        required
+                        type="password"
+                        autoComplete="current-password"
+                        value={itemAuthorizationPassword}
+                        onChange={(event) => setItemAuthorizationPassword(event.target.value)}
                       />
                     </Field>
                   </div>
@@ -1075,8 +1174,14 @@ export function SalesPdv() {
                       )}
                     {!consumption && (
                       <div className="mt-2 flex justify-between text-xs text-slate-400">
-                        <span>Desconto manual</span>
+                        <span>Desconto na conta</span>
                         <span>- {formatBRL(preview.discount)}</span>
+                      </div>
+                    )}
+                    {!consumption && preview.item_discount_total !== "0.00" && (
+                      <div className="mt-2 flex justify-between text-xs text-amber-300">
+                        <span>Descontos por item</span>
+                        <span>- {formatBRL(preview.item_discount_total)}</span>
                       </div>
                     )}
                     {!consumption && preview.service_fee_amount !== "0.00" && (

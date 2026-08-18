@@ -1,6 +1,7 @@
 from rest_framework.permissions import BasePermission
 
 from apps.companies.selectors import (
+    accessible_companies,
     company_permission_codes,
     user_has_company_permission,
 )
@@ -25,12 +26,7 @@ class UserFunctionalPermission(BasePermission):
         if user.is_superuser:
             return True
         code = self.codes.get(view.action)
-        return user.company_accesses.filter(
-            is_active=True,
-            access_profile__status='active',
-            access_profile__permissions__status='active',
-            access_profile__permissions__code=code,
-        ).exists()
+        return accessible_companies(user, code).exists()
 
     def has_object_permission(self, request, view, obj):
         user = request.user
@@ -55,13 +51,7 @@ class UserFunctionalPermission(BasePermission):
             return False
         if view.action in ('update', 'partial_update'):
             return all(
-                set(
-                    obj.company_accesses.filter(
-                        company_id=company_id,
-                        is_active=True,
-                        access_profile__permissions__status='active',
-                    ).values_list('access_profile__permissions__code', flat=True)
-                )
+                company_permission_codes(obj, company_id)
                 <= company_permission_codes(user, company_id)
                 for company_id in target_company_ids
             )
