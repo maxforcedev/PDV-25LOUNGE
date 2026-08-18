@@ -201,7 +201,7 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         queryset = Sale.objects.select_related(
             'company', 'branch', 'cash_session', 'created_by', 'seller_user',
-            'discount_approved_by', 'beneficiary_user', 'cancelled_by'
+            'discount_approved_by', 'service_fee_waived_by', 'beneficiary_user', 'cancelled_by'
         ).prefetch_related('items__product', 'payments__payment_method')
         queryset = queryset.filter(branch=self.request.branch_context)
         if self.action == 'list':
@@ -289,6 +289,8 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
         )
         if query.validated_data.get('category'):
             queryset = queryset.filter(category_id=query.validated_data['category'])
+        if request.query_params.get('favorites') == 'true':
+            queryset = queryset.filter(is_favorite=True)
         if request.query_params.get('search'):
             search = request.query_params['search']
             queryset = queryset.filter(
@@ -341,7 +343,7 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
         )
         sale = Sale.objects.select_related(
             'company', 'branch', 'cash_session', 'created_by', 'seller_user',
-            'discount_approved_by', 'beneficiary_user', 'cancelled_by'
+            'discount_approved_by', 'service_fee_waived_by', 'beneficiary_user', 'cancelled_by'
         ).prefetch_related('items__product', 'payments__payment_method').get(pk=sale.pk)
         return Response(self.get_serializer(sale).data, status=status.HTTP_201_CREATED)
 
@@ -381,6 +383,7 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
                 charged_amount=data.get('charged_amount'),
                 beneficiary_user=beneficiary,
                 branch=request.branch_context,
+                service_fee_waived=data.get('service_fee_waived', False),
             )
         except DjangoValidationError as exc:
             detail = exc.message_dict if hasattr(exc, 'message_dict') else {'detail': exc.messages}

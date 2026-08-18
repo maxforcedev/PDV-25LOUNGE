@@ -286,6 +286,7 @@ class SaleSerializer(serializers.ModelSerializer):
     created_by_name = serializers.SerializerMethodField()
     seller_user_name = serializers.SerializerMethodField()
     discount_approved_by_name = serializers.SerializerMethodField()
+    service_fee_waived_by_name = serializers.SerializerMethodField()
     beneficiary_user_name = serializers.SerializerMethodField()
     cancelled_by_name = serializers.SerializerMethodField()
     subtotal = serializers.DecimalField(
@@ -324,6 +325,7 @@ class SaleSerializer(serializers.ModelSerializer):
             'cash_session_status', 'sale_number', 'operation_type', 'status',
             'created_by', 'created_by_name', 'seller_user', 'seller_user_name',
             'discount_approved_by', 'discount_approved_by_name',
+            'service_fee_waived', 'service_fee_waived_by', 'service_fee_waived_by_name',
             'beneficiary_user', 'beneficiary_user_name',
             'subtotal', 'promotion_discount_total', 'discount',
             'service_fee_rate', 'service_fee_amount',
@@ -340,6 +342,9 @@ class SaleSerializer(serializers.ModelSerializer):
 
     def get_discount_approved_by_name(self, sale):
         return readable_user_name(sale.discount_approved_by)
+
+    def get_service_fee_waived_by_name(self, sale):
+        return readable_user_name(sale.service_fee_waived_by)
 
     def get_beneficiary_user_name(self, sale):
         return readable_user_name(sale.beneficiary_user)
@@ -429,6 +434,7 @@ class CalculationSerializer(serializers.Serializer):
         required=False,
         allow_null=True,
     )
+    service_fee_waived = serializers.BooleanField(required=False, default=False)
 
 
 class CalculationItemOutputSerializer(serializers.Serializer):
@@ -481,6 +487,7 @@ class CalculationOutputSerializer(serializers.Serializer):
     service_fee_amount = InternalDecimalField(
         max_digits=14, decimal_places=2, coerce_to_string=True
     )
+    service_fee_waived = serializers.BooleanField()
     commission_rate = InternalDecimalField(
         max_digits=5, decimal_places=2, coerce_to_string=True
     )
@@ -513,6 +520,7 @@ class FinalizeSaleSerializer(CalculationSerializer):
     )
     payments = PaymentInputSerializer(many=True, required=False, default=list)
     discount_authorization = serializers.DictField(required=False, write_only=True)
+    service_fee_authorization = serializers.DictField(required=False, write_only=True)
 
     def validate_discount_authorization(self, value):
         allowed = {'user', 'method', 'credential'}
@@ -532,6 +540,9 @@ class FinalizeSaleSerializer(CalculationSerializer):
         except User.DoesNotExist:
             raise serializers.ValidationError('Autorizacao de desconto invalida.')
         return {'user': user, 'method': 'password', 'credential': credential}
+
+    def validate_service_fee_authorization(self, value):
+        return self.validate_discount_authorization(value)
 
 
 class SalesQuerySerializer(serializers.Serializer):

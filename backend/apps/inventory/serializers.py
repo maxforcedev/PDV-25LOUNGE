@@ -5,7 +5,7 @@ from rest_framework import serializers
 from apps.base.constants import MAX_BIGINT
 from apps.companies.selectors import user_has_branch_permission
 
-from .models import Stock, StockMovement
+from .models import MovementNature, Stock, StockMovement
 
 
 class StockSerializer(serializers.ModelSerializer):
@@ -47,7 +47,7 @@ class StockSerializer(serializers.ModelSerializer):
         return 'normal'
 
     def get_total_cost(self, obj):
-        return f'{(obj.current_quantity * obj.product.cost):.2f}'
+        return f'{(max(obj.current_quantity, Decimal("0")) * obj.product.cost):.2f}'
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -104,7 +104,7 @@ class StockMovementSerializer(serializers.ModelSerializer):
             'branch_name', 'company', 'company_name', 'unit', 'movement_type', 'type',
              'previous_quantity', 'quantity', 'movement_quantity', 'final_quantity',
              'user', 'user_name', 'reason', 'sale', 'sale_number', 'sale_operation_type',
-             'original_movement', 'created_at',
+              'original_movement', 'nature', 'operation_reference', 'created_at',
         )
         read_only_fields = fields
 
@@ -127,6 +127,7 @@ class MovementRequestSerializer(serializers.Serializer):
     reason = serializers.CharField(
         allow_blank=True, required=False, default='', trim_whitespace=True
     )
+    nature = serializers.ChoiceField(choices=MovementNature.values, required=False)
 
 
 class AdjustmentRequestSerializer(serializers.Serializer):
@@ -138,3 +139,40 @@ class AdjustmentRequestSerializer(serializers.Serializer):
     reason = serializers.CharField(
         allow_blank=True, required=False, default='', trim_whitespace=True
     )
+    nature = serializers.ChoiceField(choices=MovementNature.values, required=False)
+
+
+class GroupMovementItemSerializer(serializers.Serializer):
+    product = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
+    quantity = serializers.DecimalField(
+        max_digits=14, decimal_places=3, min_value=Decimal('0')
+    )
+
+
+class GroupEntrySerializer(serializers.Serializer):
+    branch = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
+    category = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
+    nature = serializers.ChoiceField(choices=(
+        MovementNature.NORMAL, MovementNature.BONUS, MovementNature.RETURN,
+        MovementNature.OPENING_BALANCE, MovementNature.CORRECTION, MovementNature.OTHER,
+    ))
+    reason = serializers.CharField(allow_blank=True, required=False, default='')
+    items = GroupMovementItemSerializer(many=True, allow_empty=False)
+
+    def validate_items(self, items):
+        if not any(item['quantity'] > 0 for item in items):
+            raise serializers.ValidationError('Informe quantidade para ao menos um produto.')
+        return items
+
+
+class RegularizationItemSerializer(serializers.Serializer):
+    stock = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
+    final_quantity = serializers.DecimalField(
+        max_digits=14, decimal_places=3, min_value=Decimal('0')
+    )
+
+
+class RegularizeNegativesSerializer(serializers.Serializer):
+    branch = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
+    reason = serializers.CharField(min_length=3, max_length=500)
+    items = RegularizationItemSerializer(many=True, allow_empty=False)

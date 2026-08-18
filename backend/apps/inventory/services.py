@@ -1,14 +1,17 @@
 from decimal import Decimal, InvalidOperation
+import uuid
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from rest_framework.exceptions import PermissionDenied
 
+from apps.base.audit import audit_log, model_snapshot
+from apps.base.exceptions import DomainValidationError
 from apps.companies.models import Branch, Status
 from apps.companies.selectors import user_has_branch_permission
 from apps.products.models import InventoryBehavior, Product
 
-from .models import MovementType, Stock, StockMovement
+from .models import MovementNature, MovementType, Stock, StockMovement
 
 
 def _decimal(value, field, *, positive=False, nonnegative=False):
@@ -58,10 +61,11 @@ def _validate_operational_stock(product, branch):
         raise ValidationError({'product': 'Somente produtos com estoque proprio podem ser movimentados.'})
 
 
-def _move(*, product, branch, quantity, user, reason, movement_type):
+def _move(*, product, branch, quantity, user, reason, movement_type, nature,
+          permission_code, operation_reference=None):
     reason = (reason or '').strip()
     with transaction.atomic():
-        branch = _authorized_branch(branch, user, 'inventory.move')
+        branch = _authorized_branch(branch, user, permission_code)
         try:
             product = Product.objects.select_for_update().get(pk=_pk(product))
         except Product.DoesNotExist:
@@ -74,26 +78,35 @@ def _move(*, product, branch, quantity, user, reason, movement_type):
         ).first()
         if stock is None:
             stock = Stock.objects.create(product=product, branch=branch)
-        return apply_locked_stock(
+        movement = apply_locked_stock(
             stock=stock, quantity=quantity, user=user, reason=reason,
-            movement_type=movement_type,
+            movement_type=movement_type, nature=nature,
+            operation_reference=operation_reference,
         )
+        audit_log(
+            actor=user, action=f'inventory.{movement_type}', obj=movement,
+            company=branch.company, branch=branch,
+            after=model_snapshot(movement, ('movement_type', 'quantity', 'previous_quantity', 'final_quantity', 'reason')),
+        )
+        return movement
 
 
 def apply_locked_stock(*, stock, quantity, user, movement_type, reason='', sale=None,
-                       original_movement=None):
+                       original_movement=None, nature=None, operation_reference=None):
     """Apply a delta to a Stock row already locked by the current transaction."""
     previous = stock.current_quantity
     final = previous + quantity
-    if final < 0:
+    if final < 0 and quantity < 0:
         from apps.companies.models import BranchSettings
         allow_negative = BranchSettings.objects.filter(
             branch_id=stock.branch_id, allow_negative_stock=True
         ).exists()
         if not allow_negative:
-            raise ValidationError({
-                'stock': f'Saldo insuficiente para o produto {stock.product_id}.',
-            })
+            raise DomainValidationError(
+                code='negative_stock_not_allowed',
+                message='A movimentacao deixaria o estoque negativo.',
+                details={'product_id': stock.product_id, 'current_quantity': str(previous), 'requested_quantity': str(quantity)},
+            )
     stock.current_quantity = final
     stock.save(update_fields=('current_quantity', 'updated_at'))
     return StockMovement.objects.create(
@@ -104,31 +117,44 @@ def apply_locked_stock(*, stock, quantity, user, movement_type, reason='', sale=
         final_quantity=final,
         user=user,
         reason=(reason or '').strip(),
+        nature=nature or {
+            MovementType.SALE: MovementNature.SALE,
+            MovementType.CONSUMPTION: MovementNature.CONSUMPTION,
+            MovementType.SALE_CANCELLATION: MovementNature.CANCELLATION,
+            MovementType.CONSUMPTION_CANCELLATION: MovementNature.CANCELLATION,
+        }.get(movement_type, MovementNature.NORMAL),
+        operation_reference=operation_reference or uuid.uuid4(),
         sale=sale,
         original_movement=original_movement,
     )
 
 
-def entry(product, branch, quantity, user, reason=''):
+def entry(product, branch, quantity, user, reason='', nature=MovementNature.NORMAL,
+          operation_reference=None):
     quantity = _decimal(quantity, 'quantity', positive=True)
     return _move(
         product=product, branch=branch, quantity=quantity, user=user,
-        reason=reason, movement_type=MovementType.ENTRY,
+        reason=reason, movement_type=MovementType.ENTRY, nature=nature,
+        permission_code='inventory.entry', operation_reference=operation_reference,
     )
 
 
-def exit(product, branch, quantity, user, reason=''):
+def exit(product, branch, quantity, user, reason='', nature=MovementNature.OTHER,
+         operation_reference=None):
     quantity = _decimal(quantity, 'quantity', positive=True)
     return _move(
         product=product, branch=branch, quantity=-quantity, user=user,
-        reason=reason, movement_type=MovementType.EXIT,
+        reason=reason, movement_type=MovementType.EXIT, nature=nature,
+        permission_code='inventory.exit', operation_reference=operation_reference,
     )
 
 
-def adjustment(product, branch, final_quantity, user, reason=''):
+def adjustment(product, branch, final_quantity, user, reason='',
+               nature=MovementNature.INVENTORY, permission_code='inventory.adjust',
+               operation_reference=None):
     final_quantity = _decimal(final_quantity, 'final_quantity')
     with transaction.atomic():
-        locked_branch = _authorized_branch(branch, user, 'inventory.move')
+        locked_branch = _authorized_branch(branch, user, permission_code)
         try:
             locked_product = Product.objects.select_for_update().get(pk=_pk(product))
         except Product.DoesNotExist:
@@ -143,8 +169,46 @@ def adjustment(product, branch, final_quantity, user, reason=''):
             raise ValidationError({'final_quantity': 'O ajuste deve alterar o saldo atual.'})
         return _move(
             product=locked_product, branch=locked_branch, quantity=delta, user=user,
-            reason=reason, movement_type=MovementType.ADJUSTMENT,
+            reason=reason, movement_type=MovementType.ADJUSTMENT, nature=nature,
+            permission_code=permission_code, operation_reference=operation_reference,
         )
+
+
+@transaction.atomic
+def group_entry(*, branch, items, user, nature=MovementNature.NORMAL, reason=''):
+    reference = uuid.uuid4()
+    movements = []
+    for item in items:
+        quantity = _decimal(item.get('quantity'), 'quantity', nonnegative=True)
+        if quantity == 0:
+            continue
+        movements.append(entry(
+            product=item.get('product'), branch=branch, quantity=quantity, user=user,
+            nature=nature, reason=reason, operation_reference=reference,
+        ))
+    if not movements:
+        raise DomainValidationError(
+            code='empty_inventory_operation',
+            message='Informe quantidade maior que zero para ao menos um produto.',
+        )
+    return movements
+
+
+@transaction.atomic
+def regularize_negatives(*, branch, items, user, reason=''):
+    reference = uuid.uuid4()
+    movements = []
+    for item in items:
+        stock = Stock.objects.select_for_update().select_related('product', 'branch').get(
+            pk=item['stock'], branch_id=_pk(branch), current_quantity__lt=0,
+        )
+        movements.append(adjustment(
+            product=stock.product, branch=stock.branch,
+            final_quantity=item['final_quantity'], user=user,
+            reason=reason, nature=MovementNature.REGULARIZATION,
+            permission_code='inventory.regularize', operation_reference=reference,
+        ))
+    return movements
 
 
 @transaction.atomic
@@ -154,8 +218,14 @@ def set_minimum(*, stock, minimum_quantity, user):
     ).get(pk=_pk(stock))
     branch = _authorized_branch(stock.branch, user, 'inventory.change_minimum')
     _validate_operational_stock(stock.product, branch)
+    before = model_snapshot(stock, ('minimum_quantity',))
     stock.minimum_quantity = minimum_quantity
     stock.save(update_fields=('minimum_quantity', 'updated_at'))
+    audit_log(
+        actor=user, action='inventory.minimum.update', obj=stock,
+        company=branch.company, branch=branch, before=before,
+        after=model_snapshot(stock, ('minimum_quantity',)),
+    )
     return stock
 
 

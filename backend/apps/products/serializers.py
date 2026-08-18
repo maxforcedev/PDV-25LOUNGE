@@ -32,6 +32,10 @@ class CategorySerializer(CompanyBoundSerializer):
             'created_at', 'updated_at',
         )
         read_only_fields = (
+            'id', 'company_name', 'category_name', 'status', 'components',
+            'created_at', 'updated_at',
+        )
+        read_only_fields = (
             'id', 'company_name', 'sort_order', 'status', 'product_count',
             'related_products', 'created_at', 'updated_at',
         )
@@ -142,10 +146,6 @@ class ProductSerializer(CompanyBoundSerializer):
             fields.pop('cost', None)
             fields.pop('suggested_cost', None)
         return fields
-        read_only_fields = (
-            'id', 'company_name', 'category_name', 'status', 'components',
-            'created_at', 'updated_at',
-        )
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
@@ -153,6 +153,20 @@ class ProductSerializer(CompanyBoundSerializer):
         category = attrs.get('category', getattr(self.instance, 'category', None))
         if category and category.company_id != company.id:
             raise serializers.ValidationError({'category': 'A categoria deve pertencer a empresa do produto.'})
+        code = attrs.get('internal_code', getattr(self.instance, 'internal_code', '')).strip()
+        if code:
+            same_code = Product.objects.filter(company=company, internal_code__iexact=code)
+            if self.instance:
+                same_code = same_code.exclude(pk=self.instance.pk)
+            if same_code.exists():
+                raise serializers.ValidationError({'internal_code': 'Ja existe um produto com este codigo nesta empresa.'})
+        barcode = (attrs.get('barcode', getattr(self.instance, 'barcode', '')) or '').strip()
+        if barcode:
+            same_barcode = Product.objects.filter(company=company, barcode__iexact=barcode)
+            if self.instance:
+                same_barcode = same_barcode.exclude(pk=self.instance.pk)
+            if same_barcode.exists():
+                raise serializers.ValidationError({'barcode': 'Ja existe um produto com este codigo de barras nesta empresa.'})
         behavior = attrs.get(
             'inventory_behavior',
             getattr(self.instance, 'inventory_behavior', InventoryBehavior.DIRECT),
@@ -172,18 +186,25 @@ class ProductSerializer(CompanyBoundSerializer):
                 raise serializers.ValidationError(
                     {'inventory_behavior': 'Remova a composicao antes de alterar o comportamento.'}
                 )
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if branch and not request.user.is_superuser:
+            current_cost = self.instance.cost if self.instance else Decimal('0.00')
+            current_price = self.instance.sale_price if self.instance else Decimal('0.00')
+            if 'cost' in attrs and attrs['cost'] != current_cost and not user_has_branch_permission(
+                request.user, branch.pk, 'products.change_cost'
+            ):
+                raise serializers.ValidationError({'cost': 'Voce nao possui permissao para alterar custos.'})
+            if 'sale_price' in attrs and attrs['sale_price'] != current_price and not user_has_branch_permission(
+                request.user, branch.pk, 'products.change_price'
+            ):
+                raise serializers.ValidationError({'sale_price': 'Voce nao possui permissao para alterar o preco padrao.'})
         return attrs
 
     def validate_internal_code(self, value):
         value = value.strip()
         if self.instance and not value:
             return self.instance.internal_code
-        company_id = self.initial_data.get('company') or getattr(self.instance, 'company_id', None)
-        queryset = Product.objects.filter(company_id=company_id, internal_code__iexact=value)
-        if self.instance:
-            queryset = queryset.exclude(pk=self.instance.pk)
-        if company_id and queryset.exists():
-            raise serializers.ValidationError('Ja existe um produto com este codigo nesta empresa.')
         return value
 
     def create(self, validated_data):
@@ -216,14 +237,7 @@ class ProductSerializer(CompanyBoundSerializer):
         return f'{value:.2f}'
 
     def validate_barcode(self, value):
-        value = (value or '').strip()
-        company_id = self.initial_data.get('company') or getattr(self.instance, 'company_id', None)
-        queryset = Product.objects.filter(company_id=company_id, barcode__iexact=value)
-        if self.instance:
-            queryset = queryset.exclude(pk=self.instance.pk)
-        if value and company_id and queryset.exists():
-            raise serializers.ValidationError('Ja existe um produto com este codigo de barras nesta empresa.')
-        return value
+        return (value or '').strip()
 
 
 class CompositionSerializer(serializers.Serializer):

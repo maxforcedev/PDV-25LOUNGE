@@ -1,4 +1,4 @@
-from django.db.models import Count, DecimalField, ExpressionWrapper, F, Q, Sum
+from django.db.models import Case, Count, DecimalField, ExpressionWrapper, F, Q, Sum, Value, When
 from django.db.models.functions import Coalesce
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -12,9 +12,11 @@ from .models import Stock, StockMovement
 from .permissions import InventoryFunctionalPermission
 from .serializers import (
     AdjustmentRequestSerializer,
+    GroupEntrySerializer,
     InventoryQuerySerializer,
     MinimumQuantitySerializer,
     MovementRequestSerializer,
+    RegularizeNegativesSerializer,
     StockMovementSerializer,
     StockSerializer,
 )
@@ -22,6 +24,7 @@ from .services import adjustment as adjust_stock
 from .services import entry as enter_stock
 from .services import exit as exit_stock
 from .services import set_minimum
+from .services import group_entry, regularize_negatives
 
 
 class StockViewSet(viewsets.ReadOnlyModelViewSet):
@@ -32,6 +35,7 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
         'retrieve': 'inventory.view',
         'minimum': 'inventory.change_minimum',
         'summary': 'inventory.view',
+        'regularize_negatives': 'inventory.regularize',
     }
 
     def _filtered_queryset(self, queryset):
@@ -108,10 +112,15 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
                 ),
             ),
             zero_count=Count('id', filter=Q(current_quantity=0)),
+            physical_products=Count('id'),
             ))
         if can_view_costs:
             value_expression = ExpressionWrapper(
-                F('current_quantity') * F('product__cost'),
+                Case(
+                    When(current_quantity__gt=0, then=F('current_quantity')),
+                    default=Value(0),
+                    output_field=DecimalField(max_digits=14, decimal_places=3),
+                ) * F('product__cost'),
                 output_field=DecimalField(max_digits=26, decimal_places=5),
             )
             cost_result = queryset.aggregate(estimated_value=Coalesce(
@@ -121,6 +130,24 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
             ))
             result['estimated_value'] = f"{cost_result['estimated_value']:.2f}"
         return Response(result)
+
+    @action(detail=False, methods=('post',), url_path='regularize-negatives')
+    def regularize_negatives(self, request):
+        serializer = RegularizeNegativesSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        movements = regularize_negatives(
+            branch=data['branch'], items=data['items'], reason=data['reason'],
+            user=request.user,
+        )
+        queryset = StockMovement.objects.select_related(
+            'stock__product', 'stock__branch', 'stock__branch__company', 'user', 'sale'
+        ).filter(pk__in=[item.pk for item in movements])
+        return Response({
+            'operation_reference': str(movements[0].operation_reference),
+            'count': len(movements),
+            'results': StockMovementSerializer(queryset, many=True).data,
+        }, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=('patch',))
     def minimum(self, request, pk=None):
@@ -141,9 +168,10 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
     permission_codes = {
         'list': 'inventory.view_history',
         'retrieve': 'inventory.view_history',
-        'entry': 'inventory.move',
-        'exit': 'inventory.move',
-        'adjustment': 'inventory.move',
+        'entry': 'inventory.entry',
+        'group_entry': 'inventory.entry',
+        'exit': 'inventory.exit',
+        'adjustment': 'inventory.adjust',
     }
 
     def get_queryset(self):
@@ -171,6 +199,10 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
         movement_type = params.get('movement_type') or params.get('type')
         if movement_type:
             queryset = queryset.filter(movement_type=movement_type)
+        if params.get('nature'):
+            queryset = queryset.filter(nature=params['nature'])
+        if params.get('operation_reference'):
+            queryset = queryset.filter(operation_reference=params['operation_reference'])
         if params.get('search'):
             search = params['search']
             queryset = queryset.filter(
@@ -190,8 +222,9 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
         current = getattr(request, 'branch_context', None)
         if current and str(branch_id) != str(current.pk):
             raise PermissionDenied('Filial fora do contexto autorizado.')
+        permission_code = self.permission_codes.get(self.action)
         if not request.user.is_superuser and not user_has_branch_permission(
-            request.user, branch_id, 'inventory.move'
+            request.user, branch_id, permission_code
         ):
             raise PermissionDenied('Filial fora do contexto autorizado.')
         serializer = serializer_class(data=request.data)
@@ -215,3 +248,29 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
         return self._perform_movement(
             request, adjust_stock, AdjustmentRequestSerializer
         )
+
+    @action(detail=False, methods=('post',), url_path='group-entry')
+    def group_entry(self, request):
+        serializer = GroupEntrySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        from apps.products.models import Product
+
+        product_ids = [item['product'] for item in data['items'] if item['quantity'] > 0]
+        valid_ids = set(Product.objects.filter(
+            id__in=product_ids, company_id=request.branch_context.company_id,
+            category_id=data['category'], inventory_behavior='direct', status='active',
+        ).values_list('id', flat=True))
+        if valid_ids != set(product_ids):
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({'items': 'Todos os produtos devem ser fisicos, ativos e pertencer a categoria informada.'})
+        movements = group_entry(
+            branch=data['branch'], items=data['items'], nature=data['nature'],
+            reason=data['reason'], user=request.user,
+        )
+        queryset = self.get_queryset().filter(pk__in=[item.pk for item in movements])
+        return Response({
+            'operation_reference': str(movements[0].operation_reference),
+            'count': len(movements),
+            'results': self.get_serializer(queryset, many=True).data,
+        }, status=status.HTTP_201_CREATED)

@@ -46,6 +46,17 @@ class InternalContractError(APIException):
     default_code = 'invalid_internal_contract'
 
 
+class DomainValidationError(APIException):
+    status_code = status.HTTP_400_BAD_REQUEST
+
+    def __init__(self, *, code, message, details=None):
+        super().__init__({
+            'code': code,
+            'message': message,
+            'details': details or {},
+        })
+
+
 def api_exception_handler(exc, context):
     response = exception_handler(exc, context)
     if response is not None:

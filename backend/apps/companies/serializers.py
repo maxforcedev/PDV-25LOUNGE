@@ -2,7 +2,13 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from .models import AccessProfile, Branch, BranchSettings, Company, FunctionalPermission, Status
+from apps.base.exceptions import DomainValidationError
+from apps.companies.rbac import OPERATING_PERMISSION_CODES
+
+from .models import (
+    AccessProfile, Branch, BranchSettings, Company, FunctionalPermission, Status,
+    UserCommissionOverride, UserPermissionBlock,
+)
 from .selectors import (
     accessible_branches,
     company_permission_codes,
@@ -40,6 +46,7 @@ class BranchSerializer(serializers.ModelSerializer):
             'address',
             'status',
             'is_matrix',
+            'address_pending',
             'settings_summary',
             'created_at',
             'updated_at',
@@ -49,6 +56,7 @@ class BranchSerializer(serializers.ModelSerializer):
             'company_name',
             'status',
             'is_matrix',
+            'address_pending',
             'settings_summary',
             'created_at',
             'updated_at',
@@ -78,6 +86,14 @@ class BranchSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'company': 'Nao e possivel criar filial em empresa inativa.'})
         if attrs.get('status') == Status.ACTIVE and company.status != Status.ACTIVE:
             raise serializers.ValidationError({'status': 'Ative a empresa antes de ativar a filial.'})
+        if self.instance and 'address' in attrs and attrs['address'] != self.instance.address:
+            initial_matrix_completion = bool(
+                self.instance.is_matrix and self.instance.address_pending
+            )
+            if not request.user.is_superuser and not initial_matrix_completion:
+                raise serializers.ValidationError({
+                    'address': 'O endereco concluido so pode ser alterado pelo superusuario da plataforma.'
+                })
         return attrs
 
     def validate_cnpj(self, value):
@@ -129,6 +145,16 @@ class BranchSerializer(serializers.ModelSerializer):
             **validated_data,
         )
 
+    def update(self, instance, validated_data):
+        completing_address = bool(
+            instance.is_matrix and instance.address_pending and 'address' in validated_data
+        )
+        instance = super().update(instance, validated_data)
+        if completing_address:
+            instance.address_pending = False
+            instance.save(update_fields=('address_pending', 'updated_at'))
+        return instance
+
 
 class BranchSettingsSerializer(serializers.ModelSerializer):
     allow_negative_stock = serializers.BooleanField(required=False)
@@ -152,6 +178,35 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
             'commission_rate', 'fixed_daily_cost', 'created_at', 'updated_at',
         )
         read_only_fields = ('id', 'branch', 'created_at', 'updated_at')
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        if request and 'commission_rate' in attrs:
+            branch = self.instance.branch if self.instance else None
+            if branch and not user_has_company_permission(
+                request.user, branch.company_id, 'commissions.change_branch_default'
+            ):
+                raise serializers.ValidationError({'commission_rate': 'Voce nao possui permissao para alterar comissão padrão.'})
+        if (
+            self.instance
+            and self.instance.allow_negative_stock
+            and attrs.get('allow_negative_stock') is False
+        ):
+            from apps.inventory.models import Stock
+
+            negatives = Stock.objects.filter(
+                branch=self.instance.branch, current_quantity__lt=0
+            ).select_related('product')
+            if negatives.exists():
+                rows = list(negatives.values('id', 'product_id', 'product__name', 'current_quantity')[:100])
+                for row in rows:
+                    row['current_quantity'] = str(row['current_quantity'])
+                raise DomainValidationError(
+                    code='negative_stocks_must_be_regularized',
+                    message='Regularize os estoques negativos antes de desativar esta opcao.',
+                    details={'count': negatives.count(), 'stocks': rows},
+                )
+        return attrs
 
 
 class CompanySerializer(serializers.ModelSerializer):
@@ -253,6 +308,8 @@ class AccessProfileSerializer(serializers.ModelSerializer):
             'description',
             'is_system',
             'status',
+            'receives_commission',
+            'commission_rate',
             'permission_codes',
             'created_at',
             'updated_at',
@@ -277,6 +334,11 @@ class AccessProfileSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'company': 'Informe a empresa do perfil.'})
 
         permissions = attrs.get('permissions')
+        commission_fields = {'receives_commission', 'commission_rate'} & set(attrs)
+        if commission_fields and not user_has_company_permission(
+            request.user, company.id, 'commissions.change_profile'
+        ):
+            raise serializers.ValidationError({'commission_rate': 'Voce nao possui permissao para alterar comissão de perfil.'})
         if permissions is not None and not request.user.is_superuser:
             actor_codes = company_permission_codes(request.user, company.id)
             requested_codes = {permission.code for permission in permissions}
@@ -285,3 +347,108 @@ class AccessProfileSerializer(serializers.ModelSerializer):
                     {'permission_codes': 'Voce nao pode conceder permissoes que nao possui.'}
                 )
         return attrs
+
+    def validate_commission_rate(self, value):
+        if value is not None and not (Decimal('0') <= value <= Decimal('100')):
+            raise serializers.ValidationError('A comissão deve estar entre 0 e 100.')
+        return value
+
+
+class UserPermissionBlockSerializer(serializers.ModelSerializer):
+    user_name = serializers.SerializerMethodField()
+    permission_code = serializers.SlugRelatedField(
+        source='permission', slug_field='code',
+        queryset=FunctionalPermission.objects.filter(status=Status.ACTIVE),
+    )
+    permission_label = serializers.CharField(source='permission.label', read_only=True)
+    company_name = serializers.CharField(source='company.trade_name', read_only=True)
+    branch_name = serializers.CharField(source='branch.name', read_only=True)
+
+    class Meta:
+        model = UserPermissionBlock
+        fields = (
+            'id', 'company', 'company_name', 'branch', 'branch_name', 'user', 'user_name',
+            'permission_code', 'permission_label', 'reason', 'is_active', 'created_by',
+            'revoked_by', 'revoked_at', 'created_at', 'updated_at',
+        )
+        read_only_fields = ('id', 'is_active', 'created_by', 'revoked_by', 'revoked_at', 'created_at', 'updated_at')
+
+    def validate(self, attrs):
+        request = self.context['request']
+        company = attrs.get('company')
+        branch = attrs.get('branch')
+        if branch and branch.company_id != company.id:
+            raise serializers.ValidationError({'branch': 'A filial deve pertencer a empresa.'})
+        user = attrs.get('user')
+        permission = attrs.get('permission')
+        if user.is_superuser:
+            raise serializers.ValidationError({'user': 'Permissoes de superusuario nao podem ser bloqueadas.'})
+        company_access = user.company_accesses.filter(company=company, is_active=True).first()
+        if not company_access:
+            raise serializers.ValidationError({'user': 'O usuario nao possui acesso ativo a esta empresa.'})
+        if permission.code in OPERATING_PERMISSION_CODES:
+            branch_accesses = user.branch_accesses.filter(
+                branch__company=company,
+                is_active=True,
+                access_profile__status=Status.ACTIVE,
+                access_profile__permissions=permission,
+            )
+            if branch:
+                branch_accesses = branch_accesses.filter(branch=branch)
+            inherited = branch_accesses.exists()
+        else:
+            inherited = bool(
+                company_access.access_profile
+                and company_access.access_profile.status == Status.ACTIVE
+                and company_access.access_profile.permissions.filter(pk=permission.pk).exists()
+            )
+        if not inherited:
+            raise serializers.ValidationError({
+                'permission_code': 'Esta permissao nao e herdada pelo usuario no escopo selecionado.'
+            })
+        if not user_has_company_permission(request.user, company.id, 'user_permission_blocks.change'):
+            raise serializers.ValidationError({'company': 'Voce nao possui permissao para bloquear permissoes nesta empresa.'})
+        return attrs
+
+    def create(self, validated_data):
+        validated_data['created_by'] = self.context['request'].user
+        return super().create(validated_data)
+
+    def get_user_name(self, block):
+        return str(block.user)
+
+
+class UserCommissionOverrideSerializer(serializers.ModelSerializer):
+    user_name = serializers.SerializerMethodField()
+    branch_name = serializers.CharField(source='branch.name', read_only=True)
+
+    class Meta:
+        model = UserCommissionOverride
+        fields = (
+            'id', 'branch', 'branch_name', 'user', 'user_name', 'receives_commission',
+            'commission_rate', 'updated_by', 'created_at', 'updated_at',
+        )
+        read_only_fields = ('id', 'updated_by', 'created_at', 'updated_at')
+
+    def validate(self, attrs):
+        request = self.context['request']
+        branch = attrs.get('branch', getattr(self.instance, 'branch', None))
+        if not branch:
+            raise serializers.ValidationError({'branch': 'Informe a filial.'})
+        if not user_has_company_permission(request.user, branch.company_id, 'commissions.change_user_override'):
+            raise serializers.ValidationError({'branch': 'Voce nao possui permissao para alterar comissão individual nesta filial.'})
+        rate = attrs.get('commission_rate', getattr(self.instance, 'commission_rate', None))
+        if rate is not None and not (Decimal('0') <= rate <= Decimal('100')):
+            raise serializers.ValidationError({'commission_rate': 'A comissão deve estar entre 0 e 100.'})
+        return attrs
+
+    def create(self, validated_data):
+        validated_data['updated_by'] = self.context['request'].user
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        validated_data['updated_by'] = self.context['request'].user
+        return super().update(instance, validated_data)
+
+    def get_user_name(self, override):
+        return str(override.user)

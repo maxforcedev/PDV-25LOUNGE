@@ -228,6 +228,13 @@ class Sale(BaseModel):
         blank=True,
         null=True,
     )
+    service_fee_waived_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='waived_service_fee_sales',
+        blank=True,
+        null=True,
+    )
     beneficiary_user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -246,6 +253,7 @@ class Sale(BaseModel):
     service_fee_amount = models.DecimalField(
         max_digits=14, decimal_places=2, default=Decimal('0.00')
     )
+    service_fee_waived = models.BooleanField(default=False)
     commission_rate = models.DecimalField(
         max_digits=5, decimal_places=2, default=Decimal('0.00')
     )
@@ -344,6 +352,13 @@ class Sale(BaseModel):
             ),
             models.CheckConstraint(
                 condition=(
+                    Q(service_fee_waived=False, service_fee_waived_by__isnull=True)
+                    | Q(service_fee_waived=True)
+                ),
+                name='sales_sale_service_fee_waiver_coherent',
+            ),
+            models.CheckConstraint(
+                condition=(
                     Q(
                         operation_type=OperationType.SALE,
                         cash_session__isnull=False,
@@ -407,6 +422,8 @@ class Sale(BaseModel):
                 self.commission_rate, self.commission_amount,
             )):
                 errors['service_fee_amount'] = 'Consumacao nao possui taxa ou comissao.'
+            if self.service_fee_waived or self.service_fee_waived_by_id:
+                errors['service_fee_waived'] = 'Consumacao nao possui retirada de taxa.'
             if self.charged_amount is not None and self.total != self.charged_amount:
                 errors['total'] = 'O total deve ser igual ao valor cobrado.'
             if self.charged_amount and not self.cash_session_id:
@@ -426,8 +443,12 @@ class Sale(BaseModel):
             net_subtotal = remaining - self.discount
             if self.total != net_subtotal + self.service_fee_amount:
                 errors['total'] = 'O total deve considerar descontos e taxa de servico.'
+            if self.service_fee_waived and self.service_fee_amount != Decimal('0'):
+                errors['service_fee_amount'] = 'Taxa retirada deve possuir valor zero.'
         if self.discount == 0 and self.discount_approved_by_id:
             errors['discount_approved_by'] = 'Venda sem desconto nao possui aprovador.'
+        if not self.service_fee_waived and self.service_fee_waived_by_id:
+            errors['service_fee_waived_by'] = 'Taxa nao retirada nao possui autorizador.'
         if self.status == SaleStatus.FINALIZED and any(
             value is not None and value != ''
             for value in (self.cancelled_at, self.cancelled_by_id, self.cancellation_reason)

@@ -77,6 +77,7 @@ class Branch(BaseModel):
     phone = models.CharField(max_length=20, blank=True)
     email = models.EmailField(blank=True)
     address = models.JSONField(default=dict, blank=True)
+    address_pending = models.BooleanField(default=False)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
     is_matrix = models.BooleanField(default=False)
 
@@ -189,6 +190,10 @@ class AccessProfile(BaseModel):
     description = models.TextField(blank=True)
     is_system = models.BooleanField(default=False)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
+    receives_commission = models.BooleanField(default=True)
+    commission_rate = models.DecimalField(
+        max_digits=5, decimal_places=2, blank=True, null=True,
+    )
     permissions = models.ManyToManyField(
         FunctionalPermission,
         related_name='access_profiles',
@@ -207,6 +212,15 @@ class AccessProfile(BaseModel):
 
     def __str__(self):
         return f'{self.company} - {self.name}'
+
+    def clean(self):
+        super().clean()
+        if self.commission_rate is not None and not (Decimal('0') <= self.commission_rate <= Decimal('100')):
+            raise ValidationError({'commission_rate': 'A comissão do perfil deve estar entre 0 e 100.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
 
 class UserCompanyAccess(BaseModel):
@@ -304,6 +318,105 @@ class UserBranchAccess(BaseModel):
                 raise ValidationError(
                     {'branch': 'O usuario precisa de acesso ativo a empresa da filial.'}
                 )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f'{self.user} - {self.branch}'
+
+
+class UserPermissionBlock(BaseModel):
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name='permission_blocks')
+    branch = models.ForeignKey(
+        Branch, on_delete=models.CASCADE, related_name='permission_blocks',
+        blank=True, null=True,
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='permission_blocks'
+    )
+    permission = models.ForeignKey(
+        FunctionalPermission, on_delete=models.PROTECT, related_name='user_blocks'
+    )
+    reason = models.TextField(blank=True, default='')
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='created_permission_blocks',
+        blank=True, null=True,
+    )
+    revoked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='revoked_permission_blocks',
+        blank=True, null=True,
+    )
+    revoked_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ('company__trade_name', 'branch__name', 'user__email', 'permission__code')
+        constraints = [
+            models.UniqueConstraint(
+                fields=('company', 'branch', 'user', 'permission'),
+                condition=Q(is_active=True, branch__isnull=False),
+                name='companies_active_branch_user_permission_block_unique',
+            ),
+            models.UniqueConstraint(
+                fields=('company', 'user', 'permission'),
+                condition=Q(is_active=True, branch__isnull=True),
+                name='companies_active_company_user_permission_block_unique',
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
+            raise ValidationError({'branch': 'A filial deve pertencer a empresa do bloqueio.'})
+        if self.permission_id and self.branch_id:
+            from .rbac import OPERATING_PERMISSION_CODES
+
+            if self.permission.code not in OPERATING_PERMISSION_CODES:
+                raise ValidationError({'permission': 'Bloqueios por filial aceitam somente permissoes operacionais.'})
+        if not self.is_active and not self.revoked_at:
+            raise ValidationError({'revoked_at': 'Informe a data de revogacao.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        scope = self.branch or self.company
+        return f'{self.user} - {scope} - {self.permission.code}'
+
+
+class UserCommissionOverride(BaseModel):
+    branch = models.ForeignKey(Branch, on_delete=models.CASCADE, related_name='commission_overrides')
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='commission_overrides'
+    )
+    receives_commission = models.BooleanField(default=True)
+    commission_rate = models.DecimalField(
+        max_digits=5, decimal_places=2, blank=True, null=True,
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='updated_commission_overrides',
+        blank=True, null=True,
+    )
+
+    class Meta:
+        ordering = ('branch__company__trade_name', 'branch__name', 'user__email')
+        constraints = [
+            models.UniqueConstraint(
+                fields=('branch', 'user'), name='companies_user_commission_override_unique'
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.commission_rate is not None and not (Decimal('0') <= self.commission_rate <= Decimal('100')):
+            raise ValidationError({'commission_rate': 'A comissão do usuario deve estar entre 0 e 100.'})
+        if self.user_id and self.branch_id and not UserCompanyAccess.objects.filter(
+            user_id=self.user_id, company_id=self.branch.company_id, is_active=True,
+        ).exists():
+            raise ValidationError({'user': 'O usuario deve possuir acesso ativo a empresa da filial.'})
 
     def save(self, *args, **kwargs):
         self.full_clean()

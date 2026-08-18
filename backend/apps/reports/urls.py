@@ -2,12 +2,14 @@ from django.urls import path
 
 from .views import (
     CashReportView,
+    CancellationsReportView,
     ConsumptionsReportView,
     DashboardView,
     InventoryMovementsReportView,
     OperationalResultReportView,
     ReportsOptionsView,
     SalesReportView,
+    StockConsumptionReportView,
     WithdrawalsReportView,
 )
 
@@ -15,6 +17,7 @@ from .views import (
 urlpatterns = [
     path('dashboard/', DashboardView.as_view(), name='dashboard'),
     path('reports/sales/', SalesReportView.as_view(), name='report-sales'),
+    path('reports/cancellations/', CancellationsReportView.as_view(), name='report-cancellations'),
     path(
         'reports/operational-result/',
         OperationalResultReportView.as_view(),
@@ -28,5 +31,10 @@ urlpatterns = [
         'reports/inventory-movements/',
         InventoryMovementsReportView.as_view(),
         name='report-inventory-movements',
+    ),
+    path(
+        'reports/stock-consumption/',
+        StockConsumptionReportView.as_view(),
+        name='report-stock-consumption',
     ),
 ]

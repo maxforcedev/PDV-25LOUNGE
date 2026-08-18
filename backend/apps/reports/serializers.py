@@ -3,6 +3,7 @@ from rest_framework import serializers
 from apps.accounts.models import User
 from apps.base.constants import MAX_BIGINT
 from apps.cash.models import CashRegister, CashSession, CashSessionStatus, WithdrawalCategory
+from apps.cash.services import session_operational_summary
 from apps.inventory.models import MovementType
 from apps.products.models import Category, Product
 from apps.sales.models import Payment, PaymentMethod, Sale, SaleItem, SaleStatus
@@ -54,6 +55,9 @@ class SalesReportQuerySerializer(BaseReportQuerySerializer):
     product = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
     category = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
     payment_method = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    payment_method_code = serializers.CharField(max_length=50, required=False)
+    weekday = serializers.IntegerField(min_value=0, max_value=6, required=False)
+    hour = serializers.IntegerField(min_value=0, max_value=23, required=False)
     status = serializers.ChoiceField(choices=SaleStatus.values, required=False)
     search = serializers.CharField(max_length=200, required=False, allow_blank=False)
     number = serializers.CharField(max_length=20, required=False, allow_blank=False)
@@ -115,6 +119,17 @@ class InventoryReportQuerySerializer(BaseReportQuerySerializer):
         return self.validate_scoped_ids(attrs, ('product', 'category', 'user'))
 
 
+class StockConsumptionReportQuerySerializer(BaseReportQuerySerializer):
+    product = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    category = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    origin = serializers.ChoiceField(
+        choices=('sale', 'consumption', 'manual_exit', 'reversal'), required=False,
+    )
+
+    def validate(self, attrs):
+        return self.validate_scoped_ids(attrs, ('product', 'category'))
+
+
 class ReportSaleItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = SaleItem
@@ -174,6 +189,18 @@ class ReportSaleSerializer(serializers.ModelSerializer):
             'user_type': sale.beneficiary_user.user_type,
         }
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if request and branch and not request.user.is_superuser:
+            from apps.companies.selectors import user_has_company_permission
+
+            if not user_has_company_permission(request.user, branch.company_id, 'commissions.view'):
+                data.pop('commission_rate', None)
+                data.pop('commission_amount', None)
+        return data
+
 
 class CashSessionReportSerializer(serializers.Serializer):
     id = serializers.IntegerField()
@@ -193,12 +220,27 @@ class CashSessionReportSerializer(serializers.Serializer):
     difference = serializers.DecimalField(
         max_digits=20, decimal_places=2, source='closing_difference', allow_null=True
     )
+    operational_summary = serializers.SerializerMethodField()
 
     def get_register(self, session):
         return {'id': session.cash_register_id, 'name': session.cash_register.name}
 
     def get_operator(self, session):
         return {'id': session.opened_by_id, 'name': readable_user_name(session.opened_by)}
+
+    def get_operational_summary(self, session):
+        summary = session_operational_summary(session)
+
+        def serialize(value):
+            from decimal import Decimal
+            if isinstance(value, Decimal):
+                return f'{value:.2f}'
+            if isinstance(value, dict):
+                return {key: serialize(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [serialize(item) for item in value]
+            return value
+        return serialize(summary)
 
 
 class WithdrawalReportSerializer(serializers.Serializer):
@@ -230,6 +272,8 @@ class InventoryMovementReportSerializer(serializers.Serializer):
     id = serializers.IntegerField()
     created_at = serializers.DateTimeField()
     movement_type = serializers.CharField()
+    nature = serializers.CharField()
+    operation_reference = serializers.UUIDField()
     product = serializers.SerializerMethodField()
     previous_quantity = serializers.DecimalField(max_digits=20, decimal_places=3)
     quantity = serializers.DecimalField(max_digits=20, decimal_places=3)
@@ -254,3 +298,43 @@ class InventoryMovementReportSerializer(serializers.Serializer):
         if movement.sale is None:
             return None
         return {'id': movement.sale_id, 'number': movement.sale.sale_number}
+
+
+class StockConsumptionSummarySerializer(serializers.Serializer):
+    product = serializers.SerializerMethodField()
+    gross_quantity = serializers.DecimalField(max_digits=20, decimal_places=3)
+    returned_quantity = serializers.DecimalField(max_digits=20, decimal_places=3)
+    net_quantity = serializers.DecimalField(max_digits=20, decimal_places=3)
+    estimated_cost = serializers.DecimalField(max_digits=20, decimal_places=2, required=False)
+    movement_count = serializers.IntegerField()
+
+    def get_product(self, row):
+        product = row['product']
+        return {
+            'id': product.pk,
+            'name': product.name,
+            'internal_code': product.internal_code,
+            'unit': product.unit,
+            'category': {'id': product.category_id, 'name': product.category.name},
+        }
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not self.context.get('include_cost'):
+            data.pop('estimated_cost', None)
+        return data
+
+
+class StockConsumptionMovementSerializer(InventoryMovementReportSerializer):
+    origin = serializers.SerializerMethodField()
+    sale = serializers.SerializerMethodField()
+
+    def get_origin(self, movement):
+        mapping = {
+            MovementType.SALE: 'sale',
+            MovementType.CONSUMPTION: 'consumption',
+            MovementType.EXIT: 'manual_exit',
+            MovementType.SALE_CANCELLATION: 'reversal',
+            MovementType.CONSUMPTION_CANCELLATION: 'reversal',
+        }
+        return mapping.get(movement.movement_type)

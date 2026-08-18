@@ -1,9 +1,12 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count, Q
+from django.db import IntegrityError, transaction
 from rest_framework import status, viewsets
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from apps.base.audit import audit_log, model_snapshot
 from apps.companies.models import Company, Status
 from .models import BranchProductPrice, Category, InventoryBehavior, Product
 from .permissions import ProductFunctionalPermission
@@ -44,21 +47,40 @@ class CatalogViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def activate(self, request, pk=None):
         item = self.get_object()
+        before = model_snapshot(item, ('status',))
         item.full_clean()
         item.status = Status.ACTIVE
         item.save(update_fields=['status', 'updated_at'])
+        audit_log(
+            actor=request.user, action=f'{item.__class__.__name__.lower()}.activate',
+            obj=item, company=item.company, before=before,
+            after=model_snapshot(item, ('status',)),
+        )
         return Response(self.get_serializer(item).data)
 
     @action(detail=True, methods=['post'])
     def deactivate(self, request, pk=None):
         item = self.get_object()
+        before = model_snapshot(item, ('status',))
         item.status = Status.INACTIVE
         item.save(update_fields=['status', 'updated_at'])
+        audit_log(
+            actor=request.user, action=f'{item.__class__.__name__.lower()}.deactivate',
+            obj=item, company=item.company, before=before,
+            after=model_snapshot(item, ('status',)),
+        )
         return Response(self.get_serializer(item).data)
 
 
 class CategoryViewSet(CatalogViewSet):
     serializer_class = CategorySerializer
+    permission_codes = {
+        'list': 'categories.view', 'retrieve': 'categories.view',
+        'create': 'categories.add', 'update': 'categories.change',
+        'partial_update': 'categories.change',
+        'activate': 'categories.change_status', 'deactivate': 'categories.change_status',
+        'reorder': 'categories.change',
+    }
 
     def get_queryset(self):
         queryset = Category.objects.select_related('company').annotate(
@@ -104,6 +126,11 @@ class CategoryViewSet(CatalogViewSet):
 class ProductViewSet(CatalogViewSet):
     serializer_class = ProductSerializer
 
+    audit_fields = (
+        'name', 'internal_code', 'cost', 'sale_price', 'status',
+        'inventory_behavior', 'is_sellable', 'is_favorite',
+    )
+
     def get_queryset(self):
         queryset = Product.objects.select_related('company', 'category').prefetch_related(
             'components__component_product'
@@ -133,10 +160,83 @@ class ProductViewSet(CatalogViewSet):
                 | Q(barcode__icontains=search)
             )
         if params.get('pos') == 'true':
-            queryset = queryset.filter(status=Status.ACTIVE, is_sellable=True).order_by(
+            return queryset.filter(status=Status.ACTIVE, is_sellable=True).order_by(
                 '-is_favorite', 'category__sort_order', 'name', 'id'
             )
-        return queryset
+        return queryset.order_by('-is_favorite', 'name', 'id')
+
+    def perform_create(self, serializer):
+        product = serializer.save()
+        audit_log(
+            actor=self.request.user, action='product.create', obj=product,
+            company=product.company, after=model_snapshot(product, self.audit_fields),
+        )
+
+    def perform_update(self, serializer):
+        before = model_snapshot(serializer.instance, self.audit_fields)
+        product = serializer.save()
+        audit_log(
+            actor=self.request.user, action='product.update', obj=product,
+            company=product.company, before=before,
+            after=model_snapshot(product, self.audit_fields),
+        )
+
+    @action(detail=False, methods=('post',), url_path='bulk-create')
+    @transaction.atomic
+    def bulk_create(self, request):
+        if not request.user.is_superuser:
+            raise PermissionDenied('Cadastro em lote e exclusivo do superusuario da plataforma.')
+        rows = request.data.get('products') if isinstance(request.data, dict) else None
+        if not isinstance(rows, list) or not rows:
+            raise ValidationError({'products': 'Informe ao menos uma linha de produto.'})
+        if len(rows) > 200:
+            raise ValidationError({'products': 'O limite por operacao e 200 produtos.'})
+        normalized = []
+        seen_codes = set()
+        seen_barcodes = set()
+        duplicate_errors = {}
+        for row in rows:
+            item = dict(row) if isinstance(row, dict) else row
+            if isinstance(item, dict):
+                for field in ('cost', 'sale_price'):
+                    if isinstance(item.get(field), str):
+                        item[field] = item[field].replace(',', '.')
+                company = str(item.get('company', ''))
+                code = str(item.get('internal_code') or '').strip().casefold()
+                barcode = str(item.get('barcode') or '').strip().casefold()
+                for field, value, seen in (
+                    ('internal_code', code, seen_codes), ('barcode', barcode, seen_barcodes)
+                ):
+                    if not value:
+                        continue
+                    key = (company, value)
+                    if key in seen:
+                        duplicate_errors.setdefault(str(len(normalized)), {})[field] = [
+                            'Valor repetido dentro deste lote.'
+                        ]
+                    seen.add(key)
+            normalized.append(item)
+        if duplicate_errors:
+            raise ValidationError({'products': duplicate_errors})
+        serializer = self.get_serializer(data=normalized, many=True)
+        serializer.is_valid(raise_exception=True)
+        try:
+            with transaction.atomic():
+                products = serializer.save()
+        except IntegrityError:
+            raise ValidationError({
+                'products': 'Outro cadastro gravou um código ou código de barras igual. Revise o lote.'
+            })
+        for product in products:
+            audit_log(
+                actor=request.user, action='product.bulk_create', obj=product,
+                company=product.company,
+                after=model_snapshot(product, self.audit_fields),
+            )
+        return Response(
+            {'count': len(products), 'results': self.get_serializer(products, many=True).data},
+            status=status.HTTP_201_CREATED,
+        )
 
     @action(detail=True, methods=['get', 'put'], url_path='components')
     def components(self, request, pk=None):
@@ -152,8 +252,14 @@ class ProductViewSet(CatalogViewSet):
             context={'request': request, 'product': product},
         )
         serializer.is_valid(raise_exception=True)
+        before = list(product.components.values('component_product_id', 'quantity'))
         product = serializer.save()
         product = self.get_queryset().get(pk=product.pk)
+        audit_log(
+            actor=request.user, action='product.composition.update', obj=product,
+            company=product.company, before={'components': before},
+            after={'components': list(product.components.values('component_product_id', 'quantity'))},
+        )
         return Response(ProductComponentSerializer(product.components.all(), many=True).data)
 
     @action(detail=False, methods=['get'], url_path='price-comparison')
@@ -198,8 +304,8 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
     http_method_names = ('get', 'post', 'patch', 'put', 'delete', 'head', 'options')
     permission_codes = {
         'list': 'products.view', 'retrieve': 'products.view',
-        'create': 'products.change', 'update': 'products.change',
-        'partial_update': 'products.change', 'destroy': 'products.change',
+        'create': 'branch_prices.change', 'update': 'branch_prices.change',
+        'partial_update': 'branch_prices.change', 'destroy': 'branch_prices.change',
     }
 
     def get_queryset(self):
@@ -215,7 +321,18 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
         return queryset
 
     def perform_create(self, serializer):
-        serializer.save()
+        price = serializer.save()
+        audit_log(
+            actor=self.request.user, action='branch_price.create', obj=price,
+            company=price.branch.company, branch=price.branch,
+            after=model_snapshot(price, ('product_id', 'branch_id', 'sale_price')),
+        )
 
     def perform_update(self, serializer):
-        serializer.save()
+        before = model_snapshot(serializer.instance, ('sale_price',))
+        price = serializer.save()
+        audit_log(
+            actor=self.request.user, action='branch_price.update', obj=price,
+            company=price.branch.company, branch=price.branch,
+            before=before, after=model_snapshot(price, ('sale_price',)),
+        )

@@ -71,12 +71,16 @@ function StateBadge({ state }: { state: Stock["state"] }) {
 
 function Inventory() {
   const { currentCompany, currentBranch, hasPermission } = useAuth();
-  const canMove = hasPermission(permissions.moveInventory);
+  const canEntry = hasPermission(permissions.inventoryEntry);
+  const canExit = hasPermission(permissions.inventoryExit);
+  const canAdjust = hasPermission(permissions.inventoryAdjust);
+  const canMove = canEntry || canExit || canAdjust;
   const canMinimum = hasPermission(permissions.changeMinimum);
   const canHistory = hasPermission(permissions.viewInventoryHistory);
   const canViewProducts = hasPermission(permissions.viewProduct);
   const canViewKpis = hasPermission(permissions.viewStockKpis);
   const canViewCosts = hasPermission(permissions.viewStockCosts);
+  const canRegularize = hasPermission(permissions.regularizeInventory);
   const [data, setData] = useState<Paginated<Stock> | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -97,6 +101,7 @@ function Inventory() {
   const [selected, setSelected] = useState<Stock | null>(null);
   const [productId, setProductId] = useState("");
   const [quantity, setQuantity] = useState("");
+  const [nature, setNature] = useState("normal");
   const [reason, setReason] = useState("");
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
@@ -218,6 +223,7 @@ function Inventory() {
           : "",
     );
     setReason("");
+    setNature(next === "entry" ? "normal" : next === "exit" ? "loss" : "inventory");
     setFields({});
     setError("");
   }
@@ -267,7 +273,8 @@ function Inventory() {
             ...(action === "adjustment"
               ? { final_quantity: quantity }
               : { quantity }),
-            reason,
+             reason,
+             nature,
           },
         );
       setAction(null);
@@ -325,6 +332,8 @@ function Inventory() {
         description={`${currentBranch?.name || "Selecione uma filial"} · posição atual dos produtos.`}
         action={
           <div className="flex flex-wrap gap-2">
+            {canEntry && <Link href="/estoque/entrada-em-grupo" className="btn btn-secondary"><Plus className="size-4" />Entrada em grupo</Link>}
+            {canRegularize && <Link href="/estoque/regularizar" className="btn btn-secondary"><TriangleAlert className="size-4" />Regularizar negativos</Link>}
             {canMove && (
               <Button
                 onClick={() => setChooser(true)}
@@ -618,23 +627,26 @@ function Inventory() {
                         </td>
                         <td>
                           <div className="flex justify-end gap-1">
-                            {canMove && (
-                              <>
-                                <button
+                            {canEntry && (
+                                 <button
                                   className="icon-button"
                                   title="Entrada"
                                   onClick={() => resetAction("entry", stock)}
                                 >
                                   <ArrowDown className="size-4 text-success" />
-                                </button>
-                                <button
+                                 </button>
+                            )}
+                            {canExit && (
+                                 <button
                                   className="icon-button"
                                   title="Saída"
                                   onClick={() => resetAction("exit", stock)}
                                 >
                                   <ArrowUp className="size-4 text-danger" />
-                                </button>
-                                <button
+                                 </button>
+                            )}
+                            {canAdjust && (
+                                 <button
                                   className="icon-button"
                                   title="Ajustar saldo"
                                   onClick={() =>
@@ -642,8 +654,7 @@ function Inventory() {
                                   }
                                 >
                                   <Settings2 className="size-4" />
-                                </button>
-                              </>
+                                 </button>
                             )}
                             {canMinimum && (
                               <button
@@ -683,7 +694,7 @@ function Inventory() {
         onClose={() => setChooser(false)}
       >
         <div className="grid gap-3 p-5 sm:grid-cols-3">
-          <button
+          {canEntry && <button
             className="rounded-lg border border-slate-200 p-5 text-left hover:border-success hover:bg-success/5"
             onClick={() => void choose("entry")}
           >
@@ -692,8 +703,8 @@ function Inventory() {
             <span className="text-[10px] text-slate-500">
               Adicionar quantidade
             </span>
-          </button>
-          <button
+          </button>}
+          {canExit && <button
             className="rounded-lg border border-slate-200 p-5 text-left hover:border-danger hover:bg-danger/5"
             onClick={() => void choose("exit")}
           >
@@ -702,8 +713,8 @@ function Inventory() {
             <span className="text-[10px] text-slate-500">
               Retirar quantidade
             </span>
-          </button>
-          <button
+          </button>}
+          {canAdjust && <button
             className="rounded-lg border border-slate-200 p-5 text-left hover:border-primary hover:bg-primary/5"
             onClick={() => void choose("adjustment")}
           >
@@ -712,7 +723,7 @@ function Inventory() {
             <span className="text-[10px] text-slate-500">
               Definir saldo final
             </span>
-          </button>
+          </button>}
         </div>
       </Modal>
       <Modal
@@ -780,6 +791,13 @@ function Inventory() {
                 onChange={(event) => setQuantity(event.target.value)}
               />
             </Field>
+            {action !== "minimum" && (
+              <Field label="Natureza" error={fieldError(fields, "nature")}>
+                <Select value={nature} onChange={(event) => setNature(event.target.value)}>
+                  {action === "entry" ? <><option value="normal">Compra / entrada normal</option><option value="bonus">Bonificada</option><option value="return">Devolução</option><option value="opening_balance">Saldo inicial</option><option value="correction">Correção</option><option value="other">Outros</option></> : action === "exit" ? <><option value="transfer">Transferência</option><option value="damage">Avaria</option><option value="loss">Perda</option><option value="internal_use">Uso interno</option><option value="correction">Correção</option><option value="other">Outros</option></> : <><option value="inventory">Inventário / contagem física</option><option value="regularization">Regularização</option><option value="balance_correction">Correção de saldo</option><option value="other">Outros</option></>}
+                </Select>
+              </Field>
+            )}
             {action !== "minimum" && (
               <Field
                 label="Motivo"

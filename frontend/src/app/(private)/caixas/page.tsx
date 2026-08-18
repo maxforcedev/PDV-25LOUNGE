@@ -15,7 +15,9 @@ import type { CashRegister, Paginated } from "@/types";
 
 function Registers() {
   const { currentCompany, currentBranch, hasPermission } = useAuth();
-  const canConfigure = hasPermission(permissions.changeBranch);
+  const canAdd = hasPermission(permissions.addCashRegister);
+  const canChange = hasPermission(permissions.changeCashRegister);
+  const canStatus = hasPermission(permissions.changeCashRegisterStatus);
   const canOpen = hasPermission(permissions.openCashRegister);
   const contextRef = useRef("");
   contextRef.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}`;
@@ -57,13 +59,13 @@ function Registers() {
   }, [currentCompany?.id, currentBranch?.id]);
 
   function show(register?: CashRegister) {
-    if (!canConfigure) return;
+    if (register ? !canChange : !canAdd) return;
     setEditing(register || null); setName(register?.name || ""); setFields({}); setError(""); setModalOpen(true);
   }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!canConfigure || !currentBranch) return;
+    if (!(editing ? canChange : canAdd) || !currentBranch) return;
     setSaving(true); setError(""); setFields({});
     try {
       if (editing) await http.patch(`cash-registers/${editing.id}/`, { name });
@@ -76,7 +78,7 @@ function Registers() {
   }
 
   async function changeStatus() {
-    if (!confirming || !canConfigure) return;
+    if (!confirming || !canStatus) return;
     const register = confirming;
     const action = register.status === "active" ? "deactivate" : "activate";
     setSaving(true); setError("");
@@ -90,12 +92,12 @@ function Registers() {
   const actions = (register: CashRegister) => <div className="flex flex-wrap items-center gap-1">
     {register.open_session && <Link className="btn btn-secondary h-9 px-3" href={`/caixas/sessoes/${register.open_session.id}`}><ExternalLink className="size-4" />Operar</Link>}
     {!register.open_session && register.status === "active" && canOpen && <Link className="btn btn-primary h-9 px-3" href={`/caixas/abrir?register=${register.id}`}><Banknote className="size-4" />Abrir</Link>}
-    {canConfigure && <button className="icon-button" aria-label={`Editar ${register.name}`} onClick={() => show(register)}><Pencil className="size-4" /></button>}
-    {canConfigure && <button className="icon-button" aria-label={`${register.status === "active" ? "Inativar" : "Ativar"} ${register.name}`} onClick={() => setConfirming(register)}><Power className="size-4" /></button>}
+    {canChange && <button className="icon-button" aria-label={`Editar ${register.name}`} onClick={() => show(register)}><Pencil className="size-4" /></button>}
+    {canStatus && <button className="icon-button" aria-label={`${register.status === "active" ? "Inativar" : "Ativar"} ${register.name}`} onClick={() => setConfirming(register)}><Power className="size-4" /></button>}
   </div>;
 
   return <>
-    <PageHeader title="Caixas" description={`Filial atual: ${currentBranch?.name || "nenhuma filial selecionada"}. Os dados abaixo pertencem somente a este contexto.`} action={canConfigure ? <Button onClick={() => show()}><Plus className="size-4" />Novo caixa</Button> : undefined} />
+    <PageHeader title="Caixas" description={`Filial atual: ${currentBranch?.name || "nenhuma filial selecionada"}. Os dados abaixo pertencem somente a este contexto.`} action={canAdd ? <Button onClick={() => show()}><Plus className="size-4" />Novo caixa</Button> : undefined} />
     <div className="space-y-4 p-4 sm:p-6 lg:p-8">
       {error && !modalOpen && <Alert message={error} />}{success && <Alert type="success" message={success} />}
       <form className="card grid gap-3 p-4 sm:grid-cols-[1fr_12rem_auto]" onSubmit={(event) => { event.preventDefault(); void load(); }}>

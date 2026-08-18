@@ -2,86 +2,48 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { Banknote, Boxes, Clock3, CreditCard, ReceiptText, ShoppingBasket, TrendingUp, Users } from "lucide-react";
+import { Boxes, ReceiptText, ShoppingBasket, TrendingDown, TrendingUp, Users } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
-import { PeriodFilter, type PeriodValue } from "@/components/period-filter";
-import { Alert, EmptyState, TableLoading } from "@/components/ui";
+import { Field, Select, Alert, EmptyState, TableLoading } from "@/components/ui";
 import { formatBRL, formatDate, formatQuantity } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { useAuth } from "@/providers/auth-provider";
-import type { DashboardData } from "@/types";
+import type { DashboardData, ReportUserGroup } from "@/types";
 
-function today(): PeriodValue {
-  const now = new Date();
-  const pad = (value: number) => String(value).padStart(2, "0");
-  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-  return { start: `${date}T00:00`, end: `${date}T23:59` };
+const pad = (value: number) => String(value).padStart(2, "0");
+const localInput = (date: Date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+function range(days = 0, offset = 0) { const end = new Date(); end.setDate(end.getDate() + offset); end.setHours(23, 59, 0, 0); const start = new Date(end); start.setDate(start.getDate() - days); start.setHours(0, 0, 0, 0); return { start: localInput(start), end: localInput(end) }; }
+
+function Kpi({ label, value, note, icon: Icon, href, tone = "primary" }: { label: string; value: string; note: string; icon: typeof TrendingUp; href: string; tone?: "primary" | "danger" | "warning" | "success" }) {
+  const tones = { primary: "bg-primary/10 text-primary", danger: "bg-danger/10 text-red-700", warning: "bg-warning/10 text-amber-700", success: "bg-success/10 text-emerald-700" };
+  return <Link href={href} className="card group p-5 transition hover:-translate-y-0.5 hover:shadow-md"><div className="flex justify-between gap-3"><div><p className="text-[10px] font-bold uppercase tracking-[.14em] text-slate-500">{label}</p><strong className="mt-3 block text-2xl text-dark">{value}</strong><span className="mt-1 block text-[11px] text-slate-500">{note}</span></div><span className={`flex size-10 items-center justify-center rounded-lg ${tones[tone]}`}><Icon className="size-5" /></span></div></Link>;
 }
 
-function Kpi({ label, value, note, icon: Icon, href }: { label: string; value: string | number; note?: string; icon: typeof TrendingUp; href?: string }) {
-  const content = <article className="card h-full p-5 transition hover:-translate-y-0.5 hover:shadow-md"><div className="flex items-start justify-between gap-3"><div><p className="text-[10px] font-bold uppercase tracking-[.14em] text-slate-400">{label}</p><strong className="mt-3 block text-2xl text-dark">{value}</strong>{note && <span className="mt-1 block text-[11px] text-slate-500">{note}</span>}</div><span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><Icon className="size-5" /></span></div></article>;
-  return href ? <Link href={href} className="block h-full">{content}</Link> : content;
-}
-
-function BarChart({ title, icon: Icon, rows, empty }: { title: string; icon: typeof TrendingUp; rows: Array<{ label: string; value: number; display: string; note?: string }>; empty: string }) {
+function Bars({ title, rows, href }: { title: string; rows: Array<{ label: string; value: number; display: string; note?: string; query?: string }>; href: string }) {
   const max = Math.max(...rows.map((row) => row.value), 0);
-  return <section className="card overflow-hidden"><div className="card-header"><h2 className="flex items-center gap-2 text-sm font-bold"><Icon className="size-4 text-primary" />{title}</h2></div>{rows.length ? <div className="space-y-4 p-5">{rows.map((row) => <div key={row.label}><div className="mb-1.5 flex items-end justify-between gap-3 text-xs"><span className="min-w-0 truncate font-semibold">{row.label}<small className="ml-1 text-[10px] font-normal text-slate-400">{row.note}</small></span><strong>{row.display}</strong></div><div className="h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-gradient-to-r from-primary to-blue-400 transition-all" style={{ width: `${max ? Math.max(3, row.value / max * 100) : 0}%` }} /></div></div>)}</div> : <EmptyState title="Sem dados" description={empty} />}</section>;
+  return <section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">{title}</h2><Link className="text-xs font-bold text-primary" href={href}>Ver relatório</Link></div>{rows.length ? <div className="space-y-4 p-5">{rows.map((row) => <Link href={`${href}${row.query || ""}`} key={row.label} className="block rounded-md focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-primary/20"><div className="mb-1.5 flex justify-between gap-3 text-xs"><span className="truncate font-semibold">{row.label}<small className="ml-1 font-normal text-slate-500">{row.note}</small></span><strong>{row.display}</strong></div><div className="h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-gradient-to-r from-primary to-blue-400" style={{ width: `${max ? Math.max(3, row.value / max * 100) : 0}%` }} /></div></Link>)}</div> : <EmptyState title="Sem dados" description="Nenhum registro no período selecionado." />}</section>;
+}
+
+function PeopleTable({ title, rows, seller, query }: { title: string; rows: ReportUserGroup[]; seller: boolean; query: string }) {
+  return <section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">{title}</h2><Link className="text-xs font-bold text-primary" href={`/relatorios/${seller ? "atendentes" : "operadores"}?${query}`}>Ver relatório</Link></div><div className="table-wrap"><table className="data-table"><thead><tr><th>Pessoa</th><th>Vendas</th><th>Faturamento</th><th>Ticket</th>{seller && <th>Comissão</th>}</tr></thead><tbody>{rows.slice(0, 6).map((row) => <tr key={row.user.id}><td><Link className="font-bold text-primary" href={`/relatorios/${seller ? "atendentes" : "operadores"}?${query}&${seller ? "seller" : "operator"}=${row.user.id}`}>{row.user.name}</Link></td><td>{row.count}</td><td>{formatBRL(row.effective_revenue)}</td><td>{formatBRL(row.average)}</td>{seller && <td>{row.commission === undefined ? "-" : formatBRL(row.commission)}</td>}</tr>)}</tbody></table></div></section>;
 }
 
 export default function DashboardPage() {
-  const { currentBranch } = useAuth();
-  const context = useRef("");
-  context.current = String(currentBranch?.id || "");
-  const [period, setPeriod] = useState<PeriodValue>(today);
-  const [data, setData] = useState<DashboardData | null>(null);
-  const [error, setError] = useState("");
-
-  async function load(next = period, token = context.current) {
-    if (!currentBranch) return;
-    setData(null); setError("");
-    const params = new URLSearchParams({ start_datetime: next.start, end_datetime: next.end });
-    try {
-      const result = await http.get<DashboardData>(`dashboard/?${params}`);
-      if (context.current === token) setData(result);
-    } catch (caught) {
-      if (context.current === token) setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar o painel.");
-    }
-  }
-
-  useEffect(() => { const next = today(); setPeriod(next); void load(next, context.current); }, [currentBranch?.id]);
-  const periodParams = new URLSearchParams({ start_datetime: period.start, end_datetime: period.end });
-  const reportHref = (extra = "") => `/relatorios?${periodParams}${extra}`;
-  const sales = data?.sales;
-  const cards = data ? [
-    ...(sales ? [
-      { label: "Valor bruto", value: formatBRL(sales.gross), note: `${sales.count} vendas`, icon: TrendingUp, href: reportHref("&report=sales") },
-      { label: "Faturamento efetivo", value: formatBRL(sales.effective_revenue), note: `Descontos ${formatBRL(sales.total_discount)}`, icon: ReceiptText, href: reportHref("&report=sales") },
-      { label: "Taxa de serviço", value: formatBRL(sales.service_fee), note: `Cobrado ${formatBRL(sales.customer_total)}`, icon: CreditCard, href: reportHref("&report=sales") },
-      { label: "Comissão", value: formatBRL(sales.commission), note: "Vendas finalizadas", icon: Users, href: reportHref("&report=sales") },
-    ] : []),
-    ...(data.consumptions ? [{ label: "Consumação cobrada", value: formatBRL(data.consumptions.charged), note: `Referência ${formatBRL(data.consumptions.reference)}`, icon: ShoppingBasket, href: "/consumacoes" }] : []),
-    ...(data.withdrawals ? [{ label: "Sangrias", value: formatBRL(data.withdrawals.amount), note: `${data.withdrawals.count} registros`, icon: Banknote, href: reportHref("&report=withdrawals") }] : []),
-    ...(data.inventory?.inventory_value !== undefined ? [{ label: "Valor em estoque", value: formatBRL(data.inventory.inventory_value), note: "Custo atual", icon: Boxes, href: "/estoque" }] : []),
-  ] : [];
-
-  return <><PageHeader title="Visão operacional" description={`Indicadores da filial ${currentBranch?.name || "atual"}.`} />
-    <div className="space-y-5 p-4 sm:p-6 lg:p-8">
-      <section className="card p-4"><PeriodFilter value={period} onApply={(next) => { setPeriod(next); void load(next); }} /></section>
-      {error && <Alert message={error} />}
-      {!data ? <section className="card"><TableLoading /></section> : <>
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{cards.map((card) => <Kpi key={card.label} {...card} />)}</div>
-        {data.inventory && <div className="grid gap-4 sm:grid-cols-3"><Kpi label="Saldo negativo" value={data.inventory.negative_count} icon={Boxes} href="/estoque?state=negative" /><Kpi label="Produtos zerados" value={data.inventory.zero_count} icon={Boxes} href="/estoque?state=zero" /><Kpi label="Abaixo do mínimo" value={data.inventory.below_minimum_count} icon={Boxes} href="/estoque?state=below_minimum" /></div>}
-        {sales && <div className="grid gap-5 xl:grid-cols-2">
-          <BarChart title="Faturamento e vendas por hora" icon={Clock3} empty="Nenhuma venda no período." rows={sales.hourly_sales.map((row) => ({ label: new Date(row.hour).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }), value: Number(row.customer_total), display: formatBRL(row.customer_total), note: `${row.count} venda${row.count === 1 ? "" : "s"}` }))} />
-          <BarChart title="Formas de pagamento" icon={CreditCard} empty="Nenhum pagamento no período." rows={sales.payment_distribution.map((row) => ({ label: row.name, value: Number(row.amount), display: formatBRL(row.amount) }))} />
-          <BarChart title="Produtos mais vendidos" icon={ShoppingBasket} empty="Nenhum produto vendido." rows={sales.top_products.slice(0, 8).map((row) => ({ label: row.product_name, value: Number(row.revenue), display: formatBRL(row.revenue), note: formatQuantity(row.quantity) }))} />
-          <BarChart title="Atendentes" icon={Users} empty="Nenhuma venda atribuída." rows={sales.top_sellers.slice(0, 8).map((row) => ({ label: row.user.name, value: Number(row.customer_total), display: formatBRL(row.customer_total), note: `${row.count} venda${row.count === 1 ? "" : "s"}` }))} />
-        </div>}
-        <div className="grid gap-5 xl:grid-cols-2">
-          {data.current_cash && <section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Caixa atual</h2><Banknote className="size-5 text-primary" /></div>{data.current_cash.length ? <div className="divide-y divide-slate-100">{data.current_cash.map((row) => <div key={row.id} className="px-5 py-4"><div className="flex justify-between"><strong>{row.register.name}</strong><span className="text-xs text-success">Aberto</span></div><div className="mt-2 flex justify-between text-xs text-slate-500"><span>Esperado</span><strong className="text-dark">{formatBRL(row.expected)}</strong></div></div>)}</div> : <EmptyState title="Nenhum caixa aberto" description="Não há sessão aberta nesta filial." />}</section>}
-          {sales && <section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Últimas vendas</h2><Link href={`/vendas?${periodParams}`} className="text-xs font-bold text-primary">Ver todas</Link></div>{sales.latest_sales.length ? <div className="divide-y divide-slate-100">{sales.latest_sales.map((sale) => <Link key={sale.id} href={`/vendas/${sale.id}`} className="flex justify-between px-5 py-3 text-sm hover:bg-slate-50"><span><strong>{sale.sale_number}</strong><small className="ml-2 text-slate-400">{sale.seller?.name || sale.operator.name} · {formatDate(sale.created_at)}</small></span><strong>{formatBRL(sale.total)}</strong></Link>)}</div> : <EmptyState title="Sem vendas" description="Nenhuma venda comercial no período." />}</section>}
-        </div>
-      </>}
-    </div>
-  </>;
+  const { currentBranch } = useAuth(); const context = useRef(currentBranch?.id || 0); context.current = currentBranch?.id || 0;
+  const [period, setPeriod] = useState(() => range()); const [category, setCategory] = useState("");
+  const [data, setData] = useState<DashboardData | null>(null); const [error, setError] = useState("");
+  async function load(next = period, nextCategory = category, token = context.current) { if (!currentBranch) return; setData(null); setError(""); const params = new URLSearchParams({ start_datetime: next.start, end_datetime: next.end }); if (nextCategory) params.set("category", nextCategory); try { const result = await http.get<DashboardData>(`dashboard/?${params}`); if (context.current === token) setData(result); } catch (caught) { if (context.current === token) setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar o Dashboard."); } }
+  useEffect(() => { const next = range(); setPeriod(next); setCategory(""); void load(next, "", context.current); }, [currentBranch?.id]);
+  function apply(next = period, nextCategory = category) { setPeriod(next); setCategory(nextCategory); void load(next, nextCategory); }
+  const query = new URLSearchParams({ start_datetime: period.start, end_datetime: period.end, ...(category ? { category } : {}), ...(currentBranch ? { branch: String(currentBranch.id) } : {}) }).toString();
+  const sales = data?.sales; const report = (slug: string, extra = "") => `/relatorios/${slug}?${query}${extra}`;
+  const weekdays = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
+  const heatMax = Math.max(...(sales?.heatmap || []).map((row) => Number(row.revenue)), 0);
+  return <><PageHeader title="Dashboard Executivo" description={`Visão gerencial organizada de ${currentBranch?.name || "sua filial"}.`} /><div className="space-y-5 p-4 sm:p-6 lg:p-8">
+    <section className="card p-4"><div className="grid gap-3 lg:grid-cols-[1fr_1fr_220px]"><Field label="Data/hora inicial"><input className="input" type="datetime-local" value={period.start} onChange={(event) => setPeriod((value) => ({ ...value, start: event.target.value }))} /></Field><Field label="Data/hora final"><input className="input" type="datetime-local" value={period.end} onChange={(event) => setPeriod((value) => ({ ...value, end: event.target.value }))} /></Field><Field label="Categoria"><Select value={category} onChange={(event) => setCategory(event.target.value)}><option value="">Todas</option>{data?.filters?.categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field></div><div className="mt-3 flex flex-wrap gap-2">{[["Hoje", range()], ["Ontem", range(0, -1)], ["Últimos 7 dias", range(6)], ["Últimos 15 dias", range(14)], ["Últimos 30 dias", range(29)]].map(([label, value]) => <button key={String(label)} className="rounded-full bg-slate-100 px-3 py-1.5 text-[11px] font-bold hover:bg-primary hover:text-white" onClick={() => apply(value as { start: string; end: string })}>{String(label)}</button>)}{data?.current_cash?.[0] && <button className="rounded-full bg-success/10 px-3 py-1.5 text-[11px] font-bold text-emerald-700" onClick={() => apply({ start: localInput(new Date(data.current_cash![0].opened_at)), end: localInput(new Date()) })}>Sessão atual</button>}<button className="rounded-full bg-primary px-4 py-1.5 text-[11px] font-bold text-white" onClick={() => apply()}>Aplicar personalizado</button></div></section>
+    {error && <Alert message={error} />}{!data ? <section className="card"><TableLoading /></section> : <>
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{sales && <><Kpi label="Faturamento" value={formatBRL(sales.effective_revenue)} note={`${sales.count} vendas comerciais`} icon={TrendingUp} href={report("vendas")} /><Kpi label="Ticket médio" value={formatBRL(sales.average)} note="Vendas finalizadas" icon={ReceiptText} href={report("vendas")} /><Kpi label="Cancelamentos / Estornos" value={formatBRL(sales.cancellations.value)} note={`${sales.cancellations.count} operações`} icon={TrendingDown} tone="danger" href={report("cancelamentos")} /><Kpi label="Descontos manuais" value={formatBRL(sales.manual_discount)} note={`${sales.manual_discount_count} vendas afetadas`} icon={ReceiptText} tone="warning" href={report("descontos")} /></>}{data.consumptions && <Kpi label="Consumação & Cortesias" value={formatBRL(data.consumptions.charged)} note={`${data.consumptions.count} pedidos · benefício ${formatBRL(data.consumptions.subsidy)}`} icon={ShoppingBasket} href={report("consumacoes")} />}{sales?.commission !== undefined && <Kpi label="Comissão" value={formatBRL(sales.commission)} note="Fora do faturamento" icon={Users} href={report("comissoes")} />}</div>
+      <div className="grid gap-5 xl:grid-cols-2"><section className="card p-5"><div className="mb-4 flex justify-between"><h2 className="text-sm font-bold">Estoque físico</h2><Link className="text-xs font-bold text-primary" href="/estoque">Abrir estoque</Link></div><div className="grid grid-cols-2 gap-3">{data.inventory?.inventory_value !== undefined && <Kpi label="Valor em estoque" value={formatBRL(data.inventory.inventory_value)} note="Somente saldos positivos" icon={Boxes} href="/estoque" />}<Kpi label="Negativos" value={String(data.inventory?.negative_count || 0)} note="Produtos físicos" icon={Boxes} tone="danger" href="/estoque?state=negative" /><Kpi label="Abaixo do mínimo" value={String(data.inventory?.below_minimum_count || 0)} note="Exigem atenção" icon={Boxes} tone="warning" href="/estoque?state=below_minimum" /><Kpi label="Produtos físicos" value={String(data.inventory?.physical_products || 0)} note="Sem pais compostos ou itens sem estoque" icon={Boxes} href="/estoque" /></div></section><section className="card p-5"><div className="mb-4 flex justify-between"><h2 className="text-sm font-bold">Caixa e resultado</h2>{data.operational_result && <Link className="text-xs font-bold text-primary" href={report("resultado")}>Ver resultado</Link>}</div>{data.operational_result && <div className="mb-4 rounded-lg border border-dashed border-primary/30 p-4"><span className="text-[10px] font-bold uppercase text-slate-500">Resultado estimado</span><strong className="mt-2 block text-2xl">{formatBRL(data.operational_result.result)}</strong><small className="text-slate-500">Margem {data.operational_result.margin}%</small></div>}{data.current_cash?.length ? data.current_cash.map((item) => <Link key={item.id} href={`/caixas/sessoes/${item.id}`} className="flex justify-between border-t border-slate-100 py-3 text-sm"><span>{item.register.name}</span><strong>{formatBRL(item.expected)} em dinheiro</strong></Link>) : <p className="text-xs text-slate-500">Nenhum caixa aberto.</p>}</section></div>
+      {sales && <><section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Mapa de calor · dia × hora</h2><p className="mt-1 text-[11px] text-slate-500">Intensidade por faturamento efetivo. Clique para detalhar.</p></div></div><div className="overflow-x-auto p-5"><div className="grid min-w-240 grid-cols-[42px_repeat(24,minmax(28px,1fr))] gap-1"><span />{Array.from({ length: 24 }, (_, hour) => <span key={hour} className="text-center text-[9px] text-slate-500">{hour}</span>)}{weekdays.map((day, weekday) => <div key={day} className="contents"><span className="self-center text-[10px] font-bold">{day}</span>{Array.from({ length: 24 }, (_, hour) => { const cell = sales.heatmap.find((row) => row.weekday === weekday && row.hour === hour); const strength = cell && heatMax ? Math.max(.08, Number(cell.revenue) / heatMax) : .03; return <Link key={hour} href={report("vendas", `&hour=${hour}&weekday=${weekday}`)} title={cell ? `${formatBRL(cell.revenue)} · ${cell.count} vendas · ticket ${formatBRL(cell.average)}` : "Sem vendas"} className="aspect-square rounded-sm border border-primary/10" style={{ backgroundColor: `color-mix(in srgb, var(--color-primary) ${Math.round(strength * 100)}%, transparent)` }} />; })}</div>)}</div></div></section><div className="grid gap-5 xl:grid-cols-2"><Bars title="Produtos mais vendidos" href={report("produtos")} rows={sales.top_products.slice(0, 8).map((row) => ({ label: row.product_name, value: Number(row.revenue), display: formatBRL(row.revenue), note: formatQuantity(row.quantity), query: row.product_id ? `&product=${row.product_id}` : "" }))} /><Bars title="Formas de pagamento" href={report("recebimentos")} rows={sales.payment_distribution.map((row) => ({ label: row.name, value: Number(row.amount), display: formatBRL(row.amount), query: `&payment_method_code=${row.code}` }))} /><Bars title="Faturamento por atendente" href={report("atendentes")} rows={sales.top_sellers.slice(0, 8).map((row) => ({ label: row.user.name, value: Number(row.effective_revenue), display: formatBRL(row.effective_revenue), note: `${row.count} vendas`, query: `&seller=${row.user.id}` }))} /><Bars title="Comparativo diário" href={report("vendas")} rows={sales.weekly_comparison.current.map((row) => ({ label: new Date(`${row.date}T12:00:00`).toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit" }), value: Number(row.revenue), display: formatBRL(row.revenue), note: `${row.count} vendas` }))} /></div><div className="grid gap-5 xl:grid-cols-2"><PeopleTable title="Atendentes / Performance" rows={sales.top_sellers} seller query={query} /><PeopleTable title="Operadores de caixa" rows={sales.top_operators} seller={false} query={query} /></div><section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Últimas vendas</h2><Link href={`/vendas?${query}`} className="text-xs font-bold text-primary">Ver todas</Link></div>{sales.latest_sales.length ? <div className="divide-y divide-slate-100">{sales.latest_sales.map((sale) => <Link key={sale.id} href={`/vendas/${sale.id}`} className="flex flex-wrap justify-between gap-2 px-5 py-3 text-sm hover:bg-slate-50"><span><strong>{sale.sale_number}</strong><small className="ml-2 text-slate-500">{sale.seller?.name || "Sem atendente"} · {formatDate(sale.created_at)}</small></span><strong>{formatBRL(sale.total)}</strong></Link>)}</div> : <EmptyState title="Sem vendas" description="Nenhuma venda comercial no período." />}</section></>}
+    </>}</div></>;
 }

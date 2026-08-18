@@ -19,6 +19,8 @@ from .rbac import (
 
 def ensure_permission_catalog():
     permissions = {}
+    catalog_codes = {item[0] for item in PERMISSION_CATALOG}
+    FunctionalPermission.objects.exclude(code__in=catalog_codes).update(status='inactive')
     for code, module, label, description in PERMISSION_CATALOG:
         permission, _ = FunctionalPermission.objects.update_or_create(
             code=code,
@@ -59,7 +61,9 @@ def ensure_default_access_profiles(company):
 def create_company_with_matrix(*, creator, **company_data):
     company = Company.objects.create(**company_data)
     profiles = ensure_default_access_profiles(company)
-    matrix = Branch.objects.create(company=company, name='Matriz', is_matrix=True)
+    matrix = Branch.objects.create(
+        company=company, name='Matriz', is_matrix=True, address_pending=True
+    )
     UserCompanyAccess.objects.create(
         user=creator,
         company=company,

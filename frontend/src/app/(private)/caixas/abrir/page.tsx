@@ -48,7 +48,10 @@ function OpenRegister() {
     setSaving(true); setError("");
     try {
       const session = await http.post<CashSession>("cash-sessions/open/", { cash_register: Number(registerId), opening_amount: normalizeMoney(openingAmount) });
-      if (contextRef.current === context) router.push(`/caixas/sessoes/${session.id}`);
+      if (contextRef.current === context) {
+        const returnTo = new URLSearchParams(window.location.search).get("return");
+        router.push(returnTo && returnTo.startsWith("/") ? returnTo : `/caixas/sessoes/${session.id}`);
+      }
     } catch (caught) {
       if (contextRef.current === context) setError(caught instanceof ApiError ? caught.message : "Não foi possível abrir o caixa.");
     } finally { if (contextRef.current === context) setSaving(false); }
@@ -66,7 +69,7 @@ function OpenRegister() {
           <Field label="Valor inicial"><div className="relative"><span className="absolute left-3 top-2.5 text-sm font-semibold text-slate-400">R$</span><Input className="pl-10" required inputMode="decimal" value={openingAmount} onChange={(event) => setOpeningAmount(event.target.value)} placeholder="0,00" /></div></Field>
           <div className="flex items-start gap-3 rounded-lg border border-primary/15 bg-primary/5 p-4 text-xs leading-5 text-slate-600"><LockKeyhole className="mt-0.5 size-4 shrink-0 text-primary" /><p>O valor é enviado como texto decimal, sem conversão para ponto flutuante. Confirme o numerário físico antes de abrir.</p></div>
         </div>
-        <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4 sm:px-6"><Link href="/caixas" className="btn btn-secondary">Cancelar</Link><Button type="submit" loading={saving}>Confirmar abertura</Button></div>
+        <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4 sm:px-6"><Link href={new URLSearchParams(typeof window !== "undefined" ? window.location.search : "").get("return") || "/caixas"} className="btn btn-secondary">Cancelar</Link><Button type="submit" loading={saving}>Confirmar abertura</Button></div>
       </form>}
     </div>
   </>;

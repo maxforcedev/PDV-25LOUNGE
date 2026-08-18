@@ -60,10 +60,11 @@ const beneficiaryRequired = new Set<WithdrawalCategory>([
 
 function SessionDetail() {
   const { id } = useParams<{ id: string }>();
-  const { currentCompany, currentBranch, hasPermission } = useAuth();
+  const { user, currentCompany, currentBranch, hasPermission } = useAuth();
   const canEntry = hasPermission(permissions.manualCashEntry);
   const canWithdraw = hasPermission(permissions.withdrawCash);
   const canClose = hasPermission(permissions.closeCashRegister);
+  const canAdministerOthers = hasPermission(permissions.administerOtherCash);
   const contextRef = useRef("");
   contextRef.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}:${id}`;
   const [session, setSession] = useState<CashSession | null>(null);
@@ -262,6 +263,7 @@ function SessionDetail() {
   }
 
   const isOpen = session?.status === "open";
+  const canOperateSession = !!session && (session.opened_by === user?.id || canAdministerOthers);
   return (
     <>
       <PageHeader
@@ -277,13 +279,13 @@ function SessionDetail() {
               <ArrowLeft className="size-4" />
               Caixas
             </Link>
-            {isOpen && canEntry && (
+            {isOpen && canOperateSession && canEntry && (
               <Button variant="secondary" onClick={() => showAction("entry")}>
                 <ArrowDownToLine className="size-4" />
                 Entrada
               </Button>
             )}
-            {isOpen && canWithdraw && (
+            {isOpen && canOperateSession && canWithdraw && (
               <Button
                 variant="secondary"
                 onClick={() => showAction("withdrawal")}
@@ -292,7 +294,7 @@ function SessionDetail() {
                 Sangria
               </Button>
             )}
-            {isOpen && canClose && (
+            {isOpen && canOperateSession && canClose && (
               <Link
                 href={`/caixas/sessoes/${id}/fechar`}
                 className="btn btn-danger"
@@ -397,6 +399,14 @@ function SessionDetail() {
               Valores recebidos e troco não compõem esse cálculo.
             </div>
             <section className="card overflow-hidden">
+              <div className="card-header"><div><h2 className="text-sm font-bold">Resumo operacional completo</h2><p className="mt-1 text-[11px] text-slate-500">Produção da sessão, benefícios e recebimentos por forma.</p></div><Banknote className="size-5 text-slate-300" /></div>
+              <div className="grid gap-6 p-5 lg:grid-cols-3">
+                <div className="space-y-2 text-xs"><h3 className="font-bold text-dark">Vendas ({summary.sales.count})</h3><p className="flex justify-between"><span>Bruto</span><strong>{formatBRL(summary.sales.gross)}</strong></p><p className="flex justify-between"><span>Descontos promocionais</span><strong className="text-red-700">- {formatBRL(summary.sales.promotion_discount)}</strong></p><p className="flex justify-between"><span>Descontos manuais</span><strong className="text-red-700">- {formatBRL(summary.sales.manual_discount)}</strong></p><p className="flex justify-between border-t border-slate-100 pt-2"><span>Receita efetiva</span><strong>{formatBRL(summary.sales.effective_revenue)}</strong></p><p className="flex justify-between"><span>Taxa de serviço</span><strong>{formatBRL(summary.sales.service_fee)}</strong></p><p className="flex justify-between"><span>Total cobrado</span><strong className="text-primary">{formatBRL(summary.sales.customer_total)}</strong></p></div>
+                <div className="space-y-2 text-xs"><h3 className="font-bold text-dark">Consumações ({summary.consumptions.count})</h3><p className="flex justify-between"><span>Valor de referência</span><strong>{formatBRL(summary.consumptions.reference)}</strong></p><p className="flex justify-between"><span>Valor cobrado</span><strong>{formatBRL(summary.consumptions.charged)}</strong></p><p className="flex justify-between border-t border-slate-100 pt-2"><span>Benefício concedido</span><strong className="text-amber-700">{formatBRL(summary.consumptions.benefit)}</strong></p><p className="flex justify-between"><span>Comissões atribuídas</span><strong>{formatBRL(summary.sales.commission)}</strong></p></div>
+                <div className="space-y-2 text-xs"><h3 className="font-bold text-dark">Recebimentos</h3>{summary.payment_totals.length ? summary.payment_totals.map((payment) => <p key={`${payment.payment_method_code}:${payment.payment_method_name}`} className="flex justify-between"><span>{payment.payment_method_name}</span><strong>{formatBRL(payment.amount)}</strong></p>) : <p className="text-slate-500">Nenhum recebimento finalizado.</p>}<p className="flex justify-between border-t border-slate-100 pt-2"><span>Dinheiro no caixa</span><strong className="text-primary">{formatBRL(summary.cash_payments)}</strong></p></div>
+              </div>
+            </section>
+            <section className="card overflow-hidden">
               <div className="card-header">
                 <div>
                   <h2 className="text-sm font-bold">Linha do tempo</h2>
@@ -439,6 +449,7 @@ function SessionDetail() {
                             <span className="ml-1">· {event.details}</span>
                           )}
                         </p>
+                        {(event.beneficiary_name || event.reason || event.registered_by_name) && <div className="mt-2 grid gap-1 text-[11px] text-slate-500 sm:grid-cols-3">{event.beneficiary_name && <p><strong className="text-dark">Beneficiário:</strong> {event.beneficiary_name}</p>}{event.reason && <p><strong className="text-dark">Motivo:</strong> {event.reason}</p>}{event.registered_by_name && <p><strong className="text-dark">Registrado por:</strong> {event.registered_by_name}</p>}</div>}
                         {event.sale && (
                           <Link
                             className="mt-1 inline-block text-[11px] font-bold text-primary"

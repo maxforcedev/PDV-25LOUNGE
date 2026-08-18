@@ -11,6 +11,13 @@ REPORT_PERMISSIONS = (
     'reports.view_withdrawals',
     'reports.view_inventory',
     'reports.view_operational_result',
+    'reports.view_stock_consumption',
+    'reports.view_products',
+    'reports.view_receipts',
+    'reports.view_team',
+    'reports.view_discounts',
+    'reports.view_cancellations',
+    'reports.view_prices',
 )
 
 
@@ -30,8 +37,13 @@ class ReportsPermission(BasePermission):
             return False
         request.branch_context = branch
         required = getattr(view, 'required_permission', None)
+        permission_by_scope = getattr(view, 'permission_by_scope', None)
+        if permission_by_scope:
+            required = permission_by_scope.get(request.query_params.get('scope'), required)
         codes = getattr(view, 'required_permissions', None)
-        if codes is None:
+        if permission_by_scope:
+            codes = (required,) if required else ()
+        elif codes is None:
             codes = REPORT_PERMISSIONS if required is None else (required,)
         if user.is_superuser:
             allowed = True

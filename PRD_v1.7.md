@@ -1,8 +1,8 @@
 # PRD — CORE PDV: Sistema de Gestão Empresarial e Ponto de Venda
 
-> **Versão:** 1.6
-> **Data:** 2026-08-16  
-> **Status:** PRD técnico — V1 fechada em escopo funcional, com núcleo operacional, auditoria reforçada, bloqueios individuais de permissão, CMV por snapshot, relatório de produtos/insumos consumidos, validação manual final e deploy previstos antes da V2  
+> **Versão:** 1.7
+> **Data:** 2026-08-17  
+> **Status:** PRD técnico — V1 em revisão final pós-validação operacional, com Dashboard executivo revisado, RBAC refinado, relatórios dedicados reais, estoque em grupo/auditável, caixa completo, auditoria humanizada e Sprint 12.2.1 consolidando as correções antes da validação manual final  
 > **Domínio de produção:** `corepdv.com`  
 > **Idioma do código:** inglês  
 > **Idioma da interface:** português brasileiro  
@@ -30,6 +30,7 @@ O documento foi construído a partir dos requisitos mandatórios do CORE PDV e u
 7. Diagramas arquiteturais podem utilizar Mermaid.
 8. Critérios de aceite e tarefas de sprint usam `- [ ]`.
 9. Mudanças futuras devem ser adicionadas ao PRD de forma explícita, sem apagar requisitos históricos relevantes.
+10. Sprints históricas já executadas preservam seus `[X]`; descobertas posteriores devem entrar em sprint corretiva nova, e a regra mais recente do corpo principal deste PRD prevalece quando houver evolução explícita de requisito.
 
 ---
 
@@ -333,6 +334,15 @@ Os principais problemas que o CORE PDV pretende resolver no MVP são:
 - bloqueios individuais de permissão por usuário/filial, sem alterar o perfil-base;
 - CMV histórico baseado em snapshot de custo do item no momento da operação;
 - relatório de produtos e insumos efetivamente consumidos, derivado dos movimentos reais de estoque.
+- Dashboard executivo/gerencial com filtros globais de Branch, data/hora e Category, KPIs, rankings, mapa de calor, gráficos e drill-down clicável;
+- bloqueio de alteração de endereço de Branch após cadastro/complementação, com alteração posterior exclusiva do superuser da plataforma;
+- revisão final do catálogo de permissões e exposição organizada das capacidades dinâmicas por módulo/ação;
+- cadastro em lote de Products restrito ao superuser da plataforma;
+- entrada manual de estoque em grupo por Category, mantendo um StockMovement individual e auditável para cada Product movimentado;
+- natureza/subtipo estruturado para entrada, saída e ajuste manual de estoque;
+- regularização explícita e auditável de saldos negativos antes de desativar `allow_negative_stock`;
+- visão completa de CashSession com faturamento, quantidade de vendas, taxa de serviço, comissão, consumação, recebimentos por forma de pagamento e gaveta física;
+- experiência de auditoria humanizada no frontend, mantendo AuditLog técnico append-only como fonte de verdade.
 
 ## 4.2 Fora do MVP funcional
 
@@ -639,7 +649,7 @@ Regras:
 13. Unicidades de negócio devem considerar empresa quando necessário.
 14. Estoque é sempre por filial.
 15. Venda exige caixa aberto.
-16. Estoque negativo é proibido.
+16. Estoque negativo é proibido por padrão e só é permitido quando `BranchSettings.allow_negative_stock=True`; a mudança dessa configuração deve preservar consistência e auditoria dos saldos existentes.
 17. Toda alteração de estoque gera movimentação correspondente.
 18. O motivo de movimentação manual de estoque (`entry`, `exit`, `adjustment`) é opcional no MVP; produto, filial, usuário, tipo, saldo anterior, quantidade, saldo final e timestamp continuam obrigatoriamente auditáveis.
 19. Preço histórico da venda é imutável em relação a alterações posteriores do produto.
@@ -699,6 +709,18 @@ Regras:
 73. Descontos não podem ser subtraídos duas vezes em relatórios de resultado: devem explicar a diferença entre valor bruto a preço de tabela e faturamento efetivo.
 74. Sangria não é automaticamente despesa. Somente movimentos classificados como afetando resultado entram em resultado operacional estimado.
 75. Nenhuma chave técnica do backend (`manual_discount`, `payment_totals`, etc.) pode ser exibida diretamente ao usuário; toda UI deve usar rótulos pt-BR explícitos.
+
+76. `Faturamento efetivo` não inclui comissão. Comissão é custo/obrigação operacional vinculada ao `seller_user` e só reduz o Resultado estimado; taxa de serviço cobrada do cliente deve ser exibida separadamente do faturamento de produtos.
+77. O Dashboard principal deve possuir filtros globais de Branch, período com data/hora e Category, atalhos de período e navegação clicável preservando os filtros.
+78. KPIs, cards, gráficos, rankings, tabelas e listas do Dashboard que possuam detalhe navegável não devem terminar em números mortos; devem oferecer drill-down para a tela/relatório correspondente.
+79. Após uma Branch possuir endereço cadastral completo, seus campos de endereço ficam bloqueados para usuários da Company; alteração posterior exige `request.user.is_superuser` e deve ser auditada.
+80. Cadastro em lote de Products é capacidade administrativa de plataforma e, na V1, somente `request.user.is_superuser` pode executá-la; não é delegável por AccessProfile da Company.
+81. Desativar `allow_negative_stock` nunca pode zerar saldos negativos silenciosamente. Enquanto houver saldo negativo, a desativação deve ser bloqueada ou exigir regularização explícita que gere StockMovement de ajuste com antes/depois, ator e justificativa de sistema.
+82. Entrada de estoque deve poder recuperar saldo negativo. Estados legados/inconsistentes devem retornar erros de domínio claros, com código e mensagem útil, e não HTTP 400 genérico sem explicação.
+83. Movimentações manuais de estoque devem registrar natureza/subtipo estruturado além de observação opcional, permitindo diferenciar entrada normal/bonificada/devolução e saída por avaria/perda/transferência, entre outras.
+84. A timeline de CashSession deve usar semântica humana explícita, por exemplo `Registrado por: Nome`, evitando nomes soltos sem contexto; o resumo da sessão deve continuar separado da timeline.
+85. AuditLog continua técnico, completo e append-only, mas a experiência principal de consulta deve apresentar a ação em linguagem humana, com `De → Para` quando aplicável e detalhes técnicos sob demanda.
+86. No Dashboard, comissão pertence ao atendente/vendedor (`seller_user`). Operador/caixa (`created_by`) possui métricas próprias de vendas processadas; só recebe comissão quando também for o `seller_user` da venda.
 
 # 9. Arquitetura Geral
 
@@ -1664,8 +1686,12 @@ Não implementar fluxos avançados de consolidação multi-filial.
 - CNPJ de Company é único quando informado.
 - Nome fantasia e razão social de Company são únicos sem diferença entre maiúsculas e minúsculas.
 - Filiais criadas manualmente exigem CEP, logradouro, número, bairro, cidade e UF; complemento e telefone são opcionais.
-- A Matriz automática pode nascer com endereço pendente para não quebrar a atomicidade do cadastro inicial da empresa, mas sua edição deve permitir completar os dados obrigatórios.
-- A consulta de CEP no frontend é apenas assistiva; os dados continuam editáveis e são validados novamente pelo backend.
+- A Matriz automática pode nascer com endereço pendente para não quebrar a atomicidade do cadastro inicial da empresa. Enquanto estiver explicitamente marcada como endereço pendente/incompleto, um usuário autorizado da Company pode **completar** os campos obrigatórios; essa exceção não autoriza alterações posteriores.
+- Depois que a Branch possuir endereço cadastral completo, CEP, logradouro, número, complemento, bairro, cidade e UF ficam somente leitura para usuários comuns, Gerentes e Administradores da Company.
+- Alteração posterior do endereço de uma Branch é operação excepcional e exclusiva do **superuser da plataforma** (`request.user.is_superuser`), independentemente do AccessProfile da Company.
+- A proteção de endereço deve existir no backend; desabilitar o input no frontend não é suficiente. Tentativas via API por usuário não-superuser devem ser rejeitadas.
+- Toda alteração excepcional de endereço realizada por superuser deve gerar AuditLog com valores anteriores/posteriores e ator.
+- A consulta de CEP no frontend é apenas assistiva durante criação/complementação permitida; os dados continuam validados pelo backend.
 - Inativar uma Company inativa atomicamente todas as suas Branches.
 - Reativar uma Company não reativa suas Branches automaticamente; cada unidade deve ser reativada explicitamente.
 
@@ -1892,9 +1918,39 @@ Regras mandatórias:
 - quando exigir, a permissão deve ser registrada no catálogo do backend;
 - o perfil de sistema `Administrador` deve receber automaticamente novas permissões do catálogo;
 - perfis não administrativos, inclusive `Gerente`, **não recebem automaticamente todas as novas permissões**; devem possuir conjunto inicial explícito e editável pela Company;
+- o preset inicial do perfil de sistema `Gerente` deve seguir **privilégio mínimo** e não pode nascer como um “Administrador quase completo”;
+- o bootstrap/migration do `Gerente` deve conceder somente capacidades operacionais explicitamente definidas para supervisão, sem sincronização automática com o catálogo completo;
+- por padrão, o `Gerente` **não deve receber automaticamente** capacidades sensíveis de administração de segurança e configuração, especialmente editar permissões de AccessProfile, criar/revogar `UserPermissionBlock`, alterar configurações críticas de Branch, configurar comissão de perfil/usuário e consultar auditoria completa, salvo quando a Company conceder essas capacidades de forma explícita;
+- a revisão final deve inspecionar o preset real persistido/gerado no backend, e não apenas verificar que ele deixou de usar uma constante equivalente a `ALL_PERMISSION_CODES`;
 - a nova permissão deve aparecer na matriz de `AccessProfile`;
 - frontend e backend devem utilizar a mesma capacidade técnica; esconder botão não substitui 403 no backend;
 - incluir, quando aplicável, capacidades equivalentes a `branches.change_settings`, `products.change_branch_price`, `sales.remove_service_fee`, `commissions.view`, `commissions.change_branch_default`, `commissions.change_profile`, `commissions.change_user_override` e permissões dedicadas dos novos relatórios.
+
+### Revisão final do catálogo de capacidades
+
+Antes da validação manual final, revisar o estado real de todas as telas, endpoints e ações e criar permissão própria sempre que a capacidade puder ser concedida/restrita de forma útil por Company/Branch. O catálogo deve continuar definido pelo CORE PDV; a Company personaliza **quais capacidades cada AccessProfile recebe**, mas não inventa códigos de permissão arbitrários.
+
+A matriz final deve contemplar, quando aplicável:
+
+- **Dashboard:** visualizar indicadores de vendas, estoque operacional, custos/resultado e comissão, separando informações sensíveis;
+- **Relatórios:** vendas, recebimentos, caixa, estoque/consumo físico, custos/CMV, comissão, descontos, cancelamentos e auditoria;
+- **Products/Categories:** visualizar, cadastrar, editar, inativar, alterar custo, alterar preço e alterar preço por Branch;
+- **Estoque:** visualizar, ver KPIs, ver custos, entrada, saída, ajuste, regularização e estoque mínimo;
+- **Caixa:** visualizar, abrir, entrada/suprimento, sangria, fechar o próprio caixa, operar ações administrativas sobre outros caixas quando existir capacidade explícita e ver valores financeiros;
+- **Vendas/Consumação:** realizar, visualizar, aplicar desconto, autorizar desconto, cancelar enquanto a sessão original estiver aberta e retirar taxa de serviço quando autorizado;
+- **Comissão:** visualizar e configurar padrão de Branch, perfil e override individual;
+- **Promoções:** visualizar, cadastrar, editar, ativar/inativar;
+- **Usuários/Acessos:** visualizar, cadastrar, editar, ativar/inativar, gerir acessos e bloqueios individuais;
+- **AccessProfiles:** visualizar, cadastrar, editar e administrar permissões;
+- **BranchSettings:** visualizar/editar configurações operacionais conforme capacidade;
+- **AuditLog:** visualizar auditoria.
+
+Regras:
+
+- usar matriz `Visualizar / Cadastrar / Editar / Inativar` onde fizer sentido e bloco **Ações especiais** para capacidades que não são CRUD;
+- esconder ação na UI não substitui 403 no backend;
+- `UserPermissionBlock` continua prevalecendo sobre capacidade herdada no escopo correto;
+- funcionalidades **exclusivas do superuser da plataforma**, como alteração posterior do endereço cadastral da Branch e cadastro em lote de Products nesta V1, não são delegáveis por AccessProfile da Company.
 
 ### Comissão configurada por perfil e usuário
 
@@ -2142,6 +2198,23 @@ Quando houver muitos filtros, manter apenas busca principal/nome/código visíve
 - tabela de preço;
 - promoções condicionais avançadas, cashback, fidelidade, cupons e motores promocionais complexos.
 
+## 19.11 Cadastro em lote de Products — superuser da plataforma
+
+A V1 deve permitir uma ferramenta de cadastro em lote para acelerar carga inicial/manutenção excepcional do catálogo, porém esta ação é **exclusiva do superuser da plataforma**.
+
+Regras:
+
+- somente `request.user.is_superuser` pode visualizar e executar a função;
+- não criar permissão delegável em AccessProfile para essa ação na V1;
+- interface tabular com múltiplas linhas, permitindo no mínimo Nome, Category, Unidade, Código interno opcional, Custo, Preço, comportamento de estoque, vendável/favorito e demais campos obrigatórios já existentes;
+- reutilizar exatamente as mesmas validações e regras do cadastro individual;
+- `internal_code` omitido continua sendo gerado pelo backend;
+- aceitar vírgula e ponto nos campos decimais;
+- salvar em transação ou retornar resultado por linha de forma que erro não deixe estado silenciosamente ambíguo;
+- registrar auditoria das inclusões quando o mecanismo geral de AuditLog se aplicar.
+
+O objetivo não é criar importador fiscal/ERP/Excel avançado nesta fase; é permitir cadastro administrativo em lote controlado.
+
 # 20. Estoque
 
 ## 20.1 Conceito
@@ -2174,6 +2247,7 @@ Regras:
 - não bloqueia venda por si só;
 - serve para alerta e decisão operacional;
 - situação:
+  - `negative` quando `current_quantity < 0`;
   - `zero` quando `current_quantity = 0`;
   - `below_minimum` quando `current_quantity > 0` e `current_quantity < minimum_quantity`;
   - `normal` nos demais casos.
@@ -2252,7 +2326,7 @@ Permitir, no mínimo:
 - Branch;
 - Category;
 - nome ou código interno;
-- situação: todos / normal / abaixo do mínimo / zerado;
+- situação: todos / normal / abaixo do mínimo / zerado / negativo;
 - status do Product;
 - vendável / insumo quando útil;
 - comportamento de estoque: `direct`, `none`, `components`.
@@ -2273,7 +2347,7 @@ Quando a quantidade de filtros deixar a tela visualmente poluída:
 - preservar visualmente os filtros ativos por chips/resumo quando útil;
 - listagem e widgets devem sempre usar o mesmo estado de filtros.
 
-## 20.7 Movimentações manuais
+## 20.7 Movimentações manuais e entrada em grupo
 
 O botão **+ Movimentação** deve permitir escolher desde o início:
 
@@ -2281,25 +2355,84 @@ O botão **+ Movimentação** deve permitir escolher desde o início:
 - Saída;
 - Ajuste.
 
+Além do tipo principal, toda movimentação manual deve possuir uma **natureza/subtipo estruturado** e observação livre opcional.
+
 ### Entrada
 
+Naturezas mínimas:
+
+- Normal;
+- Bonificada;
+- Devolução;
+- Saldo inicial;
+- Correção;
+- Outros.
+
+Regras:
+
 - quantidade positiva;
-- motivo opcional;
+- observação opcional;
 - registra saldo anterior e final;
-- usuário obrigatório.
+- usuário obrigatório;
+- deve ser permitida para recuperar um saldo atualmente negativo, mesmo quando a Branch não permite novas operações que aprofundem saldo negativo.
+
+### Entrada em grupo por Category
+
+Para facilitar a operação, a entrada manual deve oferecer modo em grupo:
+
+```text
+Category: [Cervejas ▼]
+Natureza: [Normal ▼]
+
+Produto                 Saldo atual     Entrada
+Heineken                 32 UN           [ 50 ]
+Budweiser                 8 UN           [ 24 ]
+Stella                     0 UN           [ 36 ]
+Corona                     7 UN           [  0 ]
+```
+
+Regras:
+
+- ao selecionar uma Category, listar todos os Products elegíveis para estoque físico no contexto da Branch;
+- permitir preencher somente os Products efetivamente recebidos; quantidade zero/vazia não cria movimento;
+- cada Product movimentado gera seu próprio `StockMovement`, preservando saldo anterior, quantidade e saldo final;
+- os movimentos podem compartilhar um identificador/referência de **operação de entrada** para facilitar consulta, sem criar controle de lote físico/validade;
+- uma falha deve retornar erro claro e não deixar um grupo parcialmente ambíguo; preferir atomicidade quando operacionalmente viável.
 
 ### Saída
 
+Naturezas mínimas:
+
+- Transferência;
+- Avaria;
+- Perda;
+- Uso interno;
+- Correção;
+- Outros.
+
+Regras:
+
 - quantidade positiva;
-- motivo opcional;
-- exige saldo suficiente;
-- não permite saldo negativo.
+- observação opcional;
+- quando `allow_negative_stock=False`, exige saldo suficiente e não pode criar/aprofundar saldo negativo;
+- quando `allow_negative_stock=True`, a regra da Branch pode permitir saldo final negativo, mantendo saldo anterior/final real;
+- **Transferência** nesta fase é somente classificação da saída; não registrar entrada automática em outra Branch enquanto não existir módulo real de transferência.
 
 ### Ajuste
 
-- motivo opcional;
+Naturezas mínimas:
+
+- Inventário;
+- Regularização;
+- Correção de saldo;
+- Outros.
+
+Regras:
+
+- observação opcional;
 - backend deve registrar diferença e valores anterior/final;
-- a interface deve deixar claro se o campo representa diferença ou nova contagem física; preferir nova contagem física para reduzir ambiguidade.
+- a interface deve deixar claro se o campo representa diferença ou nova contagem física; preferir nova contagem física para reduzir ambiguidade;
+- regularizações automáticas/assistidas para sair de estoque negativo devem usar esta trilha de ajuste e nunca alterar `Stock.current_quantity` sem movimento correspondente.
 
 ### Apresentação do histórico
 
@@ -2308,23 +2441,24 @@ A listagem/histórico de StockMovement deve destacar visualmente a operação se
 Exemplo:
 
 ```text
-SAÍDA   -5 UN
+SAÍDA · AVARIA   -5 UN
 20 UN → 15 UN
 ```
 
 ou:
 
 ```text
-ENTRADA   +10 UN
+ENTRADA · BONIFICADA   +10 UN
 20 UN → 30 UN
 ```
 
 Regras de UX:
 
-- tipo da movimentação com badge/identificação clara;
+- tipo e natureza da movimentação com badge/identificação clara;
 - quantidade movimentada com sinal `+`/`-` quando aplicável;
-- `saldo anterior → saldo final` com hierarquia visual forte, preferencialmente em negrito ou destaque equivalente do design system;
-- motivo, quando informado, aparece como informação secundária;
+- `saldo anterior → saldo final` com hierarquia visual forte;
+- observação, quando informada, aparece como informação secundária;
+- movimentos automáticos continuam usando **Origem / Detalhes** estruturados;
 - não usar cor como única forma de transmitir entrada/saída.
 
 ## 20.8 Formatação de quantidade
@@ -2380,12 +2514,45 @@ Uso recomendado: `transaction.atomic()` + estratégia de lock como `select_for_u
 
 A regra padrão continua sendo proibir saldo negativo. A exceção é explícita por `BranchSettings.allow_negative_stock`.
 
-- `False`: venda/consumação com necessidade maior que o saldo deve ser rejeitada;
+- `False`: venda/consumação/saída manual não pode criar ou aprofundar saldo negativo;
 - `True`: a operação pode finalizar e o `Stock.current_quantity` pode ficar negativo;
 - o movimento deve registrar saldo anterior e final reais, por exemplo `2 → -3`;
-- criar estado derivado `negative` quando `current_quantity < 0`;
+- o estado derivado é `negative` quando `current_quantity < 0`;
 - widgets e filtros devem distinguir negativo de zerado;
 - a regra também se aplica aos componentes reais de Products `components`.
+
+### Alteração de `True → False`
+
+Desativar estoque negativo é uma mudança de política da Branch e **não pode apagar dívida física de estoque silenciosamente**.
+
+Se existir qualquer `Stock.current_quantity < 0`:
+
+1. a API deve bloquear a desativação normal de `allow_negative_stock`;
+2. a UI deve informar quantos Products estão negativos e oferecer **Ver produtos** / **Regularizar negativos**;
+3. o fluxo **Regularizar negativos** pode oferecer ajuste explícito para `0` ou nova contagem física informada pelo usuário autorizado;
+4. cada regularização deve gerar `StockMovement(type='adjustment')` com natureza `regularization`, saldo anterior, diferença, saldo final, ator e razão equivalente a `Regularização para desativação de estoque negativo`;
+5. somente quando não restarem saldos negativos a configuração pode ser salva como `False`.
+
+Exemplo:
+
+```text
+Heineken  -24 UN
+Regularizar para 0 UN
+
+StockMovement
+before = -24
+quantity = +24
+after = 0
+nature = regularization
+```
+
+### Recuperação de saldo e erros de domínio
+
+- Entrada de estoque deve continuar permitida para aumentar/regularizar um saldo negativo;
+- não bloquear uma entrada apenas porque o saldo atual é negativo;
+- se existir estado legado incompatível com `allow_negative_stock=False`, saída/venda que agravaria o problema deve ser bloqueada até regularização;
+- endpoints `entry/`, `exit/`, ajuste e alteração de BranchSettings devem responder erro de domínio estruturado (`code`, `message`, `details`) em vez de HTTP 400 genérico sem contexto;
+- o frontend deve mostrar a mensagem de domínio ao operador.
 
 ## 20.13 Origem estruturada das movimentações
 
@@ -2408,10 +2575,10 @@ Regras:
 - a UI pode usar dropdown/popover para detalhes e ação **Abrir venda/consumação**;
 - `reason` permanece para justificativa humana de movimentos manuais.
 
-## 20.12 Não implementar
+## 20.14 Não implementar
 
 - transferência;
-- lote;
+- controle de lote físico/rastreabilidade por lote;
 - validade;
 - inventário avançado;
 - fornecedor;
@@ -2421,7 +2588,7 @@ Regras:
 - composição recursiva;
 - custo médio/FIFO/LIFO.
 
-## 20.14 Valorização quando existe estoque negativo
+## 20.15 Valorização quando existe estoque negativo
 
 Saldo negativo continua sendo exibido e auditado quando a Branch permite venda sem estoque, porém **não reduz o valor físico existente em estoque**.
 
@@ -2574,11 +2741,20 @@ Exemplo de apresentação:
 ```text
 16:00  Abertura                + R$ 200,00
 16:10  Venda V000021           + R$  50,00
-16:30  Sangria DJ              - R$ 100,00
+16:30  Sangria                 - R$   4,00
+       Beneficiário: Rogerio Pereira
+       Motivo: Compra de cabo
+       Registrado por: Luis Felipe
 17:20  Cancelamento V000024    - R$  30,00
 ```
 
-Venda/consumação relacionada deve ser clicável. O histórico não pode depender apenas de `CashMovement` se pagamentos e vendas forem armazenados em entidades separadas; o backend deve compor a timeline corretamente.
+Regras de UX:
+
+- não apresentar nomes soltos sem semântica, como `motivo · beneficiário · usuário`;
+- usar rótulos explícitos, por exemplo **Beneficiário**, **Motivo** e **Registrado por**;
+- Venda/Consumação/Cancelamento relacionado deve ser clicável;
+- a timeline deve continuar focada em eventos operacionais relevantes e não listar centenas de pagamentos não monetários;
+- o histórico não pode depender apenas de `CashMovement` se pagamentos e vendas forem armazenados em entidades separadas; o backend deve compor a timeline corretamente.
 
 ## 21.9 Regra de cancelamento vinculada à sessão
 
@@ -2590,29 +2766,78 @@ Venda/consumação relacionada deve ser clicável. O histórico não pode depend
 
 ## 21.10 Resumo financeiro completo da CashSession
 
-A operação de caixa deve distinguir **dinheiro físico da gaveta** de **recebimentos da sessão por todas as formas de pagamento**.
+A operação de caixa deve distinguir **performance da sessão**, **recebimentos por forma de pagamento** e **dinheiro físico da gaveta**.
 
 O cálculo `Esperado em dinheiro` continua usando somente abertura, entradas, pagamentos em dinheiro, sangrias e reversões em dinheiro. PIX, crédito e débito não entram no dinheiro esperado.
 
-A tela da sessão e o fechamento devem também exibir resumo por forma de pagamento, por exemplo:
+A visão da sessão aberta, a tela de fechamento e o detalhe histórico após fechamento devem apresentar, conforme permissões:
+
+### Operação da sessão
+
+- quantidade de vendas comerciais finalizadas;
+- faturamento efetivo de vendas comerciais;
+- taxa de serviço cobrada, separada;
+- comissão gerada, separada e **não incluída no faturamento**;
+- quantidade de consumações;
+- valor de referência, valor cobrado e benefício de consumação/cortesias;
+- cancelamentos/reversões ocorridos enquanto a sessão estava aberta.
+
+### Recebimentos
+
+- Dinheiro;
+- PIX;
+- Cartão de crédito;
+- Cartão de débito;
+- demais PaymentMethods ativos, quando existirem no domínio.
+
+### Gaveta física
 
 ```text
-Faturamento/recebimentos da sessão
-Dinheiro                R$ 300,00
-PIX                     R$ 400,00
-Cartão de crédito       R$   0,00
-Cartão de débito        R$  40,00
-
-Movimentações de gaveta
-Abertura                R$  50,00
-Entradas                R$   0,00
-Sangrias               -R$ 100,00
-Esperado em dinheiro    R$ 250,00
-Informado               R$ 248,00
-Diferença              -R$   2,00
+Abertura                 R$   300,00
+Entradas                 R$   100,00
+Vendas em dinheiro       R$ 4.200,00
+Consumação em dinheiro   R$   120,00
+Sangrias                -R$   900,00
+Reversões em dinheiro   -R$   100,00
+Esperado em dinheiro     R$ 3.720,00
+Informado                R$ 3.710,00
+Diferença               -R$    10,00
 ```
 
-A timeline cronológica deve continuar focada nos eventos que alteram a gaveta ou o estado da sessão; não deve ficar poluída com centenas de vendas de PIX/cartão. O resumo por forma de pagamento fica separado acima da timeline.
+### Exemplo de resumo
+
+```text
+SESSÃO #128 — Caixa Principal
+Aberta por: Luis Felipe
+17/08/2026 18:02
+
+VENDAS
+127 vendas
+Faturamento efetivo      R$ 18.420,00
+Taxa de serviço          R$  1.842,00
+Comissões                R$    921,00
+
+CONSUMAÇÃO / CORTESIAS
+18 pedidos
+Referência               R$  1.240,00
+Cobrado                  R$    380,00
+Benefício                R$    860,00
+
+RECEBIMENTOS
+Dinheiro                 R$  4.200,00
+PIX                      R$  7.800,00
+Crédito                  R$  5.100,00
+Débito                   R$  3.542,00
+```
+
+Regras:
+
+- `Faturamento efetivo` não soma comissão;
+- comissão é custo/obrigação operacional e aparece em campo próprio;
+- taxa de serviço cobrada do cliente aparece separadamente do faturamento de produtos;
+- o histórico `/relatorios/caixa` deve permitir abrir a sessão fechada e visualizar o mesmo conjunto de informações consolidadas;
+- sessões que atravessam meia-noite continuam seguindo a regra de interseção temporal dos relatórios;
+- a timeline cronológica permanece abaixo do resumo e foca os eventos operacionais que alteram gaveta/estado.
 
 ### Fechamento 404 como bloqueador
 
@@ -3006,72 +3231,118 @@ Usar lock dos estoques envolvidos quando necessário.
 
 # 26. Dashboard, Relatórios e Promoções
 
-## 26.1 Dashboard operacional da empresa
+## 26.1 Dashboard executivo/operacional da empresa
 
-O dashboard principal deve responder rapidamente **como está a operação**, e não quantos cadastros administrativos existem.
+O Dashboard é a **porta de entrada do CORE PDV** e deve possuir alto padrão visual, hierarquia clara e leitura imediata. Referências de concorrentes como ZIG, BarFácil, Mogo Gourmet, OnChef e outros podem orientar **organização funcional**, porém a identidade visual deve continuar sendo a do design system do CORE PDV, sem cópia de layout, marca ou componentes proprietários.
 
-Não utilizar como KPIs principais:
+O Dashboard principal responde **como está a operação** e não quantos cadastros administrativos existem. Não utilizar como KPIs principais quantidade de Companies, Branches, Users ou perfis.
 
-- quantidade de Companies;
-- quantidade de Branches;
-- quantidade de Users;
-- quantidade de permissões/perfis.
+### Filtros globais — sempre acessíveis
 
-Esses dados permanecem nos respectivos cadastros. Um futuro dashboard de plataforma/SaaS poderá mostrar empresas clientes, filiais, licenças e usuários para o proprietário do CORE PDV, fora do escopo atual.
+O estado global deve conter:
 
-### Filtro temporal do dashboard
-
-O dashboard deve possuir período explícito com:
-
+- Branch atual;
 - data inicial;
 - hora inicial;
 - data final;
-- hora final.
+- hora final;
+- Category (`Todas` por padrão).
 
-Atalhos recomendados:
+Atalhos mínimos:
 
 - Hoje;
 - Ontem;
 - Últimos 7 dias;
-- Este mês;
-- Mês anterior;
-- Personalizado.
+- Últimos 15 dias;
+- Últimos 30 dias;
+- Personalizado;
+- **Sessão atual** quando existir CashSession aberta e esse recorte for aplicável.
 
-O período deve ser interpretado em `America/Sao_Paulo` e aceitar operações que atravessam a meia-noite, por exemplo `16/08/2026 18:00 → 17/08/2026 05:00`.
+O período usa `America/Sao_Paulo`, aceita intervalos atravessando meia-noite e deve ser preservado no drill-down.
 
 ### KPIs principais
 
-Exibir conforme permissões:
+Exibir conforme permissões e sem transformar o topo em uma parede de cards:
 
-- faturamento de vendas comerciais no período;
+1. **Faturamento** — valor do faturamento efetivo + quantidade de vendas comerciais;
+2. **Ticket médio**;
+3. **Cancelamentos/Estornos** — valor original/revertido + quantidade de operações no período;
+4. **Descontos manuais** — valor + quantidade de vendas afetadas;
+5. **Consumação & Cortesias** — quantidade de pedidos, valor de referência, valor cobrado e benefício concedido; consumação com `charged_amount=0` pode ser apresentada como cortesia operacional sem criar novo módulo;
+6. **Comissão** — valor total gerado no período, separado do faturamento.
+
+`Resultado estimado` pode aparecer em linha/bloco gerencial próprio quando o usuário possuir as permissões financeiras correspondentes.
+
+### Regra de faturamento, taxa e comissão
+
+- `Faturamento efetivo` representa receita comercial dos produtos após promoção/desconto manual;
+- taxa de serviço cobrada do cliente aparece separadamente;
+- comissão não compõe faturamento e é tratada como custo/obrigação operacional no Resultado estimado;
+- consumação cobrada continua separada do faturamento comercial padrão, embora possa ser exibida no Dashboard.
+
+### Estoque
+
+Criar seção compacta com:
+
+- **Valor em estoque**, somente com permissão financeira;
+- **Produtos negativos**;
+- **Abaixo do mínimo**;
+- **Produtos físicos**.
+
+`Produtos físicos` deve contar itens que efetivamente representam estoque controlado no contexto da Branch, excluindo `inventory_behavior='none'` e Products pais `components` que não possuem saldo próprio. Components/insumos físicos `direct` continuam contando normalmente.
+
+### Pessoas / Performance
+
+Criar ranking por `seller_user`/atendente no período, exibindo no mínimo:
+
+- faturamento;
 - quantidade de vendas;
 - ticket médio;
-- valor de descontos concedidos;
-- valor de referência de consumação;
-- valor efetivamente cobrado em consumação;
-- total/quantidade de sangrias no período;
-- situação do caixa atual;
-- produtos zerados;
-- produtos abaixo do mínimo;
-- valor em estoque somente com `inventory.view_stock_costs`.
+- comissão.
 
-### Blocos operacionais
+Criar visão/ranking separado para `created_by`/operador-caixa com faturamento processado, quantidade de vendas, ticket médio e indicadores operacionais adequados. **Não atribuir comissão ao caixa apenas por ter registrado a venda**; comissão pertence ao `seller_user`.
 
-- formas de pagamento no período;
-- produtos mais vendidos;
-- categorias mais vendidas;
-- últimas vendas;
-- últimas consumações quando autorizado;
-- resumo de caixa;
-- alertas de estoque.
+### Gráficos e análises
 
-Regras:
+O Dashboard deve possuir, de forma organizada e responsiva:
+
+- **Produtos mais vendidos** — preferencialmente barras horizontais;
+- **Mapa de calor** — dia da semana × hora, com intensidade baseada em faturamento efetivo, tooltip com faturamento/vendas/ticket e célula clicável;
+- **Formas de pagamento** — participação/valor por PaymentMethod;
+- **Faturamento por atendente** — barras/ranking;
+- **Comparativo semanal** — faturamento por dia da semana/período, permitindo comparar desempenho recente, por exemplo quarta anterior × ontem × hoje, sem confundir faturamento com dinheiro físico da gaveta;
+- poucos gráficos adicionais somente quando agregarem leitura real.
+
+### Últimas vendas
+
+Exibir lista compacta, por exemplo 8–10 operações, contendo número da Sale, horário, atendente, forma(s) de pagamento e total, com acesso ao detalhe e ação **Ver todas as vendas**.
+
+### Drill-down obrigatório
+
+Nenhum KPI, card, ranking, gráfico, tabela ou lista que possua detalhe útil deve terminar em número morto. Exemplos:
+
+- Faturamento/Vendas → relatório de vendas;
+- Cancelamentos/Estornos → cancelamentos;
+- Descontos → descontos;
+- Consumação → consumação;
+- Comissão → comissões;
+- estoque negativo/abaixo do mínimo → `/estoque` filtrado;
+- atendente → relatório daquele `seller_user`;
+- operador → relatório daquele `created_by`;
+- fatia/legenda de PaymentMethod → recebimentos filtrados;
+- Product → performance do Product;
+- célula do mapa de calor → vendas no intervalo correspondente.
+
+Toda navegação deve preservar `start_datetime`, `end_datetime`, Branch, Category e demais filtros aplicáveis.
+
+### Segurança e coerência
 
 - métricas comerciais consideram `operation_type='sale'` por padrão;
 - consumação não infla faturamento comercial;
 - `inventory_behavior='none'` não gera alerta físico;
 - insumos não vendáveis utilizados em composição podem gerar alerta;
-- todas as métricas respeitam Company, Branch e permissões efetivas.
+- custos, comissão, resultado e valorização respeitam permissões específicas no backend;
+- todos os dados respeitam Company e Branch atual.
 
 ## 26.2 Regra global de período para histórico e relatórios
 
@@ -3390,54 +3661,48 @@ Exemplo: sessão aberta `16/08 23:00` e fechada `17/08 05:00` deve aparecer em c
 
 ## 26.12 Direção final do Dashboard e da Central de Relatórios — V1
 
-### Dashboard principal enxuto
+### Dashboard executivo organizado, não minimalista demais
 
-O Dashboard principal é uma **visão executiva rápida da operação** e não um BI completo. Deve evitar excesso de cards, rankings e tabelas concorrendo pela atenção.
+A decisão final da V1 substitui a interpretação de que o Dashboard deveria ser apenas um painel mínimo. Ele pode concentrar as informações gerenciais mais importantes **desde que exista hierarquia visual, agrupamento e navegação clara**. A Sprint 12.2 permanece como histórico executado; esta direção final é refinada pela Sprint 12.2.1 e prevalece para a experiência definitiva.
 
 Hierarquia recomendada:
 
 ```text
-Linha 1 — período + Branch
-Linha 2 — 5 ou 6 KPIs principais
-Linha 3 — gráfico principal de faturamento/vendas por hora/período
-Linha 4 — formas de pagamento + produtos mais vendidos
-Linha 5 — vendas por atendente + consumação
-Linha 6 — alertas compactos de estoque/caixa
+Linha 1 — filtros globais: Branch + período/data/hora + Category + atalhos
+Linha 2 — KPIs principais
+Linha 3 — Estoque + Caixa/Resultado resumidos conforme permissão
+Linha 4 — Mapa de calor (destaque)
+Linha 5 — Produtos mais vendidos + Formas de pagamento
+Linha 6 — Faturamento por atendente + Comparativo semanal
+Linha 7 — Pessoas/Ranking
+Linha 8 — Últimas vendas
 ```
 
-KPIs principais recomendados, conforme permissão:
+A composição pode variar por breakpoint, mas deve preservar a prioridade visual. Não criar 20 cards de mesmo peso.
 
-- Faturamento efetivo;
-- Vendas;
+KPIs principais finais:
+
+- Faturamento efetivo + quantidade de vendas;
 - Ticket médio;
-- Consumação cobrada, exibindo também **quantidade de pedidos de consumação**;
-- Descontos;
-- Resultado estimado.
+- Cancelamentos/Estornos + quantidade;
+- Desconto manual;
+- Consumação & Cortesias;
+- Comissão.
 
-O bloco de consumação deve permitir leitura equivalente a:
-
-```text
-CONSUMAÇÕES
-12 pedidos
-Valor de referência     R$ 780,00
-Valor cobrado           R$ 240,00
-Benefício concedido     R$ 540,00
-```
-
-KPIs e gráficos devem ser clicáveis e navegar para o relatório/tela correspondente preservando `start_datetime`, `end_datetime` e Branch. Estoque no dashboard deve aparecer apenas como alertas resumidos, por exemplo `1 negativo`, `3 abaixo do mínimo`, `2 zerados`, levando a `/estoque`. Caixa deve aparecer como estado/resumo da sessão atual, não como relatório completo.
+O Dashboard pode exibir Resultado estimado em bloco separado quando autorizado. Estoque deve mostrar Valor em estoque, Negativos, Abaixo do mínimo e Produtos físicos. Equipe deve separar `seller_user` de `created_by`.
 
 ### Central de Relatórios
 
-A rota `/relatorios` deixa de tentar renderizar todos os dados em uma única página e passa a ser uma **Central de Relatórios** com cards/categorias.
+A rota `/relatorios` continua sendo uma **Central de Relatórios** com cards/categorias, não uma página única gigantesca.
 
-Agrupamentos funcionais da V1:
+Agrupamentos funcionais:
 
 - **Visão Gerencial:** resumo de vendas, faturamento por período/filial, ticket médio e resultado estimado;
-- **Produtos & Performance:** produtos, categorias, produtos por atendente/operador e consumo de estoque;
+- **Produtos & Performance:** Products, Categories, performance comercial e consumo físico;
 - **Recebimentos:** formas de pagamento e resumo por CashSession;
 - **Equipe & Comissão:** operador, atendente e comissão;
 - **Custos & Resultado:** CMV, consumo físico, margem e resultado estimado;
-- **Auditoria & Controle:** cancelamentos, descontos, promoções, movimentações e sangrias.
+- **Auditoria & Controle:** cancelamentos, descontos, promoções, movimentações, sangrias e AuditLog.
 
 Rotas dedicadas iniciais:
 
@@ -3459,20 +3724,36 @@ Rotas dedicadas iniciais:
 /relatorios/resultado
 ```
 
-Cada relatório deve possuir seus próprios KPIs, filtros adequados, gráficos quando úteis, tabela de detalhes e exportação quando já prevista. Todos os relatórios históricos respeitam data/hora inicial/final.
+### Regra mandatória — rotas dedicadas devem ser páginas reais
+
+As rotas dedicadas acima representam experiências próprias de relatório e **não podem existir apenas como aliases/redirects para uma página genérica**.
+
+Regras:
+
+- `/relatorios/vendas`, `/relatorios/comissoes`, `/relatorios/atendentes`, `/relatorios/operadores`, `/relatorios/produtos` e demais rotas dedicadas devem renderizar sua própria página/experiência funcional;
+- é proibido implementar uma rota dedicada apenas com `redirect('/relatorios?report=...')`, `router.replace('/relatorios?report=...')` ou mecanismo equivalente;
+- a arquitetura antiga baseada em `/relatorios?report=<tipo>` não deve permanecer como experiência principal de navegação;
+- parâmetros de query continuam permitidos para **filtros do relatório** (`start_datetime`, `end_datetime`, Branch, Category, operador, atendente etc.), mas não como substituto da identidade da rota;
+- componentes, hooks, serviços, filtros e tabelas podem e devem ser reutilizados internamente quando isso reduzir duplicação, desde que cada rota dedicada mantenha título, KPIs, filtros, visualizações e semântica coerentes com seu domínio;
+- se existir compatibilidade temporária com URL antiga `?report=...`, a direção aceitável é a URL legada encaminhar para a rota dedicada correspondente; a rota dedicada nunca deve encaminhar de volta para a página genérica;
+- os links do Dashboard, Central de Relatórios, menus e drill-downs devem apontar diretamente para as rotas dedicadas;
+- exemplos obrigatórios: Faturamento/Vendas → `/relatorios/vendas`, Recebimentos → `/relatorios/recebimentos`, Comissão → `/relatorios/comissoes`, Resultado → `/relatorios/resultado`;
+- nenhum `[X]` histórico da Sprint 12.2 prova, por si só, que a implementação atual atende esta regra. A Sprint 12.2.1 deve conferir os arquivos/rotas reais e corrigir desvios encontrados.
+
+Cada relatório possui KPIs, filtros adequados, gráficos quando úteis, tabela de detalhes e exportação quando prevista. Relatórios históricos usam data/hora inicial/final e respeitam Branch/permissões.
 
 ### Consumo de Estoque
 
-`/relatorios/consumo-estoque` deve possuir no mínimo duas visões:
+`/relatorios/consumo-estoque` mantém duas visões:
 
-1. **Resumo por produto físico**, mostrando a saída líquida real por Product/unidade;
-2. **Movimentações detalhadas**, permitindo rastrear Venda, Consumação, saída manual e respectivos cancelamentos/reversões.
+1. **Resumo por produto físico**, mostrando saída líquida real por Product/unidade;
+2. **Movimentações detalhadas**, rastreando Venda, Consumação, saída manual e cancelamentos/reversões.
 
-A visão física deve usar `StockMovement` como fonte de verdade. Venda de `1 Combo 5 Águas` aparece como `5 UN Água` para conferência física.
+A visão física usa `StockMovement` como fonte de verdade. Venda de `1 Combo 5 Águas` aparece como `5 UN Água` para conferência física.
 
 ### Resultado operacional dedicado
 
-`/relatorios/resultado` deve ser uma rota própria e permitir recorte por período e, quando útil, CashSession. Deve exibir claramente bruto, promoções, desconto manual, faturamento efetivo, CMV, comissão, despesas que afetam resultado, custo fixo rateado, resultado estimado e margem estimada.
+`/relatorios/resultado` permite recorte por período e, quando útil, CashSession. Exibe bruto, promoções, desconto manual, faturamento efetivo, CMV, comissão, despesas que afetam resultado, custo fixo rateado, resultado estimado e margem estimada. Comissão permanece fora do faturamento.
 
 ### Português obrigatório
 
@@ -3485,7 +3766,7 @@ manual_entry             → Entrada manual
 withdrawal               → Sangria
 sale                     → Venda
 consumption              → Consumação
-fixed_amount              → Valor fixo
+fixed_amount             → Valor fixo
 ```
 
 Não usar transformação genérica de chave como `replaceAll('_', ' ')` para títulos de UI.
@@ -3722,7 +4003,10 @@ Referência de hierarquia:
 
 - rótulo principal (`CNPJ`) com contraste normal/forte;
 - complemento (`opcional`) pode usar tom secundário, porém ainda legível;
-- não corrigir somente componentes isolados: revisar padrões compartilhados de `Field`, `Modal`, tabelas e formulários.
+- revisar tokens compartilhados para texto principal, texto secundário/muted, labels, placeholders, inputs, selects, tabelas (`thead`/`tbody`), dropdowns, badges, modais, tooltips, empty states e mensagens de erro;
+- revisar também eixos, grid, labels, legendas e tooltips dos gráficos no tema escuro;
+- estados `hover`, `focus`, `disabled`, `selected` e validação de erro devem continuar legíveis nos dois temas;
+- não corrigir somente componentes isolados: resolver preferencialmente nos tokens/variáveis/classes compartilhadas do design system/Tailwind e validar as telas principais em light/dark.
 
 ## 28.11 Tabela de preços como edição em lote
 
@@ -3947,7 +4231,9 @@ Regras:
 - comissão é gerada para `seller_user`;
 - percentual padrão vem da Branch e é salvo como snapshot na Sale;
 - cancelamento válido remove a operação das comissões realizadas ou registra reversão equivalente;
-- não recalcular venda histórica usando configuração atual.
+- não recalcular venda histórica usando configuração atual;
+- comissão **não entra no faturamento** e não reduz o valor exibido como `Faturamento efetivo`; ela é apresentada separadamente e reduz somente o `Resultado estimado`;
+- `created_by`/operador do caixa não recebe comissão automaticamente. Comissão pertence ao `seller_user`; se a mesma pessoa exercer os dois papéis na Sale, a comissão continua sendo atribuída pelo papel de seller.
 
 ### CMV histórico por snapshot — V1
 
@@ -4035,6 +4321,51 @@ Regras:
 - não duplicar integralmente dados transacionais imutáveis quando a própria entidade já é a fonte oficial; o AuditLog registra a ação e as mudanças relevantes.
 
 ---
+
+## 32.3 Experiência de consulta da Auditoria
+
+O `AuditLog` é técnico por natureza, mas a tela principal de Auditoria deve ser compreensível por um gerente/administrador sem exigir leitura de JSON.
+
+Cada item deve apresentar, quando aplicável:
+
+- data/hora;
+- módulo/categoria;
+- ação em pt-BR;
+- objeto afetado;
+- resumo da alteração;
+- ator;
+- Branch;
+- `De → Para` para alterações de valor/status/configuração;
+- ação **Ver detalhes**.
+
+Exemplos:
+
+```text
+17/08/2026 19:32 · PRODUTO
+Preço alterado — Heineken Long Neck
+De: R$ 10,00 → Para: R$ 12,00
+Alterado por: Luis Felipe
+```
+
+```text
+17/08/2026 20:48 · CAIXA
+Sangria registrada — R$ 4,00
+Beneficiário: Rogerio Pereira
+Motivo: Compra de cabo
+Registrado por: Luis Felipe
+```
+
+O painel **Ver detalhes** pode exibir `object_type`, `object_id`, `before_data`, `after_data`, IP, User-Agent e demais metadados técnicos permitidos.
+
+Filtros mínimos:
+
+- período com data/hora;
+- Branch;
+- ator;
+- módulo/tipo de objeto;
+- ação.
+
+Quando seguro e aplicável, permitir navegar do log para o objeto relacionado. Nenhum segredo, senha, token ou hash pode ser exibido.
 
 # 33. Healthcheck
 
@@ -5081,6 +5412,57 @@ Não utilizar SQLite como banco funcional do ambiente Docker do MVP.
 
 **Decisão:** relatório de insumos consumidos usa `StockMovement` como fonte de verdade, permitindo representar corretamente componentes de combos e reversões.
 
+## ADR-053 — Faturamento e comissão são métricas distintas
+
+**Decisão:** comissão não compõe nem reduz `Faturamento efetivo`; é custo/obrigação operacional do `seller_user` e reduz o Resultado estimado. Taxa de serviço é exibida separadamente.
+
+## ADR-054 — Dashboard como entrada gerencial rica e organizada
+
+**Decisão:** o Dashboard pode reunir KPIs, estoque, pessoas, mapa de calor, pagamentos, rankings, comparativo semanal e últimas vendas, desde que exista hierarquia visual e todos os elementos detalháveis possuam drill-down preservando filtros.
+
+## ADR-055 — Endereço de Branch bloqueado após cadastro
+
+**Decisão:** depois de completo, endereço cadastral da Branch só pode ser alterado por superuser da plataforma.
+**Segurança:** regra obrigatória no backend e AuditLog da alteração.
+
+## ADR-056 — Cadastro em lote de Products é operação de plataforma
+
+**Decisão:** a ferramenta de cadastro em lote existe na V1, mas somente `request.user.is_superuser` pode executá-la; não é delegável por AccessProfile.
+
+## ADR-057 — Entrada de estoque em grupo mantém movimentos individuais
+
+**Decisão:** selecionar uma Category pode abrir entrada em grupo, porém cada Product movimentado gera StockMovement próprio; uma referência comum pode agrupar a operação sem criar controle de lote físico.
+
+## ADR-058 — Desativar estoque negativo exige regularização explícita
+
+**Decisão:** nunca zerar saldo negativo silenciosamente. Bloquear `allow_negative_stock=True → False` enquanto houver negativos ou exigir fluxo explícito de ajuste auditável; somente após regularização salvar `False`.
+
+## ADR-059 — Natureza estruturada das movimentações manuais
+
+**Decisão:** Entrada/Saída/Ajuste possuem subtipos operacionais estruturados, mantendo observação livre opcional e Origem/Detalhes para movimentos automáticos.
+
+## ADR-060 — CashSession possui visão gerencial completa
+
+**Decisão:** sessão exibe vendas/faturamento, taxa, comissão, consumação, recebimentos por forma de pagamento e gaveta física; timeline fica separada e usa rótulos humanos como `Registrado por`.
+
+## ADR-061 — Auditoria técnica com apresentação humana
+
+**Decisão:** AuditLog permanece append-only e detalhado, mas a tela principal traduz a ação em pt-BR, mostra resumo/De→Para e deixa payload técnico em detalhe sob demanda.
+
+## ADR-062 — Relatórios dedicados são rotas reais
+
+**Decisão:** as rotas `/relatorios/*` representam páginas funcionais próprias; é proibido implementá-las apenas como redirects para `/relatorios?report=...`.
+**Reuso:** componentes/serviços podem ser compartilhados internamente, sem recriar lógica ou transformar todos os relatórios em uma única tela genérica.
+**Compatibilidade:** URL legada pode encaminhar para rota dedicada; a rota dedicada não encaminha de volta para o seletor genérico.
+
+## ADR-063 — Preset Gerente segue privilégio mínimo
+
+**Decisão:** `Gerente` é perfil padrão de supervisão operacional, não um Administrador reduzido. Seu conjunto inicial é explícito, não recebe sincronização automática de novas permissões e evita capacidades sensíveis de segurança/configuração até concessão explícita da Company.
+
+## ADR-064 — Checkmark histórico não substitui inspeção corretiva
+
+**Decisão:** `[X]` em sprint anterior registra que o item foi executado naquele momento, mas não prova conformidade do código atual após mudanças/regressões. Sprints corretivas devem inspecionar o estado real e registrar correções sem apagar o histórico.
+
 # 48. Definition of Done
 
 O MVP somente pode ser considerado concluído se TODOS os cenários abaixo funcionarem ponta a ponta.
@@ -5202,6 +5584,11 @@ O MVP somente pode ser considerado concluído se TODOS os cenários abaixo funci
 - [ ] AC-95 — `/relatorios/consumo-estoque` possui resumo físico e detalhamento por origem, incluindo cancelamentos.
 - [ ] AC-96 — Dashboard principal permanece enxuto e não tenta reproduzir todos os relatórios na mesma tela.
 - [ ] AC-97 — Venda comercial possui constraint/regra estrutural de `seller_user` obrigatório sem impedir consumação.
+- [ ] AC-98 — Cada rota principal `/relatorios/*` renderiza relatório dedicado real e nenhuma delas redireciona para `/relatorios?report=...`.
+- [ ] AC-99 — Dashboard e Central de Relatórios navegam diretamente para as rotas dedicadas preservando Branch, período e filtros aplicáveis.
+- [ ] AC-100 — A arquitetura `?report=...` não é usada como seletor principal de relatório; query string permanece apenas para filtros ou compatibilidade legada encaminhada para rota dedicada.
+- [ ] AC-101 — O preset inicial `Gerente` usa privilégio mínimo, não recebe sincronização automática do catálogo completo e não nasce com capacidades sensíveis de segurança/configuração equivalentes ao Administrador.
+- [ ] AC-102 — A revisão da Sprint 12.2.1 foi baseada na inspeção do código real; `[X]` históricos não foram utilizados como prova automática de conformidade atual.
 
 # 49. Roadmap
 
@@ -5228,7 +5615,8 @@ O MVP somente pode ser considerado concluído se TODOS os cenários abaixo funci
 | UX avançada | 11.8 | tema claro/escuro, fullscreen, sidebar recolhível e refinamentos finais |
 | Fechamento técnico da V1 | 11.9 | auditoria reforçada, bloqueios individuais, CMV por snapshot e relatório de produtos/insumos consumidos |
 | Correções da validação | 12.1 | bugs/UX/RBAC/comissão/taxa/caixa/favoritos/preços/estoque identificados manualmente |
-| Dashboard e Relatórios finais | 12.2 | dashboard enxuto, Central de Relatórios, rotas dedicadas e consumo físico |
+| Dashboard e Relatórios finais | 12.2 | dashboard executivo inicial, Central de Relatórios, rotas dedicadas e consumo físico |
+| Revisão gerencial e operacional | 12.2.1 | inspeção do código real, relatórios dedicados sem redirects genéricos, Dashboard final, preset Gerente por privilégio mínimo, RBAC revisado, estoque em grupo/naturezas, regularização de negativos, caixa completo, endereço protegido e auditoria humanizada |
 | Validação final | 12.3 | validação manual final conduzida pelo responsável pelo produto; OpenCode não marca como concluída sozinho |
 | Produção | 13 | deploy somente após autorização expressa |
 
@@ -6315,57 +6703,57 @@ PDV-25LOUNGE/
 
 ### Auditoria reforçada
 
-- [ ] Criar `AuditLog` append-only ou mecanismo equivalente.
-- [ ] Registrar Company, Branch, ator, ação, tipo/ID do objeto e timestamp.
-- [ ] Registrar antes/depois em mudanças críticas quando aplicável.
-- [ ] Auditar alteração de preço/custo/status/composição de Product.
-- [ ] Auditar movimentações manuais de estoque e alterações de mínimo quando aplicável.
-- [ ] Auditar abertura, entrada, sangria e fechamento de caixa.
-- [ ] Auditar descontos, autorizações e cancelamentos.
-- [ ] Auditar BranchSettings, preço por Branch, taxa e comissão.
-- [ ] Auditar alterações de AccessProfile e bloqueios individuais.
-- [ ] Garantir que senhas, tokens e segredos nunca sejam persistidos no AuditLog.
-- [ ] Criar consulta/tela de auditoria simples, protegida por permissão específica.
+- [X] Criar `AuditLog` append-only ou mecanismo equivalente.
+- [X] Registrar Company, Branch, ator, ação, tipo/ID do objeto e timestamp.
+- [X] Registrar antes/depois em mudanças críticas quando aplicável.
+- [X] Auditar alteração de preço/custo/status/composição de Product.
+- [X] Auditar movimentações manuais de estoque e alterações de mínimo quando aplicável.
+- [X] Auditar abertura, entrada, sangria e fechamento de caixa.
+- [X] Auditar descontos, autorizações e cancelamentos.
+- [X] Auditar BranchSettings, preço por Branch, taxa e comissão.
+- [X] Auditar alterações de AccessProfile e bloqueios individuais.
+- [X] Garantir que senhas, tokens e segredos nunca sejam persistidos no AuditLog.
+- [X] Criar consulta/tela de auditoria simples, protegida por permissão específica.
 
 ### Bloqueios individuais de permissão
 
-- [ ] Criar `UserPermissionBlock` ou equivalente por Company/Branch/User/Permission.
-- [ ] Fazer bloqueio explícito prevalecer sobre permissão herdada do perfil.
-- [ ] Permitir criar/revogar bloqueio sem alterar o AccessProfile-base.
+- [X] Criar `UserPermissionBlock` ou equivalente por Company/Branch/User/Permission.
+- [X] Fazer bloqueio explícito prevalecer sobre permissão herdada do perfil.
+- [X] Permitir criar/revogar bloqueio sem alterar o AccessProfile-base.
 - [ ] Exibir na administração do usuário as permissões herdadas que estão bloqueadas.
-- [ ] Proteger criação/revogação de bloqueio com permissão administrativa específica.
-- [ ] Auditar criação e revogação dos bloqueios.
-- [ ] Validar que bloqueio em uma Branch não vaza para outra Branch.
+- [X] Proteger criação/revogação de bloqueio com permissão administrativa específica.
+- [X] Auditar criação e revogação dos bloqueios.
+- [X] Validar que bloqueio em uma Branch não vaza para outra Branch.
 
 ### CMV por snapshot
 
-- [ ] Confirmar/preencher `SaleItem.unit_cost` na finalização de venda.
-- [ ] Garantir imutabilidade histórica do custo do item finalizado.
-- [ ] Calcular CMV de vendas a partir de `unit_cost × quantity`.
-- [ ] Excluir/reverter vendas canceladas do CMV líquido.
-- [ ] Separar CMV de vendas do custo de consumação.
-- [ ] Expor CMV nos relatórios/resultado somente para usuários com permissão financeira adequada.
+- [X] Confirmar/preencher `SaleItem.unit_cost` na finalização de venda.
+- [X] Garantir imutabilidade histórica do custo do item finalizado.
+- [X] Calcular CMV de vendas a partir de `unit_cost × quantity`.
+- [X] Excluir/reverter vendas canceladas do CMV líquido.
+- [X] Separar CMV de vendas do custo de consumação.
+- [X] Expor CMV nos relatórios/resultado somente para usuários com permissão financeira adequada.
 
 ### Relatório de Produtos e Insumos Consumidos
 
-- [ ] Criar relatório com período data/hora obrigatório.
-- [ ] Adicionar filtros por Branch, Product, Category e origem Venda/Consumação.
-- [ ] Criar visão comercial baseada em SaleItem.
-- [ ] Criar visão física baseada em StockMovement.
-- [ ] Exibir quantidade bruta, devoluções e quantidade líquida.
-- [ ] Para Products `components`, exibir os componentes físicos realmente baixados.
-- [ ] Validar que `1 Combo 5 Águas` resulta em `5 UN Água` na visão de insumos.
-- [ ] Garantir que cancelamento use os movimentos inversos históricos e ajuste o relatório corretamente.
-- [ ] Respeitar permissão de custos ao exibir valores financeiros.
-- [ ] Permitir exportação conforme o mecanismo já adotado na V1, sem criar processamento assíncrono.
+- [X] Criar relatório com período data/hora obrigatório.
+- [X] Adicionar filtros por Branch, Product, Category e origem Venda/Consumação.
+- [X] Criar visão comercial baseada em SaleItem.
+- [X] Criar visão física baseada em StockMovement.
+- [X] Exibir quantidade bruta, devoluções e quantidade líquida.
+- [X] Para Products `components`, exibir os componentes físicos realmente baixados.
+- [X] Validar que `1 Combo 5 Águas` resulta em `5 UN Água` na visão de insumos.
+- [X] Garantir que cancelamento use os movimentos inversos históricos e ajuste o relatório corretamente.
+- [X] Respeitar permissão de custos ao exibir valores financeiros.
+- [X] Permitir exportação conforme o mecanismo já adotado na V1, sem criar processamento assíncrono.
 
 ### Validação técnica da sprint
 
-- [ ] Executar `python manage.py check`.
-- [ ] Verificar migrations pendentes.
-- [ ] Executar build do frontend.
-- [ ] Validar API sem vazamento cross-Branch/cross-Company.
-- [ ] Validar auditoria, bloqueios, CMV e consumo físico em cenários manuais.
+- [X] Executar `python manage.py check`.
+- [X] Verificar migrations pendentes.
+- [X] Executar build do frontend.
+- [X] Validar API sem vazamento cross-Branch/cross-Company.
+- [X] Validar auditoria, bloqueios, CMV e consumo físico em cenários manuais.
 
 **Entrega:** escopo funcional definitivo da V1 pronto para Sprint 12 e deploy.
 
@@ -6377,51 +6765,51 @@ PDV-25LOUNGE/
 
 ### Bugs e coerência operacional
 
-- [ ] Corrigir definitivamente o 404 no fechamento de caixa e validar rota Next + chamadas da API no contexto da Branch.
-- [ ] Revisar contraste de toda a aplicação em modo escuro, não somente campos isolados.
-- [ ] Centralizar labels pt-BR e eliminar `sale_cancellation`, `consumption_cancellation`, `manual_entry`, `fixed_amount` e demais chaves técnicas da UI.
-- [ ] Alterar valorização física para não produzir `Valor em estoque` negativo; manter KPI/filtro de produtos negativos.
-- [ ] Revisar `seller_user` obrigatório em venda também em constraint/regra estrutural de banco.
+- [X] Corrigir definitivamente o 404 no fechamento de caixa e validar rota Next + chamadas da API no contexto da Branch.
+- [X] Revisar contraste de toda a aplicação em modo escuro, não somente campos isolados.
+- [X] Centralizar labels pt-BR e eliminar `sale_cancellation`, `consumption_cancellation`, `manual_entry`, `fixed_amount` e demais chaves técnicas da UI.
+- [X] Alterar valorização física para não produzir `Valor em estoque` negativo; manter KPI/filtro de produtos negativos.
+- [X] Revisar `seller_user` obrigatório em venda também em constraint/regra estrutural de banco.
 
 ### Permissões
 
-- [ ] Revisar todas as funcionalidades introduzidas nas Sprints 11.4–11.9 e criar permissões ausentes.
-- [ ] Garantir sincronização automática de novas permissões para Administrador.
-- [ ] Remover regra que conceda automaticamente todas as novas permissões ao perfil Gerente; usar conjunto explícito configurável.
-- [ ] Expor todas as novas capacidades na matriz de AccessProfile.
-- [ ] Manter bloqueio individual de permissão com precedência sobre perfil.
+- [X] Revisar todas as funcionalidades introduzidas nas Sprints 11.4–11.9 e criar permissões ausentes.
+- [X] Garantir sincronização automática de novas permissões para Administrador.
+- [X] Remover regra que conceda automaticamente todas as novas permissões ao perfil Gerente; usar conjunto explícito configurável.
+- [X] Expor todas as novas capacidades na matriz de AccessProfile.
+- [X] Manter bloqueio individual de permissão com precedência sobre perfil.
 
 ### Comissão
 
-- [ ] Adicionar `receives_commission` ao AccessProfile ou configuração equivalente.
-- [ ] Permitir perfil usar percentual padrão da Branch ou percentual próprio.
-- [ ] Permitir override individual de comissão no User quando autorizado.
-- [ ] Aplicar precedência User → Perfil → Branch e salvar snapshot na Sale.
-- [ ] Criar permissões independentes para visualizar comissão, alterar padrão da Branch, alterar perfil e override de User.
+- [X] Adicionar `receives_commission` ao AccessProfile ou configuração equivalente.
+- [X] Permitir perfil usar percentual padrão da Branch ou percentual próprio.
+- [X] Permitir override individual de comissão no User quando autorizado.
+- [X] Aplicar precedência User → Perfil → Branch e salvar snapshot na Sale.
+- [X] Criar permissões independentes para visualizar comissão, alterar padrão da Branch, alterar perfil e override de User.
 
 ### PDV
 
-- [ ] Criar categoria virtual `Favoritos` quando houver Products elegíveis e exibi-la primeiro.
-- [ ] Priorizar favoritos também na listagem administrativa de Products.
-- [ ] Permitir retirar taxa de serviço com permissão específica ou autorização pontual.
-- [ ] Salvar `service_fee_waived`/autorizador ou histórico equivalente.
-- [ ] Remover `Comissão prevista` do checkout do PDV.
-- [ ] Quando não houver CashSession aberta, permitir ao usuário autorizado abrir caixa no próprio fluxo do PDV e continuar o pedido.
-- [ ] Adicionar calculadora `Dividir por pessoas` sem alterar Sale/Payment.
+- [X] Criar categoria virtual `Favoritos` quando houver Products elegíveis e exibi-la primeiro.
+- [X] Priorizar favoritos também na listagem administrativa de Products.
+- [X] Permitir retirar taxa de serviço com permissão específica ou autorização pontual.
+- [X] Salvar `service_fee_waived`/autorizador ou histórico equivalente.
+- [X] Remover `Comissão prevista` do checkout do PDV.
+- [X] Quando não houver CashSession aberta, permitir ao usuário autorizado abrir caixa no próprio fluxo do PDV e continuar o pedido.
+- [X] Adicionar calculadora `Dividir por pessoas` sem alterar Sale/Payment.
 
 ### Caixa
 
-- [ ] Exibir resumo da sessão por Dinheiro, PIX, Crédito e Débito.
-- [ ] Manter `Esperado em dinheiro` restrito à gaveta física.
-- [ ] Manter timeline de caixa focada nos eventos que alteram gaveta/estado, com links para operações relacionadas.
-- [ ] Revisar fechamento para apresentar resumo por forma de pagamento + abertura/entradas/sangrias/esperado/informado/diferença.
+- [X] Exibir resumo da sessão por Dinheiro, PIX, Crédito e Débito.
+- [X] Manter `Esperado em dinheiro` restrito à gaveta física.
+- [X] Manter timeline de caixa focada nos eventos que alteram gaveta/estado, com links para operações relacionadas.
+- [X] Revisar fechamento para apresentar resumo por forma de pagamento + abertura/entradas/sangrias/esperado/informado/diferença.
 
 ### Tabela de preços
 
-- [ ] Transformar a tela em edição em lote por Branch.
-- [ ] Diferenciar visualmente `Preço padrão` de `Preço da filial`.
-- [ ] Salvar múltiplas alterações de BranchProductPrice de forma segura.
-- [ ] Deixar claro no cadastro do Product quando a Branch atual possui override.
+- [X] Transformar a tela em edição em lote por Branch.
+- [X] Diferenciar visualmente `Preço padrão` de `Preço da filial`.
+- [X] Salvar múltiplas alterações de BranchProductPrice de forma segura.
+- [X] Deixar claro no cadastro do Product quando a Branch atual possui override.
 
 **Entrega:** erros e regras operacionais encontradas na validação manual corrigidos antes da reorganização final de gestão.
 
@@ -6433,52 +6821,222 @@ PDV-25LOUNGE/
 
 ### Dashboard
 
-- [ ] Reduzir Dashboard para visão executiva rápida.
-- [ ] Manter filtro global de Branch + data/hora.
-- [ ] Limitar topo a KPIs essenciais: Faturamento, Vendas, Ticket médio, Consumação, Descontos e Resultado estimado, conforme permissão.
-- [ ] No KPI/bloco de Consumação, exibir quantidade de pedidos, referência, cobrado e benefício.
-- [ ] Usar um gráfico principal de faturamento/vendas por hora/período.
-- [ ] Manter no máximo blocos complementares úteis: Formas de pagamento, Produtos mais vendidos, Vendas por atendente e Consumação.
-- [ ] Transformar estoque/caixa em alertas/resumos compactos, não relatórios completos no Dashboard.
-- [ ] Tornar KPIs e blocos clicáveis, preservando período/Branch ao abrir detalhe.
-- [ ] Adicionar ação `Ver relatório` nos blocos relevantes.
+- [X] Reduzir Dashboard para visão executiva rápida.
+- [X] Manter filtro global de Branch + data/hora.
+- [X] Limitar topo a KPIs essenciais: Faturamento, Vendas, Ticket médio, Consumação, Descontos e Resultado estimado, conforme permissão.
+- [X] No KPI/bloco de Consumação, exibir quantidade de pedidos, referência, cobrado e benefício.
+- [X] Usar um gráfico principal de faturamento/vendas por hora/período.
+- [X] Manter no máximo blocos complementares úteis: Formas de pagamento, Produtos mais vendidos, Vendas por atendente e Consumação.
+- [X] Transformar estoque/caixa em alertas/resumos compactos, não relatórios completos no Dashboard.
+- [X] Tornar KPIs e blocos clicáveis, preservando período/Branch ao abrir detalhe.
+- [X] Adicionar ação `Ver relatório` nos blocos relevantes.
 
 ### Central de Relatórios
 
-- [ ] Transformar `/relatorios` em Central de Relatórios com cards/categorias.
-- [ ] Organizar em Visão Gerencial, Produtos & Performance, Recebimentos, Equipe & Comissão, Custos & Resultado e Auditoria & Controle.
-- [ ] Criar/validar `/relatorios/visao-geral`.
-- [ ] Criar/validar `/relatorios/vendas`.
-- [ ] Criar/validar `/relatorios/produtos`.
-- [ ] Criar/validar `/relatorios/recebimentos`.
-- [ ] Criar/validar `/relatorios/operadores`.
-- [ ] Criar/validar `/relatorios/atendentes`.
-- [ ] Criar/validar `/relatorios/comissoes`.
-- [ ] Criar/validar `/relatorios/descontos`.
-- [ ] Criar/validar `/relatorios/consumacoes`.
-- [ ] Criar/validar `/relatorios/caixa`.
-- [ ] Criar/validar `/relatorios/sangrias`.
-- [ ] Criar/validar `/relatorios/consumo-estoque`.
-- [ ] Criar/validar `/relatorios/cancelamentos`.
-- [ ] Criar/validar `/relatorios/precos`.
-- [ ] Criar/validar `/relatorios/resultado`.
-- [ ] Cada relatório deve possuir filtros específicos, KPIs, visualização tabular e gráficos somente quando agregarem compreensão.
-- [ ] Preservar filtros com data/hora e Branch em todas as rotas históricas.
+- [X] Transformar `/relatorios` em Central de Relatórios com cards/categorias.
+- [X] Organizar em Visão Gerencial, Produtos & Performance, Recebimentos, Equipe & Comissão, Custos & Resultado e Auditoria & Controle.
+- [X] Criar/validar `/relatorios/visao-geral`.
+- [X] Criar/validar `/relatorios/vendas`.
+- [X] Criar/validar `/relatorios/produtos`.
+- [X] Criar/validar `/relatorios/recebimentos`.
+- [X] Criar/validar `/relatorios/operadores`.
+- [X] Criar/validar `/relatorios/atendentes`.
+- [X] Criar/validar `/relatorios/comissoes`.
+- [X] Criar/validar `/relatorios/descontos`.
+- [X] Criar/validar `/relatorios/consumacoes`.
+- [X] Criar/validar `/relatorios/caixa`.
+- [X] Criar/validar `/relatorios/sangrias`.
+- [X] Criar/validar `/relatorios/consumo-estoque`.
+- [X] Criar/validar `/relatorios/cancelamentos`.
+- [X] Criar/validar `/relatorios/precos`.
+- [X] Criar/validar `/relatorios/resultado`.
+- [X] Cada relatório deve possuir filtros específicos, KPIs, visualização tabular e gráficos somente quando agregarem compreensão.
+- [X] Preservar filtros com data/hora e Branch em todas as rotas históricas.
 
 ### Consumo físico
 
-- [ ] Exibir Resumo por produto físico.
-- [ ] Exibir Movimentações detalhadas.
-- [ ] Separar Venda, Consumação, Saída manual e reversões/cancelamentos.
-- [ ] Usar StockMovement como fonte de verdade física; combos devem expandir para seus componentes reais.
+- [X] Exibir Resumo por produto físico.
+- [X] Exibir Movimentações detalhadas.
+- [X] Separar Venda, Consumação, Saída manual e reversões/cancelamentos.
+- [X] Usar StockMovement como fonte de verdade física; combos devem expandir para seus componentes reais.
 
 ### Resultado
 
-- [ ] Manter `/relatorios/resultado` como relatório gerencial dedicado.
-- [ ] Exibir bruto, promoções, desconto manual, faturamento efetivo, CMV histórico, comissão, despesas que afetam resultado, custo fixo, resultado e margem estimados.
-- [ ] Permitir filtro por CashSession como recorte opcional da noite/operação.
+- [X] Manter `/relatorios/resultado` como relatório gerencial dedicado.
+- [X] Exibir bruto, promoções, desconto manual, faturamento efetivo, CMV histórico, comissão, despesas que afetam resultado, custo fixo, resultado e margem estimados.
+- [X] Permitir filtro por CashSession como recorte opcional da noite/operação.
 
 **Entrega:** Dashboard simples para decisão rápida e relatórios aprofundados em rotas próprias.
+
+---
+
+
+## Sprint 12.2.1 — Revisão Gerencial, Permissões, Estoque e Caixa
+
+**Objetivo:** incorporar as conclusões da validação operacional final e consolidar Dashboard, permissões, estoque, caixa, endereço de filial e auditoria antes da Sprint 12.3. Esta sprint é corretiva/evolutiva e **não altera os `[X]` históricos da Sprint 12.2**. Quando houver conflito de UX/requisito com a 12.2, as regras desta sprint e do corpo principal da versão 1.8 prevalecem.
+
+### Regra de execução — inspeção do estado real
+
+- [X] Antes de alterar qualquer funcionalidade desta sprint, inspecionar o código atual do backend e frontend relacionado ao item; não assumir implementação correta apenas porque uma sprint histórica possui `[X]`.
+- [X] Tratar os `[X]` das Sprints 11.9, 12.1 e 12.2 como **registro histórico de execução**, e não como validação automática do estado atual.
+- [X] Corrigir todo desvio concreto encontrado entre código atual e a regra mais recente deste PRD dentro da Sprint 12.2.1.
+- [X] Não reescrever `[X]` históricos para mascarar regressão; registrar/corrigir a regressão nesta sprint corretiva.
+- [X] A conclusão técnica da 12.2.1 não autoriza concluir a Sprint 12.3, que permanece exclusivamente manual pelo responsável do produto.
+
+### Relatórios, navegação e drill-down — correções mandatórias da inspeção
+
+- [X] Inspecionar os arquivos reais das rotas `/relatorios/*` e identificar qualquer rota dedicada implementada apenas como redirect/alias para `/relatorios?report=...`.
+- [X] Remover redirects do tipo `/relatorios/vendas → /relatorios?report=sales` e equivalentes para comissão, atendentes, operadores, produtos, recebimentos, descontos, consumação, caixa, sangrias, cancelamentos, preços e resultado.
+- [X] Fazer cada rota dedicada renderizar uma página/experiência funcional própria, podendo reutilizar componentes compartilhados internamente.
+- [X] Remover `/relatorios?report=...` como arquitetura principal de seleção de relatório; query string deve ser usada para filtros, não para substituir a identidade da rota.
+- [X] Se URLs legadas com `?report=...` forem mantidas temporariamente, encaminhá-las para a rota dedicada correspondente, nunca no sentido inverso.
+- [X] Atualizar a Central `/relatorios` para navegar diretamente para as rotas dedicadas.
+- [X] Atualizar links e drill-downs do Dashboard para apontarem diretamente para `/relatorios/vendas`, `/relatorios/recebimentos`, `/relatorios/comissoes`, `/relatorios/resultado` e demais relatórios correspondentes.
+- [X] Preservar `start_datetime`, `end_datetime`, Branch, Category e filtros aplicáveis durante a navegação para a rota dedicada.
+- [X] Validar que cada relatório dedicado possui rótulos pt-BR, KPIs, filtros, tabela e gráficos somente quando úteis, sem reaproveitar cegamente uma tela genérica de chave/valor.
+
+### Preset do Gerente — revisão de privilégio mínimo
+
+- [X] Inspecionar o bootstrap/migration/service que cria ou sincroniza o AccessProfile de sistema `Gerente`.
+- [X] Garantir que `Gerente` não receba todas ou quase todas as permissões do catálogo por padrão.
+- [X] Garantir que novas permissões não sejam sincronizadas automaticamente para `Gerente`; somente `Administrador` de sistema recebe sincronização completa prevista neste PRD.
+- [X] Revisar especialmente permissões sensíveis de editar AccessProfiles/permissões, gerir `UserPermissionBlock`, alterar BranchSettings críticos, configurar comissão de perfil/usuário e acessar AuditLog completo.
+- [X] Manter essas capacidades fora do preset padrão de `Gerente`, salvo quando houver decisão explícita no catálogo inicial; a Company poderá concedê-las depois por configuração autorizada.
+- [X] Não considerar a revisão concluída apenas por remover uso de `ALL_PERMISSION_CODES`; validar o conjunto efetivo de permissões persistidas do perfil.
+
+### Dashboard Executivo
+
+- [X] Redesenhar o Dashboard com alto padrão visual seguindo `design_system/design_system.html`, usando concorrentes apenas como referência funcional e sem copiar identidade visual.
+- [X] Manter filtros globais sempre acessíveis por Branch, data/hora inicial, data/hora final e Category.
+- [X] Adicionar atalhos Hoje, Ontem, Últimos 7 dias, Últimos 15 dias, Últimos 30 dias e Personalizado.
+- [X] Quando existir CashSession aberta e o recorte for coerente, disponibilizar atalho Sessão atual.
+- [X] Criar KPI Faturamento com valor + quantidade de vendas comerciais.
+- [X] Criar KPI Ticket médio.
+- [X] Criar KPI Cancelamentos/Estornos com valor + quantidade.
+- [X] Criar KPI Descontos manuais com valor e quantidade de vendas afetadas.
+- [X] Criar KPI Consumação & Cortesias com quantidade, referência, cobrado e benefício; considerar consumação gratuita como cortesia operacional apenas para apresentação.
+- [X] Criar KPI Comissão, mantendo comissão fora do faturamento.
+- [X] Exibir Resultado estimado separadamente quando autorizado.
+- [X] Criar seção compacta de Estoque com Valor em estoque, Negativos, Abaixo do mínimo e Produtos físicos, excluindo Products pais `components` e itens `none` da contagem física.
+- [X] Respeitar `inventory.view_stock_costs` e demais permissões financeiras no backend e frontend.
+- [X] Criar seção Pessoas/Performance por `seller_user` com faturamento, vendas, ticket médio e comissão.
+- [X] Criar ranking separado por `created_by`/operador-caixa com faturamento processado, vendas e ticket; não atribuir comissão ao operador quando ele não for o `seller_user`.
+- [X] Criar gráfico de Products mais vendidos.
+- [X] Criar mapa de calor dia da semana × hora com intensidade por faturamento, tooltip com faturamento/vendas/ticket e célula clicável.
+- [X] Criar gráfico de formas de pagamento.
+- [X] Criar gráfico de faturamento por atendente.
+- [X] Criar comparativo semanal por dia/período, sem confundir faturamento com dinheiro físico da gaveta.
+- [X] Exibir lista compacta das últimas vendas com acesso ao detalhe e `Ver todas`.
+- [X] Tornar KPIs, cards, gráficos, rankings, células e linhas detalháveis clicáveis.
+- [X] Preservar Branch, `start_datetime`, `end_datetime`, Category e demais filtros ao navegar para relatório/detalhe.
+- [X] Garantir responsividade e hierarquia visual em desktop, notebook, tablet e smartphone.
+
+### Dark Mode
+
+- [X] Corrigir contraste global do modo escuro em toda a aplicação.
+- [X] Revisar tokens compartilhados de texto principal, muted, labels, placeholders, inputs, selects, tabelas, dropdowns, badges, modais, tooltips, empty states e erros.
+- [X] Revisar eixos, grid, legendas, labels e tooltips dos gráficos.
+- [X] Revisar estados hover/focus/disabled/selected/error nos dois temas.
+- [X] Resolver preferencialmente nos tokens/classes globais do design system/Tailwind, evitando remendos isolados por página.
+
+### Filiais e Endereço
+
+- [X] Permitir endereço normalmente durante criação de Branch.
+- [X] Permitir apenas a complementação inicial de uma Matriz automática explicitamente marcada com endereço pendente.
+- [X] Após o endereço estar completo, tornar os campos cadastrais de endereço somente leitura para usuários da Company.
+- [X] Permitir alteração posterior do endereço somente a `request.user.is_superuser`.
+- [X] Rejeitar no backend tentativa de alteração por não-superuser, mesmo via chamada direta à API.
+- [X] Auditar alteração de endereço realizada por superuser com antes/depois.
+
+### Catálogo de Permissões
+
+- [X] Revisar todas as telas, endpoints e ações atuais e mapear capacidades que merecem permissão específica.
+- [X] Manter catálogo de capacidades definido pelo CORE PDV e AccessProfiles configuráveis pela Company; não permitir que a Company invente códigos arbitrários de permissão.
+- [X] Organizar AccessProfile por módulos e ações usando matriz Visualizar/Cadastrar/Editar/Inativar onde fizer sentido.
+- [X] Exibir Ações especiais separadamente.
+- [X] Revisar permissões de Dashboard e Relatórios financeiros.
+- [X] Revisar permissões de Product, Category, custo, preço e preço por Branch.
+- [X] Revisar permissões de Stock: visualizar, KPIs, custos, entrada, saída, ajuste, regularização e mínimo.
+- [X] Revisar permissões de CashSession: visualizar, abrir, entrada, sangria, fechar e capacidades administrativas sobre outros caixas quando existirem.
+- [X] Revisar permissões de Sale/Consumption: realizar, visualizar, desconto, autorização, taxa e cancelamento.
+- [X] Revisar permissões de Commission, Promotions, Users, AccessProfiles, BranchSettings e AuditLog.
+- [X] Exibir claramente permissões herdadas que estejam bloqueadas por `UserPermissionBlock`.
+- [X] Garantir que bloqueio individual prevaleça somente no escopo correto de Company/Branch.
+- [X] Não tornar ações exclusivas de superuser — endereço cadastral e cadastro em lote de Products nesta V1 — delegáveis por AccessProfile.
+
+### Cadastro em lote de Products
+
+- [X] Criar opção Cadastro em lote de Products.
+- [X] Restringir frontend e backend ao superuser da plataforma.
+- [X] Criar interface tabular para inclusão de múltiplos Products.
+- [X] Reutilizar as mesmas validações de Category, unidade, código interno, custo, preço e comportamento de estoque do cadastro individual.
+- [X] Aceitar vírgula e ponto nos campos decimais.
+- [X] Garantir resposta clara por linha ou transação segura, sem estado parcialmente ambíguo.
+
+### Estoque em grupo e natureza de movimentação
+
+- [X] Permitir registrar Entrada de estoque selecionando uma Category.
+- [X] Listar os Products físicos elegíveis da Category no contexto da Branch e permitir informar múltiplas quantidades em uma única operação.
+- [X] Não criar movimento para quantidade zero/vazia.
+- [X] Criar StockMovement individual por Product e permitir referência comum de operação para consulta.
+- [X] Adicionar natureza estruturada de Entrada: Normal, Bonificada, Devolução, Saldo inicial, Correção e Outros.
+- [X] Adicionar natureza estruturada de Saída: Transferência, Avaria, Perda, Uso interno, Correção e Outros.
+- [X] Adicionar natureza estruturada de Ajuste: Inventário, Regularização, Correção de saldo e Outros.
+- [X] Manter observação livre opcional.
+- [X] Não tratar `Transferência` como entrada automática em outra Branch enquanto não existir módulo real de transferência.
+- [X] Exibir tipo + natureza + quantidade + `saldo anterior → saldo final` de forma clara no histórico.
+
+### Estoque negativo
+
+- [X] Investigar os HTTP 400 reproduzidos em `stock-movements/entry/` e `stock-movements/exit/` após mudança de `allow_negative_stock`.
+- [X] Não bloquear entrada destinada a recuperar saldo negativo apenas porque o saldo atual está abaixo de zero.
+- [X] Padronizar erro de domínio claro com `code`, `message` e `details` em vez de 400 genérico.
+- [X] Não zerar saldos negativos silenciosamente ao desativar `allow_negative_stock`.
+- [X] Bloquear a desativação quando existirem Stocks negativos e apresentar quantidade/lista dos afetados.
+- [X] Criar fluxo `Regularizar negativos` que permita ajustar explicitamente para zero ou nova contagem física.
+- [X] Cada regularização deve criar StockMovement de adjustment/regularization com before, quantity, after, actor e reason.
+- [X] Somente após não existirem negativos permitir salvar `allow_negative_stock=False`.
+
+### Sessão de Caixa
+
+- [X] Reabrir como bloqueador o erro 404 reproduzido no fechamento da CashSession.
+- [X] Revisar coerência entre rota Next, cliente HTTP, Branch, ID da sessão, DRF router e `cash-sessions/{id}/close/`.
+- [X] Não considerar o 404 corrigido sem validação manual do fluxo real.
+- [X] Redesenhar timeline para usar rótulos explícitos como `Beneficiário`, `Motivo` e `Registrado por`.
+- [X] Em sangria, exibir valor, beneficiário, motivo e usuário que registrou.
+- [X] Exibir quantidade de vendas e Faturamento efetivo da sessão.
+- [X] Exibir Taxa de serviço separadamente.
+- [X] Exibir Comissão separadamente e fora do faturamento.
+- [X] Exibir Consumação/Cortesias com quantidade, referência, cobrado e benefício.
+- [X] Exibir totais por Dinheiro, PIX, Crédito, Débito e demais PaymentMethods aplicáveis.
+- [X] Manter `Esperado em dinheiro` restrito aos eventos que alteram a gaveta física.
+- [X] Exibir abertura, entradas, dinheiro de vendas/consumações, sangrias, reversões, esperado, informado e diferença.
+- [X] Manter timeline focada nos eventos operacionais relevantes e não listar centenas de vendas não monetárias.
+- [X] Após fechamento, disponibilizar o mesmo resumo completo no detalhe histórico e em `/relatorios/caixa`.
+
+### Auditoria
+
+- [X] Manter AuditLog append-only como trilha técnica de verdade.
+- [X] Redesenhar a tela de Auditoria para apresentação humana e explicável em pt-BR.
+- [X] Mostrar módulo, ação, objeto, resumo da mudança, ator, Branch e data/hora.
+- [X] Para alterações de valor/status/configuração, apresentar `De → Para` quando aplicável.
+- [X] Adicionar `Ver detalhes` para before_data, after_data, IDs, IP e User-Agent quando disponíveis e seguros.
+- [X] Não exibir JSON técnico como experiência principal.
+- [X] Permitir filtros por período, Branch, ator, módulo e ação.
+- [X] Permitir navegação para objeto relacionado quando seguro e aplicável.
+
+### Validação técnica
+
+- [X] Executar `python manage.py check`.
+- [X] Verificar migrations pendentes e consistência das migrations criadas.
+- [X] Executar build do frontend.
+- [X] Validar `/health/`.
+- [X] Validar Docker Compose quando necessário.
+- [X] Não criar/reintroduzir testes automatizados.
+- [X] Não marcar a Sprint 12.3 como concluída.
+- [X] Entregar o sistema para validação manual do responsável pelo produto.
+
+**Entrega:** CORE PDV gerencial e operacionalmente consistente, com Dashboard final, RBAC revisado, estoque auditável, caixa completo, endereço protegido e Auditoria compreensível, pronto para iniciar a Sprint 12.3.
 
 ---
 
@@ -6492,40 +7050,53 @@ PDV-25LOUNGE/
 
 Checklist manual mínimo:
 
-- [ ] Login e troca de Branch.
-- [ ] Permissões, inclshow estritos.
+- [x] Login e troca de Branch.
+- [x] Permissões, inclshow estritos.
 - [ ] Produtos/Categories/combos.
-- [ ] Estoque e histórico.
-- [ ] Formas de pagamento.
+- [X] Estoque e histórico.
+- [X] Formas de pagamento.
 - [ ] Caixa, entradas, sangrias e fechamento.
-- [ ] PDV sem erro de contrato monetário.
-- [ ] Venda normal.
-- [ ] Aplicar consumação dentro do checkout do PDV.
-- [ ] Consumação gratuita e cobrada.
+- [X] PDV sem erro de contrato monetário.
+- [X] Venda normal.
+- [X] Aplicar consumação dentro do checkout do PDV.
+- [X] Consumação gratuita e cobrada.
 - [ ] Cancelamento histórico após alteração posterior de composição.
-- [ ] Filtros com data/hora, inclusive atravessando meia-noite.
-- [ ] Dashboard operacional.
-- [ ] Relatórios e exportações.
-- [ ] Promoções sem conflito, recorrência, Branch e vigência sem fim quando aplicável.
-- [ ] Quantidade `UN` aceita inteiros corretamente.
-- [ ] Inputs aceitam vírgula e ponto.
-- [ ] Dinheiro usa Valor recebido e calcula troco sem campo redundante.
-- [ ] Histórico da sessão de caixa.
-- [ ] Bloqueio de cancelamento após fechamento do caixa.
-- [ ] Atendente obrigatório em toda venda.
-- [ ] Autorização pontual de desconto por outro usuário.
-- [ ] Estoque negativo somente na Branch que permite.
-- [ ] Preço por filial e fallback do preço padrão.
-- [ ] Taxa de serviço e comissão.
-- [ ] Relatórios por operador/atendente e KPI de comissão.
-- [ ] Resultado operacional estimado sem descontar benefícios duas vezes.
-- [ ] Dashboard com KPIs clicáveis e gráficos.
-- [ ] Modo claro/escuro, fullscreen e sidebar recolhível.
+- [X] Filtros com data/hora, inclusive atravessando meia-noite.
+- [X] Dashboard operacional.
+- [X] Relatórios e exportações.
+- [X] Promoções sem conflito, recorrência, Branch e vigência sem fim quando aplicável.
+- [X] Quantidade `UN` aceita inteiros corretamente.
+- [X] Inputs aceitam vírgula e ponto.
+- [X] Dinheiro usa Valor recebido e calcula troco sem campo redundante.
+- [X] Histórico da sessão de caixa.
+- [X] Bloqueio de cancelamento após fechamento do caixa.
+- [X] Atendente obrigatório em toda venda.
+- [X] Autorização pontual de desconto por outro usuário.
+- [X] Estoque negativo somente na Branch que permite.
+- [X] Preço por filial e fallback do preço padrão.
+- [X] Taxa de serviço e comissão.
+- [X] Relatórios por operador/atendente e KPI de comissão.
+- [X] Resultado operacional estimado sem descontar benefícios duas vezes.
+- [X] Dashboard com KPIs clicáveis e gráficos.
+- [X] Modo claro/escuro, fullscreen e sidebar recolhível.
 - [ ] Responsividade em desktop e celular.
 - [ ] Auditoria de alterações críticas e consulta dos logs.
-- [ ] Bloqueio individual de permissão em uma Branch sem afetar outra.
+- [!!] Bloqueio individual de permissão em uma Branch sem afetar outra. (TA BLOQUEANDO EM GERAL POR EMPRESA E N POR FILIAL)
 - [ ] CMV permanece histórico após alteração posterior do custo do Product.
-- [ ] Relatório de produtos/insumos consumidos reconcilia venda, consumação, combo e cancelamento.
+- [X] Relatório de produtos/insumos consumidos reconcilia venda, consumação, combo e cancelamento.
+- [X] Dashboard final possui filtros Branch + data/hora + Category e atalhos de período.
+- [X] KPIs, mapa de calor, rankings, gráficos e últimas vendas possuem drill-down preservando filtros.
+- [ ] Faturamento não inclui comissão e taxa de serviço aparece separadamente.
+- [X] Ranking de atendente usa `seller_user` e ranking de operador usa `created_by`.
+- [ ] Modo escuro permanece legível em textos, formulários, tabelas, modais e gráficos.
+- [!!!] Endereço de Branch completa não pode ser alterado por usuário da Company; superuser consegue alterar e gera auditoria. (NAO GERA AUDITORIA)
+- [X] Cadastro em lote de Products é inacessível para não-superuser.
+- [X] Entrada de estoque em grupo por Category cria movimentos individuais coerentes.
+- [X] Naturezas de entrada/saída/ajuste aparecem corretamente no histórico.
+- [X] Desativar estoque negativo com saldos negativos exige regularização explícita e auditável.
+- [X] Entrada consegue recuperar saldo negativo sem 400 genérico.
+- [X] CashSession mostra vendas, taxa, comissão, consumação, formas de pagamento, gaveta e timeline com `Registrado por`.
+- [ ] Auditoria apresenta resumo humano e permite abrir detalhes técnicos.
 
 Verificações técnicas permitidas ao agente durante correções:
 

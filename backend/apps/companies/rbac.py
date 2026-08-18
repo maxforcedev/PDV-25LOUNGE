@@ -4,10 +4,13 @@ PERMISSION_CATALOG = (
     ('branches.view', 'companies', 'Visualizar filiais', 'Visualizar filiais autorizadas.'),
     ('branches.add', 'companies', 'Cadastrar filiais', 'Cadastrar filiais em empresas autorizadas.'),
     ('branches.change', 'companies', 'Editar filiais', 'Editar e alterar o status de filiais.'),
+    ('branches.change_settings', 'companies', 'Alterar configuracoes da filial', 'Alterar regras operacionais, taxa de servico, comissao e custo fixo.'),
     ('users.view', 'accounts', 'Visualizar usuarios', 'Visualizar usuarios autorizados.'),
     ('users.add', 'accounts', 'Cadastrar usuarios', 'Cadastrar usuarios e seus acessos.'),
     ('users.change', 'accounts', 'Editar usuarios', 'Editar usuarios e seus acessos.'),
     ('users.change_status', 'accounts', 'Alterar status de usuarios', 'Ativar e inativar usuarios.'),
+    ('user_permission_blocks.view', 'accounts', 'Visualizar bloqueios individuais', 'Visualizar permissoes bloqueadas por usuario.'),
+    ('user_permission_blocks.change', 'accounts', 'Alterar bloqueios individuais', 'Criar e revogar bloqueios individuais de permissoes.'),
     ('access_profiles.view', 'accounts', 'Visualizar perfis', 'Visualizar perfis de acesso.'),
     ('access_profiles.add', 'accounts', 'Cadastrar perfis', 'Cadastrar perfis de acesso.'),
     ('access_profiles.change', 'accounts', 'Editar perfis', 'Editar perfis e permissoes.'),
@@ -17,8 +20,19 @@ PERMISSION_CATALOG = (
     ('products.change', 'products', 'Editar produtos', 'Editar produtos.'),
     ('products.change_status', 'products', 'Alterar status de produtos', 'Ativar e inativar produtos.'),
     ('products.configure_composition', 'products', 'Configurar composicao', 'Configurar a composicao de produtos.'),
+    ('products.change_cost', 'products', 'Alterar custo de produto', 'Alterar custo cadastral de produtos.'),
+    ('products.change_price', 'products', 'Alterar preco padrao', 'Alterar preco padrao de produtos.'),
+    ('categories.view', 'products', 'Visualizar categorias', 'Visualizar categorias de produtos.'),
+    ('categories.add', 'products', 'Cadastrar categorias', 'Cadastrar categorias de produtos.'),
+    ('categories.change', 'products', 'Editar categorias', 'Editar categorias de produtos.'),
+    ('categories.change_status', 'products', 'Alterar status de categorias', 'Ativar e inativar categorias.'),
+    ('branch_prices.change', 'products', 'Alterar precos por filial', 'Alterar precos especificos de produtos por filial.'),
     ('inventory.view', 'inventory', 'Visualizar estoque', 'Visualizar saldos de estoque.'),
     ('inventory.move', 'inventory', 'Movimentar estoque', 'Registrar movimentacoes de estoque.'),
+    ('inventory.entry', 'inventory', 'Registrar entrada', 'Registrar entradas individuais ou em grupo.'),
+    ('inventory.exit', 'inventory', 'Registrar saida', 'Registrar saidas de estoque.'),
+    ('inventory.adjust', 'inventory', 'Ajustar estoque', 'Registrar inventario e correcao de saldo.'),
+    ('inventory.regularize', 'inventory', 'Regularizar negativos', 'Regularizar explicitamente saldos negativos.'),
     ('inventory.change_minimum', 'inventory', 'Alterar estoque minimo', 'Configurar estoque minimo.'),
     ('inventory.view_history', 'inventory', 'Visualizar historico', 'Visualizar historico de estoque.'),
     ('inventory.view_stock_kpis', 'inventory', 'Visualizar indicadores de estoque', 'Visualizar indicadores de estoque baixo e zerado.'),
@@ -28,10 +42,15 @@ PERMISSION_CATALOG = (
     ('cash_registers.manual_entry', 'cash_registers', 'Realizar entrada manual', 'Registrar entradas manuais no caixa.'),
     ('cash_registers.withdraw', 'cash_registers', 'Realizar sangria', 'Registrar sangrias no caixa.'),
     ('cash_registers.close', 'cash_registers', 'Fechar caixa', 'Fechar caixas.'),
+    ('cash_registers.add', 'cash_registers', 'Cadastrar caixa', 'Cadastrar caixas na filial.'),
+    ('cash_registers.change', 'cash_registers', 'Editar caixa', 'Editar caixas da filial.'),
+    ('cash_registers.change_status', 'cash_registers', 'Alterar status de caixa', 'Ativar e inativar caixas.'),
+    ('cash_registers.administer_others', 'cash_registers', 'Administrar caixas de outros', 'Operar sessoes abertas por outros usuarios.'),
     ('sales.create', 'sales', 'Realizar vendas', 'Registrar vendas.'),
     ('sales.view', 'sales', 'Visualizar vendas', 'Visualizar vendas.'),
     ('sales.cancel', 'sales', 'Cancelar vendas', 'Cancelar vendas.'),
     ('sales.apply_discount', 'sales', 'Aplicar desconto', 'Aplicar descontos em vendas.'),
+    ('sales.waive_service_fee', 'sales', 'Retirar taxa de servico', 'Retirar taxa de servico com permissao ou autorizacao pontual.'),
     ('sales.create_consumption', 'sales', 'Criar consumacao', 'Criar consumacoes.'),
     ('sales.view_consumption', 'sales', 'Visualizar consumacao', 'Visualizar consumacoes.'),
     ('sales.cancel_consumption', 'sales', 'Cancelar consumacao', 'Cancelar consumacoes.'),
@@ -39,13 +58,26 @@ PERMISSION_CATALOG = (
     ('payment_methods.change', 'payment_methods', 'Configurar formas de pagamento', 'Configurar formas de pagamento.'),
     ('promotions.view', 'promotions', 'Visualizar promocoes', 'Visualizar promocoes.'),
     ('promotions.change', 'promotions', 'Configurar promocoes', 'Criar, editar e alterar o status de promocoes.'),
+    ('dashboard.view', 'reports', 'Visualizar Dashboard', 'Visualizar indicadores executivos autorizados.'),
     ('reports.view_sales', 'reports', 'Visualizar relatorio de vendas', 'Visualizar relatorio operacional de vendas.'),
     ('reports.view_consumptions', 'reports', 'Visualizar relatorio de consumacoes', 'Visualizar relatorio operacional de consumacoes.'),
     ('reports.view_cash', 'reports', 'Visualizar relatorio de caixa', 'Visualizar relatorio operacional de caixa.'),
     ('reports.view_withdrawals', 'reports', 'Visualizar relatorio de sangrias', 'Visualizar relatorio operacional de sangrias.'),
     ('reports.view_inventory', 'reports', 'Visualizar relatorio de estoque', 'Visualizar relatorio de movimentacoes de estoque.'),
     ('reports.view_operational_result', 'reports', 'Visualizar resultado operacional', 'Visualizar resultado operacional estimado da filial.'),
+    ('reports.view_stock_consumption', 'reports', 'Visualizar consumo fisico', 'Visualizar produtos e insumos consumidos.'),
+    ('reports.view_products', 'reports', 'Visualizar performance de produtos', 'Visualizar produtos e categorias vendidos.'),
+    ('reports.view_receipts', 'reports', 'Visualizar recebimentos', 'Visualizar recebimentos por forma de pagamento.'),
+    ('reports.view_team', 'reports', 'Visualizar equipe', 'Visualizar desempenho de operadores e atendentes.'),
+    ('reports.view_discounts', 'reports', 'Visualizar descontos', 'Visualizar descontos manuais e promocionais.'),
+    ('reports.view_cancellations', 'reports', 'Visualizar cancelamentos', 'Visualizar cancelamentos e estornos.'),
+    ('reports.view_prices', 'reports', 'Visualizar precos', 'Visualizar comparativo de precos por filial.'),
     ('reports.export', 'reports', 'Exportar relatorios', 'Exportar relatorios operacionais.'),
+    ('audit_logs.view', 'audit_logs', 'Visualizar auditoria', 'Consultar logs de auditoria.'),
+    ('commissions.view', 'commissions', 'Visualizar comissoes', 'Visualizar valores e relatorios de comissao.'),
+    ('commissions.change_branch_default', 'commissions', 'Alterar comissao da filial', 'Alterar percentual padrao de comissao da filial.'),
+    ('commissions.change_profile', 'commissions', 'Alterar comissao do perfil', 'Alterar regra de comissao em perfis de acesso.'),
+    ('commissions.change_user_override', 'commissions', 'Alterar comissao individual', 'Alterar override individual de comissao por usuario.'),
 )
 
 ALL_PERMISSION_CODES = frozenset(item[0] for item in PERMISSION_CATALOG)
@@ -54,12 +86,31 @@ OPERATING_PERMISSION_CODES = frozenset(
     code
     for code in ALL_PERMISSION_CODES
     if code.split('.', 1)[0]
-    in {'products', 'inventory', 'cash_registers', 'sales', 'payment_methods', 'promotions', 'reports'}
+    in {'products', 'categories', 'inventory', 'cash_registers', 'sales', 'payment_methods', 'promotions', 'reports', 'dashboard', 'branch_prices', 'audit_logs'}
 )
 
 DEFAULT_PROFILE_PERMISSIONS = {
     'Administrador': ALL_PERMISSION_CODES,
-    'Gerente': ALL_PERMISSION_CODES,
+    'Gerente': frozenset(
+        {
+            'companies.view', 'branches.view', 'products.view', 'categories.view',
+            'inventory.view',
+            'inventory.move', 'inventory.entry', 'inventory.exit', 'inventory.adjust',
+            'inventory.regularize', 'inventory.change_minimum', 'inventory.view_history',
+            'inventory.view_stock_kpis', 'inventory.view_stock_costs', 'cash_registers.view',
+            'cash_registers.open', 'cash_registers.manual_entry', 'cash_registers.withdraw',
+            'cash_registers.close', 'sales.create', 'sales.view', 'sales.cancel',
+            'sales.apply_discount', 'sales.waive_service_fee', 'sales.create_consumption',
+            'sales.view_consumption', 'sales.cancel_consumption', 'payment_methods.view',
+            'promotions.view', 'dashboard.view',
+            'reports.view_sales', 'reports.view_consumptions', 'reports.view_cash',
+            'reports.view_withdrawals', 'reports.view_inventory',
+            'reports.view_operational_result', 'reports.view_stock_consumption',
+            'reports.view_products', 'reports.view_receipts', 'reports.view_team',
+            'reports.view_discounts', 'reports.view_cancellations', 'reports.view_prices',
+            'reports.export', 'commissions.view',
+        }
+    ),
     'Operador de Caixa': frozenset(
         {
             'companies.view',
@@ -81,6 +132,7 @@ DEFAULT_PROFILE_PERMISSIONS = {
             'reports.view_consumptions',
             'reports.view_cash',
             'reports.view_withdrawals',
+            'sales.waive_service_fee',
         }
     ),
     'Operador de Estoque': frozenset(
@@ -94,6 +146,10 @@ DEFAULT_PROFILE_PERMISSIONS = {
             'products.configure_composition',
             'inventory.view',
             'inventory.move',
+            'inventory.entry',
+            'inventory.exit',
+            'inventory.adjust',
+            'inventory.regularize',
             'inventory.change_minimum',
             'inventory.view_history',
             'inventory.view_stock_kpis',
@@ -104,7 +160,7 @@ DEFAULT_PROFILE_PERMISSIONS = {
 
 DEFAULT_PROFILE_DESCRIPTIONS = {
     'Administrador': 'Acesso completo a empresa.',
-    'Gerente': 'Acesso gerencial e operacional completo.',
+    'Gerente': 'Acesso gerencial operacional sem capacidades sensiveis de seguranca.',
     'Operador de Caixa': 'Acesso a caixa, vendas e consultas operacionais.',
     'Operador de Estoque': 'Acesso ao catalogo de produtos e estoque.',
 }

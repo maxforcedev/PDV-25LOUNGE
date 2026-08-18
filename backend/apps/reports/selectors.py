@@ -13,12 +13,13 @@ from django.db.models import (
     Value,
     When,
 )
-from django.db.models.functions import Coalesce, TruncHour
+from django.db.models.functions import Coalesce, ExtractHour, ExtractIsoWeekDay, TruncHour
 from django.utils import timezone
 
 from apps.cash.models import CashMovement, CashMovementType, CashSession, CashSessionStatus, ResultEffect
 from apps.companies.models import BranchSettings
 from apps.inventory.models import Stock, StockMovement
+from apps.inventory.models import MovementType
 from apps.sales.models import OperationType, Payment, Sale, SaleItem, SaleStatus
 
 
@@ -44,6 +45,7 @@ def filtered_sales(*, branch, start, end, operation_type, filters):
         'product': 'items__product_id',
         'category': 'items__product__category_id',
         'payment_method': 'payments__payment_method_id',
+        'payment_method_code': 'payments__payment_method_code',
         'status': 'status',
         'beneficiary': 'beneficiary_user_id',
         'user_type': 'beneficiary_user__user_type',
@@ -51,6 +53,14 @@ def filtered_sales(*, branch, start, end, operation_type, filters):
     for parameter, lookup in mappings.items():
         if filters.get(parameter) is not None:
             queryset = queryset.filter(**{lookup: filters[parameter]})
+    if filters.get('weekday') is not None:
+        queryset = queryset.annotate(
+            report_iso_weekday=ExtractIsoWeekDay('created_at')
+        ).filter(report_iso_weekday=filters['weekday'] + 1)
+    if filters.get('hour') is not None:
+        queryset = queryset.annotate(
+            report_hour=ExtractHour('created_at')
+        ).filter(report_hour=filters['hour'])
     if filters.get('number'):
         queryset = queryset.filter(sale_number__icontains=filters['number'])
     if filters.get('search'):
@@ -198,7 +208,8 @@ def hourly_sales(queryset):
 def sale_user_groups(queryset, user_field):
     if user_field not in ('created_by', 'seller_user'):
         raise ValueError('Campo de agrupamento invalido.')
-    rows = queryset.filter(status=SaleStatus.FINALIZED).values(
+    finalized = queryset.filter(status=SaleStatus.FINALIZED)
+    rows = finalized.values(
         f'{user_field}_id', f'{user_field}__first_name',
         f'{user_field}__last_name', f'{user_field}__email',
     ).annotate(
@@ -207,7 +218,6 @@ def sale_user_groups(queryset, user_field):
         manual_discount=Coalesce(Sum('discount'), ZERO_MONEY),
         promotion_discount=Coalesce(Sum('promotion_discount_total'), ZERO_MONEY),
         service_fee=Coalesce(Sum('service_fee_amount'), ZERO_MONEY),
-        commission=Coalesce(Sum('commission_amount'), ZERO_MONEY),
         customer_total=Coalesce(Sum('total'), ZERO_MONEY),
     ).order_by('-customer_total', f'{user_field}__first_name', f'{user_field}_id')
     result = []
@@ -220,8 +230,72 @@ def sale_user_groups(queryset, user_field):
         row['total_discount'] = row['manual_discount'] + row['promotion_discount']
         row['effective_revenue'] = row['gross'] - row['total_discount']
         row['average'] = row['customer_total'] / row['count'] if row['count'] else Decimal('0.00')
+        if user_field == 'seller_user':
+            row['commission'] = finalized.filter(
+                seller_user_id=user_id
+            ).aggregate(value=Coalesce(Sum('commission_amount'), ZERO_MONEY))['value']
         result.append(row)
     return result
+
+
+def cancellation_summary(*, branch, start, end, category=None):
+    queryset = period_filter(
+        Sale.objects.filter(
+            branch=branch, operation_type=OperationType.SALE, status=SaleStatus.CANCELLED,
+        ),
+        'cancelled_at', start, end,
+    )
+    if category:
+        queryset = queryset.filter(items__product__category_id=category).distinct()
+    totals = queryset.aggregate(
+        count=Count('id'), value=Coalesce(Sum('total'), ZERO_MONEY)
+    )
+    return queryset, totals
+
+
+def dashboard_time_analysis(queryset, *, branch, start, end, category=None):
+    finalized = list(queryset.filter(status=SaleStatus.FINALIZED).only(
+        'id', 'created_at', 'subtotal', 'promotion_discount_total', 'discount'
+    ))
+    heatmap = {}
+    for sale in finalized:
+        local = timezone.localtime(sale.created_at)
+        key = (local.weekday(), local.hour)
+        row = heatmap.setdefault(key, {
+            'weekday': local.weekday(), 'hour': local.hour, 'count': 0,
+            'revenue': Decimal('0.00'),
+        })
+        row['count'] += 1
+        row['revenue'] += sale.subtotal - sale.promotion_discount_total - sale.discount
+    heatmap_rows = []
+    for row in heatmap.values():
+        row['average'] = row['revenue'] / row['count'] if row['count'] else Decimal('0.00')
+        heatmap_rows.append(row)
+    heatmap_rows.sort(key=lambda row: (row['weekday'], row['hour']))
+
+    duration = end - start
+    previous_start = start - duration
+    previous_end = start
+    previous = period_filter(
+        Sale.objects.filter(
+            branch=branch,
+            operation_type=OperationType.SALE,
+            status=SaleStatus.FINALIZED,
+        ), 'created_at', previous_start, previous_end,
+    )
+    if category:
+        previous = previous.filter(items__product__category_id=category).distinct()
+
+    def by_day(rows):
+        grouped = {}
+        for sale in rows:
+            day = timezone.localtime(sale.created_at).date().isoformat()
+            entry = grouped.setdefault(day, {'date': day, 'count': 0, 'revenue': Decimal('0.00')})
+            entry['count'] += 1
+            entry['revenue'] += sale.subtotal - sale.promotion_discount_total - sale.discount
+        return sorted(grouped.values(), key=lambda row: row['date'])
+
+    return heatmap_rows, by_day(finalized), by_day(previous)
 
 
 def operational_result(*, branch, start, end, sales, cash_session=None):
@@ -265,6 +339,8 @@ def operational_result(*, branch, start, end, sales, cash_session=None):
     )
     return {
         'gross': summary['gross'],
+        'promotion_discount': summary['promotion_discount'],
+        'manual_discount': summary['manual_discount'],
         'discounts': summary['total_discount'],
         'effective_revenue': summary['effective_revenue'],
         'service_fee': summary['service_fee'],
@@ -389,6 +465,59 @@ def filtered_inventory_movements(*, branch, start, end, filters):
     return queryset.order_by('-created_at', '-id')
 
 
+def stock_consumption_report(*, branch, start, end, filters):
+    movement_types = (
+        MovementType.SALE,
+        MovementType.SALE_CANCELLATION,
+        MovementType.CONSUMPTION,
+        MovementType.CONSUMPTION_CANCELLATION,
+        MovementType.EXIT,
+    )
+    rows = period_filter(
+        StockMovement.objects.filter(stock__branch=branch, movement_type__in=movement_types),
+        'created_at', start, end,
+    ).select_related('stock__product__category', 'user', 'sale', 'original_movement')
+    if filters.get('product') is not None:
+        rows = rows.filter(stock__product_id=filters['product'])
+    if filters.get('category') is not None:
+        rows = rows.filter(stock__product__category_id=filters['category'])
+    origin = filters.get('origin')
+    if origin == 'sale':
+        rows = rows.filter(movement_type=MovementType.SALE)
+    elif origin == 'consumption':
+        rows = rows.filter(movement_type=MovementType.CONSUMPTION)
+    elif origin == 'manual_exit':
+        rows = rows.filter(movement_type=MovementType.EXIT)
+    elif origin == 'reversal':
+        rows = rows.filter(movement_type__in=(MovementType.SALE_CANCELLATION, MovementType.CONSUMPTION_CANCELLATION))
+    summary = {}
+    for movement in rows:
+        product = movement.stock.product
+        key = product.pk
+        entry = summary.setdefault(key, {
+            'product': product,
+            'gross_quantity': Decimal('0.000'),
+            'returned_quantity': Decimal('0.000'),
+            'net_quantity': Decimal('0.000'),
+            'estimated_cost': Decimal('0.00'),
+            'movement_count': 0,
+        })
+        quantity = movement.quantity.copy_abs()
+        if movement.quantity < 0:
+            entry['gross_quantity'] += quantity
+            entry['estimated_cost'] += (quantity * product.cost).quantize(Decimal('0.01'))
+        else:
+            entry['returned_quantity'] += quantity
+            entry['estimated_cost'] -= (quantity * product.cost).quantize(Decimal('0.01'))
+        entry['movement_count'] += 1
+    for entry in summary.values():
+        entry['net_quantity'] = entry['gross_quantity'] - entry['returned_quantity']
+    summary_rows = sorted(
+        summary.values(), key=lambda item: (-item['net_quantity'], item['product'].name)
+    )
+    return rows.order_by('-created_at', '-id'), summary_rows
+
+
 def inventory_kpis(branch, *, include_value=False):
     stocks = Stock.objects.filter(branch=branch)
     result = {
@@ -397,10 +526,15 @@ def inventory_kpis(branch, *, include_value=False):
         'below_minimum_count': stocks.filter(
             current_quantity__gt=0, current_quantity__lt=F('minimum_quantity')
         ).count(),
+        'physical_products': stocks.count(),
     }
     if include_value:
         value = ExpressionWrapper(
-            F('current_quantity') * F('product__cost'), output_field=MONEY_FIELD
+            Case(
+                When(current_quantity__gt=0, then=F('current_quantity')),
+                default=Value(Decimal('0.000')),
+                output_field=QUANTITY_FIELD,
+            ) * F('product__cost'), output_field=MONEY_FIELD
         )
         result['inventory_value'] = stocks.aggregate(
             value=Coalesce(Sum(value), ZERO_MONEY)

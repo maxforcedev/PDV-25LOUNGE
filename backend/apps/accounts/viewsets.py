@@ -3,6 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
+from apps.base.audit import audit_log, model_snapshot
 from apps.companies.selectors import user_has_company_permission
 
 from .models import User
@@ -54,6 +55,15 @@ class UserViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(company_accesses__company_id=company_id)
         return queryset.distinct().order_by('email')
 
+    def perform_create(self, serializer):
+        user = serializer.save()
+        audit_log(actor=self.request.user, action='user.create', obj=user, after=model_snapshot(user, ('email', 'can_login', 'user_type', 'first_name', 'last_name', 'is_active')))
+
+    def perform_update(self, serializer):
+        before = model_snapshot(serializer.instance, ('email', 'can_login', 'user_type', 'first_name', 'last_name', 'is_active'))
+        user = serializer.save()
+        audit_log(actor=self.request.user, action='user.update', obj=user, before=before, after=model_snapshot(user, ('email', 'can_login', 'user_type', 'first_name', 'last_name', 'is_active')))
+
     def _check_status_context(self, target):
         actor = self.request.user
         if actor.is_superuser:
@@ -77,6 +87,7 @@ class UserViewSet(viewsets.ModelViewSet):
         self._check_status_context(user)
         user.is_active = True
         user.save(update_fields=['is_active', 'updated_at'])
+        audit_log(actor=request.user, action='user.activate', obj=user, before={'is_active': False}, after={'is_active': True})
         return Response(self.get_serializer(user).data)
 
     @action(detail=True, methods=['post'])
@@ -90,4 +101,5 @@ class UserViewSet(viewsets.ModelViewSet):
         self._check_status_context(user)
         user.is_active = False
         user.save(update_fields=['is_active', 'updated_at'])
+        audit_log(actor=request.user, action='user.deactivate', obj=user, before={'is_active': True}, after={'is_active': False})
         return Response(self.get_serializer(user).data)

@@ -1,77 +1,43 @@
-Analise com cuidado todos os detalhes do @PRD.md, do
-@design_system/design-system.html e do código, implementações e padrões
-já realizados no projeto, e em seguida execute a "Sprint 1 — Fundação Backend"
-descrita na sessão "50. Sprints de Implementação" do @PRD.md.
-Marque X nas tarefas conforme finalize as mesmas. Ignore tarefas já marcadas
-com X.
 
 
-
-
+Concorrentes: ZIG, BARFACIL, MOGO GOURMET, ON CHEF
 opencode -s ses_ff9d0e215ffeTtoqj8gL2pSXeo
 
-
-
+--------------------------------------------------------------------------------------------
 
 nossa conexao caiu, volte a fazer o que foi pedido e 
+
 Analise com cuidado todos os detalhes do@PRD.md, do
 @design_system/design-system.html e do código, implementações e padrões
 já realizados no projeto, e em seguida execute as sprints
-"Sprint 11.5 — Configurações por Filial e Preços" até "Sprint 11.8 — UX Avançada e Acabamento" descritas
+"Sprint 11.9 — Auditoria, Bloqueios Individuais, CMV e Consumo Físico" até "Sprint 12.3 — Validação Manual Final pelo Responsável do Produto" descritas
 na sessão "50. Sprints de Implementação" do @PRD.md.
 Marque X nas tarefas conforme finalize as mesmas. Ignore tarefas já marcadas
 com X.
 
+Analise com cuidado todos os detalhes do @PRD.md, do
+@design_system/design-system.html e do código, implementações e padrões
+já realizados no projeto, e em seguida execute a "Sprint 12.2.1 — Revisão Gerencial, Permissões, Estoque e Caixa" na sessão "50. Sprints de Implementação" do @PRD.md.
+Marque X nas tarefas conforme finalize as mesmas. Ignore tarefas já marcadas com X.
+
+---------------------------------------------------------------------------------------------
+ 
+ - Sentindo falta de graficos NO DASHBOARD (ja pedi varias vezes e a IA nao colocou.)
+- Resolve a cor das letras no modo escuro de todo o site, elas quase nao dao pra ler (tem muito em MODAL)
+- Em estoque:  regularizar negativos deve aparecer so se tiver a opção de poder estoque ativo
+- Em venda, pode ter desconto por item e por conta (ambos com permissao (1 pra cada))
+- Produtos (Proibir produtos com mesmo nome)
+- Produtos: nao consigo criar/EDITAR produto composto por componentes:
+backend-1   | [18/Aug/2026 02:10:37] "POST /api/v1/products/ HTTP/1.1" 201 487
+backend-1   | [18/Aug/2026 02:10:37] "OPTIONS /api/v1/products/10/components/ HTTP/1.1" 200 0
+backend-1   | Internal Server Error: /api/v1/products/10/components/
+backend-1   | [18/Aug/2026 02:10:37] "PUT /api/v1/products/10/components/ HTTP/1.1" 500 57
+- Em bloqueios de acesso, o seletor de permissao herdada podia ser tipo um select com checkbox pra bloquear mais de uma permissao de uma vez e nao esta por branch
+- Em relatorios: 
+  - Pode ter mais vida, exemplo: Status vermelho para cancelado, finalizado/venda verde e etc...
+  - Relatorio de comissoes acho que os kips nao estao funcionando  (olhar a foto enviada)
+  - (REVISAR TODOS SISTEMA ) MOVIMENTO DE ESTOQUE cancellation /  Relatorios TEM INFOS EM INGLES como sale_cancellation,  consumption_cancellation e entre outras....
 
 
-
-em pdv, se a caixa nao tiver o acesso de desconto, aparecer mesmo assim e solicitar senhda de alguem q tenha
-em pdv ou conmsumo, substituir a , pelo . pq ele n ta indo e  as vezes o teclado so tem isso
-
-em editar produto = backend-1   | Bad Request: /api/v1/products/2/components/
-backend-1   | [16/Aug/2026 15:43:47] "PUT /api/v1/products/2/components/ HTTP/1.1" 400 88
-nao consigo colocar na composição 5 aguas, so vai se for 5,0001
-en Movimentações de estoque  quando for saida de venda, colocar no motivo o numero da venda E SE FICAR COM QUEBRA DE LINHA O PRODUTO TIPO TIRA O MOTIVO E COLOCA COMO BOTAO POR DROPDROWN (FOTO 6)
-EM DASHBOARD OS KPIS DEVEM SER CLICAVEIS EXEMPLO, FATURAMENTO 25,00 5 VENDAS, CLICOU VAI PARA A PAGINA DE VENDAS.
-AS VENDAS NAO DEVERIAM REGISTRAR CARTOES E PIX, PRA NO FINAL SABER OQ VENDEU, QUANTO VENDEU TOTAL, QUAIS FORMAS DE PAGAMENTOS + SANGRIAS +  FUNDOS
-PROMOÇÕES (OLHAR A FOTO) VAI TER PROBLEMA, 2 PROMOÇÕES PARA O MESMO PERIODO, NAO DEVE ACUMULAR, E SE TIVER 2 AO MESMO TEMPO, COMO O SISTEMA VAI PODER ESCOLHER
-PARA CANCELAR VENDA E CONSUMAÇÃO, DEVE ESTA COM O MESMO CAIXA ABERTO, DEPOIS Q FECHA N CANCELA. PQ AI IMAGINA CANCELAR ALGO DE 30 DIAS ATRAS POR EX.
-
-EM RELATORIOES ESTA TUDO EM INGLES, PQ TROQUEI O MODELO DA IA, FORÇAR Q TUDO EM PORTUGUES PRO USUARIO.
-KPIS MA FORMADA, LAYOUT  PESSIMO, DEVE SEGUIR O PADRAO DO SISTEMA. COLOCAR UMAS IMAGENS BARRAS SLA
-KIP DISCONTT E MANUAL DISCONT É A MESMA COISA.
-MODO CLARO/ESCURO, TELA CHEIA E MENU LATERAL ABRIR E FECHAR COMO O DO design_system
-ADICIONAR COMISSAO AO GARÇOM E COBRAR AO CLIENTE (CONFIGURAVEL POR EMPRESA/FILIAL) = PODE SE COBRAR 10% AO CLIENTE E O GARÇOM RECEBER SO 5 EXEMPLO..
-RELATORIO DE VENDA POR OPERADOR, (PRICILA VENDEU 5000, FELIPE 233) / COMISSAO POR ATENDENTE = ISSO TUDO COM FILTRO DE OPERADOR (GARÇOM, CAIXA OU QUALQUER FUNCNIONARIO Q TENHA PERMISSAO DE VENDA.)
-ADICIONAR GRAFICOS NO DASHBOARD 
-ADICIONAR RELATORIO DE TABELA DE PREÇO 
-PRODUTO | VALOR FILIAL X | VALOR FILIAL Y
-RELATORIO DE ESTOQUE QUERO Q SEJA SIMPLESMENTE O /ESTOQUE.
-EM RELATORIOS VENDAS, COMO VAI TER A COMISSAO COLOCAR O KPI DE COMISSAO
-EM KPI TOTAL DESCONTO (COLOCAR O QNT VENDERIA SEM DESCONTO = DESCONTOS (MANUAL E PROMOÇÃO) + VENDAS )
-ACHO TAMBEM Q TEM Q TER ALGO TIPO VENDEU 10K AI 700 REAIS DO GARÇOM + 300 DE DESCONTO + AS SANGRIAS (EX 600)+ CUSTOS DAS BEBIDAS Q VENDEU (EX 5000) + DESPESAS FIXAS 400/DIA = RESTO 3 MIL LUCRO, POR AI, QUE AI CADA EVENTO VOU SABER SE DEU BOM OU N (CADA EVENTO = CAIXA ABERTO DO EVENTO (NAO PRECISA DE MODULO EVENTOA AGR))
-
-PROMOÇÃO, TINHA Q SER OPCIONAL O FIM, Q EXEMPLO TODA SEMANAA  A MRM PROMOÇÃO OU SEJA NAO ACABA, E SE UM DIA ACABAR SO EU COLOCAR FIM OU INATIVAR.
-PROMOÇÃO SOBRE O HORARIO PODE COLOCAR INTERVALOS (SEM SER IGUAL FA FOTO MAS MELHOR.) EX: SEG 10 AS 15:15 E 20H AS 22H PROMOÇÃO DE X % NO PRODUTO A.
-EM /CONSUMAÇOES OS FILTROS TA MT POLUIDO
-
-EM EMPRESAS LISTA FILIAIS E SUAS CONFIGURAÇÕES, EXEMPLO EMPRESA Z FILIAL A PODE VENDER PRODUTO SEM ESTOQUE (NAO) FILIAL B PODE VENDER PRODUTO SEM ESTOQUE (SIM) E POR AI VAI...
-
-
-
-
-
-- Dashboard > consumação cobrada - referencia e adicionar ao lado a qnd de pedidodsa de consumação
-- Geral > Em modo escuro, umas fontes ficam apagadas por ser escura, exemplo na label de editar empresas cnpj e outras estao escuros, mas opcional ta bom <span class="label">CNPJ<span class="ml-1 font-normal text-slate-400">(opcional)</span></span>  a fonte da cor editar empresa no drop tb ta bom (branco)
-- Geral > verificar TODA parte de permissoes do sistema e sempre adicionar no perfils de permissoes
-- Perfils de permissoes > poderia ter exemplo: recebe comissao ? sim  (ja cobra automatico e o usuario desse perfil recebe o valopr cadastrado na filial, se o usuario tiver esse cargo tambem em usuarios na conta dele vai aparecer a opção de trocar (diferente do padrao da filial))
-tem q ter permissao para isso tambe, pode editar permissao padrao, do usuario, do perfil e etc... tudo tem que ter permissao 
-- Produtos > Favoritos estarem primeiro na lista e no pdv criar uma categoria favoritos (caso tenha produtos) e mostrar em primeiro
-- Tabela de preços > o ideal se trocar o preço e salvar deve alterar no sistem a (ali é onde o cara pode mudar tipo em lote rs), va verdade em configs do produto nao mudou,, mas no pdv vendas mudou certo.
-- PDV > Tem q ter a opção de tirar os 10% ; Tirar essa comissao prevista ; se o caixa estiver fechado, faciliar e poder abrir ali mesmo, aparecer o dropdown para abriar colocar fundo e tals ; Opção de dividir por pessoas (facilitar divisao na cabeça do garçom); 
-- Operação de caixa > So  contrrola dinheiro ? nao deveria contar todas as formas de pagamento, entradas e saidas para quando fecharmos ter o acesso de ah 300 dinheiro (esperado agr), 400 pix e 40 debito.
-- Operação de caixa > Ao fechar caixa erro 404 dnv 
-- Estoque > valor em estoque negativo ? 
-- Em relatorios eu acho melhor fazer uma rota por relatorio separado e dedicado com todos os filtros, exemplo (visao geral, a atual ou tipo um dashboard de relatorios) e rellarotios/comissoes ou relatorios/descontos 
-- Relatorios TEM INFOS EM INGLES como sale_cancellation,  consumption_cancellation e entre outras....
-- Uma forma de saber exemplo, tudo que saiu de produtos insumos em determinado periodo, pq isso ? pq quando acaba o evento vai poder conferrir oq saiu do estooque (vendas conumações e etc...)
+- AUDITORIA DEVE CONTER TUDO DO SISTEMA, TUDO!!!!!!!!  EU ACABEI DE FAZER AÇÕES NO SITE E NAO APARECE LA! E TEM COISAS EM INGLES COMO STATUS: CLOSED E OUTROS...
+- Tem filtros que n funconam e esta com 2 aplicar (HORARIOS DE FILTRO N FUNCIONAM)

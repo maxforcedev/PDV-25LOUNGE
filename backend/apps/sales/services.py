@@ -8,8 +8,12 @@ from django.db.models.functions import Cast, Substr
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
 
+from apps.base.audit import audit_log, model_snapshot
 from apps.cash.models import CashSession, CashSessionStatus
-from apps.companies.models import Branch, BranchSettings, Company, Status, UserCompanyAccess
+from apps.companies.models import (
+    Branch, BranchSettings, Company, Status, UserBranchAccess, UserCommissionOverride,
+    UserCompanyAccess,
+)
 from apps.companies.selectors import eligible_branch_users, user_has_branch_permission
 from apps.inventory.models import MovementType, Stock, StockMovement
 from apps.inventory.services import apply_locked_stock
@@ -58,15 +62,38 @@ def _percentage_amount(base, rate, field):
     return amount
 
 
-def _financial_snapshots(branch, net_subtotal, *, lock=False):
+def _commission_rate_for_seller(branch, seller_user, branch_default):
+    if seller_user is None:
+        return Decimal('0.00')
+    override = UserCommissionOverride.objects.filter(
+        branch=branch, user=seller_user,
+    ).first()
+    if override:
+        if not override.receives_commission:
+            return Decimal('0.00')
+        return override.commission_rate if override.commission_rate is not None else branch_default
+    access = UserBranchAccess.objects.select_related('access_profile').filter(
+        branch=branch, user=seller_user, is_active=True, access_profile__status=Status.ACTIVE,
+    ).first()
+    if access and not access.access_profile.receives_commission:
+        return Decimal('0.00')
+    if access and access.access_profile.commission_rate is not None:
+        return access.access_profile.commission_rate
+    return branch_default
+
+
+def _financial_snapshots(branch, net_subtotal, *, seller_user=None, service_fee_waived=False, lock=False):
     queryset = BranchSettings.objects
     if lock:
         queryset = queryset.select_for_update()
     settings = queryset.filter(branch=branch).first()
     service_fee_rate = settings.service_fee_rate if settings else Decimal('0.00')
-    commission_rate = settings.commission_rate if settings else Decimal('0.00')
-    service_fee_amount = _percentage_amount(
-        net_subtotal, service_fee_rate, 'service_fee_amount'
+    branch_commission_rate = settings.commission_rate if settings else Decimal('0.00')
+    commission_rate = _commission_rate_for_seller(branch, seller_user, branch_commission_rate)
+    service_fee_amount = (
+        Decimal('0.00') if service_fee_waived else _percentage_amount(
+            net_subtotal, service_fee_rate, 'service_fee_amount'
+        )
     )
     commission_amount = _percentage_amount(
         net_subtotal, commission_rate, 'commission_amount'
@@ -95,6 +122,24 @@ def _discount_approver(branch, operator, discount, authorization):
     )
     if not approver.check_password(authorization.get('credential') or ''):
         raise ValidationError({'discount_authorization': 'Autorizacao de desconto invalida.'})
+    return approver
+
+
+def _service_fee_waiver(branch, operator, waived, authorization):
+    if not waived:
+        return None
+    if operator.is_superuser or user_has_branch_permission(
+        operator, branch.pk, 'sales.waive_service_fee'
+    ):
+        return operator
+    if not authorization or authorization.get('method') != 'password':
+        raise ValidationError({'service_fee_authorization': 'Autorizacao para retirar taxa invalida.'})
+    approver = _eligible_sale_user(
+        branch, authorization.get('user'), 'sales.waive_service_fee',
+        'service_fee_authorization',
+    )
+    if not approver.check_password(authorization.get('credential') or ''):
+        raise ValidationError({'service_fee_authorization': 'Autorizacao para retirar taxa invalida.'})
     return approver
 
 
@@ -278,7 +323,7 @@ def _apply_promotions(operation_type, items, promotions):
     return sum((item['promotion_benefit'] for item in items), Decimal('0.00'))
 
 
-def calculate_preview(*, company, operation_type, raw_items, discount, charged_amount, beneficiary_user, branch=None):
+def calculate_preview(*, company, operation_type, raw_items, discount, charged_amount, beneficiary_user, branch=None, service_fee_waived=False):
     if operation_type not in OperationType.values:
         raise ValidationError({'operation_type': 'Tipo de operacao invalido.'})
     if not isinstance(raw_items, list) or not raw_items:
@@ -333,7 +378,9 @@ def calculate_preview(*, company, operation_type, raw_items, discount, charged_a
             service_fee_amount,
             commission_rate,
             commission_amount,
-        ) = _financial_snapshots(branch, net_subtotal)
+        ) = _financial_snapshots(
+            branch, net_subtotal, service_fee_waived=bool(service_fee_waived)
+        )
         total = net_subtotal + service_fee_amount
         ensure_money_fits(total, 'total')
     for item in provisional:
@@ -347,6 +394,7 @@ def calculate_preview(*, company, operation_type, raw_items, discount, charged_a
         'discount': discount_value,
         'service_fee_rate': service_fee_rate,
         'service_fee_amount': service_fee_amount,
+        'service_fee_waived': bool(service_fee_waived) if operation_type == OperationType.SALE else False,
         'commission_rate': commission_rate,
         'commission_amount': commission_amount,
         'charged_amount': charged,
@@ -681,7 +729,8 @@ def _prepare_payments(company, raw_payments, total, *, free_consumption):
 @transaction.atomic
 def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiary_user=None,
                   seller_user=None, discount_authorization=None, items=None, discount=None,
-                  charged_amount=None, payments=None):
+                  charged_amount=None, payments=None, service_fee_waived=False,
+                  service_fee_authorization=None):
     operation_timestamp = timezone.now()
     permission = 'sales.create_consumption' if operation_type == OperationType.CONSUMPTION else 'sales.create'
     if operation_type not in OperationType.values:
@@ -732,6 +781,8 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         discount_value = Decimal('0.00')
         promotion_discount_total = Decimal('0.00')
         discount_approved_by = None
+        service_fee_waived = False
+        service_fee_waived_by = None
         service_fee_rate = Decimal('0.00')
         service_fee_amount = Decimal('0.00')
         commission_rate = Decimal('0.00')
@@ -748,13 +799,19 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         discount_approved_by = _discount_approver(
             branch, user, discount_value, discount_authorization
         )
+        service_fee_waived_by = _service_fee_waiver(
+            branch, user, bool(service_fee_waived), service_fee_authorization
+        )
         net_subtotal = remaining - discount_value
         (
             service_fee_rate,
             service_fee_amount,
             commission_rate,
             commission_amount,
-        ) = _financial_snapshots(branch, net_subtotal, lock=True)
+        ) = _financial_snapshots(
+            branch, net_subtotal, seller_user=seller_user,
+            service_fee_waived=bool(service_fee_waived), lock=True,
+        )
         total = net_subtotal + service_fee_amount
         ensure_money_fits(total, 'total')
 
@@ -771,6 +828,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         discount=discount_value, service_fee_rate=service_fee_rate,
         service_fee_amount=service_fee_amount, commission_rate=commission_rate,
         commission_amount=commission_amount, charged_amount=charged, total=total,
+        service_fee_waived=bool(service_fee_waived), service_fee_waived_by=service_fee_waived_by,
     )
     for snapshot in snapshots:
         promotion = snapshot['promotion_object']
@@ -799,6 +857,21 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             stock=stocks[product_id], quantity=-requirements[product_id], user=user,
             movement_type=movement_type, sale=sale,
         )
+    audit_log(
+        actor=user,
+        action='sale.finalize' if operation_type == OperationType.SALE else 'consumption.finalize',
+        obj=sale,
+        company=company,
+        branch=branch,
+        after=model_snapshot(
+            sale,
+            ('sale_number', 'operation_type', 'subtotal', 'promotion_discount_total', 'discount',
+             'service_fee_rate', 'service_fee_amount', 'service_fee_waived', 'commission_rate',
+             'commission_amount', 'total', 'seller_user_id', 'discount_approved_by_id',
+             'service_fee_waived_by_id'),
+        ),
+        metadata={'discount_authorization': discount_authorization, 'service_fee_authorization': service_fee_authorization},
+    )
     return sale
 
 
@@ -857,4 +930,13 @@ def cancel_sale(*, sale, branch, user, reason=''):
     sale.save(update_fields=(
         'status', 'cancelled_at', 'cancelled_by', 'cancellation_reason', 'updated_at',
     ))
+    audit_log(
+        actor=user,
+        action='sale.cancel' if sale.operation_type == OperationType.SALE else 'consumption.cancel',
+        obj=sale,
+        company=sale.company,
+        branch=branch,
+        before={'status': SaleStatus.FINALIZED},
+        after=model_snapshot(sale, ('status', 'cancelled_at', 'cancelled_by_id', 'cancellation_reason')),
+    )
     return sale

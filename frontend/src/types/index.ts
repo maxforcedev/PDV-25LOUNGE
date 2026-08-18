@@ -28,6 +28,16 @@ export interface User {
   permissions: string[];
   companies: UserCompany[];
   branches: UserBranch[];
+  permission_blocks: Array<{
+    id: number;
+    company: number;
+    company_name: string;
+    branch: number | null;
+    branch_name: string | null;
+    permission_code: string;
+    permission_label: string;
+    reason: string;
+  }>;
   created_at: string;
   updated_at: string;
 }
@@ -66,6 +76,7 @@ export interface Branch {
   address: Address | string | null;
   status: Status;
   is_matrix: boolean;
+  address_pending: boolean;
   settings_summary: Omit<BranchSettings, "id" | "branch" | "created_at" | "updated_at"> | null;
   created_at: string;
   updated_at: string;
@@ -135,6 +146,8 @@ export interface AccessProfile {
   description: string;
   is_system: boolean;
   status: Status;
+  receives_commission: boolean;
+  commission_rate: string | null;
   permission_codes: string[];
   created_at: string;
   updated_at: string;
@@ -259,6 +272,8 @@ export interface StockMovement {
   sale: number | null;
   sale_number: string | null;
   sale_operation_type: SaleOperation | null;
+  nature: string;
+  operation_reference: string;
   created_at: string;
 }
 
@@ -347,6 +362,12 @@ export interface CashSummary {
   withdrawals: string;
   expected_amount: string;
   status: CashSessionStatus;
+  cash_payments: string;
+  closing_amount_informed: string | null;
+  closing_difference: string | null;
+  sales: { count: number; gross: string; promotion_discount: string; manual_discount: string; effective_revenue: string; service_fee: string; commission: string; customer_total: string };
+  consumptions: { count: number; reference: string; charged: string; benefit: string };
+  payment_totals: Array<{ payment_method_code: string; payment_method_name: string; amount: string }>;
 }
 
 export type SessionTimelineKind = "open" | "manual_entry" | "withdrawal" | "cash_sale" | "charged_consumption" | "cancellation" | "close";
@@ -359,6 +380,10 @@ export interface SessionTimelineEvent {
   amount: string;
   sale: { id: number; number: string; operation_type: SaleOperation; status: SaleStatus } | null;
   details: string;
+  reason?: string | null;
+  beneficiary_name?: string | null;
+  registered_by_name?: string | null;
+  category_label?: string | null;
 }
 
 export interface SessionTimeline {
@@ -458,6 +483,9 @@ export interface Sale {
   discount: string;
   service_fee_rate: string;
   service_fee_amount: string;
+  service_fee_waived: boolean;
+  service_fee_waived_by: number | null;
+  service_fee_waived_by_name: string | null;
   commission_rate: string;
   commission_amount: string;
   charged_amount: string | null;
@@ -510,6 +538,7 @@ export interface SalePreview {
   discount: string;
   service_fee_rate: string;
   service_fee_amount: string;
+  service_fee_waived: boolean;
   commission_rate: string;
   commission_amount: string;
   charged_amount: string | null;
@@ -564,13 +593,15 @@ export interface CashReportRow {
 }
 export interface DashboardData {
   period: ReportPeriod;
-  sales?: { revenue: string; gross: string; effective_revenue: string; customer_total: string; service_fee: string; commission: string; count: number; average: string; manual_discount: string; promotion_discount: string; total_discount: string; payment_distribution: Array<{ code: string; name: string; amount: string }>; hourly_sales: Array<{ hour: string; count: number; effective_revenue: string; service_fee: string; customer_total: string }>; top_products: Array<{ product_name: string; quantity: string; revenue: string }>; top_categories: Array<{ category_name: string; quantity: string; revenue: string }>; top_sellers: ReportUserGroup[]; top_operators: ReportUserGroup[]; latest_sales: ReportSale[] };
+  filters?: { category: number | null; categories: Array<{ id: number; name: string }> };
+  sales?: { revenue: string; gross: string; effective_revenue: string; customer_total: string; service_fee: string; commission?: string; count: number; average: string; manual_discount: string; manual_discount_count: number; promotion_discount: string; total_discount: string; cancellations: { count: number; value: string }; payment_distribution: Array<{ code: string; name: string; amount: string }>; hourly_sales: Array<{ hour: string; count: number; effective_revenue: string; service_fee: string; customer_total: string }>; top_products: Array<{ product_id?: number; product_name: string; quantity: string; revenue: string }>; top_categories: Array<{ category_id?: number; category_name: string; quantity: string; revenue: string }>; top_sellers: ReportUserGroup[]; top_operators: ReportUserGroup[]; heatmap: Array<{ weekday: number; hour: number; count: number; revenue: string; average: string }>; weekly_comparison: { current: Array<{ date: string; count: number; revenue: string }>; previous: Array<{ date: string; count: number; revenue: string }> }; latest_sales: ReportSale[] };
   consumptions?: { count: number; reference: string; charged: string; subsidy: string };
   withdrawals?: { count: number; amount: string };
   current_cash?: CashReportRow[];
-  inventory?: { zero_count: number; negative_count: number; below_minimum_count: number; inventory_value?: string };
+  inventory?: { zero_count: number; negative_count: number; below_minimum_count: number; physical_products: number; inventory_value?: string };
+  operational_result?: { result: string; margin: string; cogs: string; operating_expenses: string; fixed_cost: string };
 }
-export interface ReportUserGroup { user: { id: number; name: string }; count: number; gross: string; effective_revenue: string; service_fee: string; commission: string; customer_total: string; average: string }
+export interface ReportUserGroup { user: { id: number; name: string }; count: number; gross: string; effective_revenue: string; service_fee: string; commission?: string; customer_total: string; average: string }
 export interface ReportResponse<T> extends Paginated<T> { period: ReportPeriod; summary: Record<string, unknown> }
 export interface ReportsOptions {
   operators: Array<{ id: number; name: string }>;
@@ -585,4 +616,50 @@ export interface ReportsOptions {
   withdrawal_categories: Array<{ value: string; label: string }>;
   user_types: Array<{ value: string; label: string }>;
   sale_statuses: Array<{ value: string; label: string }>;
+}
+
+export interface AuditLog {
+  id: number;
+  company: number | null;
+  company_name: string | null;
+  branch: number | null;
+  branch_name: string | null;
+  actor: number | null;
+  actor_name: string | null;
+  action: string;
+  object_type: string;
+  object_id: string;
+  before: Record<string, unknown>;
+  after: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface UserPermissionBlock {
+  id: number;
+  company: number;
+  company_name: string;
+  branch: number | null;
+  branch_name: string | null;
+  user: number;
+  user_name: string;
+  permission_code: string;
+  permission_label: string;
+  reason: string;
+  is_active: boolean;
+  revoked_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserCommissionOverride {
+  id: number;
+  branch: number;
+  branch_name: string;
+  user: number;
+  user_name: string;
+  receives_commission: boolean;
+  commission_rate: string | null;
+  created_at: string;
+  updated_at: string;
 }

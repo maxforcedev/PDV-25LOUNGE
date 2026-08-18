@@ -7,6 +7,7 @@ from rest_framework.exceptions import PermissionDenied
 
 from apps.companies.models import (
     AccessProfile, Branch, Company, Status, UserBranchAccess, UserCompanyAccess,
+    UserPermissionBlock,
 )
 from apps.companies.rbac import ALL_PERMISSION_CODES, OPERATING_PERMISSION_CODES
 from apps.companies.selectors import (
@@ -31,6 +32,7 @@ class UserSerializer(serializers.ModelSerializer):
     permissions = serializers.SerializerMethodField()
     companies = serializers.SerializerMethodField()
     branches = serializers.SerializerMethodField()
+    permission_blocks = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -46,6 +48,7 @@ class UserSerializer(serializers.ModelSerializer):
             'permissions',
             'companies',
             'branches',
+            'permission_blocks',
             'created_at',
             'updated_at',
         )
@@ -57,6 +60,7 @@ class UserSerializer(serializers.ModelSerializer):
             'permissions',
             'companies',
             'branches',
+            'permission_blocks',
             'created_at',
             'updated_at',
         )
@@ -132,13 +136,7 @@ class UserSerializer(serializers.ModelSerializer):
                     'name': access.access_profile.name,
                 } if access.access_profile else None,
                 'permissions': sorted(
-                    permission.code
-                    for permission in (
-                        access.access_profile.permissions.all()
-                        if access.access_profile else ()
-                    )
-                    if permission.status == Status.ACTIVE
-                    and permission.code not in OPERATING_PERMISSION_CODES
+                    company_permission_codes(user, access.company_id) - OPERATING_PERMISSION_CODES
                 ),
             }
             for access in self._active_company_accesses(user)
@@ -188,13 +186,32 @@ class UserSerializer(serializers.ModelSerializer):
                     'name': access.access_profile.name,
                 },
                 'permissions': sorted(
-                    permission.code
-                    for permission in access.access_profile.permissions.all()
-                    if permission.status == Status.ACTIVE
-                    and permission.code in OPERATING_PERMISSION_CODES
+                    branch_permission_codes(user, access.branch_id) & OPERATING_PERMISSION_CODES
                 ),
             }
             for access in accesses.distinct()
+        ]
+
+    def get_permission_blocks(self, user):
+        request = self.context.get('request')
+        company_ids = self._visible_company_ids(user)
+        blocks = UserPermissionBlock.objects.filter(user=user, is_active=True).select_related(
+            'company', 'branch', 'permission'
+        )
+        if company_ids is not None:
+            blocks = blocks.filter(company_id__in=company_ids)
+        return [
+            {
+                'id': block.pk,
+                'company': block.company_id,
+                'company_name': block.company.trade_name,
+                'branch': block.branch_id,
+                'branch_name': block.branch.name if block.branch_id else None,
+                'permission_code': block.permission.code,
+                'permission_label': block.permission.label,
+                'reason': block.reason,
+            }
+            for block in blocks
         ]
 
 

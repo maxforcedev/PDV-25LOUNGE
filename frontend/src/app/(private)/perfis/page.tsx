@@ -11,11 +11,11 @@ import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
 import type { AccessProfile, FunctionalPermission, Paginated } from "@/types";
 
-type ProfileForm = { company: number; name: string; description: string; permission_codes: string[] };
+type ProfileForm = { company: number; name: string; description: string; receives_commission: boolean; commission_rate: string | null; permission_codes: string[] };
 
 type CrudColumn = "view" | "create" | "change" | "change_status";
 const columnLabels: Record<CrudColumn, string> = { view: "Visualizar", create: "Cadastrar", change: "Editar", change_status: "Inativar" };
-const moduleLabels: Record<string, string> = { companies: "Empresas e filiais", accounts: "Usuários e perfis", products: "Produtos", inventory: "Estoque", cash_registers: "Caixa", sales: "Vendas", payment_methods: "Formas de pagamento" };
+const moduleLabels: Record<string, string> = { companies: "Empresas e filiais", accounts: "Usuários e perfis", products: "Produtos", branch_prices: "Preços por filial", inventory: "Estoque", cash_registers: "Caixa", sales: "Vendas", payment_methods: "Formas de pagamento", promotions: "Promoções", reports: "Relatórios", audit_logs: "Auditoria", commissions: "Comissões" };
 function permissionSuffix(code: string) { return code.split(".").slice(1).join("."); }
 function PermissionMatrix({ catalog, selected, onChange }: { catalog: FunctionalPermission[]; selected: string[]; onChange: (codes: string[]) => void }) {
   const modules = Object.entries(Object.groupBy(catalog, (item) => item.module || "general"));
@@ -48,7 +48,7 @@ function Profiles() {
   const [success, setSuccess] = useState("");
   const [editing, setEditing] = useState<AccessProfile | null>(null);
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState<ProfileForm>({ company: 0, name: "", description: "", permission_codes: [] });
+  const [form, setForm] = useState<ProfileForm>({ company: 0, name: "", description: "", receives_commission: true, commission_rate: null, permission_codes: [] });
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState<AccessProfile | null>(null);
@@ -73,7 +73,7 @@ function Profiles() {
 
   function openCreate() {
     if (!currentCompany || !canAdd) return;
-    setEditing(null); setForm({ company: currentCompany.id, name: "", description: "", permission_codes: [] }); setFields({}); setError(""); setOpen(true);
+    setEditing(null); setForm({ company: currentCompany.id, name: "", description: "", receives_commission: true, commission_rate: null, permission_codes: [] }); setFields({}); setError(""); setOpen(true);
   }
 
   async function openEdit(profile: AccessProfile) {
@@ -83,7 +83,7 @@ function Profiles() {
     try {
       const detail = await http.get<AccessProfile>(`access-profiles/${profile.id}/`);
       if (companyIdRef.current !== requestedCompanyId || detail.company !== requestedCompanyId) return;
-      setEditing(detail); setForm({ company: detail.company, name: detail.name, description: detail.description || "", permission_codes: detail.permission_codes }); setFields({}); setOpen(true);
+      setEditing(detail); setForm({ company: detail.company, name: detail.name, description: detail.description || "", receives_commission: detail.receives_commission, commission_rate: detail.commission_rate, permission_codes: detail.permission_codes }); setFields({}); setOpen(true);
     } catch (caught) { setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar o perfil."); }
   }
 
@@ -113,7 +113,7 @@ function Profiles() {
   return <>
     <PageHeader title="Perfis de acesso" description={`Permissões funcionais de ${currentCompany?.trade_name || "sua empresa"}.`} action={<Button onClick={openCreate} disabled={!canAdd}><Plus className="size-4" />Novo perfil</Button>} />
     <div className="space-y-4 p-4 sm:p-6 lg:p-8">{error && !open && <Alert message={error} />}{success && <Alert type="success" message={success} />}<section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Perfis cadastrados</h2><p className="mt-1 text-[11px] text-slate-500">Acesso definido por empresa, sem papéis fixos</p></div><ShieldCheck className="size-5 text-slate-300" /></div>{loading ? <TableLoading /> : data?.results.length ? <><div className="table-wrap"><table className="data-table"><thead><tr><th>Perfil</th><th>Permissões</th><th>Tipo</th><th>Status</th><th>Atualização</th><th className="text-right">Ações</th></tr></thead><tbody>{data.results.map((profile) => <tr key={profile.id}><td><strong className="block">{profile.name}</strong><span className="text-[11px] text-slate-400">{profile.description || "Sem descrição"}</span></td><td>{profile.permission_codes.length}</td><td>{profile.is_system ? "Padrão do sistema" : "Personalizado"}</td><td><StatusBadge active={profile.status === "active"} /></td><td>{formatDate(profile.updated_at)}</td><td><div className="flex justify-end gap-1"><button className="icon-button" onClick={() => void openEdit(profile)} disabled={!canChange}><Pencil className="size-4" /></button><button className="icon-button" onClick={() => setConfirming(profile)} disabled={!canStatus}><Power className="size-4" /></button></div></td></tr>)}</tbody></table></div><Pagination count={data.count} next={data.next} previous={data.previous} onPage={load} /></> : <EmptyState title="Nenhum perfil cadastrado" description="Crie um perfil e selecione as permissões funcionais." />}</section></div>
-    <Modal open={open} title={editing ? "Editar perfil" : "Novo perfil"} description="Matriz gerada exclusivamente pelo catálogo de permissões da API." onClose={() => !saving && setOpen(false)} size="xl"><form onSubmit={submit}><div className="grid gap-5 p-5 sm:grid-cols-2 sm:p-6"><div className="sm:col-span-2">{error && <Alert message={error} />}</div><Field label="Nome" error={fieldError(fields, "name")}><Input required value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} disabled={saving} /></Field><Field label="Descrição" optional error={fieldError(fields, "description")}><Textarea value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} disabled={saving} /></Field><div className="sm:col-span-2"><h3 className="mb-3 text-xs font-bold">Permissões</h3><PermissionMatrix catalog={catalog} selected={form.permission_codes} onChange={(permission_codes) => setForm((current) => ({ ...current, permission_codes }))} />{fieldError(fields, "permission_codes") && <p className="field-error">{fieldError(fields, "permission_codes")}</p>}</div></div><div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4"><Button type="button" variant="secondary" onClick={() => setOpen(false)} disabled={saving}>Cancelar</Button><Button type="submit" loading={saving}>Salvar perfil</Button></div></form></Modal>
+    <Modal open={open} title={editing ? "Editar perfil" : "Novo perfil"} description="Matriz gerada exclusivamente pelo catálogo de permissões da API." onClose={() => !saving && setOpen(false)} size="xl"><form onSubmit={submit}><div className="grid gap-5 p-5 sm:grid-cols-2 sm:p-6"><div className="sm:col-span-2">{error && <Alert message={error} />}</div><Field label="Nome" error={fieldError(fields, "name")}><Input required value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} disabled={saving} /></Field><Field label="Descrição" optional error={fieldError(fields, "description")}><Textarea value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} disabled={saving} /></Field><label className="flex items-center gap-3 rounded-lg border border-slate-200 p-4 text-xs font-semibold"><input type="checkbox" className="size-4 accent-primary" checked={form.receives_commission} onChange={(event) => setForm((current) => ({ ...current, receives_commission: event.target.checked }))} /><span><strong className="block">Recebe comissão</strong><small className="font-normal text-slate-400">Quando desmarcado, vendas deste perfil não geram comissão.</small></span></label><Field label="Comissão do perfil" optional error={fieldError(fields, "commission_rate")}><Input inputMode="decimal" placeholder="Usar padrão da filial" value={form.commission_rate || ""} onChange={(event) => setForm((current) => ({ ...current, commission_rate: event.target.value || null }))} disabled={saving || !form.receives_commission} /></Field><div className="sm:col-span-2"><h3 className="mb-3 text-xs font-bold">Permissões</h3><PermissionMatrix catalog={catalog} selected={form.permission_codes} onChange={(permission_codes) => setForm((current) => ({ ...current, permission_codes }))} />{fieldError(fields, "permission_codes") && <p className="field-error">{fieldError(fields, "permission_codes")}</p>}</div></div><div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4"><Button type="button" variant="secondary" onClick={() => setOpen(false)} disabled={saving}>Cancelar</Button><Button type="submit" loading={saving}>Salvar perfil</Button></div></form></Modal>
     <ConfirmDialog open={!!confirming} title={`${confirming?.status === "active" ? "Inativar" : "Ativar"} perfil`} message={`Confirma a alteração de status de “${confirming?.name || ""}”?`} confirmLabel={confirming?.status === "active" ? "Inativar" : "Ativar"} danger={confirming?.status === "active"} loading={saving} onClose={() => !saving && setConfirming(null)} onConfirm={changeStatus} />
   </>;
 }

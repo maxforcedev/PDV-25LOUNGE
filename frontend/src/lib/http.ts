@@ -6,12 +6,16 @@ let csrfRequest: Promise<string> | null = null;
 export class ApiError extends Error {
   status: number;
   fields: Record<string, string[]>;
+  code: string | null;
+  details: Record<string, unknown>;
 
-  constructor(message: string, status = 0, fields: Record<string, string[]> = {}) {
+  constructor(message: string, status = 0, fields: Record<string, string[]> = {}, code: string | null = null, details: Record<string, unknown> = {}) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.fields = fields;
+    this.code = code;
+    this.details = details;
   }
 }
 
@@ -151,7 +155,8 @@ async function request<T>(path: string, options: RequestOptions = {}, csrfRetrie
       return request<T>(path, options, true);
     }
     if (response.status === 401 && !suppressUnauthorizedEvent && typeof window !== "undefined") window.dispatchEvent(new Event("auth:unauthorized"));
-    throw new ApiError(errorMessage(response.status, data), response.status, normalizeFields(data));
+    const payload = data && typeof data === "object" ? data as Record<string, unknown> : {};
+    throw new ApiError(errorMessage(response.status, data), response.status, normalizeFields(data), typeof payload.code === "string" ? payload.code : null, payload.details && typeof payload.details === "object" ? payload.details as Record<string, unknown> : {});
   }
   return data as T;
 }

@@ -15,9 +15,9 @@ import type { Category } from "@/types";
 function Categories() {
   const { currentCompany, currentBranch, hasPermission } = useAuth();
   const router = useRouter();
-  const canAdd = hasPermission(permissions.addProduct);
-  const canChange = hasPermission(permissions.changeProduct);
-  const canStatus = hasPermission(permissions.changeProductStatus);
+  const canAdd = hasPermission(permissions.addCategory);
+  const canChange = hasPermission(permissions.changeCategory);
+  const canStatus = hasPermission(permissions.changeCategoryStatus);
   const [items, setItems] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -142,4 +142,4 @@ function Categories() {
   </>;
 }
 
-export default function CategoriesPage() { return <AdminGuard requiredPermissions={[permissions.viewProduct]}><Categories /></AdminGuard>; }
+export default function CategoriesPage() { return <AdminGuard requiredPermissions={[permissions.viewCategory]}><Categories /></AdminGuard>; }

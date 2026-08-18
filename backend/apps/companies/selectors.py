@@ -1,6 +1,39 @@
 from apps.accounts.models import User
 
-from .models import Branch, Company, UserBranchAccess, UserCompanyAccess
+from .models import Branch, Company, UserBranchAccess, UserCompanyAccess, UserPermissionBlock
+
+
+def _company_blocked_codes(user, company_id):
+    return set(
+        UserPermissionBlock.objects.filter(
+            user=user, company_id=company_id, branch__isnull=True, is_active=True,
+            permission__status='active',
+        ).values_list('permission__code', flat=True)
+    )
+
+
+def _branch_blocked_codes(user, branch_id):
+    branch = Branch.objects.filter(pk=branch_id).only('company_id').first()
+    if not branch:
+        return set()
+    return set(
+        UserPermissionBlock.objects.filter(
+            user=user,
+            company_id=branch.company_id,
+            is_active=True,
+            permission__status='active',
+        ).filter(branch_id__in=(branch_id,) if branch_id else ()).values_list(
+            'permission__code', flat=True
+        )
+    ) | _company_blocked_codes(user, branch.company_id)
+
+
+def _permission_blocked(user, *, company_id=None, branch_id=None, code):
+    if user.is_superuser:
+        return False
+    if branch_id:
+        return code in _branch_blocked_codes(user, branch_id)
+    return code in _company_blocked_codes(user, company_id)
 
 
 def accessible_companies(user, permission_code=None):
@@ -20,7 +53,14 @@ def accessible_companies(user, permission_code=None):
                 'user_accesses__access_profile__permissions__code': permission_code,
             }
         )
-    return Company.objects.filter(**filters).distinct()
+    queryset = Company.objects.filter(**filters).distinct()
+    if permission_code and not user.is_superuser:
+        blocked_company_ids = UserPermissionBlock.objects.filter(
+            user=user, branch__isnull=True, is_active=True,
+            permission__code=permission_code,
+        ).values_list('company_id', flat=True)
+        queryset = queryset.exclude(id__in=blocked_company_ids)
+    return queryset
 
 
 def accessible_branches(user, permission_code=None):
@@ -49,7 +89,15 @@ def accessible_branches(user, permission_code=None):
                 'company__user_accesses__access_profile__permissions__status': 'active',
                 'company__user_accesses__access_profile__permissions__code': permission_code,
             })
-    return Branch.objects.filter(**filters).distinct()
+    queryset = Branch.objects.filter(**filters).distinct()
+    if permission_code and not user.is_superuser:
+        blocked = UserPermissionBlock.objects.filter(
+            user=user, is_active=True, permission__code=permission_code,
+        )
+        blocked_branches = blocked.exclude(branch__isnull=True).values_list('branch_id', flat=True)
+        blocked_companies = blocked.filter(branch__isnull=True).values_list('company_id', flat=True)
+        queryset = queryset.exclude(id__in=blocked_branches).exclude(company_id__in=blocked_companies)
+    return queryset
 
 
 def active_operational_companies(user):
@@ -85,7 +133,7 @@ def company_permission_codes(user, company_id):
         from .rbac import ALL_PERMISSION_CODES
 
         return set(ALL_PERMISSION_CODES)
-    return set(
+    codes = set(
         UserCompanyAccess.objects.filter(
             user=user,
             company_id=company_id,
@@ -94,12 +142,17 @@ def company_permission_codes(user, company_id):
             access_profile__permissions__status='active',
         ).values_list('access_profile__permissions__code', flat=True)
     )
+    return codes - _company_blocked_codes(user, company_id)
 
 
 def user_has_company_permission(user, company_id, code):
     if not user.is_authenticated or not user.can_login or not user.is_active:
         return False
-    return user.is_superuser or UserCompanyAccess.objects.filter(
+    if user.is_superuser:
+        return True
+    if _permission_blocked(user, company_id=company_id, code=code):
+        return False
+    return UserCompanyAccess.objects.filter(
         user=user,
         company_id=company_id,
         is_active=True,
@@ -114,6 +167,8 @@ def user_has_branch_permission(user, branch_id, code):
         return False
     if user.is_superuser:
         return True
+    if _permission_blocked(user, branch_id=branch_id, code=code):
+        return False
     return UserBranchAccess.objects.filter(
         user=user,
         branch_id=branch_id,
@@ -128,6 +183,17 @@ def user_has_branch_permission(user, branch_id, code):
 
 
 def eligible_branch_users(branch, permission_code):
+    blocked_users = UserPermissionBlock.objects.filter(
+        company_id=branch.company_id,
+        is_active=True,
+        permission__code=permission_code,
+    ).filter(branch_id__in=(branch.pk,)).values_list('user_id', flat=True)
+    company_blocked_users = UserPermissionBlock.objects.filter(
+        company_id=branch.company_id,
+        branch__isnull=True,
+        is_active=True,
+        permission__code=permission_code,
+    ).values_list('user_id', flat=True)
     return User.objects.filter(
         is_active=True,
         can_login=True,
@@ -139,7 +205,7 @@ def eligible_branch_users(branch, permission_code):
         company_accesses__company_id=branch.company_id,
         company_accesses__is_active=True,
         company_accesses__access_profile__status='active',
-    ).distinct().order_by('first_name', 'last_name', 'email', 'id')
+    ).exclude(id__in=blocked_users).exclude(id__in=company_blocked_users).distinct().order_by('first_name', 'last_name', 'email', 'id')
 
 
 def branch_permission_codes(user, branch_id):
@@ -149,7 +215,7 @@ def branch_permission_codes(user, branch_id):
         from .rbac import ALL_PERMISSION_CODES
 
         return set(ALL_PERMISSION_CODES)
-    return set(
+    codes = set(
         UserBranchAccess.objects.filter(
             user=user,
             branch_id=branch_id,
@@ -161,3 +227,4 @@ def branch_permission_codes(user, branch_id):
             branch__company__user_accesses__access_profile__status='active',
         ).values_list('access_profile__permissions__code', flat=True)
     )
+    return codes - _branch_blocked_codes(user, branch_id)

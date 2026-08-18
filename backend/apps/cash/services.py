@@ -2,12 +2,13 @@ from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
-from django.db.models import DecimalField, Q, Sum
+from django.db.models import Count, DecimalField, Q, Sum
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
 
 from apps.accounts.models import User
+from apps.base.audit import audit_log, model_snapshot
 from apps.companies.models import Branch, Status, UserCompanyAccess
 from apps.companies.selectors import user_has_branch_permission
 
@@ -92,13 +93,15 @@ def open_session(cash_register, opening_amount, user, current_branch):
                 raise ValidationError(
                     {'cash_register': 'Este caixa ja possui uma sessao aberta.'}
                 )
-            return CashSession.objects.create(
+            session = CashSession.objects.create(
                 cash_register=register,
                 branch=register.branch,
                 opened_by=user,
                 opened_at=timezone.now(),
                 opening_amount=opening_amount,
             )
+            audit_log(actor=user, action='cash_session.open', obj=session, company=register.branch.company, branch=register.branch, after=model_snapshot(session, ('cash_register_id', 'opening_amount', 'status')))
+            return session
     except IntegrityError as error:
         constraint = getattr(getattr(error.__cause__, 'diag', None), 'constraint_name', None)
         if constraint == 'cash_session_one_open_per_register':
@@ -124,6 +127,10 @@ def _record_movement(
         except (CashSession.DoesNotExist, TypeError, ValueError):
             raise ValidationError({'cash_session': 'Sessao de caixa invalida.'})
         _validate_current_branch(current_branch, session.branch, user, permission_code)
+        if session.opened_by_id != user.pk and not user_has_branch_permission(
+            user, session.branch_id, 'cash_registers.administer_others'
+        ):
+            raise PermissionDenied('Voce nao pode operar uma sessao aberta por outro usuario.')
         _validate_operational(session.cash_register)
         if session.status != CashSessionStatus.OPEN:
             raise ValidationError({'cash_session': 'A sessao de caixa esta fechada.'})
@@ -159,7 +166,7 @@ def _record_movement(
             raise ValidationError(
                 {'beneficiary_user': 'Informe o beneficiario desta sangria.'}
             )
-        return CashMovement.objects.create(
+        movement = CashMovement.objects.create(
             cash_session=session,
             movement_type=movement_type,
             amount=amount,
@@ -169,6 +176,8 @@ def _record_movement(
             beneficiary_user=beneficiary,
             result_effect=result_effect or 'neutral',
         )
+        audit_log(actor=user, action=f'cash_movement.{movement_type}', obj=movement, company=session.branch.company, branch=session.branch, after=model_snapshot(movement, ('movement_type', 'amount', 'reason', 'withdrawal_category', 'result_effect')))
+        return movement
 
 
 def record_manual_entry(cash_session, amount, user, reason, current_branch):
@@ -243,6 +252,59 @@ def calculate_expected_amount(session):
     ).quantize(Decimal('0.01'))
 
 
+def session_operational_summary(session):
+    if not isinstance(session, CashSession):
+        session = CashSession.objects.get(pk=_pk(session))
+    from apps.sales.models import OperationType, Payment, Sale, SaleStatus
+
+    money = DecimalField(max_digits=20, decimal_places=2)
+    finalized = Sale.objects.filter(cash_session=session, status=SaleStatus.FINALIZED)
+    sales = finalized.filter(operation_type=OperationType.SALE).aggregate(
+        count=Count('id'),
+        gross=Coalesce(Sum('subtotal'), Decimal('0.00'), output_field=money),
+        promotion_discount=Coalesce(Sum('promotion_discount_total'), Decimal('0.00'), output_field=money),
+        manual_discount=Coalesce(Sum('discount'), Decimal('0.00'), output_field=money),
+        service_fee=Coalesce(Sum('service_fee_amount'), Decimal('0.00'), output_field=money),
+        commission=Coalesce(Sum('commission_amount'), Decimal('0.00'), output_field=money),
+        customer_total=Coalesce(Sum('total'), Decimal('0.00'), output_field=money),
+    )
+    sales['effective_revenue'] = sales['gross'] - sales['promotion_discount'] - sales['manual_discount']
+    consumptions = finalized.filter(operation_type=OperationType.CONSUMPTION).aggregate(
+        count=Count('id'),
+        reference=Coalesce(Sum('subtotal'), Decimal('0.00'), output_field=money),
+        charged=Coalesce(Sum('total'), Decimal('0.00'), output_field=money),
+    )
+    consumptions['benefit'] = consumptions['reference'] - consumptions['charged']
+    payments = list(
+        Payment.objects.filter(sale__in=finalized)
+        .values('payment_method_code', 'payment_method_name')
+        .annotate(amount=Sum('amount')).order_by('payment_method_name')
+    )
+    movement_values = movement_totals(session)
+    expected = (
+        calculate_expected_amount(session)
+        if session.status == CashSessionStatus.OPEN
+        else session.closing_expected_amount
+    )
+    cash_payments = sum(
+        (row['amount'] for row in payments if row['payment_method_code'] == 'cash'),
+        Decimal('0.00'),
+    )
+    return {
+        'status': session.status,
+        'opening_amount': session.opening_amount,
+        'manual_entries': movement_values['manual_entries'],
+        'withdrawals': movement_values['withdrawals'],
+        'cash_payments': cash_payments,
+        'expected_amount': expected,
+        'closing_amount_informed': session.closing_amount_informed,
+        'closing_difference': session.closing_difference,
+        'sales': sales,
+        'consumptions': consumptions,
+        'payment_totals': payments,
+    }
+
+
 def close_session(cash_session, closing_amount_informed, user, current_branch):
     informed = parse_money(
         closing_amount_informed, 'closing_amount_informed', nonnegative=True
@@ -257,6 +319,10 @@ def close_session(cash_session, closing_amount_informed, user, current_branch):
         _validate_current_branch(
             current_branch, session.branch, user, 'cash_registers.close'
         )
+        if session.opened_by_id != user.pk and not user_has_branch_permission(
+            user, session.branch_id, 'cash_registers.administer_others'
+        ):
+            raise PermissionDenied('Voce nao pode fechar uma sessao aberta por outro usuario.')
         if session.status != CashSessionStatus.OPEN:
             raise ValidationError({'cash_session': 'A sessao de caixa ja esta fechada.'})
 
@@ -273,6 +339,7 @@ def close_session(cash_session, closing_amount_informed, user, current_branch):
         session.closing_expected_amount = expected
         session.closing_amount_informed = informed
         session.closing_difference = informed - expected
+        before = {'status': CashSessionStatus.OPEN}
         session.save(
             update_fields=(
                 'status',
@@ -284,6 +351,7 @@ def close_session(cash_session, closing_amount_informed, user, current_branch):
                 'updated_at',
             )
         )
+        audit_log(actor=user, action='cash_session.close', obj=session, company=session.branch.company, branch=session.branch, before=before, after=model_snapshot(session, ('status', 'closing_expected_amount', 'closing_amount_informed', 'closing_difference')))
         return session
 
 

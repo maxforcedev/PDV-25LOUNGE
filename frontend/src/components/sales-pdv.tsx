@@ -62,6 +62,7 @@ type PricingPayload = {
   beneficiary_user?: number;
   charged_amount?: string;
   discount?: string;
+  service_fee_waived?: boolean;
 };
 let paymentKey = 1;
 const canonicalDecimal = /^\d+\.\d{2}$/;
@@ -120,6 +121,7 @@ export function SalesPdv() {
   );
   const consumption = operation === "consumption";
   const canDiscount = !consumption && hasPermission(permissions.applyDiscount);
+  const canWaiveServiceFee = !consumption && hasPermission(permissions.waiveServiceFee);
   const contextRef = useRef("");
   contextRef.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}`;
   const requestRef = useRef(0);
@@ -142,9 +144,13 @@ export function SalesPdv() {
   const [seller, setSeller] = useState("");
   const [authorizer, setAuthorizer] = useState("");
   const [authorizationPassword, setAuthorizationPassword] = useState("");
+  const [serviceFeeWaived, setServiceFeeWaived] = useState(false);
+  const [serviceFeeAuthorizer, setServiceFeeAuthorizer] = useState("");
+  const [serviceFeePassword, setServiceFeePassword] = useState("");
   const [discount, setDiscount] = useState("0.00");
   const [charged, setCharged] = useState("0.00");
   const [cashSession, setCashSession] = useState("");
+  const [splitPeople, setSplitPeople] = useState("1");
   const [payments, setPayments] = useState<PaymentRow[]>([
     { key: paymentKey++, payment_method: "", amount: "", received_amount: "" },
   ]);
@@ -162,7 +168,8 @@ export function SalesPdv() {
   function catalogPath() {
     const params = new URLSearchParams({ operation_type: operation });
     if (search.trim()) params.set("search", search.trim());
-    if (category) params.set("category", category);
+    if (category === "favorites") params.set("favorites", "true");
+    else if (category) params.set("category", category);
     return `sales/catalog/?${params}`;
   }
 
@@ -229,9 +236,13 @@ export function SalesPdv() {
     setSeller("");
     setAuthorizer("");
     setAuthorizationPassword("");
+    setServiceFeeWaived(false);
+    setServiceFeeAuthorizer("");
+    setServiceFeePassword("");
     setDiscount("0.00");
     setCharged("0.00");
     setCashSession("");
+    setSplitPeople("1");
     setPayments([
       {
         key: paymentKey++,
@@ -333,7 +344,7 @@ export function SalesPdv() {
           beneficiary_user: Number(beneficiary),
           charged_amount: charged.replace(",", "."),
         }
-      : { discount: discount.replace(",", ".") }),
+      : { discount: discount.replace(",", "."), service_fee_waived: serviceFeeWaived }),
   };
   const pricingSignature = JSON.stringify(pricingPayload);
   function invalidatePreview() {
@@ -544,12 +555,17 @@ export function SalesPdv() {
   const discountAuthorizationRequired = Boolean(
     !consumption && !canDiscount && preview && preview.discount !== "0.00",
   );
+  const serviceFeeAuthorizationRequired = Boolean(
+    !consumption && serviceFeeWaived && !canWaiveServiceFee,
+  );
   const saleContextValid = consumption
     ? true
     : Boolean(
         seller &&
           (!discountAuthorizationRequired ||
-            (authorizer && authorizationPassword)),
+            (authorizer && authorizationPassword)) &&
+          (!serviceFeeAuthorizationRequired ||
+            (serviceFeeAuthorizer && serviceFeePassword)),
       );
 
   async function finalize() {
@@ -573,15 +589,25 @@ export function SalesPdv() {
               charged_amount: canonicalMoney(charged),
               discount: "0.00",
             }
-          : {
+            : {
               seller_user: Number(seller),
               discount: canonicalMoney(discount),
+              service_fee_waived: serviceFeeWaived,
               ...(discountAuthorizationRequired
                 ? {
                     discount_authorization: {
                       user: Number(authorizer),
                       method: "password",
                       credential: authorizationPassword,
+                    },
+                  }
+                : {}),
+              ...(serviceFeeAuthorizationRequired
+                ? {
+                    service_fee_authorization: {
+                      user: Number(serviceFeeAuthorizer),
+                      method: "password",
+                      credential: serviceFeePassword,
                     },
                   }
                 : {}),
@@ -719,6 +745,14 @@ export function SalesPdv() {
                 >
                   Todos
                 </button>
+                {catalog.some((product) => product.is_favorite) && (
+                  <button
+                    className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold ${category === "favorites" ? "bg-primary text-white" : "bg-slate-100"}`}
+                    onClick={() => { setCategory("favorites"); void loadCatalog(`sales/catalog/?operation_type=${operation}&favorites=true`); }}
+                  >
+                    Favoritos
+                  </button>
+                )}
                 {categories.map(({ id, name }) => (
                   <button
                     key={id}
@@ -995,6 +1029,24 @@ export function SalesPdv() {
                     </Field>
                   </div>
                 )}
+                {!consumption && (
+                  <label className="flex items-center gap-3 rounded-lg border border-slate-200 p-4 text-xs font-semibold">
+                    <input type="checkbox" className="size-4 accent-primary" checked={serviceFeeWaived} onChange={(event) => { invalidatePreview(); setServiceFeeWaived(event.target.checked); }} />
+                    <span><strong className="block">Retirar taxa de serviço</strong><small className="font-normal text-slate-400">{canWaiveServiceFee ? "Permitido pelo seu perfil." : "Exige autorização pontual."}</small></span>
+                  </label>
+                )}
+                {serviceFeeAuthorizationRequired && (
+                  <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-4">
+                    <strong className="block text-xs text-amber-800">Autorização para retirar taxa</strong>
+                    <Field label="Autorizador">
+                      <Select required value={serviceFeeAuthorizer} onChange={(event) => setServiceFeeAuthorizer(event.target.value)}>
+                        <option value="" disabled>Selecione quem autoriza</option>
+                        {authorizers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                      </Select>
+                    </Field>
+                    <Field label="Senha do autorizador"><Input required type="password" autoComplete="current-password" value={serviceFeePassword} onChange={(event) => setServiceFeePassword(event.target.value)} /></Field>
+                  </div>
+                )}
                 {previewError && <Alert message={previewError} />}
                 {calculating && (
                   <div className="flex items-center gap-2 text-xs text-primary">
@@ -1033,10 +1085,10 @@ export function SalesPdv() {
                         <span>+ {formatBRL(preview.service_fee_amount)}</span>
                       </div>
                     )}
-                    {!consumption && preview.commission_amount !== "0.00" && (
-                      <div className="mt-2 flex justify-between text-[10px] text-slate-500">
-                        <span>Comissão prevista ({preview.commission_rate}%)</span>
-                        <span>{formatBRL(preview.commission_amount)}</span>
+                    {!consumption && preview.service_fee_waived && (
+                      <div className="mt-2 flex justify-between text-xs text-amber-300">
+                        <span>Taxa de serviço retirada</span>
+                        <span>{preview.service_fee_rate}%</span>
                       </div>
                     )}
                     {consumption && (
@@ -1089,6 +1141,9 @@ export function SalesPdv() {
                           </option>
                         ))}
                       </Select>
+                      {!sessions.length && hasPermission(permissions.openCashRegister) && (
+                        <Link className="mt-2 inline-block text-xs font-bold text-primary" href="/caixas/abrir?return=/pdv">Abrir caixa e continuar no PDV</Link>
+                      )}
                     </Field>
                     <div className="flex items-center justify-between">
                       <strong className="text-xs">Pagamentos</strong>
@@ -1110,6 +1165,12 @@ export function SalesPdv() {
                       >
                         + Dividir pagamento
                       </button>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 p-3">
+                      <div className="grid gap-2 sm:grid-cols-[150px_1fr]">
+                        <Field label="Dividir por pessoas"><Input inputMode="numeric" min={1} value={splitPeople} onChange={(event) => setSplitPeople(event.target.value.replace(/\D/g, "") || "1")} /></Field>
+                        <div className="self-end pb-2 text-xs text-slate-500">Valor por pessoa: <strong className="text-slate-900">{preview ? formatBRL(centsToDecimal((moneyToCents(preview.total) || BigInt(0)) / BigInt(Math.max(1, Number(splitPeople) || 1)))) : "-"}</strong>. Esta calculadora não altera a venda nem os pagamentos.</div>
+                      </div>
                     </div>
                     {payments.map((row) => {
                       const method = methods.find(

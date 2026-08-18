@@ -7,7 +7,7 @@ import type { User, UserBranch, UserCompany } from "@/types";
 
 const COMPANY_KEY = "pdv.current_company_id";
 const BRANCH_KEY = "pdv.current_branch_id";
-const OPERATING_MODULES = new Set(["products", "inventory", "cash_registers", "sales", "payment_methods", "reports", "promotions"]);
+const OPERATING_MODULES = new Set(["products", "categories", "branch_prices", "inventory", "cash_registers", "sales", "payment_methods", "reports", "dashboard", "promotions", "audit_logs"]);
 
 interface AuthContextValue {
   user: User | null;

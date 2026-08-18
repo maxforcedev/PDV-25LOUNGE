@@ -36,6 +36,7 @@ from .services import (
     open_session,
     record_manual_entry,
     record_withdrawal,
+    session_operational_summary,
     set_register_status,
 )
 
@@ -64,11 +65,11 @@ class CashRegisterViewSet(CurrentBranchQuerysetMixin, viewsets.ModelViewSet):
     permission_codes = {
         'list': 'cash_registers.view',
         'retrieve': ('cash_registers.view', 'cash_registers.close'),
-        'create': 'branches.change',
-        'update': 'branches.change',
-        'partial_update': 'branches.change',
-        'activate': 'branches.change',
-        'deactivate': 'branches.change',
+        'create': 'cash_registers.add',
+        'update': 'cash_registers.change',
+        'partial_update': 'cash_registers.change',
+        'activate': 'cash_registers.change_status',
+        'deactivate': 'cash_registers.change_status',
     }
 
     def get_queryset(self):
@@ -210,21 +211,18 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
     @action(detail=True, methods=('get',))
     def summary(self, request, pk=None):
         session = self.get_object()
-        totals = movement_totals(session)
-        expected = (
-            calculate_expected_amount(session)
-            if session.status == CashSessionStatus.OPEN
-            else session.closing_expected_amount
-        )
-        return Response(
-            {
-                'opening_amount': f'{session.opening_amount:.2f}',
-                'manual_entries': f"{totals['manual_entries']:.2f}",
-                'withdrawals': f"{totals['withdrawals']:.2f}",
-                'expected_amount': f'{expected:.2f}',
-                'status': session.status,
-            }
-        )
+        summary = session_operational_summary(session)
+
+        def serialize(value):
+            if isinstance(value, Decimal):
+                return f'{value:.2f}'
+            if isinstance(value, dict):
+                return {key: serialize(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [serialize(item) for item in value]
+            return value
+
+        return Response(serialize(summary))
 
     @action(detail=True, methods=('get',))
     def timeline(self, request, pk=None):
@@ -254,11 +252,14 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
                 'label': 'Entrada manual' if is_entry else f"Sangria · {movement.get_withdrawal_category_display() or 'Sangria'}",
                 'amount': f'{movement.amount:.2f}',
                 'sale': None,
-                'details': (
-                    f"{movement.reason}"
-                    f"{' · ' + movement.beneficiary_user.get_full_name().strip() if movement.beneficiary_user_id else ''}"
-                    f"{' · ' + movement.user.get_full_name().strip() if movement.user_id else ''}"
+                'details': movement.reason,
+                'reason': movement.reason,
+                'beneficiary_name': (
+                    movement.beneficiary_user.get_full_name().strip() or movement.beneficiary_user.email
+                    if movement.beneficiary_user_id else None
                 ),
+                'registered_by_name': movement.user.get_full_name().strip() or movement.user.email,
+                'category_label': movement.get_withdrawal_category_display() if not is_entry else None,
             })
         sales = list(
             Sale.objects.filter(cash_session=session).select_related(
@@ -267,7 +268,10 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
         )
         cash_code = PaymentMethodCode.CASH
         for sale in sales:
-            has_cash = sale.payments.filter(payment_method_code=cash_code).exists()
+            cash_amount = sale.payments.filter(payment_method_code=cash_code).aggregate(
+                value=Coalesce(Sum('amount'), Decimal('0.00'), output_field=DecimalField(max_digits=20, decimal_places=2))
+            )['value']
+            has_cash = cash_amount > 0
             is_cancelled = sale.status == SaleStatus.CANCELLED
             charged = sale.charged_amount or Decimal('0.00')
             show = (
@@ -281,17 +285,17 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
                 kind = 'cancellation'
                 label = f"Cancelamento · {'Consumação' if sale.operation_type == OperationType.CONSUMPTION else 'Venda'} {sale.sale_number}"
                 timestamp = sale.cancelled_at or sale.created_at
-                amount = f'{sale.total:.2f}'
+                amount = f'{cash_amount:.2f}'
             elif sale.operation_type == OperationType.CONSUMPTION:
                 kind = 'charged_consumption'
                 label = f"Consumação cobrada {sale.sale_number}"
                 timestamp = sale.created_at
-                amount = f'{charged:.2f}'
+                amount = f'{cash_amount:.2f}'
             else:
                 kind = 'cash_sale'
                 label = f"Venda em dinheiro {sale.sale_number}"
                 timestamp = sale.created_at
-                amount = f'{sale.total:.2f}'
+                amount = f'{cash_amount:.2f}'
             events.append({
                 'id': f'sale-{sale.pk}',
                 'timestamp': (timestamp or sale.created_at).isoformat(),
@@ -300,6 +304,13 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
                 'amount': amount,
                 'sale': {'id': sale.pk, 'number': sale.sale_number, 'operation_type': sale.operation_type, 'status': sale.status},
                 'details': f"Operador {sale.created_by.get_full_name().strip() or sale.created_by.email}",
+                'reason': sale.cancellation_reason if is_cancelled else None,
+                'beneficiary_name': (
+                    sale.beneficiary_user.get_full_name().strip() or sale.beneficiary_user.email
+                    if sale.beneficiary_user_id else None
+                ),
+                'registered_by_name': sale.created_by.get_full_name().strip() or sale.created_by.email,
+                'category_label': None,
             })
         if session.status == CashSessionStatus.CLOSED and session.closed_at:
             events.append({

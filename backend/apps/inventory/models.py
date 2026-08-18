@@ -1,4 +1,5 @@
 from decimal import Decimal
+import uuid
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -59,11 +60,34 @@ class MovementType(models.TextChoices):
     CONSUMPTION_CANCELLATION = 'consumption_cancellation', 'Cancelamento de consumacao'
 
 
+class MovementNature(models.TextChoices):
+    NORMAL = 'normal', 'Normal'
+    BONUS = 'bonus', 'Bonificada'
+    RETURN = 'return', 'Devolucao'
+    OPENING_BALANCE = 'opening_balance', 'Saldo inicial'
+    CORRECTION = 'correction', 'Correcao'
+    TRANSFER = 'transfer', 'Transferencia'
+    DAMAGE = 'damage', 'Avaria'
+    LOSS = 'loss', 'Perda'
+    INTERNAL_USE = 'internal_use', 'Uso interno'
+    INVENTORY = 'inventory', 'Inventario'
+    REGULARIZATION = 'regularization', 'Regularizacao'
+    BALANCE_CORRECTION = 'balance_correction', 'Correcao de saldo'
+    SALE = 'sale', 'Venda'
+    CONSUMPTION = 'consumption', 'Consumacao'
+    CANCELLATION = 'cancellation', 'Cancelamento/estorno'
+    OTHER = 'other', 'Outros'
+
+
 class StockMovement(BaseModel):
     stock = models.ForeignKey(
         Stock, on_delete=models.PROTECT, related_name='movements'
     )
     movement_type = models.CharField(max_length=24, choices=MovementType.choices)
+    nature = models.CharField(
+        max_length=24, choices=MovementNature.choices, default=MovementNature.NORMAL
+    )
+    operation_reference = models.UUIDField(default=uuid.uuid4, db_index=True, editable=False)
     previous_quantity = models.DecimalField(max_digits=14, decimal_places=3)
     quantity = models.DecimalField(max_digits=14, decimal_places=3)
     final_quantity = models.DecimalField(max_digits=14, decimal_places=3)

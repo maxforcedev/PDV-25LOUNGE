@@ -5,6 +5,8 @@ from .views import (
     BranchViewSet,
     CompanyViewSet,
     FunctionalPermissionViewSet,
+    UserCommissionOverrideViewSet,
+    UserPermissionBlockViewSet,
 )
 
 router = SimpleRouter()
@@ -16,5 +18,7 @@ router.register(
     basename='functional-permission',
 )
 router.register('access-profiles', AccessProfileViewSet, basename='access-profile')
+router.register('user-permission-blocks', UserPermissionBlockViewSet, basename='user-permission-block')
+router.register('user-commission-overrides', UserCommissionOverrideViewSet, basename='user-commission-override')
 
 urlpatterns = router.urls

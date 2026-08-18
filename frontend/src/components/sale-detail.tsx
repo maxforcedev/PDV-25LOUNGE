@@ -160,6 +160,7 @@ export function SaleDetail({
     hasPermission(
       consumption ? permissions.cancelConsumption : permissions.cancelSale,
     );
+  const canViewCommission = hasPermission(permissions.viewCommission);
   return (
     <>
       <PageHeader
@@ -324,7 +325,13 @@ export function SaleDetail({
                   <span>+ {formatBRL(sale.service_fee_amount)}</span>
                 </div>
               )}
-              {!consumption && (
+              {!consumption && sale.service_fee_waived && (
+                <div className="flex justify-between text-sm text-amber-700">
+                  <span>Taxa de serviço retirada</span>
+                  <span>{sale.service_fee_waived_by_name || "Autorizado"}</span>
+                </div>
+              )}
+              {!consumption && canViewCommission && sale.commission_amount !== undefined && (
                 <div className="flex justify-between text-xs text-slate-400">
                   <span>Comissão ({sale.commission_rate}%)</span>
                   <span className={sale.status === "cancelled" ? "line-through" : ""}>{formatBRL(sale.commission_amount)}</span>

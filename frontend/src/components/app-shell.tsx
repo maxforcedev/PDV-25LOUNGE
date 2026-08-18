@@ -12,6 +12,7 @@ import {
   ChevronDown,
   ClipboardList,
   CreditCard,
+  FileSearch,
   GitBranch,
   LayoutDashboard,
   LogOut,
@@ -24,6 +25,7 @@ import {
   PanelLeftOpen,
   ReceiptText,
   ShieldCheck,
+  ShieldX,
   ShoppingCart,
   Sun,
   Tags,
@@ -71,10 +73,16 @@ const adminNavigation = [
     requiredPermissions: [permissions.viewUser],
   },
   {
+    href: "/usuarios/bloqueios",
+    label: "Bloqueios de acesso",
+    icon: ShieldX,
+    requiredPermissions: [permissions.viewPermissionBlock],
+  },
+  {
     href: "/categorias",
     label: "Categorias",
     icon: Tags,
-    requiredPermissions: [permissions.viewProduct],
+    requiredPermissions: [permissions.viewCategory],
   },
   {
     href: "/produtos",
@@ -147,7 +155,14 @@ const adminNavigation = [
       permissions.viewWithdrawalsReport,
       permissions.viewInventoryReport,
       permissions.viewOperationalResult,
+      permissions.viewStockConsumptionReport,
     ],
+  },
+  {
+    href: "/auditoria",
+    label: "Auditoria",
+    icon: FileSearch,
+    requiredPermissions: [permissions.viewAuditLog],
   },
 ];
 

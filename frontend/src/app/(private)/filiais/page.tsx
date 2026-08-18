@@ -38,9 +38,11 @@ function addressText(address: Branch["address"]) {
 }
 
 function BranchesAdministration() {
-  const { currentCompany, hasPermission } = useAuth();
+  const { user, currentCompany, hasPermission } = useAuth();
   const canAdd = hasPermission(permissions.addBranch);
   const canChange = hasPermission(permissions.changeBranch);
+  const canSettings = hasPermission(permissions.changeBranchSettings);
+  const canChangeCommission = hasPermission(permissions.changeBranchCommission);
   const [data, setData] = useState<Paginated<Branch> | null>(null);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
@@ -177,7 +179,9 @@ function BranchesAdministration() {
     setError("");
     setSuccess("");
     try {
-      const payload = { ...form, cnpj: form.cnpj || null };
+      const addressEditable = !editing || user?.is_superuser || editing.address_pending;
+      const payload = { ...form, cnpj: form.cnpj || null } as Partial<BranchPayload>;
+      if (!addressEditable) delete payload.address;
       if (editing) await http.patch(`branches/${editing.id}/`, payload);
       else await http.post("branches/", payload);
       setModalOpen(false);
@@ -215,7 +219,7 @@ function BranchesAdministration() {
   }
 
   async function openSettings(branch: Branch) {
-    if (!canChange) return;
+    if (!canSettings) return;
     setSettingsBranch(branch);
     setSettings(null);
     setSettingsFields({});
@@ -233,7 +237,7 @@ function BranchesAdministration() {
 
   async function saveSettings(event: React.FormEvent) {
     event.preventDefault();
-    if (!settingsBranch || !settings || !canChange) return;
+    if (!settingsBranch || !settings || !canSettings) return;
     setSettingsSaving(true);
     setSettingsFields({});
     setError("");
@@ -250,6 +254,9 @@ function BranchesAdministration() {
       if (caught instanceof ApiError) {
         setError(caught.message);
         setSettingsFields(caught.fields);
+        if (caught.code === "negative_stocks_must_be_regularized") {
+          setSettingsFields((current) => ({ ...current, allow_negative_stock: ["Use o fluxo Regularizar negativos na tela de Estoque."] }));
+        }
       } else setError("Não foi possível salvar as configurações da filial.");
     } finally {
       setSettingsSaving(false);
@@ -282,7 +289,7 @@ function BranchesAdministration() {
                         <td><span className="flex max-w-64 items-center gap-1.5 text-slate-500"><MapPin className="size-3.5 shrink-0 text-primary" /><span className="truncate">{addressText(branch.address)}</span></span></td>
                         <td><StatusBadge active={branch.status === "active"} /></td>
                         <td className="text-slate-500">{formatDate(branch.updated_at)}</td>
-                        <td><div className="flex justify-end gap-1"><button className="icon-button" disabled={!canChange} title={canChange ? "Configurações operacionais" : "Sem permissão para configurar filiais"} onClick={() => void openSettings(branch)}><Settings2 className="size-4" /></button><button className="icon-button" disabled={!canChange} title={canChange ? "Editar" : "Sem permissão para editar filiais"} onClick={() => openEdit(branch)}><Pencil className="size-4" /></button><button disabled={!canChange} className={`icon-button ${branch.status === "active" ? "hover:bg-danger/10 hover:text-danger" : "hover:bg-success/10 hover:text-success"}`} title={canChange ? (branch.status === "active" ? "Inativar" : "Ativar") : "Sem permissão para alterar filiais"} onClick={() => canChange && setConfirming(branch)}><Power className="size-4" /></button></div></td>
+                        <td><div className="flex justify-end gap-1"><button className="icon-button" disabled={!canSettings} title={canSettings ? "Configurações operacionais" : "Sem permissão para configurar filiais"} onClick={() => void openSettings(branch)}><Settings2 className="size-4" /></button><button className="icon-button" disabled={!canChange} title={canChange ? "Editar" : "Sem permissão para editar filiais"} onClick={() => openEdit(branch)}><Pencil className="size-4" /></button><button disabled={!canChange} className={`icon-button ${branch.status === "active" ? "hover:bg-danger/10 hover:text-danger" : "hover:bg-success/10 hover:text-success"}`} title={canChange ? (branch.status === "active" ? "Inativar" : "Ativar") : "Sem permissão para alterar filiais"} onClick={() => canChange && setConfirming(branch)}><Power className="size-4" /></button></div></td>
                       </tr>
                     ))}
                   </tbody>
@@ -307,18 +314,15 @@ function BranchesAdministration() {
 
             <div className="border-t border-slate-100 pt-4 sm:col-span-2 lg:col-span-3">
               <h3 className="text-xs font-bold text-dark">Endereço</h3>
+              {editing && !user?.is_superuser && !editing.address_pending && <p className="mt-1 text-[11px] text-slate-500">Endereço concluído. Alterações posteriores são exclusivas do superusuário da plataforma.</p>}
+              {editing?.address_pending && <p className="mt-1 text-[11px] font-semibold text-amber-700">Complete o endereço inicial da Matriz. Após salvar, ele se tornará somente leitura.</p>}
               {fieldError(fields, "address") && <p className="field-error">{fieldError(fields, "address")}</p>}
             </div>
             <Field label="CEP" error={fieldError(fields, "address.zip_code") || zipCodeError}>
-              <Input required inputMode="numeric" autoComplete="postal-code" maxLength={9} pattern="[0-9]{5}-?[0-9]{3}" value={form.address.zip_code} onChange={(event) => updateZipCode(event.target.value)} disabled={saving} placeholder="00000-000" />
+              <Input required inputMode="numeric" autoComplete="postal-code" maxLength={9} pattern="[0-9]{5}-?[0-9]{3}" value={form.address.zip_code} onChange={(event) => updateZipCode(event.target.value)} disabled={saving || !!editing && !user?.is_superuser && !editing.address_pending} placeholder="00000-000" />
               {zipCodeLoading && <span className="mt-1.5 flex items-center gap-1.5 text-[11px] text-primary"><Spinner className="size-3" />Consultando CEP...</span>}
             </Field>
-            <Field label="Logradouro" error={fieldError(fields, "address.street")}><Input required autoComplete="address-line1" value={form.address.street} onChange={(event) => updateAddress("street", event.target.value)} disabled={saving} /></Field>
-            <Field label="Número" error={fieldError(fields, "address.number")}><Input required value={form.address.number} onChange={(event) => updateAddress("number", event.target.value)} disabled={saving} placeholder="Ex.: 120 ou S/N" /></Field>
-            <Field label="Complemento" optional error={fieldError(fields, "address.complement")}><Input autoComplete="address-line2" value={form.address.complement || ""} onChange={(event) => updateAddress("complement", event.target.value)} disabled={saving} /></Field>
-            <Field label="Bairro" error={fieldError(fields, "address.neighborhood")}><Input required value={form.address.neighborhood} onChange={(event) => updateAddress("neighborhood", event.target.value)} disabled={saving} /></Field>
-            <Field label="Cidade" error={fieldError(fields, "address.city")}><Input required autoComplete="address-level2" value={form.address.city} onChange={(event) => updateAddress("city", event.target.value)} disabled={saving} /></Field>
-            <Field label="Estado" error={fieldError(fields, "address.state")}><Input required autoComplete="address-level1" minLength={2} maxLength={2} value={form.address.state} onChange={(event) => updateAddress("state", event.target.value.toUpperCase())} disabled={saving} placeholder="UF" /></Field>
+            {([['street','Logradouro'],['number','Número'],['complement','Complemento'],['neighborhood','Bairro'],['city','Cidade'],['state','Estado']] as Array<[keyof Address,string]>).map(([key,label]) => <Field key={key} label={label} optional={key === 'complement'} error={fieldError(fields, `address.${key}`)}><Input required={key !== 'complement'} value={form.address[key] || ""} onChange={(event) => updateAddress(key, key === 'state' ? event.target.value.toUpperCase() : event.target.value)} disabled={saving || !!editing && !user?.is_superuser && !editing.address_pending} /></Field>)}
           </div>
           <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4 sm:px-6"><Button type="button" variant="secondary" disabled={saving} onClick={() => setModalOpen(false)}>Cancelar</Button><Button type="submit" loading={saving} disabled={editing ? !canChange : !canAdd}>{editing ? "Salvar alterações" : "Criar filial"}</Button></div>
         </form>
@@ -329,12 +333,13 @@ function BranchesAdministration() {
             <div className="space-y-5 p-5 sm:p-6">
               {error && <Alert message={error} />}
               <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-4">
-                <input type="checkbox" className="mt-0.5 size-4 accent-primary" checked={settings.allow_negative_stock} onChange={(event) => setSettings((value) => value ? { ...value, allow_negative_stock: event.target.checked } : value)} disabled={settingsSaving} />
-                <span><strong className="block text-xs">Permitir estoque negativo</strong><small className="mt-1 block text-[11px] text-slate-500">Vendas e saídas poderão deixar o saldo abaixo de zero nesta filial.</small></span>
-              </label>
+                 <input type="checkbox" className="mt-0.5 size-4 accent-primary" checked={settings.allow_negative_stock} onChange={(event) => setSettings((value) => value ? { ...value, allow_negative_stock: event.target.checked } : value)} disabled={settingsSaving} />
+                 <span><strong className="block text-xs">Permitir estoque negativo</strong><small className="mt-1 block text-[11px] text-slate-500">Vendas e saídas poderão deixar o saldo abaixo de zero nesta filial.</small></span>
+               </label>
+              {fieldError(settingsFields, "allow_negative_stock") && <div><p className="field-error">{fieldError(settingsFields, "allow_negative_stock")}</p><a className="mt-2 inline-block text-xs font-bold text-primary" href="/estoque?state=negative&regularize=true">Regularizar negativos</a></div>}
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Taxa de serviço (%)" error={fieldError(settingsFields, "service_fee_rate")}><Input required type="number" min="0" max="100" step="0.01" value={settings.service_fee_rate} onChange={(event) => setSettings((value) => value ? { ...value, service_fee_rate: event.target.value } : value)} disabled={settingsSaving} /></Field>
-                <Field label="Comissão padrão (%)" error={fieldError(settingsFields, "commission_rate")}><Input required type="number" min="0" max="100" step="0.01" value={settings.commission_rate} onChange={(event) => setSettings((value) => value ? { ...value, commission_rate: event.target.value } : value)} disabled={settingsSaving} /></Field>
+                 <Field label="Comissão padrão (%)" error={fieldError(settingsFields, "commission_rate")}><Input required type="number" min="0" max="100" step="0.01" value={settings.commission_rate} onChange={(event) => setSettings((value) => value ? { ...value, commission_rate: event.target.value } : value)} disabled={settingsSaving || !canChangeCommission} /></Field>
               </div>
               <Field label="Custo fixo diário" error={fieldError(settingsFields, "fixed_daily_cost")}><MoneyInput required value={settings.fixed_daily_cost} onValueChange={(value) => setSettings((current) => current ? { ...current, fixed_daily_cost: value } : current)} disabled={settingsSaving} /></Field>
             </div>
