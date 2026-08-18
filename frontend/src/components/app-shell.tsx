@@ -39,8 +39,18 @@ import { permissions, reportMenuPermissions } from "@/lib/permissions";
 import { Alert, Spinner } from "@/components/ui";
 
 const mainNavigation = [
-  { href: "/dashboard", label: "Visão geral", icon: LayoutDashboard, requiredPermissions: [permissions.viewDashboard] },
-  { href: "/sobre-mim", label: "Sobre mim", icon: UserRound, requiredPermissions: [] },
+  {
+    href: "/dashboard",
+    label: "Visão geral",
+    icon: LayoutDashboard,
+    requiredPermissions: [permissions.viewDashboard],
+  },
+  {
+    href: "/sobre-mim",
+    label: "Sobre mim",
+    icon: UserRound,
+    requiredPermissions: [],
+  },
 ];
 
 const adminNavigation = [
@@ -158,12 +168,20 @@ const adminNavigation = [
   },
 ];
 
-function Sidebar({ onNavigate, collapsed = false }: { onNavigate?: () => void; collapsed?: boolean }) {
+function Sidebar({
+  onNavigate,
+  collapsed = false,
+}: {
+  onNavigate?: () => void;
+  collapsed?: boolean;
+}) {
   const pathname = usePathname();
   const { hasAnyPermission } = useAuth();
   const navigation = [
-    ...mainNavigation.filter((item) =>
-      !item.requiredPermissions.length || hasAnyPermission(item.requiredPermissions),
+    ...mainNavigation.filter(
+      (item) =>
+        !item.requiredPermissions.length ||
+        hasAnyPermission(item.requiredPermissions),
     ),
     ...adminNavigation.filter((item) =>
       hasAnyPermission(item.requiredPermissions),
@@ -177,22 +195,31 @@ function Sidebar({ onNavigate, collapsed = false }: { onNavigate?: () => void; c
     )
     .sort((left, right) => right.href.length - left.href.length)[0]?.href;
   return (
-    <div className="flex h-full flex-col bg-dark text-white">
-      <div className={`flex h-18 items-center gap-3 border-b border-white/8 ${collapsed ? "justify-center px-2" : "px-6"}`}>
+    <div className="flex h-full flex-col bg-operational-canvas text-operational-fg">
+      <div
+        className={`flex h-18 items-center gap-3 border-b border-white/8 ${collapsed ? "justify-center px-2" : "px-6"}`}
+      >
         <div className="flex size-9 items-center justify-center rounded-lg bg-primary text-white shadow-lg shadow-primary/20">
           <ShieldCheck className="size-5" />
         </div>
-        {!collapsed && <div>
-          <strong className="block text-sm tracking-wide">Core PDV</strong>
-          <span className="text-[10px] uppercase tracking-[0.18em] text-slate-400">
-            Administração
-          </span>
-        </div>}
+        {!collapsed && (
+          <div>
+            <strong className="block text-sm tracking-wide">Core PDV</strong>
+            <span className="text-[10px] uppercase tracking-[0.18em] text-operational-muted">
+              Administração
+            </span>
+          </div>
+        )}
       </div>
-      <nav className="flex-1 overflow-y-auto px-3 py-6" aria-label="Menu principal">
-        {!collapsed && <p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
-          Gestão
-        </p>}
+      <nav
+        className="flex-1 overflow-y-auto px-3 py-6"
+        aria-label="Menu principal"
+      >
+        {!collapsed && (
+          <p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-[0.16em] text-operational-muted">
+            Gestão
+          </p>
+        )}
         <div className="space-y-1">
           {navigation.map(({ href, label, icon: Icon }) => {
             const active = activeHref === href;
@@ -203,7 +230,7 @@ function Sidebar({ onNavigate, collapsed = false }: { onNavigate?: () => void; c
                 onClick={onNavigate}
                 title={collapsed ? label : undefined}
                 aria-label={collapsed ? label : undefined}
-                className={`flex items-center rounded-md py-2.5 text-[13px] font-medium transition ${collapsed ? "justify-center px-2" : "gap-3 px-3"} ${active ? "bg-primary text-white shadow-md shadow-black/10" : "text-slate-300 hover:bg-white/6 hover:text-white"}`}
+                className={`flex items-center rounded-md py-2.5 text-[13px] font-medium transition focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-focus ${collapsed ? "justify-center px-2" : "gap-3 px-3"} ${active ? "bg-primary text-white shadow-md shadow-black/10" : "text-operational-muted hover:bg-white/6 hover:text-operational-fg"}`}
               >
                 <Icon className="size-[17px] shrink-0" />
                 {!collapsed && <span>{label}</span>}
@@ -212,9 +239,11 @@ function Sidebar({ onNavigate, collapsed = false }: { onNavigate?: () => void; c
           })}
         </div>
       </nav>
-      {!collapsed && <div className="border-t border-white/8 px-6 py-4 text-[10px] text-slate-500">
-        Ambiente administrativo
-      </div>}
+      {!collapsed && (
+        <div className="border-t border-white/8 px-6 py-4 text-[10px] text-operational-muted">
+          Ambiente administrativo
+        </div>
+      )}
     </div>
   );
 }
@@ -240,12 +269,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   useEffect(() => setDrawer(false), [pathname]);
   useEffect(() => {
-    setTheme(document.documentElement.dataset.theme === "dark" ? "dark" : "light");
+    setTheme(
+      document.documentElement.dataset.theme === "dark" ? "dark" : "light",
+    );
     setCollapsed(localStorage.getItem("pdv.sidebar_collapsed") === "true");
     setFullscreenSupported(Boolean(document.fullscreenEnabled));
-    const updateFullscreen = () => setFullscreen(Boolean(document.fullscreenElement));
+    const updateFullscreen = () =>
+      setFullscreen(Boolean(document.fullscreenElement));
     document.addEventListener("fullscreenchange", updateFullscreen);
-    return () => document.removeEventListener("fullscreenchange", updateFullscreen);
+    return () =>
+      document.removeEventListener("fullscreenchange", updateFullscreen);
   }, []);
   useEffect(() => {
     if (!drawer) return;
@@ -301,8 +334,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className={`min-h-screen bg-canvas transition-[padding] duration-200 ${collapsed ? "lg:pl-20" : "lg:pl-65"}`}>
-      <aside className={`fixed inset-y-0 left-0 z-40 hidden transition-[width] duration-200 lg:block ${collapsed ? "w-20" : "w-65"}`}>
+    <div
+      className={`min-h-screen bg-canvas transition-[padding] duration-200 ${collapsed ? "lg:pl-20" : "lg:pl-65"}`}
+    >
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 hidden transition-[width] duration-200 lg:block ${collapsed ? "w-20" : "w-65"}`}
+      >
         <Sidebar collapsed={collapsed} />
       </aside>
       {drawer && (
@@ -315,7 +352,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <aside className="absolute inset-y-0 left-0 w-[82vw] max-w-72 shadow-2xl">
             <Sidebar onNavigate={() => setDrawer(false)} />
             <button
-              className="absolute right-3 top-4 icon-button text-slate-300 hover:bg-white/10 hover:text-white"
+              className="absolute right-3 top-4 icon-button text-operational-muted hover:bg-white/10 hover:text-operational-fg"
               onClick={() => setDrawer(false)}
               aria-label="Fechar menu"
             >
@@ -324,7 +361,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </aside>
         </div>
       )}
-      <header className="sticky top-0 z-30 flex min-h-18 items-center border-b border-slate-200 bg-white/95 px-4 py-2 backdrop-blur sm:px-6 lg:px-8">
+      <header className="sticky top-0 z-30 flex min-h-18 items-center border-b border-subtle bg-surface/95 px-4 py-2 backdrop-blur sm:px-6 lg:px-8">
         <button
           ref={menuButtonRef}
           className="icon-button mr-2 lg:hidden"
@@ -333,14 +370,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         >
           <Menu className="size-5" />
         </button>
-        <button className="icon-button mr-3 hidden lg:inline-flex" onClick={toggleSidebar} title={collapsed ? "Expandir menu lateral" : "Recolher menu lateral"} aria-label={collapsed ? "Expandir menu lateral" : "Recolher menu lateral"}>
-          {collapsed ? <PanelLeftOpen className="size-5" /> : <PanelLeftClose className="size-5" />}
+        <button
+          className="icon-button mr-3 hidden lg:inline-flex"
+          onClick={toggleSidebar}
+          title={collapsed ? "Expandir menu lateral" : "Recolher menu lateral"}
+          aria-label={
+            collapsed ? "Expandir menu lateral" : "Recolher menu lateral"
+          }
+        >
+          {collapsed ? (
+            <PanelLeftOpen className="size-5" />
+          ) : (
+            <PanelLeftClose className="size-5" />
+          )}
         </button>
         <div className="hidden sm:block">
-          <p className="text-xs font-semibold text-dark">
-            Painel administrativo
-          </p>
-          <p className="mt-0.5 text-[11px] text-slate-400">
+          <p className="text-xs font-semibold text-fg">Painel administrativo</p>
+          <p className="mt-0.5 text-[11px] text-muted">
             Operação e acessos em um só lugar
           </p>
         </div>
@@ -399,40 +445,60 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               ))}
           </select>
         </div>
-        <button className="icon-button mr-1" onClick={toggleTheme} title={theme === "dark" ? "Usar tema claro" : "Usar tema escuro"} aria-label={theme === "dark" ? "Usar tema claro" : "Usar tema escuro"}>
-          {theme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
+        <button
+          className="icon-button mr-1"
+          onClick={toggleTheme}
+          title={theme === "dark" ? "Usar tema claro" : "Usar tema escuro"}
+          aria-label={theme === "dark" ? "Usar tema claro" : "Usar tema escuro"}
+        >
+          {theme === "dark" ? (
+            <Sun className="size-4" />
+          ) : (
+            <Moon className="size-4" />
+          )}
         </button>
-        {fullscreenSupported && <button className="icon-button mr-1 hidden sm:inline-flex" onClick={() => void toggleFullscreen()} title={fullscreen ? "Sair da tela cheia" : "Usar tela cheia"} aria-label={fullscreen ? "Sair da tela cheia" : "Usar tela cheia"}>
-          {fullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
-        </button>}
+        {fullscreenSupported && (
+          <button
+            className="icon-button mr-1 hidden sm:inline-flex"
+            onClick={() => void toggleFullscreen()}
+            title={fullscreen ? "Sair da tela cheia" : "Usar tela cheia"}
+            aria-label={fullscreen ? "Sair da tela cheia" : "Usar tela cheia"}
+          >
+            {fullscreen ? (
+              <Minimize2 className="size-4" />
+            ) : (
+              <Maximize2 className="size-4" />
+            )}
+          </button>
+        )}
         <div className="relative">
           <button
             onClick={() => setProfileOpen((value) => !value)}
-            className="flex items-center gap-2.5 rounded-md p-1.5 text-left transition hover:bg-slate-50"
+            className="flex items-center gap-2.5 rounded-md p-1.5 text-left transition hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-focus/20"
             aria-expanded={profileOpen}
           >
             <span className="flex size-9 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
               {initials(user?.first_name || "", user?.last_name || "")}
             </span>
             <span className="hidden max-w-40 sm:block">
-              <strong className="block truncate text-xs text-dark">
+              <strong className="block truncate text-xs text-fg">
                 {user?.first_name || "Usuário"} {user?.last_name || ""}
               </strong>
-              <span className="block truncate text-[10px] text-slate-400">
+              <span className="block truncate text-[10px] text-muted">
                 {user?.email}
               </span>
             </span>
-            <ChevronDown className="hidden size-3.5 text-slate-400 sm:block" />
+            <ChevronDown className="hidden size-3.5 text-muted sm:block" />
           </button>
           {profileOpen && (
-            <div className="absolute right-0 mt-2 w-56 rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
-              <div className="border-b border-slate-100 px-2 py-2 sm:hidden">
+            <div className="absolute right-0 mt-2 w-56 rounded-lg border border-subtle bg-surface-raised p-2 shadow-xl">
+              <div className="border-b border-subtle px-2 py-2 sm:hidden">
                 <p className="truncate text-xs font-semibold">{user?.email}</p>
               </div>
               <Link
                 href="/sobre-mim"
                 onClick={() => setProfileOpen(false)}
-                className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-xs font-medium text-slate-600 hover:bg-slate-50 hover:text-dark"
+                className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-xs font-medium text-muted hover:bg-surface-muted hover:text-fg"
               >
                 <UserRound className="size-4" />
                 Sobre mim

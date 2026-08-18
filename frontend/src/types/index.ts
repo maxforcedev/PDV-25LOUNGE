@@ -25,7 +25,6 @@ export interface User {
   last_name: string;
   is_active: boolean;
   is_superuser: boolean;
-  permissions: string[];
   companies: UserCompany[];
   branches: UserBranch[];
   permission_blocks: Array<{
@@ -77,7 +76,10 @@ export interface Branch {
   status: Status;
   is_matrix: boolean;
   address_pending: boolean;
-  settings_summary: Omit<BranchSettings, "id" | "branch" | "created_at" | "updated_at"> | null;
+  settings_summary: Omit<
+    BranchSettings,
+    "id" | "branch" | "created_at" | "updated_at"
+  > | null;
   created_at: string;
   updated_at: string;
 }
@@ -90,7 +92,10 @@ export interface BranchSettings {
   commission_rate?: string;
   fixed_daily_cost: string;
   negative_stock_count: number;
-  negative_stock_state: "clear" | "enabled_with_negatives" | "legacy_inconsistent";
+  negative_stock_state:
+    | "clear"
+    | "enabled_with_negatives"
+    | "legacy_inconsistent";
   created_at: string;
   updated_at: string;
 }
@@ -170,7 +175,13 @@ export interface Category {
   description: string;
   sort_order: number;
   product_count: number;
-  related_products: Array<{ id: number; name: string; internal_code: string; sale_price: string; status: Status }>;
+  related_products: Array<{
+    id: number;
+    name: string;
+    internal_code: string;
+    sale_price: string;
+    status: Status;
+  }>;
   status: Status;
   created_at: string;
   updated_at: string;
@@ -276,6 +287,8 @@ export interface StockMovement {
   sale_operation_type: SaleOperation | null;
   nature: string;
   operation_reference: string;
+  operation_label: string;
+  operation_count: number;
   created_at: string;
 }
 
@@ -350,7 +363,13 @@ export interface CashMovement {
   created_at: string;
 }
 
-export type WithdrawalCategory = "dj" | "artist" | "advance" | "promoter" | "supplier" | "other";
+export type WithdrawalCategory =
+  | "dj"
+  | "artist"
+  | "advance"
+  | "promoter"
+  | "supplier"
+  | "other";
 
 export interface CashBeneficiary {
   id: number;
@@ -365,15 +384,48 @@ export interface CashSummary {
   withdrawals: string;
   expected_amount: string;
   status: CashSessionStatus;
+  sale_cash: string;
+  consumption_cash: string;
+  cash_reversals: string;
+  cash_cancellations: number;
   cash_payments: string;
   closing_amount_informed: string | null;
   closing_difference: string | null;
-  sales: { count: number; gross: string; promotion_discount: string; item_discount: string; account_discount: string; manual_discount: string; effective_revenue: string; service_fee: string; commission?: string; customer_total: string };
-  consumptions: { count: number; reference: string; charged: string; benefit: string };
-  payment_totals: Array<{ payment_method_code: string; payment_method_name: string; amount: string }>;
+  sales: {
+    count: number;
+    gross: string;
+    promotion_discount: string;
+    item_discount: string;
+    account_discount: string;
+    manual_discount: string;
+    effective_revenue: string;
+    service_fee: string;
+    commission?: string;
+    customer_total: string;
+    cancellations: { count: number; value: string };
+  };
+  consumptions: {
+    count: number;
+    reference: string;
+    charged: string;
+    benefit: string;
+    cancellations: { count: number; value: string };
+  };
+  payment_totals: Array<{
+    payment_method_code: string;
+    payment_method_name: string;
+    amount: string;
+  }>;
 }
 
-export type SessionTimelineKind = "open" | "manual_entry" | "withdrawal" | "cash_sale" | "charged_consumption" | "cancellation" | "close";
+export type SessionTimelineKind =
+  | "open"
+  | "manual_entry"
+  | "withdrawal"
+  | "cash_sale"
+  | "charged_consumption"
+  | "cancellation"
+  | "close";
 
 export interface SessionTimelineEvent {
   id: string;
@@ -381,7 +433,12 @@ export interface SessionTimelineEvent {
   kind: SessionTimelineKind;
   label: string;
   amount: string;
-  sale: { id: number; number: string; operation_type: SaleOperation; status: SaleStatus } | null;
+  sale: {
+    id: number;
+    number: string;
+    operation_type: SaleOperation;
+    status: SaleStatus;
+  } | null;
   details: string;
   reason?: string | null;
   beneficiary_name?: string | null;
@@ -595,43 +652,335 @@ export interface Promotion {
   updated_at: string;
 }
 
-export interface ReportPeriod { start_datetime: string; end_datetime: string }
+export interface ReportPeriod {
+  start_datetime: string;
+  end_datetime: string;
+}
 export interface ReportSale {
-  id: number; sale_number: string; operation_type: SaleOperation; status: SaleStatus;
-  operator: { id: number; name: string }; seller: { id: number; name: string } | null;
-  discount_approved_by: { id: number; name: string } | null; beneficiary: { id: number; name: string; user_type: UserType } | null;
-  subtotal: string; promotion_discount_total: string; item_discount_total: string; discount: string;
-  service_fee_rate: string; service_fee_amount: string; commission_rate?: string; commission_amount?: string; total: string;
-  created_at: string; cancelled_at: string | null;
-  items: Array<Record<string, unknown>>; payments: Array<Record<string, unknown>>;
+  id: number;
+  sale_number: string;
+  operation_type: SaleOperation;
+  status: SaleStatus;
+  operator: { id: number; name: string };
+  seller: { id: number; name: string } | null;
+  discount_approved_by: { id: number; name: string } | null;
+  beneficiary: { id: number; name: string; user_type: UserType } | null;
+  subtotal: string;
+  promotion_discount_total: string;
+  item_discount_total: string;
+  discount: string;
+  service_fee_rate: string;
+  service_fee_amount: string;
+  commission_rate?: string;
+  commission_amount?: string;
+  total: string;
+  effective_revenue: string;
+  total_received_sales: string;
+  customer_total: string;
+  payment_reconciliation_delta: string;
+  created_at: string;
+  cancelled_at: string | null;
+  items: Array<Record<string, unknown>>;
+  payments: Array<Record<string, unknown>>;
 }
 export interface CashReportRow {
-  id: number; opened_at: string; closed_at: string | null; status: string;
-  register: { id: number; name: string }; operator: { id: number; name: string };
-  opening: string; manual_entries: string; cash_payments: string; withdrawals: string;
-  expected: string; informed: string | null; difference: string | null;
+  id: number;
+  opened_at: string;
+  closed_at: string | null;
+  status: string;
+  register: { id: number; name: string };
+  operator: { id: number; name: string };
+  opening: string;
+  manual_entries: string;
+  sale_cash: string;
+  consumption_cash: string;
+  cash_reversals: string;
+  cash_cancellations: number;
+  cash_payments: string;
+  withdrawals: string;
+  expected: string;
+  informed: string | null;
+  difference: string | null;
+  operational_summary: CashSummary;
+}
+
+export interface PaymentSourceTotal {
+  code: string;
+  name: string;
+  commercial_received: string;
+  consumption_received: string;
+  gross_received: string;
+  reversals: string;
+  net_received: string;
+}
+
+export interface CommercialReportSummary {
+  gross: string;
+  effective_revenue: string;
+  count: number;
+  average: string;
+  ticket_average: string;
+  account_discount: string;
+  item_discount: string;
+  manual_discount: string;
+  promotion_discount: string;
+  total_discount: string;
+  service_fee: string;
+  commission?: string;
+  customer_total: string;
+  total_received_sales: string;
+  payment_reconciliation_delta: string;
+  discount_reconstruction_delta: string;
+  received_reconstruction_delta: string;
+  commission_sale_count: number;
+  commission_attendant_count: number;
+  cancellations: CancellationReportSummary;
+}
+
+export interface ReceiptsReportSummary {
+  effective_revenue: string;
+  sales_count: number;
+  consumption_count: number;
+  service_fee: string;
+  fee_contained: string;
+  sales_received: string;
+  commercial_payments: string;
+  consumption_charged: string;
+  charged_consumption_payments: string;
+  consumption_received: string;
+  gross_received: string;
+  reversals: string;
+  total_operational_received: string;
+  semantic_operational_received: string;
+  reconciliation_delta: string;
+  payment_totals: PaymentSourceTotal[];
+  filtered_payment_method?: {
+    code: string;
+    name: string;
+    subtotal: string;
+    is_integral_revenue: false;
+  };
+}
+
+export interface CancellationReportSummary {
+  count: number;
+  value: string;
+  reversed_effective_revenue: string;
+  reversed_service_fee: string;
+  reversed_total_received: string;
+  reconciliation_delta: string;
+}
+
+export interface ConsumptionReportSummary {
+  count: number;
+  reference: string;
+  charged: string;
+  subsidy: string;
+  benefit: string;
+  quantity: string;
+  payment_totals: Array<{ code: string; name: string; amount: string }>;
+  payment_reconciliation_delta: string;
+  historical_cost?: string;
+  historical_consumption_cogs?: string;
+}
+
+export interface CashReportSummary {
+  count: number;
+  session_rows_scope: "complete_session";
+  top_summary_scope: "requested_period_events";
+  complete_session_totals: {
+    opening: string;
+    manual_entries: string;
+    sale_cash: string;
+    consumption_cash: string;
+    cash_reversals: string;
+    cash_payments: string;
+    withdrawals: string;
+    expected: string;
+    informed: string;
+    difference: string;
+  };
+  sales_count: number;
+  consumption_count: number;
+  effective_revenue: string;
+  service_fee: string;
+  sales_received: string;
+  consumption_charged: string;
+  operational_received: string;
+  reversals: string;
+  reconciliation_delta: string;
+  manual_entries: string;
+  withdrawals: string;
+  opening: string;
+  expected: string;
+  informed: string;
+  difference: string;
+  payment_totals: PaymentSourceTotal[];
+  commission?: string;
+}
+
+export interface OperationalResultReportSummary {
+  gross: string;
+  promotion_discount: string;
+  item_discount: string;
+  account_discount: string;
+  manual_discount: string;
+  discounts: string;
+  effective_revenue: string;
+  service_fee: string;
+  customer_total: string;
+  total_received_sales: string;
+  payment_reconciliation_delta: string;
+  charged_consumption: string;
+  operational_received: string;
+  historical_sales_cogs: string;
+  historical_consumption_cogs: string;
+  commission?: string;
+  operating_expenses: string;
+  fixed_cost: string;
+  estimated_result: string;
+  result: string;
+  margin: string;
+  operational_reconciliation_delta: string;
+  unclassified_withdrawals: { count: number; amount: string };
+  cash_session: number | null;
+  notice: string;
 }
 export interface DashboardData {
   period: ReportPeriod;
-  filters?: { category: number | null; categories: Array<{ id: number; name: string }> };
-  sales?: { revenue: string; gross: string; effective_revenue: string; customer_total: string; service_fee: string; commission?: string; count: number; average: string; account_discount: string; item_discount: string; manual_discount: string; manual_discount_count: number; promotion_discount: string; total_discount: string; cancellations: { count: number; value: string }; payment_distribution: Array<{ code: string; name: string; amount: string }>; hourly_sales: Array<{ hour: string; count: number; effective_revenue: string; service_fee: string; customer_total: string }>; top_products: Array<{ product_id?: number; product_name: string; quantity: string; revenue: string }>; top_categories: Array<{ category_id?: number; category_name: string; quantity: string; revenue: string }>; top_sellers: ReportUserGroup[]; top_operators: ReportUserGroup[]; heatmap: Array<{ weekday: number; hour: number; count: number; revenue: string; average: string }>; weekly_comparison: { current: Array<{ date: string; count: number; revenue: string }>; previous: Array<{ date: string; count: number; revenue: string }> }; latest_sales: ReportSale[] };
-  consumptions?: { count: number; reference: string; charged: string; subsidy: string };
+  filters?: {
+    category: number | null;
+    categories: Array<{ id: number; name: string }>;
+  };
+  sales?: {
+    revenue: string;
+    gross: string;
+    effective_revenue: string;
+    customer_total: string;
+    total_received_sales: string;
+    payment_reconciliation_delta: string;
+    total_received_operational?: string;
+    operational_reconciliation_delta?: string;
+    service_fee: string;
+    commission?: string;
+    count: number;
+    average: string;
+    account_discount: string;
+    item_discount: string;
+    manual_discount: string;
+    manual_discount_count: number;
+    promotion_discount: string;
+    total_discount: string;
+    cancellations: { count: number; value: string };
+    payment_distribution: Array<{ code: string; name: string; amount: string }>;
+    payment_distribution_scope: "operational" | "sales_only";
+    hourly_sales: Array<{
+      hour: string;
+      count: number;
+      effective_revenue: string;
+      service_fee: string;
+      customer_total: string;
+    }>;
+    top_products: Array<{
+      product_id?: number;
+      product_name: string;
+      quantity: string;
+      revenue: string;
+    }>;
+    top_categories: Array<{
+      category_id?: number;
+      category_name: string;
+      quantity: string;
+      revenue: string;
+    }>;
+    top_sellers: ReportUserGroup[];
+    top_operators: ReportUserGroup[];
+    heatmap: Array<{
+      weekday: number;
+      hour: number;
+      count: number;
+      revenue: string;
+      average: string;
+    }>;
+    weekly_comparison: {
+      current: Array<{ date: string; count: number; revenue: string }>;
+      previous: Array<{ date: string; count: number; revenue: string }>;
+    };
+    latest_sales: ReportSale[];
+  };
+  consumptions?: {
+    count: number;
+    reference: string;
+    charged: string;
+    subsidy: string;
+  };
   withdrawals?: { count: number; amount: string };
   current_cash?: CashReportRow[];
-  inventory?: { zero_count: number; negative_count: number; below_minimum_count: number; physical_products: number; inventory_value?: string };
-  operational_result?: { result: string; margin: string; cogs: string; operating_expenses: string; fixed_cost: string };
+  inventory?: {
+    zero_count: number;
+    negative_count: number;
+    below_minimum_count: number;
+    physical_products: number;
+    inventory_value?: string;
+  };
+  operational_result?: {
+    result: string;
+    estimated_result: string;
+    margin: string;
+    operational_received: string;
+    charged_consumption: string;
+    historical_sales_cogs: string;
+    historical_consumption_cogs: string;
+    commission?: string;
+    operating_expenses: string;
+    fixed_cost: string;
+    operational_reconciliation_delta: string;
+  };
 }
-export interface ReportUserGroup { user: { id: number; name: string }; count: number; gross: string; effective_revenue: string; service_fee: string; commission?: string; customer_total: string; average: string }
-export interface ReportResponse<T> extends Paginated<T> { period: ReportPeriod; summary: Record<string, unknown> }
+export interface ReportUserGroup {
+  user: { id: number; name: string };
+  count: number;
+  gross: string;
+  effective_revenue: string;
+  service_fee: string;
+  commission?: string;
+  commission_sale_count?: number;
+  customer_total: string;
+  total_received: string;
+  payment_reconciliation_delta: string;
+  average: string;
+  cancellation_count: number;
+  cancellation_value: string;
+}
+export interface ReportResponse<T, S = Record<string, unknown>> extends Paginated<T> {
+  period: ReportPeriod;
+  summary: S;
+}
 export interface ReportsOptions {
   operators: Array<{ id: number; name: string }>;
   sellers: Array<{ id: number; name: string }>;
   beneficiaries: Array<{ id: number; name: string; user_type: UserType }>;
-  products: Array<{ id: number; name: string; internal_code: string; status: Status }>;
+  products: Array<{
+    id: number;
+    name: string;
+    internal_code: string;
+    status: Status;
+  }>;
   categories: Array<{ id: number; name: string; status: Status }>;
-  payment_methods: Array<{ id: number; name: string; code: string; status: Status }>;
+  payment_methods: Array<{
+    id: number;
+    name: string;
+    code: string;
+    status: Status;
+  }>;
   cash_registers: Array<{ id: number; name: string; status: Status }>;
-  cash_sessions: Array<{ id: number; name: string; status: string; opened_at: string; closed_at: string | null }>;
+  cash_sessions: Array<{
+    id: number;
+    name: string;
+    status: string;
+    opened_at: string;
+    closed_at: string | null;
+  }>;
   movement_types: Array<{ value: string; label: string }>;
   withdrawal_categories: Array<{ value: string; label: string }>;
   user_types: Array<{ value: string; label: string }>;
@@ -652,10 +1001,21 @@ export interface AuditLog {
   object_label: string;
   object_type: string;
   object_id: string;
+  changes: Array<{
+    field: string;
+    field_label: string;
+    before_label: string;
+    after_label: string;
+  }>;
   before: Record<string, unknown>;
   after: Record<string, unknown>;
   metadata: Record<string, unknown>;
   created_at: string;
+}
+
+export interface AuditOptions {
+  modules: Array<{ value: string; label: string }>;
+  actions: Array<{ value: string; label: string }>;
 }
 
 export interface UserPermissionBlock {
@@ -672,6 +1032,8 @@ export interface UserPermissionBlock {
   is_active: boolean;
   created_by: number | null;
   created_by_name: string | null;
+  revoked_by: number | null;
+  revoked_by_name: string | null;
   revoked_at: string | null;
   created_at: string;
   updated_at: string;

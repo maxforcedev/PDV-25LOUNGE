@@ -66,14 +66,22 @@ type PricingPayload = {
 };
 let paymentKey = 1;
 const canonicalDecimal = /^\d+\.\d{2}$/;
-const userTypeLabels: Record<string, string> = { employee: "Funcionário", promoter: "Promoter", dj: "DJ", artist: "Artista", other: "Outro" };
+const userTypeLabels: Record<string, string> = {
+  employee: "Funcionário",
+  promoter: "Promoter",
+  dj: "DJ",
+  artist: "Artista",
+  other: "Outro",
+};
 
 function newIdempotencyKey() {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
   const bytes = crypto.getRandomValues(new Uint8Array(16));
   bytes[6] = (bytes[6] & 0x0f) | 0x40;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const value = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const value = Array.from(bytes, (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
   return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
 }
 
@@ -97,9 +105,11 @@ function validPreviewContract(value: unknown): value is SalePreview {
       preview.service_fee_amount,
       preview.reference_total,
       preview.total,
-    ].every(money)
-    || (preview.commission_rate !== undefined && !money(preview.commission_rate))
-    || (preview.commission_amount !== undefined && !money(preview.commission_amount))
+    ].every(money) ||
+    (preview.commission_rate !== undefined &&
+      !money(preview.commission_rate)) ||
+    (preview.commission_amount !== undefined &&
+      !money(preview.commission_amount))
   )
     return false;
   if (preview.charged_amount !== null && !money(preview.charged_amount))
@@ -132,8 +142,10 @@ export function SalesPdv() {
   );
   const consumption = operation === "consumption";
   const canDiscount = !consumption && hasPermission(permissions.applyDiscount);
-  const canItemDiscount = !consumption && hasPermission(permissions.applyItemDiscount);
-  const canWaiveServiceFee = !consumption && hasPermission(permissions.waiveServiceFee);
+  const canItemDiscount =
+    !consumption && hasPermission(permissions.applyItemDiscount);
+  const canWaiveServiceFee =
+    !consumption && hasPermission(permissions.waiveServiceFee);
   const contextRef = useRef("");
   contextRef.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}`;
   const requestRef = useRef(0);
@@ -158,7 +170,8 @@ export function SalesPdv() {
   const [authorizer, setAuthorizer] = useState("");
   const [authorizationPassword, setAuthorizationPassword] = useState("");
   const [itemAuthorizer, setItemAuthorizer] = useState("");
-  const [itemAuthorizationPassword, setItemAuthorizationPassword] = useState("");
+  const [itemAuthorizationPassword, setItemAuthorizationPassword] =
+    useState("");
   const [serviceFeeWaived, setServiceFeeWaived] = useState(false);
   const [serviceFeeAuthorizer, setServiceFeeAuthorizer] = useState("");
   const [serviceFeePassword, setServiceFeePassword] = useState("");
@@ -367,7 +380,10 @@ export function SalesPdv() {
           beneficiary_user: Number(beneficiary),
           charged_amount: charged.replace(",", "."),
         }
-      : { discount: discount.replace(",", "."), service_fee_waived: serviceFeeWaived }),
+      : {
+          discount: discount.replace(",", "."),
+          service_fee_waived: serviceFeeWaived,
+        }),
   };
   const pricingSignature = JSON.stringify(pricingPayload);
   function invalidatePreview() {
@@ -456,7 +472,11 @@ export function SalesPdv() {
           })
         : [
             ...current,
-            { ...product, quantity: product.unit === "un" ? "1" : "1.000", item_discount: "0.00" },
+            {
+              ...product,
+              quantity: product.unit === "un" ? "1" : "1.000",
+              item_discount: "0.00",
+            },
           ],
     );
   }
@@ -527,7 +547,9 @@ export function SalesPdv() {
     setCharged(canonical);
     setOperation("consumption");
     setDiscount("0.00");
-    setCart((current) => current.map((item) => ({ ...item, item_discount: "0.00" })));
+    setCart((current) =>
+      current.map((item) => ({ ...item, item_discount: "0.00" })),
+    );
     setConsumptionModal(false);
     invalidatePreview();
   }
@@ -634,7 +656,7 @@ export function SalesPdv() {
               charged_amount: canonicalMoney(charged),
               discount: "0.00",
             }
-            : {
+          : {
               seller_user: Number(seller),
               discount: canonicalMoney(discount),
               service_fee_waived: serviceFeeWaived,
@@ -646,7 +668,7 @@ export function SalesPdv() {
                       credential: authorizationPassword,
                     },
                   }
-                  : {}),
+                : {}),
               ...(itemDiscountAuthorizationRequired
                 ? {
                     item_discount_authorization: {
@@ -718,11 +740,11 @@ export function SalesPdv() {
   }
 
   return (
-    <div className="min-h-[calc(100vh-4.5rem)] bg-slate-950 p-3 sm:p-5">
+    <div className="min-h-[calc(100vh-4.5rem)] bg-operational-canvas p-3 sm:p-5">
       <div className="mx-auto max-w-[1600px]">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/6 px-5 py-4 text-white">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-operational-surface px-5 py-4 text-operational-fg">
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-[.2em] text-blue-300">
+            <p className="text-[10px] font-bold uppercase tracking-[.2em] text-operational-info">
               {consumption ? "Consumo interno" : "Frente de caixa"}
             </p>
             <h1 className="mt-1 text-xl font-bold">
@@ -730,7 +752,7 @@ export function SalesPdv() {
             </h1>
           </div>
           <div className="rounded-lg bg-white/10 px-4 py-2 text-right">
-            <span className="block text-[10px] uppercase tracking-wider text-slate-400">
+            <span className="block text-[10px] uppercase tracking-wider text-operational-muted">
               Filial em operação
             </span>
             <strong className="text-sm">
@@ -746,7 +768,7 @@ export function SalesPdv() {
             </div>
           ))}
         {sale && (
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-success/30 bg-emerald-950 px-5 py-4 text-emerald-100">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-success/30 bg-success-surface px-5 py-4 text-success-strong">
             <div className="flex items-center gap-3">
               <CheckCircle2 className="size-6" />
               <div>
@@ -756,7 +778,7 @@ export function SalesPdv() {
                     : "Venda"}{" "}
                   {sale.sale_number} finalizada
                 </strong>
-                <span className="text-xs text-emerald-300">
+                <span className="text-xs text-success-strong">
                   Total {formatBRL(sale.total)}
                 </span>
               </div>
@@ -771,7 +793,7 @@ export function SalesPdv() {
         )}
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(390px,.75fr)]">
           <section className="overflow-hidden rounded-xl bg-canvas">
-            <div className="border-b border-slate-200 bg-white p-4">
+            <div className="border-b border-subtle bg-surface p-4">
               <form
                 className="flex gap-2"
                 onSubmit={(event) => {
@@ -792,7 +814,7 @@ export function SalesPdv() {
               </form>
               <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
                 <button
-                  className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold ${!category ? "bg-primary text-white" : "bg-slate-100"}`}
+                  className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold ${!category ? "bg-primary text-white" : "bg-surface-muted text-fg"}`}
                   onClick={() => {
                     setCategory("");
                     void loadCatalog(
@@ -804,8 +826,13 @@ export function SalesPdv() {
                 </button>
                 {catalog.some((product) => product.is_favorite) && (
                   <button
-                    className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold ${category === "favorites" ? "bg-primary text-white" : "bg-slate-100"}`}
-                    onClick={() => { setCategory("favorites"); void loadCatalog(`sales/catalog/?operation_type=${operation}&favorites=true`); }}
+                    className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold ${category === "favorites" ? "bg-primary text-white" : "bg-surface-muted text-fg"}`}
+                    onClick={() => {
+                      setCategory("favorites");
+                      void loadCatalog(
+                        `sales/catalog/?operation_type=${operation}&favorites=true`,
+                      );
+                    }}
                   >
                     Favoritos
                   </button>
@@ -813,7 +840,7 @@ export function SalesPdv() {
                 {categories.map(({ id, name }) => (
                   <button
                     key={id}
-                    className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold ${category === String(id) ? "bg-primary text-white" : "bg-slate-100"}`}
+                    className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold ${category === String(id) ? "bg-primary text-white" : "bg-surface-muted text-fg"}`}
                     onClick={() => {
                       setCategory(String(id));
                       void loadCatalog(
@@ -837,7 +864,7 @@ export function SalesPdv() {
                     <button
                       key={product.id}
                       onClick={() => add(product)}
-                      className={`group relative min-h-36 rounded-xl border bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary hover:shadow-md ${product.is_favorite ? "border-primary/40" : "border-slate-200"}`}
+                      className={`group relative min-h-36 rounded-xl border bg-surface p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary hover:shadow-md focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-focus/30 ${product.is_favorite ? "border-primary/40" : "border-subtle"}`}
                     >
                       {product.is_favorite && (
                         <Heart className="absolute right-3 top-3 size-4 fill-primary text-primary" />
@@ -845,7 +872,7 @@ export function SalesPdv() {
                       <span className="block pr-5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
                         {product.category_name || "Geral"}
                       </span>
-                      <strong className="mt-3 block text-sm leading-5 text-dark">
+                      <strong className="mt-3 block text-sm leading-5 text-fg">
                         {product.name}
                       </strong>
                       <span className="mt-1 block text-[10px] text-slate-400">
@@ -876,8 +903,8 @@ export function SalesPdv() {
               />
             )}
           </section>
-          <aside className="self-start overflow-hidden rounded-xl bg-white xl:sticky xl:top-23">
-            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+          <aside className="self-start overflow-hidden rounded-xl bg-surface xl:sticky xl:top-23">
+            <div className="flex items-center justify-between border-b border-subtle px-5 py-4">
               <div>
                 <h2 className="flex items-center gap-2 text-sm font-bold">
                   <ShoppingBasket className="size-4 text-primary" />
@@ -916,7 +943,7 @@ export function SalesPdv() {
                     </div>
                     <div className="mt-2 flex items-center gap-2">
                       <button
-                        className="icon-button size-8 border border-slate-200"
+                        className="icon-button size-8 border border-subtle"
                         onClick={() => {
                           const q =
                             quantityToThousandths(item.quantity) || BigInt(0);
@@ -943,7 +970,7 @@ export function SalesPdv() {
                         aria-label={`Quantidade de ${item.name}`}
                       />
                       <button
-                        className="icon-button size-8 border border-slate-200"
+                        className="icon-button size-8 border border-subtle"
                         onClick={() => {
                           const q =
                             quantityToThousandths(item.quantity) || BigInt(0);
@@ -983,7 +1010,10 @@ export function SalesPdv() {
                     )}
                     {!consumption && (
                       <div className="mt-2 flex items-center gap-2">
-                        <label className="text-[10px] font-semibold text-slate-500" htmlFor={`item-discount-${item.id}`}>
+                        <label
+                          className="text-[10px] font-semibold text-slate-500"
+                          htmlFor={`item-discount-${item.id}`}
+                        >
                           Desconto do item (R$)
                         </label>
                         <Input
@@ -991,7 +1021,9 @@ export function SalesPdv() {
                           className="ml-auto h-8 w-24 text-right"
                           inputMode="decimal"
                           value={item.item_discount}
-                          onChange={(event) => itemDiscount(item.id, event.target.value)}
+                          onChange={(event) =>
+                            itemDiscount(item.id, event.target.value)
+                          }
                         />
                       </div>
                     )}
@@ -1000,7 +1032,7 @@ export function SalesPdv() {
               </div>
             )}
             {!!cart.length && (
-              <div className="space-y-4 border-t border-slate-200 p-5">
+              <div className="space-y-4 border-t border-subtle p-5">
                 <div className="flex flex-wrap gap-2">
                   {canConsumption && (!consumption || !beneficiary) && (
                     <Button variant="secondary" onClick={openConsumption}>
@@ -1067,8 +1099,8 @@ export function SalesPdv() {
                   </Field>
                 )}
                 {discountAuthorizationRequired && (
-                  <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-4">
-                    <strong className="block text-xs text-amber-800">
+                  <div className="space-y-3 rounded-lg border border-warning/30 bg-warning-surface p-4">
+                    <strong className="block text-xs text-warning-strong">
                       Autorização de desconto
                     </strong>
                     <Field label="Autorizador">
@@ -1101,19 +1133,25 @@ export function SalesPdv() {
                   </div>
                 )}
                 {itemDiscountAuthorizationRequired && (
-                  <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-4">
-                    <strong className="block text-xs text-amber-800">
+                  <div className="space-y-3 rounded-lg border border-warning/30 bg-warning-surface p-4">
+                    <strong className="block text-xs text-warning-strong">
                       Autorização de desconto por item
                     </strong>
                     <Field label="Autorizador">
                       <Select
                         required
                         value={itemAuthorizer}
-                        onChange={(event) => setItemAuthorizer(event.target.value)}
+                        onChange={(event) =>
+                          setItemAuthorizer(event.target.value)
+                        }
                       >
-                        <option value="" disabled>Selecione quem autoriza</option>
+                        <option value="" disabled>
+                          Selecione quem autoriza
+                        </option>
                         {itemAuthorizers.map((item) => (
-                          <option key={item.id} value={item.id}>{item.name}</option>
+                          <option key={item.id} value={item.id}>
+                            {item.name}
+                          </option>
                         ))}
                       </Select>
                     </Field>
@@ -1123,27 +1161,68 @@ export function SalesPdv() {
                         type="password"
                         autoComplete="current-password"
                         value={itemAuthorizationPassword}
-                        onChange={(event) => setItemAuthorizationPassword(event.target.value)}
+                        onChange={(event) =>
+                          setItemAuthorizationPassword(event.target.value)
+                        }
                       />
                     </Field>
                   </div>
                 )}
                 {!consumption && (
-                  <label className="flex items-center gap-3 rounded-lg border border-slate-200 p-4 text-xs font-semibold">
-                    <input type="checkbox" className="size-4 accent-primary" checked={serviceFeeWaived} onChange={(event) => { invalidatePreview(); setServiceFeeWaived(event.target.checked); }} />
-                    <span><strong className="block">Retirar taxa de serviço</strong><small className="font-normal text-slate-400">{canWaiveServiceFee ? "Permitido pelo seu perfil." : "Exige autorização pontual."}</small></span>
+                  <label className="flex items-center gap-3 rounded-lg border border-subtle p-4 text-xs font-semibold">
+                    <input
+                      type="checkbox"
+                      className="size-4 accent-primary"
+                      checked={serviceFeeWaived}
+                      onChange={(event) => {
+                        invalidatePreview();
+                        setServiceFeeWaived(event.target.checked);
+                      }}
+                    />
+                    <span>
+                      <strong className="block">Retirar taxa de serviço</strong>
+                      <small className="font-normal text-slate-400">
+                        {canWaiveServiceFee
+                          ? "Permitido pelo seu perfil."
+                          : "Exige autorização pontual."}
+                      </small>
+                    </span>
                   </label>
                 )}
                 {serviceFeeAuthorizationRequired && (
-                  <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-4">
-                    <strong className="block text-xs text-amber-800">Autorização para retirar taxa</strong>
+                  <div className="space-y-3 rounded-lg border border-warning/30 bg-warning-surface p-4">
+                    <strong className="block text-xs text-warning-strong">
+                      Autorização para retirar taxa
+                    </strong>
                     <Field label="Autorizador">
-                      <Select required value={serviceFeeAuthorizer} onChange={(event) => setServiceFeeAuthorizer(event.target.value)}>
-                        <option value="" disabled>Selecione quem autoriza</option>
-                        {authorizers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                      <Select
+                        required
+                        value={serviceFeeAuthorizer}
+                        onChange={(event) =>
+                          setServiceFeeAuthorizer(event.target.value)
+                        }
+                      >
+                        <option value="" disabled>
+                          Selecione quem autoriza
+                        </option>
+                        {authorizers.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.name}
+                          </option>
+                        ))}
                       </Select>
                     </Field>
-                    <Field label="Senha do autorizador"><Input required type="password" autoComplete="current-password" value={serviceFeePassword} onChange={(event) => setServiceFeePassword(event.target.value)} /></Field>
+                    <Field label="Senha do autorizador">
+                      <Input
+                        required
+                        type="password"
+                        autoComplete="current-password"
+                        value={serviceFeePassword}
+                        onChange={(event) =>
+                          setServiceFeePassword(event.target.value)
+                        }
+                      />
+                    </Field>
                   </div>
                 )}
                 {previewError && <Alert message={previewError} />}
@@ -1154,8 +1233,8 @@ export function SalesPdv() {
                   </div>
                 )}
                 {preview && (
-                  <div className="rounded-lg bg-slate-950 p-4 text-white">
-                    <div className="flex justify-between text-xs text-slate-400">
+                  <div className="rounded-lg bg-operational-surface p-4 text-operational-fg">
+                    <div className="flex justify-between text-xs text-operational-muted">
                       <span>
                         {consumption
                           ? "Subtotal de referência"
@@ -1165,7 +1244,7 @@ export function SalesPdv() {
                     </div>
                     {!consumption &&
                       preview.promotion_discount_total !== "0.00" && (
-                        <div className="mt-2 flex justify-between text-xs text-emerald-300">
+                        <div className="mt-2 flex justify-between text-xs text-operational-success">
                           <span>Benefício promocional</span>
                           <span>
                             - {formatBRL(preview.promotion_discount_total)}
@@ -1173,31 +1252,33 @@ export function SalesPdv() {
                         </div>
                       )}
                     {!consumption && (
-                      <div className="mt-2 flex justify-between text-xs text-slate-400">
+                      <div className="mt-2 flex justify-between text-xs text-operational-muted">
                         <span>Desconto na conta</span>
                         <span>- {formatBRL(preview.discount)}</span>
                       </div>
                     )}
                     {!consumption && preview.item_discount_total !== "0.00" && (
-                      <div className="mt-2 flex justify-between text-xs text-amber-300">
+                      <div className="mt-2 flex justify-between text-xs text-operational-warning">
                         <span>Descontos por item</span>
                         <span>- {formatBRL(preview.item_discount_total)}</span>
                       </div>
                     )}
                     {!consumption && preview.service_fee_amount !== "0.00" && (
-                      <div className="mt-2 flex justify-between text-xs text-blue-300">
-                        <span>Taxa de serviço ({preview.service_fee_rate}%)</span>
+                      <div className="mt-2 flex justify-between text-xs text-operational-info">
+                        <span>
+                          Taxa de serviço ({preview.service_fee_rate}%)
+                        </span>
                         <span>+ {formatBRL(preview.service_fee_amount)}</span>
                       </div>
                     )}
                     {!consumption && preview.service_fee_waived && (
-                      <div className="mt-2 flex justify-between text-xs text-amber-300">
+                      <div className="mt-2 flex justify-between text-xs text-operational-warning">
                         <span>Taxa de serviço retirada</span>
                         <span>{preview.service_fee_rate}%</span>
                       </div>
                     )}
                     {consumption && (
-                      <div className="mt-2 flex justify-between text-xs text-slate-400">
+                      <div className="mt-2 flex justify-between text-xs text-operational-muted">
                         <span>Valor cobrado</span>
                         <span>{formatBRL(preview.charged_amount)}</span>
                       </div>
@@ -1210,7 +1291,7 @@ export function SalesPdv() {
                             .map((item) => (
                               <div
                                 key={item.product}
-                                className="flex justify-between text-[10px] text-emerald-300"
+                                className="flex justify-between text-[10px] text-operational-success"
                               >
                                 <span>
                                   {item.product_name} · {item.promotion_name}
@@ -1225,7 +1306,7 @@ export function SalesPdv() {
                       )}
                     <div className="mt-3 flex justify-between border-t border-white/10 pt-3">
                       <strong>Total a pagar</strong>
-                      <strong className="text-xl text-blue-300">
+                      <strong className="text-xl text-operational-info">
                         {formatBRL(preview.total)}
                       </strong>
                     </div>
@@ -1246,9 +1327,15 @@ export function SalesPdv() {
                           </option>
                         ))}
                       </Select>
-                      {!sessions.length && hasPermission(permissions.openCashRegister) && (
-                        <Link className="mt-2 inline-block text-xs font-bold text-primary" href="/caixas/abrir?return=/pdv">Abrir caixa e continuar no PDV</Link>
-                      )}
+                      {!sessions.length &&
+                        hasPermission(permissions.openCashRegister) && (
+                          <Link
+                            className="mt-2 inline-block text-xs font-bold text-primary"
+                            href="/caixas/abrir?return=/pdv"
+                          >
+                            Abrir caixa e continuar no PDV
+                          </Link>
+                        )}
                     </Field>
                     <div className="flex items-center justify-between">
                       <strong className="text-xs">Pagamentos</strong>
@@ -1271,10 +1358,37 @@ export function SalesPdv() {
                         + Dividir pagamento
                       </button>
                     </div>
-                    <div className="rounded-lg border border-slate-200 p-3">
+                    <div className="rounded-lg border border-subtle p-3">
                       <div className="grid gap-2 sm:grid-cols-[150px_1fr]">
-                        <Field label="Dividir por pessoas"><Input inputMode="numeric" min={1} value={splitPeople} onChange={(event) => setSplitPeople(event.target.value.replace(/\D/g, "") || "1")} /></Field>
-                        <div className="self-end pb-2 text-xs text-slate-500">Valor por pessoa: <strong className="text-slate-900">{preview ? formatBRL(centsToDecimal((moneyToCents(preview.total) || BigInt(0)) / BigInt(Math.max(1, Number(splitPeople) || 1)))) : "-"}</strong>. Esta calculadora não altera a venda nem os pagamentos.</div>
+                        <Field label="Dividir por pessoas">
+                          <Input
+                            inputMode="numeric"
+                            min={1}
+                            value={splitPeople}
+                            onChange={(event) =>
+                              setSplitPeople(
+                                event.target.value.replace(/\D/g, "") || "1",
+                              )
+                            }
+                          />
+                        </Field>
+                        <div className="self-end pb-2 text-xs text-slate-500">
+                          Valor por pessoa:{" "}
+                          <strong className="text-slate-900">
+                            {preview
+                              ? formatBRL(
+                                  centsToDecimal(
+                                    (moneyToCents(preview.total) || BigInt(0)) /
+                                      BigInt(
+                                        Math.max(1, Number(splitPeople) || 1),
+                                      ),
+                                  ),
+                                )
+                              : "-"}
+                          </strong>
+                          . Esta calculadora não altera a venda nem os
+                          pagamentos.
+                        </div>
                       </div>
                     </div>
                     {payments.map((row) => {
@@ -1292,7 +1406,7 @@ export function SalesPdv() {
                       return (
                         <div
                           key={row.key}
-                          className="rounded-lg border border-slate-200 p-3"
+                          className="rounded-lg border border-subtle p-3"
                         >
                           <div className="grid gap-2 sm:grid-cols-2">
                             <Select
@@ -1313,7 +1427,7 @@ export function SalesPdv() {
                               ))}
                             </Select>
                             {isCash ? (
-                              <div className="rounded-md bg-slate-50 px-3 py-2 text-xs">
+                              <div className="rounded-md bg-surface-muted px-3 py-2 text-xs">
                                 <span className="block text-[9px] uppercase text-slate-400">
                                   Valor da conta
                                 </span>
@@ -1350,7 +1464,7 @@ export function SalesPdv() {
                                   )
                                 }
                               />
-                              <div className="rounded-md bg-slate-50 px-3 py-2 text-xs">
+                              <div className="rounded-md bg-surface-muted px-3 py-2 text-xs">
                                 <span className="block text-[9px] uppercase text-slate-400">
                                   Troco previsto
                                 </span>
@@ -1387,7 +1501,7 @@ export function SalesPdv() {
                   </div>
                 )}
                 {preview && free && (
-                  <div className="rounded-lg border border-success/20 bg-success/8 p-3 text-xs text-emerald-800">
+                  <div className="rounded-lg border border-success/20 bg-success-surface p-3 text-xs text-success-strong">
                     Consumação sem cobrança: não utiliza caixa nem forma de
                     pagamento.
                   </div>

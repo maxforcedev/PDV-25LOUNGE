@@ -15,5 +15,5 @@ export const domainLabels: Record<string, string> = {
 
 export function domainLabel(value: unknown) {
   const key = String(value ?? "");
-  return domainLabels[key] || key || "-";
+  return domainLabels[key] || (key ? "Não identificado" : "-");
 }

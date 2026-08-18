@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from apps.base.audit import audit_log, model_snapshot
 from apps.companies.selectors import (
     active_operational_branches,
     active_operational_companies,
@@ -15,6 +16,28 @@ from apps.companies.selectors import (
 
 from .models import User
 from .serializers import LoginSerializer, UserSerializer
+
+
+def _audit_scope(request, user):
+    if user.is_superuser:
+        return None, None, {'is_superuser': True}
+
+    companies = list(active_operational_companies(user).order_by('pk'))
+    branches = list(
+        active_operational_branches(user).select_related('company').order_by('pk')
+    )
+    requested_branch_id = request.headers.get('X-Branch-ID')
+    branch = next(
+        (item for item in branches if str(item.pk) == str(requested_branch_id)),
+        None,
+    )
+    if branch is None and not requested_branch_id and len(branches) == 1:
+        branch = branches[0]
+    company = branch.company if branch else (companies[0] if len(companies) == 1 else None)
+    return company, branch, {
+        'available_company_ids': [item.pk for item in companies],
+        'available_branch_ids': [item.pk for item in branches],
+    }
 
 
 class CsrfView(APIView):
@@ -110,6 +133,17 @@ class LoginView(APIView):
                 return Response({'detail': message}, status=status.HTTP_403_FORBIDDEN)
 
         login(request, user)
+        company, branch, metadata = _audit_scope(request, user)
+        audit_log(
+            actor=user,
+            action='auth.login',
+            obj=user,
+            company=company,
+            branch=branch,
+            before={'authenticated': False},
+            after={'authenticated': True},
+            metadata=metadata,
+        )
         response = Response(UserSerializer(user, context={'request': request}).data)
         response['X-CSRFToken'] = get_token(request)
         return response
@@ -119,7 +153,19 @@ class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        user = request.user
+        company, branch, metadata = _audit_scope(request, user)
         logout(request)
+        audit_log(
+            actor=user,
+            action='auth.logout',
+            obj=user,
+            company=company,
+            branch=branch,
+            before={'authenticated': True},
+            after={'authenticated': False},
+            metadata=metadata,
+        )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -137,5 +183,18 @@ class MeView(APIView):
             context={'request': request},
         )
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        fields = tuple(serializer.validated_data)
+        before = model_snapshot(request.user, fields)
+        company, branch, metadata = _audit_scope(request, request.user)
+        user = serializer.save()
+        audit_log(
+            actor=user,
+            action='user.update_self',
+            obj=user,
+            company=company,
+            branch=branch,
+            before=before,
+            after=model_snapshot(user, fields),
+            metadata=metadata,
+        )
         return Response(serializer.data)

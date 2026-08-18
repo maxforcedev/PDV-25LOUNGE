@@ -9,9 +9,16 @@ from apps.base.audit import audit_log, model_snapshot
 from apps.base.exceptions import DomainValidationError
 from apps.companies.models import Branch, Status
 from apps.companies.selectors import user_has_branch_permission
-from apps.products.models import InventoryBehavior, Product
+from apps.products.models import Category, InventoryBehavior, Product
 
-from .models import MovementNature, MovementType, Stock, StockMovement
+from .models import (
+    InventoryOperation,
+    InventoryOperationKind,
+    MovementNature,
+    MovementType,
+    Stock,
+    StockMovement,
+)
 
 
 def _decimal(value, field, *, positive=False, nonnegative=False):
@@ -70,13 +77,72 @@ def _validate_operational_stock(product, branch):
         raise ValidationError({'product': 'Somente produtos com estoque proprio podem ser movimentados.'})
 
 
-def _move(*, product, branch, quantity, user, reason, movement_type, nature,
-          permission_code, operation_reference=None):
+def _claim_operation(*, branch, key, user, kind, payload):
+    operation = InventoryOperation.objects.select_for_update().filter(
+        branch=branch, idempotency_key=key
+    ).first()
+    if operation:
+        if (
+            operation.created_by_id != user.pk
+            or operation.kind != kind
+            or operation.payload != payload
+        ):
+            raise DomainValidationError(
+                code='idempotency_key_conflict',
+                message='A chave de idempotencia ja foi usada com outros dados.',
+                details={'operation_reference': str(key)},
+            )
+        return True
+    InventoryOperation.objects.create(
+        branch=branch,
+        idempotency_key=key,
+        kind=kind,
+        payload=payload,
+        created_by=user,
+    )
+    return False
+
+
+def _move(*, product, branch, user, reason, movement_type, nature,
+          permission_code, quantity=None, final_quantity=None,
+          operation_reference=None, idempotency_key=None):
     reason = (reason or '').strip()
     with transaction.atomic():
         branch = _authorized_branch(branch, user, permission_code)
+        branch = Branch.objects.select_for_update().select_related('company').get(pk=branch.pk)
+        product_id = _pk(product)
+        if idempotency_key:
+            kind = {
+                MovementType.ENTRY: InventoryOperationKind.MANUAL_ENTRY,
+                MovementType.EXIT: InventoryOperationKind.MANUAL_EXIT,
+                MovementType.ADJUSTMENT: InventoryOperationKind.MANUAL_ADJUSTMENT,
+            }[movement_type]
+            payload = {
+                'product': int(product_id),
+                'quantity': str(quantity) if final_quantity is None else None,
+                'final_quantity': str(final_quantity) if final_quantity is not None else None,
+                'nature': str(nature),
+                'reason': reason,
+            }
+            replayed = _claim_operation(
+                branch=branch, key=idempotency_key, user=user, kind=kind,
+                payload=payload,
+            )
+            if replayed:
+                existing = list(StockMovement.objects.select_related('stock').filter(
+                    stock__branch=branch,
+                    operation_reference=idempotency_key,
+                )[:2])
+                if len(existing) == 1:
+                    existing[0]._idempotency_replayed = True
+                    return existing[0]
+                raise DomainValidationError(
+                    code='idempotency_key_conflict',
+                    message='A operacao idempotente persistida esta inconsistente.',
+                    details={'operation_reference': str(idempotency_key)},
+                )
         try:
-            product = Product.objects.select_for_update().get(pk=_pk(product))
+            product = Product.objects.select_for_update().get(pk=product_id)
         except Product.DoesNotExist:
             raise ValidationError({'product': 'Produto invalido.'})
         _validate_operational_stock(product, branch)
@@ -87,10 +153,27 @@ def _move(*, product, branch, quantity, user, reason, movement_type, nature,
         ).first()
         if stock is None:
             stock = Stock.objects.create(product=product, branch=branch)
+        if final_quantity is not None:
+            quantity = final_quantity - stock.current_quantity
+            if quantity == 0:
+                raise ValidationError({'final_quantity': 'O ajuste deve alterar o saldo atual.'})
+            if (
+                stock.current_quantity < 0
+                and quantity > 0
+                and permission_code != 'inventory.regularize'
+            ):
+                raise DomainValidationError(
+                    code='regularization_permission_required',
+                    message='Use o fluxo Regularizar negativos para corrigir este saldo.',
+                    details={
+                        'stock_id': stock.pk,
+                        'current_quantity': str(stock.current_quantity),
+                    },
+                )
         movement = apply_locked_stock(
             stock=stock, quantity=quantity, user=user, reason=reason,
             movement_type=movement_type, nature=nature,
-            operation_reference=operation_reference,
+            operation_reference=idempotency_key or operation_reference,
         )
         audit_log(
             actor=user,
@@ -146,58 +229,41 @@ def apply_locked_stock(*, stock, quantity, user, movement_type, reason='', sale=
 
 
 def entry(product, branch, quantity, user, reason='', nature=MovementNature.NORMAL,
-          operation_reference=None):
+          operation_reference=None, idempotency_key=None):
     quantity = _decimal(quantity, 'quantity', positive=True)
     return _move(
         product=product, branch=branch, quantity=quantity, user=user,
         reason=reason, movement_type=MovementType.ENTRY, nature=nature,
         permission_code='inventory.entry', operation_reference=operation_reference,
+        idempotency_key=idempotency_key,
     )
 
 
 def exit(product, branch, quantity, user, reason='', nature=MovementNature.OTHER,
-         operation_reference=None):
+         operation_reference=None, idempotency_key=None):
     quantity = _decimal(quantity, 'quantity', positive=True)
     return _move(
         product=product, branch=branch, quantity=-quantity, user=user,
         reason=reason, movement_type=MovementType.EXIT, nature=nature,
         permission_code='inventory.exit', operation_reference=operation_reference,
+        idempotency_key=idempotency_key,
     )
 
 
 def adjustment(product, branch, final_quantity, user, reason='',
                nature=MovementNature.INVENTORY, permission_code='inventory.adjust',
-               operation_reference=None):
+               operation_reference=None, idempotency_key=None):
     final_quantity = _decimal(final_quantity, 'final_quantity')
-    with transaction.atomic():
-        locked_branch = _authorized_branch(branch, user, permission_code)
-        try:
-            locked_product = Product.objects.select_for_update().get(pk=_pk(product))
-        except Product.DoesNotExist:
-            raise ValidationError({'product': 'Produto invalido.'})
-        _validate_operational_stock(locked_product, locked_branch)
-        stock = Stock.objects.select_for_update().filter(
-            product=locked_product, branch=locked_branch
-        ).first()
-        current = stock.current_quantity if stock else Decimal('0')
-        delta = final_quantity - current
-        if delta == 0:
-            raise ValidationError({'final_quantity': 'O ajuste deve alterar o saldo atual.'})
-        if current < 0 and delta > 0 and permission_code != 'inventory.regularize':
-            raise DomainValidationError(
-                code='regularization_permission_required',
-                message='Use o fluxo Regularizar negativos para corrigir este saldo.',
-                details={'stock_id': stock.pk if stock else None, 'current_quantity': str(current)},
-            )
-        return _move(
-            product=locked_product, branch=locked_branch, quantity=delta, user=user,
-            reason=reason, movement_type=MovementType.ADJUSTMENT, nature=nature,
-            permission_code=permission_code, operation_reference=operation_reference,
-        )
+    return _move(
+        product=product, branch=branch, final_quantity=final_quantity, user=user,
+        reason=reason, movement_type=MovementType.ADJUSTMENT, nature=nature,
+        permission_code=permission_code, operation_reference=operation_reference,
+        idempotency_key=idempotency_key,
+    )
 
 
 @transaction.atomic
-def group_entry(*, branch, items, user, operation_reference,
+def group_entry(*, branch, category, items, user, operation_reference,
                 nature=MovementNature.NORMAL, reason=''):
     branch = _authorized_branch(branch, user, 'inventory.entry')
     branch = Branch.objects.select_for_update().select_related('company').get(pk=branch.pk)
@@ -206,27 +272,52 @@ def group_entry(*, branch, items, user, operation_reference,
         (int(_pk(item.get('product'))), _decimal(item.get('quantity'), 'quantity', nonnegative=True))
         for item in items if _decimal(item.get('quantity'), 'quantity', nonnegative=True) > 0
     )
-    existing = list(StockMovement.objects.select_related('stock').filter(
-        stock__branch=branch, operation_reference=reference,
-    ).order_by('stock__product_id'))
-    if existing:
-        persisted = [(movement.stock.product_id, movement.quantity) for movement in existing]
-        coherent = (
-            persisted == requested
-            and all(movement.movement_type == MovementType.ENTRY for movement in existing)
-            and all(movement.nature == nature for movement in existing)
-            and all(movement.reason == (reason or '').strip() for movement in existing)
-            and all(movement.user_id == user.pk for movement in existing)
-        )
-        if not coherent:
+    payload = {
+        'category': int(_pk(category)),
+        'items': [
+            {'product': product_id, 'quantity': str(quantity)}
+            for product_id, quantity in requested
+        ],
+        'nature': str(nature),
+        'reason': (reason or '').strip(),
+    }
+    replayed = _claim_operation(
+        branch=branch, key=reference, user=user,
+        kind=InventoryOperationKind.GROUP_ENTRY, payload=payload,
+    )
+    if replayed:
+        existing = list(StockMovement.objects.select_related('stock').filter(
+            stock__branch=branch, operation_reference=reference,
+        ).order_by('stock__product_id'))
+        if len(existing) != len(requested):
             raise DomainValidationError(
                 code='idempotency_key_conflict',
-                message='A chave de idempotencia ja foi usada com outros dados.',
+                message='A operacao idempotente persistida esta inconsistente.',
                 details={'operation_reference': str(reference)},
             )
         for movement in existing:
             movement._idempotency_replayed = True
         return existing
+    product_ids = [product_id for product_id, _quantity in requested]
+    if not Category.objects.filter(
+        pk=_pk(category), company_id=branch.company_id, status=Status.ACTIVE
+    ).exists():
+        raise DomainValidationError(
+            code='invalid_inventory_entry_category',
+            message='A categoria informada nao esta ativa nesta empresa.',
+            details={'category_id': _pk(category)},
+        )
+    valid_ids = set(Product.objects.filter(
+        id__in=product_ids,
+        company_id=branch.company_id,
+        category_id=_pk(category),
+        inventory_behavior=InventoryBehavior.DIRECT,
+        status=Status.ACTIVE,
+    ).values_list('id', flat=True))
+    if valid_ids != set(product_ids):
+        raise ValidationError({
+            'items': 'Todos os produtos devem ser fisicos, ativos e pertencer a categoria informada.'
+        })
     movements = []
     for item in items:
         quantity = _decimal(item.get('quantity'), 'quantity', nonnegative=True)
@@ -248,6 +339,7 @@ def group_entry(*, branch, items, user, operation_reference,
 def regularize_negatives(*, branch, items, user, reason=''):
     reference = uuid.uuid4()
     branch = _authorized_branch(branch, user, 'inventory.regularize')
+    branch = Branch.objects.select_for_update().select_related('company').get(pk=branch.pk)
     movements = []
     for item in items:
         try:

@@ -79,6 +79,36 @@ class MovementNature(models.TextChoices):
     OTHER = 'other', 'Outros'
 
 
+class InventoryOperationKind(models.TextChoices):
+    MANUAL_ENTRY = 'manual_entry', 'Entrada manual'
+    MANUAL_EXIT = 'manual_exit', 'Saida manual'
+    MANUAL_ADJUSTMENT = 'manual_adjustment', 'Ajuste manual'
+    GROUP_ENTRY = 'group_entry', 'Entrada em grupo'
+
+
+class InventoryOperation(BaseModel):
+    branch = models.ForeignKey(
+        Branch, on_delete=models.PROTECT, related_name='inventory_operations'
+    )
+    idempotency_key = models.UUIDField(editable=False)
+    kind = models.CharField(max_length=32, choices=InventoryOperationKind.choices)
+    payload = models.JSONField(default=dict)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='inventory_operations',
+    )
+
+    class Meta:
+        ordering = ('-created_at', '-pk')
+        constraints = [
+            models.UniqueConstraint(
+                fields=('branch', 'idempotency_key'),
+                name='inventory_operation_branch_idempotency_unique',
+            ),
+        ]
+
+
 class StockMovement(BaseModel):
     stock = models.ForeignKey(
         Stock, on_delete=models.PROTECT, related_name='movements'

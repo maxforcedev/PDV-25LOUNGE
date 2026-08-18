@@ -8,7 +8,11 @@ from rest_framework.response import Response
 
 from apps.companies.selectors import accessible_branches, user_has_branch_permission
 from apps.accounts.models import User
-from apps.base.datetimes import parse_datetime_range
+from apps.base.datetimes import (
+    filter_datetime_range,
+    inclusive_end_exclusive,
+    parse_datetime_range,
+)
 from apps.base.audit import audit_log, model_snapshot
 
 from .models import (
@@ -163,9 +167,13 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
             queryset = queryset.filter(cash_register_id=register)
         start_datetime, end_datetime = parse_datetime_range(params)
         if start_datetime:
-            queryset = queryset.filter(opened_at__gte=start_datetime)
+            queryset = queryset.filter(
+                Q(closed_at__isnull=True) | Q(closed_at__gte=start_datetime)
+            )
         if end_datetime:
-            queryset = queryset.filter(opened_at__lte=end_datetime)
+            queryset = queryset.filter(
+                opened_at__lt=inclusive_end_exclusive(end_datetime)
+            )
         return queryset
 
     def _serialize_session(self, session, response_status=status.HTTP_200_OK):
@@ -257,7 +265,7 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
     @action(detail=True, methods=('get',))
     def timeline(self, request, pk=None):
         from apps.sales.models import (
-            OperationType, Payment, PaymentMethodCode, Sale, SaleStatus,
+            OperationType, PaymentMethodCode, Sale, SaleStatus,
         )
 
         session = self.get_object()
@@ -303,38 +311,21 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
             )['value']
             has_cash = cash_amount > 0
             is_cancelled = sale.status == SaleStatus.CANCELLED
-            charged = sale.charged_amount or Decimal('0.00')
-            show = (
-                (sale.operation_type == OperationType.SALE and has_cash and not is_cancelled)
-                or (sale.operation_type == OperationType.CONSUMPTION and charged > 0 and not is_cancelled)
-                or is_cancelled
-            )
-            if not show:
+            if not has_cash:
                 continue
-            if is_cancelled:
-                kind = 'cancellation'
-                label = f"Cancelamento · {'Consumação' if sale.operation_type == OperationType.CONSUMPTION else 'Venda'} {sale.sale_number}"
-                timestamp = sale.cancelled_at or sale.created_at
-                amount = f'{cash_amount:.2f}'
-            elif sale.operation_type == OperationType.CONSUMPTION:
-                kind = 'charged_consumption'
-                label = f"Consumação cobrada {sale.sale_number}"
-                timestamp = sale.created_at
-                amount = f'{cash_amount:.2f}'
-            else:
-                kind = 'cash_sale'
-                label = f"Venda em dinheiro {sale.sale_number}"
-                timestamp = sale.created_at
-                amount = f'{cash_amount:.2f}'
+            is_consumption = sale.operation_type == OperationType.CONSUMPTION
             events.append({
-                'id': f'sale-{sale.pk}',
-                'timestamp': (timestamp or sale.created_at).isoformat(),
-                'kind': kind,
-                'label': label,
-                'amount': amount,
+                'id': f'sale-{sale.pk}-cash',
+                'timestamp': sale.created_at.isoformat(),
+                'kind': 'charged_consumption' if is_consumption else 'cash_sale',
+                'label': (
+                    f'Consumação em dinheiro {sale.sale_number}'
+                    if is_consumption else f'Venda em dinheiro {sale.sale_number}'
+                ),
+                'amount': f'{cash_amount:.2f}',
                 'sale': {'id': sale.pk, 'number': sale.sale_number, 'operation_type': sale.operation_type, 'status': sale.status},
                 'details': f"Operador {sale.created_by.get_full_name().strip() or sale.created_by.email}",
-                'reason': sale.cancellation_reason if is_cancelled else None,
+                'reason': None,
                 'beneficiary_name': (
                     sale.beneficiary_user.get_full_name().strip() or sale.beneficiary_user.email
                     if sale.beneficiary_user_id else None
@@ -342,6 +333,27 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
                 'registered_by_name': sale.created_by.get_full_name().strip() or sale.created_by.email,
                 'category_label': None,
             })
+            if is_cancelled:
+                cancelled_by = (
+                    sale.cancelled_by.get_full_name().strip() or sale.cancelled_by.email
+                    if sale.cancelled_by_id else None
+                )
+                events.append({
+                    'id': f'sale-{sale.pk}-reversal',
+                    'timestamp': (sale.cancelled_at or sale.created_at).isoformat(),
+                    'kind': 'cancellation',
+                    'label': f"Reversão em dinheiro · {'Consumação' if is_consumption else 'Venda'} {sale.sale_number}",
+                    'amount': f'{-cash_amount:.2f}',
+                    'sale': {'id': sale.pk, 'number': sale.sale_number, 'operation_type': sale.operation_type, 'status': sale.status},
+                    'details': f'Cancelado por {cancelled_by}' if cancelled_by else 'Operação cancelada',
+                    'reason': sale.cancellation_reason,
+                    'beneficiary_name': (
+                        sale.beneficiary_user.get_full_name().strip() or sale.beneficiary_user.email
+                        if sale.beneficiary_user_id else None
+                    ),
+                    'registered_by_name': cancelled_by,
+                    'category_label': None,
+                })
         if session.status == CashSessionStatus.CLOSED and session.closed_at:
             events.append({
                 'id': f'close-{session.pk}',
@@ -386,11 +398,9 @@ class CashMovementViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelView
         if params.get('search'):
             queryset = queryset.filter(reason__icontains=params['search'])
         start_datetime, end_datetime = parse_datetime_range(params)
-        if start_datetime:
-            queryset = queryset.filter(created_at__gte=start_datetime)
-        if end_datetime:
-            queryset = queryset.filter(created_at__lte=end_datetime)
-        return queryset
+        return filter_datetime_range(
+            queryset, 'created_at', start_datetime, end_datetime
+        )
 
 
 class CashBeneficiaryViewSet(

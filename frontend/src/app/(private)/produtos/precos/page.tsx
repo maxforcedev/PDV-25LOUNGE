@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Check, DollarSign, RotateCcw, Search } from "lucide-react";
 import { AdminGuard } from "@/components/admin-guard";
 import { PageHeader } from "@/components/page-header";
@@ -11,6 +11,21 @@ import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
 import type { BranchProductPrice, ProductPriceComparison } from "@/types";
+
+interface OperationalPriceTable extends ProductPriceComparison {
+  overrides: BranchProductPrice[];
+}
+
+interface BulkPriceResponse {
+  operation_reference: string;
+  count: number;
+  created: number;
+  updated: number;
+  results: BranchProductPrice[];
+}
+
+type PriceItem = { product: number; sale_price: string };
+type LineErrors = Record<number, Record<string, string[]>>;
 
 function BranchPrices() {
   const { currentCompany, currentBranch, hasPermission } = useAuth();
@@ -24,58 +39,87 @@ function BranchPrices() {
   const [savingAll, setSavingAll] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [lineErrors, setLineErrors] = useState<LineErrors>({});
+  const branchRef = useRef(currentBranch?.id || 0);
+  branchRef.current = currentBranch?.id || 0;
+
+  function mapLineErrors(caught: ApiError, items: PriceItem[]) {
+    const mapped: LineErrors = {};
+    for (const [path, messages] of Object.entries(caught.fields)) {
+      const match = /^items\.(\d+)(?:\.(.+))?$/.exec(path);
+      if (!match) continue;
+      const item = items[Number(match[1])];
+      if (!item) continue;
+      const field = match[2] || "non_field_errors";
+      mapped[item.product] = { ...mapped[item.product], [field]: messages };
+    }
+    return mapped;
+  }
+
+  function bulkErrorMessage(caught: ApiError) {
+    const globalMessages = Object.entries(caught.fields)
+      .filter(([path]) => !/^items\.\d+(?:\.|$)/.test(path))
+      .flatMap(([, messages]) => messages);
+    return [...new Set([caught.message, ...globalMessages])].join(" ");
+  }
 
   async function load() {
     if (!currentCompany || !currentBranch) { setComparison(null); setLoading(false); return; }
+    const branchId = currentBranch.id;
     setLoading(true); setError("");
     try {
-      const [matrix, prices] = await Promise.all([
-        http.get<ProductPriceComparison>("products/price-comparison/"),
-        http.getAll<BranchProductPrice>(`branch-prices/?branch=${currentBranch.id}`),
-      ]);
-      const byProduct = Object.fromEntries(prices.map((price) => [price.product, price]));
+      const matrix = await http.get<OperationalPriceTable>("branch-prices/table/");
+      if (branchRef.current !== branchId) return;
+      const byProduct = Object.fromEntries(matrix.overrides.map((price) => [price.product, price]));
       setComparison(matrix);
       setOverrides(byProduct);
       setDrafts(Object.fromEntries(matrix.products.map((product) => [product.id, byProduct[product.id]?.sale_price || product.default_price])));
+      setLineErrors({});
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar os preços por filial.");
-    } finally { setLoading(false); }
+      if (branchRef.current === branchId) setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar os preços por filial.");
+    } finally { if (branchRef.current === branchId) setLoading(false); }
   }
 
   useEffect(() => { setSearch(""); setSuccess(""); void load(); }, [currentCompany?.id, currentBranch?.id]);
 
   async function save(productId: number) {
     if (!currentBranch || !canChange) return;
+    const branchId = currentBranch.id;
     const salePrice = drafts[productId];
-    if (!salePrice) return;
-    setSaving(productId); setError(""); setSuccess("");
+    const items = [{ product: productId, sale_price: salePrice ?? "" }];
+    setSaving(productId); setError(""); setSuccess(""); setLineErrors({});
     try {
-      const existing = overrides[productId];
-      if (existing) await http.patch(`branch-prices/${existing.id}/`, { sale_price: salePrice });
-      else await http.post("branch-prices/", { product: productId, branch: currentBranch.id, sale_price: salePrice });
+      await http.post<BulkPriceResponse>("branch-prices/bulk/", { branch: branchId, items });
+      if (branchRef.current !== branchId) return;
       setSuccess("Preço específico salvo com sucesso.");
       await load();
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "Não foi possível salvar o preço específico.");
+      if (caught instanceof ApiError) {
+        const mapped = mapLineErrors(caught, items);
+        setLineErrors(mapped);
+        setError(bulkErrorMessage(caught));
+      } else setError("Não foi possível salvar o preço específico.");
     } finally { setSaving(null); }
   }
 
   async function saveAll() {
     if (!currentBranch || !canChange || !comparison) return;
-    const changed = comparison.products.filter((product) => drafts[product.id] && drafts[product.id] !== (overrides[product.id]?.sale_price || product.default_price));
+    const branchId = currentBranch.id;
+    const changed = comparison.products.filter((product) => drafts[product.id] !== undefined && drafts[product.id] !== (overrides[product.id]?.sale_price || product.default_price));
     if (!changed.length) { setSuccess("Nenhuma alteração pendente."); return; }
-    setSavingAll(true); setError(""); setSuccess("");
+    const items = changed.map((product) => ({ product: product.id, sale_price: drafts[product.id] }));
+    setSavingAll(true); setError(""); setSuccess(""); setLineErrors({});
     try {
-      for (const product of changed) {
-        const existing = overrides[product.id];
-        const sale_price = drafts[product.id];
-        if (existing) await http.patch(`branch-prices/${existing.id}/`, { sale_price });
-        else await http.post("branch-prices/", { product: product.id, branch: currentBranch.id, sale_price });
-      }
-      setSuccess(`${changed.length} preço(s) salvo(s) com segurança.`);
+      const result = await http.post<BulkPriceResponse>("branch-prices/bulk/", { branch: branchId, items });
+      if (branchRef.current !== branchId) return;
+      setSuccess(`${result.count} preço(s) salvo(s) em uma única operação.`);
       await load();
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "Não foi possível salvar as alterações em lote.");
+      if (caught instanceof ApiError) {
+        const mapped = mapLineErrors(caught, items);
+        setLineErrors(mapped);
+        setError(bulkErrorMessage(caught));
+      } else setError("Não foi possível salvar as alterações em lote.");
     } finally { setSavingAll(false); }
   }
 
@@ -102,6 +146,7 @@ function BranchPrices() {
     <div className="space-y-4 p-4 sm:p-6 lg:p-8">
       {error && <Alert message={error} />}
       {success && <Alert type="success" message={success} />}
+      {!!Object.keys(lineErrors).length && <div role="alert" className="card border-danger/30 p-4"><strong className="text-xs text-danger-strong">Linhas que precisam de correção</strong>{Object.entries(lineErrors).map(([productId, fields]) => <p key={productId} className="mt-2 text-xs text-danger-strong"><span className="font-bold">{comparison?.products.find((product) => product.id === Number(productId))?.name || `Produto ${productId}`}:</span> {Object.values(fields).flat().join(" ")}</p>)}</div>}
       <div className="card grid gap-4 p-4 lg:grid-cols-[1fr_auto] lg:items-center">
         <div className="relative"><Search className="absolute left-3 top-3 size-4 text-slate-400" /><Input className="pl-9" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar produto ou código" /></div>
         <div className="flex flex-wrap items-center gap-2"><div className="rounded-lg bg-primary/5 px-4 py-2 text-xs text-slate-600"><strong className="text-primary">Filial editável:</strong> {currentBranch?.name || "nenhuma"}</div><Button onClick={() => void saveAll()} loading={savingAll} disabled={!canChange || saving !== null}>Salvar alterações da filial</Button></div>
@@ -115,5 +160,5 @@ function BranchPrices() {
 }
 
 export default function BranchPricesPage() {
-  return <AdminGuard requiredPermissions={[permissions.viewProduct]}><BranchPrices /></AdminGuard>;
+  return <AdminGuard requiredPermissions={[permissions.changeBranchPrice]}><BranchPrices /></AdminGuard>;
 }

@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 
 from apps.accounts.models import User
@@ -43,7 +45,7 @@ class BaseReportQuerySerializer(serializers.Serializer):
         for field in fields:
             value = attrs.get(field)
             if value is not None and not querysets[field].filter(pk=value).exists():
-                errors[field] = 'Identificador invalido para a filial atual.'
+                errors[field] = 'Identificador inválido para a filial atual.'
         if errors:
             raise serializers.ValidationError(errors)
         return attrs
@@ -72,7 +74,7 @@ class SalesReportQuerySerializer(BaseReportQuerySerializer):
             code=code,
         ).exists():
             raise serializers.ValidationError({
-                'payment_method_code': 'Forma de pagamento invalida para a empresa atual.'
+                'payment_method_code': 'Forma de pagamento inválida para a empresa atual.'
             })
         return attrs
 
@@ -163,6 +165,12 @@ class ReportSaleSerializer(serializers.ModelSerializer):
     beneficiary = serializers.SerializerMethodField()
     items = ReportSaleItemSerializer(many=True, read_only=True)
     payments = ReportPaymentSerializer(many=True, read_only=True)
+    effective_revenue = serializers.SerializerMethodField()
+    total_received_sales = serializers.SerializerMethodField()
+    customer_total = serializers.DecimalField(
+        max_digits=14, decimal_places=2, source='total', read_only=True
+    )
+    payment_reconciliation_delta = serializers.SerializerMethodField()
 
     class Meta:
         model = Sale
@@ -171,8 +179,19 @@ class ReportSaleSerializer(serializers.ModelSerializer):
             'discount_approved_by', 'beneficiary', 'subtotal',
             'promotion_discount_total', 'item_discount_total', 'discount', 'service_fee_rate',
             'service_fee_amount', 'commission_rate', 'commission_amount', 'total', 'created_at',
-            'cancelled_at', 'items', 'payments',
+            'effective_revenue', 'total_received_sales', 'customer_total',
+            'payment_reconciliation_delta', 'cancelled_at', 'items', 'payments',
         )
+
+    def get_effective_revenue(self, sale):
+        return f'{sale.total - sale.service_fee_amount:.2f}'
+
+    def get_total_received_sales(self, sale):
+        return f'{sum((payment.amount for payment in sale.payments.all()), 0):.2f}'
+
+    def get_payment_reconciliation_delta(self, sale):
+        received = sum((payment.amount for payment in sale.payments.all()), 0)
+        return f'{received - sale.total:.2f}'
 
     def get_operator(self, sale):
         return {'id': sale.created_by_id, 'name': readable_user_name(sale.created_by)}
@@ -222,6 +241,8 @@ class ReportSaleSerializer(serializers.ModelSerializer):
                 'service_fee_amount': f"{scoped['service_fee']:.2f}",
                 'commission_amount': f"{scoped['commission']:.2f}",
                 'total': f"{scoped['customer_total']:.2f}",
+                'effective_revenue': f"{scoped['effective_revenue']:.2f}",
+                'customer_total': f"{scoped['customer_total']:.2f}",
             })
             category_by_id = {
                 item.pk: item.product.category_id for item in instance.items.all()
@@ -246,18 +267,11 @@ class ReportSaleSerializer(serializers.ModelSerializer):
                 for payment in _scoped_payment_rows(instance, filters)
                 if payment['amount']
             ]
-        payment_method = request.query_params.get('payment_method') if request else None
-        payment_code = request.query_params.get('payment_method_code') if request else None
-        if payment_method:
-            data['payments'] = [
-                payment for payment in data['payments']
-                if str(payment.get('payment_method')) == payment_method
-            ]
-        if payment_code:
-            data['payments'] = [
-                payment for payment in data['payments']
-                if payment.get('payment_method_code') == payment_code
-            ]
+            received = sum((Decimal(payment['amount']) for payment in data['payments']), Decimal('0.00'))
+            data['total_received_sales'] = f'{received:.2f}'
+            data['payment_reconciliation_delta'] = (
+                f"{received - scoped['customer_total']:.2f}"
+            )
         for payment in data['payments']:
             payment.pop('payment_method', None)
         if request and branch and not request.user.is_superuser:
@@ -278,6 +292,10 @@ class CashSessionReportSerializer(serializers.Serializer):
     operator = serializers.SerializerMethodField()
     opening = serializers.DecimalField(max_digits=20, decimal_places=2, source='opening_amount')
     manual_entries = serializers.DecimalField(max_digits=20, decimal_places=2)
+    sale_cash = serializers.DecimalField(max_digits=20, decimal_places=2)
+    consumption_cash = serializers.DecimalField(max_digits=20, decimal_places=2)
+    cash_reversals = serializers.DecimalField(max_digits=20, decimal_places=2)
+    cash_cancellations = serializers.IntegerField()
     cash_payments = serializers.DecimalField(max_digits=20, decimal_places=2)
     withdrawals = serializers.DecimalField(max_digits=20, decimal_places=2)
     expected = serializers.DecimalField(max_digits=20, decimal_places=2)
@@ -301,9 +319,16 @@ class CashSessionReportSerializer(serializers.Serializer):
         if request and not request.user.is_superuser:
             from apps.companies.selectors import user_has_branch_permission
 
-            if not user_has_branch_permission(
-                request.user, session.branch_id, 'commissions.view'
-            ):
+            cache_name = f'_report_commission_permission_{session.branch_id}'
+            if not hasattr(request, cache_name):
+                setattr(
+                    request,
+                    cache_name,
+                    user_has_branch_permission(
+                        request.user, session.branch_id, 'commissions.view'
+                    ),
+                )
+            if not getattr(request, cache_name):
                 summary['sales'].pop('commission', None)
 
         def serialize(value):

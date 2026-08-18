@@ -79,6 +79,10 @@ class InventoryQuerySerializer(serializers.Serializer):
     product = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
 
 
+class StockMovementQuerySerializer(InventoryQuerySerializer):
+    operation_reference = serializers.UUIDField(required=False)
+
+
 class StockMovementSerializer(serializers.ModelSerializer):
     product = serializers.IntegerField(source='stock.product_id', read_only=True)
     product_name = serializers.CharField(source='stock.product.name', read_only=True)
@@ -97,6 +101,9 @@ class StockMovementSerializer(serializers.ModelSerializer):
     )
     sale_number = serializers.SerializerMethodField()
     sale_operation_type = serializers.SerializerMethodField()
+    operation_label = serializers.SerializerMethodField()
+    operation_count = serializers.IntegerField(read_only=True)
+    operation_kind = serializers.CharField(read_only=True)
 
     class Meta:
         model = StockMovement
@@ -106,6 +113,7 @@ class StockMovementSerializer(serializers.ModelSerializer):
              'previous_quantity', 'quantity', 'movement_quantity', 'final_quantity',
              'user', 'user_name', 'reason', 'sale', 'sale_number', 'sale_operation_type',
               'original_movement', 'nature', 'operation_reference', 'created_at',
+              'operation_label', 'operation_count', 'operation_kind',
         )
         read_only_fields = fields
 
@@ -118,8 +126,27 @@ class StockMovementSerializer(serializers.ModelSerializer):
     def get_sale_operation_type(self, obj):
         return obj.sale.operation_type if obj.sale_id else None
 
+    def get_operation_label(self, obj):
+        if obj.sale_id:
+            operation = 'Consumação' if obj.sale.operation_type == 'consumption' else 'Venda'
+            return f'{operation} {obj.sale.sale_number}'
+        count = obj.operation_count
+        suffix = f'{count} produto' if count == 1 else f'{count} produtos'
+        if obj.nature == MovementNature.REGULARIZATION:
+            return f'Regularização · {suffix}'
+        operation = {
+            'entry': 'Entrada',
+            'exit': 'Saída',
+            'adjustment': 'Ajuste',
+        }.get(obj.movement_type, obj.get_movement_type_display())
+        if count > 1 or obj.operation_kind == 'group_entry':
+            operation = 'Entrada em grupo' if obj.movement_type == 'entry' else operation
+            return f'{operation} · {suffix}'
+        return operation
+
 
 class MovementRequestSerializer(serializers.Serializer):
+    idempotency_key = serializers.UUIDField()
     product = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
     branch = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
     quantity = serializers.DecimalField(
@@ -132,6 +159,7 @@ class MovementRequestSerializer(serializers.Serializer):
 
 
 class AdjustmentRequestSerializer(serializers.Serializer):
+    idempotency_key = serializers.UUIDField()
     product = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
     branch = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
     final_quantity = serializers.DecimalField(

@@ -72,6 +72,11 @@ def audit_log(*, actor=None, action, obj=None, company=None, branch=None, before
     return log
 
 
+def require_audit_fallback(request):
+    """Require one request-level fallback in addition to any rich side-effect events."""
+    request.audit_fallback_required = True
+
+
 class AuditRequestContextMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
@@ -101,7 +106,10 @@ class AuditRequestContextMiddleware:
                 request.method in MUTATING_METHODS
                 and request.path.startswith('/api/v1/')
                 and 200 <= response.status_code < 400
-                and _request_event_count.get() == 0
+                and (
+                    _request_event_count.get() == 0
+                    or getattr(request, 'audit_fallback_required', False)
+                )
                 and not getattr(request, 'audit_fallback_suppressed', False)
             ):
                 self._fallback(request, response, actor)

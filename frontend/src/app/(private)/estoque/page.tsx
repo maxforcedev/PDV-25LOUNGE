@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { AdminGuard } from "@/components/admin-guard";
 import { PageHeader } from "@/components/page-header";
+import { StockOperationDetails } from "@/components/stock-operation-details";
 import {
   Alert,
   Button,
@@ -35,7 +36,7 @@ import { fieldError, formatBRL, formatQuantity } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
-import type { Category, Paginated, Product, Stock } from "@/types";
+import type { Category, Paginated, Product, Stock, StockMovement } from "@/types";
 
 type Action = "entry" | "exit" | "adjustment" | "minimum";
 type Summary = {
@@ -51,6 +52,12 @@ type StockFilters = {
   category: string;
   status: string;
   behavior: string;
+};
+type OperationSuccess = {
+  label: string;
+  description?: string;
+  reference?: string;
+  count?: number;
 };
 const emptyFilters: StockFilters = {
   state: "",
@@ -90,7 +97,7 @@ function Inventory() {
   const [loading, setLoading] = useState(true);
   const [productsLoading, setProductsLoading] = useState(false);
   const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
+  const [success, setSuccess] = useState<OperationSuccess | null>(null);
   const [search, setSearch] = useState("");
   const [state, setState] = useState("");
   const [category, setCategory] = useState("");
@@ -107,6 +114,7 @@ function Inventory() {
   const [reason, setReason] = useState("");
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
+  const movementIdempotencyKey = useRef<string | null>(null);
   const showRegularize = canRegularize && !!summary?.allow_negative_stock && (summary?.negative_count ?? 0) > 0;
   const showLegacyRecovery = canRegularize && !!summary?.legacy_negative_state && (summary?.negative_count ?? 0) > 0;
   const contextRef = useRef("");
@@ -193,6 +201,8 @@ function Inventory() {
     setData(null);
     setSummary(null);
     setAction(null);
+    setSuccess(null);
+    movementIdempotencyKey.current = null;
     const context = contextRef.current;
     if (!currentCompany || !currentBranch) {
       setLoading(false);
@@ -230,6 +240,8 @@ function Inventory() {
     setNature(next === "entry" ? "normal" : next === "exit" ? "loss" : "inventory");
     setFields({});
     setError("");
+    setSuccess(null);
+    movementIdempotencyKey.current = null;
   }
   async function choose(next: Exclude<Action, "minimum">) {
     resetAction(next, null);
@@ -263,15 +275,18 @@ function Inventory() {
     setError("");
     setFields({});
     try {
+      let movement: StockMovement | null = null;
       if (action === "minimum" && selected)
         await http.patch(
           `stocks/${selected.id}/minimum/?branch=${currentBranch.id}`,
           { minimum_quantity: quantity },
         );
-      else
-        await http.post(
+      else {
+        if (!movementIdempotencyKey.current) movementIdempotencyKey.current = crypto.randomUUID();
+        movement = await http.post<StockMovement>(
           `stock-movements/${action}/?branch=${currentBranch.id}`,
           {
+            idempotency_key: movementIdempotencyKey.current,
             product: selected?.product || Number(productId),
             branch: currentBranch.id,
             ...(action === "adjustment"
@@ -281,13 +296,16 @@ function Inventory() {
              nature,
           },
         );
+      }
       setAction(null);
       setSelected(null);
-      setSuccess(
-        action === "minimum"
-          ? "Estoque mínimo atualizado."
-          : "Movimentação registrada com sucesso.",
-      );
+      movementIdempotencyKey.current = null;
+      setSuccess(action === "minimum" ? { label: "Estoque mínimo atualizado." } : {
+        label: movement!.operation_label,
+        description: "Movimentação registrada com sucesso.",
+        reference: movement!.operation_reference,
+        count: movement!.operation_count,
+      });
       await load();
     } catch (caught) {
       if (caught instanceof ApiError) {
@@ -358,7 +376,7 @@ function Inventory() {
       />
       <div className="space-y-4 p-4 sm:p-6 lg:p-8">
         {error && !action && <Alert message={error} />}
-        {success && <Alert type="success" message={success} />}
+        {success && <section role="status" className="rounded-md border border-success/30 bg-success/10 px-3.5 py-3 text-[13px] text-success-strong"><strong className="block">{success.label}</strong>{success.description && <p className="mt-1">{success.description}</p>}{success.reference && <StockOperationDetails reference={success.reference} count={success.count || 1} />}</section>}
         {showLegacyRecovery && <section className="card border-warning/40 bg-warning/10 p-4 text-sm"><strong className="block text-warning-strong">Estado legado incompatível</strong><p className="mt-1 text-muted">A filial bloqueia estoque negativo, mas ainda possui {summary?.negative_count} {summary?.negative_count === 1 ? "produto negativo" : "produtos negativos"}. Use a recuperação administrativa antes de novas saídas.</p><Link href="/estoque/regularizar?legacy=true" className="btn btn-secondary mt-3"><TriangleAlert className="size-4" />Recuperar saldos negativos</Link></section>}
         {(canViewKpis || canViewCosts) && (
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -750,7 +768,7 @@ function Inventory() {
                   <Select
                     required
                     value={productId}
-                    onChange={(event) => setProductId(event.target.value)}
+                    onChange={(event) => { setProductId(event.target.value); movementIdempotencyKey.current = null; }}
                     disabled={productsLoading || !canViewProducts}
                   >
                     <option value="">
@@ -793,12 +811,12 @@ function Inventory() {
                 required
                 inputMode="decimal"
                 value={quantity}
-                onChange={(event) => setQuantity(event.target.value)}
+                onChange={(event) => { setQuantity(event.target.value); if (action !== "minimum") movementIdempotencyKey.current = null; }}
               />
             </Field>
             {action !== "minimum" && (
               <Field label="Natureza" error={fieldError(fields, "nature")}>
-                <Select value={nature} onChange={(event) => setNature(event.target.value)}>
+                <Select value={nature} onChange={(event) => { setNature(event.target.value); movementIdempotencyKey.current = null; }}>
                   {action === "entry" ? <><option value="normal">Compra / entrada normal</option><option value="bonus">Bonificada</option><option value="return">Devolução</option><option value="opening_balance">Saldo inicial</option><option value="correction">Correção</option><option value="other">Outros</option></> : action === "exit" ? <><option value="transfer">Transferência</option><option value="damage">Avaria</option><option value="loss">Perda</option><option value="internal_use">Uso interno</option><option value="correction">Correção</option><option value="other">Outros</option></> : <><option value="inventory">Inventário / contagem física</option><option value="balance_correction">Correção de saldo</option><option value="other">Outros</option></>}
                 </Select>
               </Field>
@@ -811,7 +829,7 @@ function Inventory() {
               >
                 <Textarea
                   value={reason}
-                  onChange={(event) => setReason(event.target.value)}
+                  onChange={(event) => { setReason(event.target.value); movementIdempotencyKey.current = null; }}
                 />
               </Field>
             )}

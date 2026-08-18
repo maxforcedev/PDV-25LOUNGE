@@ -1,17 +1,20 @@
-from django.db.models import Case, Count, DecimalField, ExpressionWrapper, F, Q, Sum, Value, When
+from django.db.models import (
+    Case, CharField, Count, DecimalField, ExpressionWrapper, F, IntegerField, OuterRef, Q,
+    Subquery, Sum, Value, When,
+)
 from django.db.models.functions import Coalesce
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
-from apps.base.datetimes import parse_datetime_range
+from apps.base.datetimes import filter_datetime_range, parse_datetime_range
 from apps.base.exceptions import DomainValidationError
 from apps.companies.models import BranchSettings, Status
 from apps.companies.selectors import accessible_branches, user_has_branch_permission
 from apps.products.models import Category, Product
 
-from .models import Stock, StockMovement
+from .models import InventoryOperation, Stock, StockMovement
 from .permissions import InventoryFunctionalPermission
 from .serializers import (
     AdjustmentRequestSerializer,
@@ -20,6 +23,7 @@ from .serializers import (
     MinimumQuantitySerializer,
     MovementRequestSerializer,
     RegularizeNegativesSerializer,
+    StockMovementQuerySerializer,
     StockMovementSerializer,
     StockSerializer,
 )
@@ -28,6 +32,23 @@ from .services import entry as enter_stock
 from .services import exit as exit_stock
 from .services import set_minimum
 from .services import group_entry, regularize_negatives
+
+
+def _with_operation_count(queryset):
+    counts = StockMovement.objects.filter(
+        operation_reference=OuterRef('operation_reference'),
+        stock__branch_id=OuterRef('stock__branch_id'),
+    ).order_by().values('operation_reference').annotate(
+        total=Count('pk')
+    ).values('total')
+    kinds = InventoryOperation.objects.filter(
+        branch_id=OuterRef('stock__branch_id'),
+        idempotency_key=OuterRef('operation_reference'),
+    ).values('kind')
+    return queryset.annotate(
+        operation_count=Subquery(counts[:1], output_field=IntegerField()),
+        operation_kind=Subquery(kinds[:1], output_field=CharField()),
+    )
 
 
 class StockViewSet(viewsets.ReadOnlyModelViewSet):
@@ -157,13 +178,16 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
             branch=data['branch'], items=data['items'], reason=data['reason'],
             user=request.user,
         )
-        queryset = StockMovement.objects.select_related(
+        queryset = _with_operation_count(StockMovement.objects.select_related(
             'stock__product', 'stock__branch', 'stock__branch__company', 'user', 'sale'
-        ).filter(pk__in=[item.pk for item in movements])
+        ).filter(pk__in=[item.pk for item in movements]))
+        results = StockMovementSerializer(queryset, many=True).data
         return Response({
             'operation_reference': str(movements[0].operation_reference),
             'count': len(movements),
-            'results': StockMovementSerializer(queryset, many=True).data,
+            'operation_label': results[0]['operation_label'],
+            'operation_count': results[0]['operation_count'],
+            'results': results,
         }, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=('patch',))
@@ -198,12 +222,12 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
         current = getattr(self.request, 'branch_context', None)
         if current:
             branches = branches.filter(pk=current.pk)
-        queryset = StockMovement.objects.select_related(
+        queryset = _with_operation_count(StockMovement.objects.select_related(
             'stock', 'stock__product', 'stock__branch', 'stock__branch__company',
             'user', 'sale',
-        ).filter(stock__branch__in=branches)
+        ).filter(stock__branch__in=branches))
         params = self.request.query_params
-        query = InventoryQuerySerializer(data=params)
+        query = StockMovementQuerySerializer(data=params)
         query.is_valid(raise_exception=True)
         filters = query.validated_data
         if filters.get('company'):
@@ -219,8 +243,8 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
             queryset = queryset.filter(movement_type=movement_type)
         if params.get('nature'):
             queryset = queryset.filter(nature=params['nature'])
-        if params.get('operation_reference'):
-            queryset = queryset.filter(operation_reference=params['operation_reference'])
+        if filters.get('operation_reference'):
+            queryset = queryset.filter(operation_reference=filters['operation_reference'])
         if params.get('search'):
             search = params['search']
             queryset = queryset.filter(
@@ -229,11 +253,9 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
                 | Q(reason__icontains=search)
             )
         start_datetime, end_datetime = parse_datetime_range(params)
-        if start_datetime:
-            queryset = queryset.filter(created_at__gte=start_datetime)
-        if end_datetime:
-            queryset = queryset.filter(created_at__lte=end_datetime)
-        return queryset
+        return filter_datetime_range(
+            queryset, 'created_at', start_datetime, end_datetime
+        )
 
     def _perform_movement(self, request, service, serializer_class):
         branch_id = request.data.get('branch')
@@ -248,9 +270,12 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
         serializer = serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)
         movement = service(user=request.user, **serializer.validated_data)
+        replayed = bool(getattr(movement, '_idempotency_replayed', False))
         movement = self.get_queryset().get(pk=movement.pk)
+        request.audit_fallback_suppressed = replayed
         return Response(
-            self.get_serializer(movement).data, status=status.HTTP_201_CREATED
+            self.get_serializer(movement).data,
+            status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED,
         )
 
     @action(detail=False, methods=('post',))
@@ -280,35 +305,23 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
         data = serializer.validated_data
         if current.pk != data['branch']:
             raise PermissionDenied('Filial fora do contexto autorizado.')
-        product_ids = [item['product'] for item in data['items'] if item['quantity'] > 0]
-        if not Category.objects.filter(
-            pk=data['category'], company_id=current.company_id, status=Status.ACTIVE
-        ).exists():
-            raise DomainValidationError(
-                code='invalid_inventory_entry_category',
-                message='A categoria informada nao esta ativa nesta empresa.',
-                details={'category_id': data['category']},
-            )
-        valid_ids = set(Product.objects.filter(
-            id__in=product_ids, company_id=current.company_id,
-            category_id=data['category'], inventory_behavior='direct', status='active',
-        ).values_list('id', flat=True))
-        if valid_ids != set(product_ids):
-            from rest_framework.exceptions import ValidationError
-            raise ValidationError({'items': 'Todos os produtos devem ser fisicos, ativos e pertencer a categoria informada.'})
         movements = group_entry(
-            branch=data['branch'], items=data['items'], nature=data['nature'],
+            branch=data['branch'], category=data['category'], items=data['items'],
+            nature=data['nature'],
             reason=data['reason'], user=request.user,
             operation_reference=data['idempotency_key'],
         )
         queryset = self.get_queryset().filter(pk__in=[item.pk for item in movements])
+        results = self.get_serializer(queryset, many=True).data
         replayed = bool(getattr(movements[0], '_idempotency_replayed', False))
         request.audit_fallback_suppressed = replayed
         return Response({
             'operation_reference': str(movements[0].operation_reference),
             'count': len(movements),
+            'operation_label': results[0]['operation_label'],
+            'operation_count': results[0]['operation_count'],
             'idempotency_replayed': replayed,
-            'results': self.get_serializer(queryset, many=True).data,
+            'results': results,
         }, status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED)
 
     @action(detail=False, methods=('get',), url_path='entry-options')

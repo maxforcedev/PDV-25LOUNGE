@@ -5,8 +5,9 @@ from rest_framework import serializers
 from apps.base.exceptions import DomainValidationError
 from .models import (
     AccessProfile, Branch, BranchSettings, Company, FunctionalPermission, Status,
-    UserCommissionOverride, UserPermissionBlock,
+    UserBranchAccess, UserCommissionOverride, UserPermissionBlock,
 )
+from .rbac import OPERATING_PERMISSION_CODES
 from .selectors import (
     accessible_branches,
     company_permission_codes,
@@ -402,9 +403,32 @@ class AccessProfileSerializer(serializers.ModelSerializer):
         ):
             raise serializers.ValidationError({'commission_rate': 'Voce nao possui permissao para alterar comissão de perfil.'})
         if permissions is not None and not request.user.is_superuser:
-            actor_codes = company_permission_codes(request.user, company.id)
             requested_codes = {permission.code for permission in permissions}
-            if requested_codes - actor_codes:
+            requested_operating = requested_codes & set(OPERATING_PERMISSION_CODES)
+            requested_company = requested_codes - requested_operating
+            actor_company = company_permission_codes(request.user, company.id)
+            unauthorized = requested_company - actor_company
+
+            branch_ids = list(UserBranchAccess.objects.filter(
+                access_profile=self.instance,
+                is_active=True,
+            ).values_list('branch_id', flat=True).distinct()) if self.instance else []
+            if branch_ids:
+                unauthorized.update(
+                    code for code in requested_operating
+                    if any(
+                        not user_has_branch_permission(request.user, branch_id, code)
+                        for branch_id in branch_ids
+                    )
+                )
+            else:
+                unauthorized.update(
+                    code for code in requested_operating
+                    if not accessible_branches(request.user, code).filter(
+                        company_id=company.id
+                    ).exists()
+                )
+            if unauthorized:
                 raise serializers.ValidationError(
                     {'permission_codes': 'Voce nao pode conceder permissoes que nao possui.'}
                 )
@@ -439,13 +463,14 @@ class UserPermissionBlockSerializer(serializers.ModelSerializer):
     company_name = serializers.CharField(source='company.trade_name', read_only=True)
     branch_name = serializers.CharField(source='branch.name', read_only=True)
     created_by_name = serializers.SerializerMethodField()
+    revoked_by_name = serializers.SerializerMethodField()
 
     class Meta:
         model = UserPermissionBlock
         fields = (
             'id', 'company', 'company_name', 'branch', 'branch_name', 'user', 'user_name',
             'permission_code', 'permission_label', 'reason', 'is_active', 'created_by', 'created_by_name',
-            'revoked_by', 'revoked_at', 'created_at', 'updated_at',
+            'revoked_by', 'revoked_by_name', 'revoked_at', 'created_at', 'updated_at',
         )
         read_only_fields = ('id', 'is_active', 'created_by', 'revoked_by', 'revoked_at', 'created_at', 'updated_at')
 
@@ -492,6 +517,9 @@ class UserPermissionBlockSerializer(serializers.ModelSerializer):
     def get_created_by_name(self, block):
         return str(block.created_by) if block.created_by_id else None
 
+    def get_revoked_by_name(self, block):
+        return str(block.revoked_by) if block.revoked_by_id else None
+
 
 class UserCommissionOverrideSerializer(serializers.ModelSerializer):
     user_name = serializers.SerializerMethodField()
@@ -517,6 +545,13 @@ class UserCommissionOverrideSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({'user': 'O usuario do override nao pode ser alterado.'})
         if not user_has_branch_permission(request.user, branch.pk, 'commissions.change_user_override'):
             raise serializers.ValidationError({'branch': 'Voce nao possui permissao para alterar comissão individual nesta filial.'})
+        user = attrs.get('user', getattr(self.instance, 'user', None))
+        if user and not UserCommissionOverride.target_has_active_branch_access(
+            branch.pk, user.pk
+        ):
+            raise serializers.ValidationError({
+                'user': 'O usuario deve estar ativo e possuir acesso e perfil ativos nesta filial.'
+            })
         rate = attrs.get('commission_rate', getattr(self.instance, 'commission_rate', None))
         if rate is not None and not (Decimal('0') <= rate <= Decimal('100')):
             raise serializers.ValidationError({'commission_rate': 'A comissão deve estar entre 0 e 100.'})

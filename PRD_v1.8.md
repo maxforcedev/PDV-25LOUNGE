@@ -1,8 +1,8 @@
 # PRD — CORE PDV: Sistema de Gestão Empresarial e Ponto de Venda
 
-> **Versão:** 1.9
+> **Versão:** 1.8
 > **Data:** 2026-08-18  
-> **Status:** PRD técnico — V1 em correções finais pós-validação manual; Sprints 12.2.1 e 12.2.2 preservadas como histórico concluído, Sprint 12.3 preservada integralmente como validação manual já executada pelo responsável do produto, nova Sprint 12.4 dedicada às correções encontradas nessa validação e à reconciliação financeira/visual final; preparação de infraestrutura/produção/deploy permanece exclusiva da Sprint 13 mediante autorização expressa
+> **Status:** PRD técnico — V1 em hardening funcional residual antes da validação manual final; Sprint 12.2.1 preservada como histórico concluído, nova Sprint 12.2.2 dedicada exclusivamente às correções e ao endurecimento do estado atual, Sprint 12.3 reservada à validação manual do responsável e toda preparação de infraestrutura/produção/deploy adiada para a Sprint 13 mediante autorização expressa  
 > **Domínio de produção:** `corepdv.com`  
 > **Idioma do código:** inglês  
 > **Idioma da interface:** português brasileiro  
@@ -721,15 +721,6 @@ Regras:
 84. A timeline de CashSession deve usar semântica humana explícita, por exemplo `Registrado por: Nome`, evitando nomes soltos sem contexto; o resumo da sessão deve continuar separado da timeline.
 85. AuditLog continua técnico, completo e append-only, mas a experiência principal de consulta deve apresentar a ação em linguagem humana, com `De → Para` quando aplicável e detalhes técnicos sob demanda.
 86. No Dashboard, comissão pertence ao atendente/vendedor (`seller_user`). Operador/caixa (`created_by`) possui métricas próprias de vendas processadas; só recebe comissão quando também for o `seller_user` da venda.
-87. Em vendas comerciais finalizadas e não canceladas, **Total recebido em vendas = Faturamento efetivo + Taxa de serviço cobrada**. A soma de `Payment.amount` das vendas do mesmo recorte deve reconciliar com esse Total recebido, respeitando estornos/reversões.
-88. Taxa de serviço é dinheiro efetivamente recebido quando cobrada. Ela permanece separada do faturamento de produtos para análise, mas integra `Total cobrado/Total recebido` e a receita operacional utilizada no Resultado estimado.
-89. Consumação com `charged_amount > 0` também representa recebimento real. Relatórios de recebimentos/caixa devem distingui-la das vendas comerciais, mas incluí-la no **Total recebido operacional**.
-90. O Resultado operacional estimado deve considerar todas as entradas operacionais efetivamente recebidas do escopo: faturamento efetivo de vendas + taxa de serviço + consumação cobrada, deduzindo também os custos históricos correspondentes de vendas/consumações, comissão e demais despesas previstas no PRD.
-91. Cancelamentos, estornos e reversões nunca podem permanecer escondidos dentro de totais positivos. Todo relatório financeiro deve declarar se apresenta valores brutos, líquidos ou estornados e reconciliar o período de forma determinística.
-92. Filtro por forma de pagamento possui semântica específica por relatório: em Vendas significa **vendas que utilizaram a forma**; em Recebimentos significa **valores efetivamente recebidos por aquela forma**. A UI deve rotular o contexto para evitar comparação enganosa.
-93. Listagens administrativas relevantes, incluindo Users, UserPermissionBlock e Categories, devem possuir busca, filtros úteis, limpeza, paginação e estado vazio coerentes, sem exigir navegação manual por listas longas.
-94. O Dashboard final da V1 não deve utilizar gráficos de linha/área como visualização principal. Para leitura gerencial, priorizar barras/colunas, barras horizontais, donut, heatmap, rankings, cards e comparativos agrupados, seguindo o design system e evitando aparência de dashboard genérico/simples.
-95. Quando relatório de CashSession incluir sessões que intersectam um período, o **resumo do período** deve recortar operações ao intervalo solicitado. O detalhe de uma sessão pode mostrar a sessão completa, desde que isso esteja claramente identificado.
 
 # 9. Arquitetura Geral
 
@@ -1672,27 +1663,6 @@ A escolha deve ser única e documentada. Não misturar estratégias sem necessid
 
 ---
 
-## 16.4 Busca e filtros da listagem de Users
-
-A listagem administrativa de Users deve ser adequada para operação com dezenas/centenas de cadastros.
-
-Requisitos:
-
-- campo de busca principal por nome e e-mail;
-- filtros por status ativo/inativo;
-- filtro por `can_login`;
-- filtro por `user_type`;
-- filtro por AccessProfile quando aplicável ao contexto atual;
-- filtro por Branch quando a relação operacional exigir;
-- busca/filtros executados no backend para conjuntos paginados, evitando filtrar apenas a página já carregada;
-- um único fluxo claro de **Aplicar/Limpar**;
-- chips/resumo de filtros ativos quando útil;
-- paginação preservando filtros e busca;
-- empty state que diferencie `nenhum usuário cadastrado` de `nenhum resultado para os filtros`;
-- respeitar Company/Branch e permissões efetivas em todos os filtros.
-
----
-
 # 17. Empresas e Filiais
 
 ## 17.1 Criação de empresa
@@ -2038,27 +2008,6 @@ Regras:
 - a venda salva snapshot do percentual e valor efetivamente utilizados;
 - alterar configuração futura não altera venda histórica.
 
-## 18.8 Busca, filtros e gestão da listagem de bloqueios individuais
-
-A listagem de `UserPermissionBlock` deve possuir:
-
-- busca por User;
-- filtro por módulo/permissão;
-- filtro por escopo `Toda a empresa` / Branch específica;
-- filtro por Branch;
-- filtro por ativo/revogado quando o histórico de revogação estiver disponível;
-- filtro por ator que criou/revogou quando útil;
-- período quando a quantidade de registros justificar;
-- exibição clara de User, permissão em pt-BR, escopo, Branch, justificativa, ator e data;
-- paginação e busca no backend;
-- um único fluxo de aplicação/limpeza de filtros;
-- atalhos para remover/revogar bloqueio conforme permissão;
-- preservação do comportamento de seleção múltipla por checkbox já definido.
-
-A UI não deve obrigar o administrador a procurar manualmente um bloqueio em uma lista extensa.
-
----
-
 # 19. Categorias e Produtos
 
 ## 19.1 Categorias
@@ -2085,21 +2034,6 @@ Regras:
 - o detalhe/edição da Category deve possuir a seção **Produtos relacionados** com os Products atualmente vinculados, preferencialmente exibindo nome, código interno, preço de venda e status;
 - a seção de relacionados é uma visão de apoio: criação/edição do produto continua ocorrendo no fluxo de Products;
 - evitar exclusão física quando houver histórico associado.
-
-### Busca e filtros da listagem de Categories
-
-A listagem de Categories deve possuir:
-
-- busca por nome e descrição;
-- filtro por status;
-- filtro `Com produtos / Sem produtos / Todas` quando útil;
-- ordenação por ordem operacional/nome sem quebrar o drag-and-drop;
-- paginação quando aplicável;
-- filtros executados de forma coerente no backend;
-- um único fluxo de Aplicar/Limpar;
-- empty state específico para busca/filtro sem resultado.
-
-O drag-and-drop continua sendo a fonte de ordenação operacional; busca e filtros não podem persistir acidentalmente uma nova ordem parcial.
 
 ## 19.2 Produtos
 
@@ -2997,42 +2931,9 @@ Regras:
 - sessões que atravessam meia-noite continuam seguindo a regra de interseção temporal dos relatórios;
 - a timeline cronológica permanece abaixo do resumo e foca os eventos operacionais que alteram gaveta/estado.
 
-### Reconciliação obrigatória da sessão
+### Fechamento 404 como bloqueador
 
-Para o mesmo escopo de operações válidas:
-
-```text
-Faturamento efetivo de vendas
-+ Taxa de serviço cobrada
-= Total recebido em vendas
-
-Total recebido em vendas
-+ Consumação cobrada
-= Total recebido operacional
-
-SUM(Payment.amount por forma de pagamento)
-= Total recebido operacional
-```
-
-Regras:
-
-- exibir **Total recebido em vendas** e **Total recebido operacional** de forma explícita;
-- a seção `Recebimentos` deve possuir rodapé/total geral;
-- cancelamentos/reversões devem ser demonstrados separadamente e reduzir o líquido quando aplicável;
-- comissão não reduz o valor recebido; ela é custo posterior;
-- troco não aumenta o recebido, pois `Payment.amount` representa somente o valor aplicado à operação;
-- no resumo por período, considerar somente operações dentro do período solicitado, ainda que a CashSession tenha começado antes ou terminado depois;
-- ao abrir o detalhe da sessão, pode-se apresentar a sessão completa, rotulada como **Valores da sessão completa**.
-
-### Regressão do fechamento de caixa
-
-O fechamento de caixa foi validado como funcional pelo responsável do produto. Não reabrir o antigo problema de 404 sem nova evidência reproduzível.
-
-Regras:
-
-- preservar as rotas/telas e contratos atuais de `cash-sessions/{id}/`, `summary/` e `close/`;
-- qualquer regressão nova no fechamento continua sendo bloqueadora;
-- correções de relatórios/reconciliação não podem alterar o comportamento funcional já validado do fechamento.
+Qualquer retorno 404 no fluxo Operação de Caixa → Fechar Caixa é bug bloqueador da V1. Deve ser investigado no frontend e na API até que a rota/tela e as chamadas `cash-sessions/{id}/`, `summary/` e `close/` estejam coerentes com o contexto atual de Branch. Não considerar o fluxo concluído enquanto a validação manual reproduzir o erro.
 
 # 22. Venda / PDV
 
@@ -3610,38 +3511,6 @@ Regras:
 - o comparativo deve usar períodos equivalentes e deixar claro `atual × anterior`;
 - dados protegidos devem respeitar permissões no backend, não apenas ocultação visual.
 
-### Direção visual obrigatória do Dashboard — revisão pós-validação
-
-O Dashboard deve ter aparência de **produto gerencial profissional**, não de um conjunto simples de cards e gráficos genéricos.
-
-Regras mandatórias:
-
-- **não utilizar gráfico de linha nem gráfico de área como visualização principal da V1**;
-- `Comparativo atual × anterior` deve utilizar **colunas/barras agrupadas**, permitindo comparar os mesmos dias/horas lado a lado;
-- evolução por hora/dia, quando exibida, deve utilizar **colunas**;
-- `Produtos mais vendidos` e `Faturamento por atendente` devem priorizar **barras horizontais**, facilitando leitura de nomes;
-- `Formas de pagamento` deve utilizar **donut** ou composição de barras, com total/percentual legível;
-- `Mapa de calor` permanece como principal análise temporal dia × hora;
-- evitar 5 gráficos com o mesmo tamanho e peso visual; criar hierarquia de blocos e tamanhos conforme importância;
-- gráficos devem possuir cabeçalho, contexto do período, tooltip rico, legenda somente quando necessária, labels em pt-BR e estados loading/empty/error bem desenhados;
-- usar espaçamento, tipografia, bordas, superfícies e tokens do `design_system/design-system.html`;
-- não utilizar cores aleatórias por gráfico; usar paleta semântica consistente e acessível em light/dark;
-- cards devem apresentar comparação/contexto quando houver dado real útil, sem sparklines de linha;
-- a composição deve funcionar em desktop largo, notebook e mobile sem comprimir gráficos até ficarem ilegíveis;
-- evitar aparência de template genérico. O Dashboard deve transmitir imediatamente `vendas`, `recebimentos`, `estoque`, `equipe` e `operação`.
-
-Composição recomendada:
-
-```text
-Filtros globais
-KPIs financeiros reconciliados
-Heatmap em destaque + situação operacional/estoque
-Produtos mais vendidos + Formas de pagamento
-Faturamento por atendente + Atual × Anterior (barras agrupadas)
-Rankings/alertas
-Últimas vendas
-```
-
 ### Semântica financeira dos filtros
 
 Filtro por Category/Product não pode selecionar uma Sale por conter um item e depois somar silenciosamente **a venda inteira** como se todo o valor pertencesse ao filtro.
@@ -3861,136 +3730,6 @@ Regras:
 - permissões `commissions.view` e `reports.*` devem ser resolvidas pelo escopo correto sem 403 contraditório entre menu, página e endpoint;
 - exportação de cada relatório deve representar o próprio relatório. `Resultado` exporta o demonstrativo de resultado; `Caixa` exporta resumo completo da sessão, incluindo formas de pagamento, faturamento, comissão e reconciliação de dinheiro quando aplicável.
 
-### Reconciliação financeira obrigatória dos relatórios — V1
-
-Os relatórios financeiros devem compartilhar a mesma semântica e permitir reconciliação direta.
-
-#### Fórmulas principais
-
-Para vendas comerciais finalizadas/não canceladas no recorte:
-
-```text
-Faturamento efetivo
-= produtos após promoções/desconto por item/desconto da conta
-
-Total recebido em vendas
-= Faturamento efetivo + Taxa de serviço cobrada
-
-Total recebido operacional
-= Total recebido em vendas + Consumação cobrada
-
-SUM(Payment.amount das operações consideradas)
-= Total recebido operacional
-```
-
-Quando houver cancelamento/estorno no mesmo recorte, exibir valor estornado/revertido separadamente e apresentar o líquido de forma explícita.
-
-#### Relatório de Vendas
-
-Deve exibir, no mínimo, no resumo:
-
-- Faturamento efetivo;
-- Taxa de serviço;
-- Total recebido em vendas;
-- quantidade de vendas;
-- Ticket médio sobre faturamento efetivo;
-- cancelamentos/estornos separados.
-
-`Recebimentos por forma` dentro desse relatório deve somar todos os Payments das Sales que compõem o resumo, de forma que o total reconcilie com `Total recebido em vendas`.
-
-Se o filtro `PaymentMethod` for usado em Vendas, sua semântica é **vendas que utilizaram essa forma**. Em venda com PIX + Dinheiro, selecionar PIX inclui a Sale inteira no conjunto de vendas; o breakdown de pagamentos dessas Sales deve continuar capaz de mostrar todas as formas que compuseram essas vendas, evitando falsa divergência.
-
-#### Relatório de Recebimentos
-
-É o relatório da entrada financeira real e deve distinguir:
-
-- recebido em vendas;
-- taxa de serviço contida nesse recebido;
-- consumação cobrada;
-- estornos/reversões;
-- **Total recebido operacional líquido**;
-- total por PaymentMethod.
-
-Quando o filtro for `Forma de pagamento = PIX`, o indicador principal deve ser rotulado como **Recebido via PIX**. Não comparar esse subtotal isolado com o faturamento integral das Sales sem explicar o escopo.
-
-#### Operadores e Atendentes
-
-Sempre que o relatório exibir faturamento e taxa, também disponibilizar `Total recebido`/`Total cobrado` para o mesmo conjunto de Sales quando tecnicamente atribuível.
-
-- `seller_user` continua responsável por comissão;
-- `created_by` continua responsável pela operação processada;
-- não atribuir comissão ao operador somente por registrar a venda.
-
-#### Comissões
-
-Exibir claramente:
-
-- Faturamento efetivo base;
-- Taxa de serviço;
-- Total recebido das vendas do escopo;
-- Comissão gerada;
-- quantidade de vendas com comissão;
-- número de atendentes.
-
-Comissão não reduz `Faturamento efetivo` nem `Total recebido`; reduz o Resultado estimado.
-
-#### Descontos
-
-Deve permitir reconstruir:
-
-```text
-Valor bruto a preço de tabela
-- Promoções
-- Desconto por item
-- Desconto na conta
-= Faturamento efetivo
-+ Taxa de serviço
-= Total recebido em vendas
-```
-
-Nenhum desconto pode ser subtraído duas vezes.
-
-#### Consumação
-
-Exibir separadamente:
-
-- referência;
-- cobrado;
-- benefício;
-- custo histórico;
-- pagamentos por forma quando `charged_amount > 0`.
-
-`Cobrado` integra `Total recebido operacional`, mas não deve inflar `Faturamento efetivo de vendas comerciais`.
-
-#### Caixa
-
-O resumo superior do relatório por período deve respeitar exatamente `start_datetime/end_datetime`. A tabela pode listar CashSessions que intersectam o intervalo, porém valores completos da sessão só podem aparecer em detalhe explicitamente rotulado.
-
-#### Resultado estimado
-
-O Resultado estimado deve partir da receita operacional efetivamente recebida, sem esconder a taxa de serviço:
-
-```text
-Faturamento efetivo de vendas
-+ Taxa de serviço cobrada
-+ Consumação cobrada
-= Receita operacional recebida
-
-- CMV histórico de vendas
-- Custo histórico das consumações
-- Comissões
-- Despesas operacionais que afetam resultado
-- Custo fixo rateado
-= Resultado operacional estimado
-```
-
-Sangria continua não sendo automaticamente despesa.
-
-#### Regra de consistência
-
-Para o mesmo conjunto de filtros, nenhuma rota dedicada pode possuir uma fórmula própria conflitante. Centralizar agregadores/serviços financeiros no backend sempre que isso reduzir risco de divergência entre Dashboard, Vendas, Recebimentos, Caixa, Comissão e Resultado.
-
-
 ## 26.4 Promoções simples
 
 Adicionar Promoção V1 sem criar motor promocional avançado.
@@ -4120,16 +3859,12 @@ Valor bruto a preço de tabela          R$ 10.300
 (-) Desconto manual                    R$    100
 (-) Promoções                          R$    200
 = Faturamento efetivo                  R$ 10.000
-(+) Taxa de serviço                    R$  1.000
-(+) Consumação cobrada                 R$    300
-= Receita operacional recebida         R$ 11.300
 
-(-) CMV histórico de vendas            R$  5.000
-(-) Custo histórico de consumação      R$    180
+(-) Custo da mercadoria vendida        R$  5.000
 (-) Comissões                          R$    700
 (-) Despesas operacionais              R$    600
 (-) Custo fixo rateado                 R$    400
-= Resultado estimado                   R$  4.420
+= Resultado estimado                   R$  3.300
 ```
 
 Regras:
@@ -4520,36 +4255,6 @@ Regras:
 - o PDV deve refletir imediatamente o preço efetivo da Branch após salvar;
 - a UI do cadastro de Product deve deixar claro quando existe override de preço na Branch atual para evitar a impressão de que a alteração “não salvou”.
 
-## 28.12 Busca e filtros nas listagens administrativas
-
-Além de Products/Stock, as telas administrativas que crescem com a operação devem seguir o mesmo padrão de descoberta rápida.
-
-Aplicar obrigatoriamente nesta V1 a:
-
-- `/usuarios`;
-- tela/listagem de bloqueios individuais de permissão;
-- `/categorias`.
-
-Padrão:
-
-```text
-[ Buscar................................ ] [ Filtros ] [ Limpar quando ativo ]
-```
-
-Regras:
-
-- busca com debounce ou aplicação explícita consistente;
-- filtros avançados em popover/drawer conforme breakpoint;
-- um único botão de aplicação por contexto;
-- filtros ativos visíveis por chips/contador quando houver vários critérios;
-- paginação e URL/query params preservam busca/filtros quando fizer sentido;
-- backend recebe os critérios relevantes; não filtrar apenas itens já carregados da página atual;
-- loading, vazio sem cadastro e vazio por filtro devem possuir mensagens distintas;
-- tabelas devem manter ações principais acessíveis sem excesso de colunas;
-- todos os campos e opções usam pt-BR.
-
----
-
 # 29. Design System
 
 Antes de construir componentes visuais, ler:
@@ -4627,25 +4332,6 @@ operation_type = consumption → seller_user pode ser NULL
 ```
 
 Preferir `CheckConstraint` condicional ou mecanismo equivalente compatível com PostgreSQL. O campo não deve simplesmente virar `null=False`, pois a mesma tabela representa consumação.
-
-## 30.4 Concorrência da finalização e escopo de locks
-
-Antes do deploy da V1, revisar o escopo dos locks da finalização de Sale.
-
-Objetivo:
-
-- garantir consistência do `sale_number`, estoque, idempotência e demais snapshots;
-- evitar manter lock pessimista da `Company` durante toda a finalização se ele serializar desnecessariamente vendas independentes da mesma empresa.
-
-Regras:
-
-- primeiro inspecionar/medir o fluxo real; não fazer refactor de concorrência por suposição;
-- se `select_for_update()` na Company estiver serializando vendas de caixas/filiais independentes por tempo relevante, reduzir o lock para contador/sequência específica ou mecanismo equivalente;
-- qualquer otimização deve preservar unicidade/ordenação definida para `sale_number`, idempotência e atomicidade;
-- não trocar consistência por throughput;
-- registrar a decisão técnica caso o lock atual seja mantido por ser adequado ao volume esperado da V1.
-
----
 
 # 31. Regras Financeiras
 
@@ -4794,53 +4480,18 @@ Regras:
 - consumação deve preservar seu próprio custo histórico para relatório de consumo, mas não deve ser misturada silenciosamente ao CMV de vendas comerciais;
 - relatórios devem identificar claramente quando o indicador é **CMV de vendas** e quando é **custo de consumação**.
 
-### Reconciliação de recebimentos
-
-Para vendas comerciais finalizadas e não canceladas:
-
-```text
-total_recebido_vendas =
-    faturamento_efetivo
-    + taxa_servico_cobrada
-```
-
-Para a operação como um todo:
-
-```text
-total_recebido_operacional =
-    total_recebido_vendas
-    + consumacao_cobrada
-```
-
-A soma dos `Payment.amount` das operações válidas do mesmo escopo deve reconciliar com `total_recebido_operacional`, respeitando estornos/reversões.
-
-Comissão não é abatida do recebimento; ela é custo operacional posterior.
-
 ### Resultado operacional estimado
 
 ```text
-receita_operacional_recebida =
-    faturamento_efetivo
-    + taxa_servico_cobrada
-    + consumacao_cobrada
-
 resultado_estimado =
-    receita_operacional_recebida
-    - cmv_historico_vendas
-    - custo_historico_consumacoes
+    faturamento_efetivo
+    - cmv_historico
     - comissoes
     - despesas_operacionais_que_afetam_resultado
     - custo_fixo_rateado
 ```
 
-Regras:
-
-- descontos não são subtraídos novamente porque já reduziram o faturamento efetivo;
-- taxa de serviço cobrada integra a receita operacional recebida, embora continue exibida separadamente para análise;
-- consumação cobrada integra recebimentos; consumação gratuita não;
-- o custo histórico das consumações deve ser deduzido quando sua receita cobrada for considerada no Resultado;
-- sangria só reduz Resultado quando explicitamente classificada como despesa operacional que afeta resultado;
-- relatórios devem deixar claro o que é `Faturamento efetivo`, `Taxa de serviço`, `Total recebido` e `Resultado estimado`.
+Descontos não são subtraídos novamente porque já reduziram o faturamento efetivo.
 
 # 32. Logs, Auditoria e Histórico
 
@@ -4989,22 +4640,6 @@ Campos adicionais recomendados:
 - o PRD considera o AuditLog append-only **pela aplicação**; se QuerySet/bulk paths puderem contornar `save/delete`, esses caminhos não devem ser usados operacionalmente para alterar logs;
 - endurecimento DB-level por trigger/permissão dedicada pode ficar para evolução posterior, mas a V1 não pode expor endpoint de editar/excluir AuditLog;
 - IP derivado de `X-Forwarded-For` só é confiável quando a cadeia de proxy de produção for controlada e configurada para sobrescrever headers; Sprint 13 deve configurar proxy confiável/`SECURE_PROXY_SSL_HEADER`.
-
-## 32.5 Acabamento final da Auditoria
-
-A tela de Auditoria deve ser utilizável sem conhecimento dos códigos internos do backend.
-
-Regras:
-
-- filtros `Módulo` e `Ação` devem usar Select/combobox com labels humanas, em vez de exigir digitar exemplos como `cash` ou `close`;
-- corrigir acentuação e ortografia de labels centralizados: `Sessão`, `Usuário`, `Configurações`, `Comissão`, `Promoção`, `Preço`, `Permissão` e equivalentes;
-- buscas técnicas por código podem existir somente como recurso secundário/avançado;
-- o resumo principal nunca deve depender de `replaceAll('_', ' ')` ou fallback equivalente;
-- revisar eventos de CommissionOverride e demais ações para garantir assunto/título totalmente em pt-BR;
-- confirmar em runtime a cobertura das mutações feitas na validação manual;
-- preservar detalhes técnicos sob demanda, sem reduzir a qualidade da trilha `before → after`.
-
----
 
 # 33. Healthcheck
 
@@ -6311,21 +5946,6 @@ O MVP somente pode ser considerado concluído se TODOS os cenários abaixo funci
 - [ ] AC-128 — **[Sprint 13]** Runtime de produção não usa `runserver` nem `npm run dev`, e secrets/proxy/HTTPS são revisados antes do deploy. Este critério não faz parte da execução da Sprint 12.2.1.
 - [ ] AC-129 — **[Sprint 13]** Não existe `.env` real versionado; qualquer segredo previamente exposto é rotacionado antes da produção. Este critério não faz parte da execução da Sprint 12.2.1.
 - [ ] AC-130 — Performance de Dashboard/relatórios é avaliada com dados realistas e índices só são adicionados com evidência de consulta.
-- [ ] AC-131 — Para vendas comerciais válidas, `Total recebido em vendas = Faturamento efetivo + Taxa de serviço`, e o total dos Payments reconcilia com esse valor.
-- [ ] AC-132 — Recebimentos distingue vendas e consumação cobrada e apresenta `Total recebido operacional` reconciliado por forma de pagamento.
-- [ ] AC-133 — Resultado estimado inclui taxa de serviço e consumação cobrada como receita operacional e deduz os custos históricos correspondentes sem dupla dedução.
-- [ ] AC-134 — Filtro por PaymentMethod possui semântica explícita e coerente em Vendas versus Recebimentos, sem produzir falsa divergência financeira.
-- [ ] AC-135 — Relatório de Caixa recorta o resumo ao período solicitado e só mostra sessão completa quando claramente identificado.
-- [ ] AC-136 — Listagem de Users possui busca e filtros úteis com backend/paginação coerentes.
-- [ ] AC-137 — Listagem de bloqueios individuais possui busca/filtros por User, permissão/módulo e escopo Company/Branch.
-- [ ] AC-138 — Listagem de Categories possui busca, filtro de status e estados de resultado coerentes sem quebrar a ordenação drag-and-drop.
-- [ ] AC-139 — Dashboard final não usa gráficos de linha/área como visual principal e utiliza barras/colunas, barras horizontais, donut e heatmap com hierarquia visual profissional.
-- [ ] AC-140 — Auditoria usa filtros e labels humanos com acentuação correta e não exige códigos técnicos como `cash`/`close` para uso normal.
-- [ ] AC-141 — Dark mode é revisado visualmente em runtime, especialmente modais, selects, dropdowns, tabelas, tooltips e gráficos.
-- [ ] AC-142 — Criação/edição de Product composto, KPIs de comissão e filtros por hora são revalidados em runtime após as correções finais.
-- [ ] AC-143 — Nenhuma página relevante mantém dois botões concorrentes `Aplicar/Filtrar` para o mesmo estado de filtros.
-- [ ] AC-144 — Cobertura real da Auditoria é revalidada com ações de domínio executadas no sistema, não apenas pela presença do fallback.
-- [ ] AC-145 — Escopo de lock da finalização de Sale é revisado; qualquer otimização preserva integridade, idempotência e geração segura do número da venda.
 
 ## Gate de qualidade obrigatório antes da Sprint 13
 
@@ -6338,17 +5958,13 @@ Gate mínimo:
 - nenhuma finalização duplicável por retry conhecido;
 - CMV histórico coerente para `direct` e `components`;
 - Dashboard/relatórios reconciliam faturamento, descontos, taxa, comissão, ticket e filtros;
-- para o mesmo recorte, `Faturamento efetivo + Taxa de serviço = Total recebido em vendas`, e Payments reconciliam com o recebido;
-- consumação cobrada é distinguida, mas entra no Total recebido operacional;
-- Resultado estimado considera taxa de serviço e consumação cobrada sem esquecer os custos históricos correspondentes;
 - todos os filtros de data/hora realmente alteram a consulta;
 - nenhum enum técnico em inglês visível ao usuário;
 - nenhuma ação mutável importante sem AuditLog;
 - nenhum problema de contraste conhecido em dark/light, especialmente modais;
 - nenhuma validação esperada de produto/composição retorna 500;
 - build/check/migrations/health sem falha;
-- Sprint 12.3 permanece preservada como validação manual executada pelo responsável do produto;
-- Sprint 12.4 concluída tecnicamente e suas correções críticas rechecadas;
+- Sprint 12.3 manual aprovada pelo responsável do produto;
 - deploy autorizado expressamente.
 
 Performance deve ser revisada com dados realistas. Índices para consultas de Sale/CashSession/StockMovement devem ser adicionados apenas quando suportados por medição (`EXPLAIN ANALYZE`) ou evidência concreta, evitando indexação cega.
@@ -6384,7 +6000,6 @@ Arquivos muito grandes podem ser refatorados após estabilização da V1; antes 
 | Revisão gerencial e operacional | 12.2.1 | hardening sênior do código real: RBAC sem bypass, idempotência, CMV de compostos, Dashboard com gráficos, filtros corretos, descontos item/conta, Products sem duplicidade, composição robusta, relatórios coerentes, estoque em grupo, caixa preservado e auditoria completa/humanizada |
 | Hardening residual da V1 | 12.2.2 | correções encontradas na revisão do estado atual: comissão individual, dark mode, filtros data/hora, operação de estoque, preços em lote atômicos, idempotência de movimentos manuais, auditoria final, relatórios/KPIs e validação runtime de composição |
 | Validação final | 12.3 | validação manual final conduzida pelo responsável pelo produto; OpenCode não marca como concluída sozinho |
-| Correções finais pós-validação | 12.4 | reconciliação financeira dos relatórios, filtros administrativos, refinamento visual do Dashboard, auditoria/dark mode e fechamento dos resíduos encontrados na validação manual |
 | Produção | 13 | deploy somente após autorização expressa |
 
 # 50. Sprints de Implementação
@@ -8081,8 +7696,8 @@ Checklist manual mínimo:
 - [X] Bloqueios individuais permitem seleção múltipla e escopo Company/Branch correto.
 - [X] `/relatorios/comissoes` reconcilia KPIs com as vendas/snapshots do mesmo período.
 - [X] Nenhuma chave técnica/status em inglês aparece em relatórios, estoque, auditoria, filtros ou exportações.
-- [ ] Filtros possuem apenas um fluxo `Aplicar` por contexto e alteração das horas muda efetivamente os resultados.
-- [ ] Auditoria registra ações mutáveis realizadas durante a validação em todos os módulos V1 relevantes.
+- [!] Filtros possuem apenas um fluxo `Aplicar` por contexto e alteração das horas muda efetivamente os resultados.
+- [!] Auditoria registra ações mutáveis realizadas durante a validação em todos os módulos V1 relevantes.
 - [X] `operation_reference` permite correlacionar movimentos da mesma operação sem expor UUID cru como informação principal.
 - [X] Tabela de preços em lote não deixa alterações parciais silenciosas quando uma linha falha.
 
@@ -8098,201 +7713,6 @@ Verificações técnicas permitidas ao agente durante correções:
 **Não criar nem reintroduzir testes automatizados para cumprir esta sprint.**
 
 **Entrega:** aprovação manual do responsável pelo produto e lista de correções encerrada.
-
----
-
-## Sprint 12.4 — Correções Finais Pós-Validação e Reconciliação Financeira
-
-**Objetivo:** corrigir os problemas encontrados após a validação manual da Sprint 12.3 e incorporar agora os refinamentos que haviam sido inicialmente deixados para uma versão posterior, sem alterar o histórico da Sprint 12.3 e sem iniciar qualquer trabalho de deploy.
-
-### Regra mandatória
-
-> **A Sprint 12.3 foi executada manualmente pelo responsável do produto e deve permanecer integralmente preservada, inclusive `[X]` e `[!]`. O OpenCode não deve editar seus checkboxes nem reescrever seu histórico. As descobertas e decisões posteriores entram exclusivamente nesta Sprint 12.4.**
-
-> **Esta sprint continua sendo de produto/hardening local. Não preparar produção, não alterar runtime para deploy, não configurar VPS/Swarm/Traefik/Cloudflare/HTTPS/registry/secrets e não executar a Sprint 13.**
-
-### 1. Reconciliação financeira — regra única do sistema
-
-- [X] Centralizar no backend a semântica de `Faturamento efetivo`, `Taxa de serviço`, `Total recebido em vendas`, `Consumação cobrada`, `Total recebido operacional`, `Comissão`, `CMV` e `Resultado estimado`.
-- [X] Garantir para vendas comerciais válidas: `Total recebido em vendas = Faturamento efetivo + Taxa de serviço cobrada`.
-- [X] Garantir que `SUM(Payment.amount)` das vendas do mesmo recorte reconcilie com `Total recebido em vendas`, respeitando cancelamentos/estornos.
-- [X] Garantir: `Total recebido operacional = Total recebido em vendas + Consumação cobrada`.
-- [X] Garantir que os Payments de consumação cobrada entrem no total por forma de pagamento.
-- [X] Manter comissão fora do faturamento/recebimento; comissão é custo posterior.
-- [X] Revisar arredondamento/Decimal para impedir divergência de centavos entre KPI, tabela e breakdown por PaymentMethod.
-- [X] Não duplicar fórmulas conflitantes em cada view; reutilizar serviço/agregador financeiro quando aplicável.
-
-### 2. Relatório de Vendas
-
-- [X] Exibir no topo **Faturamento efetivo**, **Taxa de serviço**, **Total recebido**, **Vendas** e **Ticket médio**.
-- [X] Exibir `Total recebido` também como total do bloco **Recebimentos por forma**.
-- [X] Fazer o total por forma de pagamento reconciliar com o `Total recebido` das Sales consideradas.
-- [X] Preservar descontos/promos uma única vez no cálculo do faturamento efetivo.
-- [X] Deixar cancelamentos/estornos visualmente separados do valor líquido.
-- [X] Revisar filtro `PaymentMethod`: em Vendas ele significa **vendas que utilizaram a forma**, sem descartar os demais Payments da mesma Sale ao reconciliar o total.
-- [X] Usar labels claros para evitar confundir `Faturamento efetivo` com dinheiro recebido.
-
-### 3. Relatório de Recebimentos
-
-- [X] Transformar `/relatorios/recebimentos` na visão de entrada financeira real.
-- [X] Exibir **Recebido em vendas**, **Taxa de serviço contida no recebido**, **Consumação cobrada**, **Estornos/Reversões** e **Total recebido operacional**.
-- [X] Exibir total por Dinheiro, PIX, Crédito, Débito e demais PaymentMethods.
-- [X] Garantir `SUM(formas) = Total recebido operacional` para o mesmo recorte líquido.
-- [X] Quando filtrar uma forma específica, rotular o KPI como `Recebido via <forma>` e não comparar silenciosamente esse subtotal com o faturamento integral.
-- [X] Preservar período, Branch e demais filtros na exportação.
-
-### 4. Relatórios de Operadores, Atendentes e Comissões
-
-- [X] Exibir `Total recebido/Total cobrado` quando o relatório já apresentar Faturamento efetivo + Taxa.
-- [X] Garantir que Atendente continue baseado em `seller_user` e Operador em `created_by`.
-- [X] Reconciliar `/relatorios/comissoes` novamente com snapshots conhecidos de `commission_rate` e `commission_amount`.
-- [X] Exibir no relatório de Comissão: Faturamento efetivo base, Taxa de serviço, Total recebido, Comissão gerada, vendas e atendentes.
-- [X] Garantir que comissão nunca seja subtraída de Faturamento/Total recebido.
-
-### 5. Relatórios de Descontos, Consumação e Cancelamentos
-
-- [X] Fazer Descontos reconstruir claramente `Bruto - Promoção - Desconto por item - Desconto da conta = Faturamento efetivo`.
-- [X] Acrescentar `+ Taxa = Total recebido` quando a visão financeira do relatório exigir reconciliação.
-- [X] Fazer Consumação exibir referência, cobrado, benefício, custo histórico e Payments por forma.
-- [X] Incluir `Consumação cobrada` no Total recebido operacional sem misturá-la ao Faturamento comercial.
-- [X] Fazer Cancelamentos exibir composição do valor revertido, incluindo parcela de taxa de serviço quando existia.
-- [X] Revisar labels/status/badges para pt-BR e contraste em light/dark.
-
-### 6. Relatório de Caixa
-
-- [X] Separar no topo `Faturamento efetivo`, `Taxa de serviço`, `Total recebido em vendas`, `Consumação cobrada` e `Total recebido operacional`.
-- [X] Exibir rodapé total na seção por PaymentMethod e reconciliar com o total operacional.
-- [X] Manter `Esperado em dinheiro` independente de PIX/cartão.
-- [X] No relatório filtrado por período, calcular o resumo somente com operações dentro de `start_datetime/end_datetime`.
-- [X] Continuar listando CashSessions que intersectam o período.
-- [X] Ao abrir uma sessão, permitir valores da sessão inteira, mas rotular explicitamente `Valores da sessão completa`.
-- [X] Não reabrir o antigo 404 do fechamento sem evidência nova; preservar o fechamento funcional.
-
-### 7. Resultado operacional estimado
-
-- [X] Alterar a base do Resultado para incluir o dinheiro operacional efetivamente recebido:
-  - `Faturamento efetivo`;
-  - `+ Taxa de serviço cobrada`;
-  - `+ Consumação cobrada`.
-- [X] Deduzir `CMV histórico de vendas`.
-- [X] Deduzir custo histórico das consumações quando consumação cobrada/gratuita fizer parte da visão de resultado operacional escolhida.
-- [X] Deduzir comissão, despesas operacionais que afetam resultado e custo fixo rateado.
-- [X] Não tratar sangria automaticamente como despesa.
-- [X] Atualizar exportação de Resultado com as mesmas linhas/fórmulas da tela.
-- [X] Validar com cenário manual conhecido e demonstrar a conta centavo a centavo.
-
-### 8. Dashboard — reformulação visual
-
-- [X] Remover gráficos de linha/área usados como visualização principal.
-- [X] Não substituir por gráficos genéricos equivalentes; redesenhar o Dashboard seguindo `design_system/design-system.html`.
-- [X] Usar `Produtos mais vendidos` em barras horizontais.
-- [X] Manter mapa de calor dia × hora como análise temporal principal.
-- [X] Usar Formas de pagamento em donut ou barras de composição, com valor e percentual legíveis.
-- [X] Usar Faturamento por atendente em barras horizontais/ranking.
-- [X] Usar Atual × Anterior em colunas/barras agrupadas, nunca linha.
-- [X] Quando houver análise por hora/dia, usar colunas.
-- [X] Criar hierarquia visual real: gráficos principais maiores, análises secundárias menores, evitando grade de cards todos iguais.
-- [X] Melhorar espaçamento, títulos, subtítulos, contexto de período, tooltips, empty/loading/error states e responsividade.
-- [X] Evitar aparência de template/dashboard simples; a leitura deve parecer produto comercial maduro.
-- [X] Não utilizar sparklines de linha nos KPIs.
-- [X] Garantir que todos os gráficos respeitem dark mode e permissões.
-- [X] Preservar drill-down e filtros globais.
-
-### 9. Dashboard — reconciliação dos KPIs
-
-- [X] Exibir **Faturamento efetivo**, **Taxa de serviço** e **Total recebido** de forma que a soma seja visualmente compreensensível.
-- [X] Exibir Consumação cobrada separadamente e, quando houver KPI de recebimento operacional, incluí-la no total.
-- [X] Fazer formas de pagamento reconciliar com o mesmo total recebido usado pelo Dashboard.
-- [X] Garantir que filtro por Category/Product não atribua valores financeiros integrais indevidos a Sales mistas.
-- [X] Revisar Ticket médio para continuar usando a base definida no PRD.
-
-### 10. Users — busca e filtros
-
-- [X] Adicionar busca por nome/e-mail.
-- [X] Adicionar filtros de status, `can_login`, `user_type`, perfil e Branch quando aplicável.
-- [X] Fazer busca/filtros no backend quando houver paginação.
-- [X] Manter um único fluxo Aplicar/Limpar.
-- [X] Preservar query/filtros ao paginar.
-- [X] Criar empty state específico para nenhum resultado.
-
-### 11. Bloqueios individuais — busca e filtros
-
-- [X] Adicionar busca por User.
-- [X] Adicionar filtro por módulo/permissão.
-- [X] Adicionar filtro por escopo Company/Branch e Branch específica.
-- [X] Adicionar status ativo/revogado quando aplicável.
-- [X] Exibir labels pt-BR, ator, data e justificativa.
-- [X] Manter seleção múltipla com checkbox para criação em lote.
-- [X] Não permitir que filtros de Branch ofereçam permissões incompatíveis com o escopo.
-
-### 12. Categories — busca e filtros
-
-- [X] Adicionar busca por nome/descrição.
-- [X] Adicionar filtro por status.
-- [X] Adicionar filtro `Com produtos / Sem produtos / Todas` quando útil.
-- [X] Preservar `product_count`.
-- [X] Garantir que filtrar/pesquisar não altere acidentalmente a ordenação `sort_order`.
-- [X] Manter drag-and-drop somente para persistência explícita da ordem operacional.
-
-### 13. Filtros data/hora e dois botões Aplicar
-
-- [X] Fazer nova varredura por páginas com `PeriodFilter` + botão local e eliminar qualquer fluxo duplicado remanescente.
-- [X] Corrigir especificamente Movimentações de Estoque se ainda houver `Filtrar` + `Aplicar` simultâneos.
-- [X] Validar alteração somente de hora com operações conhecidas no limite do intervalo.
-- [X] Validar período atravessando meia-noite.
-- [X] Confirmar que Dashboard, relatório, tabela e exportação recebem o mesmo período.
-- [X] Não marcar como concluído apenas porque `parse_datetime_range()` existe; comprovar resultado funcional.
-
-### 14. Auditoria — acabamento e cobertura runtime
-
-- [X] Trocar campos técnicos de filtro por Select/combobox humano para Módulo e Ação.
-- [X] Remover necessidade de o usuário saber códigos como `cash` e `close`.
-- [X] Corrigir acentuação/labels: Sessão, Usuário, Configurações, Comissão, Promoção, Preço, Permissão e demais.
-- [X] Revisar `CommissionOverride` e outros títulos que ainda possam expor nomes técnicos.
-- [ ] Reexecutar uma matriz manual de mutações e confirmar que todas aparecem com informação útil.
-- [X] Manter fallback HTTP como rede de segurança, mas preferir `before → after` rico nos domínios críticos.
-- [X] Não expor JSON técnico como experiência principal.
-
-### 15. Dark mode — verificação visual final
-
-- [ ] Abrir em runtime as telas principais no dark mode, não confiar somente em tokens/CSS estático.
-- [ ] Revisar especialmente Modal, Dialog, Drawer, Select, Dropdown, Table, Badge, Tooltip, filtros e gráficos.
-- [X] Corrigir qualquer texto secundário/placeholder/disabled com contraste insuficiente.
-- [ ] Confirmar também hover/focus/selected/error.
-- [X] Priorizar correção em tokens/componentes compartilhados.
-
-### 16. Products compostos — revalidação
-
-- [X] Criar Product composto real no fluxo atual.
-- [X] Editar seus componentes.
-- [X] Confirmar ausência de 500.
-- [X] Confirmar atomicidade em erro.
-- [X] Confirmar que mudança posterior não altera CMV histórico de Sale anterior.
-
-### 17. Concorrência e performance da finalização
-
-- [X] Inspecionar o escopo de `select_for_update()` usado na finalização e geração de `sale_number`.
-- [X] Verificar se lock da Company mantém vendas independentes serializadas durante toda a transação.
-- [X] Se houver gargalo concreto/relevante para a V1, reduzir o lock para mecanismo mais específico sem perder atomicidade, idempotência ou unicidade.
-- [X] Se o comportamento atual for aceitável ao volume esperado, documentar e não refatorar apenas por estética.
-- [X] Revisar consultas pesadas do Dashboard após a reformulação; índices somente com evidência.
-
-### 18. Validação técnica da Sprint 12.4
-
-- [X] Executar `python manage.py check`.
-- [X] Verificar migrations pendentes/consistência.
-- [X] Executar build do frontend e TypeScript.
-- [X] Validar `/health/`.
-- [X] Subir Docker Compose quando necessário para validar os fluxos alterados.
-- [X] Revisar logs e não encerrar com 500 reproduzível conhecido.
-- [X] Não criar/reintroduzir testes automatizados.
-- [X] Não preparar produção/deploy.
-- [X] Não editar a Sprint 12.3.
-- [X] Entregar resumo das alterações, migrations, permissões, contratos financeiros alterados e pontos que merecem rechecagem do responsável.
-
-**Gate de saída da Sprint 12.4:** relatórios financeiros reconciliáveis, Dashboard visualmente maduro sem gráficos de linha, Users/Bloqueios/Categories pesquisáveis e filtráveis, filtros de data/hora funcionais, Auditoria/Dark mode rechecados e nenhuma regressão crítica conhecida.
-
-**Entrega:** V1 funcional corrigida e pronta para receber autorização expressa para a Sprint 13. A conclusão desta sprint não executa deploy automaticamente.
 
 ---
 
@@ -8566,7 +7986,7 @@ A **Sprint 7.1** consolidou os ajustes de Caixa, usuários, permissões, filtros
 
 Após as Sprints 8–10, a **Sprint 10.1** corrige os problemas encontrados em uso real antes de ampliar o escopo: contrato monetário do PDV, criação de consumação dentro do checkout, filtros temporais com data/hora, restauração de acesso administrativo, acesso à configuração de formas de pagamento e remoção dos testes automatizados incidentais.
 
-A **Sprint 11** entrega o dashboard operacional; a **Sprint 11.1** entrega relatórios operacionais; a **Sprint 11.2** entrega Promoções V1. As **Sprints 12.1 e 12.2** consolidam as correções e a reorganização de Dashboard/Relatórios descobertas na validação real. A **Sprint 12.3** permanece preservada como validação manual executada pelo responsável do produto. A **Sprint 12.4** concentra as correções finais descobertas nessa validação, incluindo reconciliação financeira dos relatórios, refinamento visual do Dashboard e filtros administrativos. A Sprint 13 somente inicia mediante autorização expressa para deploy.
+A **Sprint 11** entrega o dashboard operacional; a **Sprint 11.1** entrega relatórios operacionais; a **Sprint 11.2** entrega Promoções V1. As **Sprints 12.1 e 12.2** consolidam as correções e a reorganização de Dashboard/Relatórios descobertas na validação real. A **Sprint 12.3** é a validação manual final do responsável pelo produto e não deve ser concluída automaticamente pelo OpenCode. A Sprint 13 somente inicia mediante autorização expressa para deploy.
 
 ---
 

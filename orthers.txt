@@ -5,7 +5,6 @@ opencode -s ses_ff9d0e215ffeTtoqj8gL2pSXeo
 
 --------------------------------------------------------------------------------------------
 
-nossa conexao caiu, volte a fazer o que foi pedido e 
 
 Analise com cuidado todos os detalhes do@PRD.md, do
 @design_system/design-system.html e do código, implementações e padrões
@@ -15,9 +14,10 @@ na sessão "50. Sprints de Implementação" do @PRD.md.
 Marque X nas tarefas conforme finalize as mesmas. Ignore tarefas já marcadas
 com X.
 
+nossa conexao caiu, volte a fazer o que foi pedido e 
 Analise com cuidado todos os detalhes do @PRD.md, do
 @design_system/design-system.html e do código, implementações e padrões
-já realizados no projeto, e em seguida execute a "Sprint 12.2.1 — Revisão Gerencial, Permissões, Estoque e Caixa" na sessão "50. Sprints de Implementação" do @PRD.md.
+já realizados no projeto, e em seguida execute a "Sprint 12.4 — Correções Finais Pós-Validação e Reconciliação Financeira" na sessão "50. Sprints de Implementação" do @PRD.md.
 Marque X nas tarefas conforme finalize as mesmas. Ignore tarefas já marcadas com X.
 
 ---------------------------------------------------------------------------------------------
@@ -41,3 +41,5 @@ backend-1   | [18/Aug/2026 02:10:37] "PUT /api/v1/products/10/components/ HTTP/1
 
 - AUDITORIA DEVE CONTER TUDO DO SISTEMA, TUDO!!!!!!!!  EU ACABEI DE FAZER AÇÕES NO SITE E NAO APARECE LA! E TEM COISAS EM INGLES COMO STATUS: CLOSED E OUTROS...
 - Tem filtros que n funconam e esta com 2 aplicar (HORARIOS DE FILTRO N FUNCIONAM)
+
+

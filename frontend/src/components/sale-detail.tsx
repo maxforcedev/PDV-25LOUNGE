@@ -23,7 +23,7 @@ import type { Sale, SaleOperation } from "@/types";
 function Status({ status }: { status: Sale["status"] }) {
   return (
     <span
-      className={`rounded-full px-3 py-1 text-xs font-bold ${status === "finalized" ? "bg-success/10 text-emerald-700" : "bg-danger/10 text-red-700"}`}
+      className={`rounded-full px-3 py-1 text-xs font-bold ${status === "finalized" ? "bg-success/10 text-success-strong" : "bg-danger/10 text-danger-strong"}`}
     >
       {status === "finalized" ? "Finalizada" : "Cancelada"}
     </span>
@@ -38,10 +38,10 @@ function DataPoint({
 }) {
   return (
     <div>
-      <dt className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+      <dt className="text-[10px] font-bold uppercase tracking-wider text-muted">
         {label}
       </dt>
-      <dd className="mt-1 text-sm font-semibold text-dark">{value || "-"}</dd>
+      <dd className="mt-1 text-sm font-semibold text-fg">{value || "-"}</dd>
     </div>
   );
 }
@@ -205,8 +205,15 @@ export function SaleDetail({
             <DataPoint label="Filial" value={sale.branch_name} />
             <DataPoint label="Empresa" value={sale.company_name} />
             <DataPoint label="Operador" value={sale.created_by_name} />
-            {!consumption && <DataPoint label="Atendente" value={sale.seller_user_name} />}
-            {!consumption && sale.discount_approved_by_name && <DataPoint label="Desconto autorizado por" value={sale.discount_approved_by_name} />}
+            {!consumption && (
+              <DataPoint label="Atendente" value={sale.seller_user_name} />
+            )}
+            {!consumption && sale.discount_approved_by_name && (
+              <DataPoint
+                label="Desconto autorizado por"
+                value={sale.discount_approved_by_name}
+              />
+            )}
             <DataPoint
               label="Beneficiário"
               value={sale.beneficiary_user_name}
@@ -261,20 +268,28 @@ export function SaleDetail({
                           {item.internal_code} · {item.unit.toUpperCase()}
                         </span>
                         {item.promotion_name && (
-                          <span className="mt-1 block text-[10px] font-bold text-emerald-700">
+                          <span className="mt-1 block text-[10px] font-bold text-success-strong">
                             {item.promotion_name} · benefício{" "}
                             {formatBRL(item.promotion_benefit)}
                           </span>
                         )}
                         {item.manual_discount !== "0.00" && (
-                          <span className="mt-1 block text-[10px] font-bold text-amber-700">
+                          <span className="mt-1 block text-[10px] font-bold text-warning-strong">
                             Desconto do item {formatBRL(item.manual_discount)}
-                            {item.discount_approved_by_name ? ` · autorizado por ${item.discount_approved_by_name}` : ""}
+                            {item.discount_approved_by_name
+                              ? ` · autorizado por ${item.discount_approved_by_name}`
+                              : ""}
                           </span>
                         )}
                         {!!item.component_cost_snapshot?.length && (
                           <span className="mt-1 block text-[10px] text-slate-500">
-                            CMV composto: {item.component_cost_snapshot.map((component) => `${formatQuantity(component.quantity_per_unit)} ${component.unit.toUpperCase()} de ${component.product_name} a ${formatBRL(component.unit_cost)}`).join("; ")}
+                            CMV composto:{" "}
+                            {item.component_cost_snapshot
+                              .map(
+                                (component) =>
+                                  `${formatQuantity(component.quantity_per_unit)} ${component.unit.toUpperCase()} de ${component.product_name} a ${formatBRL(component.unit_cost)}`,
+                              )
+                              .join("; ")}
                           </span>
                         )}
                       </td>
@@ -287,15 +302,17 @@ export function SaleDetail({
                       <td className="text-right">
                         <strong
                           className={
-                            item.promotion_name || item.manual_discount !== "0.00"
+                            item.promotion_name ||
+                            item.manual_discount !== "0.00"
                               ? "text-slate-400 line-through"
                               : ""
                           }
                         >
                           {formatBRL(item.subtotal)}
                         </strong>
-                        {(item.promotion_name || item.manual_discount !== "0.00") && (
-                          <strong className="block text-emerald-700">
+                        {(item.promotion_name ||
+                          item.manual_discount !== "0.00") && (
+                          <strong className="block text-success-strong">
                             {formatBRL(item.net_subtotal)}
                           </strong>
                         )}
@@ -319,13 +336,13 @@ export function SaleDetail({
                 <span>{formatBRL(sale.subtotal)}</span>
               </div>
               {!consumption && sale.promotion_discount_total !== "0.00" && (
-                <div className="flex justify-between text-sm text-emerald-700">
+                <div className="flex justify-between text-sm text-success-strong">
                   <span>Promoções</span>
                   <span>- {formatBRL(sale.promotion_discount_total)}</span>
                 </div>
               )}
               {!consumption && sale.item_discount_total !== "0.00" && (
-                <div className="flex justify-between text-sm text-amber-700">
+                <div className="flex justify-between text-sm text-warning-strong">
                   <span>Descontos por item</span>
                   <span>- {formatBRL(sale.item_discount_total)}</span>
                 </div>
@@ -337,23 +354,31 @@ export function SaleDetail({
                 </div>
               )}
               {!consumption && sale.service_fee_amount !== "0.00" && (
-                <div className="flex justify-between text-sm text-blue-700">
+                <div className="flex justify-between text-sm text-info-strong">
                   <span>Taxa de serviço ({sale.service_fee_rate}%)</span>
                   <span>+ {formatBRL(sale.service_fee_amount)}</span>
                 </div>
               )}
               {!consumption && sale.service_fee_waived && (
-                <div className="flex justify-between text-sm text-amber-700">
+                <div className="flex justify-between text-sm text-warning-strong">
                   <span>Taxa de serviço retirada</span>
                   <span>{sale.service_fee_waived_by_name || "Autorizado"}</span>
                 </div>
               )}
-              {!consumption && canViewCommission && sale.commission_amount !== undefined && (
-                <div className="flex justify-between text-xs text-slate-400">
-                  <span>Comissão ({sale.commission_rate}%)</span>
-                  <span className={sale.status === "cancelled" ? "line-through" : ""}>{formatBRL(sale.commission_amount)}</span>
-                </div>
-              )}
+              {!consumption &&
+                canViewCommission &&
+                sale.commission_amount !== undefined && (
+                  <div className="flex justify-between text-xs text-slate-400">
+                    <span>Comissão ({sale.commission_rate}%)</span>
+                    <span
+                      className={
+                        sale.status === "cancelled" ? "line-through" : ""
+                      }
+                    >
+                      {formatBRL(sale.commission_amount)}
+                    </span>
+                  </div>
+                )}
               {consumption && (
                 <div className="flex justify-between text-sm text-slate-500">
                   <span>Valor cobrado</span>
@@ -451,7 +476,7 @@ export function SaleDetail({
         size="md"
       >
         <div className="space-y-4 p-5 sm:p-6">
-          <div className="rounded-lg border border-warning/30 bg-warning/10 p-4 text-xs leading-5 text-amber-900">
+          <div className="rounded-lg border border-warning/30 bg-warning-surface p-4 text-xs leading-5 text-warning-strong">
             <strong className="block">
               O estoque será revertido pelos movimentos originais.
             </strong>

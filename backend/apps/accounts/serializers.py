@@ -29,7 +29,6 @@ class LoginSerializer(serializers.Serializer):
 
 class UserSerializer(serializers.ModelSerializer):
     is_superuser = serializers.BooleanField(read_only=True)
-    permissions = serializers.SerializerMethodField()
     companies = serializers.SerializerMethodField()
     branches = serializers.SerializerMethodField()
     permission_blocks = serializers.SerializerMethodField()
@@ -45,7 +44,6 @@ class UserSerializer(serializers.ModelSerializer):
             'last_name',
             'is_active',
             'is_superuser',
-            'permissions',
             'companies',
             'branches',
             'permission_blocks',
@@ -57,7 +55,6 @@ class UserSerializer(serializers.ModelSerializer):
             'email',
             'is_active',
             'is_superuser',
-            'permissions',
             'companies',
             'branches',
             'permission_blocks',
@@ -95,23 +92,6 @@ class UserSerializer(serializers.ModelSerializer):
         if company_ids is not None:
             accesses = accesses.filter(company_id__in=company_ids)
         return accesses
-
-    def get_permissions(self, user):
-        if not user.can_login or not user.is_active:
-            return []
-        if user.is_superuser:
-            return sorted(ALL_PERMISSION_CODES)
-        codes = set()
-        for access in self._active_company_accesses(user):
-            if access.access_profile is None:
-                continue
-            codes.update(
-                permission.code
-                for permission in access.access_profile.permissions.all()
-                if permission.status == Status.ACTIVE
-                and permission.code not in OPERATING_PERMISSION_CODES
-            )
-        return sorted(codes)
 
     def get_companies(self, user):
         if user.is_superuser:
@@ -252,7 +232,6 @@ class UserManagementSerializer(UserSerializer):
             'id',
             'is_active',
             'is_superuser',
-            'permissions',
             'companies',
             'branches',
             'created_at',

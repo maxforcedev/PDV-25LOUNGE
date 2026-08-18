@@ -65,6 +65,8 @@ function SessionDetail() {
   const canWithdraw = hasPermission(permissions.withdrawCash);
   const canClose = hasPermission(permissions.closeCashRegister);
   const canAdministerOthers = hasPermission(permissions.administerOtherCash);
+  const canViewSales = hasPermission(permissions.viewSale) || hasPermission(permissions.cancelSale);
+  const canViewConsumptions = hasPermission(permissions.viewConsumption) || hasPermission(permissions.cancelConsumption);
   const contextRef = useRef("");
   contextRef.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}:${id}`;
   const [session, setSession] = useState<CashSession | null>(null);
@@ -349,6 +351,9 @@ function SessionDetail() {
                 value={summary.withdrawals}
                 tone="danger"
               />
+              <MoneyKpi label="Vendas em dinheiro" value={summary.sale_cash} tone="success" />
+              <MoneyKpi label="Consumações em dinheiro" value={summary.consumption_cash} tone="success" />
+              <MoneyKpi label="Reversões em dinheiro" value={summary.cash_reversals} tone="danger" />
               <MoneyKpi
                 label={isOpen ? "Esperado agora" : "Esperado no fechamento"}
                 value={summary.expected_amount}
@@ -361,7 +366,7 @@ function SessionDetail() {
                   <div>
                     <h2 className="text-sm font-bold">Conferência encerrada</h2>
                     <p className="mt-1 text-[11px] text-slate-500">
-                      Snapshots imutáveis gravados no fechamento.
+                      Valores imutáveis gravados no fechamento.
                     </p>
                   </div>
                   {session.closing_difference !== null && (
@@ -398,15 +403,16 @@ function SessionDetail() {
             )}
             <div className="rounded-lg border border-primary/15 bg-primary/5 px-4 py-3 text-[11px] leading-5 text-slate-600">
               O esperado é calculado no servidor como abertura + entradas
-              manuais + pagamentos em dinheiro (Payment.amount) - sangrias.
-              Valores recebidos e troco não compõem esse cálculo.
+              manuais + vendas em dinheiro + consumações em dinheiro - reversões
+              em dinheiro - sangrias. Valores recebidos e troco não compõem esse cálculo.
             </div>
             <section className="card overflow-hidden">
               <div className="card-header"><div><h2 className="text-sm font-bold">Resumo operacional completo</h2><p className="mt-1 text-[11px] text-slate-500">Produção da sessão, benefícios e recebimentos por forma.</p></div><Banknote className="size-5 text-slate-300" /></div>
-              <div className="grid gap-6 p-5 lg:grid-cols-3">
-                <div className="space-y-2 text-xs"><h3 className="font-bold text-dark">Vendas ({summary.sales.count})</h3><p className="flex justify-between"><span>Bruto</span><strong>{formatBRL(summary.sales.gross)}</strong></p><p className="flex justify-between"><span>Descontos promocionais</span><strong className="text-red-700">- {formatBRL(summary.sales.promotion_discount)}</strong></p><p className="flex justify-between"><span>Descontos manuais</span><strong className="text-red-700">- {formatBRL(summary.sales.manual_discount)}</strong></p><p className="flex justify-between border-t border-slate-100 pt-2"><span>Receita efetiva</span><strong>{formatBRL(summary.sales.effective_revenue)}</strong></p><p className="flex justify-between"><span>Taxa de serviço</span><strong>{formatBRL(summary.sales.service_fee)}</strong></p><p className="flex justify-between"><span>Total cobrado</span><strong className="text-primary">{formatBRL(summary.sales.customer_total)}</strong></p></div>
-                <div className="space-y-2 text-xs"><h3 className="font-bold text-dark">Consumações ({summary.consumptions.count})</h3><p className="flex justify-between"><span>Valor de referência</span><strong>{formatBRL(summary.consumptions.reference)}</strong></p><p className="flex justify-between"><span>Valor cobrado</span><strong>{formatBRL(summary.consumptions.charged)}</strong></p><p className="flex justify-between border-t border-slate-100 pt-2"><span>Benefício concedido</span><strong className="text-amber-700">{formatBRL(summary.consumptions.benefit)}</strong></p><p className="flex justify-between"><span>Comissões atribuídas</span><strong>{formatBRL(summary.sales.commission)}</strong></p></div>
-                <div className="space-y-2 text-xs"><h3 className="font-bold text-dark">Recebimentos</h3>{summary.payment_totals.length ? summary.payment_totals.map((payment) => <p key={`${payment.payment_method_code}:${payment.payment_method_name}`} className="flex justify-between"><span>{payment.payment_method_name}</span><strong>{formatBRL(payment.amount)}</strong></p>) : <p className="text-slate-500">Nenhum recebimento finalizado.</p>}<p className="flex justify-between border-t border-slate-100 pt-2"><span>Dinheiro no caixa</span><strong className="text-primary">{formatBRL(summary.cash_payments)}</strong></p></div>
+              <div className="grid gap-6 p-5 lg:grid-cols-4">
+                <div className="space-y-2 text-xs"><h3 className="font-bold text-dark">Vendas ({summary.sales.count})</h3><p className="flex justify-between"><span>Bruto</span><strong>{formatBRL(summary.sales.gross)}</strong></p><p className="flex justify-between"><span>Descontos promocionais</span><strong className="text-danger">- {formatBRL(summary.sales.promotion_discount)}</strong></p><p className="flex justify-between"><span>Descontos manuais</span><strong className="text-danger">- {formatBRL(summary.sales.manual_discount)}</strong></p><p className="flex justify-between border-t border-slate-100 pt-2"><span>Faturamento efetivo</span><strong>{formatBRL(summary.sales.effective_revenue)}</strong></p><p className="flex justify-between"><span>Taxa de serviço</span><strong>{formatBRL(summary.sales.service_fee)}</strong></p><p className="flex justify-between"><span>Total cobrado</span><strong className="text-primary">{formatBRL(summary.sales.customer_total)}</strong></p>{summary.sales.commission !== undefined && <p className="flex justify-between"><span>Comissões atribuídas</span><strong>{formatBRL(summary.sales.commission)}</strong></p>}<p className="flex justify-between"><span>Cancelamentos</span><strong>{summary.sales.cancellations.count} · {formatBRL(summary.sales.cancellations.value)}</strong></p></div>
+                <div className="space-y-2 text-xs"><h3 className="font-bold text-dark">Consumações ({summary.consumptions.count})</h3><p className="flex justify-between"><span>Valor de referência</span><strong>{formatBRL(summary.consumptions.reference)}</strong></p><p className="flex justify-between"><span>Valor cobrado</span><strong>{formatBRL(summary.consumptions.charged)}</strong></p><p className="flex justify-between border-t border-slate-100 pt-2"><span>Benefício concedido</span><strong className="text-warning">{formatBRL(summary.consumptions.benefit)}</strong></p><p className="flex justify-between"><span>Cancelamentos</span><strong>{summary.consumptions.cancellations.count} · {formatBRL(summary.consumptions.cancellations.value)}</strong></p></div>
+                <div className="space-y-2 text-xs"><h3 className="font-bold text-dark">Recebimentos</h3>{summary.payment_totals.length ? summary.payment_totals.map((payment) => <p key={`${payment.payment_method_code}:${payment.payment_method_name}`} className="flex justify-between"><span>{payment.payment_method_name}</span><strong>{formatBRL(payment.amount)}</strong></p>) : <p className="text-slate-500">Nenhum recebimento finalizado.</p>}<p className="flex justify-between border-t border-slate-100 pt-2"><span>Dinheiro líquido no caixa</span><strong className="text-primary">{formatBRL(summary.cash_payments)}</strong></p></div>
+                <div className="space-y-2 text-xs"><h3 className="font-bold text-dark">Componentes da gaveta</h3><p className="flex justify-between"><span>Abertura</span><strong>{formatBRL(summary.opening_amount)}</strong></p><p className="flex justify-between"><span>Entradas manuais</span><strong>{formatBRL(summary.manual_entries)}</strong></p><p className="flex justify-between"><span>Vendas em dinheiro</span><strong>{formatBRL(summary.sale_cash)}</strong></p><p className="flex justify-between"><span>Consumações em dinheiro</span><strong>{formatBRL(summary.consumption_cash)}</strong></p><p className="flex justify-between text-danger"><span>Reversões ({summary.cash_cancellations})</span><strong>- {formatBRL(summary.cash_reversals)}</strong></p><p className="flex justify-between text-danger"><span>Sangrias</span><strong>- {formatBRL(summary.withdrawals)}</strong></p><p className="flex justify-between border-t border-slate-100 pt-2"><span>Esperado</span><strong>{formatBRL(summary.expected_amount)}</strong></p></div>
               </div>
             </section>
             <section className="card overflow-hidden">
@@ -415,7 +421,7 @@ function SessionDetail() {
                   <h2 className="text-sm font-bold">Linha do tempo</h2>
                   <p className="mt-1 text-[11px] text-slate-500">
                     Abertura, entradas, sangrias, vendas em dinheiro,
-                    consumações cobradas, cancelamentos e fechamento.
+                     consumações em dinheiro, reversões e fechamento.
                   </p>
                 </div>
                 <History className="size-5 text-slate-300" />
@@ -424,7 +430,10 @@ function SessionDetail() {
                 <TableLoading columns={3} />
               ) : timeline?.results.length ? (
                 <ul className="divide-y divide-slate-100">
-                  {timeline.results.map((event) => (
+                  {timeline.results.map((event) => {
+                    const displayedAmount = event.kind === "withdrawal" && !event.amount.startsWith("-") ? `-${event.amount}` : event.amount;
+                    const canOpenSale = event.sale?.operation_type === "consumption" ? canViewConsumptions : canViewSales;
+                    return (
                     <li
                       key={event.id}
                       className="flex items-start gap-3 px-5 py-4 text-sm"
@@ -436,12 +445,7 @@ function SessionDetail() {
                         <div className="flex flex-wrap items-baseline justify-between gap-2">
                           <strong className="text-dark">{event.label}</strong>
                           <span className="font-bold">
-                            {event.kind === "withdrawal" ||
-                            event.kind === "cancellation"
-                              ? `- ${formatBRL(event.amount)}`
-                              : event.kind === "open" || event.kind === "close"
-                                ? formatBRL(event.amount)
-                                : formatBRL(event.amount)}
+                            {formatBRL(displayedAmount)}
                           </span>
                         </div>
                         <p className="mt-0.5 text-[11px] text-slate-500">
@@ -453,7 +457,7 @@ function SessionDetail() {
                           )}
                         </p>
                         {(event.beneficiary_name || event.reason || event.registered_by_name) && <div className="mt-2 grid gap-1 text-[11px] text-slate-500 sm:grid-cols-3">{event.beneficiary_name && <p><strong className="text-dark">Beneficiário:</strong> {event.beneficiary_name}</p>}{event.reason && <p><strong className="text-dark">Motivo:</strong> {event.reason}</p>}{event.registered_by_name && <p><strong className="text-dark">Registrado por:</strong> {event.registered_by_name}</p>}</div>}
-                        {event.sale && (
+                        {event.sale && canOpenSale && (
                           <Link
                             className="mt-1 inline-block text-[11px] font-bold text-primary"
                             href={`${event.sale.operation_type === "consumption" ? "/consumacoes" : "/vendas"}/${event.sale.id}`}
@@ -463,7 +467,7 @@ function SessionDetail() {
                         )}
                       </div>
                     </li>
-                  ))}
+                  );})}
                 </ul>
               ) : (
                 <EmptyState
@@ -488,6 +492,11 @@ function SessionDetail() {
                 onApply={(next) => {
                   setPeriod(next);
                   void loadMovements(movementsPath(next));
+                }}
+                onClear={() => {
+                  const emptyPeriod = { start: "", end: "" };
+                  setPeriod(emptyPeriod);
+                  void loadMovements(movementsPath(emptyPeriod));
                 }}
               />
               {movementsLoading ? (

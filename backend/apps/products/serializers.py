@@ -391,12 +391,12 @@ class BranchProductPriceSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         product = attrs.get('product', getattr(self.instance, 'product', None))
         branch = attrs.get('branch', getattr(self.instance, 'branch', None))
-        if product and branch and product.company_id != branch.company_id:
-            raise serializers.ValidationError({'branch': 'A filial deve pertencer a empresa do produto.'})
         request = self.context.get('request')
         context_branch = getattr(request, 'branch_context', None) if request else None
         if context_branch and product and product.company_id != context_branch.company_id:
             raise serializers.ValidationError({'product': 'Produto fora do contexto autorizado.'})
         if context_branch and branch and branch.pk != context_branch.pk:
             raise serializers.ValidationError({'branch': 'Selecione a filial ativa.'})
+        if product and branch and product.company_id != branch.company_id:
+            raise serializers.ValidationError({'branch': 'A filial deve pertencer a empresa do produto.'})
         return attrs

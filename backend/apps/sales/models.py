@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -206,6 +206,7 @@ class Sale(BaseModel):
     )
     sale_number = models.CharField(max_length=20)
     idempotency_key = models.UUIDField(blank=True, null=True, editable=False)
+    idempotency_fingerprint = models.CharField(max_length=64, blank=True, default='', editable=False)
     operation_type = models.CharField(
         max_length=20, choices=OperationType.choices, default=OperationType.SALE
     )
@@ -490,7 +491,17 @@ class Sale(BaseModel):
         return super().save(*args, **kwargs)
 
 
+class ImmutableHistoricalQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValueError('Registros historicos nao podem ser alterados em lote.')
+
+    def delete(self):
+        raise ValueError('Registros historicos nao podem ser excluidos.')
+
+
 class ImmutableHistoricalModel(BaseModel):
+    objects = ImmutableHistoricalQuerySet.as_manager()
+
     class Meta:
         abstract = True
 
@@ -647,7 +658,9 @@ class SaleItem(ImmutableHistoricalModel):
                 self.unit_cost = self.product.cost
             if self.unit_price is None:
                 self.unit_price = self.product.sale_price
-            self.subtotal = (self.unit_price * self.quantity).quantize(Decimal('0.01'))
+            self.subtotal = (self.unit_price * self.quantity).quantize(
+                Decimal('0.01'), rounding=ROUND_HALF_UP
+            )
         self.net_subtotal = self.subtotal - self.promotion_benefit - self.manual_discount
         self.full_clean()
         return super().save(*args, **kwargs)

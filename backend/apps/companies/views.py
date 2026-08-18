@@ -1,7 +1,7 @@
 import uuid
 
 from django.db import transaction
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Q
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -14,7 +14,8 @@ from apps.base.audit import audit_log, model_snapshot
 
 from .models import (
     AccessProfile, Branch, BranchSettings, Company, FunctionalPermission, Status,
-    UserCommissionOverride, UserPermissionBlock,
+    UserBranchAccess, UserCommissionOverride, UserCompanyAccess,
+    UserPermissionBlock,
 )
 from .permissions import CanCreateCompany, FunctionalCompanyPermission
 from .selectors import (
@@ -68,10 +69,16 @@ class CompanyViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         company = serializer.save()
+        operation_reference = str(uuid.uuid4())
+        operation_metadata = {
+            'source': 'company.create',
+            'operation_reference': operation_reference,
+        }
         fields = ('trade_name', 'legal_name', 'cnpj', 'email', 'phone', 'status')
         audit_log(
             actor=self.request.user, action='company.create', obj=company,
             company=company, after=model_snapshot(company, fields),
+            metadata=operation_metadata,
         )
         matrix = company.branches.filter(is_matrix=True).first()
         if matrix:
@@ -79,7 +86,53 @@ class CompanyViewSet(viewsets.ModelViewSet):
                 actor=self.request.user, action='branch.create', obj=matrix,
                 company=company, branch=matrix,
                 after=model_snapshot(matrix, ('name', 'status', 'is_matrix', 'address_pending')),
-                metadata={'source': 'company.create'},
+                metadata=operation_metadata,
+            )
+            settings = BranchSettings.objects.filter(branch=matrix).first()
+            if settings:
+                audit_log(
+                    actor=self.request.user, action='branch_settings.create',
+                    obj=settings, company=company, branch=matrix,
+                    after=model_snapshot(settings, (
+                        'allow_negative_stock', 'service_fee_rate',
+                        'commission_rate', 'fixed_daily_cost',
+                    )), metadata=operation_metadata,
+                )
+        for profile in company.access_profiles.prefetch_related('permissions'):
+            after = model_snapshot(profile, (
+                'name', 'description', 'status', 'receives_commission',
+                'commission_rate',
+            ))
+            after['permission_codes'] = sorted(
+                profile.permissions.values_list('code', flat=True)
+            )
+            audit_log(
+                actor=self.request.user, action='access_profile.create',
+                obj=profile, company=company, after=after,
+                metadata=operation_metadata,
+            )
+        from apps.sales.models import PaymentMethod
+
+        for method in PaymentMethod.objects.filter(company=company):
+            audit_log(
+                actor=self.request.user, action='payment_method.create',
+                obj=method, company=company,
+                after=model_snapshot(method, ('code', 'name', 'status', 'is_system')),
+                metadata=operation_metadata,
+            )
+        for access in UserCompanyAccess.objects.filter(company=company):
+            audit_log(
+                actor=self.request.user, action='user_company_access.create',
+                obj=access, company=company,
+                after=model_snapshot(access, ('user_id', 'access_profile_id', 'is_active')),
+                metadata=operation_metadata,
+            )
+        for access in UserBranchAccess.objects.filter(branch__company=company).select_related('branch'):
+            audit_log(
+                actor=self.request.user, action='user_branch_access.create',
+                obj=access, company=company, branch=access.branch,
+                after=model_snapshot(access, ('user_id', 'access_profile_id', 'is_active')),
+                metadata=operation_metadata,
             )
 
     def perform_update(self, serializer):
@@ -148,11 +201,33 @@ class BranchViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         branch = serializer.save()
+        operation_metadata = {
+            'source': 'branch.create',
+            'operation_reference': str(uuid.uuid4()),
+        }
         audit_log(
             actor=self.request.user, action='branch.create', obj=branch,
             company=branch.company, branch=branch,
             after=model_snapshot(branch, ('name', 'cnpj', 'phone', 'email', 'address', 'status')),
+            metadata=operation_metadata,
         )
+        settings = BranchSettings.objects.filter(branch=branch).first()
+        if settings:
+            audit_log(
+                actor=self.request.user, action='branch_settings.create',
+                obj=settings, company=branch.company, branch=branch,
+                after=model_snapshot(settings, (
+                    'allow_negative_stock', 'service_fee_rate',
+                    'commission_rate', 'fixed_daily_cost',
+                )), metadata=operation_metadata,
+            )
+        for access in UserBranchAccess.objects.filter(branch=branch):
+            audit_log(
+                actor=self.request.user, action='user_branch_access.create',
+                obj=access, company=branch.company, branch=branch,
+                after=model_snapshot(access, ('user_id', 'access_profile_id', 'is_active')),
+                metadata=operation_metadata,
+            )
 
     def perform_update(self, serializer):
         fields = ('name', 'cnpj', 'phone', 'email', 'address', 'address_pending', 'status')
@@ -362,7 +437,7 @@ class UserPermissionBlockPermission(BasePermission):
     def code_for_action(action_name):
         return (
             'user_permission_blocks.view'
-            if action_name in ('list', 'retrieve')
+            if action_name in ('list', 'retrieve', 'list_filters')
             else 'user_permission_blocks.change'
         )
 
@@ -406,13 +481,42 @@ class UserPermissionBlockViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(company_id__in=company_ids)
         params = self.request.query_params
         for field in ('company', 'branch', 'user'):
-            if params.get(field):
-                queryset = queryset.filter(**{f'{field}_id': params[field]})
+            value = params.get(field)
+            if not value:
+                continue
+            try:
+                value = int(value)
+                if value < 1:
+                    raise ValueError
+            except (TypeError, ValueError) as error:
+                raise ValidationError({field: 'Informe um identificador valido.'}) from error
+            queryset = queryset.filter(**{f'{field}_id': value})
+        search = params.get('search', '').strip()
+        for term in search.split():
+            queryset = queryset.filter(
+                Q(user__first_name__icontains=term)
+                | Q(user__last_name__icontains=term)
+                | Q(user__email__icontains=term)
+            )
+        if params.get('module'):
+            queryset = queryset.filter(permission__module=params['module'])
         if params.get('permission'):
             queryset = queryset.filter(permission__code=params['permission'])
-        if params.get('active') in ('true', 'false'):
-            queryset = queryset.filter(is_active=params['active'] == 'true')
-        return queryset
+        scope = params.get('scope')
+        if scope:
+            if scope not in ('company', 'branch'):
+                raise ValidationError({'scope': 'Informe company ou branch.'})
+            if scope == 'company' and params.get('branch'):
+                raise ValidationError({
+                    'branch': 'Filial nao pode ser usada com escopo company.'
+                })
+            queryset = queryset.filter(branch__isnull=scope == 'company')
+        active = params.get('active')
+        if active:
+            if active not in ('true', 'false'):
+                raise ValidationError({'active': 'Informe true ou false.'})
+            queryset = queryset.filter(is_active=active == 'true')
+        return queryset.order_by('-created_at', '-id')
 
     def perform_create(self, serializer):
         block = serializer.save()
@@ -440,6 +544,32 @@ class UserPermissionBlockViewSet(viewsets.ModelViewSet):
             after=model_snapshot(block, ('is_active', 'revoked_at', 'revoked_by_id')),
             metadata={'operation_reference': str(operation_reference)},
         )
+
+    @action(detail=False, methods=('get',), url_path='list-filters')
+    def list_filters(self, request):
+        company_id = request.query_params.get('company')
+        try:
+            company_id = int(company_id)
+            if company_id < 1:
+                raise ValueError
+        except (TypeError, ValueError) as error:
+            raise ValidationError({'company': 'Informe uma empresa valida.'}) from error
+        if not Company.objects.filter(pk=company_id).exists():
+            raise ValidationError({'company': 'Informe uma empresa valida.'})
+        branches = Branch.objects.filter(
+            company_id=company_id, status=Status.ACTIVE
+        ).order_by('name', 'id')
+        permissions = FunctionalPermission.objects.filter(
+            status=Status.ACTIVE
+        ).order_by('module', 'label', 'code')
+        return Response({
+            'branches': [
+                {'id': branch.pk, 'name': branch.name} for branch in branches
+            ],
+            'permissions': FunctionalPermissionSerializer(
+                permissions, many=True
+            ).data,
+        })
 
     @action(detail=False, methods=('get',), url_path='options')
     def block_options(self, request):
@@ -586,23 +716,31 @@ class UserPermissionBlockViewSet(viewsets.ModelViewSet):
 class CommissionOverridePermission(BasePermission):
     message = 'Voce nao possui permissao para comissoes nesta filial.'
 
+    @staticmethod
+    def codes_for_action(view):
+        codes = view.permission_codes.get(view.action, ())
+        return codes if isinstance(codes, tuple) else (codes,)
+
     def has_permission(self, request, view):
         user = request.user
         if not user.is_authenticated or not user.can_login or not user.is_active:
             return False
         if user.is_superuser:
             return True
-        code = view.permission_codes.get(view.action, 'commissions.view')
+        codes = self.codes_for_action(view)
+        if not codes:
+            return False
         branch_id = request.data.get('branch') or request.query_params.get('branch')
         if branch_id:
-            return user_has_branch_permission(user, branch_id, code)
-        return accessible_branches(user, code).exists()
+            return any(user_has_branch_permission(user, branch_id, code) for code in codes)
+        return any(accessible_branches(user, code).exists() for code in codes)
 
     def has_object_permission(self, request, view, obj):
         if request.user.is_superuser:
             return True
-        return user_has_branch_permission(
-            request.user, obj.branch_id, view.permission_codes.get(view.action, 'commissions.view')
+        return any(
+            user_has_branch_permission(request.user, obj.branch_id, code)
+            for code in self.codes_for_action(view)
         )
 
 
@@ -610,21 +748,28 @@ class UserCommissionOverrideViewSet(viewsets.ModelViewSet):
     serializer_class = UserCommissionOverrideSerializer
     permission_classes = (CommissionOverridePermission,)
     permission_codes = {
-        'list': 'commissions.view',
-        'retrieve': 'commissions.view',
+        'list': ('commissions.view', 'commissions.change_user_override'),
+        'retrieve': ('commissions.view', 'commissions.change_user_override'),
         'create': 'commissions.change_user_override',
         'update': 'commissions.change_user_override',
         'partial_update': 'commissions.change_user_override',
+        'destroy': 'commissions.change_user_override',
     }
-    http_method_names = ('get', 'post', 'patch', 'put', 'head', 'options')
+    http_method_names = ('get', 'post', 'patch', 'put', 'delete', 'head', 'options')
 
     def get_queryset(self):
-        permission_code = self.permission_codes.get(self.action, 'commissions.view')
         queryset = UserCommissionOverride.objects.select_related('branch', 'branch__company', 'user')
         user = self.request.user
-        if user.is_superuser:
-            return queryset
-        return queryset.filter(branch__in=accessible_branches(user, permission_code))
+        if not user.is_superuser:
+            branch_scope = Branch.objects.none()
+            for code in CommissionOverridePermission.codes_for_action(self):
+                branch_scope = branch_scope | accessible_branches(user, code)
+            queryset = queryset.filter(branch__in=branch_scope)
+        params = self.request.query_params
+        for field in ('branch', 'user'):
+            if params.get(field):
+                queryset = queryset.filter(**{f'{field}_id': params[field]})
+        return queryset.distinct()
 
     def perform_create(self, serializer):
         override = serializer.save()
@@ -634,3 +779,25 @@ class UserCommissionOverrideViewSet(viewsets.ModelViewSet):
         before = model_snapshot(serializer.instance, ('receives_commission', 'commission_rate'))
         override = serializer.save()
         audit_log(actor=self.request.user, action='commission_override.update', obj=override, company=override.branch.company, branch=override.branch, before=before, after=model_snapshot(override, ('receives_commission', 'commission_rate')))
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        before = model_snapshot(instance, (
+            'id', 'branch_id', 'user_id', 'receives_commission', 'commission_rate',
+            'updated_by_id', 'created_at', 'updated_at',
+        ))
+        audit_log(
+            actor=self.request.user,
+            action='commission_override.delete',
+            obj=instance,
+            company=instance.branch.company,
+            branch=instance.branch,
+            before=before,
+            metadata={
+                'branch_name': instance.branch.name,
+                'company_name': instance.branch.company.trade_name,
+                'user_name': str(instance.user),
+                'user_email': instance.user.email,
+            },
+        )
+        instance.delete()

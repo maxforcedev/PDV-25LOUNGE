@@ -1,5 +1,5 @@
 from datetime import timedelta
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from django.db.models import (
     Case,
@@ -7,6 +7,7 @@ from django.db.models import (
     DecimalField,
     ExpressionWrapper,
     F,
+    IntegerField,
     OuterRef,
     Q,
     Subquery,
@@ -22,7 +23,9 @@ from apps.companies.models import BranchSettings
 from apps.inventory.models import Stock, StockMovement
 from apps.inventory.models import MovementType
 from apps.products.models import InventoryBehavior
-from apps.sales.models import OperationType, Payment, Sale, SaleItem, SaleStatus
+from apps.sales.models import OperationType, Payment, PaymentMethod, Sale, SaleItem, SaleStatus
+
+from .financials import FinancialAggregator, allocate_money, money
 
 
 MONEY_FIELD = DecimalField(max_digits=20, decimal_places=2)
@@ -89,31 +92,7 @@ def sale_rows(queryset):
 
 
 def _allocate_money(total, weighted_rows):
-    """Allocate a cent value exactly, resolving residual cents by weight then stable id."""
-    total = Decimal(total or 0).quantize(CENT)
-    rows = [(key, max(Decimal(weight or 0), Decimal('0'))) for key, weight in weighted_rows]
-    if not rows:
-        return {}
-    if total == 0:
-        return {key: Decimal('0.00') for key, _weight in rows}
-    weight_total = sum((weight for _key, weight in rows), Decimal('0'))
-    if weight_total == 0:
-        result = {key: Decimal('0.00') for key, _weight in rows}
-        result[min(key for key, _weight in rows)] = total
-        return result
-    raw = {key: total * weight / weight_total for key, weight in rows}
-    result = {
-        key: value.quantize(CENT, rounding=ROUND_DOWN)
-        for key, value in raw.items()
-    }
-    residual_cents = int((total - sum(result.values(), Decimal('0.00'))) / CENT)
-    order = sorted(
-        rows,
-        key=lambda row: (-(raw[row[0]] - result[row[0]]), row[0]),
-    )
-    for key, _weight in order[:residual_cents]:
-        result[key] += CENT
-    return result
+    return allocate_money(total, weighted_rows)
 
 
 def _item_matches(item, filters):
@@ -128,127 +107,34 @@ def _item_matches(item, filters):
 
 
 def _sale_item_financials(sale, filters=None):
-    items = sorted(sale.items.all(), key=lambda item: item.pk)
-    account_discounts = _allocate_money(
-        sale.discount, [(item.pk, item.net_subtotal) for item in items]
-    )
-    revenues = {
-        item.pk: item.net_subtotal - account_discounts[item.pk]
-        for item in items
-    }
-    service_fees = _allocate_money(
-        sale.service_fee_amount, [(item.pk, revenues[item.pk]) for item in items]
-    )
-    commissions = _allocate_money(
-        sale.commission_amount, [(item.pk, revenues[item.pk]) for item in items]
-    )
-    return [
-        {
-            'item': item,
-            'gross': item.subtotal,
-            'promotion_discount': item.promotion_benefit,
-            'item_discount': item.manual_discount,
-            'account_discount': account_discounts[item.pk],
-            'effective_revenue': revenues[item.pk],
-            'service_fee': service_fees[item.pk],
-            'commission': commissions[item.pk],
-        }
-        for item in items
-        if _item_matches(item, filters)
-    ]
+    return FinancialAggregator([sale], filters).item_rows(sale)
 
 
 def _financial_sales(queryset):
+    if isinstance(queryset, (list, tuple)):
+        return queryset
     return queryset.select_related('created_by', 'seller_user').prefetch_related(
         'items__product__category', 'payments'
     ).order_by('id')
 
 
+def _sales_with_status(queryset, status):
+    if isinstance(queryset, (list, tuple)):
+        return [sale for sale in queryset if sale.status == status]
+    return _financial_sales(queryset.filter(status=status))
+
+
 def _scoped_sale_values(sale, filters=None):
-    rows = _sale_item_financials(sale, filters)
-    values = {
-        'gross': sum((row['gross'] for row in rows), Decimal('0.00')),
-        'promotion_discount': sum(
-            (row['promotion_discount'] for row in rows), Decimal('0.00')
-        ),
-        'item_discount': sum((row['item_discount'] for row in rows), Decimal('0.00')),
-        'account_discount': sum(
-            (row['account_discount'] for row in rows), Decimal('0.00')
-        ),
-        'effective_revenue': sum(
-            (row['effective_revenue'] for row in rows), Decimal('0.00')
-        ),
-        'service_fee': sum((row['service_fee'] for row in rows), Decimal('0.00')),
-        'commission': sum((row['commission'] for row in rows), Decimal('0.00')),
-    }
-    values['manual_discount'] = values['item_discount'] + values['account_discount']
-    values['total_discount'] = values['promotion_discount'] + values['manual_discount']
-    values['customer_total'] = values['effective_revenue'] + values['service_fee']
-    values['has_items'] = bool(rows)
-    return values
+    return FinancialAggregator([sale], filters).sale_values(sale)
 
 
 def _scoped_payment_rows(sale, filters=None):
-    item_rows = _sale_item_financials(sale)
-    matching_ids = {
-        row['item'].pk for row in item_rows if _item_matches(row['item'], filters)
-    }
-    if not matching_ids:
-        return []
-    weights = [(row['item'].pk, row['effective_revenue']) for row in item_rows]
-    result = []
-    for payment in sale.payments.all():
-        allocation = _allocate_money(payment.amount, weights)
-        result.append({
-            'payment_method_name': payment.payment_method_name,
-            'payment_method_code': payment.payment_method_code,
-            'amount': sum(
-                (allocation[item_id] for item_id in matching_ids), Decimal('0.00')
-            ),
-            'payment_method_id': payment.payment_method_id,
-        })
-    return result
+    return FinancialAggregator([sale], filters).payment_rows(sale)
 
 
 def commercial_summary(queryset, filters=None):
-    totals = {
-        'customer_total': Decimal('0.00'),
-        'gross': Decimal('0.00'),
-        'count': 0,
-        'discounted_count': 0,
-        'manual_discount_count': 0,
-        'account_discount': Decimal('0.00'),
-        'item_discount': Decimal('0.00'),
-        'manual_discount': Decimal('0.00'),
-        'promotion_discount': Decimal('0.00'),
-        'total_discount': Decimal('0.00'),
-        'effective_revenue': Decimal('0.00'),
-        'service_fee': Decimal('0.00'),
-        'commission': Decimal('0.00'),
-    }
-    for sale in _financial_sales(queryset.filter(status=SaleStatus.FINALIZED)):
-        values = _scoped_sale_values(sale, filters)
-        if not values['has_items']:
-            continue
-        totals['count'] += 1
-        if values['total_discount'] > 0:
-            totals['discounted_count'] += 1
-        if values['manual_discount'] > 0:
-            totals['manual_discount_count'] += 1
-        for key in totals.keys() - {'count', 'discounted_count', 'manual_discount_count'}:
-            totals[key] += values[key]
-    totals['revenue'] = totals['effective_revenue']
-    totals['average'] = (
-        totals['effective_revenue'] / totals['count']
-        if totals['count'] else Decimal('0.00')
-    )
-    cancelled = {'count': 0, 'value': Decimal('0.00')}
-    for sale in _financial_sales(queryset.filter(status=SaleStatus.CANCELLED)):
-        values = _scoped_sale_values(sale, filters)
-        if values['has_items']:
-            cancelled['count'] += 1
-            cancelled['value'] += values['customer_total']
-    return totals, cancelled
+    aggregator = FinancialAggregator(_financial_sales(queryset), filters)
+    return aggregator.commercial(), aggregator.cancellations()
 
 
 def filtered_sale_items(queryset, filters=None):
@@ -262,52 +148,70 @@ def filtered_sale_items(queryset, filters=None):
 
 
 def consumption_summary(queryset, *, include_cost=False, filters=None):
-    finalized = queryset.filter(status=SaleStatus.FINALIZED)
-    totals = {'count': 0, 'reference': Decimal('0.00'), 'charged': Decimal('0.00')}
-    for sale in _financial_sales(finalized):
-        items = sorted(sale.items.all(), key=lambda item: item.pk)
-        matching = [item for item in items if _item_matches(item, filters)]
-        if not matching:
-            continue
-        charged = _allocate_money(
-            sale.total, [(item.pk, item.subtotal) for item in items]
-        )
-        totals['count'] += 1
-        totals['reference'] += sum((item.subtotal for item in matching), Decimal('0.00'))
-        totals['charged'] += sum((charged[item.pk] for item in matching), Decimal('0.00'))
-    totals['subsidy'] = totals['reference'] - totals['charged']
-    items = filtered_sale_items(finalized, filters)
-    totals['quantity'] = items.aggregate(
-        value=Coalesce(Sum('quantity'), Value(Decimal('0.000'), output_field=QUANTITY_FIELD))
-    )['value']
+    totals = FinancialAggregator(_financial_sales(queryset), filters).consumption()
     if include_cost:
-        cost = ExpressionWrapper(F('unit_cost') * F('quantity'), output_field=MONEY_FIELD)
-        totals['historical_cost'] = items.aggregate(
-            value=Coalesce(Sum(cost), ZERO_MONEY)
-        )['value']
+        totals['historical_cost'] = totals['historical_consumption_cogs']
     return totals
 
 
+def _scoped_consumption_values(sale, filters=None):
+    return FinancialAggregator([sale], filters).consumption_values(sale)
+
+
+def consumption_groupings(queryset, filters=None):
+    by_beneficiary = {}
+    by_user_type = {}
+    for sale in _sales_with_status(queryset, SaleStatus.FINALIZED):
+        values = _scoped_consumption_values(sale, filters)
+        if not values:
+            continue
+        beneficiary = sale.beneficiary_user
+        beneficiary_name = (
+            beneficiary.get_full_name().strip() or beneficiary.email
+            if beneficiary else 'Não informado'
+        )
+        beneficiary_row = by_beneficiary.setdefault(sale.beneficiary_user_id, {
+            'beneficiary': {
+                'id': sale.beneficiary_user_id,
+                'name': beneficiary_name,
+                'user_type': beneficiary.user_type if beneficiary else None,
+            },
+            'count': 0,
+            'reference': Decimal('0.00'),
+            'charged': Decimal('0.00'),
+            'benefit': Decimal('0.00'),
+        })
+        user_type = beneficiary.user_type if beneficiary else 'not_informed'
+        type_row = by_user_type.setdefault(user_type, {
+            'user_type': user_type,
+            'count': 0,
+            'reference': Decimal('0.00'),
+            'charged': Decimal('0.00'),
+            'benefit': Decimal('0.00'),
+        })
+        for row in (beneficiary_row, type_row):
+            row['count'] += 1
+            for key in ('reference', 'charged', 'benefit'):
+                row[key] += values[key]
+    beneficiary_rows = sorted(
+        by_beneficiary.values(),
+        key=lambda row: (-row['charged'], -row['reference'], row['beneficiary']['name']),
+    )
+    type_rows = sorted(
+        by_user_type.values(),
+        key=lambda row: (-row['charged'], -row['reference'], row['user_type']),
+    )
+    return beneficiary_rows, type_rows
+
+
 def payment_totals(queryset, filters=None):
-    grouped = {}
-    for sale in _financial_sales(queryset.filter(status=SaleStatus.FINALIZED)):
-        for payment in _scoped_payment_rows(sale, filters):
-            if filters and filters.get('payment_method') is not None and payment['payment_method_id'] != filters['payment_method']:
-                continue
-            if filters and filters.get('payment_method_code') and payment['payment_method_code'] != filters['payment_method_code']:
-                continue
-            key = (payment['payment_method_code'], payment['payment_method_name'])
-            grouped[key] = grouped.get(key, Decimal('0.00')) + payment['amount']
-    return [
-        {'payment_method_code': key[0], 'payment_method_name': key[1], 'amount': amount}
-        for key, amount in sorted(grouped.items(), key=lambda row: (-row[1], row[0][1]))
-    ]
+    return FinancialAggregator(_financial_sales(queryset), filters).payment_totals()
 
 
-def sale_rankings(queryset, *, limit=10, filters=None):
+def sale_rankings(queryset, *, limit=None, filters=None):
     by_product = {}
     by_category = {}
-    for sale in _financial_sales(queryset.filter(status=SaleStatus.FINALIZED)):
+    for sale in _sales_with_status(queryset, SaleStatus.FINALIZED):
         for row in _sale_item_financials(sale, filters):
             item = row['item']
             product_key = item.product_id
@@ -329,14 +233,17 @@ def sale_rankings(queryset, *, limit=10, filters=None):
             })
             category_entry['quantity'] += item.quantity
             category_entry['revenue'] += row['effective_revenue']
-    products = sorted(by_product.values(), key=lambda row: (-row['quantity'], -row['revenue'], row['product_name']))[:limit]
-    categories = sorted(by_category.values(), key=lambda row: (-row['quantity'], -row['revenue'], row['category_name']))[:limit]
+    products = sorted(by_product.values(), key=lambda row: (-row['quantity'], -row['revenue'], row['product_name']))
+    categories = sorted(by_category.values(), key=lambda row: (-row['quantity'], -row['revenue'], row['category_name']))
+    if limit is not None:
+        products = products[:limit]
+        categories = categories[:limit]
     return products, categories
 
 
 def hourly_sales(queryset, filters=None):
     grouped = {}
-    for sale in _financial_sales(queryset.filter(status=SaleStatus.FINALIZED)):
+    for sale in _sales_with_status(queryset, SaleStatus.FINALIZED):
         values = _scoped_sale_values(sale, filters)
         if not values['has_items']:
             continue
@@ -353,37 +260,63 @@ def hourly_sales(queryset, filters=None):
 
 def sale_user_groups(queryset, user_field, filters=None):
     if user_field not in ('created_by', 'seller_user'):
-        raise ValueError('Campo de agrupamento invalido.')
+        raise ValueError('Campo de agrupamento inválido.')
     grouped = {}
-    for sale in _financial_sales(queryset.filter(status=SaleStatus.FINALIZED)):
-        values = _scoped_sale_values(sale, filters)
-        if not values['has_items']:
-            continue
+
+    def group_for(sale):
         user = getattr(sale, user_field)
         user_id = getattr(sale, f'{user_field}_id')
         row = grouped.setdefault(user_id, {
             'user': {
                 'id': user_id,
-                'name': (user.get_full_name().strip() or user.email) if user else 'Nao informado',
+                'name': (user.get_full_name().strip() or user.email) if user else 'Não informado',
             },
             'count': 0,
+            'cancellation_count': 0,
+            'cancellation_value': Decimal('0.00'),
             **{
                 key: Decimal('0.00') for key in (
                     'gross', 'account_discount', 'item_discount', 'manual_discount',
                     'promotion_discount', 'total_discount', 'effective_revenue',
-                    'service_fee', 'customer_total',
+                    'service_fee', 'customer_total', 'total_received',
                 )
             },
         })
         if user_field == 'seller_user' and 'commission' not in row:
             row['commission'] = Decimal('0.00')
+        return row
+
+    financial_fields = (
+        'gross', 'account_discount', 'item_discount', 'manual_discount',
+        'promotion_discount', 'total_discount', 'effective_revenue',
+        'service_fee', 'customer_total',
+    )
+    for sale in _sales_with_status(queryset, SaleStatus.FINALIZED):
+        values = _scoped_sale_values(sale, filters)
+        if not values['has_items']:
+            continue
+        row = group_for(sale)
         row['count'] += 1
-        for key in row.keys() - {'user', 'count', 'commission'}:
+        for key in financial_fields:
             row[key] += values[key]
+        row['total_received'] += sum(
+            (payment['amount'] for payment in _scoped_payment_rows(sale, filters)),
+            Decimal('0.00'),
+        )
         if user_field == 'seller_user':
             row['commission'] += values['commission']
+            row.setdefault('commission_sale_count', 0)
+            row['commission_sale_count'] += int(sale.commission_amount > 0)
+    for sale in _sales_with_status(queryset, SaleStatus.CANCELLED):
+        values = _scoped_sale_values(sale, filters)
+        if not values['has_items']:
+            continue
+        row = group_for(sale)
+        row['cancellation_count'] += 1
+        row['cancellation_value'] += values['customer_total']
     for row in grouped.values():
         row['average'] = row['effective_revenue'] / row['count'] if row['count'] else Decimal('0.00')
+        row['payment_reconciliation_delta'] = row['total_received'] - row['customer_total']
     return sorted(
         grouped.values(),
         key=lambda row: (-row['effective_revenue'], row['user']['name'], row['user']['id'] or 0),
@@ -404,18 +337,88 @@ def cancellation_summary(*, branch, start, end, category=None, product=None):
     if product:
         queryset = queryset.filter(items__product_id=product)
     queryset = queryset.distinct()
-    totals = {'count': 0, 'value': Decimal('0.00')}
-    for sale in _financial_sales(queryset):
-        values = _scoped_sale_values(sale, filters)
-        if values['has_items']:
-            totals['count'] += 1
-            totals['value'] += values['customer_total']
-    return queryset, totals
+    rows = _financial_sales(queryset)
+    totals = FinancialAggregator(rows, filters).cancellations()
+    return queryset.order_by('-cancelled_at', '-id'), totals
+
+
+def receipt_summary(
+    *, branch, start, end, filters, cash_session_ids=None, inflow_sales=None,
+):
+    integral_filters = {
+        key: value for key, value in filters.items()
+        if key not in ('payment_method', 'payment_method_code', 'status')
+    }
+    inflows = list(inflow_sales) if inflow_sales is not None else []
+    if inflow_sales is None:
+        for operation_type in (OperationType.SALE, OperationType.CONSUMPTION):
+            operation_filters = dict(integral_filters)
+            if operation_type == OperationType.CONSUMPTION:
+                operation_filters.pop('seller', None)
+            queryset = filtered_sales(
+                branch=branch, start=start, end=end, operation_type=operation_type,
+                filters=operation_filters,
+            )
+            if cash_session_ids is not None:
+                queryset = queryset.filter(cash_session_id__in=cash_session_ids)
+            inflows.extend(_financial_sales(queryset))
+
+    reversals = period_filter(
+        Sale.objects.filter(branch=branch, status=SaleStatus.CANCELLED),
+        'cancelled_at', start, end,
+    )
+    if cash_session_ids is not None:
+        reversals = reversals.filter(cash_session_id__in=cash_session_ids)
+    if integral_filters.get('operator') is not None:
+        reversals = reversals.filter(created_by_id=integral_filters['operator'])
+    if integral_filters.get('seller') is not None:
+        reversals = reversals.filter(
+            Q(operation_type=OperationType.CONSUMPTION)
+            | Q(seller_user_id=integral_filters['seller'])
+        )
+    if integral_filters.get('product') is not None:
+        reversals = reversals.filter(items__product_id=integral_filters['product'])
+    if integral_filters.get('category') is not None:
+        reversals = reversals.filter(
+            items__product__category_id=integral_filters['category']
+        )
+    reversals = _financial_sales(reversals.distinct())
+    result = FinancialAggregator(inflows, integral_filters).receipts(reversals)
+
+    method_id = filters.get('payment_method')
+    method_code = filters.get('payment_method_code')
+    if method_id is not None:
+        method = PaymentMethod.objects.filter(pk=method_id).values(
+            'code', 'name'
+        ).first()
+        if method:
+            method_code = method['code']
+            method_label = method['name']
+        else:
+            method_label = ''
+    elif method_code:
+        method = next(
+            (row for row in result['payment_methods'] if row['code'] == method_code), None
+        )
+        method_label = method['name'] if method else method_code
+    else:
+        method_label = None
+    if method_code:
+        method_row = next(
+            (row for row in result['payment_methods'] if row['code'] == method_code), None
+        )
+        result['filtered_payment_method'] = {
+            'code': method_code,
+            'name': method_label,
+            'subtotal': method_row['net_received'] if method_row else Decimal('0.00'),
+            'is_integral_revenue': False,
+        }
+    return result
 
 
 def dashboard_time_analysis(queryset, *, branch, start, end, category=None):
     filters = {'category': category} if category else {}
-    finalized = list(_financial_sales(queryset.filter(status=SaleStatus.FINALIZED)))
+    finalized = list(_sales_with_status(queryset, SaleStatus.FINALIZED))
     heatmap = {}
     for sale in finalized:
         local = timezone.localtime(sale.created_at)
@@ -477,14 +480,13 @@ def dashboard_time_analysis(queryset, *, branch, start, end, category=None):
 
 
 def operational_result(*, branch, start, end, sales, cash_session=None):
-    finalized = sales.filter(status=SaleStatus.FINALIZED)
-    summary, _ = commercial_summary(finalized)
-    cost_expression = ExpressionWrapper(
-        F('unit_cost') * F('quantity'), output_field=MONEY_FIELD
+    operations = period_filter(
+        Sale.objects.filter(branch=branch, status=SaleStatus.FINALIZED),
+        'created_at', start, end,
     )
-    cogs = SaleItem.objects.filter(sale_id__in=finalized.values('id')).aggregate(
-        value=Coalesce(Sum(cost_expression), ZERO_MONEY)
-    )['value']
+    if cash_session:
+        operations = operations.filter(cash_session=cash_session)
+    operations = _financial_sales(operations)
     withdrawals = period_filter(
         CashMovement.objects.filter(
             cash_session__branch=branch,
@@ -507,32 +509,16 @@ def operational_result(*, branch, start, end, sales, cash_session=None):
     seconds = max(Decimal('0'), Decimal(str((scoped_end - scoped_start).total_seconds())))
     settings = BranchSettings.objects.filter(branch=branch).first()
     daily_cost = settings.fixed_daily_cost if settings else Decimal('0.00')
-    fixed_cost = (daily_cost * seconds / Decimal('86400')).quantize(Decimal('0.01'))
-    result = (
-        summary['effective_revenue'] - cogs - summary['commission'] - expense - fixed_cost
+    fixed_cost = (daily_cost * seconds / Decimal('86400')).quantize(
+        Decimal('0.01'), rounding=ROUND_HALF_UP
     )
-    margin = (
-        result * Decimal('100') / summary['effective_revenue']
-        if summary['effective_revenue'] else Decimal('0.00')
+    result = FinancialAggregator(operations).operational_statement(
+        operating_expenses=expense, fixed_cost=fixed_cost,
     )
-    return {
-        'gross': summary['gross'],
-        'promotion_discount': summary['promotion_discount'],
-        'item_discount': summary['item_discount'],
-        'account_discount': summary['account_discount'],
-        'manual_discount': summary['manual_discount'],
-        'discounts': summary['total_discount'],
-        'effective_revenue': summary['effective_revenue'],
-        'service_fee': summary['service_fee'],
-        'customer_total': summary['customer_total'],
-        'cogs': cogs,
-        'commission': summary['commission'],
-        'operating_expenses': expense,
-        'fixed_cost': fixed_cost,
-        'result': result,
-        'margin': margin.quantize(Decimal('0.01')),
-        'unclassified_withdrawals': unclassified,
-    }
+    result['discounts'] = result['total_discount']
+    result['cogs'] = result['historical_sales_cogs']
+    result['unclassified_withdrawals'] = unclassified
+    return result
 
 
 def filtered_cash_sessions(*, branch, start, end, filters):
@@ -545,9 +531,26 @@ def filtered_cash_sessions(*, branch, start, end, filters):
     ).values('cash_session').annotate(value=Sum('amount')).values('value')
     cash = Payment.objects.filter(
         sale__cash_session_id=OuterRef('pk'),
-        sale__status=SaleStatus.FINALIZED,
         payment_method_code='cash',
-    ).values('sale__cash_session').annotate(value=Sum('amount')).values('value')
+    )
+
+    def cash_sum(queryset):
+        return queryset.values('sale__cash_session').annotate(
+            value=Sum('amount')
+        ).values('value')
+
+    sale_cash = cash_sum(cash.filter(sale__operation_type=OperationType.SALE))
+    consumption_cash = cash_sum(
+        cash.filter(sale__operation_type=OperationType.CONSUMPTION)
+    )
+    cash_reversals = cash_sum(cash.filter(sale__status=SaleStatus.CANCELLED))
+    cash_cancellations = Sale.objects.filter(
+        cash_session_id=OuterRef('pk'),
+        status=SaleStatus.CANCELLED,
+        payments__payment_method_code='cash',
+    ).values('cash_session').annotate(
+        value=Count('id', distinct=True)
+    ).values('value')
     queryset = CashSession.objects.filter(branch=branch)
     # Intersect the session's [opened_at, closed_at] with the requested period, so
     # sessions opened before the period or still open are included when relevant.
@@ -560,7 +563,17 @@ def filtered_cash_sessions(*, branch, start, end, filters):
     queryset = queryset.select_related('cash_register', 'opened_by').annotate(
         manual_entries=Coalesce(Subquery(manual, output_field=MONEY_FIELD), ZERO_MONEY),
         withdrawals=Coalesce(Subquery(withdrawals, output_field=MONEY_FIELD), ZERO_MONEY),
-        cash_payments=Coalesce(Subquery(cash, output_field=MONEY_FIELD), ZERO_MONEY),
+        sale_cash=Coalesce(Subquery(sale_cash, output_field=MONEY_FIELD), ZERO_MONEY),
+        consumption_cash=Coalesce(Subquery(consumption_cash, output_field=MONEY_FIELD), ZERO_MONEY),
+        cash_reversals=Coalesce(Subquery(cash_reversals, output_field=MONEY_FIELD), ZERO_MONEY),
+        cash_cancellations=Coalesce(
+            Subquery(cash_cancellations, output_field=IntegerField()), 0,
+        ),
+    ).annotate(
+        cash_payments=ExpressionWrapper(
+            F('sale_cash') + F('consumption_cash') - F('cash_reversals'),
+            output_field=MONEY_FIELD,
+        ),
     ).annotate(
         calculated_expected=ExpressionWrapper(
             F('opening_amount') + F('manual_entries') + F('cash_payments') - F('withdrawals'),
@@ -685,10 +698,14 @@ def stock_consumption_report(*, branch, start, end, filters):
         quantity = movement.quantity.copy_abs()
         if movement.quantity < 0:
             entry['gross_quantity'] += quantity
-            entry['estimated_cost'] += (quantity * product.cost).quantize(Decimal('0.01'))
+            entry['estimated_cost'] += (quantity * product.cost).quantize(
+                Decimal('0.01'), rounding=ROUND_HALF_UP
+            )
         else:
             entry['returned_quantity'] += quantity
-            entry['estimated_cost'] -= (quantity * product.cost).quantize(Decimal('0.01'))
+            entry['estimated_cost'] -= (quantity * product.cost).quantize(
+                Decimal('0.01'), rounding=ROUND_HALF_UP
+            )
         entry['movement_count'] += 1
     for entry in summary.values():
         entry['net_quantity'] = entry['gross_quantity'] - entry['returned_quantity']

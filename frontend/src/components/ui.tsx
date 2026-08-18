@@ -128,7 +128,7 @@ export function Select({
   className = "",
   ...props
 }: SelectHTMLAttributes<HTMLSelectElement>) {
-  return <select {...props} className={`input ${className}`} />;
+  return <select {...props} className={`input select-control ${className}`} />;
 }
 
 export function Textarea({
@@ -149,7 +149,7 @@ export function Alert({
   return (
     <div
       role={success ? "status" : "alert"}
-      className={`animate-enter flex items-start gap-2.5 rounded-md border px-3.5 py-3 text-[13px] ${success ? "border-success/30 bg-success/10 text-success-strong" : "border-danger/30 bg-danger/10 text-danger-strong"}`}
+      className={`animate-enter flex items-start gap-2.5 rounded-md border px-3.5 py-3 text-[13px] ${success ? "border-success/30 bg-success-surface text-success-strong" : "border-danger/30 bg-danger-surface text-danger-strong"}`}
     >
       {success ? (
         <CheckCircle2 className="mt-0.5 size-4 shrink-0" />
@@ -170,11 +170,11 @@ export function EmptyState({
 }) {
   return (
     <div className="flex flex-col items-center px-6 py-16 text-center">
-      <div className="mb-4 flex size-14 items-center justify-center rounded-full bg-slate-100 text-slate-400">
+      <div className="mb-4 flex size-14 items-center justify-center rounded-full bg-surface-muted text-muted">
         <Inbox className="size-6" />
       </div>
-      <h3 className="text-sm font-semibold text-dark">{title}</h3>
-      <p className="mt-1 max-w-sm text-xs leading-5 text-slate-500">
+      <h3 className="text-sm font-semibold text-fg">{title}</h3>
+      <p className="mt-1 max-w-sm text-xs leading-5 text-muted">
         {description}
       </p>
     </div>
@@ -185,11 +185,11 @@ export function TableLoading({ columns = 5 }: { columns?: number }) {
   return (
     <div className="p-5" aria-label="Carregando dados">
       {[0, 1, 2, 3].map((row) => (
-        <div key={row} className="flex gap-6 border-b border-slate-100 py-4">
+        <div key={row} className="flex gap-6 border-b border-subtle py-4">
           {Array.from({ length: columns }).map((_, col) => (
             <div
               key={col}
-              className="h-3 flex-1 animate-pulse rounded bg-slate-100"
+              className="h-3 flex-1 animate-pulse rounded bg-surface-muted"
             />
           ))}
         </div>
@@ -201,12 +201,35 @@ export function TableLoading({ columns = 5 }: { columns?: number }) {
 export function StatusBadge({ active }: { active: boolean }) {
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ${active ? "bg-success/10 text-emerald-700" : "bg-slate-100 text-slate-500"}`}
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${active ? "border-success/30 bg-success-surface text-success-strong" : "border-subtle bg-surface-muted text-muted"}`}
     >
       <span
-        className={`size-1.5 rounded-full ${active ? "bg-success" : "bg-slate-400"}`}
+        className={`size-1.5 rounded-full ${active ? "bg-success" : "bg-disabled"}`}
       />
       {active ? "Ativo" : "Inativo"}
+    </span>
+  );
+}
+
+export function Tooltip({
+  content,
+  children,
+}: {
+  content: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <span
+      className="group relative inline-block max-w-full rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-focus/30"
+      tabIndex={0}
+    >
+      {children}
+      <span
+        role="tooltip"
+        className="pointer-events-none invisible absolute bottom-full left-1/2 z-30 mb-2 w-max max-w-72 -translate-x-1/2 rounded-md bg-chart-tooltip px-3 py-2 text-left text-[11px] font-medium leading-4 text-chart-tooltip-fg opacity-0 shadow-xl ring-1 ring-subtle transition group-hover:visible group-hover:opacity-100 group-focus:visible group-focus:opacity-100"
+      >
+        {content}
+      </span>
     </span>
   );
 }
@@ -224,16 +247,16 @@ export function Pagination({
 }) {
   if (!next && !previous)
     return (
-      <div className="px-5 py-4 text-xs text-slate-500">
+      <div className="px-5 py-4 text-xs text-muted">
         {count} {count === 1 ? "registro" : "registros"}
       </div>
     );
   return (
-    <div className="flex items-center justify-between gap-4 px-5 py-4 text-xs text-slate-500">
+    <div className="flex items-center justify-between gap-4 px-5 py-4 text-xs text-muted">
       <span>{count} registros</span>
       <div className="flex gap-2">
         <button
-          className="icon-button border border-slate-200"
+          className="icon-button border border-subtle"
           aria-label="Página anterior"
           disabled={!previous}
           onClick={() => previous && onPage(previous)}
@@ -241,7 +264,7 @@ export function Pagination({
           <ChevronLeft className="size-4" />
         </button>
         <button
-          className="icon-button border border-slate-200"
+          className="icon-button border border-subtle"
           aria-label="Próxima página"
           disabled={!next}
           onClick={() => next && onPage(next)}
@@ -272,7 +295,7 @@ export function Modal({
   const sizes = { md: "max-w-md", lg: "max-w-2xl", xl: "max-w-4xl" };
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/45 p-0 backdrop-blur-[1px] sm:items-center sm:p-5"
+      className="modal-backdrop fixed inset-0 z-50 flex items-end justify-center p-0 backdrop-blur-[1px] sm:items-center sm:p-5"
       role="dialog"
       aria-modal="true"
       aria-labelledby="modal-title"
@@ -283,7 +306,7 @@ export function Modal({
       >
         <div className="modal-header sticky top-0 z-10 flex items-start justify-between gap-4 border-b px-5 py-4 sm:px-6">
           <div>
-            <h2 id="modal-title" className="text-base font-bold text-dark">
+            <h2 id="modal-title" className="text-base font-bold text-fg">
               {title}
             </h2>
             {description && (
@@ -329,7 +352,7 @@ export function ConfirmDialog({
       <div className="p-5 sm:p-6">
         <p className="text-[13px] leading-6 text-muted">{message}</p>
       </div>
-      <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4 sm:px-6">
+      <div className="flex justify-end gap-2 border-t border-subtle px-5 py-4 sm:px-6">
         <Button variant="secondary" onClick={onClose} disabled={loading}>
           Cancelar
         </Button>

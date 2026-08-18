@@ -10,7 +10,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from apps.accounts.models import User
-from apps.base.datetimes import parse_datetime_range
+from apps.base.datetimes import filter_datetime_range, parse_datetime_range
 from apps.base.audit import audit_log, model_snapshot
 from apps.base.exceptions import InternalContractError
 from apps.cash.models import CashSession, CashSessionStatus
@@ -299,10 +299,9 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
                     | Q(beneficiary_user__email__icontains=search)
                 ).distinct()
             start_datetime, end_datetime = parse_datetime_range(params)
-            if start_datetime:
-                queryset = queryset.filter(created_at__gte=start_datetime)
-            if end_datetime:
-                queryset = queryset.filter(created_at__lte=end_datetime)
+            queryset = filter_datetime_range(
+                queryset, 'created_at', start_datetime, end_datetime
+            )
         return queryset
 
     def _paginated_response(self, queryset, serializer_class):
@@ -430,6 +429,7 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
             status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED,
         )
         if replayed:
+            request.audit_fallback_suppressed = True
             response['Idempotency-Replayed'] = 'true'
         return response
 
@@ -486,4 +486,5 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
         ):
             response_data.pop('commission_rate', None)
             response_data.pop('commission_amount', None)
+        request.audit_fallback_suppressed = True
         return Response(response_data)

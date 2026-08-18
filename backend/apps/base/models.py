@@ -10,7 +10,17 @@ class BaseModel(models.Model):
         abstract = True
 
 
+class AuditLogQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValueError('Logs de auditoria sao append-only.')
+
+    def delete(self):
+        raise ValueError('Logs de auditoria nao podem ser excluidos.')
+
+
 class AuditLog(models.Model):
+    objects = AuditLogQuerySet.as_manager()
+
     company = models.ForeignKey(
         'companies.Company', on_delete=models.PROTECT, related_name='audit_logs',
         blank=True, null=True,

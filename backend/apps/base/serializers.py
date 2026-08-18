@@ -13,13 +13,14 @@ class AuditLogSerializer(serializers.ModelSerializer):
     action_label = serializers.SerializerMethodField()
     module_label = serializers.SerializerMethodField()
     object_label = serializers.SerializerMethodField()
+    changes = serializers.SerializerMethodField()
 
     class Meta:
         model = AuditLog
         fields = (
             'id', 'company', 'company_name', 'branch', 'branch_name', 'actor',
             'actor_name', 'action', 'action_label', 'module_label', 'object_label',
-            'object_type', 'object_id', 'before', 'after',
+            'object_type', 'object_id', 'changes', 'before', 'after',
             'metadata', 'created_at',
         )
 
@@ -34,3 +35,6 @@ class AuditLogSerializer(serializers.ModelSerializer):
 
     def get_object_label(self, log):
         return audit_labels(log)['object_label']
+
+    def get_changes(self, log):
+        return audit_labels(log)['changes']

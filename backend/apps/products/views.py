@@ -9,7 +9,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from apps.base.audit import audit_log, model_snapshot
-from apps.companies.models import Company, Status
+from apps.companies.models import Branch, Company, Status
 from .models import BranchProductPrice, Category, InventoryBehavior, Product
 from .permissions import ProductFunctionalPermission
 from .serializers import (
@@ -20,6 +20,47 @@ from .serializers import (
     ProductSerializer,
 )
 from .services import reorder_categories
+
+
+def branch_price_comparison(company_id, *, product=None, category=None, status=None):
+    products_queryset = Product.objects.filter(company_id=company_id)
+    if product is not None:
+        products_queryset = products_queryset.filter(pk=product)
+    if category is not None:
+        products_queryset = products_queryset.filter(category_id=category)
+    if status is not None:
+        products_queryset = products_queryset.filter(status=status)
+    products = list(products_queryset.order_by('name', 'id'))
+    branches = list(
+        Branch.objects.filter(company_id=company_id, status=Status.ACTIVE).order_by(
+            'name', 'id'
+        )
+    )
+    prices = {
+        (price.product_id, price.branch_id): price.sale_price
+        for price in BranchProductPrice.objects.filter(
+            product__in=products, branch__in=branches
+        )
+    }
+    return {
+        'branches': [{'id': branch.pk, 'name': branch.name} for branch in branches],
+        'products': [
+            {
+                'id': product.pk,
+                'name': product.name,
+                'internal_code': product.internal_code,
+                'default_price': f'{product.sale_price:.2f}',
+                'prices': {
+                    str(branch.pk): (
+                        f'{prices[(product.pk, branch.pk)]:.2f}'
+                        if (product.pk, branch.pk) in prices else None
+                    )
+                    for branch in branches
+                },
+            }
+            for product in products
+        ],
+    }
 
 
 class CatalogViewSet(viewsets.ModelViewSet):
@@ -92,8 +133,25 @@ class CategoryViewSet(CatalogViewSet):
         if branch:
             queryset = queryset.filter(company_id=branch.company_id)
         queryset = self.filter_common(queryset)
-        search = self.request.query_params.get('search')
-        return queryset.filter(name__icontains=search) if search else queryset
+        params = self.request.query_params
+        category_status = params.get('status')
+        if category_status and category_status not in Status.values:
+            raise ValidationError({'status': 'Informe um status valido.'})
+        search = params.get('search', '').strip()
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search) | Q(description__icontains=search)
+            )
+        has_products = params.get('has_products')
+        if has_products:
+            if has_products not in ('true', 'false'):
+                raise ValidationError({'has_products': 'Informe true ou false.'})
+            queryset = (
+                queryset.filter(product_count__gt=0)
+                if has_products == 'true'
+                else queryset.filter(product_count=0)
+            )
+        return queryset
 
     def perform_create(self, serializer):
         category = serializer.save()
@@ -135,7 +193,7 @@ class CategoryViewSet(CatalogViewSet):
             before = dict(Category.objects.filter(company=company).values_list('id', 'sort_order'))
             categories = reorder_categories(company=company, category_ids=category_ids)
         except (Company.DoesNotExist, DjangoValidationError) as error:
-            detail = getattr(error, 'message_dict', {'company': ['Empresa invalida.']})
+            detail = getattr(error, 'message_dict', {'company': ['Empresa inválida.']})
             return Response(detail, status=status.HTTP_400_BAD_REQUEST)
         reference = uuid.uuid4()
         for category in categories:
@@ -158,8 +216,9 @@ class ProductViewSet(CatalogViewSet):
     serializer_class = ProductSerializer
 
     audit_fields = (
-        'name', 'internal_code', 'cost', 'sale_price', 'status',
-        'inventory_behavior', 'is_sellable', 'is_favorite',
+        'category_id', 'name', 'description', 'internal_code', 'barcode', 'unit',
+        'cost', 'sale_price', 'image', 'status', 'inventory_behavior',
+        'is_sellable', 'is_favorite',
     )
 
     @staticmethod
@@ -242,7 +301,7 @@ class ProductViewSet(CatalogViewSet):
         if not isinstance(rows, list) or not rows:
             raise ValidationError({'products': 'Informe ao menos uma linha de produto.'})
         if len(rows) > 200:
-            raise ValidationError({'products': 'O limite por operacao e 200 produtos.'})
+            raise ValidationError({'products': 'O limite por operação é 200 produtos.'})
         normalized = []
         seen_codes = set()
         seen_barcodes = set()
@@ -327,38 +386,24 @@ class ProductViewSet(CatalogViewSet):
 
     @action(detail=False, methods=['get'], url_path='price-comparison')
     def price_comparison(self, request):
-        company_id = request.branch_context.company_id
-        products = list(
-            Product.objects.filter(company_id=company_id).order_by('name', 'id')
-        )
-        from apps.companies.models import Branch
-        branches = list(
-            Branch.objects.filter(company_id=company_id, status=Status.ACTIVE).order_by('name', 'id')
-        )
-        prices = {}
-        for price in BranchProductPrice.objects.filter(
-            product__in=products, branch__in=branches
-        ):
-            prices[(price.product_id, price.branch_id)] = price.sale_price
-        return Response({
-            'branches': [{'id': b.pk, 'name': b.name} for b in branches],
-            'products': [
-                {
-                    'id': product.pk,
-                    'name': product.name,
-                    'internal_code': product.internal_code,
-                    'default_price': f'{product.sale_price:.2f}',
-                    'prices': {
-                        str(branch.pk): (
-                            f'{prices[(product.pk, branch.pk)]:.2f}'
-                            if (product.pk, branch.pk) in prices else None
-                        )
-                        for branch in branches
-                    },
-                }
-                for product in products
-            ],
-        })
+        filters = {}
+        for parameter in ('product', 'category'):
+            if request.query_params.get(parameter):
+                try:
+                    value = int(request.query_params[parameter])
+                except (TypeError, ValueError):
+                    raise ValidationError({parameter: 'Informe um identificador válido.'})
+                if value <= 0:
+                    raise ValidationError({parameter: 'Informe um identificador válido.'})
+                filters[parameter] = value
+        product_status = request.query_params.get('status')
+        if product_status:
+            if product_status not in Status.values:
+                raise ValidationError({'status': 'Informe um status válido.'})
+            filters['status'] = product_status
+        return Response(branch_price_comparison(
+            request.branch_context.company_id, **filters,
+        ))
 
 
 class BranchProductPriceViewSet(viewsets.ModelViewSet):
@@ -369,6 +414,7 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
         'list': 'products.view', 'retrieve': 'products.view',
         'create': 'branch_prices.change', 'update': 'branch_prices.change',
         'partial_update': 'branch_prices.change', 'destroy': 'branch_prices.change',
+        'table': 'branch_prices.change', 'bulk': 'branch_prices.change',
     }
 
     def get_queryset(self):
@@ -399,6 +445,165 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
             company=price.branch.company, branch=price.branch,
             before=before, after=model_snapshot(price, ('sale_price',)),
         )
+
+    @action(detail=False, methods=['get'])
+    def table(self, request):
+        branch = getattr(request, 'branch_context', None)
+        if branch is None:
+            raise ValidationError({'branch': ['Informe a filial ativa no cabecalho.']})
+        data = branch_price_comparison(branch.company_id)
+        data['branches'] = [
+            item for item in data['branches'] if item['id'] == branch.pk
+        ]
+        for product in data['products']:
+            product['prices'] = {
+                str(branch.pk): product['prices'].get(str(branch.pk))
+            }
+        overrides = self.get_queryset().filter(branch=branch).order_by('product__name', 'id')
+        data['overrides'] = self.get_serializer(overrides, many=True).data
+        return Response(data)
+
+    @action(detail=False, methods=['post'])
+    @transaction.atomic
+    def bulk(self, request):
+        if not isinstance(request.data, dict):
+            raise ValidationError({
+                'detail': 'O lote de preços não foi salvo.',
+                'non_field_errors': ['Informe um objeto com branch e items.'],
+            })
+
+        branch_id = request.data.get('branch')
+        if branch_id in (None, ''):
+            raise ValidationError({
+                'detail': 'O lote de preços não foi salvo.',
+                'branch': ['Informe a filial.'],
+            })
+        try:
+            branch = Branch.objects.select_related('company').select_for_update().get(
+                pk=branch_id,
+                status=Status.ACTIVE,
+                company__status=Status.ACTIVE,
+            )
+        except (Branch.DoesNotExist, TypeError, ValueError):
+            raise ValidationError({
+                'detail': 'O lote de preços não foi salvo.',
+                'branch': ['Filial inválida ou inativa.'],
+            })
+
+        context_branch = getattr(request, 'branch_context', None)
+        if context_branch and branch.pk != context_branch.pk:
+            raise ValidationError({
+                'detail': 'O lote de preços não foi salvo.',
+                'branch': ['A filial deve ser a mesma informada em X-Branch-ID.'],
+            })
+
+        items = request.data.get('items')
+        if not isinstance(items, list) or not items:
+            raise ValidationError({
+                'detail': 'O lote de preços não foi salvo.',
+                'items': ['Informe ao menos uma linha de preço.'],
+            })
+        if len(items) > 200:
+            raise ValidationError({
+                'detail': 'O lote de preços não foi salvo.',
+                'items': ['O limite por operação é 200 preços.'],
+            })
+
+        item_errors = {}
+        candidate_product_ids = []
+        product_indexes = {}
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                item_errors[index] = {
+                    'non_field_errors': ['Cada linha deve ser um objeto.']
+                }
+                continue
+            raw_product_id = item.get('product')
+            try:
+                product_id = int(raw_product_id)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            candidate_product_ids.append(product_id)
+            product_indexes.setdefault(product_id, []).append(index)
+
+        for indexes in product_indexes.values():
+            if len(indexes) < 2:
+                continue
+            for index in indexes:
+                item_errors.setdefault(index, {}).setdefault('product', []).append(
+                    'Produto repetido dentro deste lote.'
+                )
+
+        existing_prices = {
+            price.product_id: price
+            for price in BranchProductPrice.objects.select_for_update().filter(
+                branch=branch, product_id__in=candidate_product_ids
+            )
+        }
+        validated_rows = []
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            try:
+                candidate_product_id = int(item.get('product'))
+            except (TypeError, ValueError, OverflowError):
+                candidate_product_id = None
+            serializer = self.get_serializer(
+                existing_prices.get(candidate_product_id),
+                data={
+                    'product': item.get('product'),
+                    'branch': branch.pk,
+                    'sale_price': item.get('sale_price'),
+                },
+            )
+            if not serializer.is_valid():
+                errors = item_errors.setdefault(index, {})
+                for field, messages in serializer.errors.items():
+                    errors.setdefault(field, []).extend(messages)
+                continue
+            validated_rows.append((index, serializer))
+
+        if item_errors:
+            raise ValidationError({
+                'detail': 'Nenhum preço foi salvo. Corrija as linhas indicadas.',
+                'items': item_errors,
+            })
+
+        operation_reference = uuid.uuid4()
+        audit_fields = ('product_id', 'branch_id', 'sale_price')
+        prices = []
+        created_count = 0
+        for index, serializer in validated_rows:
+            before = (
+                model_snapshot(serializer.instance, audit_fields)
+                if serializer.instance else None
+            )
+            price = serializer.save()
+            created = before is None
+            created_count += int(created)
+            audit_log(
+                actor=request.user,
+                action=f'branch_price.{"create" if created else "update"}',
+                obj=price,
+                company=branch.company,
+                branch=branch,
+                before=before,
+                after=model_snapshot(price, audit_fields),
+                metadata={
+                    'operation_reference': str(operation_reference),
+                    'bulk_index': index,
+                    'bulk_size': len(validated_rows),
+                },
+            )
+            prices.append(price)
+
+        return Response({
+            'operation_reference': str(operation_reference),
+            'count': len(prices),
+            'created': created_count,
+            'updated': len(prices) - created_count,
+            'results': self.get_serializer(prices, many=True).data,
+        })
 
     @transaction.atomic
     def perform_destroy(self, instance):

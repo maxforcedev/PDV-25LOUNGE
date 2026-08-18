@@ -1,3 +1,4 @@
+from django.db.models import Q
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -19,7 +20,8 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        company_param = self.request.query_params.get('company')
+        params = self.request.query_params
+        company_param = params.get('company')
         company_id = None
         if company_param is not None:
             try:
@@ -39,17 +41,77 @@ class UserViewSet(viewsets.ModelViewSet):
                 queryset = queryset.filter(
                     company_accesses__company_id=company_id,
                     company_accesses__is_active=True,
-                ).distinct()
-            return queryset.order_by('email')
-        permission_code = UserFunctionalPermission.codes.get(self.action, 'users.view')
-        company_ids = accessible_companies(user, permission_code).values_list('id', flat=True)
-        queryset = queryset.filter(
-            company_accesses__company_id__in=company_ids,
-            company_accesses__is_active=True,
-        )
-        if company_id is not None:
-            queryset = queryset.filter(company_accesses__company_id=company_id)
-        return queryset.distinct().order_by('email')
+                )
+        else:
+            permission_code = UserFunctionalPermission.codes.get(self.action, 'users.view')
+            company_ids = accessible_companies(user, permission_code).values_list('id', flat=True)
+            queryset = queryset.filter(
+                company_accesses__company_id__in=company_ids,
+                company_accesses__is_active=True,
+            )
+            if company_id is not None:
+                queryset = queryset.filter(company_accesses__company_id=company_id)
+
+        search = params.get('search', '').strip()
+        for term in search.split():
+            queryset = queryset.filter(
+                Q(first_name__icontains=term)
+                | Q(last_name__icontains=term)
+                | Q(email__icontains=term)
+            )
+
+        user_status = params.get('status')
+        if user_status:
+            if user_status not in ('active', 'inactive'):
+                raise ValidationError({'status': 'Informe active ou inactive.'})
+            queryset = queryset.filter(is_active=user_status == 'active')
+
+        can_login = params.get('can_login')
+        if can_login:
+            if can_login not in ('true', 'false'):
+                raise ValidationError({'can_login': 'Informe true ou false.'})
+            queryset = queryset.filter(can_login=can_login == 'true')
+
+        user_type = params.get('user_type')
+        if user_type:
+            if user_type not in User.UserType.values:
+                raise ValidationError({'user_type': 'Informe um tipo de usuario valido.'})
+            queryset = queryset.filter(user_type=user_type)
+
+        for parameter in ('access_profile', 'branch'):
+            value = params.get(parameter)
+            if not value:
+                continue
+            try:
+                value = int(value)
+                if value < 1:
+                    raise ValueError
+            except (TypeError, ValueError) as error:
+                raise ValidationError({parameter: 'Informe um identificador valido.'}) from error
+            if parameter == 'access_profile':
+                filters = {
+                    'company_accesses__access_profile_id': value,
+                    'company_accesses__is_active': True,
+                }
+                if company_id is not None:
+                    filters['company_accesses__access_profile__company_id'] = company_id
+                elif not user.is_superuser:
+                    filters['company_accesses__access_profile__company_id__in'] = company_ids
+                queryset = queryset.filter(**filters)
+            else:
+                filters = {
+                    'branch_accesses__branch_id': value,
+                    'branch_accesses__branch__status': 'active',
+                    'branch_accesses__is_active': True,
+                    'branch_accesses__access_profile__status': 'active',
+                }
+                if company_id is not None:
+                    filters['branch_accesses__branch__company_id'] = company_id
+                elif not user.is_superuser:
+                    filters['branch_accesses__branch__company_id__in'] = company_ids
+                queryset = queryset.filter(**filters)
+
+        return queryset.distinct().order_by('first_name', 'last_name', 'email', 'id')
 
     audit_fields = ('email', 'can_login', 'user_type', 'first_name', 'last_name', 'is_active')
 

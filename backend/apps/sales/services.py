@@ -1,5 +1,7 @@
 from datetime import datetime, time
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+import hashlib
+import json
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
@@ -33,6 +35,108 @@ DEFAULT_PAYMENT_METHODS = (
 )
 MAX_MONEY = Decimal('999999999999.99')
 CENT = Decimal('0.01')
+
+
+def _idempotency_value(value):
+    if hasattr(value, 'pk'):
+        return value.pk
+    if isinstance(value, Decimal):
+        if value == 0:
+            return '0'
+        return str(value.normalize())
+    if isinstance(value, dict):
+        return {
+            str(key): _idempotency_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_idempotency_value(item) for item in value]
+    if isinstance(value, (datetime, time)):
+        return value.isoformat()
+    return str(value) if value is not None and not isinstance(value, (str, int, float, bool)) else value
+
+
+def _idempotency_decimal(value, *, default=None):
+    if value in (None, '') and default is not None:
+        value = default
+    if value is None:
+        return None
+    if isinstance(value, (float, bool)):
+        raise ValidationError('Valores decimais de idempotencia devem ser exatos.')
+    try:
+        value = Decimal(value)
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValidationError('Valor decimal de idempotencia invalido.')
+    if not value.is_finite():
+        raise ValidationError('Valor decimal de idempotencia deve ser finito.')
+    return value
+
+
+def _authorization_identity(authorization):
+    if not authorization:
+        return None
+    user = authorization.get('user')
+    return {
+        'user': user.pk if hasattr(user, 'pk') else user,
+        'method': authorization.get('method'),
+    }
+
+
+def _sale_idempotency_payload(*, actor, operation_type, cash_session, beneficiary_user,
+                              seller_user, discount_authorization, items, discount,
+                              charged_amount, payments, service_fee_waived,
+                              service_fee_authorization, item_discount_authorization):
+    def identity(value):
+        return value.pk if hasattr(value, 'pk') else value
+
+    canonical_items = [
+        {
+            'product': identity(item.get('product')),
+            'quantity': _idempotency_decimal(item.get('quantity')),
+            'discount': _idempotency_decimal(item.get('discount', '0')),
+        }
+        for item in (items or [])
+    ]
+    canonical_payments = []
+    for payment in payments or []:
+        amount = payment.get('amount')
+        if amount in (None, '', 'auto', 'remaining'):
+            amount = 'remaining'
+        else:
+            amount = _idempotency_decimal(amount)
+        canonical_payments.append({
+            'payment_method': identity(payment.get('payment_method')),
+            'amount': amount,
+            'received_amount': _idempotency_decimal(payment.get('received_amount')),
+        })
+    return {
+        'actor': identity(actor),
+        'operation_type': operation_type,
+        'cash_session': identity(cash_session),
+        'beneficiary_user': identity(beneficiary_user),
+        'seller_user': identity(seller_user),
+        'discount_authorization': _authorization_identity(discount_authorization),
+        'items': canonical_items,
+        'discount': _idempotency_decimal(discount, default='0'),
+        'charged_amount': (
+            None if charged_amount in (None, '')
+            else _idempotency_decimal(charged_amount)
+        ),
+        'payments': canonical_payments,
+        'service_fee_waived': bool(service_fee_waived),
+        'service_fee_authorization': _authorization_identity(service_fee_authorization),
+        'item_discount_authorization': _authorization_identity(item_discount_authorization),
+    }
+
+
+def _sale_idempotency_fingerprint(payload):
+    canonical = json.dumps(
+        _idempotency_value(payload),
+        ensure_ascii=True,
+        separators=(',', ':'),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
 
 
 def ensure_default_payment_methods(company):
@@ -71,7 +175,8 @@ def _commission_rate_for_seller(branch, seller_user, branch_default):
     if override:
         if not override.receives_commission:
             return Decimal('0.00')
-        return override.commission_rate if override.commission_rate is not None else branch_default
+        if override.commission_rate is not None:
+            return override.commission_rate
     access = UserBranchAccess.objects.select_related('access_profile').filter(
         branch=branch, user=seller_user, is_active=True, access_profile__status=Status.ACTIVE,
     ).first()
@@ -227,7 +332,9 @@ def _consolidate_items(raw_items, products, *, price_overrides=None):
         product = products_by_id[product_id]
         quantity = quantities[product_id]
         unit_price = price_overrides.get(product_id, product.sale_price)
-        item_subtotal = (unit_price * quantity).quantize(Decimal('0.01'))
+        item_subtotal = (unit_price * quantity).quantize(
+            CENT, rounding=ROUND_HALF_UP
+        )
         ensure_money_fits(item_subtotal, 'items')
         subtotal += item_subtotal
         ensure_money_fits(subtotal, 'subtotal')
@@ -438,6 +545,7 @@ def next_sale_number(company):
     for attempt in range(3):
         try:
             with transaction.atomic():
+                # Sale numbering remains serialized per company to preserve monotonic uniqueness.
                 Company.objects.select_for_update().get(pk=company.pk)
                 latest = Sale.objects.filter(
                     company=company, sale_number__regex=r'^V[0-9]+$'
@@ -663,7 +771,9 @@ def _prepare_products(company, raw_items, *, branch=None):
                 'quantity_per_unit': format(row.quantity, 'f'),
                 'consumed_quantity': format(required, 'f'),
                 'unit_cost': f'{component.cost:.2f}',
-                'unit_cost_contribution': f'{cost_contribution.quantize(CENT):.2f}',
+                'unit_cost_contribution': (
+                    f'{cost_contribution.quantize(CENT, rounding=ROUND_HALF_UP):.2f}'
+                ),
             })
         snapshot['unit_cost'] = compound_unit_cost.quantize(CENT, rounding=ROUND_HALF_UP)
         ensure_money_fits(snapshot['unit_cost'], 'unit_cost')
@@ -789,6 +899,21 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
     if not idempotency_key:
         raise ValidationError({'idempotency_key': 'Informe a chave de idempotencia.'})
     company = Company.objects.select_for_update().get(pk=branch.company_id)
+    fingerprint = _sale_idempotency_fingerprint(_sale_idempotency_payload(
+        actor=user,
+        operation_type=operation_type,
+        cash_session=cash_session,
+        beneficiary_user=beneficiary_user,
+        seller_user=seller_user,
+        discount_authorization=discount_authorization,
+        items=items,
+        discount=discount,
+        charged_amount=charged_amount,
+        payments=payments,
+        service_fee_waived=service_fee_waived,
+        service_fee_authorization=service_fee_authorization,
+        item_discount_authorization=item_discount_authorization,
+    ))
     replay = Sale.objects.filter(
         company=company,
         branch=branch,
@@ -796,6 +921,26 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         idempotency_key=idempotency_key,
     ).first()
     if replay:
+        if not replay.idempotency_fingerprint:
+            from apps.base.exceptions import DomainValidationError
+
+            raise DomainValidationError(
+                code='idempotency_key_conflict',
+                message='A chave pertence a uma venda sem fingerprint seguro; use uma nova chave.',
+                details={
+                    'idempotency_key': str(idempotency_key),
+                    'requires_new_key': True,
+                    'reason': 'missing_safe_fingerprint',
+                },
+            )
+        if replay.idempotency_fingerprint != fingerprint:
+            from apps.base.exceptions import DomainValidationError
+
+            raise DomainValidationError(
+                code='idempotency_key_conflict',
+                message='A chave de idempotencia ja foi usada com outros dados.',
+                details={'idempotency_key': str(idempotency_key)},
+            )
         replay._idempotency_replayed = True
         return replay
 
@@ -894,7 +1039,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
     sale = Sale.objects.create(
         company=company, branch=branch, cash_session=session,
         sale_number=next_sale_number(company), operation_type=operation_type,
-        idempotency_key=idempotency_key,
+        idempotency_key=idempotency_key, idempotency_fingerprint=fingerprint,
         status=SaleStatus.FINALIZED, created_by=user, seller_user=seller_user,
         discount_approved_by=discount_approved_by, beneficiary_user=beneficiary_user,
         subtotal=subtotal, promotion_discount_total=promotion_discount_total,
@@ -965,10 +1110,20 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
              'promotion_discount_total', 'item_discount_total', 'discount',
              'service_fee_rate', 'service_fee_amount', 'service_fee_waived', 'commission_rate',
              'commission_amount', 'total', 'seller_user_id', 'discount_approved_by_id',
-             'service_fee_waived_by_id'),
+             'service_fee_waived_by_id', 'beneficiary_user_id', 'charged_amount',
+             'cash_session_id'),
         ),
         metadata={
             'items': item_snapshots,
+            'payments': [
+                {
+                    'payment_method': method.pk,
+                    'payment_method_name': method.name,
+                    'amount': f'{amount:.2f}',
+                    'received_amount': f'{received:.2f}' if received is not None else None,
+                }
+                for method, amount, received in prepared_payments
+            ],
             'discount_authorization': {
                 'method': (discount_authorization or {}).get('method'),
                 'approved_by': discount_approved_by.pk if discount_approved_by else None,

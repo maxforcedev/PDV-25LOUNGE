@@ -409,14 +409,33 @@ class UserCommissionOverride(BaseModel):
             ),
         ]
 
+    @staticmethod
+    def target_has_active_branch_access(branch_id, user_id):
+        return UserBranchAccess.objects.filter(
+            branch_id=branch_id,
+            branch__status=Status.ACTIVE,
+            branch__company__status=Status.ACTIVE,
+            user_id=user_id,
+            user__is_active=True,
+            is_active=True,
+            access_profile__status=Status.ACTIVE,
+            branch__company__user_accesses__user_id=user_id,
+            branch__company__user_accesses__is_active=True,
+            branch__company__user_accesses__access_profile__status=Status.ACTIVE,
+        ).exists()
+
     def clean(self):
         super().clean()
         if self.commission_rate is not None and not (Decimal('0') <= self.commission_rate <= Decimal('100')):
             raise ValidationError({'commission_rate': 'A comissão do usuario deve estar entre 0 e 100.'})
-        if self.user_id and self.branch_id and not UserCompanyAccess.objects.filter(
-            user_id=self.user_id, company_id=self.branch.company_id, is_active=True,
-        ).exists():
-            raise ValidationError({'user': 'O usuario deve possuir acesso ativo a empresa da filial.'})
+        if (
+            self.user_id
+            and self.branch_id
+            and not self.target_has_active_branch_access(self.branch_id, self.user_id)
+        ):
+            raise ValidationError({
+                'user': 'O usuario deve estar ativo e possuir acesso e perfil ativos nesta filial.'
+            })
 
     def save(self, *args, **kwargs):
         self.full_clean()
