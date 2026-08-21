@@ -1619,6 +1619,7 @@ Modelagem sugerida:
 
 Regras:
 
+
 - sem agenda semanal configurada, a promoção vale durante todo o período de vigência;
 - `ends_at=NULL` significa vigência sem fim enquanto ativa;
 - intervalos podem atravessar meia-noite, com semântica explícita;
