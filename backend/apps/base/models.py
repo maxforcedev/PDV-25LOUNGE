@@ -12,10 +12,10 @@ class BaseModel(models.Model):
 
 class AuditLogQuerySet(models.QuerySet):
     def update(self, **kwargs):
-        raise ValueError('Logs de auditoria sao append-only.')
+        raise ValueError('Logs de auditoria são append-only.')
 
     def delete(self):
-        raise ValueError('Logs de auditoria nao podem ser excluidos.')
+        raise ValueError('Logs de auditoria não podem ser excluídos.')
 
 
 class AuditLog(models.Model):
@@ -46,8 +46,8 @@ class AuditLog(models.Model):
 
     def save(self, *args, **kwargs):
         if self.pk:
-            raise ValueError('Logs de auditoria sao append-only.')
+            raise ValueError('Logs de auditoria são append-only.')
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
-        raise ValueError('Logs de auditoria nao podem ser excluidos.')
+        raise ValueError('Logs de auditoria não podem ser excluídos.')

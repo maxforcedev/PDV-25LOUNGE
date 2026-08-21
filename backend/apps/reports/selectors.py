@@ -25,7 +25,7 @@ from apps.inventory.models import MovementType
 from apps.products.models import InventoryBehavior
 from apps.sales.models import OperationType, Payment, PaymentMethod, Sale, SaleItem, SaleStatus
 
-from .financials import FinancialAggregator, allocate_money, money
+from .financials import FinancialAggregator, allocate_money
 
 
 MONEY_FIELD = DecimalField(max_digits=20, decimal_places=2)
@@ -44,13 +44,8 @@ def period_end_exclusive(end):
     return end + timedelta(seconds=1) if end.microsecond == 0 else end + timedelta(microseconds=1)
 
 
-def filtered_sales(*, branch, start, end, operation_type, filters):
-    queryset = period_filter(
-        Sale.objects.filter(branch=branch, operation_type=operation_type),
-        'created_at',
-        start,
-        end,
-    )
+def _apply_sale_filters(queryset, filters, *, timestamp_field):
+    filters = filters or {}
     mappings = {
         'operator': 'created_by_id',
         'seller': 'seller_user_id',
@@ -67,11 +62,11 @@ def filtered_sales(*, branch, start, end, operation_type, filters):
             queryset = queryset.filter(**{lookup: filters[parameter]})
     if filters.get('weekday') is not None:
         queryset = queryset.annotate(
-            report_iso_weekday=ExtractIsoWeekDay('created_at')
+            report_iso_weekday=ExtractIsoWeekDay(timestamp_field)
         ).filter(report_iso_weekday=filters['weekday'] + 1)
     if filters.get('hour') is not None:
         queryset = queryset.annotate(
-            report_hour=ExtractHour('created_at')
+            report_hour=ExtractHour(timestamp_field)
         ).filter(report_hour=filters['hour'])
     if filters.get('number'):
         queryset = queryset.filter(sale_number__icontains=filters['number'])
@@ -83,6 +78,64 @@ def filtered_sales(*, branch, start, end, operation_type, filters):
             | Q(items__internal_code__icontains=value)
         )
     return queryset.distinct()
+
+
+def filtered_sales(*, branch, start, end, operation_type, filters):
+    queryset = period_filter(
+        Sale.objects.filter(branch=branch, operation_type=operation_type),
+        'created_at', start, end,
+    )
+    return _apply_sale_filters(queryset, filters, timestamp_field='created_at')
+
+
+def filtered_reversals(
+    *, branch, start, end, filters, operation_types=None, cash_session_ids=None,
+):
+    queryset = period_filter(
+        Sale.objects.filter(branch=branch, status=SaleStatus.CANCELLED),
+        'cancelled_at', start, end,
+    )
+    if operation_types is not None:
+        queryset = queryset.filter(operation_type__in=operation_types)
+    if cash_session_ids is not None:
+        queryset = queryset.filter(cash_session_id__in=cash_session_ids)
+    return _apply_sale_filters(queryset, filters, timestamp_field='cancelled_at')
+
+
+def period_event_sales(*, branch, start, end, filters, operation_types):
+    inflows = []
+    for operation_type in operation_types:
+        inflows.extend(_financial_sales(filtered_sales(
+            branch=branch, start=start, end=end, operation_type=operation_type,
+            filters=filters,
+        )))
+    reversals = list(_financial_sales(filtered_reversals(
+        branch=branch, start=start, end=end, filters=filters,
+        operation_types=operation_types,
+    )))
+    return inflows, reversals
+
+
+def event_rows(inflows, reversals):
+    rows = []
+    for sale in inflows:
+        sale._report_event_type = 'inflow'
+        sale._report_event_at = sale.created_at
+        sale._report_event_sign = 1
+        rows.append(sale)
+    for sale in reversals:
+        sale._report_event_type = 'reversal'
+        sale._report_event_at = sale.cancelled_at
+        sale._report_event_sign = -1
+        rows.append(sale)
+    return sorted(
+        rows,
+        key=lambda sale: (
+            sale._report_event_at, sale.pk,
+            1 if sale._report_event_type == 'reversal' else 0,
+        ),
+        reverse=True,
+    )
 
 
 def sale_rows(queryset):
@@ -113,7 +166,9 @@ def _sale_item_financials(sale, filters=None):
 def _financial_sales(queryset):
     if isinstance(queryset, (list, tuple)):
         return queryset
-    return queryset.select_related('created_by', 'seller_user').prefetch_related(
+    return queryset.select_related(
+        'created_by', 'seller_user', 'beneficiary_user', 'discount_approved_by'
+    ).prefetch_related(
         'items__product__category', 'payments'
     ).order_by('id')
 
@@ -132,8 +187,10 @@ def _scoped_payment_rows(sale, filters=None):
     return FinancialAggregator([sale], filters).payment_rows(sale)
 
 
-def commercial_summary(queryset, filters=None):
+def commercial_summary(queryset, filters=None, reversals=None):
     aggregator = FinancialAggregator(_financial_sales(queryset), filters)
+    if reversals is not None:
+        return aggregator.commercial_events(_financial_sales(reversals)), aggregator.cancellations()
     return aggregator.commercial(), aggregator.cancellations()
 
 
@@ -147,8 +204,14 @@ def filtered_sale_items(queryset, filters=None):
     return items
 
 
-def consumption_summary(queryset, *, include_cost=False, filters=None):
-    totals = FinancialAggregator(_financial_sales(queryset), filters).consumption()
+def consumption_summary(
+    queryset, *, include_cost=False, filters=None, reversals=None,
+):
+    aggregator = FinancialAggregator(_financial_sales(queryset), filters)
+    totals = (
+        aggregator.consumption_events(_financial_sales(reversals))
+        if reversals is not None else aggregator.consumption()
+    )
     if include_cost:
         totals['historical_cost'] = totals['historical_consumption_cogs']
     return totals
@@ -158,41 +221,43 @@ def _scoped_consumption_values(sale, filters=None):
     return FinancialAggregator([sale], filters).consumption_values(sale)
 
 
-def consumption_groupings(queryset, filters=None):
+def consumption_groupings(queryset, filters=None, reversals=()):
     by_beneficiary = {}
     by_user_type = {}
-    for sale in _sales_with_status(queryset, SaleStatus.FINALIZED):
-        values = _scoped_consumption_values(sale, filters)
-        if not values:
-            continue
-        beneficiary = sale.beneficiary_user
-        beneficiary_name = (
-            beneficiary.get_full_name().strip() or beneficiary.email
-            if beneficiary else 'Não informado'
-        )
-        beneficiary_row = by_beneficiary.setdefault(sale.beneficiary_user_id, {
-            'beneficiary': {
-                'id': sale.beneficiary_user_id,
-                'name': beneficiary_name,
-                'user_type': beneficiary.user_type if beneficiary else None,
-            },
-            'count': 0,
-            'reference': Decimal('0.00'),
-            'charged': Decimal('0.00'),
-            'benefit': Decimal('0.00'),
-        })
-        user_type = beneficiary.user_type if beneficiary else 'not_informed'
-        type_row = by_user_type.setdefault(user_type, {
-            'user_type': user_type,
-            'count': 0,
-            'reference': Decimal('0.00'),
-            'charged': Decimal('0.00'),
-            'benefit': Decimal('0.00'),
-        })
-        for row in (beneficiary_row, type_row):
-            row['count'] += 1
-            for key in ('reference', 'charged', 'benefit'):
-                row[key] += values[key]
+    for sales, sign in ((queryset, 1), (reversals, -1)):
+        for sale in sales:
+            values = _scoped_consumption_values(sale, filters)
+            if not values:
+                continue
+            beneficiary = sale.beneficiary_user
+            beneficiary_name = (
+                beneficiary.get_full_name().strip() or beneficiary.email
+                if beneficiary else 'Não informado'
+            )
+            beneficiary_row = by_beneficiary.setdefault(sale.beneficiary_user_id, {
+                'beneficiary': {
+                    'id': sale.beneficiary_user_id,
+                    'name': beneficiary_name,
+                    'user_type': beneficiary.user_type if beneficiary else None,
+                },
+                'count': 0, 'inflow_count': 0, 'reversal_count': 0,
+                'reference': Decimal('0.00'),
+                'charged': Decimal('0.00'),
+                'benefit': Decimal('0.00'),
+            })
+            user_type = beneficiary.user_type if beneficiary else 'not_informed'
+            type_row = by_user_type.setdefault(user_type, {
+                'user_type': user_type,
+                'count': 0, 'inflow_count': 0, 'reversal_count': 0,
+                'reference': Decimal('0.00'),
+                'charged': Decimal('0.00'),
+                'benefit': Decimal('0.00'),
+            })
+            for row in (beneficiary_row, type_row):
+                row['count'] += sign
+                row['inflow_count' if sign > 0 else 'reversal_count'] += 1
+                for key in ('reference', 'charged', 'benefit'):
+                    row[key] += sign * values[key]
     beneficiary_rows = sorted(
         by_beneficiary.values(),
         key=lambda row: (-row['charged'], -row['reference'], row['beneficiary']['name']),
@@ -201,6 +266,12 @@ def consumption_groupings(queryset, filters=None):
         by_user_type.values(),
         key=lambda row: (-row['charged'], -row['reference'], row['user_type']),
     )
+    for row in beneficiary_rows + type_rows:
+        row['sales_revenue'] = Decimal('0.00')
+        row['consumption_charged'] = row['charged']
+        row['effective_revenue'] = row['charged']
+        row['service_fee'] = Decimal('0.00')
+        row['total_received'] = row['charged']
     return beneficiary_rows, type_rows
 
 
@@ -208,57 +279,69 @@ def payment_totals(queryset, filters=None):
     return FinancialAggregator(_financial_sales(queryset), filters).payment_totals()
 
 
-def sale_rankings(queryset, *, limit=None, filters=None):
+def sale_rankings(queryset, *, limit=None, filters=None, reversals=()):
     by_product = {}
     by_category = {}
-    for sale in _sales_with_status(queryset, SaleStatus.FINALIZED):
-        for row in _sale_item_financials(sale, filters):
-            item = row['item']
-            product_key = item.product_id
-            category_key = item.product.category_id
-            product_entry = by_product.setdefault(product_key, {
-                'product_id': product_key,
-                'product_name': item.product_name,
-                'internal_code': item.internal_code,
-                'quantity': Decimal('0.000'),
-                'revenue': Decimal('0.00'),
-            })
-            product_entry['quantity'] += item.quantity
-            product_entry['revenue'] += row['effective_revenue']
-            category_entry = by_category.setdefault(category_key, {
-                'category_id': category_key,
-                'category_name': item.product.category.name if item.product.category_id else 'Sem categoria',
-                'quantity': Decimal('0.000'),
-                'revenue': Decimal('0.00'),
-            })
-            category_entry['quantity'] += item.quantity
-            category_entry['revenue'] += row['effective_revenue']
-    products = sorted(by_product.values(), key=lambda row: (-row['quantity'], -row['revenue'], row['product_name']))
-    categories = sorted(by_category.values(), key=lambda row: (-row['quantity'], -row['revenue'], row['category_name']))
+    for sales, sign in ((queryset, 1), (reversals, -1)):
+        for sale in sales:
+            for row in _sale_item_financials(sale, filters):
+                item = row['item']
+                product_key = item.product_id
+                category_key = item.product.category_id
+                product_entry = by_product.setdefault(product_key, {
+                    'product_id': product_key,
+                    'product_name': item.product_name,
+                    'internal_code': item.internal_code,
+                    'quantity': Decimal('0.000'),
+                    'sales_revenue': Decimal('0.00'),
+                })
+                product_entry['quantity'] += sign * item.quantity
+                product_entry['sales_revenue'] += sign * row['sales_revenue']
+                category_entry = by_category.setdefault(category_key, {
+                    'category_id': category_key,
+                    'category_name': item.product.category.name if item.product.category_id else 'Sem categoria',
+                    'quantity': Decimal('0.000'),
+                    'sales_revenue': Decimal('0.00'),
+                })
+                category_entry['quantity'] += sign * item.quantity
+                category_entry['sales_revenue'] += sign * row['sales_revenue']
+    products = sorted(by_product.values(), key=lambda row: (-row['quantity'], -row['sales_revenue'], row['product_name']))
+    categories = sorted(by_category.values(), key=lambda row: (-row['quantity'], -row['sales_revenue'], row['category_name']))
+    for row in products + categories:
+        row['revenue'] = row['sales_revenue']
     if limit is not None:
         products = products[:limit]
         categories = categories[:limit]
     return products, categories
 
 
-def hourly_sales(queryset, filters=None):
+def hourly_sales(queryset, filters=None, reversals=()):
     grouped = {}
-    for sale in _sales_with_status(queryset, SaleStatus.FINALIZED):
-        values = _scoped_sale_values(sale, filters)
-        if not values['has_items']:
-            continue
-        hour = timezone.localtime(sale.created_at).replace(minute=0, second=0, microsecond=0)
-        row = grouped.setdefault(hour, {
-            'hour': hour, 'count': 0, 'effective_revenue': Decimal('0.00'),
-            'service_fee': Decimal('0.00'), 'customer_total': Decimal('0.00'),
-        })
-        row['count'] += 1
-        for key in ('effective_revenue', 'service_fee', 'customer_total'):
-            row[key] += values[key]
+    for sales, sign, timestamp_field in (
+        (queryset, 1, 'created_at'), (reversals, -1, 'cancelled_at'),
+    ):
+        for sale in sales:
+            values = _scoped_sale_values(sale, filters)
+            if not values['has_items']:
+                continue
+            hour = timezone.localtime(getattr(sale, timestamp_field)).replace(
+                minute=0, second=0, microsecond=0
+            )
+            row = grouped.setdefault(hour, {
+                'hour': hour, 'count': 0, 'inflow_count': 0, 'reversal_count': 0,
+                'sales_revenue': Decimal('0.00'),
+                'effective_revenue': Decimal('0.00'), 'service_fee': Decimal('0.00'),
+                'total_received': Decimal('0.00'),
+            })
+            row['count'] += sign
+            row['inflow_count' if sign > 0 else 'reversal_count'] += 1
+            for key in ('sales_revenue', 'effective_revenue', 'service_fee', 'total_received'):
+                row[key] += sign * values[key]
+            row['customer_total'] = row['total_received']
     return [grouped[key] for key in sorted(grouped)]
 
 
-def sale_user_groups(queryset, user_field, filters=None):
+def sale_user_groups(queryset, user_field, filters=None, reversals=()):
     if user_field not in ('created_by', 'seller_user'):
         raise ValueError('Campo de agrupamento inválido.')
     grouped = {}
@@ -266,19 +349,24 @@ def sale_user_groups(queryset, user_field, filters=None):
     def group_for(sale):
         user = getattr(sale, user_field)
         user_id = getattr(sale, f'{user_field}_id')
+        if user_field == 'seller_user' and user_id is None:
+            return None
         row = grouped.setdefault(user_id, {
             'user': {
                 'id': user_id,
                 'name': (user.get_full_name().strip() or user.email) if user else 'Não informado',
             },
             'count': 0,
+            'inflow_count': 0,
+            'reversal_count': 0,
             'cancellation_count': 0,
             'cancellation_value': Decimal('0.00'),
             **{
                 key: Decimal('0.00') for key in (
                     'gross', 'account_discount', 'item_discount', 'manual_discount',
-                    'promotion_discount', 'total_discount', 'effective_revenue',
-                    'service_fee', 'customer_total', 'total_received',
+                    'promotion_discount', 'total_discount', 'sales_revenue',
+                    'consumption_charged', 'effective_revenue', 'service_fee',
+                    'total_received', 'payment_total',
                 )
             },
         })
@@ -288,102 +376,85 @@ def sale_user_groups(queryset, user_field, filters=None):
 
     financial_fields = (
         'gross', 'account_discount', 'item_discount', 'manual_discount',
-        'promotion_discount', 'total_discount', 'effective_revenue',
-        'service_fee', 'customer_total',
+        'promotion_discount', 'total_discount', 'sales_revenue',
+        'consumption_charged', 'effective_revenue', 'service_fee', 'total_received',
     )
-    for sale in _sales_with_status(queryset, SaleStatus.FINALIZED):
-        values = _scoped_sale_values(sale, filters)
-        if not values['has_items']:
-            continue
-        row = group_for(sale)
-        row['count'] += 1
-        for key in financial_fields:
-            row[key] += values[key]
-        row['total_received'] += sum(
-            (payment['amount'] for payment in _scoped_payment_rows(sale, filters)),
-            Decimal('0.00'),
-        )
-        if user_field == 'seller_user':
-            row['commission'] += values['commission']
-            row.setdefault('commission_sale_count', 0)
-            row['commission_sale_count'] += int(sale.commission_amount > 0)
-    for sale in _sales_with_status(queryset, SaleStatus.CANCELLED):
-        values = _scoped_sale_values(sale, filters)
-        if not values['has_items']:
-            continue
-        row = group_for(sale)
-        row['cancellation_count'] += 1
-        row['cancellation_value'] += values['customer_total']
+    for sales, sign in ((queryset, 1), (reversals, -1)):
+        for sale in sales:
+            values = _scoped_sale_values(sale, filters)
+            if not values['has_items']:
+                continue
+            row = group_for(sale)
+            if row is None:
+                continue
+            row['count'] += sign
+            row['inflow_count' if sign > 0 else 'reversal_count'] += 1
+            for key in financial_fields:
+                row[key] += sign * values[key]
+            row['payment_total'] += sign * sum(
+                (payment['amount'] for payment in _scoped_payment_rows(sale, filters)),
+                Decimal('0.00'),
+            )
+            if sign < 0:
+                row['cancellation_count'] += 1
+                row['cancellation_value'] += values['total_received']
+            if user_field == 'seller_user':
+                row['commission'] += sign * values['commission']
+                row.setdefault('commission_sale_count', 0)
+                row['commission_sale_count'] += sign * int(values['commission'] > 0)
     for row in grouped.values():
-        row['average'] = row['effective_revenue'] / row['count'] if row['count'] else Decimal('0.00')
-        row['payment_reconciliation_delta'] = row['total_received'] - row['customer_total']
+        row['average'] = (
+            row['sales_revenue'] / row['count']
+            if row['count'] > 0 else Decimal('0.00')
+        )
+        row['reconciliation_delta'] = row['payment_total'] - row['total_received']
+        row['payment_reconciliation_delta'] = row['reconciliation_delta']
+        row['customer_total'] = row['total_received']
     return sorted(
         grouped.values(),
-        key=lambda row: (-row['effective_revenue'], row['user']['name'], row['user']['id'] or 0),
+        key=lambda row: (-row['sales_revenue'], row['user']['name'], row['user']['id'] or 0),
     )
 
 
-def cancellation_summary(*, branch, start, end, category=None, product=None):
-    queryset = period_filter(
-        Sale.objects.filter(
-            branch=branch, operation_type=OperationType.SALE, status=SaleStatus.CANCELLED,
-        ),
-        'cancelled_at', start, end,
+def cancellation_summary(*, branch, start, end, filters=None):
+    filters = filters or {}
+    queryset = filtered_reversals(
+        branch=branch, start=start, end=end, filters=filters,
+        operation_types=(OperationType.SALE,),
     )
-    filters = {'category': category, 'product': product}
-    filters = {key: value for key, value in filters.items() if value is not None}
-    if category:
-        queryset = queryset.filter(items__product__category_id=category)
-    if product:
-        queryset = queryset.filter(items__product_id=product)
-    queryset = queryset.distinct()
     rows = _financial_sales(queryset)
-    totals = FinancialAggregator(rows, filters).cancellations()
+    item_filters = {
+        key: filters[key] for key in ('category', 'product')
+        if filters.get(key) is not None
+    }
+    totals = FinancialAggregator(rows, item_filters).cancellations()
     return queryset.order_by('-cancelled_at', '-id'), totals
 
 
 def receipt_summary(
     *, branch, start, end, filters, cash_session_ids=None, inflow_sales=None,
+    operation_types=None,
 ):
-    integral_filters = {
-        key: value for key, value in filters.items()
-        if key not in ('payment_method', 'payment_method_code', 'status')
-    }
+    event_filters = dict(filters)
+    operation_types = operation_types or (
+        OperationType.SALE, OperationType.CONSUMPTION,
+    )
     inflows = list(inflow_sales) if inflow_sales is not None else []
     if inflow_sales is None:
-        for operation_type in (OperationType.SALE, OperationType.CONSUMPTION):
-            operation_filters = dict(integral_filters)
-            if operation_type == OperationType.CONSUMPTION:
-                operation_filters.pop('seller', None)
+        for operation_type in operation_types:
             queryset = filtered_sales(
                 branch=branch, start=start, end=end, operation_type=operation_type,
-                filters=operation_filters,
+                filters=event_filters,
             )
             if cash_session_ids is not None:
                 queryset = queryset.filter(cash_session_id__in=cash_session_ids)
             inflows.extend(_financial_sales(queryset))
 
-    reversals = period_filter(
-        Sale.objects.filter(branch=branch, status=SaleStatus.CANCELLED),
-        'cancelled_at', start, end,
-    )
-    if cash_session_ids is not None:
-        reversals = reversals.filter(cash_session_id__in=cash_session_ids)
-    if integral_filters.get('operator') is not None:
-        reversals = reversals.filter(created_by_id=integral_filters['operator'])
-    if integral_filters.get('seller') is not None:
-        reversals = reversals.filter(
-            Q(operation_type=OperationType.CONSUMPTION)
-            | Q(seller_user_id=integral_filters['seller'])
-        )
-    if integral_filters.get('product') is not None:
-        reversals = reversals.filter(items__product_id=integral_filters['product'])
-    if integral_filters.get('category') is not None:
-        reversals = reversals.filter(
-            items__product__category_id=integral_filters['category']
-        )
-    reversals = _financial_sales(reversals.distinct())
-    result = FinancialAggregator(inflows, integral_filters).receipts(reversals)
+    reversals = _financial_sales(filtered_reversals(
+        branch=branch, start=start, end=end, filters=event_filters,
+        operation_types=operation_types, cash_session_ids=cash_session_ids,
+    ))
+    result = FinancialAggregator(inflows, event_filters).receipts(reversals)
 
     method_id = filters.get('payment_method')
     method_code = filters.get('payment_method_code')
@@ -411,48 +482,56 @@ def receipt_summary(
             'code': method_code,
             'name': method_label,
             'subtotal': method_row['net_received'] if method_row else Decimal('0.00'),
+            'payment_total': (
+                method_row['payment_total'] if method_row else Decimal('0.00')
+            ),
             'is_integral_revenue': False,
         }
     return result
 
 
-def dashboard_time_analysis(queryset, *, branch, start, end, category=None):
+def dashboard_time_analysis(
+    queryset, *, branch, start, end, category=None, reversals=(),
+):
     filters = {'category': category} if category else {}
-    finalized = list(_sales_with_status(queryset, SaleStatus.FINALIZED))
     heatmap = {}
-    for sale in finalized:
-        local = timezone.localtime(sale.created_at)
-        key = (local.weekday(), local.hour)
-        row = heatmap.setdefault(key, {
-            'weekday': local.weekday(), 'hour': local.hour, 'count': 0,
-            'revenue': Decimal('0.00'),
-        })
-        values = _scoped_sale_values(sale, filters)
-        if not values['has_items']:
-            continue
-        row['count'] += 1
-        row['revenue'] += values['effective_revenue']
+    for sales, sign, timestamp_field in (
+        (queryset, 1, 'created_at'), (reversals, -1, 'cancelled_at'),
+    ):
+        for sale in sales:
+            local = timezone.localtime(getattr(sale, timestamp_field))
+            key = (local.weekday(), local.hour)
+            row = heatmap.setdefault(key, {
+                'weekday': local.weekday(), 'hour': local.hour, 'count': 0,
+                'inflow_count': 0, 'reversal_count': 0,
+                'sales_revenue': Decimal('0.00'),
+            })
+            values = _scoped_sale_values(sale, filters)
+            if not values['has_items']:
+                continue
+            row['count'] += sign
+            row['inflow_count' if sign > 0 else 'reversal_count'] += 1
+            row['sales_revenue'] += sign * values['sales_revenue']
     heatmap_rows = []
     for row in heatmap.values():
-        row['average'] = row['revenue'] / row['count'] if row['count'] else Decimal('0.00')
+        row['average'] = (
+            row['sales_revenue'] / row['count']
+            if row['count'] > 0 else Decimal('0.00')
+        )
+        row['revenue'] = row['sales_revenue']
         heatmap_rows.append(row)
     heatmap_rows.sort(key=lambda row: (row['weekday'], row['hour']))
 
     current_end = period_end_exclusive(end)
     duration = current_end - start
     previous_start = start - duration
-    previous_end = start
-    previous = Sale.objects.filter(
-            branch=branch,
-            operation_type=OperationType.SALE,
-            status=SaleStatus.FINALIZED,
-            created_at__gte=previous_start,
-            created_at__lt=previous_end,
-        )
-    if category:
-        previous = previous.filter(items__product__category_id=category).distinct()
+    previous_end = start - timedelta(microseconds=1)
+    previous, previous_reversals = period_event_sales(
+        branch=branch, start=previous_start, end=previous_end, filters=filters,
+        operation_types=(OperationType.SALE,),
+    )
 
-    def by_day(rows, range_start, range_end, *, end_exclusive=False):
+    def by_day(rows, reversal_rows, range_start, range_end, *, end_exclusive=False):
         first_day = timezone.localtime(range_start).date()
         adjusted_end = range_end - timedelta(microseconds=1) if end_exclusive else range_end
         last_day = timezone.localtime(adjusted_end).date()
@@ -460,33 +539,55 @@ def dashboard_time_analysis(queryset, *, branch, start, end, category=None):
         day = first_day
         while day <= last_day:
             key = day.isoformat()
-            grouped[key] = {'date': key, 'count': 0, 'revenue': Decimal('0.00')}
+            grouped[key] = {
+                'date': key, 'count': 0, 'inflow_count': 0,
+                'reversal_count': 0, 'sales_revenue': Decimal('0.00'),
+            }
             day += timedelta(days=1)
-        for sale in rows:
-            day = timezone.localtime(sale.created_at).date().isoformat()
-            values = _scoped_sale_values(sale, filters)
-            if not values['has_items']:
-                continue
-            entry = grouped.setdefault(day, {'date': day, 'count': 0, 'revenue': Decimal('0.00')})
-            entry['count'] += 1
-            entry['revenue'] += values['effective_revenue']
-        return sorted(grouped.values(), key=lambda row: row['date'])
+        for sales, sign, timestamp_field in (
+            (rows, 1, 'created_at'), (reversal_rows, -1, 'cancelled_at'),
+        ):
+            for sale in sales:
+                day = timezone.localtime(getattr(sale, timestamp_field)).date().isoformat()
+                values = _scoped_sale_values(sale, filters)
+                if not values['has_items']:
+                    continue
+                entry = grouped.setdefault(day, {
+                    'date': day, 'count': 0, 'inflow_count': 0,
+                    'reversal_count': 0, 'sales_revenue': Decimal('0.00'),
+                })
+                entry['count'] += sign
+                entry['inflow_count' if sign > 0 else 'reversal_count'] += 1
+                entry['sales_revenue'] += sign * values['sales_revenue']
+        result = sorted(grouped.values(), key=lambda row: row['date'])
+        for entry in result:
+            entry['revenue'] = entry['sales_revenue']
+        return result
 
     return (
         heatmap_rows,
-        by_day(finalized, start, current_end, end_exclusive=True),
-        by_day(_financial_sales(previous), previous_start, previous_end, end_exclusive=True),
+        by_day(queryset, reversals, start, current_end, end_exclusive=True),
+        by_day(previous, previous_reversals, previous_start, start, end_exclusive=True),
     )
 
 
-def operational_result(*, branch, start, end, sales, cash_session=None):
-    operations = period_filter(
-        Sale.objects.filter(branch=branch, status=SaleStatus.FINALIZED),
+def operational_result(*, branch, start, end, sales, cash_session=None, filters=None):
+    consumptions = period_filter(
+        Sale.objects.filter(
+            branch=branch,
+            operation_type=OperationType.CONSUMPTION,
+        ),
         'created_at', start, end,
     )
     if cash_session:
-        operations = operations.filter(cash_session=cash_session)
-    operations = _financial_sales(operations)
+        consumptions = consumptions.filter(cash_session=cash_session)
+    operations = list(_financial_sales(sales)) + list(_financial_sales(consumptions))
+    reversals = filtered_reversals(
+        branch=branch, start=start, end=end, filters={},
+        operation_types=(OperationType.SALE, OperationType.CONSUMPTION),
+        cash_session_ids=(cash_session.pk,) if cash_session else None,
+    )
+    reversals = list(_financial_sales(reversals))
     withdrawals = period_filter(
         CashMovement.objects.filter(
             cash_session__branch=branch,
@@ -512,12 +613,15 @@ def operational_result(*, branch, start, end, sales, cash_session=None):
     fixed_cost = (daily_cost * seconds / Decimal('86400')).quantize(
         Decimal('0.01'), rounding=ROUND_HALF_UP
     )
-    result = FinancialAggregator(operations).operational_statement(
+    result = FinancialAggregator(operations, filters).operational_statement(
         operating_expenses=expense, fixed_cost=fixed_cost,
+        reversal_sales=reversals,
     )
     result['discounts'] = result['total_discount']
     result['cogs'] = result['historical_sales_cogs']
     result['unclassified_withdrawals'] = unclassified
+    result['_event_inflows'] = operations
+    result['_event_reversals'] = reversals
     return result
 
 

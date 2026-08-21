@@ -1,0 +1,177 @@
+services:
+  db:
+    image: postgres:16-alpine@sha256:44c4ee9810eff91f7eab4d822642e01115b1a9eccce4bcbdde7604752d68eac6
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-corepdv}
+      POSTGRES_USER: ${POSTGRES_USER:-corepdv}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - corepdv_internal
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 60s
+        order: stop-first
+      rollback_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: pause
+        monitor: 60s
+        order: stop-first
+
+  backend:
+    image: ${BACKEND_IMAGE:-ghcr.io/maxforcedev/core-pdv-backend}:${RELEASE_TAG:?Set RELEASE_TAG to the full commit SHA}
+    environment:
+      DEBUG: 'False'
+      SECRET_KEY_FILE: /run/secrets/django_secret_key
+      DATABASE_URL: postgresql://${POSTGRES_USER:-corepdv}@db:5432/${POSTGRES_DB:-corepdv}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      DATABASE_CONNECT_TIMEOUT: ${DATABASE_CONNECT_TIMEOUT:-3}
+      ALLOWED_HOSTS: ${DOMAIN:-corepdv.com},${API_DOMAIN:-api.corepdv.com},127.0.0.1
+      CSRF_TRUSTED_ORIGINS: https://${DOMAIN:-corepdv.com},https://*.${DOMAIN:-corepdv.com}
+      CORS_ALLOWED_ORIGINS: https://${DOMAIN:-corepdv.com}
+      TIME_ZONE: ${TIME_ZONE:-America/Sao_Paulo}
+      LANGUAGE_CODE: ${LANGUAGE_CODE:-pt-br}
+      TRUST_PROXY_HEADERS: 'True'
+      SECURE_SSL_REDIRECT: 'True'
+      SESSION_COOKIE_SECURE: 'True'
+      CSRF_COOKIE_SECURE: 'True'
+      SECURE_CONTENT_TYPE_NOSNIFF: 'True'
+      SECURE_HSTS_SECONDS: ${SECURE_HSTS_SECONDS:-0}
+      SECURE_HSTS_INCLUDE_SUBDOMAINS: ${SECURE_HSTS_INCLUDE_SUBDOMAINS:-False}
+      SECURE_HSTS_PRELOAD: ${SECURE_HSTS_PRELOAD:-False}
+      MIGRATE_ON_START: ${MIGRATE_ON_START:-True}
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-3}
+      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-60}
+      GUNICORN_GRACEFUL_TIMEOUT: ${GUNICORN_GRACEFUL_TIMEOUT:-30}
+      GUNICORN_KEEP_ALIVE: ${GUNICORN_KEEP_ALIVE:-5}
+      GUNICORN_FORWARDED_ALLOW_IPS: ${GUNICORN_FORWARDED_ALLOW_IPS:-*}
+      EMAIL_BACKEND: ${EMAIL_BACKEND:-django.core.mail.backends.smtp.EmailBackend}
+    secrets:
+      - django_secret_key
+      - postgres_password
+    networks:
+      - corepdv_internal
+      - traefik_public
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          request = urllib.request.Request('http://127.0.0.1:8000/health/', headers={'X-Forwarded-Proto': 'https'});
+          urllib.request.urlopen(request, timeout=3)
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 60s
+        order: stop-first
+      rollback_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: pause
+        monitor: 60s
+        order: stop-first
+      labels:
+        - traefik.enable=true
+        - traefik.docker.network=${TRAEFIK_NETWORK:-traefik_public}
+        - traefik.http.routers.corepdv-backend.rule=Host(`${API_DOMAIN:-api.corepdv.com}`)
+        - traefik.http.routers.corepdv-backend.entrypoints=websecure
+        - traefik.http.routers.corepdv-backend.tls=true
+        - traefik.http.services.corepdv-backend.loadbalancer.server.port=8000
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-ghcr.io/maxforcedev/core-pdv-frontend}:${RELEASE_TAG:?Set RELEASE_TAG to the full commit SHA}
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: '1'
+      HOSTNAME: 0.0.0.0
+      PORT: '3000'
+    networks:
+      - traefik_public
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:3000/login')
+          .then(response => process.exit(response.status < 500 ? 0 : 1))
+          .catch(() => process.exit(1))
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 60s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: pause
+        monitor: 60s
+        order: stop-first
+      labels:
+        - traefik.enable=true
+        - traefik.docker.network=${TRAEFIK_NETWORK:-traefik_public}
+        - traefik.http.routers.corepdv-frontend.rule=Host(`${DOMAIN:-corepdv.com}`)
+        - traefik.http.routers.corepdv-frontend.entrypoints=websecure
+        - traefik.http.routers.corepdv-frontend.tls=true
+        - traefik.http.services.corepdv-frontend.loadbalancer.server.port=3000
+
+volumes:
+  postgres_data:
+
+networks:
+  corepdv_internal:
+    driver: overlay
+    internal: true
+  traefik_public:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik_public}
+
+secrets:
+  django_secret_key:
+    external: true
+    name: ${DJANGO_SECRET_NAME:-corepdv_django_secret_key}
+  postgres_password:
+    external: true
+    name: ${POSTGRES_PASSWORD_SECRET_NAME:-corepdv_postgres_password}

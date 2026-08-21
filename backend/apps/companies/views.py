@@ -287,7 +287,7 @@ class BranchViewSet(viewsets.ModelViewSet):
 
 
 class CanViewPermissionCatalog(BasePermission):
-    message = 'Voce nao possui permissao para visualizar perfis de acesso.'
+    message = 'Você não possui permissão para visualizar perfis de acesso.'
 
     def has_permission(self, request, view):
         user = request.user
@@ -314,7 +314,7 @@ class FunctionalPermissionViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class AccessProfilePermission(BasePermission):
-    message = 'Voce nao possui permissao para esta operacao.'
+    message = 'Você não possui permissão para esta operação.'
     codes = {
         'list': 'access_profiles.view',
         'retrieve': 'access_profiles.view',
@@ -406,10 +406,10 @@ class AccessProfileViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def activate(self, request, pk=None):
         profile = self.get_object()
-        before = model_snapshot(profile, ('status',))
+        before = model_snapshot(profile, ('name', 'status'))
         profile.status = Status.ACTIVE
         profile.save(update_fields=['status', 'updated_at'])
-        audit_log(actor=request.user, action='access_profile.activate', obj=profile, company=profile.company, before=before, after=model_snapshot(profile, ('status',)))
+        audit_log(actor=request.user, action='access_profile.activate', obj=profile, company=profile.company, before=before, after=model_snapshot(profile, ('name', 'status')))
         return Response(self.get_serializer(profile).data)
 
     @action(detail=True, methods=['post'])
@@ -421,17 +421,17 @@ class AccessProfileViewSet(viewsets.ModelViewSet):
             is_active=True,
         ).exists():
             return Response(
-                {'status': ['Voce nao pode inativar seu proprio perfil ativo nesta empresa.']},
+                {'status': ['Você não pode inativar seu próprio perfil ativo nesta empresa.']},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         profile.status = Status.INACTIVE
         profile.save(update_fields=['status', 'updated_at'])
-        audit_log(actor=request.user, action='access_profile.deactivate', obj=profile, company=profile.company, before={'status': Status.ACTIVE}, after=model_snapshot(profile, ('status',)))
+        audit_log(actor=request.user, action='access_profile.deactivate', obj=profile, company=profile.company, before={'name': profile.name, 'status': Status.ACTIVE}, after=model_snapshot(profile, ('name', 'status')))
         return Response(self.get_serializer(profile).data)
 
 
 class UserPermissionBlockPermission(BasePermission):
-    message = 'Voce nao possui permissao para bloqueios individuais.'
+    message = 'Você não possui permissão para bloqueios individuais.'
 
     @staticmethod
     def code_for_action(action_name):
@@ -489,7 +489,7 @@ class UserPermissionBlockViewSet(viewsets.ModelViewSet):
                 if value < 1:
                     raise ValueError
             except (TypeError, ValueError) as error:
-                raise ValidationError({field: 'Informe um identificador valido.'}) from error
+                raise ValidationError({field: 'Informe um identificador válido.'}) from error
             queryset = queryset.filter(**{f'{field}_id': value})
         search = params.get('search', '').strip()
         for term in search.split():
@@ -523,13 +523,18 @@ class UserPermissionBlockViewSet(viewsets.ModelViewSet):
         self._audit_create(block, uuid.uuid4())
 
     def _audit_create(self, block, operation_reference):
+        after = model_snapshot(block, ('reason', 'is_active'))
+        after.update({
+            'user_name': str(block.user),
+            'permission_label': block.permission.label,
+        })
         audit_log(
             actor=self.request.user,
             action='user_permission_block.create',
             obj=block,
             company=block.company,
             branch=block.branch,
-            after=model_snapshot(block, ('user_id', 'permission_id', 'reason', 'is_active')),
+            after=after,
             metadata={'operation_reference': str(operation_reference)},
         )
 
@@ -553,9 +558,9 @@ class UserPermissionBlockViewSet(viewsets.ModelViewSet):
             if company_id < 1:
                 raise ValueError
         except (TypeError, ValueError) as error:
-            raise ValidationError({'company': 'Informe uma empresa valida.'}) from error
+            raise ValidationError({'company': 'Informe uma empresa válida.'}) from error
         if not Company.objects.filter(pk=company_id).exists():
-            raise ValidationError({'company': 'Informe uma empresa valida.'})
+            raise ValidationError({'company': 'Informe uma empresa válida.'})
         branches = Branch.objects.filter(
             company_id=company_id, status=Status.ACTIVE
         ).order_by('name', 'id')
@@ -577,10 +582,10 @@ class UserPermissionBlockViewSet(viewsets.ModelViewSet):
         try:
             company_id = int(company_id)
         except (TypeError, ValueError) as error:
-            raise ValidationError({'company': 'Informe uma empresa valida.'}) from error
+            raise ValidationError({'company': 'Informe uma empresa válida.'}) from error
         company = Company.objects.filter(pk=company_id).first()
         if not company:
-            raise ValidationError({'company': 'Informe uma empresa valida.'})
+            raise ValidationError({'company': 'Informe uma empresa válida.'})
 
         users = User.objects.filter(
             is_active=True,
@@ -634,7 +639,7 @@ class UserPermissionBlockViewSet(viewsets.ModelViewSet):
     def batch_apply(self, request):
         permission_codes = request.data.get('permission_codes')
         if not isinstance(permission_codes, list) or not permission_codes:
-            raise ValidationError({'permission_codes': 'Selecione ao menos uma permissao.'})
+            raise ValidationError({'permission_codes': 'Selecione ao menos uma permissão.'})
         if (
             any(not isinstance(code, str) or not code for code in permission_codes)
             or len(permission_codes) != len(set(permission_codes))
@@ -714,7 +719,7 @@ class UserPermissionBlockViewSet(viewsets.ModelViewSet):
 
 
 class CommissionOverridePermission(BasePermission):
-    message = 'Voce nao possui permissao para comissoes nesta filial.'
+    message = 'Você não possui permissão para comissões nesta filial.'
 
     @staticmethod
     def codes_for_action(view):
@@ -773,12 +778,17 @@ class UserCommissionOverrideViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         override = serializer.save()
-        audit_log(actor=self.request.user, action='commission_override.create', obj=override, company=override.branch.company, branch=override.branch, after=model_snapshot(override, ('user_id', 'receives_commission', 'commission_rate')))
+        after = model_snapshot(override, ('receives_commission', 'commission_rate'))
+        after['user_name'] = str(override.user)
+        audit_log(actor=self.request.user, action='commission_override.create', obj=override, company=override.branch.company, branch=override.branch, after=after)
 
     def perform_update(self, serializer):
         before = model_snapshot(serializer.instance, ('receives_commission', 'commission_rate'))
+        before['user_name'] = str(serializer.instance.user)
         override = serializer.save()
-        audit_log(actor=self.request.user, action='commission_override.update', obj=override, company=override.branch.company, branch=override.branch, before=before, after=model_snapshot(override, ('receives_commission', 'commission_rate')))
+        after = model_snapshot(override, ('receives_commission', 'commission_rate'))
+        after['user_name'] = str(override.user)
+        audit_log(actor=self.request.user, action='commission_override.update', obj=override, company=override.branch.company, branch=override.branch, before=before, after=after)
 
     @transaction.atomic
     def perform_destroy(self, instance):

@@ -5,7 +5,7 @@ from apps.companies.selectors import user_has_branch_permission
 
 
 class InventoryFunctionalPermission(BasePermission):
-    message = 'Voce nao possui permissao para esta operacao.'
+    message = 'Você não possui permissão para esta operação.'
 
     def get_code(self, view):
         return view.permission_codes.get(view.action)

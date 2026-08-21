@@ -11,6 +11,7 @@ import {
   Building2,
   ChevronDown,
   ClipboardList,
+  CircleHelp,
   CreditCard,
   FileSearch,
   GitBranch,
@@ -495,6 +496,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <div className="border-b border-subtle px-2 py-2 sm:hidden">
                 <p className="truncate text-xs font-semibold">{user?.email}</p>
               </div>
+              <Link
+                href="/ajuda"
+                onClick={() => setProfileOpen(false)}
+                className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-xs font-medium text-muted hover:bg-surface-muted hover:text-fg"
+              >
+                <CircleHelp className="size-4" />
+                Central de ajuda
+              </Link>
               <Link
                 href="/sobre-mim"
                 onClick={() => setProfileOpen(false)}

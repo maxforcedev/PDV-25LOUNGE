@@ -8,6 +8,11 @@ import type { User, UserBranch, UserCompany } from "@/types";
 
 const COMPANY_KEY = "pdv.current_company_id";
 const BRANCH_KEY = "pdv.current_branch_id";
+const PUBLIC_PATHS = ["/", "/ajuda"];
+
+function isPublicPath(pathname: string) {
+  return PUBLIC_PATHS.some((path) => pathname === path || (path !== "/" && pathname.startsWith(`${path}/`)));
+}
 interface AuthContextValue {
   user: User | null;
   loading: boolean;
@@ -73,7 +78,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (loading) return;
-    if (!user && pathname !== "/login") router.replace("/login");
+    if (!user && pathname !== "/login" && !isPublicPath(pathname)) router.replace("/login");
     if (user && pathname === "/login") {
       router.replace(firstAuthorizedRoute(user, currentCompany, currentBranch));
     }

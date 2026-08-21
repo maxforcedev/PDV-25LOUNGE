@@ -16,7 +16,7 @@ class CanCreateCompany(BasePermission):
 
 
 class FunctionalCompanyPermission(BasePermission):
-    message = 'Voce nao possui permissao para esta operacao.'
+    message = 'Você não possui permissão para esta operação.'
 
     def _code(self, view):
         return view.permission_codes.get(view.action)

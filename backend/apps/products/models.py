@@ -57,7 +57,7 @@ class Unit(models.TextChoices):
 
 
 class InventoryBehavior(models.TextChoices):
-    DIRECT = 'direct', 'Estoque proprio'
+    DIRECT = 'direct', 'Estoque próprio'
     NONE = 'none', 'Sem estoque'
     COMPONENTS = 'components', 'Baixa por componentes'
 
@@ -132,7 +132,7 @@ class Product(BaseModel):
                 duplicate = duplicate.exclude(pk=self.pk)
             if duplicate.exists():
                 raise ValidationError(
-                    {'name': 'Ja existe um produto com este nome nesta empresa.'}
+                    {'name': 'Já existe um produto com este nome nesta empresa.'}
                 )
         self.internal_code = self.internal_code.strip()
         self.barcode = self.barcode.strip()
@@ -152,7 +152,7 @@ class Product(BaseModel):
                 and self.used_as_component.exists()
             ):
                 raise ValidationError(
-                    {'inventory_behavior': 'Um insumo de outra composicao deve manter estoque proprio.'}
+                    {'inventory_behavior': 'Um insumo de outra composição deve manter estoque próprio.'}
                 )
             if self.inventory_behavior == InventoryBehavior.COMPONENTS:
                 if self.is_sellable and not self.components.exists():
@@ -162,22 +162,22 @@ class Product(BaseModel):
                 for component in self.components.select_related('component_product'):
                     if component.component_product.company_id != self.company_id:
                         raise ValidationError(
-                            {'inventory_behavior': 'A composicao possui produto de outra empresa.'}
+                            {'inventory_behavior': 'A composição possui produto de outra empresa.'}
                         )
                     if (
                         component.component_product.inventory_behavior
                         != InventoryBehavior.DIRECT
                     ):
                         raise ValidationError(
-                            {'inventory_behavior': 'A composicao possui um componente sem estoque proprio.'}
+                            {'inventory_behavior': 'A composição possui um componente sem estoque próprio.'}
                         )
             elif self.components.exists():
                 raise ValidationError(
-                    {'inventory_behavior': 'Remova a composicao antes de alterar o comportamento.'}
+                    {'inventory_behavior': 'Remova a composição antes de alterar o comportamento.'}
                 )
         elif self.inventory_behavior == InventoryBehavior.COMPONENTS and self.is_sellable:
             raise ValidationError(
-                {'is_sellable': 'Um produto composto deve ser criado como nao vendavel.'}
+                {'is_sellable': 'Um produto composto deve ser criado como não vendável.'}
             )
 
     def save(self, *args, **kwargs):
@@ -224,7 +224,7 @@ class ProductComponent(BaseModel):
         if self.parent_product.inventory_behavior != InventoryBehavior.COMPONENTS:
             raise ValidationError({'parent_product': 'O produto deve baixar estoque por componentes.'})
         if self.component_product.inventory_behavior != InventoryBehavior.DIRECT:
-            raise ValidationError({'component_product': 'Somente produtos com estoque proprio podem ser componentes.'})
+            raise ValidationError({'component_product': 'Somente produtos com estoque próprio podem ser componentes.'})
         if (
             self.component_product.unit == Unit.UNIT
             and self.quantity != self.quantity.to_integral_value()

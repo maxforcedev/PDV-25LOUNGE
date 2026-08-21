@@ -18,13 +18,13 @@ def parse_datetime_range(params, *, required=False, default_today=False):
             values[name] = None
             continue
         if not isinstance(raw_value, str) or not DATETIME_WITH_TIME.match(raw_value):
-            raise ValidationError({name: 'Informe uma data e hora ISO valida.'})
+            raise ValidationError({name: 'Informe uma data e hora ISO válida.'})
         try:
             value = parse_datetime(raw_value)
         except (ValueError, OverflowError):
             value = None
         if value is None:
-            raise ValidationError({name: 'Informe uma data e hora ISO valida.'})
+            raise ValidationError({name: 'Informe uma data e hora ISO válida.'})
         if timezone.is_naive(value):
             value = timezone.make_aware(value, current_timezone)
         else:
@@ -46,7 +46,7 @@ def parse_datetime_range(params, *, required=False, default_today=False):
         end = end or now
     if start and end and start > end:
         raise ValidationError(
-            {'end_datetime': 'A data e hora final deve ser posterior ou igual a inicial.'}
+            {'end_datetime': 'A data e hora final deve ser posterior ou igual à inicial.'}
         )
     return start, end
 

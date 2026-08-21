@@ -9,11 +9,20 @@ frontend/.next/
 
 out/
 dist/
-
+orthers.txt
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# =========================
+# PYTHON
+# =========================
+.venv/
+venv/
+backend/.venv/
+__pycache__/
+*.py[cod]
 
 # =========================
 # FRONTEND ENV
@@ -26,6 +35,12 @@ frontend/.env.*.local
 # BACKEND ENV
 # =========================
 backend/.env
+
+# Keep every real environment file local while preserving contracts.
+.env
+.env.*
+!.env.example
+!.env.production.example
 
 # =========================
 # IDE / EDITOR
@@ -43,9 +58,9 @@ desktop.ini
 # TEMP / BACKUPS
 # =========================
 *.tmp
-*.pyc
 *.bak
 *.swp
+*.log
 *.zip
 *.dump
 *.sql

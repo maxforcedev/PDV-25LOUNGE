@@ -266,8 +266,10 @@ FIELD_LABELS = {
     'receives_commission': 'Recebe comissão',
     'permission_codes': 'Permissões',
     'user_id': 'Usuário',
+    'user_name': 'Usuário',
     'permission_id': 'Permissão',
     'permission_code': 'Permissão',
+    'permission_label': 'Permissão',
     'created_by_id': 'Criado por',
     'updated_by_id': 'Alterado por',
     'reason': 'Motivo',
@@ -285,6 +287,7 @@ FIELD_LABELS = {
     'is_favorite': 'Favorito',
     'components': 'Composição',
     'product_id': 'Produto',
+    'product_name': 'Produto',
     'parent_product_id': 'Produto composto',
     'component_product_id': 'Componente',
     'branch_id': 'Filial',
@@ -506,7 +509,6 @@ TECHNICAL_FIELDS = {
     'company_accesses',
     'branch_accesses',
     'permission_codes',
-    'components',
     'product_ids',
     'category_ids',
     'schedules',
@@ -528,6 +530,16 @@ def value_label(field, value):
         return 'Não informado'
     if isinstance(value, bool):
         return 'Sim' if value else 'Não'
+    if field == 'components' and isinstance(value, list):
+        components = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            name = item.get('component_name') or 'Componente'
+            quantity = item.get('quantity') or '0'
+            unit = str(item.get('component_unit') or '').upper()
+            components.append(f'{name}: {quantity} {unit}'.strip())
+        return '; '.join(components) if components else 'Sem componentes'
     if isinstance(value, (dict, list)):
         return 'Dados estruturados'
     if field in TECHNICAL_FIELDS or field.endswith('_id') or field.endswith('_ids'):

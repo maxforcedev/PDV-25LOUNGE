@@ -365,3 +365,32 @@ html[data-theme="dark"] .hover\:bg-slate-100:hover {
 html[data-theme="dark"] .hover\:text-dark:hover {
   color: #f8fafc;
 }
+
+/* Public website --------------------------------------------------------- */
+.marketing-hero {
+  background:
+    radial-gradient(circle at 15% 16%, color-mix(in srgb, var(--info) 10%, transparent), transparent 26%),
+    radial-gradient(circle at 84% 18%, color-mix(in srgb, var(--chart-2) 8%, transparent), transparent 28%),
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 82%, var(--canvas)), var(--canvas));
+}
+.marketing-grid {
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--border-subtle) 68%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--border-subtle) 68%, transparent) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(to bottom, rgb(0 0 0 / 0.72), transparent 88%);
+}
+.marketing-eyebrow {
+  color: var(--info-strong);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  line-height: 1.25rem;
+  text-transform: uppercase;
+}
+html[data-theme="dark"] .marketing-hero {
+  background:
+    radial-gradient(circle at 15% 16%, color-mix(in srgb, var(--info) 16%, transparent), transparent 30%),
+    radial-gradient(circle at 84% 18%, color-mix(in srgb, var(--chart-2) 10%, transparent), transparent 30%),
+    linear-gradient(180deg, #131d2a, var(--canvas));
+}

@@ -1,5 +1,8 @@
+import os
 from pathlib import Path
+
 from corsheaders.defaults import default_headers
+from django.core.exceptions import ImproperlyConfigured
 import environ
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -8,11 +11,55 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 env = environ.Env(DEBUG=(bool, False))
 environ.Env.read_env(BASE_DIR / '.env')
 
-SECRET_KEY = env('SECRET_KEY')
+
+_MISSING = object()
+
+
+def env_or_file(name, default=_MISSING):
+    """Read a value directly or from Docker Secrets without exposing it."""
+    value = os.environ.get(name)
+    file_path = os.environ.get(f'{name}_FILE')
+    if value is not None and file_path is not None:
+        raise ImproperlyConfigured(
+            f'Set either {name} or {name}_FILE, not both.'
+        )
+    if file_path is not None:
+        try:
+            value = Path(file_path).read_text(encoding='utf-8').rstrip('\r\n')
+        except OSError as error:
+            raise ImproperlyConfigured(
+                f'Could not read {name}_FILE.'
+            ) from error
+    if value is not None:
+        if not value:
+            raise ImproperlyConfigured(f'{name} cannot be empty.')
+        return value
+    if default is not _MISSING:
+        return default
+    raise ImproperlyConfigured(f'{name} or {name}_FILE is required.')
+
+
+SECRET_KEY = env_or_file('SECRET_KEY')
 DEBUG = env('DEBUG')
 ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=[])
 CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=[])
 CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[])
+
+TRUST_PROXY_HEADERS = env.bool('TRUST_PROXY_HEADERS', default=not DEBUG)
+SECURE_PROXY_SSL_HEADER = (
+    ('HTTP_X_FORWARDED_PROTO', 'https') if TRUST_PROXY_HEADERS else None
+)
+SECURE_SSL_REDIRECT = env.bool('SECURE_SSL_REDIRECT', default=not DEBUG)
+SESSION_COOKIE_SECURE = env.bool('SESSION_COOKIE_SECURE', default=not DEBUG)
+CSRF_COOKIE_SECURE = env.bool('CSRF_COOKIE_SECURE', default=not DEBUG)
+SECURE_HSTS_SECONDS = env.int('SECURE_HSTS_SECONDS', default=0)
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env.bool(
+    'SECURE_HSTS_INCLUDE_SUBDOMAINS', default=False
+)
+SECURE_HSTS_PRELOAD = env.bool('SECURE_HSTS_PRELOAD', default=False)
+SECURE_CONTENT_TYPE_NOSNIFF = env.bool(
+    'SECURE_CONTENT_TYPE_NOSNIFF', default=True
+)
 
 
 # Application definition
@@ -38,6 +85,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -69,7 +117,15 @@ TEMPLATES = [
 WSGI_APPLICATION = 'core.wsgi.application'
 
 
-DATABASES = {'default': env.db('DATABASE_URL')}
+DATABASE_URL = env_or_file('DATABASE_URL')
+DATABASES = {'default': environ.Env.db_url_config(DATABASE_URL)}
+database_password = env_or_file('POSTGRES_PASSWORD', default=None)
+if database_password is not None:
+    DATABASES['default']['PASSWORD'] = database_password
+if DATABASES['default']['ENGINE'] == 'django.db.backends.postgresql':
+    DATABASES['default'].setdefault('OPTIONS', {})['connect_timeout'] = env.int(
+        'DATABASE_CONNECT_TIMEOUT', default=3
+    )
 
 
 # Password validation
@@ -106,7 +162,16 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+    },
+}
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -137,8 +202,6 @@ CORS_ALLOW_HEADERS = (
     'x-request-id',
 )
 CORS_EXPOSE_HEADERS = ['X-CSRFToken', 'X-Request-ID', 'X-Correlation-ID']
-SESSION_COOKIE_SECURE = not DEBUG
-CSRF_COOKIE_SECURE = not DEBUG
 
 
 # Email

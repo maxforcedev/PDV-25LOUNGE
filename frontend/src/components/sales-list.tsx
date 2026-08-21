@@ -21,6 +21,20 @@ import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
 import type { Paginated, Sale, SaleBeneficiary, SaleOperation } from "@/types";
 
+interface SalesFilters {
+  search: string;
+  number: string;
+  status: string;
+  beneficiary: string;
+}
+
+const emptyFilters = (): SalesFilters => ({
+  search: "",
+  number: "",
+  status: "",
+  beneficiary: "",
+});
+
 function SaleStatusBadge({ status }: { status: Sale["status"] }) {
   return (
     <span
@@ -38,6 +52,7 @@ export function SalesList({ operation }: { operation: SaleOperation }) {
     hasPermission(permissions.viewConsumption) ||
     hasPermission(permissions.createConsumption);
   const contextRef = useRef("");
+  const requestRef = useRef(0);
   contextRef.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}:${operation}`;
   const [data, setData] = useState<Paginated<Sale> | null>(null);
   const [beneficiaries, setBeneficiaries] = useState<SaleBeneficiary[]>([]);
@@ -48,19 +63,51 @@ export function SalesList({ operation }: { operation: SaleOperation }) {
   const [status, setStatus] = useState("");
   const [beneficiary, setBeneficiary] = useState("");
   const [period, setPeriod] = useState<PeriodValue>({ start: "", end: "" });
+  const [appliedFilters, setAppliedFilters] =
+    useState<SalesFilters>(emptyFilters);
 
-  function query(selectedPeriod = period) {
+  function query(
+    selectedPeriod = period,
+    selectedFilters = appliedFilters,
+  ) {
     const params = new URLSearchParams({ operation_type: operation });
-    if (number.trim()) params.set("number", number.trim());
-    if (search.trim()) params.set("search", search.trim());
-    if (status) params.set("status", status);
-    if (beneficiary) params.set("beneficiary", beneficiary);
+    if (selectedFilters.number.trim())
+      params.set("number", selectedFilters.number.trim());
+    if (selectedFilters.search.trim())
+      params.set("search", selectedFilters.search.trim());
+    if (selectedFilters.status) params.set("status", selectedFilters.status);
+    if (selectedFilters.beneficiary)
+      params.set("beneficiary", selectedFilters.beneficiary);
     if (selectedPeriod.start)
       params.set("start_datetime", selectedPeriod.start);
     if (selectedPeriod.end) params.set("end_datetime", selectedPeriod.end);
     return `sales/?${params}`;
   }
-  async function load(path?: string, context = contextRef.current) {
+  function syncUrl(selectedPeriod: PeriodValue, selectedFilters: SalesFilters) {
+    const params = new URLSearchParams();
+    if (selectedFilters.number.trim())
+      params.set("number", selectedFilters.number.trim());
+    if (selectedFilters.search.trim())
+      params.set("search", selectedFilters.search.trim());
+    if (selectedFilters.status) params.set("status", selectedFilters.status);
+    if (selectedFilters.beneficiary)
+      params.set("beneficiary", selectedFilters.beneficiary);
+    if (selectedPeriod.start)
+      params.set("start_datetime", selectedPeriod.start);
+    if (selectedPeriod.end) params.set("end_datetime", selectedPeriod.end);
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${params.size ? `?${params}` : ""}`,
+    );
+  }
+  async function load(
+    path?: string,
+    context = contextRef.current,
+    selectedPeriod = period,
+    selectedFilters = appliedFilters,
+  ) {
+    const requestId = ++requestRef.current;
     if (!currentBranch) {
       setData(null);
       setLoading(false);
@@ -68,18 +115,27 @@ export function SalesList({ operation }: { operation: SaleOperation }) {
     }
     setLoading(true);
     setError("");
+    setData(null);
+    if (!path) {
+      setAppliedFilters(selectedFilters);
+      syncUrl(selectedPeriod, selectedFilters);
+    }
     try {
-      const response = await http.get<Paginated<Sale>>(path || query());
-      if (contextRef.current === context) setData(response);
+      const response = await http.get<Paginated<Sale>>(
+        path || query(selectedPeriod, selectedFilters),
+      );
+      if (contextRef.current === context && requestRef.current === requestId)
+        setData(response);
     } catch (caught) {
-      if (contextRef.current === context)
+      if (contextRef.current === context && requestRef.current === requestId)
         setError(
           caught instanceof ApiError
             ? caught.message
             : "Não foi possível carregar as operações.",
         );
     } finally {
-      if (contextRef.current === context) setLoading(false);
+      if (contextRef.current === context && requestRef.current === requestId)
+        setLoading(false);
     }
   }
   function clearFilters() {
@@ -87,20 +143,34 @@ export function SalesList({ operation }: { operation: SaleOperation }) {
     setNumber("");
     setStatus("");
     setBeneficiary("");
-    setPeriod({ start: "", end: "" });
-    void load(`sales/?operation_type=${operation}`);
+    const clearedPeriod = { start: "", end: "" };
+    const clearedFilters = emptyFilters();
+    setPeriod(clearedPeriod);
+    void load(undefined, contextRef.current, clearedPeriod, clearedFilters);
   }
   useEffect(() => {
     const context = contextRef.current;
+    const queryParams = new URLSearchParams(window.location.search);
+    const initialPeriod = {
+      start: queryParams.get("start_datetime") || "",
+      end: queryParams.get("end_datetime") || "",
+    };
+    const initialFilters = {
+      search: queryParams.get("search") || "",
+      number: queryParams.get("number") || "",
+      status: queryParams.get("status") || "",
+      beneficiary: queryParams.get("beneficiary") || "",
+    };
     setData(null);
     setError("");
-    setSearch("");
-    setNumber("");
-    setStatus("");
-    setBeneficiary("");
-    setPeriod({ start: "", end: "" });
+    setSearch(initialFilters.search);
+    setNumber(initialFilters.number);
+    setStatus(initialFilters.status);
+    setBeneficiary(initialFilters.beneficiary);
+    setPeriod(initialPeriod);
+    setAppliedFilters(initialFilters);
     setBeneficiaries([]);
-    void load(`sales/?operation_type=${operation}`, context);
+    void load(undefined, context, initialPeriod, initialFilters);
     if (consumption && canLoadBeneficiaries)
       http
         .getAll<SaleBeneficiary>("sales/beneficiaries/")
@@ -122,7 +192,8 @@ export function SalesList({ operation }: { operation: SaleOperation }) {
           className="card grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-[10rem_minmax(13rem,1fr)_10rem_12rem_auto_auto]"
           onSubmit={(event) => {
             event.preventDefault();
-            void load(query(period));
+            const nextFilters = { search, number, status, beneficiary };
+            void load(undefined, contextRef.current, period, nextFilters);
           }}
         >
           <Field label="Número">
@@ -185,6 +256,10 @@ export function SalesList({ operation }: { operation: SaleOperation }) {
             className="md:col-span-2 xl:col-span-full"
             value={period}
             onChange={setPeriod}
+            onApply={(next) => {
+              setPeriod(next);
+              void load(undefined, contextRef.current, next, appliedFilters);
+            }}
             showActions={false}
           />
         </form>

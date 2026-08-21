@@ -674,7 +674,14 @@ export interface ReportSale {
   commission_rate?: string;
   commission_amount?: string;
   total: string;
+  sales_revenue: string;
+  consumption_charged: string;
   effective_revenue: string;
+  service_fee: string;
+  total_received: string;
+  payment_total: string;
+  reconciliation_delta: string;
+  // Compatibility aliases still consumed by existing sale detail/report views.
   total_received_sales: string;
   customer_total: string;
   payment_reconciliation_delta: string;
@@ -716,6 +723,8 @@ export interface PaymentSourceTotal {
 
 export interface CommercialReportSummary {
   gross: string;
+  sales_revenue: string;
+  consumption_charged: string;
   effective_revenue: string;
   count: number;
   average: string;
@@ -726,6 +735,9 @@ export interface CommercialReportSummary {
   promotion_discount: string;
   total_discount: string;
   service_fee: string;
+  total_received: string;
+  payment_total: string;
+  reconciliation_delta: string;
   commission?: string;
   customer_total: string;
   total_received_sales: string;
@@ -738,6 +750,7 @@ export interface CommercialReportSummary {
 }
 
 export interface ReceiptsReportSummary {
+  sales_revenue: string;
   effective_revenue: string;
   sales_count: number;
   consumption_count: number;
@@ -746,6 +759,8 @@ export interface ReceiptsReportSummary {
   sales_received: string;
   commercial_payments: string;
   consumption_charged: string;
+  total_received: string;
+  payment_total: string;
   charged_consumption_payments: string;
   consumption_received: string;
   gross_received: string;
@@ -765,9 +780,12 @@ export interface ReceiptsReportSummary {
 export interface CancellationReportSummary {
   count: number;
   value: string;
+  reversed_sales_revenue: string;
+  reversed_consumption_charged: string;
   reversed_effective_revenue: string;
   reversed_service_fee: string;
   reversed_total_received: string;
+  reversed_payment_total: string;
   reconciliation_delta: string;
 }
 
@@ -778,7 +796,19 @@ export interface ConsumptionReportSummary {
   subsidy: string;
   benefit: string;
   quantity: string;
-  payment_totals: Array<{ code: string; name: string; amount: string }>;
+  sales_revenue: string;
+  consumption_charged: string;
+  effective_revenue: string;
+  service_fee: string;
+  total_received: string;
+  payment_total: string;
+  reconciliation_delta: string;
+  payment_totals: Array<{
+    code: string;
+    name: string;
+    amount: string;
+    payment_total: string;
+  }>;
   payment_reconciliation_delta: string;
   historical_cost?: string;
   historical_consumption_cogs?: string;
@@ -802,10 +832,13 @@ export interface CashReportSummary {
   };
   sales_count: number;
   consumption_count: number;
+  sales_revenue: string;
   effective_revenue: string;
   service_fee: string;
   sales_received: string;
   consumption_charged: string;
+  total_received: string;
+  payment_total: string;
   operational_received: string;
   reversals: string;
   reconciliation_delta: string;
@@ -826,22 +859,22 @@ export interface OperationalResultReportSummary {
   account_discount: string;
   manual_discount: string;
   discounts: string;
+  sales_revenue: string;
+  consumption_charged: string;
   effective_revenue: string;
   service_fee: string;
-  customer_total: string;
-  total_received_sales: string;
-  payment_reconciliation_delta: string;
-  charged_consumption: string;
-  operational_received: string;
-  historical_sales_cogs: string;
-  historical_consumption_cogs: string;
+  total_received: string;
+  payment_total: string;
+  reconciliation_delta: string;
+  costs_and_expenses: string;
+  historical_sales_cogs?: string;
+  historical_consumption_cogs?: string;
   commission?: string;
-  operating_expenses: string;
-  fixed_cost: string;
-  estimated_result: string;
-  result: string;
-  margin: string;
-  operational_reconciliation_delta: string;
+  operating_expenses?: string;
+  fixed_cost?: string;
+  estimated_result?: string;
+  result?: string;
+  margin: string | null;
   unclassified_withdrawals: { count: number; amount: string };
   cash_session: number | null;
   notice: string;
@@ -853,18 +886,18 @@ export interface DashboardData {
     categories: Array<{ id: number; name: string }>;
   };
   sales?: {
-    revenue: string;
-    gross: string;
+    sales_revenue: string;
+    consumption_charged: string;
     effective_revenue: string;
-    customer_total: string;
-    total_received_sales: string;
-    payment_reconciliation_delta: string;
-    total_received_operational?: string;
-    operational_reconciliation_delta?: string;
     service_fee: string;
+    total_received: string;
+    payment_total: string;
+    reconciliation_delta: string;
+    gross: string;
     commission?: string;
     count: number;
     average: string;
+    ticket_average: string;
     account_discount: string;
     item_discount: string;
     manual_discount: string;
@@ -872,26 +905,33 @@ export interface DashboardData {
     promotion_discount: string;
     total_discount: string;
     cancellations: { count: number; value: string };
-    payment_distribution: Array<{ code: string; name: string; amount: string }>;
+    payment_distribution: Array<{
+      code: string;
+      name: string;
+      amount: string;
+      payment_total: string;
+      percentage: string;
+    }>;
     payment_distribution_scope: "operational" | "sales_only";
     hourly_sales: Array<{
       hour: string;
       count: number;
+      sales_revenue: string;
       effective_revenue: string;
       service_fee: string;
-      customer_total: string;
+      total_received: string;
     }>;
     top_products: Array<{
       product_id?: number;
       product_name: string;
       quantity: string;
-      revenue: string;
+      sales_revenue: string;
     }>;
     top_categories: Array<{
       category_id?: number;
       category_name: string;
       quantity: string;
-      revenue: string;
+      sales_revenue: string;
     }>;
     top_sellers: ReportUserGroup[];
     top_operators: ReportUserGroup[];
@@ -899,20 +939,44 @@ export interface DashboardData {
       weekday: number;
       hour: number;
       count: number;
-      revenue: string;
+      sales_revenue: string;
       average: string;
     }>;
     weekly_comparison: {
-      current: Array<{ date: string; count: number; revenue: string }>;
-      previous: Array<{ date: string; count: number; revenue: string }>;
+      current: Array<{
+        date: string;
+        count: number;
+        sales_revenue: string;
+      }>;
+      previous: Array<{
+        date: string;
+        count: number;
+        sales_revenue: string;
+      }>;
     };
-    latest_sales: ReportSale[];
+    latest_sales: {
+      count: number;
+      page: number;
+      page_size: number;
+      total_pages: number;
+      next_page: number | null;
+      previous_page: number | null;
+      ordering: string[];
+      results: ReportSale[];
+    };
   };
   consumptions?: {
     count: number;
     reference: string;
     charged: string;
     subsidy: string;
+    sales_revenue: string;
+    consumption_charged: string;
+    effective_revenue: string;
+    service_fee: string;
+    total_received: string;
+    payment_total: string;
+    reconciliation_delta: string;
   };
   withdrawals?: { count: number; amount: string };
   current_cash?: CashReportRow[];
@@ -924,29 +988,39 @@ export interface DashboardData {
     inventory_value?: string;
   };
   operational_result?: {
-    result: string;
-    estimated_result: string;
-    margin: string;
-    operational_received: string;
-    charged_consumption: string;
-    historical_sales_cogs: string;
-    historical_consumption_cogs: string;
+    sales_revenue: string;
+    consumption_charged: string;
+    effective_revenue: string;
+    service_fee: string;
+    total_received: string;
+    payment_total: string;
+    reconciliation_delta: string;
+    costs_and_expenses: string;
+    result?: string;
+    estimated_result?: string;
+    margin?: string | null;
+    charged_consumption?: string;
+    historical_sales_cogs?: string;
+    historical_consumption_cogs?: string;
     commission?: string;
-    operating_expenses: string;
-    fixed_cost: string;
-    operational_reconciliation_delta: string;
+    operating_expenses?: string;
+    fixed_cost?: string;
   };
 }
 export interface ReportUserGroup {
-  user: { id: number; name: string };
+  user: { id: number; name: string } | null;
   count: number;
   gross: string;
+  sales_revenue: string;
+  consumption_charged: string;
   effective_revenue: string;
   service_fee: string;
   commission?: string;
   commission_sale_count?: number;
   customer_total: string;
   total_received: string;
+  payment_total: string;
+  reconciliation_delta: string;
   payment_reconciliation_delta: string;
   average: string;
   cancellation_count: number;

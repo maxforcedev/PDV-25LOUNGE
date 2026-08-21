@@ -27,7 +27,7 @@ REPORT_PERMISSIONS = (
 
 
 class ReportsPermission(BasePermission):
-    message = 'Voce nao possui permissao para este relatorio nesta filial.'
+    message = 'Você não possui permissão para este relatório nesta filial.'
 
     @staticmethod
     def _has_code(user, branch, code):

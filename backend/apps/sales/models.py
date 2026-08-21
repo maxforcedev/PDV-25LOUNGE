@@ -14,7 +14,7 @@ from apps.products.models import Product, Unit
 
 class OperationType(models.TextChoices):
     SALE = 'sale', 'Venda'
-    CONSUMPTION = 'consumption', 'Consumacao'
+    CONSUMPTION = 'consumption', 'Consumação'
 
 
 class SaleStatus(models.TextChoices):
@@ -25,8 +25,8 @@ class SaleStatus(models.TextChoices):
 class PaymentMethodCode(models.TextChoices):
     CASH = 'cash', 'Dinheiro'
     PIX = 'pix', 'PIX'
-    CREDIT_CARD = 'credit_card', 'Cartao de credito'
-    DEBIT_CARD = 'debit_card', 'Cartao de debito'
+    CREDIT_CARD = 'credit_card', 'Cartão de crédito'
+    DEBIT_CARD = 'debit_card', 'Cartão de débito'
 
 
 class PromotionDiscountType(models.TextChoices):
@@ -84,9 +84,9 @@ class Promotion(BaseModel):
         self.name = ' '.join((self.name or '').split())
         errors = {}
         if not self.name:
-            errors['name'] = 'Informe o nome da promocao.'
+            errors['name'] = 'Informe o nome da promoção.'
         if self.starts_at and self.ends_at and self.starts_at >= self.ends_at:
-            errors['ends_at'] = 'A data final deve ser posterior a data inicial.'
+            errors['ends_at'] = 'A data final deve ser posterior à data inicial.'
         if self.discount_value is not None and self.discount_value <= 0:
             errors['discount_value'] = 'O desconto deve ser maior que zero.'
         if (
@@ -94,9 +94,9 @@ class Promotion(BaseModel):
             and self.discount_value is not None
             and self.discount_value > 100
         ):
-            errors['discount_value'] = 'O percentual nao pode ser maior que 100.'
+            errors['discount_value'] = 'O percentual não pode ser maior que 100.'
         if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
-            errors['branch'] = 'A filial deve pertencer a empresa da promocao.'
+            errors['branch'] = 'A filial deve pertencer à empresa da promoção.'
         if errors:
             raise ValidationError(errors)
 
@@ -111,11 +111,11 @@ class Promotion(BaseModel):
 class Weekday(models.IntegerChoices):
     SUNDAY = 0, 'Domingo'
     MONDAY = 1, 'Segunda'
-    TUESDAY = 2, 'Terca'
+    TUESDAY = 2, 'Terça'
     WEDNESDAY = 3, 'Quarta'
     THURSDAY = 4, 'Quinta'
     FRIDAY = 5, 'Sexta'
-    SATURDAY = 6, 'Sabado'
+    SATURDAY = 6, 'Sábado'
 
 
 class PromotionSchedule(BaseModel):
@@ -144,7 +144,7 @@ class PromotionSchedule(BaseModel):
         if self.start_time and self.end_time:
             # Allow overnight intervals where end_time < start_time (wraps midnight).
             if self.start_time == self.end_time:
-                raise ValidationError({'end_time': 'O horario final deve diferir do inicial.'})
+                raise ValidationError({'end_time': 'O horário final deve diferir do inicial.'})
 
     def save(self, *args, **kwargs):
         self.full_clean()
@@ -176,19 +176,19 @@ class PaymentMethod(BaseModel):
         self.code = (self.code or '').strip().lower()
         self.name = ' '.join((self.name or '').split())
         if not self.code:
-            raise ValidationError({'code': 'Informe o codigo da forma de pagamento.'})
+            raise ValidationError({'code': 'Informe o código da forma de pagamento.'})
         if not self.name:
             raise ValidationError({'name': 'Informe o nome da forma de pagamento.'})
         if self.pk:
             original = PaymentMethod.objects.get(pk=self.pk)
             if self.company_id != original.company_id:
-                raise ValidationError({'company': 'A empresa nao pode ser alterada.'})
+                raise ValidationError({'company': 'A empresa não pode ser alterada.'})
             if self.code != original.code:
-                raise ValidationError({'code': 'O codigo nao pode ser alterado.'})
+                raise ValidationError({'code': 'O código não pode ser alterado.'})
             if original.is_system and self.name != original.name:
-                raise ValidationError({'name': 'O nome de um metodo padrao nao pode ser alterado.'})
+                raise ValidationError({'name': 'O nome de um método padrão não pode ser alterado.'})
             if self.is_system != original.is_system:
-                raise ValidationError({'is_system': 'A origem do metodo nao pode ser alterada.'})
+                raise ValidationError({'is_system': 'A origem do método não pode ser alterada.'})
 
     def save(self, *args, **kwargs):
         self.full_clean()
@@ -419,70 +419,70 @@ class Sale(BaseModel):
         super().clean()
         errors = {}
         if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
-            errors['branch'] = 'A filial deve pertencer a empresa da venda.'
+            errors['branch'] = 'A filial deve pertencer à empresa da venda.'
         if self.cash_session_id and self.branch_id and self.cash_session.branch_id != self.branch_id:
-            errors['cash_session'] = 'A sessao de caixa deve pertencer a filial da venda.'
+            errors['cash_session'] = 'A sessão de caixa deve pertencer à filial da venda.'
         if self.beneficiary_user_id and self.company_id and not UserCompanyAccess.objects.filter(
             user_id=self.beneficiary_user_id, company_id=self.company_id, is_active=True
         ).exists():
-            errors['beneficiary_user'] = 'O beneficiario deve possuir acesso ativo a empresa.'
+            errors['beneficiary_user'] = 'O beneficiário deve possuir acesso ativo à empresa.'
         if self.operation_type == OperationType.CONSUMPTION:
             if not self.beneficiary_user_id:
-                errors['beneficiary_user'] = 'Informe o beneficiario da consumacao.'
+                errors['beneficiary_user'] = 'Informe o beneficiário da consumação.'
             if self.charged_amount is None:
                 errors['charged_amount'] = 'Informe o valor cobrado.'
             if self.discount != Decimal('0'):
-                errors['discount'] = 'Consumacao nao aceita desconto.'
+                errors['discount'] = 'Consumação não aceita desconto.'
             if self.promotion_discount_total != Decimal('0'):
-                errors['promotion_discount_total'] = 'Consumacao nao aceita promocao.'
+                errors['promotion_discount_total'] = 'Consumação não aceita promoção.'
             if self.item_discount_total != Decimal('0'):
-                errors['item_discount_total'] = 'Consumacao nao aceita desconto por item.'
+                errors['item_discount_total'] = 'Consumação não aceita desconto por item.'
             if self.seller_user_id:
-                errors['seller_user'] = 'Consumacao nao possui atendente.'
+                errors['seller_user'] = 'Consumação não possui atendente.'
             if any(value != Decimal('0') for value in (
                 self.service_fee_rate, self.service_fee_amount,
                 self.commission_rate, self.commission_amount,
             )):
-                errors['service_fee_amount'] = 'Consumacao nao possui taxa ou comissao.'
+                errors['service_fee_amount'] = 'Consumação não possui taxa ou comissão.'
             if self.service_fee_waived or self.service_fee_waived_by_id:
-                errors['service_fee_waived'] = 'Consumacao nao possui retirada de taxa.'
+                errors['service_fee_waived'] = 'Consumação não possui retirada de taxa.'
             if self.charged_amount is not None and self.total != self.charged_amount:
                 errors['total'] = 'O total deve ser igual ao valor cobrado.'
             if self.charged_amount and not self.cash_session_id:
-                errors['cash_session'] = 'Consumacao cobrada exige sessao de caixa.'
+                errors['cash_session'] = 'Consumação cobrada exige sessão de caixa.'
         else:
             if not self.seller_user_id:
                 errors['seller_user'] = 'Informe o atendente da venda.'
             if self.charged_amount is not None:
-                errors['charged_amount'] = 'Venda normal nao possui valor cobrado.'
+                errors['charged_amount'] = 'Venda normal não possui valor cobrado.'
             if not self.cash_session_id:
-                errors['cash_session'] = 'Venda normal exige sessao de caixa.'
+                errors['cash_session'] = 'Venda normal exige sessão de caixa.'
             after_promotion = self.subtotal - self.promotion_discount_total
             remaining = after_promotion - self.item_discount_total
             if self.promotion_discount_total < 0 or after_promotion < 0:
                 errors['promotion_discount_total'] = 'O desconto promocional excede o subtotal.'
             if self.item_discount_total < 0 or remaining < 0:
-                errors['item_discount_total'] = 'O desconto por item excede o saldo apos promocoes.'
+                errors['item_discount_total'] = 'O desconto por item excede o saldo após promoções.'
             if self.discount < 0 or self.discount > remaining:
-                errors['discount'] = 'O desconto manual excede o saldo apos promocoes.'
+                errors['discount'] = 'O desconto manual excede o saldo após promoções.'
             net_subtotal = remaining - self.discount
             if self.total != net_subtotal + self.service_fee_amount:
-                errors['total'] = 'O total deve considerar descontos e taxa de servico.'
+                errors['total'] = 'O total deve considerar descontos e taxa de serviço.'
             if self.service_fee_waived and self.service_fee_amount != Decimal('0'):
                 errors['service_fee_amount'] = 'Taxa retirada deve possuir valor zero.'
         if self.discount == 0 and self.discount_approved_by_id:
-            errors['discount_approved_by'] = 'Venda sem desconto nao possui aprovador.'
+            errors['discount_approved_by'] = 'Venda sem desconto não possui aprovador.'
         if not self.service_fee_waived and self.service_fee_waived_by_id:
-            errors['service_fee_waived_by'] = 'Taxa nao retirada nao possui autorizador.'
+            errors['service_fee_waived_by'] = 'Taxa não retirada não possui autorizador.'
         if self.status == SaleStatus.FINALIZED and any(
             value is not None and value != ''
             for value in (self.cancelled_at, self.cancelled_by_id, self.cancellation_reason)
         ):
-            errors['status'] = 'Venda finalizada nao pode possuir cancelamento.'
+            errors['status'] = 'Venda finalizada não pode possuir cancelamento.'
         if self.status == SaleStatus.CANCELLED and not all(
             (self.cancelled_at, self.cancelled_by_id)
         ):
-            errors['status'] = 'Os dados de cancelamento sao obrigatorios.'
+            errors['status'] = 'Os dados de cancelamento são obrigatórios.'
         if errors:
             raise ValidationError(errors)
 
@@ -493,10 +493,10 @@ class Sale(BaseModel):
 
 class ImmutableHistoricalQuerySet(models.QuerySet):
     def update(self, **kwargs):
-        raise ValueError('Registros historicos nao podem ser alterados em lote.')
+        raise ValueError('Registros históricos não podem ser alterados em lote.')
 
     def delete(self):
-        raise ValueError('Registros historicos nao podem ser excluidos.')
+        raise ValueError('Registros históricos não podem ser excluídos.')
 
 
 class ImmutableHistoricalModel(BaseModel):
@@ -506,7 +506,7 @@ class ImmutableHistoricalModel(BaseModel):
         abstract = True
 
     def delete(self, *args, **kwargs):
-        raise ValidationError('Registros historicos nao podem ser excluidos.')
+        raise ValidationError('Registros históricos não podem ser excluídos.')
 
 
 class SaleItem(ImmutableHistoricalModel):
@@ -611,31 +611,31 @@ class SaleItem(ImmutableHistoricalModel):
         super().clean()
         errors = {}
         if self.sale_id and self.product_id and self.sale.company_id != self.product.company_id:
-            errors['product'] = 'O produto deve pertencer a empresa da venda.'
+            errors['product'] = 'O produto deve pertencer à empresa da venda.'
         if self.promotion_id and self.sale_id and self.promotion.company_id != self.sale.company_id:
-            errors['promotion'] = 'A promocao deve pertencer a empresa da venda.'
+            errors['promotion'] = 'A promoção deve pertencer à empresa da venda.'
         snapshots = (
             self.promotion_name,
             self.promotion_discount_type,
             self.promotion_discount_value,
         )
         if self.promotion_id and any(value is None for value in snapshots):
-            errors['promotion'] = 'Os snapshots da promocao sao obrigatorios.'
+            errors['promotion'] = 'Os snapshots da promoção são obrigatórios.'
         if not self.promotion_id and (
             any(value is not None for value in snapshots) or self.promotion_benefit != 0
         ):
-            errors['promotion'] = 'Item sem promocao nao pode possuir beneficio promocional.'
+            errors['promotion'] = 'Item sem promoção não pode possuir benefício promocional.'
         if self.promotion_benefit < 0 or self.promotion_benefit > self.subtotal:
-            errors['promotion_benefit'] = 'O beneficio deve estar entre zero e o subtotal.'
+            errors['promotion_benefit'] = 'O benefício deve estar entre zero e o subtotal.'
         remaining = self.subtotal - self.promotion_benefit
         if self.manual_discount < 0 or self.manual_discount > remaining:
             errors['manual_discount'] = 'O desconto manual excede o saldo do item.'
         if self.manual_discount and not self.discount_approved_by_id:
             errors['discount_approved_by'] = 'Informe quem autorizou o desconto do item.'
         if not self.manual_discount and self.discount_approved_by_id:
-            errors['discount_approved_by'] = 'Item sem desconto nao possui autorizador.'
+            errors['discount_approved_by'] = 'Item sem desconto não possui autorizador.'
         if self.net_subtotal != remaining - self.manual_discount:
-            errors['net_subtotal'] = 'O subtotal liquido deve descontar promocao e desconto do item.'
+            errors['net_subtotal'] = 'O subtotal líquido deve descontar promoção e desconto do item.'
         if self.unit == Unit.UNIT and self.quantity != self.quantity.to_integral_value():
             errors['quantity'] = 'A quantidade de produto UN deve ser inteira.'
         if errors:
@@ -643,13 +643,13 @@ class SaleItem(ImmutableHistoricalModel):
 
     def save(self, *args, **kwargs):
         if self.pk:
-            raise ValidationError('Itens de venda sao imutaveis.')
+            raise ValidationError('Itens de venda são imutáveis.')
         if isinstance(self.quantity, (float, bool)):
             raise ValidationError({'quantity': 'Informe a quantidade como decimal exato.'})
         try:
             self.quantity = Decimal(self.quantity)
         except (TypeError, ValueError):
-            raise ValidationError({'quantity': 'Informe uma quantidade valida.'})
+            raise ValidationError({'quantity': 'Informe uma quantidade válida.'})
         if self.product_id:
             self.product_name = self.product.name
             self.internal_code = self.product.internal_code
@@ -697,12 +697,12 @@ class Payment(ImmutableHistoricalModel):
         if self.amount is not None and self.amount <= 0:
             errors['amount'] = 'O valor deve ser maior que zero.'
         if self.sale_id and self.payment_method_id and self.sale.company_id != self.payment_method.company_id:
-            errors['payment_method'] = 'A forma de pagamento deve pertencer a empresa da venda.'
+            errors['payment_method'] = 'A forma de pagamento deve pertencer à empresa da venda.'
         if self.payment_method_id and self.payment_method.status != Status.ACTIVE:
-            errors['payment_method'] = 'A forma de pagamento esta inativa.'
+            errors['payment_method'] = 'A forma de pagamento está inativa.'
         if self.payment_method_id and self.payment_method.code == PaymentMethodCode.CASH:
             if self.received_amount is not None and self.received_amount < self.amount:
-                errors['received_amount'] = 'O valor recebido nao pode ser menor que o pagamento.'
+                errors['received_amount'] = 'O valor recebido não pode ser menor que o pagamento.'
             expected_change = (
                 self.received_amount - self.amount if self.received_amount is not None else None
             )
@@ -715,7 +715,7 @@ class Payment(ImmutableHistoricalModel):
 
     def save(self, *args, **kwargs):
         if self.pk:
-            raise ValidationError('Pagamentos sao imutaveis.')
+            raise ValidationError('Pagamentos são imutáveis.')
         for field in ('amount', 'received_amount'):
             value = getattr(self, field)
             if value is None:
@@ -725,7 +725,7 @@ class Payment(ImmutableHistoricalModel):
             try:
                 setattr(self, field, Decimal(value))
             except (TypeError, ValueError):
-                raise ValidationError({field: 'Informe um valor valido.'})
+                raise ValidationError({field: 'Informe um valor válido.'})
         if self.payment_method_id:
             self.payment_method_name = self.payment_method.name
             self.payment_method_code = self.payment_method.code

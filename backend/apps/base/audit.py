@@ -3,6 +3,8 @@ import re
 import uuid
 from contextvars import ContextVar
 
+from django.conf import settings
+
 
 SENSITIVE_KEYS = {
     'password',
@@ -82,7 +84,11 @@ class AuditRequestContextMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
-        forwarded = request.META.get('HTTP_X_FORWARDED_FOR', '')
+        forwarded = (
+            request.META.get('HTTP_X_FORWARDED_FOR', '')
+            if settings.TRUST_PROXY_HEADERS
+            else ''
+        )
         ip_address = forwarded.split(',')[0].strip() if forwarded else request.META.get('REMOTE_ADDR')
         supplied_request_id = request.META.get('HTTP_X_REQUEST_ID', '')
         request_id = supplied_request_id if SAFE_REQUEST_ID.fullmatch(supplied_request_id) else str(uuid.uuid4())

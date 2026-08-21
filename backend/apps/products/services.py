@@ -41,7 +41,7 @@ def create_product(*, components=None, **product_data):
                 ).exists():
                     raise
         if product is None:
-            raise ValidationError({'internal_code': 'Nao foi possivel gerar um codigo unico.'})
+            raise ValidationError({'internal_code': 'Não foi possível gerar um código único.'})
 
     if product.inventory_behavior == InventoryBehavior.COMPONENTS:
         replace_composition(product=product, components=components or [])
@@ -87,14 +87,14 @@ def replace_composition(*, product, components):
     product = locked_products[product.pk]
     if product.inventory_behavior != InventoryBehavior.COMPONENTS:
         raise ValidationError(
-            {'inventory_behavior': 'Somente produtos com comportamento components possuem composicao.'}
+            {'inventory_behavior': 'Somente produtos com comportamento components possuem composição.'}
         )
 
     if len(component_ids) != len(set(component_ids)):
-        raise ValidationError({'components': 'Nao repita produtos na composicao.'})
+        raise ValidationError({'components': 'Não repita produtos na composição.'})
     if product.is_sellable and not components:
         raise ValidationError(
-            {'components': 'Um produto composto vendavel deve possuir componentes.'}
+            {'components': 'Um produto composto vendável deve possuir componentes.'}
         )
 
     prepared = []
@@ -114,7 +114,7 @@ def replace_composition(*, product, components):
             )
         if component.inventory_behavior != InventoryBehavior.DIRECT:
             raise ValidationError(
-                {'components': {index: {'component_product': ['Somente produtos com estoque proprio podem ser componentes.']}}}
+                {'components': {index: {'component_product': ['Somente produtos com estoque próprio podem ser componentes.']}}}
             )
         if (
             component.unit == Unit.UNIT

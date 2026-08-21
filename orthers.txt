@@ -1,6 +1,6 @@
 
 
-Concorrentes: ZIG, BARFACIL, MOGO GOURMET, ON CHEF
+Referencia: ZIG, BARFACIL, MOGO GOURMET, ON CHEF, PDV LEGAL, TAKEAT, CONTROLE NA MAO
 opencode -s ses_ff9d0e215ffeTtoqj8gL2pSXeo
 
 --------------------------------------------------------------------------------------------
@@ -21,25 +21,4 @@ já realizados no projeto, e em seguida execute a "Sprint 12.4 — Correções F
 Marque X nas tarefas conforme finalize as mesmas. Ignore tarefas já marcadas com X.
 
 ---------------------------------------------------------------------------------------------
- 
- - Sentindo falta de graficos NO DASHBOARD (ja pedi varias vezes e a IA nao colocou.)
-- Resolve a cor das letras no modo escuro de todo o site, elas quase nao dao pra ler (tem muito em MODAL)
-- Em estoque:  regularizar negativos deve aparecer so se tiver a opção de poder estoque ativo
-- Em venda, pode ter desconto por item e por conta (ambos com permissao (1 pra cada))
-- Produtos (Proibir produtos com mesmo nome)
-- Produtos: nao consigo criar/EDITAR produto composto por componentes:
-backend-1   | [18/Aug/2026 02:10:37] "POST /api/v1/products/ HTTP/1.1" 201 487
-backend-1   | [18/Aug/2026 02:10:37] "OPTIONS /api/v1/products/10/components/ HTTP/1.1" 200 0
-backend-1   | Internal Server Error: /api/v1/products/10/components/
-backend-1   | [18/Aug/2026 02:10:37] "PUT /api/v1/products/10/components/ HTTP/1.1" 500 57
-- Em bloqueios de acesso, o seletor de permissao herdada podia ser tipo um select com checkbox pra bloquear mais de uma permissao de uma vez e nao esta por branch
-- Em relatorios: 
-  - Pode ter mais vida, exemplo: Status vermelho para cancelado, finalizado/venda verde e etc...
-  - Relatorio de comissoes acho que os kips nao estao funcionando  (olhar a foto enviada)
-  - (REVISAR TODOS SISTEMA ) MOVIMENTO DE ESTOQUE cancellation /  Relatorios TEM INFOS EM INGLES como sale_cancellation,  consumption_cancellation e entre outras....
-
-
-- AUDITORIA DEVE CONTER TUDO DO SISTEMA, TUDO!!!!!!!!  EU ACABEI DE FAZER AÇÕES NO SITE E NAO APARECE LA! E TEM COISAS EM INGLES COMO STATUS: CLOSED E OUTROS...
-- Tem filtros que n funconam e esta com 2 aplicar (HORARIOS DE FILTRO N FUNCIONAM)
-
-
+ ssh-keygen -t ed25519 -C "lfcvs.rj@gmail.com"

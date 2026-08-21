@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { Eye, EyeOff, LockKeyhole, ShieldCheck } from "lucide-react";
 import { Alert, Button, Field, Input, Spinner } from "@/components/ui";
 import { ApiError } from "@/lib/http";
@@ -49,6 +50,10 @@ export default function LoginPage() {
               <Field label="Senha"><div className="relative"><Input type={showPassword ? "text" : "password"} autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Digite sua senha" className="pr-11" disabled={submitting} /><button type="button" className="icon-button absolute right-0.5 top-1/2 -translate-y-1/2" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Ocultar senha" : "Exibir senha"}>{showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}</button></div></Field>
               <Button type="submit" className="w-full" loading={submitting}>Entrar</Button>
             </form>
+          </div>
+          <div className="mt-5 flex items-center justify-between gap-4 px-1 text-[11px] font-semibold text-muted">
+            <Link href="/" className="transition hover:text-fg">Página inicial</Link>
+            <Link href="/ajuda" className="transition hover:text-fg">Central de ajuda</Link>
           </div>
         </div>
       </section>

@@ -1,3 +1,4 @@
+from copy import deepcopy
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
@@ -335,11 +336,17 @@ def build_session_operational_summary(session, session_sales):
     receipts = aggregator.receipts(
         sale for sale in session_sales if sale.status == 'cancelled'
     )
+    payment_total = receipts['payment_total']
     payments = [
         {
             'payment_method_code': row['code'],
             'payment_method_name': row['name'],
-            'amount': row['net_received'],
+            'payment_total': row['payment_total'],
+            'percentage': (
+                row['payment_total'] * Decimal('100') / payment_total
+                if payment_total else Decimal('0.00')
+            ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+            'amount': row['payment_total'],
             'gross_received': row['gross_received'],
             'reversals': row['reversals'],
         }
@@ -387,10 +394,33 @@ def build_session_operational_summary(session, session_sales):
         'closing_difference': session.closing_difference,
         'sales': sales,
         'consumptions': consumptions,
+        'sales_revenue': receipts['sales_revenue'],
+        'consumption_charged': receipts['consumption_charged'],
+        'effective_revenue': receipts['effective_revenue'],
+        'service_fee': receipts['service_fee'],
+        'total_received': receipts['total_received'],
+        'payment_total': receipts['payment_total'],
+        'reconciliation_delta': receipts['reconciliation_delta'],
         'payment_totals': payments,
         'receipts': receipts,
         'values_scope': 'complete_session',
     }
+
+
+def redact_operational_summary(summary, *, include_costs, include_commission):
+    """Return a permission-safe copy of a nested cash operational summary."""
+    summary = deepcopy(summary)
+    sales = summary.get('sales', {})
+    consumptions = summary.get('consumptions', {})
+    if not include_commission:
+        sales.pop('commission', None)
+        sales.pop('commission_sale_count', None)
+        sales.pop('commission_attendant_count', None)
+    if not include_costs:
+        sales.pop('historical_sales_cogs', None)
+        consumptions.pop('historical_consumption_cogs', None)
+        consumptions.pop('historical_cost', None)
+    return summary
 
 
 def close_session(cash_session, closing_amount_informed, user, current_branch):

@@ -82,7 +82,7 @@ def create_branch_with_access(*, creator, **branch_data):
     requested_company = branch_data.pop('company')
     company = Company.objects.select_for_update().get(pk=requested_company.pk)
     if company.status != 'active':
-        raise ValidationError({'company': 'Nao e possivel criar filial em empresa inativa.'})
+        raise ValidationError({'company': 'Não é possível criar filial em empresa inativa.'})
     branch_data['company'] = company
     branch = Branch.objects.create(**branch_data)
     company_access = UserCompanyAccess.objects.get(

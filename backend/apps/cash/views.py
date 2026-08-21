@@ -41,6 +41,7 @@ from .services import (
     open_session,
     record_manual_entry,
     record_withdrawal,
+    redact_operational_summary,
     session_operational_summary,
     set_register_status,
 )
@@ -243,13 +244,22 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
     def summary(self, request, pk=None):
         session = self.get_object()
         summary = session_operational_summary(session)
-        if not (
+        include_commission = (
             request.user.is_superuser
             or user_has_branch_permission(
                 request.user, session.branch_id, 'commissions.view'
             )
-        ):
-            summary['sales'].pop('commission', None)
+        )
+        include_costs = (
+            request.user.is_superuser
+            or user_has_branch_permission(
+                request.user, session.branch_id, 'inventory.view_stock_costs'
+            )
+        )
+        summary = redact_operational_summary(
+            summary, include_costs=include_costs,
+            include_commission=include_commission,
+        )
 
         def serialize(value):
             if isinstance(value, Decimal):

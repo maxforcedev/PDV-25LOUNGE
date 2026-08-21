@@ -8,7 +8,7 @@ class SessionAuthentication(BaseSessionAuthentication):
         if result is not None:
             user, _ = result
             if not user.can_login or not user.is_active:
-                raise AuthenticationFailed('Sessao de usuario sem acesso ao sistema.')
+                raise AuthenticationFailed('Sessão de usuário sem acesso ao sistema.')
         return result
 
     def authenticate_header(self, request):

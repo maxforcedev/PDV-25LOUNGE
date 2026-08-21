@@ -67,7 +67,7 @@ class PromotionViewSet(
         if active_at:
             value = parse_datetime(active_at)
             if value is None:
-                raise ValidationError({'active_at': 'Informe uma data e hora ISO valida.'})
+                raise ValidationError({'active_at': 'Informe uma data e hora ISO válida.'})
             current_timezone = timezone.get_default_timezone()
             value = (
                 timezone.make_aware(value, current_timezone)
@@ -92,9 +92,9 @@ class PromotionViewSet(
                 try:
                     value = int(params[parameter])
                 except (TypeError, ValueError):
-                    raise ValidationError({parameter: 'Informe um identificador valido.'})
+                    raise ValidationError({parameter: 'Informe um identificador válido.'})
                 if value <= 0:
-                    raise ValidationError({parameter: 'Informe um identificador valido.'})
+                    raise ValidationError({parameter: 'Informe um identificador válido.'})
                 queryset = queryset.filter(**{lookup: value})
         return queryset.distinct()
 

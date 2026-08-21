@@ -10,7 +10,7 @@ from apps.companies.selectors import (
 
 
 class CashFunctionalPermission(BasePermission):
-    message = 'Voce nao possui permissao para esta operacao nesta filial.'
+    message = 'Você não possui permissão para esta operação nesta filial.'
 
     def get_code(self, view):
         return view.permission_codes.get(view.action)

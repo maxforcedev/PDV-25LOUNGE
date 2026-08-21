@@ -72,7 +72,7 @@ class CashRegister(BaseModel):
             and self.status == CashRegisterStatus.INACTIVE
             and self.sessions.filter(status=CashSessionStatus.OPEN).exists()
         ):
-            raise ValidationError({'status': 'Nao e possivel inativar um caixa aberto.'})
+            raise ValidationError({'status': 'Não é possível inativar um caixa aberto.'})
 
     def save(self, *args, **kwargs):
         self.full_clean()
@@ -174,26 +174,26 @@ class CashSession(BaseModel):
         if self.status == CashSessionStatus.OPEN and any(
             value is not None for value in closing_values
         ):
-            raise ValidationError({'status': 'Uma sessao aberta nao pode ter fechamento.'})
+            raise ValidationError({'status': 'Uma sessão aberta não pode ter fechamento.'})
         if self.status == CashSessionStatus.CLOSED and any(
             value is None for value in closing_values
         ):
-            raise ValidationError({'status': 'O fechamento da sessao esta incompleto.'})
+            raise ValidationError({'status': 'O fechamento da sessão está incompleto.'})
         if self.opening_amount is not None and self.opening_amount < Decimal('0'):
-            raise ValidationError({'opening_amount': 'O valor nao pode ser negativo.'})
+            raise ValidationError({'opening_amount': 'O valor não pode ser negativo.'})
         if (
             self.closing_amount_informed is not None
             and self.closing_amount_informed < Decimal('0')
         ):
             raise ValidationError(
-                {'closing_amount_informed': 'O valor nao pode ser negativo.'}
+                {'closing_amount_informed': 'O valor não pode ser negativo.'}
             )
 
     def save(self, *args, **kwargs):
         if self.pk and CashSession.objects.filter(
             pk=self.pk, status=CashSessionStatus.CLOSED
         ).exists():
-            raise ValidationError('Sessoes de caixa fechadas sao imutaveis.')
+            raise ValidationError('Sessões de caixa fechadas são imutáveis.')
         self.full_clean()
         return super().save(*args, **kwargs)
 
@@ -283,14 +283,14 @@ class CashMovement(BaseModel):
         super().clean()
         self.reason = (self.reason or '').strip()
         if not self.reason:
-            raise ValidationError({'reason': 'Informe o motivo da movimentacao.'})
+            raise ValidationError({'reason': 'Informe o motivo da movimentação.'})
         if self.amount is not None and self.amount <= Decimal('0'):
             raise ValidationError({'amount': 'O valor deve ser maior que zero.'})
         if self.cash_session_id and CashSession.objects.filter(
             pk=self.cash_session_id, status=CashSessionStatus.CLOSED
         ).exists():
             raise ValidationError(
-                {'cash_session': 'Nao e possivel movimentar uma sessao fechada.'}
+                {'cash_session': 'Não é possível movimentar uma sessão fechada.'}
             )
         required_beneficiary_categories = {
             WithdrawalCategory.DJ,
@@ -301,7 +301,7 @@ class CashMovement(BaseModel):
         if self.movement_type == CashMovementType.MANUAL_ENTRY:
             if self.withdrawal_category or self.beneficiary_user_id:
                 raise ValidationError(
-                    {'withdrawal_category': 'Entradas nao aceitam classificacao de sangria.'}
+                    {'withdrawal_category': 'Entradas não aceitam classificação de sangria.'}
                 )
             self.result_effect = ResultEffect.NEUTRAL
         elif self.movement_type == CashMovementType.WITHDRAWAL:
@@ -314,17 +314,17 @@ class CashMovement(BaseModel):
                 and not self.beneficiary_user_id
             ):
                 raise ValidationError(
-                    {'beneficiary_user': 'Informe o beneficiario desta sangria.'}
+                    {'beneficiary_user': 'Informe o beneficiário desta sangria.'}
                 )
 
     def save(self, *args, **kwargs):
         if self.pk:
-            raise ValidationError('Movimentacoes de caixa sao imutaveis.')
+            raise ValidationError('Movimentações de caixa são imutáveis.')
         self.full_clean()
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
-        raise ValidationError('Movimentacoes de caixa sao imutaveis.')
+        raise ValidationError('Movimentações de caixa são imutáveis.')
 
     def __str__(self):
         return f'{self.get_movement_type_display()} - {self.amount:.2f}'

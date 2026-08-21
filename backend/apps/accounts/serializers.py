@@ -254,7 +254,7 @@ class UserManagementSerializer(UserSerializer):
         company_ids = [item['company_id'] for item in items]
         if len(company_ids) != len(set(company_ids)):
             raise serializers.ValidationError(
-                {'company_accesses': 'Nao repita a mesma empresa.'}
+                {'company_accesses': 'Não repita a mesma empresa.'}
             )
 
         companies = Company.objects.in_bulk(company_ids)
@@ -268,7 +268,7 @@ class UserManagementSerializer(UserSerializer):
             company = companies[item['company_id']]
             if not user_has_company_permission(request.user, company.id, permission_code):
                 raise PermissionDenied(
-                    'Voce nao possui permissao em todas as empresas informadas.'
+                    'Você não possui permissão em todas as empresas informadas.'
                 )
             profile = None
             if item['access_profile_id'] is not None:
@@ -291,9 +291,22 @@ class UserManagementSerializer(UserSerializer):
             branch_ids = [branch_item['branch_id'] for branch_item in branch_items]
             if len(branch_ids) != len(set(branch_ids)):
                 raise serializers.ValidationError(
-                    {'company_accesses': 'Nao repita a mesma filial.'}
+                    {'company_accesses': 'Não repita a mesma filial.'}
                 )
-            branches = Branch.objects.filter(id__in=branch_ids, company=company).in_bulk()
+            existing_branch_ids = set()
+            if self.instance:
+                existing_branch_ids = set(
+                    self.instance.branch_accesses.filter(
+                        branch_id__in=branch_ids,
+                        branch__company=company,
+                        is_active=True,
+                    ).values_list('branch_id', flat=True)
+                )
+            branches = Branch.objects.filter(
+                Q(status=Status.ACTIVE) | Q(id__in=existing_branch_ids),
+                id__in=branch_ids,
+                company=company,
+            ).in_bulk()
             if len(branches) != len(branch_ids):
                 raise serializers.ValidationError(
                     {'company_accesses': 'Uma filial nao existe ou pertence a outra empresa.'}
@@ -320,7 +333,7 @@ class UserManagementSerializer(UserSerializer):
                 actor_company_codes -= OPERATING_PERMISSION_CODES
                 if company_profile_codes - actor_company_codes:
                     raise PermissionDenied(
-                        'Voce nao pode atribuir um perfil com permissoes que nao possui.'
+                        'Você não pode atribuir um perfil com permissões que não possui.'
                     )
             normalized_branches = []
             for branch_item in branch_items:
@@ -344,7 +357,7 @@ class UserManagementSerializer(UserSerializer):
                     requested_codes &= OPERATING_PERMISSION_CODES
                     if requested_codes - branch_permission_codes(request.user, branch.id):
                         raise PermissionDenied(
-                            'Voce nao pode atribuir um perfil de filial com permissoes que nao possui.'
+                            'Você não pode atribuir um perfil de filial com permissões que não possui.'
                         )
                 normalized_branches.append(
                     {'branch': branch, 'access_profile': branch_profile}
@@ -371,7 +384,7 @@ class UserManagementSerializer(UserSerializer):
         email = attrs.get('email', getattr(self.instance, 'email', None))
         if can_login and not email:
             raise serializers.ValidationError(
-                {'email': 'O e-mail e obrigatorio para usuarios com login.'}
+                {'email': 'O e-mail é obrigatório para usuários com login.'}
             )
         if not self.instance and not attrs.get('company_accesses'):
             raise serializers.ValidationError(
@@ -398,19 +411,19 @@ class UserManagementSerializer(UserSerializer):
                 )
             )
             if self.instance.is_superuser and not request.user.is_superuser:
-                raise PermissionDenied('Voce nao pode alterar um superusuario.')
+                raise PermissionDenied('Você não pode alterar um superusuário.')
             if any(
                 not user_has_company_permission(request.user, company_id, permission_code)
                 for company_id in current_company_ids
             ):
                 raise PermissionDenied(
-                    'O usuario possui acessos fora do seu contexto autorizado.'
+                    'O usuário possui acessos fora do seu contexto autorizado.'
                 )
 
         if 'company_accesses' in attrs:
             if self.instance and self.instance.pk == request.user.pk:
                 raise serializers.ValidationError(
-                    {'company_accesses': 'Voce nao pode alterar os proprios acessos.'}
+                    {'company_accesses': 'Você não pode alterar os próprios acessos.'}
                 )
             changed_company_ids = current_company_ids | {
                 item['company_id'] for item in attrs['company_accesses']
@@ -429,7 +442,7 @@ class UserManagementSerializer(UserSerializer):
                 ) - visible_branch_ids
                 if hidden_target_ids:
                     raise PermissionDenied(
-                        'O usuario possui filiais fora do seu contexto autorizado.'
+                        'O usuário possui filiais fora do seu contexto autorizado.'
                     )
             attrs['company_accesses'] = self._validate_company_accesses(
                 attrs['company_accesses'], permission_code
