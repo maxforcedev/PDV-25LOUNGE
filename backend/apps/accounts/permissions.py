@@ -5,10 +5,11 @@ from apps.companies.selectors import (
     company_permission_codes,
     user_has_company_permission,
 )
+from apps.companies.rbac import OPERATING_PERMISSION_CODES
 
 
 class UserFunctionalPermission(BasePermission):
-    message = 'Voce nao possui permissao para esta operacao.'
+    message = 'Você não possui permissão para esta operação.'
     codes = {
         'list': 'users.view',
         'retrieve': 'users.view',
@@ -17,6 +18,7 @@ class UserFunctionalPermission(BasePermission):
         'partial_update': 'users.change',
         'activate': 'users.change_status',
         'deactivate': 'users.change_status',
+        'management_options': ('users.view', 'users.add', 'users.change'),
     }
 
     def has_permission(self, request, view):
@@ -26,6 +28,8 @@ class UserFunctionalPermission(BasePermission):
         if user.is_superuser:
             return True
         code = self.codes.get(view.action)
+        if isinstance(code, tuple):
+            return any(accessible_companies(user, item).exists() for item in code)
         return accessible_companies(user, code).exists()
 
     def has_object_permission(self, request, view, obj):
@@ -51,8 +55,8 @@ class UserFunctionalPermission(BasePermission):
             return False
         if view.action in ('update', 'partial_update'):
             return all(
-                company_permission_codes(obj, company_id)
-                <= company_permission_codes(user, company_id)
+                company_permission_codes(obj, company_id) - OPERATING_PERMISSION_CODES
+                <= company_permission_codes(user, company_id) - OPERATING_PERMISSION_CODES
                 for company_id in target_company_ids
             )
         return True

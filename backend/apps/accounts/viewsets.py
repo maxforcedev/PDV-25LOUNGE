@@ -1,3 +1,4 @@
+from django.db import transaction
 from django.db.models import Q
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -5,8 +6,15 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from apps.base.audit import audit_log, model_snapshot
-from apps.companies.models import Company
-from apps.companies.selectors import accessible_companies, user_has_company_permission
+from apps.companies.models import AccessProfile, Company, Status
+from apps.companies.rbac import OPERATING_PERMISSION_CODES
+from apps.companies.selectors import (
+    accessible_branches,
+    accessible_companies,
+    branch_permission_codes,
+    company_permission_codes,
+    user_has_company_permission,
+)
 
 from .models import User
 from .permissions import UserFunctionalPermission
@@ -29,7 +37,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 if company_id < 1:
                     raise ValueError
             except (TypeError, ValueError) as error:
-                raise ValidationError({'company': 'Informe uma empresa valida.'}) from error
+                raise ValidationError({'company': 'Informe uma empresa válida.'}) from error
         queryset = User.objects.prefetch_related(
             'company_accesses__company',
             'company_accesses__access_profile__permissions',
@@ -44,13 +52,24 @@ class UserViewSet(viewsets.ModelViewSet):
                 )
         else:
             permission_code = UserFunctionalPermission.codes.get(self.action, 'users.view')
-            company_ids = accessible_companies(user, permission_code).values_list('id', flat=True)
-            queryset = queryset.filter(
-                company_accesses__company_id__in=company_ids,
-                company_accesses__is_active=True,
+            permission_codes = (
+                permission_code if isinstance(permission_code, tuple)
+                else (permission_code,)
             )
+            company_ids = {
+                accessible_company_id
+                for code in permission_codes
+                for accessible_company_id in accessible_companies(
+                    user, code
+                ).values_list('id', flat=True)
+            }
+            company_access_filters = {
+                'company_accesses__company_id__in': company_ids,
+                'company_accesses__is_active': True,
+            }
             if company_id is not None:
-                queryset = queryset.filter(company_accesses__company_id=company_id)
+                company_access_filters['company_accesses__company_id'] = company_id
+            queryset = queryset.filter(**company_access_filters)
 
         search = params.get('search', '').strip()
         for term in search.split():
@@ -75,9 +94,10 @@ class UserViewSet(viewsets.ModelViewSet):
         user_type = params.get('user_type')
         if user_type:
             if user_type not in User.UserType.values:
-                raise ValidationError({'user_type': 'Informe um tipo de usuario valido.'})
+                raise ValidationError({'user_type': 'Informe um tipo de usuário válido.'})
             queryset = queryset.filter(user_type=user_type)
 
+        relation_filters = {}
         for parameter in ('access_profile', 'branch'):
             value = params.get(parameter)
             if not value:
@@ -87,31 +107,116 @@ class UserViewSet(viewsets.ModelViewSet):
                 if value < 1:
                     raise ValueError
             except (TypeError, ValueError) as error:
-                raise ValidationError({parameter: 'Informe um identificador valido.'}) from error
-            if parameter == 'access_profile':
-                filters = {
-                    'company_accesses__access_profile_id': value,
-                    'company_accesses__is_active': True,
-                }
-                if company_id is not None:
-                    filters['company_accesses__access_profile__company_id'] = company_id
-                elif not user.is_superuser:
-                    filters['company_accesses__access_profile__company_id__in'] = company_ids
-                queryset = queryset.filter(**filters)
-            else:
-                filters = {
-                    'branch_accesses__branch_id': value,
-                    'branch_accesses__branch__status': 'active',
-                    'branch_accesses__is_active': True,
-                    'branch_accesses__access_profile__status': 'active',
-                }
-                if company_id is not None:
-                    filters['branch_accesses__branch__company_id'] = company_id
-                elif not user.is_superuser:
-                    filters['branch_accesses__branch__company_id__in'] = company_ids
-                queryset = queryset.filter(**filters)
+                raise ValidationError({parameter: 'Informe um identificador válido.'}) from error
+            relation_filters[parameter] = value
+
+        profile_id = relation_filters.get('access_profile')
+        branch_id = relation_filters.get('branch')
+        if branch_id is not None:
+            filters = {
+                'branch_accesses__branch_id': branch_id,
+                'branch_accesses__branch__status': 'active',
+                'branch_accesses__is_active': True,
+                'branch_accesses__access_profile__status': 'active',
+            }
+            if profile_id is not None:
+                filters['branch_accesses__access_profile_id'] = profile_id
+            if company_id is not None:
+                filters['branch_accesses__branch__company_id'] = company_id
+            elif not user.is_superuser:
+                filters['branch_accesses__branch__company_id__in'] = company_ids
+            queryset = queryset.filter(**filters)
+        elif profile_id is not None:
+            filters = {
+                'company_accesses__access_profile_id': profile_id,
+                'company_accesses__is_active': True,
+            }
+            if company_id is not None:
+                filters['company_accesses__access_profile__company_id'] = company_id
+            elif not user.is_superuser:
+                filters['company_accesses__access_profile__company_id__in'] = company_ids
+            queryset = queryset.filter(**filters)
 
         return queryset.distinct().order_by('first_name', 'last_name', 'email', 'id')
+
+    @action(detail=False, methods=['get'], url_path='management-options')
+    def management_options(self, request):
+        management_codes = ('users.view', 'users.add', 'users.change')
+        if request.user.is_superuser:
+            company_ids = list(Company.objects.values_list('id', flat=True))
+        else:
+            company_ids = sorted({
+                company_id
+                for code in management_codes
+                for company_id in accessible_companies(
+                    request.user, code
+                ).values_list('id', flat=True)
+            })
+        branches = list(accessible_branches(request.user).filter(
+            company_id__in=company_ids
+        ).order_by('company_id', 'name', 'id'))
+        profiles = AccessProfile.objects.filter(
+            company_id__in=company_ids, status=Status.ACTIVE
+        ).prefetch_related('permissions').order_by('company_id', 'name', 'id')
+        actor_company_codes = {
+            company_id: company_permission_codes(request.user, company_id)
+            for company_id in set(branch.company_id for branch in branches)
+        }
+        actor_branch_codes = {
+            branch.pk: branch_permission_codes(request.user, branch.pk)
+            for branch in branches
+        }
+        manageable_company_ids = {
+            company_id for company_id in actor_company_codes
+            if request.user.is_superuser or any(
+                user_has_company_permission(request.user, company_id, code)
+                for code in ('users.add', 'users.change')
+            )
+        }
+        profile_options = []
+        for profile in profiles:
+            codes = set(profile.permissions.filter(status=Status.ACTIVE).values_list(
+                'code', flat=True
+            ))
+            company_codes = codes - OPERATING_PERMISSION_CODES
+            operating_codes = codes & OPERATING_PERMISSION_CODES
+            profile_options.append({
+                'id': profile.pk,
+                'company_id': profile.company_id,
+                'name': profile.name,
+                'company_assignable': (
+                    request.user.is_superuser
+                    or (
+                        profile.company_id in manageable_company_ids
+                        and company_codes <= actor_company_codes.get(profile.company_id, set())
+                    )
+                ),
+                'assignable_branch_ids': [
+                    branch.pk for branch in branches
+                    if (
+                        branch.company_id == profile.company_id
+                        and branch.status == Status.ACTIVE
+                    ) and (
+                        request.user.is_superuser
+                        or (
+                            profile.company_id in manageable_company_ids
+                            and operating_codes <= actor_branch_codes[branch.pk]
+                        )
+                    )
+                ],
+            })
+        return Response({
+            'branches': [
+                {
+                    'id': branch.pk,
+                    'company_id': branch.company_id,
+                    'name': branch.name,
+                    'status': branch.status,
+                }
+                for branch in branches
+            ],
+            'profiles': profile_options,
+        })
 
     audit_fields = ('email', 'can_login', 'user_type', 'first_name', 'last_name', 'is_active')
 
@@ -141,12 +246,14 @@ class UserViewSet(viewsets.ModelViewSet):
                 metadata={'scope_company_id': company.pk if company else None},
             )
 
+    @transaction.atomic
     def perform_create(self, serializer):
         user = serializer.save()
         after = model_snapshot(user, self.audit_fields)
         after.update(self.access_snapshot(user))
         self.audit_user(user, 'user.create', after=after)
 
+    @transaction.atomic
     def perform_update(self, serializer):
         before = model_snapshot(serializer.instance, self.audit_fields)
         before.update(self.access_snapshot(serializer.instance))
@@ -169,10 +276,11 @@ class UserViewSet(viewsets.ModelViewSet):
             for company_id in target_company_ids
         ):
             raise PermissionDenied(
-                'O usuario possui acessos fora do seu contexto autorizado.'
+                'O usuário possui acessos fora do seu contexto autorizado.'
             )
 
     @action(detail=True, methods=['post'])
+    @transaction.atomic
     def activate(self, request, pk=None):
         user = self.get_object()
         self._check_status_context(user)
@@ -187,11 +295,12 @@ class UserViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(user).data)
 
     @action(detail=True, methods=['post'])
+    @transaction.atomic
     def deactivate(self, request, pk=None):
         user = self.get_object()
         if user.pk == request.user.pk:
             return Response(
-                {'is_active': ['Voce nao pode inativar o proprio usuario.']},
+                {'is_active': ['Você não pode inativar o próprio usuário.']},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         self._check_status_context(user)

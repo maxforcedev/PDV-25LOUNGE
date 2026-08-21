@@ -1,11 +1,12 @@
 import csv
 import io
 import json
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from django.db.models import Count, DecimalField, Q, Sum
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -35,15 +36,16 @@ from .selectors import (
     consumption_summary,
     current_cash_sessions,
     dashboard_time_analysis,
+    event_rows,
     filtered_cash_sessions,
     filtered_inventory_movements,
     filtered_sales,
+    period_event_sales,
     stock_consumption_report,
     filtered_withdrawals,
     inventory_kpis,
     hourly_sales,
     operational_result,
-    payment_totals,
     period_end_exclusive,
     receipt_summary,
     sale_rankings,
@@ -74,6 +76,68 @@ def decimal_string(value, places=2):
     return f'{value.quantize(quantum, rounding=ROUND_HALF_UP):.{places}f}'
 
 
+def payment_distribution(rows, total_received):
+    total_received = Decimal(total_received or 0)
+    result = []
+    for row in rows:
+        amount = Decimal(row.get('payment_total', row.get('net_received', row.get('amount', 0))))
+        result.append({
+            'code': row.get('code', row.get('payment_method_code')),
+            'name': row.get('name', row.get('payment_method_name')),
+            'payment_total': decimal_string(amount),
+            'percentage': decimal_string(
+                amount * Decimal('100') / total_received
+                if total_received > 0 else 0
+            ),
+            'amount': decimal_string(amount),
+        })
+    return result
+
+
+def operational_result_data(request, summary, *, extra_keys=()):
+    keys = (
+        'sales_revenue', 'consumption_charged', 'effective_revenue', 'service_fee',
+        'total_received', 'payment_total', 'reconciliation_delta',
+        'costs_and_expenses', 'estimated_result', 'result', 'margin',
+        'sales_revenue_inflows', 'sales_revenue_reversals',
+        'consumption_charged_inflows', 'consumption_charged_reversals',
+        'service_fee_inflows', 'service_fee_reversals',
+        'payment_total_inflows', 'payment_total_reversals',
+    ) + tuple(extra_keys)
+    data = {
+        key: decimal_string(summary[key]) if summary[key] is not None else None
+        for key in keys if key in summary
+    }
+    if 'event_accounting' in summary:
+        data['event_accounting'] = summary['event_accounting']
+    for key in (
+        'sales_inflow_count', 'sales_reversal_count',
+        'consumption_inflow_count', 'consumption_reversal_count',
+    ):
+        if key in summary:
+            data[key] = summary[key]
+    can_view_commission = user_has_code(request, 'commissions.view')
+    can_view_costs = user_has_code(request, 'inventory.view_stock_costs')
+    if can_view_commission and 'commission' in summary:
+        for key in ('commission', 'commission_inflows', 'commission_reversals'):
+            if key in summary:
+                data[key] = decimal_string(summary[key])
+    if can_view_costs:
+        for key in (
+            'historical_sales_cogs', 'historical_sales_cogs_inflows',
+            'historical_sales_cogs_reversals', 'historical_consumption_cogs',
+            'historical_consumption_cogs_inflows',
+            'historical_consumption_cogs_reversals',
+        ):
+            if key in summary:
+                data[key] = decimal_string(summary[key])
+    if can_view_commission and can_view_costs:
+        for key in ('operating_expenses', 'fixed_cost'):
+            if key in summary:
+                data[key] = decimal_string(summary[key])
+    return data
+
+
 def user_has_code(request, code):
     if code not in OPERATING_PERMISSION_CODES:
         return request.user.is_superuser or user_has_company_permission(
@@ -91,7 +155,14 @@ def safe_csv_cell(value):
     if isinstance(value, (dict, list)):
         value = json.dumps(value, ensure_ascii=False, separators=(',', ':'))
     value = str(value)
-    if value.startswith(('=', '+', '-', '@')):
+    is_signed_number = False
+    if value.startswith(('+', '-')):
+        try:
+            Decimal(value)
+            is_signed_number = True
+        except InvalidOperation:
+            pass
+    if value.startswith(('=', '+', '-', '@')) and not is_signed_number:
         value = "'" + value
     return value
 
@@ -114,27 +185,64 @@ class ReportsOptionsView(APIView):
 
     def get(self, request):
         branch = request.branch_context
+        can_view_team = user_has_code(request, 'reports.view_team')
+        can_view_sellers = can_view_team or (
+            request.query_params.get('scope') == 'commissions'
+            and user_has_code(request, 'commissions.view')
+        )
+        can_view_consumptions = any(user_has_code(request, code) for code in (
+            'reports.view_consumptions', 'sales.view_consumption',
+        ))
+        can_view_withdrawals = user_has_code(request, 'reports.view_withdrawals')
+        can_view_cash = user_has_code(request, 'reports.view_cash')
+        can_view_result = user_has_code(request, 'reports.view_operational_result')
+        can_view_inventory = any(user_has_code(request, code) for code in (
+            'reports.view_inventory', 'reports.view_stock_consumption',
+        ))
+        can_view_sales_data = any(user_has_code(request, code) for code in (
+            'reports.view_sales', 'reports.view_products', 'reports.view_receipts',
+            'reports.view_discounts', 'reports.view_cancellations', 'dashboard.view',
+            'reports.view_team', 'reports.view_prices', 'commissions.view',
+        ))
+        can_view_payment_data = any(user_has_code(request, code) for code in (
+            'reports.view_sales', 'reports.view_receipts', 'reports.view_discounts',
+            'reports.view_cancellations', 'dashboard.view', 'reports.view_team',
+            'commissions.view',
+        ))
+        can_view_products = (
+            can_view_sales_data or can_view_consumptions or can_view_inventory
+        )
         users = User.objects.filter(
             is_active=True,
             company_accesses__company_id=branch.company_id,
             company_accesses__is_active=True,
-        ).distinct().order_by('first_name', 'last_name', 'id')
+        ).distinct().order_by('first_name', 'last_name', 'id') if (
+            can_view_consumptions or can_view_withdrawals
+        ) else User.objects.none()
         operators = User.objects.filter(
             is_active=True,
             branch_accesses__branch=branch,
             branch_accesses__is_active=True,
-        ).distinct().order_by('first_name', 'last_name', 'id')
-        products = Product.objects.filter(company_id=branch.company_id).order_by('name', 'id')
+        ).distinct().order_by('first_name', 'last_name', 'id') if can_view_team else User.objects.none()
+        products = Product.objects.filter(company_id=branch.company_id).order_by(
+            'name', 'id'
+        ) if can_view_products else Product.objects.none()
         categories = Category.objects.filter(company_id=branch.company_id).order_by(
             'sort_order', 'name', 'id'
-        )
+        ) if can_view_products else Category.objects.none()
         payment_methods = PaymentMethod.objects.filter(
             company_id=branch.company_id
-        ).order_by('name', 'id')
-        registers = CashRegister.objects.filter(branch=branch).order_by('name', 'id')
+        ).order_by('name', 'id') if can_view_payment_data else PaymentMethod.objects.none()
+        registers = CashRegister.objects.filter(branch=branch).order_by(
+            'name', 'id'
+        ) if (
+            can_view_cash or can_view_withdrawals or can_view_result
+        ) else CashRegister.objects.none()
         sessions = CashSession.objects.filter(branch=branch).select_related(
             'cash_register'
-        ).order_by('-opened_at', '-id')
+        ).order_by('-opened_at', '-id') if (
+            can_view_cash or can_view_result
+        ) else CashSession.objects.none()
         eligible_seller_ids = eligible_branch_users(
             branch, 'sales.create'
         ).values_list('id', flat=True)
@@ -143,7 +251,7 @@ class ReportsOptionsView(APIView):
         ).values_list('seller_user_id', flat=True)
         sellers = User.objects.filter(
             Q(id__in=eligible_seller_ids) | Q(id__in=historical_seller_ids)
-        ).distinct().order_by('first_name', 'last_name', 'id')
+        ).distinct().order_by('first_name', 'last_name', 'id') if can_view_sellers else User.objects.none()
         return Response({
             'operators': [
                 {'id': user.pk, 'name': readable_user_name(user)} for user in operators
@@ -198,17 +306,17 @@ class ReportsOptionsView(APIView):
             ],
             'movement_types': [
                 {'value': value, 'label': label} for value, label in MovementType.choices
-            ],
+            ] if can_view_inventory else [],
             'withdrawal_categories': [
                 {'value': value, 'label': label}
                 for value, label in WithdrawalCategory.choices
-            ],
+            ] if can_view_withdrawals else [],
             'user_types': [
                 {'value': value, 'label': label} for value, label in User.UserType.choices
-            ],
+            ] if can_view_consumptions else [],
             'sale_statuses': [
                 {'value': value, 'label': label} for value, label in SaleStatus.choices
-            ],
+            ] if (can_view_sales_data or can_view_consumptions) else [],
         })
 
 
@@ -233,7 +341,13 @@ class BaseReportView(APIView):
     def respond(self, request, *, rows, period, summary):
         if request.query_params.get('export') == 'csv':
             data = self.serialize_rows(rows, request)
-            return csv_response(self.csv_filename, self.csv_headers, data)
+            headers = self.csv_headers
+            if not user_has_code(request, 'commissions.view'):
+                headers = tuple(
+                    header for header in headers
+                    if header not in ('commission', 'commission_amount')
+                )
+            return csv_response(self.csv_filename, headers, data)
         paginator = StandardPagination()
         page = paginator.paginate_queryset(rows, request, view=self)
         data = self.serialize_rows(page, request)
@@ -262,6 +376,12 @@ class DashboardView(APIView):
         start, end = parse_datetime_range(request.query_params, default_today=True)
         branch = request.branch_context
         response = {'period': canonical_datetime_range(start, end)}
+        try:
+            latest_sales_page = int(request.query_params.get('latest_sales_page', 1))
+        except (TypeError, ValueError):
+            raise ValidationError({'latest_sales_page': 'Informe uma página válida.'})
+        if latest_sales_page < 1:
+            latest_sales_page = 1
         category = None
         if request.query_params.get('category'):
             try:
@@ -280,7 +400,10 @@ class DashboardView(APIView):
         }
 
         can_view_consumptions = user_has_code(request, 'sales.view_consumption')
+        item_filters = {'category': category} if category else {}
+        sales = None
         dashboard_consumption_graph = None
+        dashboard_consumption_reversals = None
         if user_has_code(request, 'sales.view'):
             sales = filtered_sales(
                 branch=branch,
@@ -289,45 +412,96 @@ class DashboardView(APIView):
                 operation_type=OperationType.SALE,
                 filters={'category': category} if category else {},
             )
-            sales_graph = list(_financial_sales(sales))
-            item_filters = {'category': category} if category else {}
-            summary, _ = commercial_summary(sales_graph, item_filters)
-            products, categories = sale_rankings(sales_graph, limit=10, filters=item_filters)
-            operator_groups = sale_user_groups(sales_graph, 'created_by', item_filters)
-            seller_groups = sale_user_groups(sales_graph, 'seller_user', item_filters)
+            sales_graph, sales_reversals = period_event_sales(
+                branch=branch, start=start, end=end, filters=item_filters,
+                operation_types=(OperationType.SALE,),
+            )
+            summary, _ = commercial_summary(
+                sales_graph, item_filters, reversals=sales_reversals,
+            )
+            products, categories = sale_rankings(
+                sales_graph, limit=10, filters=item_filters,
+                reversals=sales_reversals,
+            )
+            can_view_team = user_has_code(request, 'reports.view_team')
+            operator_groups = (
+                sale_user_groups(
+                    sales_graph, 'created_by', item_filters, sales_reversals,
+                )
+                if can_view_team else []
+            )
+            seller_groups = (
+                sale_user_groups(
+                    sales_graph, 'seller_user', item_filters, sales_reversals,
+                )
+                if can_view_team else []
+            )
             _cancelled_rows, cancellations = cancellation_summary(
-                branch=branch, start=start, end=end, category=category,
+                branch=branch, start=start, end=end, filters=item_filters,
             )
             discount_count = summary['manual_discount_count']
             heatmap, current_comparison, previous_comparison = dashboard_time_analysis(
                 sales_graph, branch=branch, start=start, end=end, category=category,
+                reversals=sales_reversals,
             )
             if can_view_consumptions:
-                dashboard_consumption_graph = list(_financial_sales(filtered_sales(
+                (
+                    dashboard_consumption_graph,
+                    dashboard_consumption_reversals,
+                ) = period_event_sales(
                     branch=branch,
                     start=start,
                     end=end,
-                    operation_type=OperationType.CONSUMPTION,
                     filters={'category': category} if category else {},
-                )))
+                    operation_types=(OperationType.CONSUMPTION,),
+                )
             dashboard_receipts = receipt_summary(
                 branch=branch, start=start, end=end,
                 filters={'category': category} if category else {},
-                inflow_sales=sales_graph + dashboard_consumption_graph,
-            ) if can_view_consumptions else None
+                inflow_sales=sales_graph + (dashboard_consumption_graph or []),
+                operation_types=(
+                    (OperationType.SALE, OperationType.CONSUMPTION)
+                    if can_view_consumptions else (OperationType.SALE,)
+                ),
+            )
+            latest_count = sales.count()
+            latest_total_pages = (latest_count + 9) // 10
+            latest_sales_page = min(
+                latest_sales_page, latest_total_pages or 1
+            )
+            latest_offset = (latest_sales_page - 1) * 10
+            latest_rows = list(sale_rows(sales)[latest_offset:latest_offset + 10])
+            distribution = payment_distribution(
+                dashboard_receipts['payment_methods'], dashboard_receipts['total_received']
+            )
             response['sales'] = {
-                'revenue': decimal_string(summary['effective_revenue']),
+                'event_accounting': dashboard_receipts['event_accounting'],
+                'sales_revenue': decimal_string(dashboard_receipts['sales_revenue']),
+                'consumption_charged': decimal_string(
+                    dashboard_receipts['consumption_charged']
+                ),
+                'effective_revenue': decimal_string(
+                    dashboard_receipts['effective_revenue']
+                ),
+                'total_received': decimal_string(dashboard_receipts['total_received']),
+                'payment_total': decimal_string(dashboard_receipts['payment_total']),
+                'reconciliation_delta': decimal_string(
+                    dashboard_receipts['reconciliation_delta']
+                ),
+                'revenue': decimal_string(summary['sales_revenue']),
                 'gross': decimal_string(summary['gross']),
-                'effective_revenue': decimal_string(summary['effective_revenue']),
                 'count': summary['count'],
+                'inflow_count': summary['inflow_count'],
+                'reversal_count': summary['reversal_count'],
                 'average': decimal_string(summary['average']),
+                'ticket_average': decimal_string(summary['average']),
                 'account_discount': decimal_string(summary['account_discount']),
                 'item_discount': decimal_string(summary['item_discount']),
                 'manual_discount': decimal_string(summary['manual_discount']),
                 'manual_discount_count': discount_count,
                 'promotion_discount': decimal_string(summary['promotion_discount']),
                 'total_discount': decimal_string(summary['total_discount']),
-                'service_fee': decimal_string(summary['service_fee']),
+                'service_fee': decimal_string(dashboard_receipts['service_fee']),
                 'commission': decimal_string(summary['commission']),
                 'customer_total': decimal_string(summary['customer_total']),
                 'total_received_sales': decimal_string(summary['total_received_sales']),
@@ -342,82 +516,120 @@ class DashboardView(APIView):
                     {
                         'hour': row['hour'],
                         'count': row['count'],
+                        'sales_revenue': decimal_string(row['sales_revenue']),
                         'effective_revenue': decimal_string(row['effective_revenue']),
                         'service_fee': decimal_string(row['service_fee']),
-                        'customer_total': decimal_string(row['customer_total']),
+                        'total_received': decimal_string(row['total_received']),
                     }
-                    for row in hourly_sales(sales_graph, item_filters)
-                ],
-                'payment_distribution': [
-                    {
-                        'code': row.get('code', row.get('payment_method_code')),
-                        'name': row.get('name', row.get('payment_method_name')),
-                        'amount': decimal_string(
-                            row.get('net_received', row.get('amount'))
-                        ),
-                    }
-                    for row in (
-                        dashboard_receipts['payment_methods']
-                        if dashboard_receipts else payment_totals(sales_graph, item_filters)
+                    for row in hourly_sales(
+                        sales_graph, item_filters, sales_reversals,
                     )
                 ],
+                'payment_distribution': distribution,
                 'payment_distribution_scope': (
-                    'operational' if dashboard_receipts else 'sales_only'
+                    'operational' if can_view_consumptions else 'sales_only'
                 ),
                 'top_products': [
-                    {**row, 'quantity': decimal_string(row['quantity'], 3), 'revenue': decimal_string(row['revenue'])}
+                    {
+                        **row, 'quantity': decimal_string(row['quantity'], 3),
+                        'sales_revenue': decimal_string(row['sales_revenue']),
+                        'revenue': decimal_string(row['sales_revenue']),
+                    }
                     for row in products
                 ],
                 'top_categories': [
-                    {**row, 'quantity': decimal_string(row['quantity'], 3), 'revenue': decimal_string(row['revenue'])}
+                    {
+                        **row, 'quantity': decimal_string(row['quantity'], 3),
+                        'sales_revenue': decimal_string(row['sales_revenue']),
+                        'revenue': decimal_string(row['sales_revenue']),
+                    }
                     for row in categories
                 ],
                 'top_sellers': [_group_json(row) for row in seller_groups[:10]],
                 'top_operators': [_group_json(row) for row in operator_groups[:10]],
                 'heatmap': [
-                    {**row, 'revenue': decimal_string(row['revenue']), 'average': decimal_string(row['average'])}
+                    {
+                        **row, 'sales_revenue': decimal_string(row['sales_revenue']),
+                        'revenue': decimal_string(row['sales_revenue']),
+                        'average': decimal_string(row['average']),
+                    }
                     for row in heatmap
                 ],
                 'weekly_comparison': {
-                    'current': [{**row, 'revenue': decimal_string(row['revenue'])} for row in current_comparison],
-                    'previous': [{**row, 'revenue': decimal_string(row['revenue'])} for row in previous_comparison],
+                    'current': [{**row, 'sales_revenue': decimal_string(row['sales_revenue']), 'revenue': decimal_string(row['sales_revenue'])} for row in current_comparison],
+                    'previous': [{**row, 'sales_revenue': decimal_string(row['sales_revenue']), 'revenue': decimal_string(row['sales_revenue'])} for row in previous_comparison],
                 },
-                'latest_sales': ReportSaleSerializer(
-                    sorted(
-                        sales_graph, key=lambda sale: (sale.created_at, sale.pk), reverse=True
-                    )[:10],
-                    many=True, context={'request': request}
-                ).data,
+                'latest_sales': {
+                    'count': latest_count,
+                    'page': latest_sales_page,
+                    'page_size': 10,
+                    'total_pages': latest_total_pages,
+                    'next_page': (
+                        latest_sales_page + 1
+                        if latest_offset + 10 < latest_count else None
+                    ),
+                    'previous_page': latest_sales_page - 1 if latest_sales_page > 1 else None,
+                    'ordering': ('-created_at', '-id'),
+                    'results': ReportSaleSerializer(
+                        latest_rows, many=True, context={'request': request}
+                    ).data,
+                },
             }
-            if dashboard_receipts:
-                response['sales']['total_received_operational'] = decimal_string(
-                    dashboard_receipts['total_operational_received']
-                )
-                response['sales']['operational_reconciliation_delta'] = decimal_string(
-                    dashboard_receipts['reconciliation_delta']
-                )
+            response['sales']['total_received_operational'] = decimal_string(
+                dashboard_receipts['total_received']
+            )
+            response['sales']['operational_reconciliation_delta'] = decimal_string(
+                dashboard_receipts['reconciliation_delta']
+            )
             if not user_has_code(request, 'commissions.view'):
                 response['sales'].pop('commission', None)
                 for group in response['sales']['top_sellers'] + response['sales']['top_operators']:
-                    group.pop('commission', None)
+                    for key in ('commission', 'commission_sale_count'):
+                        group.pop(key, None)
 
         if can_view_consumptions:
             if dashboard_consumption_graph is None:
-                dashboard_consumption_graph = list(_financial_sales(filtered_sales(
+                (
+                    dashboard_consumption_graph,
+                    dashboard_consumption_reversals,
+                ) = period_event_sales(
                     branch=branch,
                     start=start,
                     end=end,
-                    operation_type=OperationType.CONSUMPTION,
                     filters={'category': category} if category else {},
-                )))
+                    operation_types=(OperationType.CONSUMPTION,),
+                )
             summary = consumption_summary(dashboard_consumption_graph, filters={
                 'category': category
-            } if category else {})
+            } if category else {}, reversals=dashboard_consumption_reversals)
+            consumption_cancellations = FinancialAggregator(
+                dashboard_consumption_reversals,
+                {'category': category} if category else {},
+            ).cancellations(operation_type=OperationType.CONSUMPTION)
             response['consumptions'] = {
+                'event_accounting': summary['event_accounting'],
                 'count': summary['count'],
+                'inflow_count': summary['inflow_count'],
+                'reversal_count': summary['reversal_count'],
                 'reference': decimal_string(summary['reference']),
                 'charged': decimal_string(summary['charged']),
+                'sales_revenue': decimal_string(summary['sales_revenue']),
+                'consumption_charged': decimal_string(summary['consumption_charged']),
+                'effective_revenue': decimal_string(summary['effective_revenue']),
+                'service_fee': decimal_string(summary['service_fee']),
+                'total_received': decimal_string(summary['total_received']),
+                'payment_total': decimal_string(summary['payment_total']),
+                'reconciliation_delta': decimal_string(summary['reconciliation_delta']),
                 'subsidy': decimal_string(summary['subsidy']),
+                'cancellations': {
+                    'count': consumption_cancellations['count'],
+                    'reversed_total_received': decimal_string(
+                        consumption_cancellations['reversed_total_received']
+                    ),
+                    'reversed_payment_total': decimal_string(
+                        consumption_cancellations['reversed_payment_total']
+                    ),
+                },
             }
 
         if user_has_code(request, 'cash_registers.withdraw'):
@@ -445,23 +657,31 @@ class DashboardView(APIView):
             if include_value:
                 stock['inventory_value'] = decimal_string(stock['inventory_value'])
             response['inventory'] = stock
-        if user_has_code(request, 'reports.view_operational_result') and 'sales' in response:
-            result = operational_result(
-                branch=branch, start=start, end=end, sales=sales,
+        if user_has_code(request, 'reports.view_operational_result'):
+            result_sales = sales if sales is not None else filtered_sales(
+                branch=branch,
+                start=start,
+                end=end,
+                operation_type=OperationType.SALE,
+                filters=item_filters,
             )
-            response['operational_result'] = {
-                key: decimal_string(value)
-                for key, value in result.items()
-                if key in (
-                    'result', 'estimated_result', 'margin', 'operational_received',
-                    'charged_consumption', 'historical_sales_cogs',
-                    'historical_consumption_cogs', 'commission',
+            result = operational_result(
+                branch=branch, start=start, end=end, sales=result_sales,
+                filters=item_filters,
+            )
+            response['operational_result'] = operational_result_data(request, result)
+            if category is not None:
+                for key in (
+                    'result', 'estimated_result', 'margin', 'costs_and_expenses',
+                    'historical_sales_cogs', 'historical_consumption_cogs',
+                    'historical_sales_cogs_inflows',
+                    'historical_sales_cogs_reversals',
+                    'historical_consumption_cogs_inflows',
+                    'historical_consumption_cogs_reversals',
+                    'commission', 'commission_inflows', 'commission_reversals',
                     'operating_expenses', 'fixed_cost',
-                    'operational_reconciliation_delta',
-                )
-            }
-            if not user_has_code(request, 'commissions.view'):
-                response['operational_result'].pop('commission', None)
+                ):
+                    response['operational_result'].pop(key, None)
         return Response(response)
 
 
@@ -481,34 +701,75 @@ class SalesReportView(BaseReportView):
     row_serializer_class = ReportSaleSerializer
     csv_filename = 'relatorio-vendas.csv'
     csv_headers = (
-        'id', 'sale_number', 'status', 'operator', 'seller', 'subtotal',
-        'promotion_discount_total', 'item_discount_total', 'discount', 'service_fee_amount',
-        'commission_amount', 'total', 'created_at', 'cancelled_at',
+        'id', 'event_type', 'event_at', 'event_sign', 'sale_number', 'status',
+        'operator', 'seller', 'subtotal',
+        'promotion_discount_total', 'item_discount_total', 'discount',
+        'sales_revenue', 'consumption_charged', 'effective_revenue', 'service_fee',
+        'total_received', 'payment_total', 'reconciliation_delta', 'commission_amount',
+        'created_at', 'cancelled_at',
         'items', 'payments',
     )
 
     def get(self, request):
         scope = request.query_params.get('scope', 'sales')
         filters, start, end = self.parse_query(request)
-        sales = filtered_sales(
+        can_view_team = user_has_code(request, 'reports.view_team')
+        can_view_sellers = can_view_team or (
+            scope == 'commissions' and user_has_code(request, 'commissions.view')
+        )
+        if not can_view_team and filters.get('operator') is not None:
+            raise PermissionDenied(
+                'Você não possui permissão para filtrar desempenho de operadores.'
+            )
+        if not can_view_sellers and filters.get('seller') is not None:
+            raise PermissionDenied(
+                'Você não possui permissão para filtrar desempenho de atendentes.'
+            )
+        sales_graph, sales_reversals = period_event_sales(
+            branch=request.branch_context, start=start, end=end, filters=filters,
+            operation_types=(OperationType.SALE,),
+        )
+        summary, _ = commercial_summary(
+            sales_graph, filters, reversals=sales_reversals,
+        )
+        _cancelled_rows, cancellations = cancellation_summary(
             branch=request.branch_context,
             start=start,
             end=end,
-            operation_type=OperationType.SALE,
             filters=filters,
         )
-        summary, cancellations = commercial_summary(sales, filters)
         products, categories = sale_rankings(
-            sales, limit=None if scope == 'products' else 10, filters=filters,
+            sales_graph, limit=None if scope == 'products' else 10, filters=filters,
+            reversals=sales_reversals,
         )
-        operator_groups = sale_user_groups(sales, 'created_by', filters)
-        seller_groups = sale_user_groups(sales, 'seller_user', filters)
+        operator_groups = (
+            sale_user_groups(
+                sales_graph, 'created_by', filters, sales_reversals,
+            ) if can_view_team else []
+        )
+        seller_groups = (
+            sale_user_groups(
+                sales_graph, 'seller_user', filters, sales_reversals,
+            ) if can_view_sellers else []
+        )
+        sales_receipts = receipt_summary(
+            branch=request.branch_context, start=start, end=end, filters=filters,
+            inflow_sales=sales_graph, operation_types=(OperationType.SALE,),
+        )
         result = {
+            'event_accounting': summary['event_accounting'],
             'gross': decimal_string(summary['gross']),
+            'sales_revenue': decimal_string(summary['sales_revenue']),
+            'consumption_charged': decimal_string(summary['consumption_charged']),
             'effective_revenue': decimal_string(summary['effective_revenue']),
+            'total_received': decimal_string(summary['total_received']),
+            'payment_total': decimal_string(summary['payment_total']),
+            'reconciliation_delta': decimal_string(summary['reconciliation_delta']),
             'count': summary['count'],
+            'inflow_count': summary['inflow_count'],
+            'reversal_count': summary['reversal_count'],
             'average': decimal_string(summary['average']),
-            'ticket_average': decimal_string(summary['ticket_average_received']),
+            'ticket_average': decimal_string(summary['average']),
             'account_discount': decimal_string(summary['account_discount']),
             'item_discount': decimal_string(summary['item_discount']),
             'manual_discount': decimal_string(summary['manual_discount']),
@@ -535,11 +796,20 @@ class SalesReportView(BaseReportView):
                 'reversed_effective_revenue': decimal_string(
                     cancellations['reversed_effective_revenue']
                 ),
+                'reversed_sales_revenue': decimal_string(
+                    cancellations['reversed_sales_revenue']
+                ),
+                'reversed_consumption_charged': decimal_string(
+                    cancellations['reversed_consumption_charged']
+                ),
                 'reversed_service_fee': decimal_string(
                     cancellations['reversed_service_fee']
                 ),
                 'reversed_total_received': decimal_string(
                     cancellations['reversed_total_received']
+                ),
+                'reversed_payment_total': decimal_string(
+                    cancellations['reversed_payment_total']
                 ),
                 'reconciliation_delta': decimal_string(
                     cancellations['reconciliation_delta']
@@ -547,48 +817,68 @@ class SalesReportView(BaseReportView):
             },
             'payment_totals': [
                 {
-                    'code': row['payment_method_code'],
-                    'name': row['payment_method_name'],
-                    'amount': decimal_string(row['amount']),
+                    'code': row['code'],
+                    'name': row['name'],
+                    'payment_total': decimal_string(row['payment_total']),
+                    'amount': decimal_string(row['payment_total']),
                 }
-                for row in payment_totals(sales, filters)
+                for row in sales_receipts['payment_methods']
             ],
             'product_ranking': [
-                {**row, 'quantity': decimal_string(row['quantity'], 3), 'revenue': decimal_string(row['revenue'])}
+                {
+                    **row, 'quantity': decimal_string(row['quantity'], 3),
+                    'sales_revenue': decimal_string(row['sales_revenue']),
+                    'revenue': decimal_string(row['sales_revenue']),
+                }
                 for row in products
             ],
             'category_ranking': [
-                {**row, 'quantity': decimal_string(row['quantity'], 3), 'revenue': decimal_string(row['revenue'])}
+                {
+                    **row, 'quantity': decimal_string(row['quantity'], 3),
+                    'sales_revenue': decimal_string(row['sales_revenue']),
+                    'revenue': decimal_string(row['sales_revenue']),
+                }
                 for row in categories
             ],
             'operator_groups': [_group_json(row) for row in operator_groups],
             'seller_groups': [_group_json(row) for row in seller_groups],
         }
         if scope == 'discounts':
-            discounted = sales.filter(status=SaleStatus.FINALIZED).filter(
-                Q(discount__gt=0)
-                | Q(item_discount_total__gt=0)
-                | Q(promotion_discount_total__gt=0)
-            ).distinct()
             item_filters = {
                 key: filters[key] for key in ('category', 'product') if filters.get(key)
             }
-            discounted_ids = [
-                sale.pk for sale in _financial_sales(discounted)
+            discounted_graph = [
+                sale for sale in sales_graph
                 if _scoped_sale_values(sale, item_filters)['total_discount'] > 0
             ]
-            discounted = discounted.filter(pk__in=discounted_ids)
-            discount_summary, _ = commercial_summary(discounted, filters)
+            discounted_reversals = [
+                sale for sale in sales_reversals
+                if _scoped_sale_values(sale, item_filters)['total_discount'] > 0
+            ]
+            discount_summary, _ = commercial_summary(
+                discounted_graph, filters, reversals=discounted_reversals,
+            )
             result.update({
                 'count': discount_summary['discounted_count'],
+                'inflow_count': discount_summary['inflow_count'],
+                'reversal_count': discount_summary['reversal_count'],
                 'gross': decimal_string(discount_summary['gross']),
                 'account_discount': decimal_string(discount_summary['account_discount']),
                 'item_discount': decimal_string(discount_summary['item_discount']),
                 'manual_discount': decimal_string(discount_summary['manual_discount']),
                 'promotion_discount': decimal_string(discount_summary['promotion_discount']),
                 'total_discount': decimal_string(discount_summary['total_discount']),
+                'sales_revenue': decimal_string(discount_summary['sales_revenue']),
+                'consumption_charged': decimal_string(
+                    discount_summary['consumption_charged']
+                ),
                 'effective_revenue': decimal_string(discount_summary['effective_revenue']),
                 'service_fee': decimal_string(discount_summary['service_fee']),
+                'total_received': decimal_string(discount_summary['total_received']),
+                'payment_total': decimal_string(discount_summary['payment_total']),
+                'reconciliation_delta': decimal_string(
+                    discount_summary['reconciliation_delta']
+                ),
                 'total_received_sales': decimal_string(
                     discount_summary['total_received_sales']
                 ),
@@ -619,19 +909,31 @@ class SalesReportView(BaseReportView):
                         for key in (
                             'commercial_received', 'consumption_received',
                             'gross_received', 'reversals', 'net_received',
+                            'sales_payment_total', 'consumption_payment_total',
+                            'payment_total_before_reversals',
+                            'reversal_payment_total', 'payment_total',
                         )
                     },
                 }
                 for row in receipts['payment_methods']
             ]
             if result.get('filtered_payment_method'):
-                result['filtered_payment_method']['subtotal'] = decimal_string(
-                    result['filtered_payment_method']['subtotal']
-                )
+                for key in ('subtotal', 'payment_total'):
+                    result['filtered_payment_method'][key] = decimal_string(
+                        result['filtered_payment_method'][key]
+                    )
         if not user_has_code(request, 'commissions.view'):
-            result.pop('commission', None)
+            for key in (
+                'commission', 'commission_sale_count', 'commission_attendant_count',
+            ):
+                result.pop(key, None)
             for group in result.get('operator_groups', []) + result.get('seller_groups', []):
-                group.pop('commission', None)
+                for key in ('commission', 'commission_sale_count'):
+                    group.pop(key, None)
+        if not can_view_team:
+            result.pop('operator_groups', None)
+        if not can_view_sellers:
+            result.pop('seller_groups', None)
         summary_keys = {
             'products': {'product_ranking', 'category_ranking'},
             'receipts': set(result),
@@ -639,13 +941,16 @@ class SalesReportView(BaseReportView):
             'sellers': {'seller_groups'},
             'commissions': {
                 'seller_groups', 'commission', 'commission_sale_count',
-                'commission_attendant_count',
+                'commission_attendant_count', 'sales_revenue', 'effective_revenue',
+                'service_fee', 'total_received', 'payment_total',
+                'reconciliation_delta', 'inflow_count', 'reversal_count',
             },
             'discounts': {
                 'account_discount', 'item_discount', 'manual_discount',
                 'promotion_discount', 'total_discount', 'gross', 'count',
-                'effective_revenue', 'service_fee', 'total_received_sales',
-                'customer_total', 'discount_reconstruction_delta',
+                'sales_revenue', 'effective_revenue', 'service_fee',
+                'total_received', 'payment_total', 'reconciliation_delta',
+                'discount_reconstruction_delta', 'inflow_count', 'reversal_count',
                 'received_reconstruction_delta',
             },
         }.get(scope)
@@ -659,7 +964,7 @@ class SalesReportView(BaseReportView):
                         'name': row['product_name'],
                         'internal_code': row['internal_code'],
                         'quantity': row['quantity'],
-                        'revenue': row['revenue'],
+                        'sales_revenue': row['sales_revenue'],
                     }
                     for row in result.get('product_ranking', [])
                 ] + [
@@ -668,19 +973,30 @@ class SalesReportView(BaseReportView):
                         'name': row['category_name'],
                         'internal_code': '',
                         'quantity': row['quantity'],
-                        'revenue': row['revenue'],
+                        'sales_revenue': row['sales_revenue'],
                     }
                     for row in result.get('category_ranking', [])
                 ]
                 return csv_response(
                     'relatorio-produtos.csv',
-                    ('ranking_type', 'name', 'internal_code', 'quantity', 'revenue'),
+                    ('ranking_type', 'name', 'internal_code', 'quantity', 'sales_revenue'),
                     ranking_rows,
                 )
             if scope == 'receipts':
                 filtered_method = result.get('filtered_payment_method') or {}
-                export_rows = [
+                export_rows = [{
+                    'row_type': 'reconciliation',
+                    'name': 'Reconciliação do período',
+                    'sales_revenue': result.get('sales_revenue'),
+                    'consumption_charged': result.get('consumption_charged'),
+                    'effective_revenue': result.get('effective_revenue'),
+                    'service_fee': result.get('service_fee'),
+                    'total_received': result.get('total_received'),
+                    'payment_total': result.get('payment_total'),
+                    'reconciliation_delta': result.get('reconciliation_delta'),
+                }] + [
                     {
+                        'row_type': 'payment_method',
                         **row,
                         'is_filtered_method': (
                             row['code'] == filtered_method.get('code')
@@ -695,9 +1011,12 @@ class SalesReportView(BaseReportView):
                 return csv_response(
                     'relatorio-recebimentos.csv',
                     (
-                        'code', 'name', 'commercial_received',
-                        'consumption_received', 'gross_received', 'reversals',
-                        'net_received', 'is_filtered_method',
+                        'row_type', 'code', 'name', 'sales_revenue',
+                        'consumption_charged', 'effective_revenue', 'service_fee',
+                        'total_received', 'reconciliation_delta',
+                        'sales_payment_total',
+                        'consumption_payment_total', 'payment_total_before_reversals',
+                        'reversal_payment_total', 'payment_total', 'is_filtered_method',
                         'filtered_subtotal_is_integral_revenue',
                     ),
                     export_rows,
@@ -709,17 +1028,22 @@ class SalesReportView(BaseReportView):
                     for row in result.get(key, [])
                 ]
                 headers = (
-                    'name', 'count', 'gross', 'effective_revenue', 'service_fee',
-                    'customer_total', 'total_received', 'payment_reconciliation_delta',
+                    'name', 'count', 'inflow_count', 'reversal_count',
+                    'gross', 'sales_revenue', 'effective_revenue',
+                    'service_fee', 'total_received', 'payment_total',
+                    'reconciliation_delta',
                     'cancellation_count', 'cancellation_value',
                 )
                 if scope == 'commissions':
                     headers += ('commission',)
                 return csv_response(f'relatorio-{scope}.csv', headers, group_rows)
         if scope == 'discounts':
-            detail_rows = sale_rows(discounted)
+            detail_rows = event_rows(discounted_graph, discounted_reversals)
         else:
-            detail_rows = sale_rows(sales) if scope in ('overview', 'sales') else []
+            detail_rows = (
+                event_rows(sales_graph, sales_reversals)
+                if scope in ('overview', 'sales') else []
+            )
         return self.respond(
             request,
             rows=detail_rows,
@@ -737,46 +1061,41 @@ class CancellationsReportView(BaseReportView):
 
     def get(self, request):
         filters, start, end = self.parse_query(request)
-        rows, totals = cancellation_summary(
-            branch=request.branch_context, start=start, end=end,
-            category=filters.get('category'), product=filters.get('product'),
-        )
-        if filters.get('operator'):
-            rows = rows.filter(created_by_id=filters['operator'])
-        if filters.get('seller'):
-            rows = rows.filter(seller_user_id=filters['seller'])
-        if filters.get('payment_method'):
-            rows = rows.filter(payments__payment_method_id=filters['payment_method'])
-        if filters.get('payment_method_code'):
-            rows = rows.filter(
-                payments__payment_method_code=filters['payment_method_code']
+        if not user_has_code(request, 'reports.view_team') and any(
+            filters.get(key) is not None for key in ('operator', 'seller')
+        ):
+            raise PermissionDenied(
+                'Você não possui permissão para filtrar desempenho da equipe.'
             )
-        rows = rows.distinct()
-        if any(filters.get(key) for key in (
-            'operator', 'seller', 'payment_method', 'payment_method_code',
-        )):
-            item_filters = {
-                key: filters[key] for key in ('category', 'product') if filters.get(key)
-            }
-            totals = FinancialAggregator(
-                _financial_sales(rows), item_filters
-            ).cancellations()
+        rows, totals = cancellation_summary(
+            branch=request.branch_context, start=start, end=end, filters=filters,
+        )
         detail_rows = rows.select_related(
             'created_by', 'seller_user', 'discount_approved_by', 'beneficiary_user'
         ).prefetch_related('items__product__category', 'payments').order_by(
             '-cancelled_at', '-id'
         )
+        detail_rows = event_rows([], list(detail_rows))
         return self.respond(
             request, rows=detail_rows, period=canonical_datetime_range(start, end),
             summary={
                 'count': totals['count'],
                 'value': decimal_string(totals['value']),
+                'reversed_sales_revenue': decimal_string(
+                    totals['reversed_sales_revenue']
+                ),
+                'reversed_consumption_charged': decimal_string(
+                    totals['reversed_consumption_charged']
+                ),
                 'reversed_effective_revenue': decimal_string(
                     totals['reversed_effective_revenue']
                 ),
                 'reversed_service_fee': decimal_string(totals['reversed_service_fee']),
                 'reversed_total_received': decimal_string(
                     totals['reversed_total_received']
+                ),
+                'reversed_payment_total': decimal_string(
+                    totals['reversed_payment_total']
                 ),
                 'reconciliation_delta': decimal_string(totals['reconciliation_delta']),
             },
@@ -790,8 +1109,10 @@ def _group_json(row):
             field: decimal_string(row[field])
             for field in (
                 'gross', 'manual_discount', 'promotion_discount', 'total_discount',
-                'effective_revenue', 'service_fee', 'commission', 'customer_total',
-                'total_received', 'payment_reconciliation_delta', 'average',
+                'sales_revenue', 'consumption_charged', 'effective_revenue',
+                'service_fee', 'commission', 'customer_total', 'total_received',
+                'payment_total', 'reconciliation_delta',
+                'payment_reconciliation_delta', 'average',
                 'cancellation_value',
             )
             if field in row
@@ -804,7 +1125,11 @@ def _consumption_group_json(row):
         **row,
         **{
             key: decimal_string(row[key])
-            for key in ('reference', 'charged', 'benefit')
+            for key in (
+                'reference', 'charged', 'benefit', 'sales_revenue',
+                'consumption_charged', 'effective_revenue', 'service_fee',
+                'total_received',
+            )
         },
     }
 
@@ -855,47 +1180,71 @@ class OperationalResultReportView(BaseReportView):
             sales=sales,
             cash_session=session,
         )
-        statement_keys = (
-            'gross', 'promotion_discount', 'item_discount', 'account_discount',
-            'manual_discount', 'discounts', 'effective_revenue', 'service_fee',
-            'customer_total', 'total_received_sales', 'payment_reconciliation_delta',
-            'charged_consumption', 'operational_received', 'historical_sales_cogs',
-            'historical_consumption_cogs', 'commission', 'operating_expenses',
-            'fixed_cost', 'estimated_result', 'result', 'margin',
-            'operational_reconciliation_delta',
+        data = operational_result_data(
+            request, summary,
+            extra_keys=(
+                'gross', 'promotion_discount', 'item_discount', 'account_discount',
+                'manual_discount', 'discounts', 'sales_revenue_inflows',
+                'sales_revenue_reversals', 'consumption_charged_inflows',
+                'consumption_charged_reversals', 'service_fee_inflows',
+                'service_fee_reversals', 'payment_total_inflows',
+                'payment_total_reversals',
+            ),
         )
-        data = {
-            key: decimal_string(summary[key]) for key in statement_keys
-        }
+        for key in (
+            'sales_inflow_count', 'sales_reversal_count',
+            'consumption_inflow_count', 'consumption_reversal_count',
+        ):
+            data[key] = summary[key]
         data['unclassified_withdrawals'] = {
             'count': summary['unclassified_withdrawals']['count'],
             'amount': decimal_string(summary['unclassified_withdrawals']['amount']),
         }
-        if not user_has_code(request, 'commissions.view'):
-            data.pop('commission', None)
         data['cash_session'] = session.pk if session else None
-        data['notice'] = 'Estimativa operacional; não constitui DRE contábil.'
+        data['event_accounting'] = summary['event_accounting']
+        data['notice'] = (
+            'Entradas pela criação e reversões pela data do cancelamento. '
+            'Estimativa operacional; não constitui DRE contábil.'
+        )
         if request.query_params.get('export') == 'csv':
             labels = {
+                'sales_inflow_count': 'Vendas - entradas',
+                'sales_reversal_count': 'Vendas - reversões',
+                'consumption_inflow_count': 'Consumações - entradas',
+                'consumption_reversal_count': 'Consumações - reversões',
                 'gross': 'Valor bruto a preço de tabela',
                 'promotion_discount': '(-) Descontos promocionais',
                 'item_discount': '(-) Descontos manuais por item',
                 'account_discount': '(-) Descontos manuais na conta',
+                'sales_revenue_inflows': 'Faturamento de vendas - entradas',
+                'sales_revenue_reversals': 'Faturamento de vendas - reversões',
+                'sales_revenue': '= Faturamento de vendas',
+                'consumption_charged_inflows': 'Consumações cobradas - entradas',
+                'consumption_charged_reversals': 'Consumações cobradas - reversões',
+                'consumption_charged': '(+) Consumações cobradas',
                 'effective_revenue': '= Faturamento efetivo',
+                'service_fee_inflows': 'Taxa de serviço - entradas',
+                'service_fee_reversals': 'Taxa de serviço - reversões',
                 'service_fee': 'Taxa de serviço',
-                'customer_total': 'Total cobrado',
-                'total_received_sales': 'Total comercial recebido',
-                'payment_reconciliation_delta': 'Delta de pagamentos comerciais',
-                'charged_consumption': '(+) Consumações cobradas',
-                'operational_received': '= Recebimento operacional',
+                'total_received': '= Total recebido',
+                'payment_total_inflows': 'Pagamentos - entradas',
+                'payment_total_reversals': 'Pagamentos - reversões',
+                'payment_total': 'Total dos pagamentos',
+                'reconciliation_delta': 'Delta de reconciliação',
+                'historical_sales_cogs_inflows': 'CMV histórico de vendas - entradas',
+                'historical_sales_cogs_reversals': 'CMV histórico de vendas - reversões',
                 'historical_sales_cogs': '(-) CMV histórico de vendas',
+                'historical_consumption_cogs_inflows': 'CMV histórico de consumações - entradas',
+                'historical_consumption_cogs_reversals': 'CMV histórico de consumações - reversões',
                 'historical_consumption_cogs': '(-) CMV histórico de consumações',
+                'commission_inflows': 'Comissões - entradas',
+                'commission_reversals': 'Comissões - reversões',
                 'commission': '(-) Comissões',
                 'operating_expenses': '(-) Despesas operacionais',
                 'fixed_cost': '(-) Custo fixo rateado',
+                'costs_and_expenses': '(-) Custos e despesas',
                 'estimated_result': '= Resultado estimado',
                 'margin': 'Margem estimada (%)',
-                'operational_reconciliation_delta': 'Delta de reconciliação operacional',
             }
             rows = [
                 {'statement': label, 'value': data[key]}
@@ -907,7 +1256,7 @@ class OperationalResultReportView(BaseReportView):
             )
         return self.respond(
             request,
-            rows=sale_rows(sales),
+            rows=[],
             period=canonical_datetime_range(start, end),
             summary=data,
         )
@@ -919,42 +1268,77 @@ class ConsumptionsReportView(BaseReportView):
     row_serializer_class = ReportSaleSerializer
     csv_filename = 'relatorio-consumacoes.csv'
     csv_headers = (
-        'id', 'sale_number', 'status', 'beneficiary', 'subtotal', 'total',
+        'id', 'event_type', 'event_at', 'event_sign', 'sale_number', 'status',
+        'beneficiary', 'subtotal',
+        'sales_revenue', 'consumption_charged', 'effective_revenue', 'service_fee',
+        'total_received', 'payment_total', 'reconciliation_delta',
         'created_at', 'cancelled_at', 'items', 'payments',
     )
 
     def get(self, request):
         filters, start, end = self.parse_query(request)
-        sales = filtered_sales(
-            branch=request.branch_context,
-            start=start,
-            end=end,
-            operation_type=OperationType.CONSUMPTION,
-            filters=filters,
+        consumption_graph, consumption_reversals = period_event_sales(
+            branch=request.branch_context, start=start, end=end, filters=filters,
+            operation_types=(OperationType.CONSUMPTION,),
         )
         include_cost = user_has_code(request, 'inventory.view_stock_costs')
         summary = consumption_summary(
-            sales, include_cost=include_cost, filters=filters
+            consumption_graph, include_cost=include_cost, filters=filters,
+            reversals=consumption_reversals,
         )
+        consumption_cancellations = FinancialAggregator(
+            consumption_reversals, filters
+        ).cancellations(operation_type=OperationType.CONSUMPTION)
         data = {
+            'event_accounting': summary['event_accounting'],
             'count': summary['count'],
+            'inflow_count': summary['inflow_count'],
+            'reversal_count': summary['reversal_count'],
             'reference': decimal_string(summary['reference']),
             'charged': decimal_string(summary['charged']),
+            'sales_revenue': decimal_string(summary['sales_revenue']),
+            'consumption_charged': decimal_string(summary['consumption_charged']),
+            'effective_revenue': decimal_string(summary['effective_revenue']),
+            'service_fee': decimal_string(summary['service_fee']),
+            'total_received': decimal_string(summary['total_received']),
+            'payment_total': decimal_string(summary['payment_total']),
+            'reconciliation_delta': decimal_string(summary['reconciliation_delta']),
             'subsidy': decimal_string(summary['subsidy']),
             'benefit': decimal_string(summary['benefit']),
             'quantity': decimal_string(summary['quantity'], 3),
             'payment_totals': [
-                {**row, 'amount': decimal_string(row['amount'])}
+                {
+                    **row,
+                    'payment_total': decimal_string(row['amount']),
+                    'amount': decimal_string(row['amount']),
+                }
                 for row in summary['payments']
             ],
             'payment_reconciliation_delta': decimal_string(
                 summary['payment_reconciliation_delta']
             ),
+            'cancellations': {
+                'count': consumption_cancellations['count'],
+                'reversed_consumption_charged': decimal_string(
+                    consumption_cancellations['reversed_consumption_charged']
+                ),
+                'reversed_total_received': decimal_string(
+                    consumption_cancellations['reversed_total_received']
+                ),
+                'reversed_payment_total': decimal_string(
+                    consumption_cancellations['reversed_payment_total']
+                ),
+                'reconciliation_delta': decimal_string(
+                    consumption_cancellations['reconciliation_delta']
+                ),
+            },
         }
         if include_cost:
             data['historical_cost'] = decimal_string(summary['historical_cost'])
             data['historical_consumption_cogs'] = data['historical_cost']
-        beneficiary_groups, user_type_groups = consumption_groupings(sales, filters)
+        beneficiary_groups, user_type_groups = consumption_groupings(
+            consumption_graph, filters, consumption_reversals,
+        )
         data['beneficiary_groups'] = [
             _consumption_group_json(row) for row in beneficiary_groups
         ]
@@ -963,7 +1347,7 @@ class ConsumptionsReportView(BaseReportView):
         ]
         return self.respond(
             request,
-            rows=sale_rows(sales),
+            rows=event_rows(consumption_graph, consumption_reversals),
             period=canonical_datetime_range(start, end),
             summary=data,
         )
@@ -1046,11 +1430,14 @@ class CashReportView(BaseReportView):
             'complete_session_totals': complete_session_totals,
             'sales_count': clipped['sales_count'],
             'consumption_count': clipped['consumption_count'],
+            'sales_revenue': decimal_string(clipped['sales_revenue']),
+            'consumption_charged': decimal_string(clipped['consumption_charged']),
             'effective_revenue': decimal_string(clipped['effective_revenue']),
             'service_fee': decimal_string(clipped['service_fee']),
+            'total_received': decimal_string(clipped['total_received']),
+            'payment_total': decimal_string(clipped['payment_total']),
             'sales_received': decimal_string(clipped['sales_received']),
-            'consumption_charged': decimal_string(clipped['consumption_charged']),
-            'operational_received': decimal_string(clipped['total_operational_received']),
+            'operational_received': decimal_string(clipped['total_received']),
             'reversals': decimal_string(clipped['reversals']),
             'reconciliation_delta': decimal_string(clipped['reconciliation_delta']),
             'manual_entries': decimal_string(clipped_movements['manual_entries']),
@@ -1068,6 +1455,9 @@ class CashReportView(BaseReportView):
                     for key in (
                         'commercial_received', 'consumption_received',
                         'gross_received', 'reversals', 'net_received',
+                        'sales_payment_total', 'consumption_payment_total',
+                        'payment_total_before_reversals',
+                        'reversal_payment_total', 'payment_total',
                     )
                 },
             }
@@ -1076,53 +1466,100 @@ class CashReportView(BaseReportView):
         if user_has_code(request, 'commissions.view'):
             clipped_sales = [
                 sale for sale in session_sales
+                if start <= sale.created_at < end_exclusive
+            ]
+            clipped_reversals = [
+                sale for sale in session_sales
                 if (
-                    start <= sale.created_at < end_exclusive
-                    and sale.status == SaleStatus.FINALIZED
+                    sale.status == SaleStatus.CANCELLED
+                    and sale.cancelled_at
+                    and start <= sale.cancelled_at < end_exclusive
                 )
             ]
             summary['commission'] = decimal_string(
-                FinancialAggregator(clipped_sales).commercial()['commission']
+                FinancialAggregator(clipped_sales).operational_statement(
+                    reversal_sales=clipped_reversals
+                )['commission']
             )
         if request.query_params.get('export') == 'csv':
-            export_rows = []
+            export_rows = [{
+                'scope': 'requested_period',
+                'period_start': start,
+                'period_end': end,
+                'period_sales_count': summary['sales_count'],
+                'period_sales_revenue': summary['sales_revenue'],
+                'period_consumption_charged': summary['consumption_charged'],
+                'period_effective_revenue': summary['effective_revenue'],
+                'period_service_fee': summary['service_fee'],
+                'period_total_received': summary['total_received'],
+                'period_payment_total': summary['payment_total'],
+                'period_reconciliation_delta': summary['reconciliation_delta'],
+                'period_consumption_count': summary['consumption_count'],
+                'period_reversals': summary['reversals'],
+                'period_manual_entries': summary['manual_entries'],
+                'period_withdrawals': summary['withdrawals'],
+                'period_payment_totals': summary['payment_totals'],
+                'period_commission': summary.get('commission'),
+            }]
             for row in serialized:
                 operational = row.get('operational_summary', {})
                 sales_summary = operational.get('sales', {})
                 consumption = operational.get('consumptions', {})
                 export_row = {
-                    **{key: row.get(key) for key in self.csv_headers},
-                    'sales_count': sales_summary.get('count', 0),
-                    'gross': sales_summary.get('gross', '0.00'),
-                    'promotion_discount': sales_summary.get('promotion_discount', '0.00'),
-                    'item_discount': sales_summary.get('item_discount', '0.00'),
-                    'account_discount': sales_summary.get('account_discount', '0.00'),
-                    'effective_revenue': sales_summary.get('effective_revenue', '0.00'),
-                    'service_fee': sales_summary.get('service_fee', '0.00'),
-                    'customer_total': sales_summary.get('customer_total', '0.00'),
-                    'sales_cancellation_count': sales_summary.get('cancellations', {}).get('count', 0),
-                    'sales_cancellation_value': sales_summary.get('cancellations', {}).get('value', '0.00'),
-                    'consumption_count': consumption.get('count', 0),
-                    'consumption_reference': consumption.get('reference', '0.00'),
-                    'consumption_charged': consumption.get('charged', '0.00'),
-                    'consumption_benefit': consumption.get('benefit', '0.00'),
-                    'consumption_cancellation_count': consumption.get('cancellations', {}).get('count', 0),
-                    'consumption_cancellation_value': consumption.get('cancellations', {}).get('value', '0.00'),
-                    'payment_totals': operational.get('payment_totals', []),
+                    'scope': 'complete_session_values',
+                    'session_id': row.get('id'),
+                    'session_opened_at': row.get('opened_at'),
+                    'session_closed_at': row.get('closed_at'),
+                    'session_status': row.get('status'),
+                    'session_register': row.get('register'),
+                    'session_operator': row.get('operator'),
+                    'complete_session_opening': row.get('opening'),
+                    'complete_session_manual_entries': row.get('manual_entries'),
+                    'complete_session_sale_cash': row.get('sale_cash'),
+                    'complete_session_consumption_cash': row.get('consumption_cash'),
+                    'complete_session_cash_reversals': row.get('cash_reversals'),
+                    'complete_session_withdrawals': row.get('withdrawals'),
+                    'complete_session_expected': row.get('expected'),
+                    'complete_session_informed': row.get('informed'),
+                    'complete_session_difference': row.get('difference'),
+                    'complete_session_sales_count': sales_summary.get('count', 0),
+                    'complete_session_sales_revenue': operational.get('sales_revenue', '0.00'),
+                    'complete_session_consumption_charged': operational.get('consumption_charged', '0.00'),
+                    'complete_session_effective_revenue': operational.get('effective_revenue', '0.00'),
+                    'complete_session_service_fee': operational.get('service_fee', '0.00'),
+                    'complete_session_total_received': operational.get('total_received', '0.00'),
+                    'complete_session_payment_total': operational.get('payment_total', '0.00'),
+                    'complete_session_reconciliation_delta': operational.get('reconciliation_delta', '0.00'),
+                    'complete_session_consumption_count': consumption.get('count', 0),
+                    'complete_session_payment_totals': operational.get('payment_totals', []),
+                    'complete_session_commission': sales_summary.get('commission'),
                 }
-                if 'commission' in sales_summary:
-                    export_row['commission'] = sales_summary['commission']
                 export_rows.append(export_row)
-            headers = self.csv_headers + (
-                'sales_count', 'gross', 'promotion_discount', 'item_discount',
-                'account_discount', 'effective_revenue', 'service_fee',
-                'customer_total', 'sales_cancellation_count', 'sales_cancellation_value',
-                'consumption_count', 'consumption_reference', 'consumption_charged',
-                'consumption_benefit', 'consumption_cancellation_count',
-                'consumption_cancellation_value', 'payment_totals',
+            headers = (
+                'scope', 'period_start', 'period_end', 'period_sales_count',
+                'period_sales_revenue', 'period_consumption_charged',
+                'period_effective_revenue', 'period_service_fee',
+                'period_total_received', 'period_payment_total',
+                'period_reconciliation_delta', 'period_consumption_count',
+                'period_reversals', 'period_manual_entries',
+                'period_withdrawals', 'period_payment_totals',
+                'session_id', 'session_opened_at', 'session_closed_at',
+                'session_status', 'session_register', 'session_operator',
+                'complete_session_opening', 'complete_session_manual_entries',
+                'complete_session_sale_cash', 'complete_session_consumption_cash',
+                'complete_session_cash_reversals', 'complete_session_withdrawals',
+                'complete_session_expected', 'complete_session_informed',
+                'complete_session_difference', 'complete_session_sales_count',
+                'complete_session_sales_revenue',
+                'complete_session_consumption_charged',
+                'complete_session_effective_revenue', 'complete_session_service_fee',
+                'complete_session_total_received', 'complete_session_payment_total',
+                'complete_session_reconciliation_delta',
+                'complete_session_consumption_count',
+                'complete_session_payment_totals',
             )
             if user_has_code(request, 'commissions.view'):
-                headers += ('commission',)
+                headers += ('period_commission', 'complete_session_commission')
             return csv_response(self.csv_filename, headers, export_rows)
         return self.respond(
             request,

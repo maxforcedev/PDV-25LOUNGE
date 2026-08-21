@@ -126,6 +126,8 @@ class FinancialAggregator:
                 'promotion_discount': money(item.promotion_benefit),
                 'item_discount': money(item.manual_discount),
                 'account_discount': account_discounts[item.pk],
+                'sales_revenue': revenues[item.pk],
+                # Compatibility alias. New consumers must use sales_revenue.
                 'effective_revenue': revenues[item.pk],
                 'service_fee': service_fees[item.pk],
                 'commission': commissions[item.pk],
@@ -140,7 +142,7 @@ class FinancialAggregator:
             key: money(sum((row[key] for row in rows), ZERO))
             for key in (
                 'gross', 'promotion_discount', 'item_discount', 'account_discount',
-                'effective_revenue', 'service_fee', 'commission', 'historical_cost',
+                'sales_revenue', 'service_fee', 'commission', 'historical_cost',
             )
         }
         values['manual_discount'] = money(
@@ -149,15 +151,16 @@ class FinancialAggregator:
         values['total_discount'] = money(
             values['promotion_discount'] + values['manual_discount']
         )
-        values['customer_total'] = money(
-            values['effective_revenue'] + values['service_fee']
-        )
+        values['consumption_charged'] = ZERO
+        values['effective_revenue'] = values['sales_revenue']
+        values['total_received'] = money(values['effective_revenue'] + values['service_fee'])
+        values['customer_total'] = values['total_received']
         values['discount_reconstruction_delta'] = money(
             values['gross'] - values['promotion_discount'] - values['item_discount']
-            - values['account_discount'] - values['effective_revenue']
+            - values['account_discount'] - values['sales_revenue']
         )
         values['received_reconstruction_delta'] = money(
-            values['effective_revenue'] + values['service_fee'] - values['customer_total']
+            values['effective_revenue'] + values['service_fee'] - values['total_received']
         )
         values['has_items'] = bool(rows)
         return values
@@ -169,10 +172,16 @@ class FinancialAggregator:
         }
         if not matching_ids:
             return []
-        weights = [
-            (row['item'].pk, row['effective_revenue'] + row['service_fee'])
-            for row in all_rows
-        ]
+        if sale.operation_type == OperationType.CONSUMPTION:
+            charged = allocate_money(
+                sale.total, [(row['item'].pk, row['item'].subtotal) for row in all_rows]
+            )
+            weights = [(row['item'].pk, charged[row['item'].pk]) for row in all_rows]
+        else:
+            weights = [
+                (row['item'].pk, row['sales_revenue'] + row['service_fee'])
+                for row in all_rows
+            ]
         payments = list(sale.payments.all())
         matrix, _columns = allocate_payment_matrix(payments, weights)
         return [
@@ -192,13 +201,14 @@ class FinancialAggregator:
             key: ZERO for key in (
                 'customer_total', 'gross', 'account_discount', 'item_discount',
                 'manual_discount', 'promotion_discount', 'total_discount',
-                'effective_revenue', 'service_fee', 'commission',
+                'sales_revenue', 'consumption_charged', 'effective_revenue',
+                'service_fee', 'total_received', 'commission',
                 'historical_sales_cogs', 'discount_reconstruction_delta',
                 'received_reconstruction_delta',
             )
         }
         totals.update(count=0, discounted_count=0, manual_discount_count=0)
-        received = ZERO
+        payment_total = ZERO
         commission_sale_count = 0
         commission_attendants = set()
         for sale in self._sales(
@@ -213,59 +223,149 @@ class FinancialAggregator:
             for key in (
                 'customer_total', 'gross', 'account_discount', 'item_discount',
                 'manual_discount', 'promotion_discount', 'total_discount',
-                'effective_revenue', 'service_fee', 'commission',
+                'sales_revenue', 'consumption_charged', 'effective_revenue',
+                'service_fee', 'total_received', 'commission',
                 'discount_reconstruction_delta', 'received_reconstruction_delta',
             ):
                 totals[key] = money(totals[key] + values[key])
             totals['historical_sales_cogs'] = money(
                 totals['historical_sales_cogs'] + values['historical_cost']
             )
-            received = money(received + sum(
+            payment_total = money(payment_total + sum(
                 (row['amount'] for row in self.payment_rows(sale)), ZERO
             ))
-            if sale.commission_amount > ZERO:
+            if values['commission'] > ZERO:
                 commission_sale_count += 1
                 commission_attendants.add(sale.seller_user_id)
-        totals['revenue'] = totals['effective_revenue']
-        totals['total_received_sales'] = received
-        totals['payment_reconciliation_delta'] = money(received - totals['customer_total'])
+        totals['revenue'] = totals['sales_revenue']
+        totals['payment_total'] = payment_total
+        totals['reconciliation_delta'] = money(payment_total - totals['total_received'])
+        totals['payment_reconciliation_delta'] = totals['reconciliation_delta']
+        # Compatibility aliases for clients predating the canonical contract.
+        totals['total_received_sales'] = payment_total
+        totals['customer_total'] = totals['total_received']
         totals['average'] = money(
-            totals['effective_revenue'] / totals['count'] if totals['count'] else ZERO
+            totals['sales_revenue'] / totals['count'] if totals['count'] else ZERO
         )
         totals['ticket_average_received'] = money(
-            received / totals['count'] if totals['count'] else ZERO
+            payment_total / totals['count'] if totals['count'] else ZERO
         )
         totals['commission_sale_count'] = commission_sale_count
         totals['commission_attendant_count'] = len(commission_attendants)
         return totals
 
+    def commercial_events(self, reversal_sales=()):
+        fields = (
+            'gross', 'account_discount', 'item_discount', 'manual_discount',
+            'promotion_discount', 'total_discount', 'sales_revenue',
+            'consumption_charged', 'effective_revenue', 'service_fee',
+            'total_received', 'commission', 'historical_sales_cogs',
+            'discount_reconstruction_delta', 'received_reconstruction_delta',
+        )
+        totals = {key: ZERO for key in fields}
+        totals.update(
+            count=0, inflow_count=0, reversal_count=0,
+            discounted_count=0, manual_discount_count=0,
+            commission_sale_count=0,
+            historical_sales_cogs_inflows=ZERO,
+            historical_sales_cogs_reversals=ZERO,
+            commission_inflows=ZERO, commission_reversals=ZERO,
+        )
+        payment_total = ZERO
+        attendant_commissions = defaultdict(lambda: ZERO)
+        for aggregator, sign in (
+            (self, 1), (FinancialAggregator(reversal_sales, self.filters), -1),
+        ):
+            for sale in aggregator._sales(operation_type=OperationType.SALE):
+                values = aggregator.sale_values(sale)
+                if not values['has_items']:
+                    continue
+                totals['count'] += sign
+                totals['inflow_count' if sign > 0 else 'reversal_count'] += 1
+                totals['discounted_count'] += sign * int(values['total_discount'] > ZERO)
+                totals['manual_discount_count'] += sign * int(
+                    values['manual_discount'] > ZERO
+                )
+                for key in fields:
+                    value_key = 'historical_cost' if key == 'historical_sales_cogs' else key
+                    totals[key] = money(totals[key] + sign * values[value_key])
+                direction = 'inflows' if sign > 0 else 'reversals'
+                totals[f'historical_sales_cogs_{direction}'] = money(
+                    totals[f'historical_sales_cogs_{direction}']
+                    + values['historical_cost']
+                )
+                totals[f'commission_{direction}'] = money(
+                    totals[f'commission_{direction}'] + values['commission']
+                )
+                sale_payment_total = sum(
+                    (row['amount'] for row in aggregator.payment_rows(sale)), ZERO
+                )
+                payment_total = money(payment_total + sign * sale_payment_total)
+                if values['commission'] > ZERO:
+                    totals['commission_sale_count'] += sign
+                attendant_commissions[sale.seller_user_id] = money(
+                    attendant_commissions[sale.seller_user_id]
+                    + sign * values['commission']
+                )
+        totals['payment_total'] = payment_total
+        totals['reconciliation_delta'] = money(payment_total - totals['total_received'])
+        totals['average'] = money(
+            totals['sales_revenue'] / totals['count'] if totals['count'] > 0 else ZERO
+        )
+        totals['commission_attendant_count'] = sum(
+            1 for user_id, value in attendant_commissions.items()
+            if user_id is not None and value != ZERO
+        )
+        totals['revenue'] = totals['sales_revenue']
+        totals['customer_total'] = totals['total_received']
+        totals['total_received_sales'] = payment_total
+        totals['payment_reconciliation_delta'] = totals['reconciliation_delta']
+        totals['ticket_average_received'] = money(
+            payment_total / totals['count'] if totals['count'] > 0 else ZERO
+        )
+        totals['event_accounting'] = 'created_inflows_plus_cancellation_reversals'
+        return totals
+
     def cancellations(self, *, operation_type=OperationType.SALE):
         totals = {
             'count': 0,
+            'reversed_sales_revenue': ZERO,
+            'reversed_consumption_charged': ZERO,
             'reversed_effective_revenue': ZERO,
             'reversed_service_fee': ZERO,
             'reversed_customer_total': ZERO,
             'reversed_total_received': ZERO,
+            'reversed_payment_total': ZERO,
         }
         for sale in self._sales(status=SaleStatus.CANCELLED, operation_type=operation_type):
             if operation_type == OperationType.SALE:
                 values = self.sale_values(sale)
                 if not values['has_items']:
                     continue
+                sales_revenue = values['sales_revenue']
+                consumption_charged = ZERO
                 effective = values['effective_revenue']
                 fee = values['service_fee']
-                semantic_total = values['customer_total']
+                semantic_total = values['total_received']
             else:
                 values = self.consumption_values(sale)
                 if not values:
                     continue
-                effective = ZERO
+                sales_revenue = ZERO
+                consumption_charged = values['consumption_charged']
+                effective = consumption_charged
                 fee = ZERO
-                semantic_total = values['charged']
+                semantic_total = values['total_received']
             reversed_received = money(sum(
                 (row['amount'] for row in self.payment_rows(sale)), ZERO
             ))
             totals['count'] += 1
+            totals['reversed_sales_revenue'] = money(
+                totals['reversed_sales_revenue'] + sales_revenue
+            )
+            totals['reversed_consumption_charged'] = money(
+                totals['reversed_consumption_charged'] + consumption_charged
+            )
             totals['reversed_effective_revenue'] = money(
                 totals['reversed_effective_revenue'] + effective
             )
@@ -274,11 +374,14 @@ class FinancialAggregator:
                 totals['reversed_customer_total'] + semantic_total
             )
             totals['reversed_total_received'] = money(
-                totals['reversed_total_received'] + reversed_received
+                totals['reversed_total_received'] + semantic_total
             )
-        totals['value'] = totals['reversed_total_received']
+            totals['reversed_payment_total'] = money(
+                totals['reversed_payment_total'] + reversed_received
+            )
+        totals['value'] = totals['reversed_payment_total']
         totals['reconciliation_delta'] = money(
-            totals['reversed_total_received'] - totals['reversed_customer_total']
+            totals['reversed_payment_total'] - totals['reversed_total_received']
         )
         return totals
 
@@ -296,6 +399,11 @@ class FinancialAggregator:
         return {
             'reference': reference,
             'charged': charged_total,
+            'sales_revenue': ZERO,
+            'consumption_charged': charged_total,
+            'effective_revenue': charged_total,
+            'service_fee': ZERO,
+            'total_received': charged_total,
             'benefit': money(reference - charged_total),
             'historical_cost': historical_cost,
             'quantity': sum((item.quantity for item in matching), Decimal('0.000')),
@@ -304,6 +412,8 @@ class FinancialAggregator:
     def consumption(self):
         totals = {
             'count': 0, 'reference': ZERO, 'charged': ZERO, 'benefit': ZERO,
+            'sales_revenue': ZERO, 'consumption_charged': ZERO,
+            'effective_revenue': ZERO, 'service_fee': ZERO, 'total_received': ZERO,
             'historical_consumption_cogs': ZERO, 'quantity': Decimal('0.000'),
         }
         payments = defaultdict(lambda: {'amount': ZERO, 'name': ''})
@@ -325,15 +435,83 @@ class FinancialAggregator:
                 payments[key]['name'] = payment['payment_method_name']
                 payments[key]['amount'] = money(payments[key]['amount'] + payment['amount'])
         totals['subsidy'] = totals['benefit']
+        totals['consumption_charged'] = totals['charged']
+        totals['effective_revenue'] = totals['consumption_charged']
+        totals['total_received'] = totals['effective_revenue']
         totals['payments'] = [
             {'code': code, 'name': value['name'], 'amount': value['amount']}
             for code, value in sorted(
                 payments.items(), key=lambda row: (-row[1]['amount'], row[1]['name'])
             )
         ]
-        totals['payment_reconciliation_delta'] = money(
-            sum((row['amount'] for row in totals['payments']), ZERO) - totals['charged']
+        totals['payment_total'] = money(sum(
+            (row['amount'] for row in totals['payments']), ZERO
+        ))
+        totals['reconciliation_delta'] = money(
+            totals['payment_total'] - totals['total_received']
         )
+        totals['payment_reconciliation_delta'] = totals['reconciliation_delta']
+        totals['event_accounting'] = 'created_inflows_plus_cancellation_reversals'
+        return totals
+
+    def consumption_events(self, reversal_sales=()):
+        totals = {
+            'count': 0, 'inflow_count': 0, 'reversal_count': 0,
+            'reference': ZERO, 'charged': ZERO, 'benefit': ZERO,
+            'sales_revenue': ZERO, 'consumption_charged': ZERO,
+            'effective_revenue': ZERO, 'service_fee': ZERO,
+            'total_received': ZERO, 'historical_consumption_cogs': ZERO,
+            'quantity': Decimal('0.000'),
+            'historical_consumption_cogs_inflows': ZERO,
+            'historical_consumption_cogs_reversals': ZERO,
+        }
+        payments = defaultdict(lambda: {'amount': ZERO, 'name': ''})
+        for aggregator, sign in (
+            (self, 1), (FinancialAggregator(reversal_sales, self.filters), -1),
+        ):
+            for sale in aggregator._sales(operation_type=OperationType.CONSUMPTION):
+                values = aggregator.consumption_values(sale)
+                if not values:
+                    continue
+                totals['count'] += sign
+                totals['inflow_count' if sign > 0 else 'reversal_count'] += 1
+                for key in ('reference', 'charged', 'benefit'):
+                    totals[key] = money(totals[key] + sign * values[key])
+                totals['historical_consumption_cogs'] = money(
+                    totals['historical_consumption_cogs']
+                    + sign * values['historical_cost']
+                )
+                direction = 'inflows' if sign > 0 else 'reversals'
+                totals[f'historical_consumption_cogs_{direction}'] = money(
+                    totals[f'historical_consumption_cogs_{direction}']
+                    + values['historical_cost']
+                )
+                totals['quantity'] += sign * values['quantity']
+                for payment in aggregator.payment_rows(sale):
+                    key = payment['payment_method_code']
+                    payments[key]['name'] = payment['payment_method_name']
+                    payments[key]['amount'] = money(
+                        payments[key]['amount'] + sign * payment['amount']
+                    )
+        totals['subsidy'] = totals['benefit']
+        totals['consumption_charged'] = totals['charged']
+        totals['effective_revenue'] = totals['consumption_charged']
+        totals['total_received'] = totals['effective_revenue']
+        totals['payments'] = [
+            {'code': code, 'name': value['name'], 'amount': value['amount']}
+            for code, value in sorted(
+                payments.items(), key=lambda row: (-row[1]['amount'], row[1]['name'])
+            )
+            if value['amount'] != ZERO
+        ]
+        totals['payment_total'] = money(sum(
+            (row['amount'] for row in totals['payments']), ZERO
+        ))
+        totals['reconciliation_delta'] = money(
+            totals['payment_total'] - totals['total_received']
+        )
+        totals['payment_reconciliation_delta'] = totals['reconciliation_delta']
+        totals['event_accounting'] = 'created_inflows_plus_cancellation_reversals'
         return totals
 
     def payment_totals(self, *, operation_type=OperationType.SALE):
@@ -416,11 +594,17 @@ class FinancialAggregator:
 
         methods = []
         for code, values in by_method.items():
+            payment_total = money(values['gross_received'] - values['reversals'])
             methods.append({
                 'code': code,
                 'name': values['name'],
                 **values,
-                'net_received': money(values['gross_received'] - values['reversals']),
+                'sales_payment_total': values['commercial_received'],
+                'consumption_payment_total': values['consumption_received'],
+                'payment_total_before_reversals': values['gross_received'],
+                'reversal_payment_total': values['reversals'],
+                'payment_total': payment_total,
+                'net_received': payment_total,
             })
         methods.sort(key=lambda row: (-row['net_received'], row['name']))
         commercial_payments = money(sum(
@@ -433,11 +617,24 @@ class FinancialAggregator:
         total_operational_received = money(
             commercial_payments + consumption_payments - reversals
         )
-        effective_revenue = money(gross_sales_effective - reversed_effective)
+        sales_revenue = money(gross_sales_effective - reversed_effective)
         service_fee = money(gross_sales_fee - reversed_fee)
-        charged_consumption = money(gross_consumption - reversed_consumption)
-        semantic_received = money(effective_revenue + service_fee + charged_consumption)
+        consumption_charged = money(gross_consumption - reversed_consumption)
+        effective_revenue = money(sales_revenue + consumption_charged)
+        total_received = money(effective_revenue + service_fee)
         return {
+            'sales_revenue_before_reversals': gross_sales_effective,
+            'effective_revenue_before_reversals': money(
+                gross_sales_effective + gross_consumption
+            ),
+            'service_fee_before_reversals': gross_sales_fee,
+            'sales_received_before_reversals': commercial_payments,
+            'consumption_charged_before_reversals': gross_consumption,
+            'consumption_received_before_reversals': consumption_payments,
+            'commercial_reversals': commercial_reversals,
+            'consumption_reversals': consumption_reversals,
+            'reversal_payment_total': reversals,
+            'sales_revenue': sales_revenue,
             'effective_revenue': effective_revenue,
             'sales_count': sales_count,
             'consumption_count': consumption_count,
@@ -445,47 +642,99 @@ class FinancialAggregator:
             'fee_contained': service_fee,
             'sales_received': money(commercial_payments - commercial_reversals),
             'commercial_payments': commercial_payments,
-            'consumption_charged': charged_consumption,
+            'consumption_charged': consumption_charged,
             'charged_consumption_payments': consumption_payments,
             'consumption_received': money(consumption_payments - consumption_reversals),
             'gross_received': money(commercial_payments + consumption_payments),
             'reversals': reversals,
+            'payment_total': total_operational_received,
+            'total_received': total_received,
+            'reconciliation_delta': money(total_operational_received - total_received),
+            # Compatibility aliases.
             'total_operational_received': total_operational_received,
-            'semantic_operational_received': semantic_received,
-            'reconciliation_delta': money(total_operational_received - semantic_received),
+            'semantic_operational_received': total_received,
             'payment_methods': methods,
+            'event_accounting': 'created_inflows_plus_cancellation_reversals',
         }
 
-    def operational_statement(self, *, operating_expenses=ZERO, fixed_cost=ZERO):
-        commercial = self.commercial()
-        consumption = self.consumption()
+    def operational_statement(
+        self, *, operating_expenses=ZERO, fixed_cost=ZERO, reversal_sales=None,
+    ):
+        if reversal_sales is None:
+            commercial = self.commercial()
+            consumption = self.consumption()
+            event_breakdown = {}
+        else:
+            commercial = self.commercial_events(reversal_sales)
+            consumption = self.consumption_events(reversal_sales)
+            receipts = self.receipts(reversal_sales)
+            event_breakdown = {
+                'sales_inflow_count': commercial['inflow_count'],
+                'sales_reversal_count': commercial['reversal_count'],
+                'consumption_inflow_count': consumption['inflow_count'],
+                'consumption_reversal_count': consumption['reversal_count'],
+                'sales_revenue_inflows': receipts['sales_revenue_before_reversals'],
+                'sales_revenue_reversals': money(
+                    receipts['sales_revenue_before_reversals']
+                    - receipts['sales_revenue']
+                ),
+                'consumption_charged_inflows': receipts[
+                    'consumption_charged_before_reversals'
+                ],
+                'consumption_charged_reversals': money(
+                    receipts['consumption_charged_before_reversals']
+                    - receipts['consumption_charged']
+                ),
+                'service_fee_inflows': receipts['service_fee_before_reversals'],
+                'service_fee_reversals': money(
+                    receipts['service_fee_before_reversals'] - receipts['service_fee']
+                ),
+                'payment_total_inflows': receipts['gross_received'],
+                'payment_total_reversals': receipts['reversal_payment_total'],
+            }
         operating_expenses = money(operating_expenses)
         fixed_cost = money(fixed_cost)
-        operational_received = money(
-            commercial['effective_revenue'] + commercial['service_fee']
-            + consumption['charged']
+        sales_revenue = commercial['sales_revenue']
+        consumption_charged = consumption['consumption_charged']
+        effective_revenue = money(sales_revenue + consumption_charged)
+        total_received = money(effective_revenue + commercial['service_fee'])
+        payment_total = money(commercial['payment_total'] + consumption['payment_total'])
+        costs_and_expenses = money(
+            commercial['historical_sales_cogs']
+            + consumption['historical_consumption_cogs'] + commercial['commission']
+            + operating_expenses + fixed_cost
         )
         estimated_result = money(
-            operational_received - commercial['historical_sales_cogs']
-            - consumption['historical_consumption_cogs'] - commercial['commission']
-            - operating_expenses - fixed_cost
+            total_received - costs_and_expenses
         )
-        margin = money(
-            estimated_result * Decimal('100') / operational_received
-            if operational_received else ZERO
+        margin = (
+            money(estimated_result * Decimal('100') / total_received)
+            if total_received > ZERO else None
         )
         return {
             **commercial,
-            'charged_consumption': consumption['charged'],
+            'sales_revenue': sales_revenue,
+            'consumption_charged': consumption_charged,
+            'charged_consumption': consumption_charged,
+            'effective_revenue': effective_revenue,
+            'total_received': total_received,
+            'payment_total': payment_total,
             'historical_consumption_cogs': consumption['historical_consumption_cogs'],
-            'operational_received': operational_received,
+            'historical_consumption_cogs_inflows': consumption.get(
+                'historical_consumption_cogs_inflows', ZERO
+            ),
+            'historical_consumption_cogs_reversals': consumption.get(
+                'historical_consumption_cogs_reversals', ZERO
+            ),
+            'costs_and_expenses': costs_and_expenses,
+            'operational_received': total_received,
             'operating_expenses': operating_expenses,
             'fixed_cost': fixed_cost,
             'estimated_result': estimated_result,
             'result': estimated_result,
             'margin': margin,
-            'operational_reconciliation_delta': money(
-                operational_received - commercial['effective_revenue']
-                - commercial['service_fee'] - consumption['charged']
-            ),
+            'reconciliation_delta': money(payment_total - total_received),
+            'operational_reconciliation_delta': money(payment_total - total_received),
+            **event_breakdown,
+            'event_accounting': 'created_inflows_plus_cancellation_reversals',
         }

@@ -32,13 +32,26 @@ import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
 import type {
-  AccessProfile,
-  Branch,
   Paginated,
   User,
   UserPayload,
   UserType,
 } from "@/types";
+
+interface UserManagementBranch {
+  id: number;
+  company: number;
+  name: string;
+  status: "active" | "inactive";
+}
+
+interface UserManagementProfile {
+  id: number;
+  company: number;
+  name: string;
+  company_assignable: boolean;
+  assignable_branch_ids: number[];
+}
 
 const userTypes: Array<[UserType, string]> = [
   ["employee", "Funcionário"],
@@ -84,8 +97,10 @@ function UsersAdministration() {
   const contextRef = useRef(currentCompany?.id);
   contextRef.current = currentCompany?.id;
   const [data, setData] = useState<Paginated<User> | null>(null);
-  const [branches, setBranches] = useState<Branch[]>([]);
-  const [profiles, setProfiles] = useState<Record<number, AccessProfile[]>>({});
+  const [branches, setBranches] = useState<UserManagementBranch[]>([]);
+  const [profiles, setProfiles] = useState<
+    Record<number, UserManagementProfile[]>
+  >({});
   const [loading, setLoading] = useState(true);
   const [dependenciesLoading, setDependenciesLoading] = useState(true);
   const [error, setError] = useState("");
@@ -93,6 +108,7 @@ function UsersAdministration() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<User | null>(null);
   const [form, setForm] = useState<UserPayload>(blank());
+  const [accessesDirty, setAccessesDirty] = useState(false);
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState<User | null>(null);
@@ -149,23 +165,40 @@ function UsersAdministration() {
     setData(null);
     void load(undefined, companyId, cleared);
     setDependenciesLoading(true);
-    Promise.all([
-      http.getAll<Branch>("branches/"),
-      ...companies.map((company) =>
-        http.getAll<AccessProfile>(
-          `access-profiles/?company=${company.id}&status=active`,
-        ),
-      ),
-    ])
-      .then(([branchItems, ...profileItems]) => {
+    http
+      .get<{
+        branches: Array<{
+          id: number;
+          company_id: number;
+          name: string;
+          status: "active" | "inactive";
+        }>;
+        profiles: Array<{
+          id: number;
+          company_id: number;
+          name: string;
+          company_assignable: boolean;
+          assignable_branch_ids: number[];
+        }>;
+      }>("users/management-options/")
+      .then((options) => {
         if (active && contextRef.current === companyId) {
-          setBranches(branchItems);
+          setBranches(
+            options.branches.map(({ company_id, ...branch }) => ({
+              ...branch,
+              company: company_id,
+            })),
+          );
           setProfiles(
-            Object.fromEntries(
-              companies.map((company, index) => [
-                company.id,
-                profileItems[index],
-              ]),
+            options.profiles.reduce<Record<number, UserManagementProfile[]>>(
+              (grouped, { company_id, ...profile }) => {
+                (grouped[company_id] ||= []).push({
+                  ...profile,
+                  company: company_id,
+                });
+                return grouped;
+              },
+              {},
             ),
           );
         }
@@ -183,7 +216,7 @@ function UsersAdministration() {
     return () => {
       active = false;
     };
-  }, [currentCompany?.id, companies.map((company) => company.id).join(",")]);
+  }, [currentCompany?.id]);
 
   function applyFilters(event: React.FormEvent) {
     event.preventDefault();
@@ -215,6 +248,7 @@ function UsersAdministration() {
           })),
       })) || [];
     setEditing(target || null);
+    setAccessesDirty(false);
     setForm(
       target
         ? {
@@ -250,6 +284,7 @@ function UsersAdministration() {
     companyId: number,
     value: Partial<UserPayload["company_accesses"][number]>,
   ) {
+    setAccessesDirty(true);
     setForm((current) => ({
       ...current,
       company_accesses: current.company_accesses.map((item) =>
@@ -258,6 +293,7 @@ function UsersAdministration() {
     }));
   }
   function toggleCompany(companyId: number) {
+    setAccessesDirty(true);
     setForm((current) => ({
       ...current,
       company_accesses: current.company_accesses.some(
@@ -284,6 +320,13 @@ function UsersAdministration() {
     const existing = access.branch_accesses.some(
       (item) => item.branch_id === branchId,
     );
+    const assignableProfile = profiles[companyId]?.find((profile) =>
+      profile.assignable_branch_ids.includes(branchId),
+    );
+    if (!existing && !assignableProfile) {
+      setError("Nenhum perfil atribuível está disponível para esta filial.");
+      return;
+    }
     updateAccess(companyId, {
       branch_accesses: existing
         ? access.branch_accesses.filter((item) => item.branch_id !== branchId)
@@ -291,7 +334,7 @@ function UsersAdministration() {
             ...access.branch_accesses,
             {
               branch_id: branchId,
-              access_profile_id: profiles[companyId]?.[0]?.id || 0,
+              access_profile_id: assignableProfile!.id,
             },
           ],
     });
@@ -314,6 +357,7 @@ function UsersAdministration() {
       });
   }
   function setCanLogin(value: boolean) {
+    setAccessesDirty(true);
     setForm((current) => ({
       ...current,
       can_login: value,
@@ -349,11 +393,13 @@ function UsersAdministration() {
     setError("");
     setFields({});
     try {
-      const payload = {
+      const normalizedPayload = {
         ...form,
         email: form.email?.trim() || null,
         password: form.password?.trim() || undefined,
       };
+      const payload = { ...normalizedPayload } as Partial<UserPayload>;
+      if (editing && !accessesDirty) delete payload.company_accesses;
       if (editing) await http.patch(`users/${editing.id}/`, payload);
       else await http.post("users/", payload);
       setOpen(false);
@@ -472,7 +518,11 @@ function UsersAdministration() {
               ))}
             </Select>
             <Select
-              aria-label="Perfil de acesso"
+              aria-label={
+                draftFilters.branch
+                  ? "Perfil na filial"
+                  : "Perfil administrativo"
+              }
               value={draftFilters.accessProfile}
               onChange={(event) =>
                 setDraftFilters((current) => ({
@@ -481,7 +531,11 @@ function UsersAdministration() {
                 }))
               }
             >
-              <option value="">Todos os perfis</option>
+              <option value="">
+                {draftFilters.branch
+                  ? "Todos os perfis na filial"
+                  : "Todos os perfis administrativos"}
+              </option>
               {(profiles[currentCompany?.id || 0] || []).map((profile) => (
                 <option key={profile.id} value={profile.id}>
                   {profile.name}
@@ -495,6 +549,7 @@ function UsersAdministration() {
                 setDraftFilters((current) => ({
                   ...current,
                   branch: event.target.value,
+                  accessProfile: "",
                 }))
               }
             >
@@ -787,11 +842,30 @@ function UsersAdministration() {
                             }
                           >
                             <option value="">Sem perfil administrativo</option>
-                            {profiles[company.id]?.map((profile) => (
-                              <option key={profile.id} value={profile.id}>
-                                {profile.name}
-                              </option>
-                            ))}
+                            {access.access_profile_id &&
+                              !profiles[company.id]?.some(
+                                (profile) =>
+                                  profile.id === access.access_profile_id &&
+                                  profile.company_assignable,
+                              ) && (
+                                <option
+                                  value={access.access_profile_id}
+                                  disabled
+                                >
+                                  {profiles[company.id]?.find(
+                                    (profile) =>
+                                      profile.id === access.access_profile_id,
+                                  )?.name || "Perfil atual"}{" "}
+                                  (mantido sem permissão para reatribuir)
+                                </option>
+                              )}
+                            {profiles[company.id]
+                              ?.filter((profile) => profile.company_assignable)
+                              .map((profile) => (
+                                <option key={profile.id} value={profile.id}>
+                                  {profile.name}
+                                </option>
+                              ))}
                           </Select>
                         </Field>
                         {form.can_login && (
@@ -838,16 +912,43 @@ function UsersAdministration() {
                                         <option value="">
                                           Selecione o perfil
                                         </option>
-                                        {profiles[company.id]?.map(
-                                          (profile) => (
+                                        {!profiles[company.id]?.some(
+                                          (profile) =>
+                                            profile.id ===
+                                              branchAccess.access_profile_id &&
+                                            profile.assignable_branch_ids.includes(
+                                              branch.id,
+                                            ),
+                                        ) && (
+                                          <option
+                                            value={
+                                              branchAccess.access_profile_id
+                                            }
+                                            disabled
+                                          >
+                                            {profiles[company.id]?.find(
+                                              (profile) =>
+                                                profile.id ===
+                                                branchAccess.access_profile_id,
+                                            )?.name || "Perfil atual"}{" "}
+                                            (mantido sem permissão para
+                                            reatribuir)
+                                          </option>
+                                        )}
+                                        {profiles[company.id]
+                                          ?.filter((profile) =>
+                                            profile.assignable_branch_ids.includes(
+                                              branch.id,
+                                            ),
+                                          )
+                                          .map((profile) => (
                                             <option
                                               key={profile.id}
                                               value={profile.id}
                                             >
                                               {profile.name}
                                             </option>
-                                          ),
-                                        )}
+                                          ))}
                                       </Select>
                                     )}
                                   </div>

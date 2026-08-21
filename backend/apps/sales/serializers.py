@@ -38,7 +38,7 @@ class PaymentMethodSerializer(serializers.ModelSerializer):
         if self.instance and company.pk != self.instance.company_id:
             raise serializers.ValidationError({'company': 'A empresa nao pode ser alterada.'})
         if self.instance and 'code' in attrs and attrs['code'] != self.instance.code:
-            raise serializers.ValidationError({'code': 'O codigo nao pode ser alterado.'})
+            raise serializers.ValidationError({'code': 'O código não pode ser alterado.'})
         if self.instance and self.instance.is_system and 'name' in attrs:
             if attrs['name'] != self.instance.name:
                 raise serializers.ValidationError(
@@ -168,7 +168,7 @@ class PromotionSerializer(serializers.ModelSerializer):
         for schedule in schedules:
             key = (schedule.get('weekday'), str(schedule.get('start_time')), str(schedule.get('end_time')))
             if key in seen:
-                errors.setdefault('schedules', []).append('Nao repita intervalos de agenda.')
+                errors.setdefault('schedules', []).append('Não repita intervalos de agenda.')
                 break
             seen.add(key)
         name = ' '.join(attrs.get('name', getattr(self.instance, 'name', '')).split())
@@ -329,6 +329,19 @@ class SaleSerializer(serializers.ModelSerializer):
     total = serializers.DecimalField(
         max_digits=14, decimal_places=2, read_only=True, coerce_to_string=True
     )
+    sales_revenue = serializers.SerializerMethodField()
+    consumption_charged = serializers.SerializerMethodField()
+    effective_revenue = serializers.SerializerMethodField()
+    service_fee = serializers.DecimalField(
+        max_digits=14, decimal_places=2, source='service_fee_amount', read_only=True,
+        coerce_to_string=True,
+    )
+    total_received = serializers.DecimalField(
+        max_digits=14, decimal_places=2, source='total', read_only=True,
+        coerce_to_string=True,
+    )
+    payment_total = serializers.SerializerMethodField()
+    reconciliation_delta = serializers.SerializerMethodField()
 
     class Meta:
         model = Sale
@@ -343,7 +356,9 @@ class SaleSerializer(serializers.ModelSerializer):
             'subtotal', 'promotion_discount_total', 'item_discount_total', 'discount',
             'service_fee_rate', 'service_fee_amount',
             'commission_rate', 'commission_amount',
-            'charged_amount', 'total', 'cancelled_at', 'cancelled_by', 'cancelled_by_name',
+            'charged_amount', 'total', 'sales_revenue', 'consumption_charged',
+            'effective_revenue', 'service_fee', 'total_received', 'payment_total',
+            'reconciliation_delta', 'cancelled_at', 'cancelled_by', 'cancelled_by_name',
             'cancellation_reason', 'items', 'payments', 'created_at', 'updated_at',
         )
 
@@ -363,6 +378,26 @@ class SaleSerializer(serializers.ModelSerializer):
 
     def get_created_by_name(self, sale):
         return readable_user_name(sale.created_by)
+
+    def get_sales_revenue(self, sale):
+        if sale.operation_type != 'sale':
+            return '0.00'
+        return f'{sale.total - sale.service_fee_amount:.2f}'
+
+    def get_consumption_charged(self, sale):
+        return f'{sale.total:.2f}' if sale.operation_type == 'consumption' else '0.00'
+
+    def get_effective_revenue(self, sale):
+        return self.get_sales_revenue(sale) if sale.operation_type == 'sale' else self.get_consumption_charged(sale)
+
+    def get_payment_total(self, sale):
+        return f'{sum((payment.amount for payment in sale.payments.all()), Decimal("0.00")):.2f}'
+
+    def get_reconciliation_delta(self, sale):
+        payment_total = sum(
+            (payment.amount for payment in sale.payments.all()), Decimal('0.00')
+        )
+        return f'{payment_total - sale.total:.2f}'
 
     def get_seller_user_name(self, sale):
         return readable_user_name(sale.seller_user)

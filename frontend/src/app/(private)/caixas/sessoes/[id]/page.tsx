@@ -58,6 +58,75 @@ const beneficiaryRequired = new Set<WithdrawalCategory>([
   "promoter",
 ]);
 
+type CanonicalCashSummary = CashSummary & {
+  sales_revenue: string;
+  consumption_charged: string;
+  effective_revenue: string;
+  service_fee: string;
+  total_received: string;
+  payment_total: string;
+  reconciliation_delta: string;
+  receipts?: { reversals?: string; reversal_payment_total?: string };
+};
+
+function CashFinancialBridge({ summary }: { summary: CashSummary }) {
+  const financial = summary as CanonicalCashSummary;
+  const lines: Array<[string, string, string, boolean?]> = [
+    ["Faturamento de vendas", financial.sales_revenue, ""],
+    ["Consumação cobrada", financial.consumption_charged, "+"],
+    ["Faturamento efetivo", financial.effective_revenue, "=", true],
+    ["Taxa de serviço", financial.service_fee, "+"],
+    ["Total recebido", financial.total_received, "=", true],
+  ];
+  const reversals =
+    financial.receipts?.reversal_payment_total ||
+    financial.receipts?.reversals ||
+    "0";
+  const hasDelta = Math.abs(Number(financial.reconciliation_delta || 0)) >= 0.005;
+  return (
+    <section className="card overflow-hidden">
+      <div className="card-header">
+        <div>
+          <h2 className="text-sm font-bold">Ponte financeira da sessão</h2>
+          <p className="mt-1 text-[11px] text-slate-500">
+            Faturamento de vendas + consumação cobrada = faturamento efetivo; +
+            taxa de serviço = Total recebido.
+          </p>
+        </div>
+      </div>
+      <div className="grid gap-px bg-surface-muted sm:grid-cols-2 xl:grid-cols-5">
+        {lines.map(([label, value, operator, strong]) => (
+          <div
+            key={label}
+            className={`bg-surface p-4 ${strong ? "text-primary" : ""}`}
+          >
+            <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+              {operator} {label}
+            </span>
+            <strong className="mt-2 block text-base">{formatBRL(value)}</strong>
+          </div>
+        ))}
+      </div>
+      <div className="grid gap-3 border-t border-subtle p-4 text-xs sm:grid-cols-3">
+        <p className="flex justify-between gap-3">
+          <span>Reversões / estornos</span>
+          <strong>{formatBRL(reversals)}</strong>
+        </p>
+        <p className="flex justify-between gap-3">
+          <span>Total dos pagamentos</span>
+          <strong>{formatBRL(financial.payment_total)}</strong>
+        </p>
+        <p
+          className={`flex justify-between gap-3 ${hasDelta ? "text-warning-strong" : ""}`}
+        >
+          <span>Delta de reconciliação</span>
+          <strong>{formatBRL(financial.reconciliation_delta)}</strong>
+        </p>
+      </div>
+    </section>
+  );
+}
+
 function SessionDetail() {
   const { id } = useParams<{ id: string }>();
   const { user, currentCompany, currentBranch, hasPermission } = useAuth();
@@ -68,6 +137,8 @@ function SessionDetail() {
   const canViewSales = hasPermission(permissions.viewSale) || hasPermission(permissions.cancelSale);
   const canViewConsumptions = hasPermission(permissions.viewConsumption) || hasPermission(permissions.cancelConsumption);
   const contextRef = useRef("");
+  const loadRequestRef = useRef(0);
+  const movementsRequestRef = useRef(0);
   contextRef.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}:${id}`;
   const [session, setSession] = useState<CashSession | null>(null);
   const [summary, setSummary] = useState<CashSummary | null>(null);
@@ -100,7 +171,24 @@ function SessionDetail() {
     return `cash-movements/?${params}`;
   }
 
+  function syncMovementPeriodUrl(selectedPeriod: PeriodValue) {
+    const params = new URLSearchParams(window.location.search);
+    for (const key of ["start_datetime", "end_datetime", "page"]) {
+      params.delete(key);
+    }
+    if (selectedPeriod.start)
+      params.set("start_datetime", selectedPeriod.start);
+    if (selectedPeriod.end) params.set("end_datetime", selectedPeriod.end);
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${params.size ? `?${params}` : ""}`,
+    );
+  }
+
   async function load(context = contextRef.current, selectedPeriod = period) {
+    const loadRequest = ++loadRequestRef.current;
+    const movementsRequest = ++movementsRequestRef.current;
     if (!currentBranch || !id) {
       setLoading(false);
       setMovementsLoading(false);
@@ -123,25 +211,42 @@ function SessionDetail() {
         http.get<Paginated<CashMovement>>(movementsPath(selectedPeriod)),
         http.get<SessionTimeline>(`cash-sessions/${id}/timeline/`),
       ]);
-      if (contextRef.current === context) {
+      if (
+        contextRef.current === context &&
+        loadRequestRef.current === loadRequest
+      ) {
         setSession(sessionResponse);
         setSummary(summaryResponse);
-        setMovements(movementResponse);
         setTimeline(timelineResponse);
       }
+      if (
+        contextRef.current === context &&
+        movementsRequestRef.current === movementsRequest
+      )
+        setMovements(movementResponse);
     } catch (caught) {
-      if (contextRef.current === context)
+      if (
+        contextRef.current === context &&
+        loadRequestRef.current === loadRequest
+      )
         setError(
           caught instanceof ApiError
             ? caught.message
             : "Não foi possível carregar a sessão de caixa.",
         );
     } finally {
-      if (contextRef.current === context) {
+      if (
+        contextRef.current === context &&
+        loadRequestRef.current === loadRequest
+      ) {
         setLoading(false);
-        setMovementsLoading(false);
         setTimelineLoading(false);
       }
+      if (
+        contextRef.current === context &&
+        movementsRequestRef.current === movementsRequest
+      )
+        setMovementsLoading(false);
     }
   }
 
@@ -149,20 +254,33 @@ function SessionDetail() {
     path = movementsPath(),
     context = contextRef.current,
   ) {
+    const requestId = ++movementsRequestRef.current;
     setMovementsLoading(true);
     setError("");
+    setMovements(null);
     try {
       const response = await http.get<Paginated<CashMovement>>(path);
-      if (contextRef.current === context) setMovements(response);
+      if (
+        contextRef.current === context &&
+        movementsRequestRef.current === requestId
+      )
+        setMovements(response);
     } catch (caught) {
-      if (contextRef.current === context)
+      if (
+        contextRef.current === context &&
+        movementsRequestRef.current === requestId
+      )
         setError(
           caught instanceof ApiError
             ? caught.message
             : "Não foi possível carregar o histórico.",
         );
     } finally {
-      if (contextRef.current === context) setMovementsLoading(false);
+      if (
+        contextRef.current === context &&
+        movementsRequestRef.current === requestId
+      )
+        setMovementsLoading(false);
     }
   }
 
@@ -175,8 +293,13 @@ function SessionDetail() {
     setError("");
     setSuccess("");
     setAction(null);
-    setPeriod({ start: "", end: "" });
-    void load(context, { start: "", end: "" });
+    const query = new URLSearchParams(window.location.search);
+    const nextPeriod = {
+      start: query.get("start_datetime") || "",
+      end: query.get("end_datetime") || "",
+    };
+    setPeriod(nextPeriod);
+    void load(context, nextPeriod);
   }, [id, currentCompany?.id, currentBranch?.id]);
 
   function showAction(next: MovementAction) {
@@ -360,6 +483,7 @@ function SessionDetail() {
                 tone="primary"
               />
             </section>
+            <CashFinancialBridge summary={summary} />
             {!isOpen && (
               <section className="card overflow-hidden">
                 <div className="card-header">
@@ -409,9 +533,9 @@ function SessionDetail() {
             <section className="card overflow-hidden">
               <div className="card-header"><div><h2 className="text-sm font-bold">Resumo operacional completo</h2><p className="mt-1 text-[11px] text-slate-500">Produção da sessão, benefícios e recebimentos por forma.</p></div><Banknote className="size-5 text-slate-300" /></div>
               <div className="grid gap-6 p-5 lg:grid-cols-4">
-                <div className="space-y-2 text-xs"><h3 className="font-bold text-dark">Vendas ({summary.sales.count})</h3><p className="flex justify-between"><span>Bruto</span><strong>{formatBRL(summary.sales.gross)}</strong></p><p className="flex justify-between"><span>Descontos promocionais</span><strong className="text-danger">- {formatBRL(summary.sales.promotion_discount)}</strong></p><p className="flex justify-between"><span>Descontos manuais</span><strong className="text-danger">- {formatBRL(summary.sales.manual_discount)}</strong></p><p className="flex justify-between border-t border-slate-100 pt-2"><span>Faturamento efetivo</span><strong>{formatBRL(summary.sales.effective_revenue)}</strong></p><p className="flex justify-between"><span>Taxa de serviço</span><strong>{formatBRL(summary.sales.service_fee)}</strong></p><p className="flex justify-between"><span>Total cobrado</span><strong className="text-primary">{formatBRL(summary.sales.customer_total)}</strong></p>{summary.sales.commission !== undefined && <p className="flex justify-between"><span>Comissões atribuídas</span><strong>{formatBRL(summary.sales.commission)}</strong></p>}<p className="flex justify-between"><span>Cancelamentos</span><strong>{summary.sales.cancellations.count} · {formatBRL(summary.sales.cancellations.value)}</strong></p></div>
-                <div className="space-y-2 text-xs"><h3 className="font-bold text-dark">Consumações ({summary.consumptions.count})</h3><p className="flex justify-between"><span>Valor de referência</span><strong>{formatBRL(summary.consumptions.reference)}</strong></p><p className="flex justify-between"><span>Valor cobrado</span><strong>{formatBRL(summary.consumptions.charged)}</strong></p><p className="flex justify-between border-t border-slate-100 pt-2"><span>Benefício concedido</span><strong className="text-warning">{formatBRL(summary.consumptions.benefit)}</strong></p><p className="flex justify-between"><span>Cancelamentos</span><strong>{summary.consumptions.cancellations.count} · {formatBRL(summary.consumptions.cancellations.value)}</strong></p></div>
-                <div className="space-y-2 text-xs"><h3 className="font-bold text-dark">Recebimentos</h3>{summary.payment_totals.length ? summary.payment_totals.map((payment) => <p key={`${payment.payment_method_code}:${payment.payment_method_name}`} className="flex justify-between"><span>{payment.payment_method_name}</span><strong>{formatBRL(payment.amount)}</strong></p>) : <p className="text-slate-500">Nenhum recebimento finalizado.</p>}<p className="flex justify-between border-t border-slate-100 pt-2"><span>Dinheiro líquido no caixa</span><strong className="text-primary">{formatBRL(summary.cash_payments)}</strong></p></div>
+                <div className="space-y-2 text-xs"><h3 className="font-bold text-dark">Vendas ({summary.sales.count})</h3><p className="flex justify-between"><span>Bruto</span><strong>{formatBRL(summary.sales.gross)}</strong></p><p className="flex justify-between"><span>Descontos promocionais</span><strong className="text-danger">- {formatBRL(summary.sales.promotion_discount)}</strong></p><p className="flex justify-between"><span>Descontos manuais</span><strong className="text-danger">- {formatBRL(summary.sales.manual_discount)}</strong></p><p className="flex justify-between border-t border-slate-100 pt-2"><span>Faturamento de vendas</span><strong>{formatBRL((summary as CanonicalCashSummary).sales_revenue)}</strong></p><p className="flex justify-between"><span>Taxa de serviço</span><strong>{formatBRL(summary.sales.service_fee)}</strong></p><p className="flex justify-between"><span>Vendas com taxa de serviço</span><strong className="text-primary">{formatBRL(summary.sales.customer_total)}</strong></p>{summary.sales.commission !== undefined && <p className="flex justify-between"><span>Comissões atribuídas</span><strong>{formatBRL(summary.sales.commission)}</strong></p>}<p className="flex justify-between"><span>Cancelamentos</span><strong>{summary.sales.cancellations.count} · {formatBRL(summary.sales.cancellations.value)}</strong></p></div>
+                <div className="space-y-2 text-xs"><h3 className="font-bold text-dark">Consumações ({summary.consumptions.count})</h3><p className="flex justify-between"><span>Valor de referência</span><strong>{formatBRL(summary.consumptions.reference)}</strong></p><p className="flex justify-between"><span>Consumação cobrada</span><strong>{formatBRL((summary as CanonicalCashSummary).consumption_charged)}</strong></p><p className="flex justify-between border-t border-slate-100 pt-2"><span>Benefício concedido</span><strong className="text-warning">{formatBRL(summary.consumptions.benefit)}</strong></p><p className="flex justify-between"><span>Cancelamentos</span><strong>{summary.consumptions.cancellations.count} · {formatBRL(summary.consumptions.cancellations.value)}</strong></p></div>
+                <div className="space-y-2 text-xs"><h3 className="font-bold text-dark">Pagamentos</h3>{summary.payment_totals.length ? summary.payment_totals.map((payment) => <p key={`${payment.payment_method_code}:${payment.payment_method_name}`} className="flex justify-between"><span>{payment.payment_method_name}</span><strong>{formatBRL(payment.amount)}</strong></p>) : <p className="text-slate-500">Nenhum pagamento finalizado.</p>}<p className="flex justify-between border-t border-slate-100 pt-2"><span>Dinheiro líquido no caixa</span><strong className="text-primary">{formatBRL(summary.cash_payments)}</strong></p></div>
                 <div className="space-y-2 text-xs"><h3 className="font-bold text-dark">Componentes da gaveta</h3><p className="flex justify-between"><span>Abertura</span><strong>{formatBRL(summary.opening_amount)}</strong></p><p className="flex justify-between"><span>Entradas manuais</span><strong>{formatBRL(summary.manual_entries)}</strong></p><p className="flex justify-between"><span>Vendas em dinheiro</span><strong>{formatBRL(summary.sale_cash)}</strong></p><p className="flex justify-between"><span>Consumações em dinheiro</span><strong>{formatBRL(summary.consumption_cash)}</strong></p><p className="flex justify-between text-danger"><span>Reversões ({summary.cash_cancellations})</span><strong>- {formatBRL(summary.cash_reversals)}</strong></p><p className="flex justify-between text-danger"><span>Sangrias</span><strong>- {formatBRL(summary.withdrawals)}</strong></p><p className="flex justify-between border-t border-slate-100 pt-2"><span>Esperado</span><strong>{formatBRL(summary.expected_amount)}</strong></p></div>
               </div>
             </section>
@@ -489,13 +613,16 @@ function SessionDetail() {
               <PeriodFilter
                 className="border-b border-slate-100 p-4"
                 value={period}
+                showActions
                 onApply={(next) => {
                   setPeriod(next);
+                  syncMovementPeriodUrl(next);
                   void loadMovements(movementsPath(next));
                 }}
                 onClear={() => {
                   const emptyPeriod = { start: "", end: "" };
                   setPeriod(emptyPeriod);
+                  syncMovementPeriodUrl(emptyPeriod);
                   void loadMovements(movementsPath(emptyPeriod));
                 }}
               />

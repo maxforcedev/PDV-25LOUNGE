@@ -316,7 +316,7 @@ class UserBranchAccess(BaseModel):
             ).exists()
             if not has_company_access:
                 raise ValidationError(
-                    {'branch': 'O usuario precisa de acesso ativo a empresa da filial.'}
+                    {'branch': 'O usuário precisa de acesso ativo à empresa da filial.'}
                 )
 
     def save(self, *args, **kwargs):
@@ -374,7 +374,7 @@ class UserPermissionBlock(BaseModel):
             from .rbac import OPERATING_PERMISSION_CODES
 
             if self.permission.code not in OPERATING_PERMISSION_CODES:
-                raise ValidationError({'permission': 'Bloqueios por filial aceitam somente permissoes operacionais.'})
+                raise ValidationError({'permission': 'Bloqueios por filial aceitam somente permissões operacionais.'})
         if not self.is_active and not self.revoked_at:
             raise ValidationError({'revoked_at': 'Informe a data de revogacao.'})
 
@@ -427,14 +427,14 @@ class UserCommissionOverride(BaseModel):
     def clean(self):
         super().clean()
         if self.commission_rate is not None and not (Decimal('0') <= self.commission_rate <= Decimal('100')):
-            raise ValidationError({'commission_rate': 'A comissão do usuario deve estar entre 0 e 100.'})
+            raise ValidationError({'commission_rate': 'A comissão do usuário deve estar entre 0 e 100.'})
         if (
             self.user_id
             and self.branch_id
             and not self.target_has_active_branch_access(self.branch_id, self.user_id)
         ):
             raise ValidationError({
-                'user': 'O usuario deve estar ativo e possuir acesso e perfil ativos nesta filial.'
+                'user': 'O usuário deve estar ativo e possuir acesso e perfil ativos nesta filial.'
             })
 
     def save(self, *args, **kwargs):

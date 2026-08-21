@@ -27,7 +27,7 @@ const groups = [
     ["/relatorios/comissoes", "Comissões", permissions.viewCommission],
   ] },
   { title: "Custos & Resultado", description: "Custos históricos e saídas financeiras.", icon: Banknote, reports: [
-    ["/relatorios/resultado", "Resultado", permissions.viewOperationalResult],
+    ["/relatorios/resultado", "Resultado estimado", permissions.viewOperationalResult],
     ["/relatorios/sangrias", "Sangrias", permissions.viewWithdrawalsReport],
     ["/relatorios/consumacoes", "Consumações", permissions.viewConsumptionsReport],
   ] },

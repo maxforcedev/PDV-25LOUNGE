@@ -38,9 +38,9 @@ class Stock(BaseModel):
         if not self.product_id or not self.branch_id:
             return
         if self.product.company_id != self.branch.company_id:
-            raise ValidationError({'branch': 'A filial deve pertencer a empresa do produto.'})
+            raise ValidationError({'branch': 'A filial deve pertencer à empresa do produto.'})
         if self.product.inventory_behavior != InventoryBehavior.DIRECT:
-            raise ValidationError({'product': 'Somente produtos com estoque proprio possuem saldo.'})
+            raise ValidationError({'product': 'Somente produtos com estoque próprio possuem saldo.'})
 
     def save(self, *args, **kwargs):
         self.full_clean()
@@ -52,36 +52,36 @@ class Stock(BaseModel):
 
 class MovementType(models.TextChoices):
     ENTRY = 'entry', 'Entrada'
-    EXIT = 'exit', 'Saida'
+    EXIT = 'exit', 'Saída'
     ADJUSTMENT = 'adjustment', 'Ajuste'
     SALE = 'sale', 'Venda'
     SALE_CANCELLATION = 'sale_cancellation', 'Cancelamento de venda'
-    CONSUMPTION = 'consumption', 'Consumacao'
-    CONSUMPTION_CANCELLATION = 'consumption_cancellation', 'Cancelamento de consumacao'
+    CONSUMPTION = 'consumption', 'Consumação'
+    CONSUMPTION_CANCELLATION = 'consumption_cancellation', 'Cancelamento de consumação'
 
 
 class MovementNature(models.TextChoices):
     NORMAL = 'normal', 'Normal'
     BONUS = 'bonus', 'Bonificada'
-    RETURN = 'return', 'Devolucao'
+    RETURN = 'return', 'Devolução'
     OPENING_BALANCE = 'opening_balance', 'Saldo inicial'
-    CORRECTION = 'correction', 'Correcao'
-    TRANSFER = 'transfer', 'Transferencia'
+    CORRECTION = 'correction', 'Correção'
+    TRANSFER = 'transfer', 'Transferência'
     DAMAGE = 'damage', 'Avaria'
     LOSS = 'loss', 'Perda'
     INTERNAL_USE = 'internal_use', 'Uso interno'
-    INVENTORY = 'inventory', 'Inventario'
-    REGULARIZATION = 'regularization', 'Regularizacao'
-    BALANCE_CORRECTION = 'balance_correction', 'Correcao de saldo'
+    INVENTORY = 'inventory', 'Inventário'
+    REGULARIZATION = 'regularization', 'Regularização'
+    BALANCE_CORRECTION = 'balance_correction', 'Correção de saldo'
     SALE = 'sale', 'Venda'
-    CONSUMPTION = 'consumption', 'Consumacao'
+    CONSUMPTION = 'consumption', 'Consumação'
     CANCELLATION = 'cancellation', 'Cancelamento/estorno'
     OTHER = 'other', 'Outros'
 
 
 class InventoryOperationKind(models.TextChoices):
     MANUAL_ENTRY = 'manual_entry', 'Entrada manual'
-    MANUAL_EXIT = 'manual_exit', 'Saida manual'
+    MANUAL_EXIT = 'manual_exit', 'Saída manual'
     MANUAL_ADJUSTMENT = 'manual_adjustment', 'Ajuste manual'
     GROUP_ENTRY = 'group_entry', 'Entrada em grupo'
 
@@ -188,7 +188,7 @@ class StockMovement(BaseModel):
         if self.movement_type == MovementType.ENTRY and self.quantity <= 0:
             raise ValidationError({'quantity': 'Uma entrada deve ter quantidade positiva.'})
         if self.movement_type == MovementType.EXIT and self.quantity >= 0:
-            raise ValidationError({'quantity': 'Uma saida deve ter quantidade negativa.'})
+            raise ValidationError({'quantity': 'Uma saída deve ter quantidade negativa.'})
         negative_types = (MovementType.SALE, MovementType.CONSUMPTION)
         cancellation_types = (
             MovementType.SALE_CANCELLATION,
@@ -200,15 +200,15 @@ class StockMovement(BaseModel):
         if self.movement_type in cancellation_types and self.quantity <= 0:
             raise ValidationError({'quantity': 'O estorno deve ter quantidade positiva.'})
         if self.movement_type in manual_types and (self.sale_id or self.original_movement_id):
-            raise ValidationError({'sale': 'Movimentacoes manuais nao podem ser vinculadas a venda.'})
+            raise ValidationError({'sale': 'Movimentações manuais não podem ser vinculadas à venda.'})
         if self.movement_type in negative_types:
             if not self.sale_id:
-                raise ValidationError({'sale': 'A venda e obrigatoria para esta movimentacao.'})
+                raise ValidationError({'sale': 'A venda é obrigatória para esta movimentação.'})
             if self.original_movement_id:
-                raise ValidationError({'original_movement': 'Uma baixa nao pode estornar outro movimento.'})
+                raise ValidationError({'original_movement': 'Uma baixa não pode estornar outro movimento.'})
         if self.movement_type in cancellation_types:
             if not self.sale_id or not self.original_movement_id:
-                raise ValidationError({'original_movement': 'O movimento original e obrigatorio.'})
+                raise ValidationError({'original_movement': 'O movimento original é obrigatório.'})
             else:
                 original = self.original_movement
                 expected_type = {
@@ -216,24 +216,24 @@ class StockMovement(BaseModel):
                     MovementType.CONSUMPTION_CANCELLATION: MovementType.CONSUMPTION,
                 }[self.movement_type]
                 if original.movement_type != expected_type:
-                    raise ValidationError({'original_movement': 'O tipo original nao corresponde ao estorno.'})
+                    raise ValidationError({'original_movement': 'O tipo original não corresponde ao estorno.'})
                 if original.stock_id != self.stock_id or original.sale_id != self.sale_id:
                     raise ValidationError({'original_movement': 'Estoque e venda devem ser os mesmos do movimento original.'})
                 if self.quantity != -original.quantity:
                     raise ValidationError({'quantity': 'O estorno deve inverter exatamente a quantidade original.'})
         if self.quantity == 0:
-            raise ValidationError({'quantity': 'A movimentacao nao pode ser zero.'})
+            raise ValidationError({'quantity': 'A movimentação não pode ser zero.'})
         if self.final_quantity != self.previous_quantity + self.quantity:
-            raise ValidationError({'final_quantity': 'O saldo final nao confere.'})
+            raise ValidationError({'final_quantity': 'O saldo final não confere.'})
 
     def save(self, *args, **kwargs):
         if self.pk:
-            raise ValidationError('Movimentacoes de estoque sao imutaveis.')
+            raise ValidationError('Movimentações de estoque são imutáveis.')
         self.full_clean()
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
-        raise ValidationError('Movimentacoes de estoque sao imutaveis.')
+        raise ValidationError('Movimentações de estoque são imutáveis.')
 
     def __str__(self):
         return f'{self.get_movement_type_display()} - {self.stock} ({self.quantity})'

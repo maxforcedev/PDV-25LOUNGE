@@ -103,7 +103,7 @@ class BranchSerializer(serializers.ModelSerializer):
         if not company or not user_has_company_permission(request.user, company.id, permission):
             raise serializers.ValidationError({'company': 'Empresa fora do contexto autorizado.'})
         if not self.instance and company.status != Status.ACTIVE:
-            raise serializers.ValidationError({'company': 'Nao e possivel criar filial em empresa inativa.'})
+            raise serializers.ValidationError({'company': 'Não é possível criar filial em empresa inativa.'})
         if attrs.get('status') == Status.ACTIVE and company.status != Status.ACTIVE:
             raise serializers.ValidationError({'status': 'Ative a empresa antes de ativar a filial.'})
         if self.instance and 'address' in attrs and attrs['address'] != self.instance.address:
@@ -154,7 +154,7 @@ class BranchSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('O CEP deve conter 8 digitos.')
         state = normalized['state'].upper()
         if len(state) != 2 or not state.isalpha():
-            raise serializers.ValidationError('Informe uma UF valida com 2 letras.')
+            raise serializers.ValidationError('Informe uma UF válida com 2 letras.')
         normalized['zip_code'] = zip_code
         normalized['state'] = state
         return normalized
@@ -229,7 +229,7 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
             if branch and not user_has_branch_permission(
                 request.user, branch.pk, 'commissions.change_branch_default'
             ):
-                raise serializers.ValidationError({'commission_rate': 'Voce nao possui permissao para alterar comissão padrão.'})
+                raise serializers.ValidationError({'commission_rate': 'Você não possui permissão para alterar comissão padrão.'})
         if (
             self.instance
             and self.instance.allow_negative_stock
@@ -401,7 +401,7 @@ class AccessProfileSerializer(serializers.ModelSerializer):
         if commission_fields and not user_has_company_permission(
             request.user, company.id, 'commissions.change_profile'
         ):
-            raise serializers.ValidationError({'commission_rate': 'Voce nao possui permissao para alterar comissão de perfil.'})
+            raise serializers.ValidationError({'commission_rate': 'Você não possui permissão para alterar comissão de perfil.'})
         if permissions is not None and not request.user.is_superuser:
             requested_codes = {permission.code for permission in permissions}
             requested_operating = requested_codes & set(OPERATING_PERMISSION_CODES)
@@ -430,7 +430,7 @@ class AccessProfileSerializer(serializers.ModelSerializer):
                 )
             if unauthorized:
                 raise serializers.ValidationError(
-                    {'permission_codes': 'Voce nao pode conceder permissoes que nao possui.'}
+                    {'permission_codes': 'Você não pode conceder permissões que não possui.'}
                 )
         return attrs
 
@@ -486,12 +486,12 @@ class UserPermissionBlockSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'user': 'Permissoes de superusuario nao podem ser bloqueadas.'})
         company_access = user.company_accesses.filter(company=company, is_active=True).first()
         if not company_access:
-            raise serializers.ValidationError({'user': 'O usuario nao possui acesso ativo a esta empresa.'})
+            raise serializers.ValidationError({'user': 'O usuário não possui acesso ativo a esta empresa.'})
         if permission.code not in inherited_permission_codes(
             user, company.id, branch.id if branch else None
         ):
             raise serializers.ValidationError({
-                'permission_code': 'Esta permissao nao e herdada pelo usuario no escopo selecionado.'
+                'permission_code': 'Esta permissão não é herdada pelo usuário no escopo selecionado.'
             })
         if UserPermissionBlock.objects.filter(
             company=company,
@@ -501,10 +501,10 @@ class UserPermissionBlockSerializer(serializers.ModelSerializer):
             is_active=True,
         ).exists():
             raise serializers.ValidationError({
-                'permission_code': 'Esta permissao ja esta bloqueada no escopo selecionado.'
+                'permission_code': 'Esta permissão já está bloqueada no escopo selecionado.'
             })
         if not user_has_company_permission(request.user, company.id, 'user_permission_blocks.change'):
-            raise serializers.ValidationError({'company': 'Voce nao possui permissao para bloquear permissoes nesta empresa.'})
+            raise serializers.ValidationError({'company': 'Você não possui permissão para bloquear permissões nesta empresa.'})
         return attrs
 
     def create(self, validated_data):
@@ -542,15 +542,15 @@ class UserCommissionOverrideSerializer(serializers.ModelSerializer):
             if 'branch' in attrs and attrs['branch'] != self.instance.branch:
                 raise serializers.ValidationError({'branch': 'A filial do override nao pode ser alterada.'})
             if 'user' in attrs and attrs['user'] != self.instance.user:
-                raise serializers.ValidationError({'user': 'O usuario do override nao pode ser alterado.'})
+                raise serializers.ValidationError({'user': 'O usuário da configuração individual não pode ser alterado.'})
         if not user_has_branch_permission(request.user, branch.pk, 'commissions.change_user_override'):
-            raise serializers.ValidationError({'branch': 'Voce nao possui permissao para alterar comissão individual nesta filial.'})
+            raise serializers.ValidationError({'branch': 'Você não possui permissão para alterar comissão individual nesta filial.'})
         user = attrs.get('user', getattr(self.instance, 'user', None))
         if user and not UserCommissionOverride.target_has_active_branch_access(
             branch.pk, user.pk
         ):
             raise serializers.ValidationError({
-                'user': 'O usuario deve estar ativo e possuir acesso e perfil ativos nesta filial.'
+                'user': 'O usuário deve estar ativo e possuir acesso e perfil ativos nesta filial.'
             })
         rate = attrs.get('commission_rate', getattr(self.instance, 'commission_rate', None))
         if rate is not None and not (Decimal('0') <= rate <= Decimal('100')):

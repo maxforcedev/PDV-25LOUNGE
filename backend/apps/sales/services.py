@@ -30,8 +30,8 @@ from .models import (
 DEFAULT_PAYMENT_METHODS = (
     (PaymentMethodCode.CASH, 'Dinheiro'),
     (PaymentMethodCode.PIX, 'PIX'),
-    (PaymentMethodCode.CREDIT_CARD, 'Cartao de credito'),
-    (PaymentMethodCode.DEBIT_CARD, 'Cartao de debito'),
+    (PaymentMethodCode.CREDIT_CARD, 'Cartão de crédito'),
+    (PaymentMethodCode.DEBIT_CARD, 'Cartão de débito'),
 )
 MAX_MONEY = Decimal('999999999999.99')
 CENT = Decimal('0.01')
@@ -62,13 +62,13 @@ def _idempotency_decimal(value, *, default=None):
     if value is None:
         return None
     if isinstance(value, (float, bool)):
-        raise ValidationError('Valores decimais de idempotencia devem ser exatos.')
+        raise ValidationError('Valores decimais de idempotência devem ser exatos.')
     try:
         value = Decimal(value)
     except (InvalidOperation, TypeError, ValueError):
-        raise ValidationError('Valor decimal de idempotencia invalido.')
+        raise ValidationError('Valor decimal de idempotência inválido.')
     if not value.is_finite():
-        raise ValidationError('Valor decimal de idempotencia deve ser finito.')
+        raise ValidationError('Valor decimal de idempotência deve ser finito.')
     return value
 
 
@@ -210,7 +210,7 @@ def _eligible_sale_user(branch, user, permission_code, field):
     user_id = _pk(user) if user else None
     candidate = eligible_branch_users(branch, permission_code).filter(pk=user_id).first()
     if not candidate:
-        raise ValidationError({field: 'Usuario sem acesso ativo e permissao nesta filial.'})
+        raise ValidationError({field: 'Usuário sem acesso ativo e permissão nesta filial.'})
     return candidate
 
 
@@ -224,12 +224,12 @@ def _discount_approver(
     ):
         return operator
     if not authorization or authorization.get('method') != 'password':
-        raise ValidationError({authorization_field: 'Autorizacao de desconto invalida.'})
+        raise ValidationError({authorization_field: 'Autorização de desconto inválida.'})
     approver = _eligible_sale_user(
         branch, authorization.get('user'), permission_code, authorization_field,
     )
     if not approver.check_password(authorization.get('credential') or ''):
-        raise ValidationError({authorization_field: 'Autorizacao de desconto invalida.'})
+        raise ValidationError({authorization_field: 'Autorização de desconto inválida.'})
     return approver
 
 
@@ -241,13 +241,13 @@ def _service_fee_waiver(branch, operator, waived, authorization):
     ):
         return operator
     if not authorization or authorization.get('method') != 'password':
-        raise ValidationError({'service_fee_authorization': 'Autorizacao para retirar taxa invalida.'})
+        raise ValidationError({'service_fee_authorization': 'Autorização para retirar taxa inválida.'})
     approver = _eligible_sale_user(
         branch, authorization.get('user'), 'sales.waive_service_fee',
         'service_fee_authorization',
     )
     if not approver.check_password(authorization.get('credential') or ''):
-        raise ValidationError({'service_fee_authorization': 'Autorizacao para retirar taxa invalida.'})
+        raise ValidationError({'service_fee_authorization': 'Autorização para retirar taxa inválida.'})
     return approver
 
 
@@ -255,24 +255,24 @@ def strict_decimal(value, *, field, decimal_places, max_digits, allow_none=False
     if value is None and allow_none:
         return None
     if isinstance(value, (float, bool)) or value in ('', None):
-        raise ValidationError({field: 'Informe um decimal valido como string ou inteiro.'})
+        raise ValidationError({field: 'Informe um decimal válido como string ou inteiro.'})
     try:
         result = Decimal(value)
     except (InvalidOperation, TypeError, ValueError):
-        raise ValidationError({field: 'Informe um decimal valido.'})
+        raise ValidationError({field: 'Informe um decimal válido.'})
     if not result.is_finite():
         raise ValidationError({field: 'O valor deve ser finito.'})
     exponent = result.as_tuple().exponent
     places = max(-exponent, 0)
     integer_digits = max(len(result.as_tuple().digits) + exponent, 0)
     if places > decimal_places or integer_digits + places > max_digits:
-        raise ValidationError({field: f'Use no maximo {decimal_places} casas decimais.'})
+        raise ValidationError({field: f'Use no máximo {decimal_places} casas decimais.'})
     return result.quantize(Decimal(1).scaleb(-decimal_places))
 
 
 def ensure_money_fits(value, field):
     if value < 0 or value > MAX_MONEY:
-        raise ValidationError({field: 'O valor excede o limite monetario permitido.'})
+        raise ValidationError({field: 'O valor excede o limite monetário permitido.'})
     return value
 
 
@@ -299,7 +299,7 @@ def _consolidate_items(raw_items, products, *, price_overrides=None):
             raise ValidationError({'items': f'Item {index + 1}: informe o produto.'})
         product = products.get(str(raw_item['product']))
         if not product:
-            raise ValidationError({'items': f'Item {index + 1}: produto indisponivel nesta empresa.'})
+            raise ValidationError({'items': f'Item {index + 1}: produto indisponível nesta empresa.'})
         quantity = strict_decimal(
             raw_item.get('quantity'), field='quantity', decimal_places=3, max_digits=14
         )
@@ -318,7 +318,7 @@ def _consolidate_items(raw_items, products, *, price_overrides=None):
         )
         if item_discount < 0:
             raise ValidationError(
-                {'items': f'Item {index + 1}: o desconto nao pode ser negativo.'}
+                {'items': f'Item {index + 1}: o desconto não pode ser negativo.'}
             )
         discounts[product.pk] += item_discount
         ensure_money_fits(discounts[product.pk], 'items')
@@ -436,10 +436,10 @@ def _apply_promotions(operation_type, items, promotions):
         promotion, benefit, _direct = selected or (None, Decimal('0.00'), False)
         manual_discount = item['manual_discount_requested']
         if operation_type == OperationType.CONSUMPTION and manual_discount:
-            raise ValidationError({'items': 'Consumacao nao aceita desconto por item.'})
+            raise ValidationError({'items': 'Consumação não aceita desconto por item.'})
         if manual_discount > item['subtotal'] - benefit:
             raise ValidationError({
-                'items': f'O desconto do item {item["product_name"]} excede o saldo apos a promocao.'
+                'items': f'O desconto do item {item["product_name"]} excede o saldo após a promoção.'
             })
         item.update({
             'promotion': promotion.pk if promotion else None,
@@ -459,7 +459,7 @@ def _apply_promotions(operation_type, items, promotions):
 
 def calculate_preview(*, company, operation_type, raw_items, discount, charged_amount, beneficiary_user, branch=None, service_fee_waived=False):
     if operation_type not in OperationType.values:
-        raise ValidationError({'operation_type': 'Tipo de operacao invalido.'})
+        raise ValidationError({'operation_type': 'Tipo de operação inválido.'})
     if not isinstance(raw_items, list) or not raw_items:
         raise ValidationError({'items': 'Informe ao menos um item.'})
     product_ids = [item.get('product') for item in raw_items if isinstance(item, dict)]
@@ -483,11 +483,11 @@ def calculate_preview(*, company, operation_type, raw_items, discount, charged_a
     )
     if operation_type == 'consumption':
         if discount not in (None, '', 0, '0', '0.00'):
-            raise ValidationError({'discount': 'Consumacao nao aceita desconto.'})
+            raise ValidationError({'discount': 'Consumação não aceita desconto.'})
         if not beneficiary_user or not UserCompanyAccess.objects.filter(
             user=beneficiary_user, user__is_active=True, company=company, is_active=True
         ).exists():
-            raise ValidationError({'beneficiary_user': 'Beneficiario sem acesso ativo a empresa.'})
+            raise ValidationError({'beneficiary_user': 'Beneficiário sem acesso ativo à empresa.'})
         charged = strict_decimal(
             charged_amount, field='charged_amount', decimal_places=2, max_digits=14
         )
@@ -506,7 +506,7 @@ def calculate_preview(*, company, operation_type, raw_items, discount, charged_a
         )
         remaining = subtotal - promotion_discount_total - item_discount_total
         if discount_value < 0 or discount_value > remaining:
-            raise ValidationError({'discount': 'O desconto deve estar entre zero e o saldo apos promocoes.'})
+            raise ValidationError({'discount': 'O desconto deve estar entre zero e o saldo após promoções.'})
         charged = None
         net_subtotal = remaining - discount_value
         (
@@ -650,9 +650,9 @@ def detect_promotion_conflict(promotion):
             else other.branch.name
         )
         return (
-            f'Conflito com a promocao "{other.name}" ({other_branch_label}). '
-            f'Esta promocao ({branch_label}) compartilha produtos/categorias, '
-            'vigencia e horario sobrepostos. Ajuste alvos, filial, vigencia ou agenda.'
+            f'Conflito com a promoção "{other.name}" ({other_branch_label}). '
+            f'Esta promoção ({branch_label}) compartilha produtos/categorias, '
+            'vigência e horário sobrepostos. Ajuste alvos, filial, vigência ou agenda.'
         )
     return None
 
@@ -667,25 +667,25 @@ def _active_branch(branch, user, permission_code):
             pk=_pk(branch), status=Status.ACTIVE, company__status=Status.ACTIVE,
         )
     except (Branch.DoesNotExist, TypeError, ValueError):
-        raise ValidationError({'branch': 'Filial ou empresa inativa/invalida.'})
+        raise ValidationError({'branch': 'Filial ou empresa inativa ou inválida.'})
     if not user.is_superuser and not user_has_branch_permission(user, branch.pk, permission_code):
-        raise PermissionDenied('Voce nao possui permissao para esta operacao nesta filial.')
+        raise PermissionDenied('Você não possui permissão para esta operação nesta filial.')
     return branch
 
 
 def _lock_cash_session(raw_session, branch, *, required):
     if raw_session in (None, ''):
         if required:
-            raise ValidationError({'cash_session': 'Informe uma sessao de caixa aberta.'})
+            raise ValidationError({'cash_session': 'Informe uma sessão de caixa aberta.'})
         return None
     try:
         session = CashSession.objects.select_for_update().get(pk=_pk(raw_session))
     except (CashSession.DoesNotExist, TypeError, ValueError):
-        raise ValidationError({'cash_session': 'Sessao de caixa invalida.'})
+        raise ValidationError({'cash_session': 'Sessão de caixa inválida.'})
     if session.branch_id != branch.pk:
-        raise ValidationError({'cash_session': 'A sessao deve pertencer a filial atual.'})
+        raise ValidationError({'cash_session': 'A sessão deve pertencer à filial atual.'})
     if session.status != CashSessionStatus.OPEN:
-        raise ValidationError({'cash_session': 'A sessao de caixa deve estar aberta.'})
+        raise ValidationError({'cash_session': 'A sessão de caixa deve estar aberta.'})
     return session
 
 
@@ -700,7 +700,7 @@ def _prepare_products(company, raw_items, *, branch=None):
     try:
         parent_ids = sorted({int(value) for value in parent_ids})
     except (TypeError, ValueError):
-        raise ValidationError({'items': 'Produto invalido.'})
+        raise ValidationError({'items': 'Produto inválido.'})
     locked_parents = {
         product.pk: product
         for product in Product.objects.select_for_update()
@@ -708,7 +708,7 @@ def _prepare_products(company, raw_items, *, branch=None):
     }
     parents = {str(pk): locked_parents[pk] for pk in parent_ids if pk in locked_parents}
     if len(parents) != len(parent_ids):
-        raise ValidationError({'items': 'Um ou mais produtos sao invalidos.'})
+        raise ValidationError({'items': 'Um ou mais produtos são inválidos.'})
 
     component_rows = list(
         ProductComponent.objects.filter(parent_product_id__in=parent_ids)
@@ -735,7 +735,7 @@ def _prepare_products(company, raw_items, *, branch=None):
         if product.company_id != company.pk:
             raise PermissionDenied('Produto fora da empresa da filial.')
         if product.status != Status.ACTIVE or not product.is_sellable:
-            raise ValidationError({'items': f'Item {index + 1}: produto inativo ou indisponivel para venda.'})
+            raise ValidationError({'items': f'Item {index + 1}: produto inativo ou indisponível para venda.'})
 
         if product.inventory_behavior == InventoryBehavior.NONE:
             continue
@@ -744,7 +744,7 @@ def _prepare_products(company, raw_items, *, branch=None):
             continue
         rows = rows_by_parent.get(product.pk, [])
         if not rows:
-            raise ValidationError({'items': f'Item {index + 1}: produto composto sem composicao.'})
+            raise ValidationError({'items': f'Item {index + 1}: produto composto sem composição.'})
         compound_unit_cost = Decimal('0.00')
         component_cost_snapshot = []
         for row in rows:
@@ -754,11 +754,11 @@ def _prepare_products(company, raw_items, *, branch=None):
                 or component.status != Status.ACTIVE
                 or component.inventory_behavior != InventoryBehavior.DIRECT
             ):
-                raise ValidationError({'items': f'Item {index + 1}: a composicao possui componente invalido ou inativo.'})
+                raise ValidationError({'items': f'Item {index + 1}: a composição possui componente inválido ou inativo.'})
             required = quantity * row.quantity
             rounded_required = required.quantize(Decimal('0.001'))
             if rounded_required != required:
-                raise ValidationError({'items': f'Item {index + 1}: a composicao gera quantidade com mais de tres casas.'})
+                raise ValidationError({'items': f'Item {index + 1}: a composição gera quantidade com mais de três casas.'})
             required = rounded_required
             requirements[component.pk] = requirements.get(component.pk, Decimal('0')) + required
             cost_contribution = component.cost * row.quantity
@@ -810,7 +810,7 @@ def _prepare_payments(company, raw_payments, total, *, free_consumption):
         raise ValidationError({'payments': 'Informe uma lista de pagamentos.'})
     if free_consumption:
         if raw_payments:
-            raise ValidationError({'payments': 'Consumacao gratuita nao aceita pagamento.'})
+            raise ValidationError({'payments': 'Consumação gratuita não aceita pagamento.'})
         return []
     if total <= 0:
         raise ValidationError({'discount': 'Venda normal deve possuir total maior que zero.'})
@@ -818,7 +818,7 @@ def _prepare_payments(company, raw_payments, total, *, free_consumption):
         raise ValidationError({'payments': 'Informe ao menos um pagamento.'})
     method_ids = [item.get('payment_method') for item in raw_payments if isinstance(item, dict)]
     if len(method_ids) != len(raw_payments) or any(value in (None, '') for value in method_ids):
-        raise ValidationError({'payments': 'Todos os pagamentos devem informar o metodo.'})
+        raise ValidationError({'payments': 'Todos os pagamentos devem informar o método.'})
     methods = {
         str(method.pk): method
         for method in PaymentMethod.objects.select_for_update().filter(
@@ -830,7 +830,7 @@ def _prepare_payments(company, raw_payments, total, *, free_consumption):
     for index, raw_payment in enumerate(raw_payments):
         method = methods.get(str(raw_payment['payment_method']))
         if not method or method.company_id != company.pk or method.status != Status.ACTIVE:
-            raise ValidationError({'payments': f'Pagamento {index + 1}: metodo inativo ou invalido para esta empresa.'})
+            raise ValidationError({'payments': f'Pagamento {index + 1}: método inativo ou inválido para esta empresa.'})
         raw_amount = raw_payment.get('amount')
         is_remaining_cash = (
             method.code == PaymentMethodCode.CASH
@@ -894,10 +894,10 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
     operation_timestamp = timezone.now()
     permission = 'sales.create_consumption' if operation_type == OperationType.CONSUMPTION else 'sales.create'
     if operation_type not in OperationType.values:
-        raise ValidationError({'operation_type': 'Tipo de operacao invalido.'})
+        raise ValidationError({'operation_type': 'Tipo de operação inválido.'})
     branch = _active_branch(branch, user, permission)
     if not idempotency_key:
-        raise ValidationError({'idempotency_key': 'Informe a chave de idempotencia.'})
+        raise ValidationError({'idempotency_key': 'Informe a chave de idempotência.'})
     company = Company.objects.select_for_update().get(pk=branch.company_id)
     fingerprint = _sale_idempotency_fingerprint(_sale_idempotency_payload(
         actor=user,
@@ -938,7 +938,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
 
             raise DomainValidationError(
                 code='idempotency_key_conflict',
-                message='A chave de idempotencia ja foi usada com outros dados.',
+                message='A chave de idempotência já foi usada com outros dados.',
                 details={'idempotency_key': str(idempotency_key)},
             )
         replay._idempotency_replayed = True
@@ -947,25 +947,25 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
     if operation_type == OperationType.CONSUMPTION:
         charged = strict_decimal(charged_amount, field='charged_amount', decimal_places=2, max_digits=14)
         if charged < 0:
-            raise ValidationError({'charged_amount': 'O valor cobrado nao pode ser negativo.'})
+            raise ValidationError({'charged_amount': 'O valor cobrado não pode ser negativo.'})
         consumption_discount = strict_decimal(
             discount if discount not in (None, '') else '0', field='discount',
             decimal_places=2, max_digits=14,
         )
         if consumption_discount != 0:
-            raise ValidationError({'discount': 'Consumacao nao aceita desconto.'})
+            raise ValidationError({'discount': 'Consumação não aceita desconto.'})
         beneficiary_access = UserCompanyAccess.objects.select_related('user').filter(
             user_id=_pk(beneficiary_user), user__is_active=True,
             company=branch.company, is_active=True,
         ).first() if beneficiary_user else None
         if not beneficiary_access:
-            raise ValidationError({'beneficiary_user': 'Beneficiario sem acesso ativo a empresa.'})
+            raise ValidationError({'beneficiary_user': 'Beneficiário sem acesso ativo à empresa.'})
         beneficiary_user = beneficiary_access.user
         seller_user = None
         session = _lock_cash_session(cash_session, branch, required=charged > 0)
     else:
         if charged_amount not in (None, ''):
-            raise ValidationError({'charged_amount': 'Venda normal nao aceita valor cobrado.'})
+            raise ValidationError({'charged_amount': 'Venda normal não aceita valor cobrado.'})
         charged = None
         beneficiary_user = None
         seller_user = _eligible_sale_user(
@@ -1005,7 +1005,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         )
         remaining = subtotal - promotion_discount_total - item_discount_total
         if discount_value < 0 or discount_value > remaining:
-            raise ValidationError({'discount': 'O desconto deve estar entre zero e o saldo apos promocoes.'})
+            raise ValidationError({'discount': 'O desconto deve estar entre zero e o saldo após promoções.'})
         discount_approved_by = _discount_approver(
             branch, user, discount_value, discount_authorization,
             permission_code='sales.apply_discount',
@@ -1146,7 +1146,7 @@ def cancel_sale(*, sale, branch, user, reason=''):
     try:
         sale = Sale.objects.select_for_update().get(pk=_pk(sale))
     except (Sale.DoesNotExist, TypeError, ValueError):
-        raise ValidationError({'sale': 'Venda invalida.'})
+        raise ValidationError({'sale': 'Venda inválida.'})
     permission = (
         'sales.cancel_consumption'
         if sale.operation_type == OperationType.CONSUMPTION else 'sales.cancel'
@@ -1155,12 +1155,12 @@ def cancel_sale(*, sale, branch, user, reason=''):
     if sale.branch_id != branch.pk:
         raise PermissionDenied('Venda fora da filial atual.')
     if sale.status == SaleStatus.CANCELLED:
-        raise ValidationError({'status': 'Esta venda ja foi cancelada.'})
+        raise ValidationError({'status': 'Esta venda já foi cancelada.'})
     if sale.cash_session_id:
         session = CashSession.objects.select_for_update().get(pk=sale.cash_session_id)
         if session.status != CashSessionStatus.OPEN:
             raise ValidationError(
-                {'cash_session': 'Nao e possivel cancelar uma operacao apos o fechamento da sessao de caixa.'}
+                {'cash_session': 'Não é possível cancelar uma operação após o fechamento da sessão de caixa.'}
             )
 
     original_type = (

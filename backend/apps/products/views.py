@@ -88,6 +88,7 @@ class CatalogViewSet(viewsets.ModelViewSet):
         return queryset
 
     @action(detail=True, methods=['post'])
+    @transaction.atomic
     def activate(self, request, pk=None):
         item = self.get_object()
         before = model_snapshot(item, ('status',))
@@ -102,6 +103,7 @@ class CatalogViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(item).data)
 
     @action(detail=True, methods=['post'])
+    @transaction.atomic
     def deactivate(self, request, pk=None):
         item = self.get_object()
         before = model_snapshot(item, ('status',))
@@ -136,7 +138,7 @@ class CategoryViewSet(CatalogViewSet):
         params = self.request.query_params
         category_status = params.get('status')
         if category_status and category_status not in Status.values:
-            raise ValidationError({'status': 'Informe um status valido.'})
+            raise ValidationError({'status': 'Informe um status válido.'})
         search = params.get('search', '').strip()
         if search:
             queryset = queryset.filter(
@@ -153,6 +155,7 @@ class CategoryViewSet(CatalogViewSet):
             )
         return queryset
 
+    @transaction.atomic
     def perform_create(self, serializer):
         category = serializer.save()
         audit_log(
@@ -161,6 +164,7 @@ class CategoryViewSet(CatalogViewSet):
             after=model_snapshot(category, ('name', 'description', 'sort_order', 'status')),
         )
 
+    @transaction.atomic
     def perform_update(self, serializer):
         fields = ('name', 'description', 'sort_order', 'status')
         before = model_snapshot(serializer.instance, fields)
@@ -172,6 +176,7 @@ class CategoryViewSet(CatalogViewSet):
         )
 
     @action(detail=False, methods=['post'])
+    @transaction.atomic
     def reorder(self, request):
         company_id = request.data.get('company')
         branch = getattr(request, 'branch_context', None)

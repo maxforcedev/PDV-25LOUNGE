@@ -151,6 +151,8 @@ function AuditPageInner() {
   const [actor, setActor] = useState("");
   const [module, setModule] = useState("");
   const [action, setAction] = useState("");
+  const [appliedFilters, setAppliedFilters] =
+    useState<AuditFilters>(emptyFilters);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [options, setOptions] = useState<AuditOptions>({
@@ -190,16 +192,38 @@ function AuditPageInner() {
     return `audit-logs/?${params}`;
   }
 
+  function syncUrl(selectedPeriod: PeriodValue, filters: AuditFilters) {
+    const params = new URLSearchParams();
+    if (selectedPeriod.start)
+      params.set("start_datetime", selectedPeriod.start);
+    if (selectedPeriod.end) params.set("end_datetime", selectedPeriod.end);
+    if (filters.search.trim()) params.set("search", filters.search.trim());
+    if (filters.branch) params.set("branch", filters.branch);
+    if (filters.actor) params.set("actor", filters.actor);
+    if (filters.module) params.set("module", filters.module);
+    if (filters.action) params.set("action", filters.action);
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${params.size ? `?${params}` : ""}`,
+    );
+  }
+
   async function load(
     path?: string,
     token = contextRef.current,
     selectedPeriod = period,
-    filters = selectedFilters(),
+    filters = appliedFilters,
   ) {
     if (!currentBranch) return;
     const requestId = ++listRequestRef.current;
     setLoading(true);
     setError("");
+    setData(null);
+    if (!path) {
+      setAppliedFilters(filters);
+      syncUrl(selectedPeriod, filters);
+    }
     try {
       const response = await http.get<Paginated<AuditLog>>(
         url(path, selectedPeriod, filters),
@@ -273,24 +297,41 @@ function AuditPageInner() {
     setActor("");
     setModule("");
     setAction("");
+    setAppliedFilters(emptyFilters);
     setSelected(null);
     void load(undefined, contextRef.current, clearedPeriod, emptyFilters);
   }
 
   useEffect(() => {
     const token = contextRef.current;
-    const initialPeriod = businessPeriodPreset("today");
+    const query = new URLSearchParams(window.location.search);
+    const defaultPeriod = businessPeriodPreset("today");
+    const initialPeriod =
+      query.get("start_datetime") && query.get("end_datetime")
+        ? {
+            start: query.get("start_datetime")!,
+            end: query.get("end_datetime")!,
+          }
+        : defaultPeriod;
+    const initialFilters = {
+      search: query.get("search") || "",
+      branch: query.get("branch") || "",
+      actor: query.get("actor") || "",
+      module: query.get("module") || "",
+      action: query.get("action") || "",
+    };
     setPeriod(initialPeriod);
-    setSearch("");
-    setBranch("");
-    setActor("");
-    setModule("");
-    setAction("");
+    setSearch(initialFilters.search);
+    setBranch(initialFilters.branch);
+    setActor(initialFilters.actor);
+    setModule(initialFilters.module);
+    setAction(initialFilters.action);
+    setAppliedFilters(initialFilters);
     setSelected(null);
     setBranches([]);
     setUsers([]);
     setOptions({ modules: [], actions: [] });
-    void load(undefined, token, initialPeriod, emptyFilters);
+    void load(undefined, token, initialPeriod, initialFilters);
     void loadOptions(token);
     if (currentCompany) {
       void http
@@ -325,7 +366,8 @@ function AuditPageInner() {
           className="card p-4"
           onSubmit={(event) => {
             event.preventDefault();
-            void load();
+            const filters = selectedFilters();
+            void load(undefined, contextRef.current, period, filters);
           }}
         >
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
@@ -333,6 +375,15 @@ function AuditPageInner() {
               className="sm:col-span-2 xl:col-span-6"
               value={period}
               onChange={setPeriod}
+              onApply={(next) => {
+                setPeriod(next);
+                void load(
+                  undefined,
+                  contextRef.current,
+                  next,
+                  appliedFilters,
+                );
+              }}
               showActions={false}
             />
             <Field label="Filial">

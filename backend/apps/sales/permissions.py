@@ -5,7 +5,7 @@ from apps.companies.selectors import user_has_branch_permission
 
 
 class SalesFunctionalPermission(BasePermission):
-    message = 'Voce nao possui permissao para esta operacao nesta filial.'
+    message = 'Você não possui permissão para esta operação nesta filial.'
 
     def _code(self, request, view):
         if view.basename == 'sale' and view.action == 'beneficiaries':

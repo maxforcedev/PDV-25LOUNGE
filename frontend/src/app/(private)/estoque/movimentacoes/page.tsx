@@ -86,6 +86,7 @@ function Movements() {
   const [appliedFilters, setAppliedFilters] =
     useState<MovementFilters>(emptyFilters);
   const contextRef = useRef("");
+  const requestRef = useRef(0);
   contextRef.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}`;
 
   function query(selected: MovementFilters) {
@@ -113,11 +114,29 @@ function Movements() {
       ? url.toString()
       : `${url.pathname.replace(/^\//, "")}${url.search}`;
   }
+  function syncUrl(selected: MovementFilters) {
+    const params = new URLSearchParams();
+    if (selected.search.trim()) params.set("search", selected.search.trim());
+    if (selected.type) params.set("type", selected.type);
+    if (selected.nature) params.set("nature", selected.nature);
+    if (selected.operationReference)
+      params.set("operation_reference", selected.operationReference);
+    if (selected.period.start)
+      params.set("start_datetime", selected.period.start);
+    if (selected.period.end)
+      params.set("end_datetime", selected.period.end);
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${params.size ? `?${params}` : ""}`,
+    );
+  }
   async function load(
     path?: string,
     context = contextRef.current,
     selected = appliedFilters,
   ) {
+    const requestId = ++requestRef.current;
     if (!currentCompany || !currentBranch) {
       setData(null);
       setLoading(false);
@@ -125,33 +144,47 @@ function Movements() {
     }
     setLoading(true);
     setError("");
+    setData(null);
+    if (!path) {
+      setAppliedFilters(selected);
+      syncUrl(selected);
+    }
     try {
       const response = await http.get<Paginated<StockMovement>>(
         pagePath(path, selected),
       );
-      if (contextRef.current === context) setData(response);
+      if (contextRef.current === context && requestRef.current === requestId)
+        setData(response);
     } catch (caught) {
-      if (contextRef.current === context)
+      if (contextRef.current === context && requestRef.current === requestId)
         setError(
           caught instanceof ApiError
             ? caught.message
             : "Não foi possível carregar as movimentações.",
         );
     } finally {
-      if (contextRef.current === context) setLoading(false);
+      if (contextRef.current === context && requestRef.current === requestId)
+        setLoading(false);
     }
   }
   useEffect(() => {
-    const requestedOperation =
-      new URLSearchParams(window.location.search).get("operation_reference") ||
-      "";
-    setSearch("");
-    setType("");
-    setNature("");
-    setPeriod({ start: "", end: "" });
+    const queryParams = new URLSearchParams(window.location.search);
+    const selected = {
+      search: queryParams.get("search") || "",
+      type: queryParams.get("type") || "",
+      nature: queryParams.get("nature") || "",
+      operationReference: queryParams.get("operation_reference") || "",
+      period: {
+        start: queryParams.get("start_datetime") || "",
+        end: queryParams.get("end_datetime") || "",
+      },
+    };
+    setSearch(selected.search);
+    setType(selected.type);
+    setNature(selected.nature);
+    setPeriod(selected.period);
     setData(null);
-    setOperationReference(requestedOperation);
-    const selected = { ...emptyFilters(), operationReference: requestedOperation };
+    setOperationReference(selected.operationReference);
     setAppliedFilters(selected);
     void load(undefined, contextRef.current, selected);
   }, [currentCompany?.id, currentBranch?.id]);
@@ -159,7 +192,6 @@ function Movements() {
   function applyFilters(event: React.FormEvent) {
     event.preventDefault();
     const selected = { search, type, nature, operationReference, period };
-    setAppliedFilters(selected);
     void load(undefined, contextRef.current, selected);
   }
 
@@ -170,8 +202,6 @@ function Movements() {
     setNature("");
     setOperationReference("");
     setPeriod(selected.period);
-    setAppliedFilters(selected);
-    window.history.replaceState(null, "", "/estoque/movimentacoes");
     void load(undefined, contextRef.current, selected);
   }
 
@@ -254,6 +284,11 @@ function Movements() {
             className="sm:col-span-2 xl:col-span-3"
             value={period}
             onChange={setPeriod}
+            onApply={(next) => {
+              const selected = { ...appliedFilters, period: next };
+              setPeriod(next);
+              void load(undefined, contextRef.current, selected);
+            }}
             showActions={false}
           />
           <div className="flex flex-wrap justify-end gap-2 sm:col-span-2 xl:col-span-3">

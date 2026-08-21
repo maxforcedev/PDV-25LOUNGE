@@ -27,7 +27,7 @@ def _decimal(value, field, *, positive=False, nonnegative=False):
     try:
         value = Decimal(value)
     except (InvalidOperation, TypeError, ValueError):
-        raise ValidationError({field: 'Informe um numero decimal valido.'})
+        raise ValidationError({field: 'Informe um número decimal válido.'})
     if not value.is_finite():
         raise ValidationError({field: 'Informe um numero decimal finito.'})
     if positive and value <= 0:
@@ -74,7 +74,7 @@ def _validate_operational_stock(product, branch):
     if product.company_id != branch.company_id:
         raise ValidationError({'branch': 'A filial deve pertencer a empresa do produto.'})
     if product.inventory_behavior != InventoryBehavior.DIRECT:
-        raise ValidationError({'product': 'Somente produtos com estoque proprio podem ser movimentados.'})
+        raise ValidationError({'product': 'Somente produtos com estoque próprio podem ser movimentados.'})
 
 
 def _claim_operation(*, branch, key, user, kind, payload):
@@ -138,7 +138,7 @@ def _move(*, product, branch, user, reason, movement_type, nature,
                     return existing[0]
                 raise DomainValidationError(
                     code='idempotency_key_conflict',
-                    message='A operacao idempotente persistida esta inconsistente.',
+                    message='A operação idempotente persistida está inconsistente.',
                     details={'operation_reference': str(idempotency_key)},
                 )
         try:
@@ -175,6 +175,11 @@ def _move(*, product, branch, user, reason, movement_type, nature,
             movement_type=movement_type, nature=nature,
             operation_reference=idempotency_key or operation_reference,
         )
+        after = model_snapshot(movement, (
+            'movement_type', 'nature', 'quantity', 'previous_quantity',
+            'final_quantity', 'reason',
+        ))
+        after['product_name'] = product.name
         audit_log(
             actor=user,
             action=(
@@ -184,7 +189,7 @@ def _move(*, product, branch, user, reason, movement_type, nature,
             ),
             obj=movement,
             company=branch.company, branch=branch,
-            after=model_snapshot(movement, ('movement_type', 'nature', 'quantity', 'previous_quantity', 'final_quantity', 'reason')),
+            after=after,
             metadata={'operation_reference': str(movement.operation_reference)},
         )
         return movement
@@ -292,7 +297,7 @@ def group_entry(*, branch, category, items, user, operation_reference,
         if len(existing) != len(requested):
             raise DomainValidationError(
                 code='idempotency_key_conflict',
-                message='A operacao idempotente persistida esta inconsistente.',
+                message='A operação idempotente persistida está inconsistente.',
                 details={'operation_reference': str(reference)},
             )
         for movement in existing:
@@ -410,7 +415,7 @@ def resolve_stock_requirements(items):
             continue
         components = list(product.components.select_related('component_product'))
         if not components:
-            raise ValidationError({'product': 'Produto composto sem composicao cadastrada.'})
+            raise ValidationError({'product': 'Produto composto sem composição cadastrada.'})
         for component in components:
             required = quantity * component.quantity
             component_id = component.component_product_id

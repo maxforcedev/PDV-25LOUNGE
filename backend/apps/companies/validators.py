@@ -22,7 +22,7 @@ def validate_cnpj(value):
     if len(digits) != 14 or not digits.isascii() or not digits.isdigit():
         raise ValidationError('O CNPJ deve conter 14 digitos.')
     if len(set(digits)) == 1:
-        raise ValidationError('Informe um CNPJ valido.')
+        raise ValidationError('Informe um CNPJ válido.')
 
     def calculate_digit(numbers, weights):
         total = sum(int(number) * weight for number, weight in zip(numbers, weights))
@@ -35,4 +35,4 @@ def validate_cnpj(value):
         (6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2),
     )
     if digits[-2:] != first + second:
-        raise ValidationError('Informe um CNPJ valido.')
+        raise ValidationError('Informe um CNPJ válido.')

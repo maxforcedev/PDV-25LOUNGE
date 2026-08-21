@@ -24,11 +24,14 @@ export function PeriodFilter({
   onApply,
   onClear,
   onChange,
-  showActions = true,
+  showActions = false,
   className = "",
 }: PeriodFilterProps) {
   const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value.start, value.end]);
+  useEffect(
+    () => setDraft({ start: value.start, end: value.end }),
+    [value.start, value.end],
+  );
 
   function update(next: PeriodValue) {
     setDraft(next);
@@ -36,7 +39,9 @@ export function PeriodFilter({
   }
 
   function choose(preset: PeriodPreset) {
-    update(businessPeriodPreset(preset));
+    const next = businessPeriodPreset(preset);
+    update(next);
+    onApply?.(next);
   }
 
   const presets: Array<[PeriodPreset, string]> = [

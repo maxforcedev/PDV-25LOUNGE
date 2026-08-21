@@ -77,7 +77,7 @@ class LoginView(APIView):
 
         if not account.is_active:
             return Response(
-                {'detail': 'Seu usuario esta inativo. Procure um administrador.'},
+                {'detail': 'Seu usuário está inativo. Procure um administrador.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -94,7 +94,7 @@ class LoginView(APIView):
         )
         if user is None:
             return Response(
-                {'detail': 'Nao foi possivel autenticar esta conta.'},
+                {'detail': 'Não foi possível autenticar esta conta.'},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
@@ -111,11 +111,11 @@ class LoginView(APIView):
                     company__status='inactive',
                 ).exists()
                 message = (
-                    'O perfil de acesso vinculado ao seu usuario esta inativo.'
+                    'O perfil de acesso vinculado ao seu usuário está inativo.'
                     if has_inactive_profile
-                    else 'A empresa vinculada ao seu usuario esta inativa.'
+                    else 'A empresa vinculada ao seu usuário está inativa.'
                     if has_inactive_company
-                    else 'Seu usuario nao possui acesso a uma empresa ativa.'
+                    else 'Seu usuário não possui acesso a uma empresa ativa.'
                 )
                 return Response({'detail': message}, status=status.HTTP_403_FORBIDDEN)
 
@@ -126,9 +126,9 @@ class LoginView(APIView):
                     branch__status='inactive',
                 ).exists()
                 message = (
-                    'A filial vinculada ao seu usuario esta inativa.'
+                    'A filial vinculada ao seu usuário está inativa.'
                     if has_inactive_branch
-                    else 'Seu usuario nao possui acesso a uma filial ativa.'
+                    else 'Seu usuário não possui acesso a uma filial ativa.'
                 )
                 return Response({'detail': message}, status=status.HTTP_403_FORBIDDEN)
 

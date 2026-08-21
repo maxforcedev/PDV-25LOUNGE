@@ -197,7 +197,7 @@ class GroupEntrySerializer(serializers.Serializer):
             raise serializers.ValidationError('Informe quantidade para ao menos um produto.')
         product_ids = [item['product'] for item in items]
         if len(product_ids) != len(set(product_ids)):
-            raise serializers.ValidationError('Nao repita produtos na mesma entrada em grupo.')
+            raise serializers.ValidationError('Não repita produtos na mesma entrada em grupo.')
         return items
 
 
@@ -218,7 +218,7 @@ class RegularizeNegativesSerializer(serializers.Serializer):
         if len(stock_ids) != len(set(stock_ids)):
             raise DomainValidationError(
                 code='duplicate_regularization_stock',
-                message='Nao repita saldos na mesma regularizacao.',
+                message='Não repita saldos na mesma regularização.',
                 details={'stock_ids': stock_ids},
             )
         return items

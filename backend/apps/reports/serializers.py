@@ -5,10 +5,10 @@ from rest_framework import serializers
 from apps.accounts.models import User
 from apps.base.constants import MAX_BIGINT
 from apps.cash.models import CashRegister, CashSession, CashSessionStatus, WithdrawalCategory
-from apps.cash.services import session_operational_summary
+from apps.cash.services import redact_operational_summary, session_operational_summary
 from apps.inventory.models import MovementType
 from apps.products.models import Category, Product
-from apps.sales.models import Payment, PaymentMethod, Sale, SaleItem, SaleStatus
+from apps.sales.models import OperationType, Payment, PaymentMethod, Sale, SaleItem, SaleStatus
 from apps.sales.serializers import readable_user_name
 
 
@@ -159,13 +159,26 @@ class ReportPaymentSerializer(serializers.ModelSerializer):
 
 
 class ReportSaleSerializer(serializers.ModelSerializer):
+    event_type = serializers.SerializerMethodField()
+    event_at = serializers.SerializerMethodField()
+    event_sign = serializers.SerializerMethodField()
     operator = serializers.SerializerMethodField()
     seller = serializers.SerializerMethodField()
     discount_approved_by = serializers.SerializerMethodField()
     beneficiary = serializers.SerializerMethodField()
     items = ReportSaleItemSerializer(many=True, read_only=True)
     payments = ReportPaymentSerializer(many=True, read_only=True)
+    sales_revenue = serializers.SerializerMethodField()
+    consumption_charged = serializers.SerializerMethodField()
     effective_revenue = serializers.SerializerMethodField()
+    service_fee = serializers.DecimalField(
+        max_digits=14, decimal_places=2, source='service_fee_amount', read_only=True
+    )
+    total_received = serializers.DecimalField(
+        max_digits=14, decimal_places=2, source='total', read_only=True
+    )
+    payment_total = serializers.SerializerMethodField()
+    reconciliation_delta = serializers.SerializerMethodField()
     total_received_sales = serializers.SerializerMethodField()
     customer_total = serializers.DecimalField(
         max_digits=14, decimal_places=2, source='total', read_only=True
@@ -175,19 +188,47 @@ class ReportSaleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Sale
         fields = (
-            'id', 'sale_number', 'operation_type', 'status', 'operator', 'seller',
+            'id', 'event_type', 'event_at', 'event_sign', 'sale_number',
+            'operation_type', 'status', 'operator', 'seller',
             'discount_approved_by', 'beneficiary', 'subtotal',
             'promotion_discount_total', 'item_discount_total', 'discount', 'service_fee_rate',
             'service_fee_amount', 'commission_rate', 'commission_amount', 'total', 'created_at',
-            'effective_revenue', 'total_received_sales', 'customer_total',
-            'payment_reconciliation_delta', 'cancelled_at', 'items', 'payments',
+            'sales_revenue', 'consumption_charged', 'effective_revenue', 'service_fee',
+            'total_received', 'payment_total', 'reconciliation_delta',
+            'payment_reconciliation_delta',
+            'total_received_sales', 'customer_total', 'cancelled_at', 'items', 'payments',
         )
 
+    def get_event_type(self, sale):
+        return getattr(sale, '_report_event_type', 'record')
+
+    def get_event_at(self, sale):
+        value = getattr(sale, '_report_event_at', sale.created_at)
+        return serializers.DateTimeField().to_representation(value)
+
+    def get_event_sign(self, sale):
+        return getattr(sale, '_report_event_sign', 1)
+
+    def get_sales_revenue(self, sale):
+        value = sale.total - sale.service_fee_amount if sale.operation_type == OperationType.SALE else 0
+        return f'{value:.2f}'
+
+    def get_consumption_charged(self, sale):
+        value = sale.total if sale.operation_type == OperationType.CONSUMPTION else 0
+        return f'{value:.2f}'
+
     def get_effective_revenue(self, sale):
-        return f'{sale.total - sale.service_fee_amount:.2f}'
+        return f'{sale.total - sale.service_fee_amount:.2f}' if sale.operation_type == OperationType.SALE else f'{sale.total:.2f}'
+
+    def get_payment_total(self, sale):
+        return f'{sum((payment.amount for payment in sale.payments.all()), 0):.2f}'
+
+    def get_reconciliation_delta(self, sale):
+        received = sum((payment.amount for payment in sale.payments.all()), 0)
+        return f'{received - sale.total:.2f}'
 
     def get_total_received_sales(self, sale):
-        return f'{sum((payment.amount for payment in sale.payments.all()), 0):.2f}'
+        return self.get_payment_total(sale)
 
     def get_payment_reconciliation_delta(self, sale):
         received = sum((payment.amount for payment in sale.payments.all()), 0)
@@ -223,7 +264,9 @@ class ReportSaleSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         branch = getattr(request, 'branch_context', None) if request else None
         if request and (request.query_params.get('product') or request.query_params.get('category')):
-            from .selectors import _scoped_payment_rows, _scoped_sale_values
+            from .selectors import (
+                _scoped_consumption_values, _scoped_payment_rows, _scoped_sale_values,
+            )
 
             filters = {}
             for key in ('product', 'category'):
@@ -232,18 +275,40 @@ class ReportSaleSerializer(serializers.ModelSerializer):
                         filters[key] = int(request.query_params[key])
                 except (TypeError, ValueError):
                     pass
-            scoped = _scoped_sale_values(instance, filters)
-            data.update({
-                'subtotal': f"{scoped['gross']:.2f}",
-                'promotion_discount_total': f"{scoped['promotion_discount']:.2f}",
-                'item_discount_total': f"{scoped['item_discount']:.2f}",
-                'discount': f"{scoped['account_discount']:.2f}",
-                'service_fee_amount': f"{scoped['service_fee']:.2f}",
-                'commission_amount': f"{scoped['commission']:.2f}",
-                'total': f"{scoped['customer_total']:.2f}",
-                'effective_revenue': f"{scoped['effective_revenue']:.2f}",
-                'customer_total': f"{scoped['customer_total']:.2f}",
-            })
+            if instance.operation_type == OperationType.CONSUMPTION:
+                scoped = _scoped_consumption_values(instance, filters)
+                data.update({
+                    'subtotal': f"{scoped['reference']:.2f}",
+                    'promotion_discount_total': '0.00',
+                    'item_discount_total': '0.00',
+                    'discount': '0.00',
+                    'service_fee_amount': '0.00',
+                    'service_fee': '0.00',
+                    'commission_amount': '0.00',
+                    'total': f"{scoped['total_received']:.2f}",
+                    'sales_revenue': '0.00',
+                    'consumption_charged': f"{scoped['consumption_charged']:.2f}",
+                    'effective_revenue': f"{scoped['effective_revenue']:.2f}",
+                    'total_received': f"{scoped['total_received']:.2f}",
+                    'customer_total': f"{scoped['total_received']:.2f}",
+                })
+            else:
+                scoped = _scoped_sale_values(instance, filters)
+                data.update({
+                    'subtotal': f"{scoped['gross']:.2f}",
+                    'promotion_discount_total': f"{scoped['promotion_discount']:.2f}",
+                    'item_discount_total': f"{scoped['item_discount']:.2f}",
+                    'discount': f"{scoped['account_discount']:.2f}",
+                    'service_fee_amount': f"{scoped['service_fee']:.2f}",
+                    'service_fee': f"{scoped['service_fee']:.2f}",
+                    'commission_amount': f"{scoped['commission']:.2f}",
+                    'total': f"{scoped['total_received']:.2f}",
+                    'sales_revenue': f"{scoped['sales_revenue']:.2f}",
+                    'consumption_charged': '0.00',
+                    'effective_revenue': f"{scoped['effective_revenue']:.2f}",
+                    'total_received': f"{scoped['total_received']:.2f}",
+                    'customer_total': f"{scoped['total_received']:.2f}",
+                })
             category_by_id = {
                 item.pk: item.product.category_id for item in instance.items.all()
             }
@@ -268,9 +333,11 @@ class ReportSaleSerializer(serializers.ModelSerializer):
                 if payment['amount']
             ]
             received = sum((Decimal(payment['amount']) for payment in data['payments']), Decimal('0.00'))
+            data['payment_total'] = f'{received:.2f}'
+            data['reconciliation_delta'] = f"{received - scoped['total_received']:.2f}"
             data['total_received_sales'] = f'{received:.2f}'
             data['payment_reconciliation_delta'] = (
-                f"{received - scoped['customer_total']:.2f}"
+                f"{received - scoped['total_received']:.2f}"
             )
         for payment in data['payments']:
             payment.pop('payment_method', None)
@@ -280,6 +347,26 @@ class ReportSaleSerializer(serializers.ModelSerializer):
             if not user_has_branch_permission(request.user, branch.pk, 'commissions.view'):
                 data.pop('commission_rate', None)
                 data.pop('commission_amount', None)
+        if data['event_sign'] < 0:
+            for key in (
+                'subtotal', 'promotion_discount_total', 'item_discount_total',
+                'discount', 'service_fee_amount', 'commission_amount', 'total',
+                'sales_revenue', 'consumption_charged', 'effective_revenue',
+                'service_fee', 'total_received', 'payment_total',
+                'total_received_sales', 'customer_total',
+            ):
+                if data.get(key) not in (None, ''):
+                    data[key] = f'{-Decimal(data[key]):.2f}'
+            data['reconciliation_delta'] = f'{-Decimal(data["reconciliation_delta"]):.2f}'
+            data['payment_reconciliation_delta'] = data['reconciliation_delta']
+            for payment in data['payments']:
+                payment['amount'] = f'{-Decimal(payment["amount"]):.2f}'
+            for item in data['items']:
+                item['quantity'] = f'{-Decimal(item["quantity"]):.3f}'
+                for key in (
+                    'subtotal', 'promotion_benefit', 'manual_discount', 'net_subtotal',
+                ):
+                    item[key] = f'{-Decimal(item[key]):.2f}'
         return data
 
 
@@ -316,20 +403,29 @@ class CashSessionReportSerializer(serializers.Serializer):
     def get_operational_summary(self, session):
         summary = session_operational_summary(session)
         request = self.context.get('request')
+        include_commission = bool(request and request.user.is_superuser)
+        include_costs = bool(request and request.user.is_superuser)
         if request and not request.user.is_superuser:
             from apps.companies.selectors import user_has_branch_permission
 
-            cache_name = f'_report_commission_permission_{session.branch_id}'
-            if not hasattr(request, cache_name):
-                setattr(
-                    request,
-                    cache_name,
-                    user_has_branch_permission(
-                        request.user, session.branch_id, 'commissions.view'
-                    ),
-                )
-            if not getattr(request, cache_name):
-                summary['sales'].pop('commission', None)
+            permissions = {}
+            for name, code in (
+                ('commission', 'commissions.view'),
+                ('costs', 'inventory.view_stock_costs'),
+            ):
+                cache_name = f'_report_{name}_permission_{session.branch_id}'
+                if not hasattr(request, cache_name):
+                    setattr(
+                        request, cache_name,
+                        user_has_branch_permission(request.user, session.branch_id, code),
+                    )
+                permissions[name] = getattr(request, cache_name)
+            include_commission = permissions['commission']
+            include_costs = permissions['costs']
+        summary = redact_operational_summary(
+            summary, include_costs=include_costs,
+            include_commission=include_commission,
+        )
 
         def serialize(value):
             from decimal import Decimal

@@ -66,7 +66,7 @@ class CategorySerializer(CompanyBoundSerializer):
         if self.instance:
             queryset = queryset.exclude(pk=self.instance.pk)
         if company_id and queryset.exists():
-            raise serializers.ValidationError('Ja existe uma categoria com este nome nesta empresa.')
+            raise serializers.ValidationError('Já existe uma categoria com este nome nesta empresa.')
         return value
 
 
@@ -169,7 +169,7 @@ class ProductSerializer(CompanyBoundSerializer):
             duplicate_name = duplicate_name.exclude(pk=self.instance.pk)
         if duplicate_name.exists():
             raise serializers.ValidationError(
-                {'name': 'Ja existe um produto com este nome nesta empresa.'}
+                {'name': 'Já existe um produto com este nome nesta empresa.'}
             )
         code = attrs.get('internal_code', getattr(self.instance, 'internal_code', '')).strip()
         if code:
@@ -177,14 +177,14 @@ class ProductSerializer(CompanyBoundSerializer):
             if self.instance:
                 same_code = same_code.exclude(pk=self.instance.pk)
             if same_code.exists():
-                raise serializers.ValidationError({'internal_code': 'Ja existe um produto com este codigo nesta empresa.'})
+                raise serializers.ValidationError({'internal_code': 'Já existe um produto com este código nesta empresa.'})
         barcode = (attrs.get('barcode', getattr(self.instance, 'barcode', '')) or '').strip()
         if barcode:
             same_barcode = Product.objects.filter(company=company, barcode__iexact=barcode)
             if self.instance:
                 same_barcode = same_barcode.exclude(pk=self.instance.pk)
             if same_barcode.exists():
-                raise serializers.ValidationError({'barcode': 'Ja existe um produto com este codigo de barras nesta empresa.'})
+                raise serializers.ValidationError({'barcode': 'Já existe um produto com este código de barras nesta empresa.'})
         behavior = attrs.get(
             'inventory_behavior',
             getattr(self.instance, 'inventory_behavior', InventoryBehavior.DIRECT),
@@ -204,11 +204,11 @@ class ProductSerializer(CompanyBoundSerializer):
                 )
             ):
                 raise serializers.ValidationError(
-                    {'components': 'Voce nao possui permissao para configurar a composicao.'}
+                    {'components': 'Você não possui permissão para configurar a composição.'}
                 )
             if behavior != InventoryBehavior.COMPONENTS:
                 raise serializers.ValidationError(
-                    {'components': 'Somente produtos com baixa por componentes possuem composicao.'}
+                    {'components': 'Somente produtos com baixa por componentes possuem composição.'}
                 )
             self._validate_components(components, company)
         if behavior == InventoryBehavior.COMPONENTS and sellable:
@@ -217,12 +217,12 @@ class ProductSerializer(CompanyBoundSerializer):
             )
             if not has_components:
                 raise serializers.ValidationError(
-                    {'is_sellable': 'Informe a composicao antes de habilitar a venda.'}
+                    {'is_sellable': 'Informe a composição antes de habilitar a venda.'}
                 )
         if self.instance and behavior != InventoryBehavior.COMPONENTS:
             if self.instance.components.exists():
                 raise serializers.ValidationError(
-                    {'inventory_behavior': 'Remova a composicao antes de alterar o comportamento.'}
+                    {'inventory_behavior': 'Remova a composição antes de alterar o comportamento.'}
                 )
         request = self.context.get('request')
         branch = getattr(request, 'branch_context', None) if request else None
@@ -232,11 +232,11 @@ class ProductSerializer(CompanyBoundSerializer):
             if 'cost' in attrs and attrs['cost'] != current_cost and not user_has_branch_permission(
                 request.user, branch.pk, 'products.change_cost'
             ):
-                raise serializers.ValidationError({'cost': 'Voce nao possui permissao para alterar custos.'})
+                raise serializers.ValidationError({'cost': 'Você não possui permissão para alterar custos.'})
             if 'sale_price' in attrs and attrs['sale_price'] != current_price and not user_has_branch_permission(
                 request.user, branch.pk, 'products.change_price'
             ):
-                raise serializers.ValidationError({'sale_price': 'Voce nao possui permissao para alterar o preco padrao.'})
+                raise serializers.ValidationError({'sale_price': 'Você não possui permissão para alterar o preço padrão.'})
         return attrs
 
     def _validate_components(self, components, company):
@@ -246,7 +246,7 @@ class ProductSerializer(CompanyBoundSerializer):
             component = item['component_product']
             item_errors = {}
             if component.pk in seen:
-                item_errors['component_product'] = ['Nao repita produtos na composicao.']
+                item_errors['component_product'] = ['Não repita produtos na composição.']
             seen.add(component.pk)
             if self.instance and component.pk == self.instance.pk:
                 item_errors['component_product'] = ['Um produto nao pode compor a si mesmo.']
@@ -254,7 +254,7 @@ class ProductSerializer(CompanyBoundSerializer):
                 item_errors['component_product'] = ['O componente deve pertencer a mesma empresa.']
             if component.inventory_behavior != InventoryBehavior.DIRECT:
                 item_errors['component_product'] = [
-                    'Somente produtos com estoque proprio podem ser componentes.'
+                    'Somente produtos com estoque próprio podem ser componentes.'
                 ]
             if component.unit == Unit.UNIT and item['quantity'] != item['quantity'].to_integral_value():
                 item_errors['quantity'] = ['A quantidade de um componente UN deve ser inteira.']
@@ -335,7 +335,7 @@ class CompositionSerializer(serializers.Serializer):
             component = item['component_product']
             item_errors = {}
             if component.pk in seen:
-                item_errors['component_product'] = ['Nao repita produtos na composicao.']
+                item_errors['component_product'] = ['Não repita produtos na composição.']
             seen.add(component.pk)
             if component.company_id != product.company_id:
                 item_errors['component_product'] = ['O componente deve pertencer a mesma empresa.']
@@ -343,7 +343,7 @@ class CompositionSerializer(serializers.Serializer):
             if branch and branch.company_id != component.company_id:
                 item_errors['component_product'] = ['Componente fora do contexto autorizado.']
             if component.inventory_behavior != InventoryBehavior.DIRECT:
-                item_errors['component_product'] = ['Somente produtos com estoque proprio podem ser componentes.']
+                item_errors['component_product'] = ['Somente produtos com estoque próprio podem ser componentes.']
             if component.pk == product.pk:
                 item_errors['component_product'] = ['Um produto nao pode compor a si mesmo.']
             if component.unit == Unit.UNIT and item['quantity'] != item['quantity'].to_integral_value():
@@ -354,7 +354,7 @@ class CompositionSerializer(serializers.Serializer):
             raise serializers.ValidationError(errors)
         if product.is_sellable and not value:
             raise serializers.ValidationError(
-                'Um produto composto vendavel deve possuir componentes.'
+                'Um produto composto vendável deve possuir componentes.'
             )
         return value
 
