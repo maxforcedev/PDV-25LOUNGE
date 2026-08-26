@@ -4,8 +4,11 @@ from rest_framework import serializers
 
 from apps.companies.models import Status
 
-from .models import ProductSupplier, ProductSupplierUnit, Supplier
-from .services import _save_product_supplier, _save_product_supplier_unit, _save_supplier
+from .models import PresentationPreset, PresentationType, ProductSupplier, ProductSupplierUnit, Supplier
+from .services import (
+    _save_presentation_preset, _save_product_supplier, _save_product_supplier_unit,
+    _save_supplier,
+)
 from .validators import normalize_tax_id, validate_tax_id
 
 
@@ -151,16 +154,27 @@ class ProductSupplierUnitSerializer(ImmutableTenantSerializer):
         source='product_supplier.supplier.trade_name', read_only=True
     )
     conversion_factor = serializers.DecimalField(
-        max_digits=18, decimal_places=6, min_value=Decimal('0.000001')
+        max_digits=18, decimal_places=6, min_value=Decimal('0.000001'), required=False
     )
-    description = serializers.CharField(required=True, allow_blank=False, max_length=200)
+    unit_code = serializers.CharField(required=False, max_length=20)
+    description = serializers.CharField(required=False, allow_blank=False, max_length=200)
+    presentation_preset = serializers.PrimaryKeyRelatedField(
+        queryset=PresentationPreset.objects.all(), required=False, allow_null=True
+    )
+    presentation_type = serializers.ChoiceField(
+        choices=PresentationType.choices, required=False, write_only=True
+    )
+    custom_code = serializers.CharField(required=False, allow_blank=False, max_length=20, write_only=True)
+    custom_name = serializers.CharField(required=False, allow_blank=False, max_length=100, write_only=True)
+    save_as_preset = serializers.BooleanField(required=False, default=False, write_only=True)
 
     class Meta:
         model = ProductSupplierUnit
         fields = (
             'id', 'company', 'company_name', 'product_supplier', 'product_name',
             'supplier_name', 'unit_code', 'description', 'conversion_factor', 'barcode',
-            'is_default', 'status', 'created_at', 'updated_at',
+            'is_default', 'status', 'presentation_preset', 'presentation_type', 'custom_code',
+            'custom_name', 'save_as_preset', 'created_at', 'updated_at',
         )
         read_only_fields = (
             'id', 'company_name', 'product_name', 'supplier_name', 'status',
@@ -188,6 +202,8 @@ class ProductSupplierUnitSerializer(ImmutableTenantSerializer):
         )
         status = getattr(self.instance, 'status', Status.ACTIVE)
         is_default = attrs.get('is_default', getattr(self.instance, 'is_default', False))
+        preset = attrs.get('presentation_preset')
+        presentation_type = attrs.get('presentation_type')
         errors = {}
         if company and relation and company.pk != relation.company_id:
             errors['product_supplier'] = 'A relação deve pertencer à empresa da apresentação.'
@@ -199,6 +215,25 @@ class ProductSupplierUnitSerializer(ImmutableTenantSerializer):
                 siblings = siblings.exclude(pk=self.instance.pk)
             if siblings.exists():
                 errors['is_default'] = 'A relação já possui uma apresentação padrão ativa.'
+        if preset and presentation_type:
+            errors['presentation_preset'] = 'Escolha um padrão existente ou informe um novo tipo.'
+        if not self.instance and not preset and not presentation_type:
+            legacy_fields = ('unit_code', 'description', 'conversion_factor')
+            missing_legacy = [field for field in legacy_fields if attrs.get(field) in (None, '')]
+            if missing_legacy and len(missing_legacy) < len(legacy_fields):
+                for field in missing_legacy:
+                    errors[field] = 'Informe este campo para a apresentação legada.'
+            elif missing_legacy:
+                errors['presentation_type'] = 'Escolha um padrão ou informe tipo e quantidade por apresentação.'
+        if presentation_type == PresentationType.OTHER:
+            if not attrs.get('custom_code'):
+                errors['custom_code'] = 'Informe a sigla personalizada.'
+            if not attrs.get('custom_name'):
+                errors['custom_name'] = 'Informe o nome personalizado.'
+        if not self.instance and presentation_type and attrs.get('conversion_factor') is None:
+            errors['conversion_factor'] = 'Informe a quantidade por apresentação.'
+        if preset and company and preset.company_id != company.pk:
+            errors['presentation_preset'] = 'O padrão deve pertencer à mesma empresa.'
         if errors:
             raise serializers.ValidationError(errors)
         return attrs
@@ -208,3 +243,49 @@ class ProductSupplierUnitSerializer(ImmutableTenantSerializer):
 
     def update(self, instance, validated_data):
         return _save_product_supplier_unit(instance=instance, **validated_data)
+
+
+class PresentationPresetSerializer(ImmutableTenantSerializer):
+    conversion_factor = serializers.DecimalField(
+        max_digits=18, decimal_places=6, min_value=Decimal('0.000001')
+    )
+    code = serializers.CharField(read_only=True)
+    description = serializers.CharField(read_only=True)
+    usage_count = serializers.SerializerMethodField(read_only=True)
+    custom_code = serializers.CharField(required=False, allow_blank=True, max_length=20)
+    custom_name = serializers.CharField(required=False, allow_blank=True, max_length=100)
+
+    class Meta:
+        model = PresentationPreset
+        fields = (
+            'id', 'company', 'presentation_type', 'conversion_factor', 'code', 'description',
+            'custom_code', 'custom_name', 'usage_count', 'status', 'created_at', 'updated_at',
+        )
+        read_only_fields = ('id', 'code', 'description', 'status', 'created_at', 'updated_at')
+        validators = []
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        presentation_type = attrs.get('presentation_type', getattr(self.instance, 'presentation_type', None))
+        custom_code = attrs.get('custom_code', getattr(self.instance, 'custom_code', ''))
+        custom_name = attrs.get('custom_name', getattr(self.instance, 'custom_name', ''))
+        errors = {}
+        if presentation_type == PresentationType.OTHER:
+            if not custom_code.strip():
+                errors['custom_code'] = 'Informe a sigla personalizada.'
+            if not custom_name.strip():
+                errors['custom_name'] = 'Informe o nome personalizado.'
+        elif custom_code or custom_name:
+            errors['presentation_type'] = 'Campos personalizados são exclusivos do tipo Outro.'
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
+
+    def create(self, validated_data):
+        return _save_presentation_preset(**validated_data)
+
+    def update(self, instance, validated_data):
+        return _save_presentation_preset(instance=instance, **validated_data)
+
+    def get_usage_count(self, instance):
+        return instance.product_supplier_units.count()

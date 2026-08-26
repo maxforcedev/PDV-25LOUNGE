@@ -739,6 +739,17 @@ class ProductSerializer(CompanyBoundSerializer):
                         'barcode': unit.barcode,
                         'is_default': unit.is_default,
                         'status': unit.status,
+                        'presentation_preset': unit.presentation_preset_id,
+                        'presentation_preset_code': (
+                            unit.presentation_preset.code if unit.presentation_preset_id else ''
+                        ),
+                        'presentation_preset_name': (
+                            unit.presentation_preset.description if unit.presentation_preset_id else ''
+                        ),
+                        'presentation_type': (
+                            unit.presentation_preset.presentation_type
+                            if unit.presentation_preset_id else None
+                        ),
                     }
                     for unit in relation.units.all()
                 ],

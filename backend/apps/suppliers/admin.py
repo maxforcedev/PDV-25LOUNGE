@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import ProductSupplier, ProductSupplierUnit, Supplier
+from .models import PresentationPreset, ProductSupplier, ProductSupplierUnit, Supplier
 
 
 class ReadOnlySupplierAdminMixin:
@@ -41,3 +41,10 @@ class ProductSupplierUnitAdmin(ReadOnlySupplierAdminMixin, admin.ModelAdmin):
     )
     list_filter = ('status', 'is_default', 'company')
     search_fields = ('unit_code', 'description', 'barcode')
+
+
+@admin.register(PresentationPreset)
+class PresentationPresetAdmin(ReadOnlySupplierAdminMixin, admin.ModelAdmin):
+    list_display = ('code', 'description', 'company', 'conversion_factor', 'status')
+    list_filter = ('presentation_type', 'status', 'company')
+    search_fields = ('code', 'description', 'custom_code', 'custom_name')

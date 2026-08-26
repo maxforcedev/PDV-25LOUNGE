@@ -47,15 +47,15 @@ class OperationalTableSerializer(TableSerializer):
 
 class BatchTableSerializer(serializers.Serializer):
     branch = serializers.IntegerField(min_value=1)
-    prefix = serializers.CharField(max_length=50, required=False, default='')
-    start = serializers.IntegerField(min_value=1)
-    end = serializers.IntegerField(min_value=1)
-    seats = serializers.IntegerField(min_value=0, required=False, default=0)
+    prefix = serializers.CharField(max_length=50, required=False)
+    start = serializers.IntegerField(min_value=1, required=False, default=1)
+    end = serializers.IntegerField(min_value=1, required=False)
+    seats = serializers.IntegerField(min_value=0, required=False)
 
     def validate(self, attrs):
-        if attrs['end'] < attrs['start']:
+        if attrs.get('end') is not None and attrs['end'] < attrs['start']:
             raise serializers.ValidationError({'end': 'O número final deve ser maior ou igual ao inicial.'})
-        if attrs['end'] - attrs['start'] > 500:
+        if attrs.get('end') is not None and attrs['end'] - attrs['start'] >= 500:
             raise serializers.ValidationError({'end': 'Máximo de 500 mesas por lote.'})
         return attrs
 

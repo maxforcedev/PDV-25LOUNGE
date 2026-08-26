@@ -10,16 +10,18 @@ from apps.companies.models import Status
 from apps.companies.permissions import FunctionalCompanyPermission
 from apps.companies.selectors import accessible_companies
 
-from .models import ProductSupplier, ProductSupplierUnit, Supplier
+from .models import PresentationPreset, ProductSupplier, ProductSupplierUnit, Supplier
 from .serializers import (
     ProductSupplierSerializer,
     ProductSupplierUnitSerializer,
+    PresentationPresetSerializer,
     SupplierSerializer,
 )
 from .services import (
     _lock_instance,
     _set_product_supplier_status,
     _set_product_supplier_unit_status,
+    _set_presentation_preset_status,
     _set_supplier_status,
 )
 
@@ -185,7 +187,7 @@ class ProductSupplierUnitViewSet(SupplierDomainViewSet):
     audit_name = 'product_supplier_unit'
     audit_fields = (
         'company_id', 'product_supplier_id', 'unit_code', 'description',
-        'conversion_factor', 'barcode', 'is_default', 'status',
+        'conversion_factor', 'presentation_preset_id', 'barcode', 'is_default', 'status',
     )
     status_service = staticmethod(_set_product_supplier_unit_status)
 
@@ -223,3 +225,23 @@ class ProductSupplierUnitViewSet(SupplierDomainViewSet):
         return queryset.order_by(
             'product_supplier__product__name', '-is_default', 'unit_code', 'id'
         )
+
+
+class PresentationPresetViewSet(SupplierDomainViewSet):
+    queryset = PresentationPreset.objects.all()
+    serializer_class = PresentationPresetSerializer
+    audit_name = 'presentation_preset'
+    audit_fields = (
+        'company_id', 'presentation_type', 'conversion_factor', 'code', 'description',
+        'custom_code', 'custom_name', 'status',
+    )
+    status_service = staticmethod(_set_presentation_preset_status)
+
+    def get_queryset(self):
+        queryset = self.scope_company(PresentationPreset.objects.select_related('company'))
+        status = self.request.query_params.get('status')
+        if status:
+            if status not in Status.values:
+                raise ValidationError({'status': 'Informe um status válido.'})
+            queryset = queryset.filter(status=status)
+        return queryset.order_by('code', 'description', 'id')

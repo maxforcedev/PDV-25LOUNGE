@@ -144,6 +144,50 @@ class MultipleCommandsPerTableTests(Block6Fixture, TestCase):
         self.assertEqual(table.commands.filter(status=CommandStatus.OPEN).count(), 0)
 
 
+class CommandConsumptionLimitTests(Block6Fixture, TestCase):
+    def test_command_limit_uses_confirmed_gross_value(self):
+        settings = self.branch.settings
+        settings.consumption_limit_enabled = True
+        settings.command_consumption_limit = Decimal('15.00')
+        settings.save()
+        command = open_command(branch=self.branch, user=self.owner, identifier='Limite')
+        first = add_order_item(command=command, user=self.owner, product_id=self.product.pk, quantity=Decimal('1'))
+        confirm_order_item(item=first, user=self.owner, idempotency_key=uuid.uuid4())
+        second = add_order_item(command=command, user=self.owner, product_id=self.product.pk, quantity=Decimal('1'))
+        with self.assertRaisesRegex(Exception, 'Limite de consumo da comanda.*Consumo atual.*Tentativa.*Excedente'):
+            confirm_order_item(item=second, user=self.owner, idempotency_key=uuid.uuid4())
+        second.refresh_from_db()
+        self.assertEqual(second.status, OrderItemStatus.PENDING)
+
+    def test_table_limit_aggregates_open_commands(self):
+        settings = self.branch.settings
+        settings.consumption_limit_enabled = True
+        settings.table_consumption_limit = Decimal('15.00')
+        settings.save()
+        table = create_table(branch=self.branch, name='Mesa limite', user=self.owner)
+        first_command = open_command(branch=self.branch, user=self.owner, table=table, identifier='A')
+        second_command = open_command(branch=self.branch, user=self.owner, table=table, identifier='B')
+        first = add_order_item(command=first_command, user=self.owner, product_id=self.product.pk, quantity=Decimal('1'))
+        confirm_order_item(item=first, user=self.owner, idempotency_key=uuid.uuid4())
+        second = add_order_item(command=second_command, user=self.owner, product_id=self.product.pk, quantity=Decimal('1'))
+        with self.assertRaisesRegex(Exception, 'Limite de consumo da mesa'):
+            confirm_order_item(item=second, user=self.owner, idempotency_key=uuid.uuid4())
+
+    def test_batch_table_api_uses_branch_defaults_when_values_are_omitted(self):
+        settings = self.branch.settings
+        settings.default_table_quantity = 2
+        settings.default_table_seats = 4
+        settings.default_table_prefix = 'Setor '
+        settings.save()
+        client = APIClient()
+        client.force_authenticate(self.owner)
+        response = client.post('/api/v1/tables/batch/', {'branch': self.branch.pk}, format='json', HTTP_X_BRANCH_ID=str(self.branch.pk))
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['created'], 2)
+        self.assertEqual(list(Table.objects.order_by('name').values_list('name', flat=True)), ['Setor 1', 'Setor 2'])
+        self.assertEqual(Table.objects.first().seats, 4)
+
+
 class CommandStabilizationTests(Block6Fixture, TestCase):
     def _client(self):
         client = APIClient()

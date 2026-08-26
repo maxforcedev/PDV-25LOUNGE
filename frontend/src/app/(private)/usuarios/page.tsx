@@ -12,6 +12,7 @@ import {
   Users,
 } from "lucide-react";
 import Link from "next/link";
+import { useParams, useRouter } from "next/navigation";
 import { AdminGuard } from "@/components/admin-guard";
 import { UserCommissionSection } from "@/components/user-commission-section";
 import { PageHeader } from "@/components/page-header";
@@ -91,6 +92,10 @@ const emptyFilters = (): UserFilters => ({
 
 function UsersAdministration() {
   const { user: actor, currentCompany, hasPermission } = useAuth();
+  const router = useRouter();
+  const { id } = useParams<{ id?: string }>();
+  const isDetail = Boolean(id);
+  const isNew = id === "novo";
   const companies = actor?.companies || [];
   const canAdd = hasPermission(permissions.addUser);
   const canChange = hasPermission(permissions.changeUser);
@@ -223,6 +228,23 @@ function UsersAdministration() {
     };
   }, [currentCompany?.id]);
 
+  useEffect(() => {
+    if (!isDetail || !currentCompany) return;
+    if (isNew) {
+      show();
+      return;
+    }
+    const userId = Number(id);
+    if (!Number.isInteger(userId) || userId <= 0) {
+      setError("Usuário inválido.");
+      return;
+    }
+    http.get<User>(`users/${userId}/`).then((target) => {
+      if (!target.companies.some((company) => company.id === currentCompany.id)) throw new ApiError("Usuário não encontrado.", 404);
+      show(target);
+    }).catch((caught) => setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar o usuário."));
+  }, [id, isDetail, isNew, currentCompany?.id]);
+
   function applyFilters(event: React.FormEvent) {
     event.preventDefault();
     setAppliedFilters(draftFilters);
@@ -237,7 +259,7 @@ function UsersAdministration() {
   }
 
   function show(target?: User) {
-    if (target ? !canChange : !canAdd) return;
+    if (!target && !canAdd) return;
     const accesses =
       target?.companies.map((company) => ({
         company_id: company.id,
@@ -405,7 +427,13 @@ function UsersAdministration() {
       const payload = { ...normalizedPayload } as Partial<UserPayload>;
       if (editing && !accessesDirty) delete payload.company_accesses;
       if (editing) await http.patch(`users/${editing.id}/`, payload);
-      else await http.post("users/", payload);
+      else {
+        const created = await http.post<User>("users/", payload);
+        if (isDetail) {
+          router.replace(`/usuarios/${created.id}`);
+          return;
+        }
+      }
       setOpen(false);
       setSuccess(
         editing
@@ -468,20 +496,20 @@ function UsersAdministration() {
 
   return (
     <>
-      <PageHeader
+      {!isDetail && <PageHeader
         title="Usuários"
         description="Cadastre pessoas com ou sem acesso ao sistema."
         action={
           <Button
-            onClick={() => show()}
+            onClick={() => router.push("/usuarios/novo")}
             disabled={!canAdd || dependenciesLoading}
           >
             <Plus className="size-4" />
             Novo usuário
           </Button>
         }
-      />
-      <div className="space-y-4 p-4 sm:p-6 lg:p-8">
+      />}
+      {!isDetail && <div className="space-y-4 p-4 sm:p-6 lg:p-8">
         {error && !open && <Alert message={error} />}
         {success && <Alert type="success" message={success} />}
         <form className="card space-y-3 p-4" onSubmit={applyFilters}>
@@ -671,14 +699,13 @@ function UsersAdministration() {
                           <td>{formatDate(item.created_at)}</td>
                           <td>
                             <div className="flex justify-end gap-1">
-                              <button
+                              <Link
                                 className="icon-button"
-                                aria-label="Editar usuário"
-                                disabled={!canChange}
-                                onClick={() => show(item)}
+                                aria-label="Ver usuário"
+                                href={`/usuarios/${item.id}`}
                               >
                                 <Pencil className="size-4" />
-                              </button>
+                              </Link>
                               <button
                                 className="icon-button"
                                 aria-label="Redefinir senha"
@@ -732,16 +759,17 @@ function UsersAdministration() {
             />
           )}
         </section>
-      </div>
+      </div>}
       <Modal
         open={open}
         title={editing ? "Editar usuário" : "Novo usuário"}
         description="O tipo é informativo e nunca concede permissões."
-        onClose={() => !saving && setOpen(false)}
+        onClose={() => !saving && (isDetail ? router.push("/usuarios") : setOpen(false))}
         size="xl"
+        fullPage={isDetail}
       >
         <form onSubmit={submit}>
-          <div className="grid gap-5 p-5 sm:grid-cols-2 sm:p-6">
+          <fieldset disabled={!!editing && !canChange} className="grid gap-5 p-5 disabled:opacity-75 sm:grid-cols-2 sm:p-6">
             {error && (
               <div className="sm:col-span-2">
                 <Alert message={error} />
@@ -957,19 +985,20 @@ function UsersAdministration() {
                 </p>
               )}
             </div>
-          </div>
+          </fieldset>
           <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4">
             <Button
               type="button"
               variant="secondary"
-              onClick={() => setOpen(false)}
+              onClick={() => isDetail ? router.push("/usuarios") : setOpen(false)}
               disabled={saving}
             >
               Cancelar
             </Button>
-            <Button type="submit" loading={saving}>
+            {editing && canStatus && editing.id !== actor?.id && <Button type="button" variant="secondary" onClick={() => setConfirming(editing)} disabled={saving}>{editing.is_active ? "Inativar" : "Ativar"}</Button>}
+            {(!editing || canChange) && <Button type="submit" loading={saving}>
               Salvar usuário
-            </Button>
+            </Button>}
           </div>
         </form>
       </Modal>
@@ -996,6 +1025,7 @@ function UsersAdministration() {
           </div>
         </div>
       </Modal>
+      {isDetail && editing && <UserCommissionSection userId={editing.id} />}
     </>
   );
 }
@@ -1005,7 +1035,6 @@ export default function UsersPage() {
     <AdminGuard requiredPermissions={[permissions.viewUser]}>
       <>
         <UsersAdministration />
-        <UserCommissionSection />
       </>
     </AdminGuard>
   );

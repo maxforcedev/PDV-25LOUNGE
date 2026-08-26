@@ -18,7 +18,7 @@ type CommissionOverride = {
 
 type CommissionMode = "profile" | "none" | "individual";
 
-export function UserCommissionSection() {
+export function UserCommissionSection({ userId }: { userId?: number } = {}) {
   const { currentCompany, currentBranch, hasPermission } = useAuth();
   const canChange = hasPermission(permissions.changeUserCommission);
   const canRead = canChange || hasPermission(permissions.viewCommission);
@@ -54,6 +54,8 @@ export function UserCommissionSection() {
     ]).then(([userItems, overrideItems]) => {
       if (!active) return;
       setUsers(userItems.filter((user) => (
+        (!userId || user.id === userId)
+        &&
         user.is_active
         && user.branches.some((branch) => (
           branch.id === branchId
@@ -68,7 +70,7 @@ export function UserCommissionSection() {
       if (active) setLoading(false);
     });
     return () => { active = false; };
-  }, [currentCompany?.id, currentBranch?.id, canRead]);
+  }, [currentCompany?.id, currentBranch?.id, canRead, userId]);
 
   if (!canRead) return null;
 

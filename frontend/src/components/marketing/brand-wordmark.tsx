@@ -7,14 +7,18 @@ import { useBranding } from "@/providers/branding-provider";
 export function BrandWordmark({
   href = "/",
   compact = false,
+  dark = false,
   className = "",
 }: {
   href?: string;
   compact?: boolean;
+  dark?: boolean;
   className?: string;
 }) {
   const branding = useBranding();
-  const logo = compact ? branding.compact_logo_url || branding.logo_url : branding.logo_url;
+  const logo = compact
+    ? (dark ? branding.compact_logo_dark_url : branding.compact_logo_light_url) || branding.compact_logo_url || branding.logo_url
+    : (dark ? branding.logo_dark_url : branding.logo_light_url) || branding.logo_url;
   return (
     <Link
       href={href}

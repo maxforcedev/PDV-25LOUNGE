@@ -348,6 +348,8 @@ class BranchViewSet(viewsets.ModelViewSet):
             'allow_negative_stock', 'service_fee_rate', 'commission_rate',
             'fixed_daily_cost', 'uses_tables', 'uses_commands', 'uses_counter',
             'uses_consumption', 'uses_cash_register', 'charges_service_fee',
+            'default_table_quantity', 'default_table_seats', 'default_table_prefix',
+            'consumption_limit_enabled', 'command_consumption_limit', 'table_consumption_limit',
         )
         before = model_snapshot(instance, fields)
         serializer.save()

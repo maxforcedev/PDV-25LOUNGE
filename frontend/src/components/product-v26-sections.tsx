@@ -69,6 +69,13 @@ const presentationTypeLabels: Record<PresentationType, string> = {
   ENG: "Engradado", DSP: "Display", BDJ: "Bandeja", SC: "Saco", KIT: "Kit", OTHER: "Outro",
 };
 
+function presentationPreview(form: UnitForm, stockUnit: string) {
+  const quantity = formatQuantity(form.conversion_factor || "0");
+  const code = form.presentation_type === "OTHER" ? form.custom_code || "SIGLA" : `${form.presentation_type}${quantity}`;
+  const name = form.presentation_type === "OTHER" ? form.custom_name || "Nome personalizado" : presentationTypeLabels[form.presentation_type];
+  return { code, description: `${name} com ${quantity} unidades`, conversion: `1 ${code} = ${quantity} ${stockUnit.toUpperCase()}` };
+}
+
 function apiError(caught: unknown, fallback: string) {
   return caught instanceof ApiError
     ? `${caught.message} ${Object.values(caught.fields).flat().join(" ")}`.trim()
@@ -316,10 +323,12 @@ export function ProductV26Sections({ product, companyId, currentBranchId, branch
       is_default: unitForm.is_default,
     };
     const payload = editingUnit
-      ? {
+      ? editingUnit.presentation_preset
+        ? commonPayload
+        : {
         ...commonPayload, unit_code: unitForm.unit_code, description: unitForm.description,
         conversion_factor: unitForm.conversion_factor.replace(",", "."),
-      }
+        }
       : unitForm.presentation_preset
         ? { ...commonPayload, presentation_preset: Number(unitForm.presentation_preset) }
         : {
@@ -421,19 +430,19 @@ export function ProductV26Sections({ product, companyId, currentBranchId, branch
     <Modal open={unitOpen} title={editingUnit ? "Editar apresentação" : "Nova apresentação"} description={unitRelation?.supplier_name} onClose={() => setUnitOpen(false)}><form onSubmit={saveUnit}><div className="grid gap-4 p-5 sm:grid-cols-2">
       <div className="sm:col-span-2 rounded-md bg-surface-muted p-3 text-[11px] text-muted">Estoque: {product.unit.toUpperCase()}. A quantidade informa quantas unidades de estoque esta apresentação representa.</div>
       {editingUnit ? <>
-        <Field label="Código da unidade" error={fieldError(fields, "unit_code")}><Input required value={unitForm.unit_code} onChange={(event) => setUnitForm((value) => ({ ...value, unit_code: event.target.value.toUpperCase() }))} /></Field>
-        <Field label="Quantidade na unidade de estoque" error={fieldError(fields, "conversion_factor")}><Input required inputMode="decimal" min="0.000001" step="0.000001" value={unitForm.conversion_factor} onChange={(event) => setUnitForm((value) => ({ ...value, conversion_factor: event.target.value }))} /></Field>
-        <Field label="Descrição da apresentação" error={fieldError(fields, "description")}><Input required maxLength={200} value={unitForm.description} onChange={(event) => setUnitForm((value) => ({ ...value, description: event.target.value }))} /></Field>
+        <Field label="Código da unidade" error={fieldError(fields, "unit_code")}><Input required disabled={Boolean(editingUnit?.presentation_preset)} value={unitForm.unit_code} onChange={(event) => setUnitForm((value) => ({ ...value, unit_code: event.target.value.toUpperCase() }))} /></Field>
+        <Field label="Quantidade na unidade de estoque" error={fieldError(fields, "conversion_factor")}><Input required disabled={Boolean(editingUnit?.presentation_preset)} inputMode="decimal" min="0.000001" step="0.000001" value={unitForm.conversion_factor} onChange={(event) => setUnitForm((value) => ({ ...value, conversion_factor: event.target.value }))} /></Field>
+        <Field label="Descrição da apresentação" error={fieldError(fields, "description")}><Input required disabled={Boolean(editingUnit?.presentation_preset)} maxLength={200} value={unitForm.description} onChange={(event) => setUnitForm((value) => ({ ...value, description: event.target.value }))} /></Field>
         <p className="self-end text-[11px] text-muted">Esta apresentação existente permanece editável sem exigir a migração para um preset.</p>
       </> : <>
-        <Field label="Apresentação da empresa" error={fieldError(fields, "presentation_preset")}><Select value={unitForm.presentation_preset} onChange={(event) => setUnitForm((value) => ({ ...value, presentation_preset: event.target.value }))}><option value="">Criar nova apresentação</option>{presentationPresets.filter((preset) => preset.status === "active").map((preset) => <option key={preset.id} value={preset.id}>{preset.code} · {preset.name}</option>)}</Select></Field>
+        <Field label="Apresentação da empresa" error={fieldError(fields, "presentation_preset")}><Select value={unitForm.presentation_preset} onChange={(event) => setUnitForm((value) => ({ ...value, presentation_preset: event.target.value }))}><option value="">Criar nova apresentação</option>{presentationPresets.filter((preset) => preset.status === "active").map((preset) => <option key={preset.id} value={preset.id}>{preset.code} · {preset.description}</option>)}</Select></Field>
         {unitForm.presentation_preset ? <p className="self-end text-[11px] text-muted">O preset define o código, a descrição e a conversão desta apresentação.</p> : <>
           <Field label="Tipo de apresentação" error={fieldError(fields, "presentation_type")}><Select value={unitForm.presentation_type} onChange={(event) => setUnitForm((value) => ({ ...value, presentation_type: event.target.value as PresentationType }))}>{(Object.keys(presentationTypeLabels) as PresentationType[]).map((type) => <option key={type} value={type}>{type} · {presentationTypeLabels[type]}</option>)}</Select></Field>
-          <Field label="Quantidade na unidade de estoque" error={fieldError(fields, "conversion_factor")}><Input required inputMode="decimal" min="0.000001" step="0.000001" value={unitForm.conversion_factor} onChange={(event) => setUnitForm((value) => ({ ...value, conversion_factor: event.target.value }))} /></Field>
+          <Field label="Quantidade por apresentação" error={fieldError(fields, "conversion_factor")}><Input required inputMode="decimal" min="0.000001" step="0.000001" value={unitForm.conversion_factor} onChange={(event) => setUnitForm((value) => ({ ...value, conversion_factor: event.target.value }))} /></Field>
           {unitForm.presentation_type === "OTHER" && <><Field label="Código personalizado" error={fieldError(fields, "custom_code")}><Input required maxLength={20} value={unitForm.custom_code} onChange={(event) => setUnitForm((value) => ({ ...value, custom_code: event.target.value.toUpperCase() }))} /></Field><Field label="Nome personalizado" error={fieldError(fields, "custom_name")}><Input required maxLength={100} value={unitForm.custom_name} onChange={(event) => setUnitForm((value) => ({ ...value, custom_name: event.target.value }))} /></Field></>}
           <label className="flex items-center gap-2 text-xs font-semibold sm:col-span-2"><input type="checkbox" checked={unitForm.save_as_preset} onChange={(event) => setUnitForm((value) => ({ ...value, save_as_preset: event.target.checked }))} />Salvar como preset da empresa</label>
         </>}
-        <div className="rounded-md bg-surface-muted p-3 text-[11px] sm:col-span-2"><strong>Prévia:</strong> {unitForm.presentation_preset ? (() => { const preset = presentationPresets.find((item) => item.id === Number(unitForm.presentation_preset)); return `${preset?.code || "-"} · ${preset?.description || preset?.name || "-"} · conversão ${formatQuantity(preset?.conversion_factor || "1")} ${product.unit.toUpperCase()}`; })() : `${unitForm.presentation_type === "OTHER" ? unitForm.custom_code || "código" : unitForm.presentation_type} · ${unitForm.presentation_type === "OTHER" ? unitForm.custom_name || "nome" : presentationTypeLabels[unitForm.presentation_type]} · conversão ${formatQuantity(unitForm.conversion_factor || "0")} ${product.unit.toUpperCase()}`}</div>
+        <div className="rounded-md bg-surface-muted p-3 text-[11px] sm:col-span-2">{unitForm.presentation_preset ? (() => { const preset = presentationPresets.find((item) => item.id === Number(unitForm.presentation_preset)); const quantity = formatQuantity(preset?.conversion_factor || "1"); return <><strong className="block">{preset?.code || "-"}</strong><span className="block">{preset?.description || "-"}</span><span className="block text-muted">1 {preset?.code || "-"} = {quantity} {product.unit.toUpperCase()}</span></>; })() : (() => { const preview = presentationPreview(unitForm, product.unit); return <><strong className="block">{preview.code}</strong><span className="block">{preview.description}</span><span className="block text-muted">{preview.conversion}</span></>; })()}</div>
       </>}
       <Field label="Código de barras" optional error={fieldError(fields, "barcode")}><Input value={unitForm.barcode} onChange={(event) => setUnitForm((value) => ({ ...value, barcode: event.target.value }))} /></Field>
       <label className="flex items-center gap-2 self-end text-xs font-semibold"><input type="checkbox" checked={unitForm.is_default} onChange={(event) => setUnitForm((value) => ({ ...value, is_default: event.target.checked }))} />Apresentação padrão</label>

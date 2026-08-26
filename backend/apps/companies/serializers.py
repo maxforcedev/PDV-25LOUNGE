@@ -199,6 +199,12 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
     uses_consumption = serializers.BooleanField(required=False)
     uses_cash_register = serializers.BooleanField(required=False)
     charges_service_fee = serializers.BooleanField(required=False)
+    default_table_quantity = serializers.IntegerField(min_value=1, max_value=500, required=False)
+    default_table_seats = serializers.IntegerField(min_value=0, required=False)
+    default_table_prefix = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    consumption_limit_enabled = serializers.BooleanField(required=False)
+    command_consumption_limit = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0.01'), required=False, allow_null=True)
+    table_consumption_limit = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0.01'), required=False, allow_null=True)
 
     class Meta:
         model = BranchSettings
@@ -207,6 +213,8 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
             'commission_rate', 'fixed_daily_cost',
             'uses_tables', 'uses_commands', 'uses_counter',
             'uses_consumption', 'uses_cash_register', 'charges_service_fee',
+            'default_table_quantity', 'default_table_seats', 'default_table_prefix',
+            'consumption_limit_enabled', 'command_consumption_limit', 'table_consumption_limit',
             'feature_flags',
             'created_at', 'updated_at',
             'negative_stock_count', 'negative_stock_state',

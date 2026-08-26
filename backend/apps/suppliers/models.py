@@ -188,12 +188,111 @@ class ProductSupplier(ProtectedSupplierModel):
         return f'{self.product} - {self.supplier.trade_name}'
 
 
+class PresentationType(models.TextChoices):
+    UNIT = 'UN', 'Unidade'
+    BOX = 'CX', 'Caixa'
+    BALE = 'FD', 'Fardo'
+    PACK = 'PK', 'Pack'
+    PACKAGE = 'PCT', 'Pacote'
+    CRATE = 'ENG', 'Engradado'
+    DISPLAY = 'DSP', 'Display'
+    TRAY = 'BDJ', 'Bandeja'
+    BAG = 'SC', 'Saco'
+    KIT = 'KIT', 'Kit'
+    OTHER = 'OTHER', 'Outro'
+
+
+class PresentationPreset(ProtectedSupplierModel):
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='presentation_presets'
+    )
+    presentation_type = models.CharField(max_length=5, choices=PresentationType.choices)
+    conversion_factor = models.DecimalField(max_digits=18, decimal_places=6)
+    code = models.CharField(max_length=20)
+    description = models.CharField(max_length=200)
+    custom_code = models.CharField(max_length=20, blank=True)
+    custom_name = models.CharField(max_length=100, blank=True)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
+
+    class Meta:
+        ordering = ('code', 'description', 'id')
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(conversion_factor__gt=0),
+                name='suppliers_preset_conversion_factor_positive',
+            ),
+            models.UniqueConstraint(
+                fields=(
+                    'company', 'presentation_type', 'conversion_factor',
+                    'custom_code', 'custom_name',
+                ),
+                name='suppliers_preset_company_semantic_unique',
+            ),
+        ]
+
+    @staticmethod
+    def _quantity_text(value):
+        return format(value.normalize(), 'f').rstrip('0').rstrip('.') if value % 1 else str(int(value))
+
+    def _populate_generated_fields(self):
+        if self.conversion_factor is None:
+            return
+        self.conversion_factor = self._meta.get_field('conversion_factor').to_python(
+            self.conversion_factor
+        )
+        quantity = self._quantity_text(self.conversion_factor)
+        prefix = self.custom_code if self.presentation_type == PresentationType.OTHER else self.presentation_type
+        name = self.custom_name if self.presentation_type == PresentationType.OTHER else self.get_presentation_type_display()
+        self.code = f'{prefix}{quantity}'
+        self.description = f'{name} com {quantity} unidades'
+
+    def clean(self):
+        super().clean()
+        self.custom_code = self.custom_code.strip().upper()
+        self.custom_name = ' '.join(self.custom_name.split())
+        errors = {}
+        if self.conversion_factor is None or self.conversion_factor <= 0:
+            errors['conversion_factor'] = 'A quantidade por apresentação deve ser maior que zero.'
+        if self.presentation_type == PresentationType.OTHER:
+            if not self.custom_code or not self.custom_code.replace('_', '').isalnum():
+                errors['custom_code'] = 'Informe uma sigla personalizada com letras, números ou _.'
+            if not self.custom_name:
+                errors['custom_name'] = 'Informe o nome personalizado.'
+        elif self.custom_code or self.custom_name:
+            errors['presentation_type'] = 'Campos personalizados são exclusivos do tipo Outro.'
+        if errors:
+            raise ValidationError(errors)
+        self._populate_generated_fields()
+        if len(self.code) > 20:
+            raise ValidationError({'custom_code': 'A sigla e a quantidade excedem o limite do código.'})
+        if self.pk:
+            original_company_id = type(self).objects.filter(pk=self.pk).values_list(
+                'company_id', flat=True
+            ).first()
+            if original_company_id and self.company_id != original_company_id:
+                raise ValidationError({'company': 'A empresa do padrão não pode ser alterada.'})
+
+    def save(self, *args, **kwargs):
+        self.custom_code = self.custom_code.strip().upper()
+        self.custom_name = ' '.join(self.custom_name.split())
+        self._populate_generated_fields()
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f'{self.company} - {self.code}'
+
+
 class ProductSupplierUnit(ProtectedSupplierModel):
     company = models.ForeignKey(
         Company, on_delete=models.PROTECT, related_name='product_supplier_units'
     )
     product_supplier = models.ForeignKey(
         ProductSupplier, on_delete=models.PROTECT, related_name='units'
+    )
+    presentation_preset = models.ForeignKey(
+        PresentationPreset, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='product_supplier_units'
     )
     unit_code = models.CharField(max_length=20)
     description = models.CharField(max_length=200, blank=False)
@@ -234,6 +333,11 @@ class ProductSupplierUnit(ProtectedSupplierModel):
             and self.product_supplier.company_id != self.company_id
         ):
             errors['product_supplier'] = 'A relação deve pertencer à empresa da apresentação.'
+        if (
+            self.presentation_preset_id and self.company_id
+            and self.presentation_preset.company_id != self.company_id
+        ):
+            errors['presentation_preset'] = 'O padrão deve pertencer à empresa da apresentação.'
         if self.pk:
             original = type(self).objects.filter(pk=self.pk).values(
                 'company_id', 'product_supplier_id'

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useParams, useRouter } from "next/navigation";
 import { DollarSign, Heart, Layers3, ListFilter, Pencil, Plus, Power, Search, Trash2, X } from "lucide-react";
 import { AdminGuard } from "@/components/admin-guard";
 import { PageHeader } from "@/components/page-header";
@@ -26,6 +27,10 @@ function channelCount(product: Product) { return [product.available_counter, pro
 
 function Products() {
   const { user, currentCompany, currentBranch, hasPermission } = useAuth();
+  const router = useRouter();
+  const { id } = useParams<{ id?: string }>();
+  const isDetail = Boolean(id);
+  const isNew = id === "novo";
   const canAdd = hasPermission(permissions.addProduct);
   const canChange = hasPermission(permissions.changeProduct);
   const canStatus = hasPermission(permissions.changeProductStatus);
@@ -114,6 +119,23 @@ function Products() {
   }, [currentCompany?.id, currentBranch?.id]);
 
   useEffect(() => {
+    if (!isDetail || !currentCompany) return;
+    if (isNew) {
+      void show();
+      return;
+    }
+    const productId = Number(id);
+    if (!Number.isInteger(productId) || productId <= 0) {
+      setError("Produto inválido.");
+      return;
+    }
+    http.get<Product>(`products/${productId}/`).then((product) => {
+      if (product.company !== currentCompany.id) throw new ApiError("Produto não encontrado.", 404);
+      void show(product);
+    }).catch((caught) => setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar o produto."));
+  }, [id, isDetail, isNew, currentCompany?.id]);
+
+  useEffect(() => {
     if (!currentCompany || !currentBranch || openedQuery.current === `${currentCompany.id}:${currentBranch.id}`) return;
     const id = Number(new URLSearchParams(window.location.search).get("edit"));
     if (!id) return;
@@ -174,11 +196,15 @@ function Products() {
           ...(editing.inventory_behavior === "components" && canCompose ? { components: composition, fraction_components: exactComposition } : {}),
         });
       } else {
-        await http.post<Product>("products/", {
+        const created = await http.post<Product>("products/", {
           ...form,
           image: form.image || null,
           ...(form.inventory_behavior === "components" ? { components: composition, fraction_components: exactComposition } : {}),
         });
+        if (isDetail) {
+          router.replace(`/produtos/${created.id}`);
+          return;
+        }
       }
       setOpen(false);
       setSuccess(editing ? editing.inventory_behavior === "components" && !canCompose ? "Produto atualizado. A composição permaneceu inalterada por falta de permissão." : "Produto atualizado com sucesso." : "Produto criado com sucesso.");
@@ -203,18 +229,18 @@ function Products() {
   function clearFilters() { setDraft(emptyFilters); setCategory(""); setStatus(""); setBehavior(""); setSellable(""); setFavorite(""); setFiltersOpen(false); void load(query(emptyFilters)); }
 
   return <>
-    <PageHeader title="Produtos" description={`Catálogo, preços e composição de ${currentCompany?.trade_name || "sua empresa"}.`} action={<div className="flex flex-wrap gap-2">{user?.is_superuser && <Link href="/produtos/lote" className="btn btn-secondary"><Plus className="size-4" />Cadastro em lote</Link>}<Link href="/produtos/precos" className="btn btn-secondary"><DollarSign className="size-4" />Preços por filial</Link><Button onClick={() => show()} disabled={!canAdd}><Plus className="size-4" />Novo produto</Button></div>} />
-    <div className="space-y-4 p-4 sm:p-6 lg:p-8">
+    {!isDetail && <PageHeader title="Produtos" description={`Catálogo, preços e composição de ${currentCompany?.trade_name || "sua empresa"}.`} action={<div className="flex flex-wrap gap-2">{user?.is_superuser && <Link href="/produtos/lote" className="btn btn-secondary"><Plus className="size-4" />Cadastro em lote</Link>}<Link href="/produtos/precos" className="btn btn-secondary"><DollarSign className="size-4" />Preços por filial</Link>{canAdd && <Link href="/produtos/novo" className="btn"><Plus className="size-4" />Novo produto</Link>}</div>} />}
+    {!isDetail && <div className="space-y-4 p-4 sm:p-6 lg:p-8">
       {error && !open && <Alert message={error} />}{success && <Alert type="success" message={success} />}
       <form className="card relative flex gap-2 p-4" onSubmit={(event) => { event.preventDefault(); void load(); }}>
         <div className="relative min-w-0 flex-1"><Search className="absolute left-3 top-3 size-4 text-slate-400" /><Input className="pl-9" placeholder="Nome, código, SKU ou código de barras" value={search} onChange={(event) => setSearch(event.target.value)} /></div><Button type="submit">Buscar</Button><Button type="button" variant="secondary" onClick={openFilters}><ListFilter className="size-4" />Filtros{Object.values({ category, status, behavior, sellable, favorite }).filter(Boolean).length ? ` (${Object.values({ category, status, behavior, sellable, favorite }).filter(Boolean).length})` : ""}</Button>
         {filtersOpen && <><button type="button" aria-label="Cancelar filtros" className="fixed inset-0 z-40 bg-slate-950/45 md:absolute md:bg-transparent" onClick={() => setFiltersOpen(false)} /><div role="dialog" aria-label="Filtros de produtos" className="fixed inset-x-0 bottom-0 z-50 max-h-[90vh] overflow-y-auto rounded-t-xl bg-white p-5 shadow-2xl md:absolute md:inset-auto md:right-4 md:top-15 md:w-96 md:rounded-xl md:border md:border-slate-200"><div className="mb-4 flex items-center justify-between"><strong className="text-sm">Filtros</strong><button type="button" className="icon-button" onClick={() => setFiltersOpen(false)}><X className="size-4" /></button></div><div className="space-y-3"><Field label="Categoria"><Select value={draft.category} onChange={(event) => setDraft((value) => ({ ...value, category: event.target.value }))}><option value="">Todas as categorias</option>{categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field><Field label="Comportamento"><Select value={draft.behavior} onChange={(event) => setDraft((value) => ({ ...value, behavior: event.target.value }))}><option value="">Todos</option><option value="direct">Estoque próprio</option><option value="none">Sem estoque</option><option value="components">Componentes</option></Select></Field><Field label="Status"><Select value={draft.status} onChange={(event) => setDraft((value) => ({ ...value, status: event.target.value }))}><option value="">Todos</option><option value="active">Ativos</option><option value="inactive">Inativos</option></Select></Field><Field label="Venda"><Select value={draft.sellable} onChange={(event) => setDraft((value) => ({ ...value, sellable: event.target.value }))}><option value="">Venda e insumos</option><option value="true">Vendável</option><option value="false">Insumo</option></Select></Field><Field label="Favoritos"><Select value={draft.favorite} onChange={(event) => setDraft((value) => ({ ...value, favorite: event.target.value }))}><option value="">Todos</option><option value="true">Favoritos</option><option value="false">Não favoritos</option></Select></Field></div><div className="mt-5 flex justify-end gap-2"><Button type="button" variant="secondary" onClick={() => setFiltersOpen(false)}>Cancelar</Button><Button type="button" variant="secondary" onClick={clearFilters}>Limpar</Button><Button type="button" onClick={applyFilters}>Aplicar</Button></div></div></>}
       </form>
       <section className="card overflow-hidden">
-         {loading ? <TableLoading /> : data?.results.length ? <><div className="table-wrap"><table className="data-table"><thead><tr><th>Produto</th><th>Categoria</th><th>Comportamento</th><th>Canais</th><th>Preço</th><th>Status</th><th className="text-right">Ações</th></tr></thead><tbody>{data.results.map((product) => <tr key={product.id}><td><strong className="flex items-center gap-1.5">{product.is_favorite && <Heart className="size-3.5 fill-primary text-primary" />}{product.name}</strong><span className="text-[11px] text-slate-400">{product.internal_code}{product.sku ? ` · SKU ${product.sku}` : ""}</span></td><td>{product.category_name || "-"}</td><td>{behaviorLabel(product.inventory_behavior)}</td><td><strong>{channelCount(product)}/3</strong><span className="block text-[10px] text-muted">globais ativos</span></td><td>R$ {product.sale_price}</td><td><StatusBadge active={product.status === "active"} /></td><td><div className="flex justify-end gap-1"><button className="icon-button" title={canChange ? "Editar e configurar" : "Ver detalhes"} onClick={() => void show(product)}><Pencil className="size-4" /></button><button className="icon-button" disabled={!canStatus} onClick={() => setConfirming(product)}><Power className="size-4" /></button></div></td></tr>)}</tbody></table></div><Pagination count={data.count} next={data.next} previous={data.previous} onPage={load} /></> : <EmptyState title="Nenhum produto cadastrado" description="Crie produtos para montar o catálogo da empresa." />}
+         {loading ? <TableLoading /> : data?.results.length ? <><div className="table-wrap"><table className="data-table"><thead><tr><th>Produto</th><th>Categoria</th><th>Comportamento</th><th>Canais</th><th>Preço</th><th>Status</th><th className="text-right">Ações</th></tr></thead><tbody>{data.results.map((product) => <tr key={product.id}><td><strong className="flex items-center gap-1.5">{product.is_favorite && <Heart className="size-3.5 fill-primary text-primary" />}{product.name}</strong><span className="text-[11px] text-slate-400">{product.internal_code}{product.sku ? ` · SKU ${product.sku}` : ""}</span></td><td>{product.category_name || "-"}</td><td>{behaviorLabel(product.inventory_behavior)}</td><td><strong>{channelCount(product)}/3</strong><span className="block text-[10px] text-muted">globais ativos</span></td><td>R$ {product.sale_price}</td><td><StatusBadge active={product.status === "active"} /></td><td><div className="flex justify-end gap-1"><Link className="icon-button" title={canChange ? "Editar e configurar" : "Ver detalhes"} href={`/produtos/${product.id}`}><Pencil className="size-4" /></Link><button className="icon-button" disabled={!canStatus} onClick={() => setConfirming(product)}><Power className="size-4" /></button></div></td></tr>)}</tbody></table></div><Pagination count={data.count} next={data.next} previous={data.previous} onPage={load} /></> : <EmptyState title="Nenhum produto cadastrado" description="Crie produtos para montar o catálogo da empresa." />}
       </section>
-    </div>
-    <Modal open={open} title={editing ? "Produto e configuração" : "Novo produto"} onClose={() => !saving && setOpen(false)} size="xl">
+    </div>}
+    <Modal open={open} title={editing ? "Produto e configuração" : "Novo produto"} onClose={() => !saving && (isDetail ? router.push("/produtos") : setOpen(false))} size="xl" fullPage={isDetail}>
       <form onSubmit={submit}>
         <fieldset disabled={!!editing && !canChange} className="grid gap-5 p-5 disabled:opacity-75 sm:grid-cols-2 lg:grid-cols-3 sm:p-6">
           <div className="sm:col-span-2 lg:col-span-3">{error && <Alert message={error} />}</div>
@@ -239,9 +265,9 @@ function Products() {
              <div className="mt-5 border-t border-subtle pt-4"><div className="mb-3 flex items-center justify-between gap-3"><div><h4 className="text-xs font-bold">Consumo exato de conteúdo</h4><p className="mt-1 text-[10px] text-muted">Somente insumos fracionáveis, sempre em mL ou g. Nunca em UN fracionária.</p></div><Button type="button" variant="secondary" onClick={addFractionComponent} disabled={!canCompose}><Plus className="size-4" />Conteúdo</Button></div><div className="space-y-3">{fractionComponents.map((component, index) => { const candidate = fractionCandidates.find((item) => item.id === component.component_product); const unit = candidate?.fraction_config?.content_unit || component.content_unit; return <div key={`fraction-${component.component_product}-${index}`} className="grid gap-2 sm:grid-cols-[1fr_10rem_auto]"><Select required value={component.component_product || ""} disabled={!canCompose} onChange={(event) => updateFractionComponent(index, "component_product", Number(event.target.value))}><option value="">Selecione o insumo fracionável</option>{fractionCandidates.filter((item) => item.id !== editing?.id && !components.some((normal) => normal.component_product === item.id)).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.fraction_config?.package_content} {item.fraction_config?.content_unit}</option>)}</Select><div><Input required inputMode="decimal" min="0.000000001" step="0.000000001" value={component.content_quantity} disabled={!canCompose} onChange={(event) => updateFractionComponent(index, "content_quantity", event.target.value)} /><span className="mt-1 block text-[10px] text-muted">Conteúdo por venda: {component.content_quantity || "0"} {unit === "ml" ? "mL" : "g"}</span></div><button type="button" className="icon-button" aria-label="Remover consumo exato" disabled={!canCompose} onClick={() => setFractionComponents((value) => value.filter((_, position) => position !== index))}><Trash2 className="size-4" /></button></div>; })}</div></div>
            </div>}
         </fieldset>
-        <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4"><Button type="button" variant="secondary" onClick={() => setOpen(false)} disabled={saving}>{editing ? "Fechar" : "Cancelar"}</Button>{(!editing || canChange) && <Button type="submit" loading={saving}>{editing ? "Salvar dados gerais" : "Salvar produto"}</Button>}</div>
+        <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4"><Button type="button" variant="secondary" onClick={() => isDetail ? router.push("/produtos") : setOpen(false)} disabled={saving}>{editing ? "Fechar" : "Cancelar"}</Button>{editing && canStatus && <Button type="button" variant="secondary" onClick={() => setConfirming(editing)} disabled={saving}>{editing.status === "active" ? "Inativar" : "Ativar"}</Button>}{(!editing || canChange) && <Button type="submit" loading={saving}>{editing ? "Salvar dados gerais" : "Salvar produto"}</Button>}</div>
       </form>
-      {editing && currentCompany && currentBranch && <ProductV26Sections product={editing} companyId={currentCompany.id} currentBranchId={currentBranch.id} branches={(user?.branches || []).filter((branch) => branch.company_id === currentCompany.id && branch.status === "active" && (user?.is_superuser || branch.permissions.includes(permissions.configureProductBranch)))} permissions={{ branch: canConfigureBranch, fraction: canConfigureFraction, destinations: canConfigureDestinations, duplicate: canDuplicate, viewModifiers: hasPermission(permissions.viewModifiers), changeModifiers: hasPermission(permissions.changeModifiers), viewSuppliers: canViewSuppliers, changeSuppliers: canChangeSuppliers }} onReload={async () => { const refreshed = await http.get<Product>(`products/${editing.id}/`); setEditing(refreshed); }} onDuplicated={(created) => { setOpen(false); setSuccess(`Produto duplicado como “${created.name}” (${created.internal_code}). SKU e código de barras foram regenerados com segurança.`); void load(); }} />}
+       {editing && currentCompany && currentBranch && <ProductV26Sections product={editing} companyId={currentCompany.id} currentBranchId={currentBranch.id} branches={(user?.branches || []).filter((branch) => branch.company_id === currentCompany.id && branch.status === "active" && (user?.is_superuser || branch.permissions.includes(permissions.configureProductBranch)))} permissions={{ branch: canConfigureBranch, fraction: canConfigureFraction, destinations: canConfigureDestinations, duplicate: canDuplicate, viewModifiers: hasPermission(permissions.viewModifiers), changeModifiers: hasPermission(permissions.changeModifiers), viewSuppliers: canViewSuppliers, changeSuppliers: canChangeSuppliers }} onReload={async () => { const refreshed = await http.get<Product>(`products/${editing.id}/`); setEditing(refreshed); }} onDuplicated={(created) => { if (isDetail) router.push(`/produtos/${created.id}`); else { setOpen(false); setSuccess(`Produto duplicado como “${created.name}” (${created.internal_code}). SKU e código de barras foram regenerados com segurança.`); void load(); } }} />}
     </Modal>
     <ConfirmDialog open={!!confirming} title={`${confirming?.status === "active" ? "Inativar" : "Ativar"} produto`} message={`Confirma a alteração de status de “${confirming?.name || ""}”?`} confirmLabel={confirming?.status === "active" ? "Inativar" : "Ativar"} danger={confirming?.status === "active"} loading={saving} onClose={() => setConfirming(null)} onConfirm={changeStatus} />
   </>;

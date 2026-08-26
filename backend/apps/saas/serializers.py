@@ -264,6 +264,8 @@ class PublicBrandingSerializer(serializers.ModelSerializer):
         model = GlobalSaaSSettings
         fields = (
             'platform_name', 'logo_url', 'compact_logo_url', 'favicon_url',
+            'logo_light_url', 'logo_dark_url', 'compact_logo_light_url',
+            'compact_logo_dark_url',
             'primary_color', 'support_email', 'support_phone', 'institutional_links',
         )
         read_only_fields = fields

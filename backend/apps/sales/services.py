@@ -907,7 +907,8 @@ def detect_promotion_conflict(promotion):
         if not _branches_overlap(promotion.branch_id, other.branch_id):
             continue
         other_products = _promotion_effective_products(other)
-        if not other_products or not (promotion._effective_products & other_products):
+        overlapping_products = promotion._effective_products & other_products
+        if not other_products or not overlapping_products:
             continue
         if not _date_windows_overlap(promotion.starts_at, promotion.ends_at, other.starts_at, other.ends_at):
             continue
@@ -923,10 +924,16 @@ def detect_promotion_conflict(promotion):
             'Todas as filiais' if other.branch_id is None
             else other.branch.name
         )
+        names = list(Product.objects.filter(pk__in=overlapping_products).order_by('name').values_list('name', flat=True)[:3])
+        own_period = f'{promotion.starts_at:%d/%m/%Y %H:%M} a {promotion.ends_at:%d/%m/%Y %H:%M}' if promotion.ends_at else f'a partir de {promotion.starts_at:%d/%m/%Y %H:%M}'
+        schedule = 'dia todo' if not own_schedules else ', '.join(
+            f'{item.get_weekday_display()} {item.start_time:%H:%M}-{item.end_time:%H:%M}'
+            for item in own_schedules
+        )
         return (
-            f'Conflito com a promoção "{other.name}" ({other_branch_label}). '
-            f'Esta promoção ({branch_label}) compartilha produtos/categorias, '
-            'vigência e horário sobrepostos. Ajuste alvos, filial, vigência ou agenda.'
+            f'Não foi possível ativar esta promoção porque ela conflita com "{other.name}". '
+            f'Produtos em comum: {", ".join(names)}. Filiais: {branch_label} e {other_branch_label}. '
+            f'Período: {own_period}. Horário: {schedule}.'
         )
     return None
 

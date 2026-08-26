@@ -4,7 +4,9 @@ from django.db import IntegrityError, transaction
 from apps.companies.models import Company, Status
 from apps.products.models import Product
 
-from .models import ProductSupplier, ProductSupplierUnit, Supplier
+from .models import (
+    PresentationPreset, PresentationType, ProductSupplier, ProductSupplierUnit, Supplier,
+)
 
 
 def _save_with_validation(instance, conflict_error):
@@ -29,6 +31,9 @@ def _lock_instance(instance):
             pk=instance.product_supplier_id
         )
         return ProductSupplierUnit.objects.select_for_update().get(pk=instance.pk)
+    if isinstance(instance, PresentationPreset):
+        Company.objects.select_for_update().get(pk=instance.company_id)
+        return PresentationPreset.objects.select_for_update().get(pk=instance.pk)
     raise TypeError('Tipo de registro de fornecedor não suportado.')
 
 
@@ -74,6 +79,12 @@ def _save_product_supplier(*, instance=None, **values):
 
 @transaction.atomic
 def _save_product_supplier_unit(*, instance=None, **values):
+    missing = object()
+    preset_id = values.pop('presentation_preset', missing)
+    presentation_type = values.pop('presentation_type', None)
+    custom_code = values.pop('custom_code', '')
+    custom_name = values.pop('custom_name', '')
+    save_as_preset = values.pop('save_as_preset', False)
     if instance is not None:
         instance = _lock_instance(instance)
         for field, value in values.items():
@@ -84,9 +95,69 @@ def _save_product_supplier_unit(*, instance=None, **values):
         )
         instance = ProductSupplierUnit(**values)
         instance.product_supplier = relation
+    if preset_id is not missing and preset_id is not None:
+        try:
+            preset = PresentationPreset.objects.select_for_update().get(
+                pk=getattr(preset_id, 'pk', preset_id), company_id=instance.company_id,
+                status=Status.ACTIVE,
+            )
+        except PresentationPreset.DoesNotExist as error:
+            raise ValidationError({'presentation_preset': 'Padrão ativo inválido para esta empresa.'}) from error
+        instance.presentation_preset = preset
+        instance.unit_code = preset.code
+        instance.description = preset.description
+        instance.conversion_factor = preset.conversion_factor
+    elif presentation_type:
+        # A custom presentation replaces a previously linked preset.
+        instance.presentation_preset = None
+        preset_values = {
+            'company': instance.company,
+            'presentation_type': presentation_type,
+            'conversion_factor': instance.conversion_factor,
+            'custom_code': custom_code,
+            'custom_name': custom_name,
+        }
+        candidate = PresentationPreset(**preset_values)
+        candidate.custom_code = candidate.custom_code.strip().upper()
+        candidate.custom_name = ' '.join(candidate.custom_name.split())
+        candidate._populate_generated_fields()
+        candidate.full_clean(validate_unique=False)
+        instance.unit_code = candidate.code
+        instance.description = candidate.description
+        if save_as_preset:
+            preset, _created = PresentationPreset.objects.get_or_create(
+                company=instance.company,
+                presentation_type=presentation_type,
+                conversion_factor=candidate.conversion_factor,
+                custom_code=candidate.custom_code,
+                custom_name=candidate.custom_name,
+                defaults={
+                    'code': candidate.code,
+                    'description': candidate.description,
+                },
+            )
+            instance.presentation_preset = preset
+    elif preset_id is None:
+        # Explicit null detaches the preset while preserving legacy fields.
+        instance.presentation_preset = None
     return _save_with_validation(
         instance,
         {'is_default': 'A relação já possui uma apresentação padrão ativa.'},
+    )
+
+
+@transaction.atomic
+def _save_presentation_preset(*, instance=None, **values):
+    if instance is not None:
+        instance = _lock_instance(instance)
+        for field, value in values.items():
+            setattr(instance, field, value)
+    else:
+        Company.objects.select_for_update().get(pk=values['company'].pk)
+        instance = PresentationPreset(**values)
+    return _save_with_validation(
+        instance,
+        {'non_field_errors': 'Este padrão de apresentação já existe para a empresa.'},
     )
 
 
@@ -100,3 +171,7 @@ def _set_product_supplier_status(*, instance, status):
 
 def _set_product_supplier_unit_status(*, instance, status):
     return _save_product_supplier_unit(instance=instance, status=status)
+
+
+def _set_presentation_preset_status(*, instance, status):
+    return _save_presentation_preset(instance=instance, status=status)

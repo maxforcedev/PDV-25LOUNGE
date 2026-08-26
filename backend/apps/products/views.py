@@ -356,7 +356,7 @@ class ProductViewSet(CatalogViewSet):
             'fraction_components__component_product__fraction_config',
             'branch_configs', 'branch_prices',
             'production_destination_links__destination',
-            'product_suppliers__supplier', 'product_suppliers__units',
+            'product_suppliers__supplier', 'product_suppliers__units__presentation_preset',
         )
         branch = getattr(self.request, 'branch_context', None)
         if branch:

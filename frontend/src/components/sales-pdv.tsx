@@ -3,7 +3,9 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import {
+  BadgeDollarSign,
   CheckCircle2,
+  Percent,
   Heart,
   Minus,
   Plus,
@@ -149,6 +151,10 @@ export function SalesPdv() {
     !consumption && hasPermission(permissions.applyItemDiscount);
   const canWaiveServiceFee =
     !consumption && hasPermission(permissions.waiveServiceFee);
+  const serviceFeeEnabled = !consumption && Boolean(
+    (currentBranch?.features as Record<string, { enabled: boolean }> | undefined)
+      ?.service_fee?.enabled,
+  );
   const contextRef = useRef("");
   contextRef.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}`;
   const requestRef = useRef(0);
@@ -540,6 +546,19 @@ export function SalesPdv() {
     );
   }
 
+  function splitPaymentByPeople() {
+    const people = Math.max(1, Number(splitPeople) || 1);
+    const total = moneyToCents(preview?.total);
+    if (total === null) return;
+    const base = total / BigInt(people);
+    const remainder = total % BigInt(people);
+    const method = methods[0] ? String(methods[0].id) : "";
+    setPayments(Array.from({ length: people }, (_, index) => {
+      const amount = centsToDecimal(base + (BigInt(index) < remainder ? BigInt(1) : BigInt(0)));
+      return { key: paymentKey++, payment_method: method, amount, received_amount: "" };
+    }));
+  }
+
   function openConsumption() {
     if (!canConsumption) return;
     setConsumptionModal(true);
@@ -599,16 +618,14 @@ export function SalesPdv() {
     )
     .map((row) => row.amount);
   const nonCashTotal = sumMoney(nonCashAmounts);
-  const hasCashRow = payments.some(
-    (row) =>
-      methods.find((item) => String(item.id) === row.payment_method)?.code ===
-      "cash",
-  );
+  const explicitCashTotal = sumMoney(payments.filter((row) => methods.find((item) => String(item.id) === row.payment_method)?.code === "cash" && row.amount).map((row) => row.amount));
+  const hasAutomaticCashRow = payments.some((row) => methods.find((item) => String(item.id) === row.payment_method)?.code === "cash" && !row.amount);
   const cashRemainingCents =
-    totalCents !== null ? totalCents - (nonCashTotal || BigInt(0)) : null;
+    totalCents !== null ? totalCents - (nonCashTotal || BigInt(0)) - (explicitCashTotal || BigInt(0)) : null;
   const effectivePaymentCents =
     (nonCashTotal || BigInt(0)) +
-    (hasCashRow && cashRemainingCents !== null && cashRemainingCents > BigInt(0)
+    (explicitCashTotal || BigInt(0)) +
+    (hasAutomaticCashRow && cashRemainingCents !== null && cashRemainingCents > BigInt(0)
       ? cashRemainingCents
       : BigInt(0));
   const free = consumption && totalCents === BigInt(0);
@@ -624,13 +641,14 @@ export function SalesPdv() {
             (item) => String(item.id) === row.payment_method,
           );
           if (!method) return false;
-          if (method.code === "cash") {
-            const received = moneyToCents(row.received_amount);
-            return (
-              received !== null &&
-              cashRemainingCents !== null &&
-              received >= cashRemainingCents
-            );
+            if (method.code === "cash") {
+              const received = moneyToCents(row.received_amount);
+              const amount = row.amount ? moneyToCents(row.amount) : cashRemainingCents;
+              return (
+                received !== null &&
+                amount !== null && amount > BigInt(0) &&
+                received >= amount
+              );
           }
           const amount = moneyToCents(row.amount);
           return amount !== null && amount > 0 && !row.received_amount;
@@ -729,7 +747,7 @@ export function SalesPdv() {
                 payment_method: Number(row.payment_method),
                 ...(isCash
                   ? {
-                      amount: "remaining",
+                      amount: row.amount ? canonicalMoney(row.amount) : "remaining",
                       received_amount: canonicalMoney(row.received_amount),
                     }
                   : { amount: canonicalMoney(row.amount) }),
@@ -781,14 +799,14 @@ export function SalesPdv() {
               PDV {consumption ? "· Consumação" : ""}
             </h1>
           </div>
-          <div className="rounded-lg bg-white/10 px-4 py-2 text-right">
+          <div className="flex flex-wrap items-center gap-2"><div className="flex rounded-lg border border-white/10 p-1 text-xs"><Link href={sessions.length ? "/caixas" : "/caixas/abrir?return=/pdv"} className={`rounded px-2 py-1 font-bold ${sessions.length ? "bg-success/20 text-success" : "bg-danger/20 text-danger"}`}><BadgeDollarSign className="mr-1 inline size-3" />Caixa {sessions.length ? "aberto" : "fechado"}</Link>{!consumption && <button type="button" className="rounded px-2 py-1 hover:bg-white/10" onClick={() => document.getElementById("pdv-discount")?.focus()}><Percent className="mr-1 inline size-3" />Desconto</button>}{serviceFeeEnabled && <button type="button" className="rounded px-2 py-1 hover:bg-white/10" onClick={() => document.getElementById("pdv-fee")?.click()}>Taxa</button>}{canConsumption && <button type="button" className="rounded px-2 py-1 hover:bg-white/10" onClick={openConsumption}>Consumação</button>}{!consumption && <button type="button" className="rounded px-2 py-1 hover:bg-white/10" onClick={splitPaymentByPeople}>Dividir</button>}</div><div className="rounded-lg bg-white/10 px-4 py-2 text-right">
             <span className="block text-[10px] uppercase tracking-wider text-operational-muted">
               Filial em operação
             </span>
             <strong className="text-sm">
               {currentBranch?.name || "Sem filial ativa"}
             </strong>
-          </div>
+          </div></div>
         </div>
         {[loadingError, ...Object.values(resourceErrors)]
           .filter(Boolean)
@@ -994,7 +1012,7 @@ export function SalesPdv() {
                       >
                         <Minus className="size-3" />
                       </button>
-                      <Input
+                      <Input id="pdv-discount"
                         className="h-8 w-24 text-center"
                         inputMode="decimal"
                         value={item.quantity}
@@ -1205,7 +1223,7 @@ export function SalesPdv() {
                 {!consumption && (
                   <label className="flex items-center gap-3 rounded-lg border border-subtle p-4 text-xs font-semibold">
                     <input
-                      type="checkbox"
+                      id="pdv-fee" type="checkbox"
                       className="size-4 accent-primary"
                       checked={serviceFeeWaived}
                       onChange={(event) => {
@@ -1394,7 +1412,7 @@ export function SalesPdv() {
                     </div>
                     <div className="rounded-lg border border-subtle p-3">
                       <div className="grid gap-2 sm:grid-cols-[150px_1fr]">
-                        <Field label="Dividir por pessoas">
+                          <Field label="Dividir por pessoas">
                           <Input
                             inputMode="numeric"
                             min={1}
@@ -1405,7 +1423,8 @@ export function SalesPdv() {
                               )
                             }
                           />
-                        </Field>
+                          </Field>
+                          <Button type="button" variant="secondary" className="self-end" onClick={splitPaymentByPeople}>Gerar linhas</Button>
                         <div className="self-end pb-2 text-xs text-slate-500">
                           Valor por pessoa:{" "}
                           <strong className="text-slate-900">
@@ -1432,7 +1451,9 @@ export function SalesPdv() {
                       const isCash = method?.code === "cash";
                       const received = moneyToCents(row.received_amount);
                       const cashAmount =
-                        isCash &&
+                        isCash && row.amount
+                          ? moneyToCents(row.amount) || BigInt(0)
+                          : isCash &&
                         cashRemainingCents !== null &&
                         cashRemainingCents > BigInt(0)
                           ? cashRemainingCents
@@ -1461,14 +1482,7 @@ export function SalesPdv() {
                               ))}
                             </Select>
                             {isCash ? (
-                              <div className="rounded-md bg-surface-muted px-3 py-2 text-xs">
-                                <span className="block text-[9px] uppercase text-slate-400">
-                                  Valor da conta
-                                </span>
-                                <strong>
-                                  {formatBRL(centsToDecimal(cashAmount))}
-                                </strong>
-                              </div>
+                              <Input inputMode="decimal" placeholder="Valor" value={row.amount} onChange={(event) => updatePayment(row.key, "amount", event.target.value)} />
                             ) : (
                               <Input
                                 inputMode="decimal"

@@ -254,6 +254,16 @@ class BranchSettings(BaseModel):
     uses_consumption = models.BooleanField(default=True)
     uses_cash_register = models.BooleanField(default=True)
     charges_service_fee = models.BooleanField(default=False)
+    default_table_quantity = models.PositiveIntegerField(default=20)
+    default_table_seats = models.PositiveIntegerField(default=0)
+    default_table_prefix = models.CharField(max_length=50, default='Mesa ')
+    consumption_limit_enabled = models.BooleanField(default=False)
+    command_consumption_limit = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True
+    )
+    table_consumption_limit = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True
+    )
 
     class Meta:
         constraints = [
@@ -280,6 +290,13 @@ class BranchSettings(BaseModel):
             errors['commission_rate'] = 'A comissão deve estar entre 0 e 100.'
         if self.fixed_daily_cost is not None and self.fixed_daily_cost < 0:
             errors['fixed_daily_cost'] = 'O custo fixo não pode ser negativo.'
+        if self.default_table_quantity > 500:
+            errors['default_table_quantity'] = 'O padrão de mesas não pode exceder 500.'
+        if self.consumption_limit_enabled:
+            if self.command_consumption_limit is not None and self.command_consumption_limit <= 0:
+                errors['command_consumption_limit'] = 'O limite da comanda deve ser maior que zero.'
+            if self.table_consumption_limit is not None and self.table_consumption_limit <= 0:
+                errors['table_consumption_limit'] = 'O limite da mesa deve ser maior que zero.'
         if errors:
             raise ValidationError(errors)
 
@@ -296,6 +313,7 @@ class BranchSettings(BaseModel):
             'cash_register': self.uses_cash_register,
             'service_fee': self.charges_service_fee,
             'negative_stock': self.allow_negative_stock,
+            'consumption_limit': self.consumption_limit_enabled,
         }
 
     def __str__(self):

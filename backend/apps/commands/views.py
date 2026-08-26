@@ -75,12 +75,19 @@ class TableViewSet(viewsets.ModelViewSet):
         branch = getattr(request, 'branch_context', None)
         if not branch:
             raise PermissionDenied('Selecione uma filial.')
+        settings = branch.settings
+        prefix = serializer.validated_data.get('prefix', settings.default_table_prefix)
+        start = serializer.validated_data['start']
+        end = serializer.validated_data.get('end')
+        if end is None:
+            end = start + settings.default_table_quantity - 1
+        seats = serializer.validated_data.get('seats', settings.default_table_seats)
         created = batch_create_tables(
             branch=branch,
-            prefix=serializer.validated_data['prefix'],
-            start=serializer.validated_data['start'],
-            end=serializer.validated_data['end'],
-            seats=serializer.validated_data.get('seats', 0),
+            prefix=prefix,
+            start=start,
+            end=end,
+            seats=seats,
             user=request.user,
         )
         return Response(

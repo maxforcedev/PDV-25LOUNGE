@@ -1,6 +1,8 @@
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
+from django.db.models import DecimalField, F, Q, Sum, Value
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -257,6 +259,8 @@ def confirm_order_item(*, item, user, idempotency_key, support_session=None):
     if item.status != OrderItemStatus.PENDING:
         raise ValidationError({'item': 'Somente itens pendentes podem ser confirmados.'})
 
+    _assert_consumption_limit(command, item)
+
     product = item.product
     requirements, content_requirements, component_snapshots = (
         _resolve_stock_requirements_for_product(product, item.quantity, command.branch)
@@ -317,6 +321,42 @@ def _branch_allows_negative(branch):
     from apps.companies.models import BranchSettings
     settings = BranchSettings.objects.filter(branch=branch).first()
     return bool(settings and settings.allow_negative_stock)
+
+
+def _confirmed_consumption(command, *, table=None):
+    money_field = DecimalField(max_digits=14, decimal_places=2)
+    filters = Q(order__command=command)
+    if table is not None:
+        filters = Q(order__command__table=table, order__command__status=CommandStatus.OPEN)
+    return OrderItem.objects.filter(filters, status=OrderItemStatus.CONFIRMED).aggregate(
+        total=Coalesce(
+            Sum(F('unit_price') * F('quantity'), output_field=money_field),
+            Value(Decimal('0.00'), output_field=money_field),
+        )
+    )['total']
+
+
+def _assert_consumption_limit(command, item):
+    from apps.companies.models import BranchSettings
+
+    settings = BranchSettings.objects.select_for_update().filter(branch=command.branch).first()
+    if not settings or not settings.consumption_limit_enabled:
+        return
+    attempt = (item.unit_price * item.quantity).quantize(CENT, rounding=ROUND_HALF_UP)
+    checks = [('comanda', settings.command_consumption_limit, None)]
+    if command.table_id:
+        table = Table.objects.select_for_update().get(pk=command.table_id)
+        checks.append(('mesa', settings.table_consumption_limit, table))
+    for label, limit, table in checks:
+        if limit is None:
+            continue
+        current = _confirmed_consumption(command, table=table)
+        total = current + attempt
+        if total > limit:
+            raise ValidationError({'consumption_limit': (
+                f'Limite de consumo da {label}: R$ {limit:.2f}. Consumo atual: '
+                f'R$ {current:.2f}. Tentativa: R$ {attempt:.2f}. Excedente: R$ {total - limit:.2f}.'
+            )})
 
 
 @transaction.atomic

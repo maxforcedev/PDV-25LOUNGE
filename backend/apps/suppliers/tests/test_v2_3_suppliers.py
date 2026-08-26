@@ -31,9 +31,9 @@ from apps.saas.tests.test_v2_2_saas import (
 )
 
 from ..admin import ProductSupplierAdmin, ProductSupplierUnitAdmin, SupplierAdmin
-from ..models import ProductSupplier, ProductSupplierUnit, Supplier
+from ..models import PresentationPreset, ProductSupplier, ProductSupplierUnit, Supplier
 from ..serializers import SupplierSerializer
-from ..services import _save_product_supplier
+from ..services import _save_product_supplier, _save_product_supplier_unit
 from ..views import SupplierViewSet
 
 
@@ -235,6 +235,61 @@ class SupplierModelTests(TestCase):
                 conversion_factor=Decimal('0'),
             )
 
+    def test_presentation_preset_generates_standard_and_other_values_per_company(self):
+        preset = PresentationPreset.objects.create(
+            company=self.company, presentation_type='CX', conversion_factor='24'
+        )
+        self.assertEqual(preset.code, 'CX24')
+        self.assertEqual(preset.description, 'Caixa com 24 unidades')
+        self.assertEqual(preset.conversion_factor, Decimal('24.000000'))
+        with self.assertRaises(ValidationError):
+            PresentationPreset.objects.create(
+                company=self.company, presentation_type='CX', conversion_factor='24'
+            )
+        other_company_preset = PresentationPreset.objects.create(
+            company=self.other_company, presentation_type='CX', conversion_factor='24'
+        )
+        self.assertNotEqual(other_company_preset.pk, preset.pk)
+        other = PresentationPreset.objects.create(
+            company=self.company, presentation_type='OTHER', conversion_factor='6',
+            custom_code='tb', custom_name='Tubo',
+        )
+        self.assertEqual(other.code, 'TB6')
+        self.assertEqual(other.description, 'Tubo com 6 unidades')
+
+    def test_preset_reuse_preserves_unit_specific_barcode_and_default(self):
+        product = create_product(self.company, 'Água com gás', 'AG-1')
+        second_product = create_product(self.company, 'Suco', 'SU-1')
+        first_supplier = create_supplier(self.company, 'Fornecedor A')
+        second_supplier = create_supplier(self.company, 'Fornecedor B')
+        first_relation = ProductSupplier.objects.create(
+            company=self.company, product=product, supplier=first_supplier
+        )
+        second_relation = ProductSupplier.objects.create(
+            company=self.company, product=second_product, supplier=second_supplier
+        )
+        first = _save_product_supplier_unit(
+            company=self.company, product_supplier=first_relation, presentation_type='CX',
+            conversion_factor='24', save_as_preset=True, barcode='789', is_default=True,
+        )
+        second = _save_product_supplier_unit(
+            company=self.company, product_supplier=second_relation,
+            presentation_preset=first.presentation_preset, barcode='456', is_default=True,
+        )
+        same_relation = _save_product_supplier_unit(
+            company=self.company, product_supplier=first_relation,
+            presentation_preset=first.presentation_preset, barcode='123', is_default=False,
+        )
+        self.assertEqual(PresentationPreset.objects.filter(company=self.company).count(), 1)
+        self.assertEqual(first.unit_code, 'CX24')
+        self.assertEqual(second.unit_code, 'CX24')
+        self.assertEqual(second.conversion_factor, Decimal('24.000000'))
+        self.assertEqual(same_relation.presentation_preset_id, first.presentation_preset_id)
+        self.assertEqual(first.barcode, '789')
+        self.assertEqual(second.barcode, '456')
+        self.assertTrue(first.is_default)
+        self.assertTrue(second.is_default)
+
 
 class SupplierApiTests(TestCase):
     def setUp(self):
@@ -401,7 +456,6 @@ class SupplierApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 400, response.data)
         self.assertIn('description', response.data)
-
         response = self.client.post(
             reverse('product-supplier-unit-list'),
             {**payload, 'description': '   '},
@@ -409,6 +463,29 @@ class SupplierApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 400, response.data)
         self.assertIn('description', response.data)
+
+    def test_presentation_preset_api_is_scoped_and_can_be_inactivated(self):
+        response = self.client.post(
+            reverse('presentation-preset-list'),
+            {'company': self.company.pk, 'presentation_type': 'CX', 'conversion_factor': '24'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['code'], 'CX24')
+        self.assertEqual(response.data['description'], 'Caixa com 24 unidades')
+        preset_id = response.data['id']
+        response = self.client.post(
+            reverse('presentation-preset-deactivate', args=[preset_id]), format='json'
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['status'], 'inactive')
+        response = self.client.get(reverse('presentation-preset-list'))
+        self.assertEqual(response.data['count'], 1)
+        response = self.client.get(
+            reverse('presentation-preset-list'), {'company': self.other_company.pk}
+        )
+        self.assertEqual(response.data['count'], 0)
+
 
     def test_update_audit_uses_locked_current_snapshot(self):
         supplier = create_supplier(self.company, 'Snapshot')

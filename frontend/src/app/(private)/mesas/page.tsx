@@ -10,7 +10,7 @@ import { fieldError, formatBRL } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
-import type { Table } from "@/types";
+import type { BranchSettings, Table } from "@/types";
 
 function TablesPage() {
   const { currentBranch, hasPermission, supportSession } = useAuth();
@@ -26,6 +26,7 @@ function TablesPage() {
   const [editing, setEditing] = useState<Table | null>(null);
   const [form, setForm] = useState({ name: "", seats: "0" });
   const [batchForm, setBatchForm] = useState({ prefix: "", start: "1", end: "20", seats: "0" });
+  const [settings, setSettings] = useState<BranchSettings | null>(null);
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
   const context = useRef("");
@@ -47,7 +48,7 @@ function TablesPage() {
 
   const loadRef = useRef(load);
   loadRef.current = load;
-  useEffect(() => { setTables([]); void loadRef.current(String(currentBranch?.id || "")); }, [currentBranch?.id]);
+  useEffect(() => { setTables([]); void loadRef.current(String(currentBranch?.id || "")); if (currentBranch) void http.get<BranchSettings>(`branches/${currentBranch.id}/settings/`).then(setSettings).catch(() => setSettings(null)); }, [currentBranch?.id]);
 
   function openCreate() { setEditing(null); setForm({ name: "", seats: "0" }); setFields({}); setModalOpen(true); }
   function openEdit(table: Table) { setEditing(table); setForm({ name: table.name, seats: String(table.seats) }); setFields({}); setModalOpen(true); }
@@ -115,7 +116,7 @@ function TablesPage() {
     <>
       <PageHeader title="Mesas" description="Acompanhe ocupação e abra Comandas rapidamente." action={canChange ? (
         <div className="flex gap-2">
-          <Button variant="secondary" onClick={() => setBatchOpen(true)}><Layers className="size-4" />Gerar lote</Button>
+          <Button variant="secondary" onClick={() => { setBatchForm({ prefix: settings?.default_table_prefix || "", start: "1", end: String(settings?.default_table_quantity || 20), seats: String(settings?.default_table_seats || 0) }); setBatchOpen(true); }}><Layers className="size-4" />Gerar lote</Button>
           <Button onClick={openCreate}><Plus className="size-4" />Nova mesa</Button>
         </div>
       ) : undefined} />

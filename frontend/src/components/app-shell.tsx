@@ -40,6 +40,7 @@ import { initials } from "@/lib/format";
 import { permissions, reportMenuPermissions } from "@/lib/permissions";
 import { Alert, Spinner } from "@/components/ui";
 import { useBranding } from "@/providers/branding-provider";
+import { BrandWordmark } from "@/components/marketing/brand-wordmark";
 import type { BranchFeature, FeaturePermissionAlternative } from "@/types";
 
 type NavItem = { href: string; label: string; icon: typeof LayoutDashboard; requiredPermissions: readonly string[]; requiredFeatures?: readonly BranchFeature[]; anyFeature?: boolean; alternatives?: readonly FeaturePermissionAlternative[] };
@@ -112,7 +113,6 @@ function Sidebar({
 }) {
   const pathname = usePathname();
   const { hasAnyPermission, hasFeature, hasPermission, currentCompany } = useAuth();
-  const branding = useBranding();
   const restrictedOwner = Boolean(currentCompany?.is_owner && !currentCompany.can_operate);
   const navigation = restrictedOwner ? [{
     href: "/assinatura",
@@ -157,17 +157,7 @@ function Sidebar({
       <div
         className={`flex h-18 items-center gap-3 border-b border-white/8 ${collapsed ? "justify-center px-2" : "px-6"}`}
       >
-        <div className="flex size-9 items-center justify-center rounded-lg bg-primary text-white shadow-lg shadow-primary/20">
-          <ShieldCheck className="size-5" />
-        </div>
-        {!collapsed && (
-          <div>
-            <strong className="block max-w-40 truncate text-sm tracking-wide">{branding.platform_name}</strong>
-            <span className="text-[10px] uppercase tracking-[0.18em] text-operational-muted">
-              Administração
-            </span>
-          </div>
-        )}
+        <BrandWordmark href="/dashboard" compact={collapsed} dark className="text-operational-fg" />
       </div>
       <nav
         className="flex-1 overflow-y-auto px-3 py-6"

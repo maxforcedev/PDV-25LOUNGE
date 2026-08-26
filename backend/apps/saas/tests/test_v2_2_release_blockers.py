@@ -641,6 +641,8 @@ class PublicPlanCatalogTests(TestCase):
         self.assertEqual(GlobalSaaSSettings.objects.count(), 0)
         expected_fields = {
             'platform_name', 'logo_url', 'compact_logo_url', 'favicon_url',
+            'logo_light_url', 'logo_dark_url', 'compact_logo_light_url',
+            'compact_logo_dark_url',
             'primary_color', 'support_email', 'support_phone', 'institutional_links',
         }
         self.assertEqual(set(response.data), expected_fields)

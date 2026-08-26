@@ -39,7 +39,8 @@ from apps.saas.tests.test_v2_2_saas import (
     create_tenant,
     create_user,
 )
-from apps.suppliers.models import ProductSupplier, ProductSupplierUnit, Supplier
+from apps.suppliers.models import PresentationPreset, ProductSupplier, ProductSupplierUnit, Supplier
+from apps.suppliers.services import _save_product_supplier_unit
 
 from ..models import (
     PayableInstallment,
@@ -172,6 +173,35 @@ class PurchaseFlowTests(TestCase):
         )
         self.product.refresh_from_db()
         self.assertEqual(self.product.cost, Decimal('2.00'))
+
+    def test_purchase_uses_cx24_preset_without_changing_historical_snapshots(self):
+        preset = PresentationPreset.objects.create(
+            company=self.company, presentation_type='CX', conversion_factor='24'
+        )
+        unit = _save_product_supplier_unit(
+            company=self.company, product_supplier=self.link, presentation_preset=preset,
+            barcode='789', is_default=False,
+        )
+        order = create_purchase_order(
+            branch=self.branch, supplier=self.supplier, order_type='DIRECT', user=self.user,
+            items=[{
+                'product_supplier_unit': unit.pk,
+                'ordered_quantity': '3',
+                'purchase_unit_price': '120.00',
+            }],
+        )
+        item = order.items.get()
+        receive_purchase_order(
+            purchase_order=order, idempotency_key=uuid.uuid4(),
+            items=[{'purchase_order_item': item.pk, 'received_quantity': '3'}], user=self.user,
+        )
+        self.assertEqual(item.presentation_unit_code, 'CX24')
+        self.assertEqual(item.conversion_factor, Decimal('24.000000'))
+        self.assertEqual(Stock.objects.get(branch=self.branch, product=self.product).current_quantity, Decimal('72.000'))
+        preset.conversion_factor = Decimal('12')
+        preset.save()
+        item.refresh_from_db()
+        self.assertEqual(item.conversion_factor, Decimal('24.000000'))
 
     def test_partial_receipt_requires_reason_is_idempotent_and_can_finish(self):
         order = create_order(

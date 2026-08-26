@@ -102,6 +102,10 @@ export interface PublicBranding {
   logo_url: string;
   compact_logo_url: string;
   favicon_url: string;
+  logo_light_url?: string;
+  logo_dark_url?: string;
+  compact_logo_light_url?: string;
+  compact_logo_dark_url?: string;
   primary_color: string;
   support_email: string;
   support_phone: string;
@@ -275,6 +279,12 @@ export interface BranchSettings {
   uses_consumption: boolean;
   uses_cash_register: boolean;
   charges_service_fee: boolean;
+  default_table_quantity: number;
+  default_table_seats: number;
+  default_table_prefix: string;
+  consumption_limit_enabled: boolean;
+  command_consumption_limit: string | null;
+  table_consumption_limit: string | null;
   feature_flags?: Record<string, boolean>;
   negative_stock_count: number;
   negative_stock_state:
@@ -473,11 +483,11 @@ export interface PresentationPreset {
   company: number;
   presentation_type: PresentationType;
   code: string;
-  name: string;
-  description?: string;
-  conversion_factor?: string;
+  description: string;
+  conversion_factor: string;
   custom_code?: string;
   custom_name?: string;
+  usage_count?: number;
   status: Status;
   created_at: string;
   updated_at: string;

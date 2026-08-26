@@ -162,6 +162,10 @@ export interface GlobalSettings {
   logo_url: string;
   compact_logo_url: string;
   favicon_url: string;
+  logo_light_url: string;
+  logo_dark_url: string;
+  compact_logo_light_url: string;
+  compact_logo_dark_url: string;
   primary_color: string;
   support_email: string;
   support_phone: string;
