@@ -41,7 +41,7 @@ function normalizeFields(value: unknown): Record<string, string[]> {
     if (!current || typeof current !== "object" || Array.isArray(current))
       return;
     for (const [key, messages] of Object.entries(current)) {
-      if (!prefix && ["detail", "message", "non_field_errors"].includes(key))
+      if (!prefix && ["detail", "message", "non_field_errors", "code", "details"].includes(key))
         continue;
       const path =
         key === "non_field_errors" && prefix
@@ -68,7 +68,7 @@ function normalizeFields(value: unknown): Record<string, string[]> {
 
 function errorMessage(status: number, data: unknown): string {
   if (status >= 500)
-    return "O servidor encontrou um problema. Tente novamente em instantes.";
+    return "Não foi possível concluir a operação devido a um erro interno. Tente novamente.";
   const payload =
     data && typeof data === "object" ? (data as Record<string, unknown>) : {};
   const detail = safeText(payload.detail) || safeText(payload.message);
@@ -79,11 +79,29 @@ function errorMessage(status: number, data: unknown): string {
       .filter((message): message is string => !!message);
     if (messages.length) return messages.join(" ");
   }
+  const fields = normalizeFields(data);
+  const fieldMessages = Object.values(fields).flat();
+  if (fieldMessages.length) return fieldMessages.join(" ");
+  if (status === 400) return "Revise os dados informados e tente novamente.";
   if (status === 401) return "Sua sessão expirou. Entre novamente.";
   if (status === 403) return "Você não tem permissão para realizar esta ação.";
+  if (status === 404) return "O item solicitado não foi encontrado.";
+  if (status === 409) return "A operação conflita com o estado atual. Atualize e tente novamente.";
   if (status === 429)
     return "Muitas tentativas. Aguarde um momento e tente novamente.";
   return "Não foi possível concluir a solicitação.";
+}
+
+export function friendlyError(caught: unknown, fallback: string) {
+  if (caught instanceof ApiError) {
+    return {
+      message: caught.message || fallback,
+      fields: caught.fields,
+      code: caught.code,
+      details: caught.details,
+    };
+  }
+  return { message: fallback, fields: {}, code: null, details: {} };
 }
 
 async function parseResponse(response: Response): Promise<unknown> {

@@ -49,6 +49,7 @@ export interface User {
   is_superuser: boolean;
   companies: UserCompany[];
   branches: UserBranch[];
+  permission_scopes: Record<string, "COMPANY" | "BRANCH">;
   permission_blocks: Array<{
     id: number;
     company: number;
@@ -454,6 +455,34 @@ export interface ProductionDestination {
   updated_at: string;
 }
 
+export type PresentationType =
+  | "UN"
+  | "CX"
+  | "FD"
+  | "PK"
+  | "PCT"
+  | "ENG"
+  | "DSP"
+  | "BDJ"
+  | "SC"
+  | "KIT"
+  | "OTHER";
+
+export interface PresentationPreset {
+  id: number;
+  company: number;
+  presentation_type: PresentationType;
+  code: string;
+  name: string;
+  description?: string;
+  conversion_factor?: string;
+  custom_code?: string;
+  custom_name?: string;
+  status: Status;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface EmbeddedProductSupplierUnit {
   id: number;
   unit_code: string;
@@ -462,6 +491,12 @@ export interface EmbeddedProductSupplierUnit {
   barcode: string;
   is_default: boolean;
   status: Status;
+  presentation_preset?: number | null;
+  presentation_preset_code?: string;
+  presentation_preset_name?: string;
+  presentation_type?: PresentationType;
+  custom_code?: string;
+  custom_name?: string;
 }
 
 export interface EmbeddedProductSupplier {
@@ -505,6 +540,12 @@ export interface ProductSupplierUnit {
   barcode: string;
   is_default: boolean;
   status: Status;
+  presentation_preset?: number | null;
+  presentation_preset_code?: string;
+  presentation_preset_name?: string;
+  presentation_type?: PresentationType;
+  custom_code?: string;
+  custom_name?: string;
   created_at: string;
   updated_at: string;
 }
@@ -628,8 +669,8 @@ export interface PurchaseOrderItem {
   id: number;
   line_number: number;
   product: number;
-  product_supplier: number;
-  product_supplier_unit: number;
+  product_supplier: number | null;
+  product_supplier_unit: number | null;
   ordered_quantity: string;
   received_quantity: string;
   pending_quantity: string;
@@ -698,6 +739,8 @@ export interface PayableInstallment {
   due_date: string;
   status: PayableInstallmentStatus;
   paid_at: string | null;
+  paid_amount: string | null;
+  paid_payment_method: string;
   paid_by: number | null;
   cancelled_at: string | null;
   cancelled_by: number | null;
@@ -788,6 +831,7 @@ export type TransferDivergenceStatus = "PENDING" | "RESOLVED";
 export type TransferResolutionType = "FOUND_RECEIPT" | "RETURN_TO_ORIGIN" | "LOSS_IN_TRANSIT" | "AUTHORIZED_CORRECTION";
 export type LossReason = "BREAKAGE" | "EXPIRATION" | "DAMAGE" | "INTERNAL_USE" | "MISPLACEMENT" | "OPERATIONAL_ERROR" | "OTHER";
 export type InventoryCountStatus = "OPEN" | "CONFIRMED";
+export type InventoryCountMode = "FULL" | "PARTIAL";
 
 export interface StockTransferItem {
   id: number; product: number; product_name_snapshot: string; product_internal_code_snapshot: string;
@@ -835,6 +879,7 @@ export interface LossRecord {
   recorded_by: number; recorded_at: string; movement_ids: number[]; created_at: string;
   content_quantity: string | null; content_unit: ContentUnit | null;
   package_content_snapshot?: string | null; complete_packages?: string | null; residual_content?: string | null;
+  attachment?: { name: string; download_url: string } | null;
 }
 export interface InventoryCountItem {
   id: number; product: number; product_name: string; theoretical_quantity: string; counted_quantity: string;
@@ -853,6 +898,7 @@ export interface InventoryCountItem {
 }
 export interface InventoryCount {
   id: string; company: number; branch: number; branch_name: string; status: InventoryCountStatus;
+  mode: InventoryCountMode;
   observation: string; created_by: number; confirmed_by: number | null; confirmed_at: string | null;
   confirmation_idempotency_key: string | null; items: InventoryCountItem[]; created_at: string; updated_at: string;
 }
@@ -913,11 +959,13 @@ export interface AdvancedInventoryReport {
 }
 
 export interface InventoryWorkflowStockOption {
-  stock: number;
+  stock: number | null;
   product: number;
   product_name: string;
   internal_code: string;
   unit: string;
+  category?: number | null;
+  category_name?: string;
   current_quantity: string;
   equivalent_quantity: string;
   current_content?: string | null;

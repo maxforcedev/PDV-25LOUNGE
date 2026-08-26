@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Alert, Button, Field, Input, Modal } from "@/components/ui";
-import { formatBRL } from "@/lib/format";
+import { formatBRL, formatDecimalBRL } from "@/lib/format";
 import type { ModifierGroup, ModifierSelection, Product } from "@/types";
 
 type Props = {
@@ -86,6 +86,6 @@ export function ModifierPicker({ product, onClose, onConfirm }: Props) {
       })}
       {error && <Alert message={error} />}
     </div>
-    <div className="flex items-center justify-between gap-3 border-t border-subtle px-5 py-4"><div className="text-xs text-muted">Adicionais: <strong className="text-fg">{formatBRL(String(additional))}</strong></div><div className="flex gap-2"><Button variant="secondary" onClick={onClose}>Cancelar</Button><Button onClick={confirm}>Adicionar ao carrinho</Button></div></div>
+    <div className="flex items-center justify-between gap-3 border-t border-subtle px-5 py-4"><div className="text-xs text-muted">Adicionais: <strong className="text-fg">{formatDecimalBRL(additional.toFixed(2))}</strong></div><div className="flex gap-2"><Button variant="secondary" onClick={onClose}>Cancelar</Button><Button onClick={confirm}>Adicionar ao carrinho</Button></div></div>
   </Modal>;
 }

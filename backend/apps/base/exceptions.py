@@ -1,3 +1,5 @@
+import logging
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
 from rest_framework import status
@@ -39,6 +41,8 @@ CONSTRAINT_ERRORS = {
     },
 }
 
+logger = logging.getLogger(__name__)
+
 
 class InternalContractError(APIException):
     status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -79,7 +83,8 @@ def api_exception_handler(exc, context):
         )
         return Response(data, status=status.HTTP_409_CONFLICT)
 
+    logger.exception('Unhandled API exception in %s', context.get('view').__class__.__name__)
     return Response(
-        {'detail': 'O servidor encontrou um problema inesperado.'},
+        {'detail': 'Não foi possível concluir a operação devido a um erro interno. Tente novamente.'},
         status=status.HTTP_500_INTERNAL_SERVER_ERROR,
     )

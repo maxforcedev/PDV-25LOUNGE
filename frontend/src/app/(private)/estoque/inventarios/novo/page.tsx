@@ -2,134 +2,134 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ArrowLeft, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, Search } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { AdminGuard } from "@/components/admin-guard";
 import { InventoryNav } from "@/components/inventory-nav";
 import { PageHeader } from "@/components/page-header";
 import { Alert, Button, Field, Input, Select, Textarea } from "@/components/ui";
-import { fieldError, formatQuantity } from "@/lib/format";
 import { contentUnitLabel, isExactContentValid, isUnitQuantityValid, physicalQuantityDisplay, quantityInputMode } from "@/lib/inventory";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
-import type { InventoryCount, InventoryWorkflowOptions } from "@/types";
+import type { InventoryCount, InventoryCountMode, InventoryWorkflowOptions, InventoryWorkflowStockOption } from "@/types";
 
-type Row = { product: string; counted_quantity: string; counted_complete_packages: string; counted_residual_content: string; counted_at: string; observation: string };
-function localNow() {
-  const date = new Date();
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
-}
-function emptyRow(): Row {
-  return { product: "", counted_quantity: "", counted_complete_packages: "", counted_residual_content: "", counted_at: localNow(), observation: "" };
+type Row = {
+  product: number;
+  counted_quantity: string;
+  counted_complete_packages: string;
+  counted_residual_content: string;
+};
+
+function initialRows(stocks: InventoryWorkflowStockOption[]) {
+  return Object.fromEntries(stocks.map((stock) => [stock.product, {
+    product: stock.product,
+    counted_quantity: "",
+    counted_complete_packages: "",
+    counted_residual_content: "",
+  }])) as Record<number, Row>;
 }
 
 function NewCount() {
   const router = useRouter();
   const { currentBranch, supportSession } = useAuth();
   const [options, setOptions] = useState<InventoryWorkflowOptions | null>(null);
+  const [rows, setRows] = useState<Record<number, Row>>({});
+  const [mode, setMode] = useState<InventoryCountMode>("FULL");
+  const [query, setQuery] = useState("");
   const [observation, setObservation] = useState("");
-  const [rows, setRows] = useState<Row[]>([emptyRow()]);
+  const [reviewing, setReviewing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [fields, setFields] = useState<Record<string, string[]>>({});
   const branchId = currentBranch?.id;
   const readOnly = supportSession?.mode === "READ_ONLY";
 
   useEffect(() => {
     let active = true;
-    setOptions(null);
-    setRows([emptyRow()]);
-    setObservation("");
-    setError("");
-    if (!branchId) {
-      setLoading(false);
-      return;
-    }
+    setReviewing(false); setError(""); setOptions(null); setRows({});
+    if (!branchId) { setLoading(false); return; }
     setLoading(true);
     void http.get<InventoryWorkflowOptions>("inventory-counts/options/")
-      .then((response) => active && setOptions(response))
+      .then((response) => {
+        if (!active) return;
+        setOptions(response);
+        setRows(initialRows(response.stocks));
+      })
       .catch((caught) => active && setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar as opções do inventário."))
       .finally(() => active && setLoading(false));
     return () => { active = false; };
   }, [branchId]);
 
-  function update(index: number, value: Partial<Row>) {
-    setRows((current) => current.map((row, position) => position === index ? { ...row, ...value } : row));
+  const selectedStocks = (options?.stocks || []).filter((stock) => mode === "FULL" || rows[stock.product]?.counted_quantity !== "" || rows[stock.product]?.counted_complete_packages !== "");
+  const visibleStocks = (options?.stocks || []).filter((stock) => `${stock.product_name} ${stock.internal_code} ${stock.category_name || ""}`.toLowerCase().includes(query.toLowerCase()));
+
+  function update(product: number, value: Partial<Row>) {
+    setRows((current) => ({ ...current, [product]: { ...current[product], ...value } }));
   }
 
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    if (!currentBranch || !options) return;
-    const clientFields: Record<string, string[]> = {};
-    rows.forEach((row, index) => {
-      const product = options.stocks.find((item) => String(item.product) === row.product);
-      const tracked = product?.current_content != null && product.package_content && product.content_unit;
+  function validate() {
+    if (!selectedStocks.length) return "Selecione ao menos um produto para a contagem parcial.";
+    for (const stock of selectedStocks) {
+      const row = rows[stock.product];
+      const tracked = !!stock.package_content && !!stock.content_unit;
       if (tracked) {
-        if (!/^\d+$/.test(row.counted_complete_packages)) clientFields[`items.${index}.counted_complete_packages`] = ["Informe um número inteiro de embalagens completas."];
-        if (!isExactContentValid(row.counted_residual_content || "0", true) || Number(row.counted_residual_content.replace(",", ".") || 0) >= Number(product.package_content)) clientFields[`items.${index}.counted_residual_content`] = [`Informe um residual entre zero e menos de ${formatQuantity(product.package_content)} ${contentUnitLabel(product.content_unit)}.`];
-      } else if (product && !isUnitQuantityValid(row.counted_quantity, product.unit, true)) {
-        clientFields[`items.${index}.counted_quantity`] = [product.unit.toLowerCase() === "un" ? "Informe uma quantidade inteira de unidades." : "Informe zero ou uma quantidade com até 3 casas decimais."];
-      }
-    });
-    if (Object.keys(clientFields).length) {
-      setFields(clientFields);
-      setError("Revise as quantidades contadas.");
-      return;
+        if (!/^\d+$/.test(row.counted_complete_packages)) return `Informe embalagens completas para ${stock.product_name}.`;
+        if (!isExactContentValid(row.counted_residual_content || "0", true) || Number((row.counted_residual_content || "0").replace(",", ".")) >= Number(stock.package_content)) return `Informe residual válido para ${stock.product_name}.`;
+      } else if (!isUnitQuantityValid(row.counted_quantity, stock.unit, true)) return `Informe quantidade válida para ${stock.product_name}.`;
     }
-    setSaving(true);
-    setError("");
-    setFields({});
+    return "";
+  }
+
+  function beginReview(event: React.FormEvent) {
+    event.preventDefault();
+    const message = validate();
+    if (message) { setError(message); return; }
+    setError(""); setReviewing(true);
+  }
+
+  async function capture() {
+    if (!currentBranch || !options) return;
+    setSaving(true); setError("");
     try {
       const count = await http.post<InventoryCount>("inventory-counts/", {
         branch: currentBranch.id,
+        mode,
         observation,
-        items: rows.map((row) => {
-          const product = options.stocks.find((item) => String(item.product) === row.product);
-          const exact = product?.current_content != null && product.package_content && product.content_unit;
-          return { product: Number(row.product), ...(exact ? { counted_complete_packages: Number(row.counted_complete_packages), counted_residual_content: (row.counted_residual_content || "0").replace(",", ".") } : { counted_quantity: row.counted_quantity.replace(",", ".") }), counted_at: new Date(row.counted_at).toISOString(), observation: row.observation };
+        items: selectedStocks.map((stock) => {
+          const row = rows[stock.product];
+          const tracked = !!stock.package_content && !!stock.content_unit;
+          return {
+            product: stock.product,
+            ...(tracked ? {
+              counted_complete_packages: Number(row.counted_complete_packages),
+              // Empty residual is canonically zero; users do not need to type it.
+              counted_residual_content: (row.counted_residual_content || "0").replace(",", "."),
+            } : { counted_quantity: row.counted_quantity.replace(",", ".") }),
+          };
         }),
       });
       router.push(`/estoque/inventarios/${count.id}`);
     } catch (caught) {
-      if (caught instanceof ApiError) {
-        setError(caught.message);
-        setFields(caught.fields);
-      } else setError("Não foi possível capturar a contagem.");
+      setError(caught instanceof ApiError ? caught.message : "Não foi possível capturar a contagem.");
       setSaving(false);
     }
   }
 
+  function display(stock: InventoryWorkflowStockOption, row: Row) {
+    if (stock.package_content && stock.content_unit) return `${row.counted_complete_packages || "0"} embalagens + ${row.counted_residual_content || "0"} ${contentUnitLabel(stock.content_unit)}`;
+    return `${row.counted_quantity || "0"} ${stock.unit.toUpperCase()}`;
+  }
+
   return <>
-    <PageHeader title="Nova contagem física" description={`${currentBranch?.name || "Selecione uma filial"} · capture quantidade e horário observados.`} action={<Link href="/estoque/inventarios" className="btn btn-secondary"><ArrowLeft className="size-4" />Voltar</Link>} />
+    <PageHeader title="Nova contagem" description={`${currentBranch?.name || "Selecione uma filial"} · preencha, revise e só então capture o snapshot imutável.`} action={<Link href="/estoque" className="btn btn-secondary"><ArrowLeft className="size-4" />Estoque</Link>} />
     <InventoryNav />
-    <div className="p-4 sm:p-6 lg:p-8">
-      <form className="mx-auto max-w-5xl space-y-4" onSubmit={submit}>
-        {error && <Alert message={error} />}
-        <section className="card p-5 sm:p-6"><Field label="Observação geral" error={fieldError(fields, "observation")}><Textarea required minLength={3} value={observation} onChange={(event) => setObservation(event.target.value)} disabled={readOnly} placeholder="Ex.: contagem física do fechamento" /></Field></section>
-        <section className="card overflow-hidden">
-          <div className="card-header"><div><h2 className="text-sm font-bold">Produtos contados</h2><p className="mt-1 text-[11px] text-muted">O teórico exibido vem das opções do fluxo; o servidor captura o valor autoritativo no horário informado.</p></div><Button type="button" variant="secondary" disabled={readOnly || loading} onClick={() => setRows((value) => [...value, emptyRow()])}><Plus className="size-4" />Adicionar</Button></div>
-          <div className="space-y-3 p-4 sm:p-6">
-            {rows.map((row, index) => {
-              const product = options?.stocks.find((item) => String(item.product) === row.product);
-              const theoretical = product ? physicalQuantityDisplay({ quantity: product.current_quantity, unit: product.unit, content: product.current_content, packageContent: product.package_content, contentUnit: product.content_unit, completePackages: product.complete_packages, residualContent: product.residual_content }) : null;
-              const tracked = product?.current_content != null && product.package_content && product.content_unit;
-              return <div key={index} className="rounded-lg border border-subtle p-4">
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[1fr_150px_210px_auto]">
-                   <Field label={`Produto ${index + 1}`} error={fieldError(fields, `items.${index}.product`)}><Select required value={row.product} onChange={(event) => update(index, { product: event.target.value, counted_quantity: "", counted_complete_packages: "", counted_residual_content: "" })} disabled={readOnly || loading}><option value="">Selecione</option>{options?.stocks.filter((item) => !rows.some((other, position) => position !== index && other.product === String(item.product))).map((item) => <option key={item.stock} value={item.product}>{item.product_name} ({item.internal_code})</option>)}</Select>{theoretical && <span className="mt-1 block text-[10px] text-muted">Teórico atual: {theoretical}</span>}</Field>
-                   {tracked ? <div className="grid grid-cols-2 gap-2"><Field label="Embalagens completas" error={fieldError(fields, `items.${index}.counted_complete_packages`)}><Input required inputMode="numeric" pattern="\d+" min="0" step="1" value={row.counted_complete_packages} onChange={(event) => update(index, { counted_complete_packages: event.target.value.replace(/\D/g, "") })} disabled={readOnly} /></Field><Field label={`Residual (${contentUnitLabel(product.content_unit)})`} error={fieldError(fields, `items.${index}.counted_residual_content`)}><Input required inputMode="decimal" min="0" max={product.package_content || undefined} step="0.000000001" value={row.counted_residual_content} onChange={(event) => update(index, { counted_residual_content: event.target.value })} disabled={readOnly} /><span className="mt-1 block text-[10px] text-muted">Cada embalagem: {formatQuantity(product.package_content)} {contentUnitLabel(product.content_unit)}</span></Field></div> : <Field label={`Contagem${product ? ` (${product.unit.toUpperCase()})` : ""}`} error={fieldError(fields, `items.${index}.counted_quantity`)}><Input required inputMode={quantityInputMode(product?.unit)} step={product?.unit.toLowerCase() === "un" ? "1" : "0.001"} min="0" value={row.counted_quantity} onChange={(event) => update(index, { counted_quantity: event.target.value })} disabled={readOnly} /></Field>}
-                  <Field label="Contado em" error={fieldError(fields, `items.${index}.counted_at`)}><Input required type="datetime-local" step="1" max={localNow()} value={row.counted_at} onChange={(event) => update(index, { counted_at: event.target.value })} disabled={readOnly} /></Field>
-                  <button type="button" className="icon-button self-end" disabled={readOnly || rows.length === 1} onClick={() => setRows((value) => value.filter((_, position) => position !== index))}><Trash2 className="size-4" /></button>
-                </div>
-                <div className="mt-3"><Field label="Observação do item" optional error={fieldError(fields, `items.${index}.observation`)}><Input value={row.observation} onChange={(event) => update(index, { observation: event.target.value })} disabled={readOnly} /></Field></div>
-              </div>;
-            })}
-          </div>
-        </section>
-        <div className="flex justify-end gap-2"><Link href="/estoque/inventarios" className="btn btn-secondary">Cancelar</Link><Button type="submit" loading={saving} disabled={readOnly || loading || rows.some((row) => { const product = options?.stocks.find((item) => String(item.product) === row.product); const tracked = product?.current_content != null && product.package_content && product.content_unit; return !row.product || (tracked ? row.counted_complete_packages === "" || row.counted_residual_content === "" : row.counted_quantity === ""); })}>Capturar inventário</Button></div>
-      </form>
-    </div>
+    <div className="p-4 sm:p-6 lg:p-8"><form className="mx-auto max-w-6xl space-y-4" onSubmit={beginReview}>
+      {error && <Alert message={error} />}
+      <section className="card p-5"><div className="grid gap-4 sm:grid-cols-[280px_1fr]"><Field label="Tipo de contagem"><Select value={mode} disabled={reviewing || readOnly} onChange={(event) => setMode(event.target.value as InventoryCountMode)}><option value="FULL">Contagem completa</option><option value="PARTIAL">Contagem parcial</option></Select></Field><p className="self-end text-xs text-muted">{mode === "FULL" ? "Todos os produtos controlados da filial, inclusive saldos zerados." : "Preencha somente os produtos que deseja conferir."}</p></div><div className="mt-4"><Field label="Observação geral" optional><Textarea value={observation} disabled={reviewing || readOnly} onChange={(event) => setObservation(event.target.value)} placeholder="Opcional" /></Field></div></section>
+      {!reviewing ? <section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Produtos para contagem</h2><p className="mt-1 text-[11px] text-muted">Agrupados por categoria. O saldo teórico é apenas referência operacional.</p></div><div className="relative w-full sm:w-72"><Search className="absolute left-3 top-3 size-4 text-muted" /><Input className="pl-9" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar produto ou código" /></div></div>{loading ? <p className="p-6 text-sm text-muted">Carregando produtos...</p> : visibleStocks.map((stock, index) => { const row = rows[stock.product]; const tracked = !!stock.package_content && !!stock.content_unit; const previousCategory = visibleStocks[index - 1]?.category_name; return <div key={stock.product}>{stock.category_name !== previousCategory && <h3 className="border-y border-subtle bg-surface-muted px-5 py-2 text-xs font-bold">{stock.category_name || "Sem categoria"}</h3>}<article className="grid gap-3 border-b border-subtle p-4 sm:grid-cols-[minmax(0,1fr)_240px]"><div><strong>{stock.product_name}</strong><small className="ml-2 text-muted">{stock.internal_code}</small><p className="mt-1 text-xs text-muted">Teórico: {physicalQuantityDisplay({ quantity: stock.current_quantity, unit: stock.unit, content: stock.current_content, packageContent: stock.package_content, contentUnit: stock.content_unit })}</p></div>{tracked ? <div className="grid grid-cols-2 gap-2"><Input required={mode === "FULL"} inputMode="numeric" min="0" step="1" placeholder="Embalagens" value={row.counted_complete_packages} onChange={(event) => update(stock.product, { counted_complete_packages: event.target.value.replace(/\D/g, "") })} disabled={readOnly} /><Input inputMode="decimal" min="0" step="0.000000001" placeholder={`Residual (${contentUnitLabel(stock.content_unit)})`} value={row.counted_residual_content} onChange={(event) => update(stock.product, { counted_residual_content: event.target.value })} disabled={readOnly} /></div> : <Input required={mode === "FULL"} inputMode={quantityInputMode(stock.unit)} min="0" step={stock.unit.toLowerCase() === "un" ? "1" : "0.001"} placeholder={`Contado (${stock.unit.toUpperCase()})`} value={row.counted_quantity} onChange={(event) => update(stock.product, { counted_quantity: event.target.value })} disabled={readOnly} />}</article></div>; })}</section> : <section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Revisão antes da captura</h2><p className="mt-1 text-[11px] text-muted">Ainda não existe snapshot persistido. Voltar permite editar esta contagem.</p></div></div><div className="divide-y divide-subtle">{selectedStocks.map((stock) => <div key={stock.product} className="grid gap-2 p-4 text-sm sm:grid-cols-3"><strong>{stock.product_name}</strong><span>Teórico: {physicalQuantityDisplay({ quantity: stock.current_quantity, unit: stock.unit, content: stock.current_content, packageContent: stock.package_content, contentUnit: stock.content_unit })}</span><span className="font-bold">Contado: {display(stock, rows[stock.product])}</span></div>)}</div></section>}
+      <div className="flex justify-end gap-2"><Link href="/estoque" className="btn btn-secondary">Cancelar</Link>{reviewing ? <><Button type="button" variant="secondary" onClick={() => setReviewing(false)} disabled={saving}>Voltar e editar</Button><Button type="button" loading={saving} disabled={readOnly} onClick={() => void capture()}>Capturar inventário</Button></> : <Button type="submit" disabled={readOnly || loading}>Revisar <ArrowRight className="size-4" /></Button>}</div>
+    </form></div>
   </>;
 }
 

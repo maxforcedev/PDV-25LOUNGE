@@ -334,12 +334,14 @@ class BranchViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(branch).data)
 
     @action(detail=True, methods=['get', 'put', 'patch'], url_path='settings')
+    @transaction.atomic
     def branch_settings(self, request, pk=None):
         branch = self.get_object()
         if request.method == 'GET':
             instance = BranchSettings.objects.filter(branch=branch).first() or BranchSettings(branch=branch)
             return Response(BranchSettingsSerializer(instance, context={'request': request}).data)
-        instance, _ = BranchSettings.objects.get_or_create(branch=branch)
+        branch = Branch.objects.select_for_update().get(pk=branch.pk)
+        instance, _ = BranchSettings.objects.select_for_update().get_or_create(branch=branch)
         serializer = BranchSettingsSerializer(instance, data=request.data, partial=True, context={'request': request})
         serializer.is_valid(raise_exception=True)
         fields = (

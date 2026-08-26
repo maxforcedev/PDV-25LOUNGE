@@ -448,6 +448,10 @@ class PayableInstallment(ProtectedPurchaseModel):
         default=PayableInstallmentStatus.PENDING,
     )
     paid_at = models.DateTimeField(blank=True, null=True)
+    paid_amount = models.DecimalField(
+        max_digits=16, decimal_places=2, blank=True, null=True
+    )
+    paid_payment_method = models.CharField(max_length=50, blank=True)
     paid_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -473,6 +477,10 @@ class PayableInstallment(ProtectedPurchaseModel):
                 fields=('purchase_order', 'installment_number'),
                 name='purchases_installment_number_unique',
             ),
+            models.UniqueConstraint(
+                fields=('purchase_order', 'due_date'),
+                name='purchases_installment_due_date_unique',
+            ),
             models.CheckConstraint(
                 condition=Q(amount__gt=0),
                 name='purchases_installment_amount_positive',
@@ -482,6 +490,8 @@ class PayableInstallment(ProtectedPurchaseModel):
                     Q(
                         status=PayableInstallmentStatus.PENDING,
                         paid_at__isnull=True,
+                        paid_amount__isnull=True,
+                        paid_payment_method='',
                         paid_by__isnull=True,
                         cancelled_at__isnull=True,
                         cancelled_by__isnull=True,
@@ -490,6 +500,8 @@ class PayableInstallment(ProtectedPurchaseModel):
                     | Q(
                         status=PayableInstallmentStatus.PAID,
                         paid_at__isnull=False,
+                        paid_amount__isnull=False,
+                        paid_payment_method__gt='',
                         paid_by__isnull=False,
                         cancelled_at__isnull=True,
                         cancelled_by__isnull=True,
@@ -498,6 +510,8 @@ class PayableInstallment(ProtectedPurchaseModel):
                     | Q(
                         status=PayableInstallmentStatus.CANCELLED,
                         paid_at__isnull=True,
+                        paid_amount__isnull=True,
+                        paid_payment_method='',
                         paid_by__isnull=True,
                         cancelled_at__isnull=False,
                         cancelled_by__isnull=False,

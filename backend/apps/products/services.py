@@ -7,7 +7,8 @@ from apps.companies.models import Branch, Company
 
 from .models import (
     BranchProductPrice, Category, FractionableProductConfig, InventoryBehavior,
-    Product, ProductBranchConfig, ProductComponent, ProductFractionComponent,
+    ModifierGroup, ModifierOption, Product, ProductBranchConfig, ProductComponent, ProductFractionComponent,
+    ProductModifierGroup,
     ProductProductionDestination, ProductionDestination, SalesChannel, Unit,
 )
 
@@ -76,6 +77,44 @@ def reorder_categories(*, company, category_ids):
         category.sort_order = position
     Category.objects.bulk_update(categories, ['sort_order'])
     return categories
+
+
+def _reorder(*, queryset, item_ids, field_name):
+    items = list(queryset.select_for_update())
+    if len(item_ids) != len(set(item_ids)) or set(item_ids) != {item.pk for item in items}:
+        raise ValidationError({field_name: 'Informe exatamente todos os itens do escopo, sem repeticao.'})
+    by_id = {item.pk: item for item in items}
+    for position, item_id in enumerate(item_ids):
+        by_id[item_id].sort_order = position
+    type(items[0]).objects.bulk_update(items, ['sort_order']) if items else None
+    return [by_id[item_id] for item_id in item_ids]
+
+
+@transaction.atomic
+def reorder_modifier_groups(*, company, group_ids):
+    Company.objects.select_for_update().get(pk=company.pk)
+    return _reorder(
+        queryset=ModifierGroup.objects.filter(company=company), item_ids=group_ids,
+        field_name='group_ids',
+    )
+
+
+@transaction.atomic
+def reorder_modifier_options(*, group, option_ids):
+    ModifierGroup.objects.select_for_update().get(pk=group.pk)
+    return _reorder(
+        queryset=ModifierOption.objects.filter(modifier_group=group), item_ids=option_ids,
+        field_name='option_ids',
+    )
+
+
+@transaction.atomic
+def reorder_product_modifier_groups(*, product, link_ids):
+    Product.objects.select_for_update().get(pk=product.pk)
+    return _reorder(
+        queryset=ProductModifierGroup.objects.filter(product=product), item_ids=link_ids,
+        field_name='link_ids',
+    )
 
 
 @transaction.atomic

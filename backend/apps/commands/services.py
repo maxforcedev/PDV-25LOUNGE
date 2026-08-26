@@ -186,7 +186,10 @@ def add_order_item(*, command, user, product_id, quantity, modifiers=None,
     require_branch_feature(command.branch, 'commands')
     if command.status != CommandStatus.OPEN:
         raise ValidationError({'command': 'A comanda deve estar aberta.'})
-    product = Product.objects.select_for_update().get(pk=product_id)
+    try:
+        product = Product.objects.select_for_update().get(pk=product_id)
+    except Product.DoesNotExist as error:
+        raise ValidationError({'product': 'Produto não encontrado.'}) from error
     if product.company_id != command.company_id:
         raise ValidationError({'product': 'Produto não pertence à empresa da comanda.'})
     if product.status != Status.ACTIVE:

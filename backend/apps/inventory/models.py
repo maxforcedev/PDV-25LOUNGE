@@ -11,6 +11,7 @@ from apps.companies.models import Branch, Company
 from apps.products.models import InventoryBehavior, Product
 
 from .content import exact_content_equivalent, exact_multiply_quantized
+from .storage import PrivateLossStorage, loss_attachment_path, validate_loss_attachment
 
 
 class Stock(BaseModel):
@@ -1014,7 +1015,14 @@ class LossRecord(ImmutableInventoryRecord):
         max_digits=24, decimal_places=9, blank=True, null=True
     )
     reason = models.CharField(max_length=24, choices=LossReason.choices)
-    observation = models.TextField()
+    observation = models.TextField(blank=True, default='')
+    attachment = models.FileField(
+        upload_to=loss_attachment_path,
+        storage=PrivateLossStorage(),
+        validators=(validate_loss_attachment,),
+        max_length=500,
+        blank=True,
+    )
     unit_cost_snapshot = models.DecimalField(max_digits=28, decimal_places=12)
     sale_price_snapshot = models.DecimalField(max_digits=12, decimal_places=2)
     cost_impact = models.DecimalField(max_digits=30, decimal_places=12)
@@ -1046,8 +1054,8 @@ class LossRecord(ImmutableInventoryRecord):
     def clean(self):
         super().clean()
         self.observation = (self.observation or '').strip()
-        if len(self.observation) < 3:
-            raise ValidationError({'observation': 'Informe a observacao da perda.'})
+        if self.reason == LossReason.OTHER and len(self.observation) < 3:
+            raise ValidationError({'observation': 'Descreva a perda quando o motivo for Outro.'})
         if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
             raise ValidationError({'branch': 'A filial deve pertencer a empresa da perda.'})
         if self.product_id and self.company_id and self.product.company_id != self.company_id:
@@ -1076,6 +1084,11 @@ class InventoryCountStatus(models.TextChoices):
     CONFIRMED = 'CONFIRMED', 'Confirmado'
 
 
+class InventoryCountMode(models.TextChoices):
+    FULL = 'FULL', 'Contagem completa'
+    PARTIAL = 'PARTIAL', 'Contagem parcial'
+
+
 class InventoryCount(ProtectedInventoryModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     company = models.ForeignKey(
@@ -1087,7 +1100,11 @@ class InventoryCount(ProtectedInventoryModel):
     status = models.CharField(
         max_length=12, choices=InventoryCountStatus.choices, default=InventoryCountStatus.OPEN
     )
-    observation = models.TextField()
+    mode = models.CharField(
+        max_length=10, choices=InventoryCountMode.choices,
+        default=InventoryCountMode.PARTIAL,
+    )
+    observation = models.TextField(blank=True, default='')
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -1118,8 +1135,6 @@ class InventoryCount(ProtectedInventoryModel):
         self.observation = (self.observation or '').strip()
         if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
             raise ValidationError({'branch': 'A filial deve pertencer a empresa do inventario.'})
-        if len(self.observation) < 3:
-            raise ValidationError({'observation': 'Informe a observacao do inventario.'})
         if self.status == InventoryCountStatus.CONFIRMED and not (
             self.confirmed_by_id and self.confirmed_at and self.confirmation_idempotency_key
         ):
@@ -1129,14 +1144,14 @@ class InventoryCount(ProtectedInventoryModel):
         allow_confirmation = getattr(self, '_allow_confirmation', False)
         if self.pk:
             previous = type(self).objects.filter(pk=self.pk).values(
-                'status', 'company_id', 'branch_id', 'observation', 'created_by_id',
+                'status', 'company_id', 'branch_id', 'mode', 'observation', 'created_by_id',
                 'confirmed_by_id', 'confirmed_at', 'confirmation_idempotency_key',
             ).first()
             if previous and previous['status'] != self.status and not allow_confirmation:
                 raise ValidationError({'status': 'Use o service auditado para confirmar o inventario.'})
             if previous and any(
                 getattr(self, field) != previous[field]
-                for field in ('company_id', 'branch_id', 'observation', 'created_by_id')
+                for field in ('company_id', 'branch_id', 'mode', 'observation', 'created_by_id')
             ):
                 raise ValidationError('O escopo e o conteudo do inventario sao imutaveis.')
             if previous and previous['status'] == InventoryCountStatus.CONFIRMED and any(

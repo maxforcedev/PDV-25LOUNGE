@@ -17,6 +17,7 @@ from .rbac import (
     DEFAULT_PROFILE_DESCRIPTIONS,
     DEFAULT_PROFILE_PERMISSIONS,
     PERMISSION_CATALOG,
+    permission_scope,
 )
 
 
@@ -29,6 +30,7 @@ def ensure_permission_catalog():
             code=code,
             defaults={
                 'module': module,
+                'scope': permission_scope(code),
                 'label': label,
                 'description': description,
                 'status': 'active',

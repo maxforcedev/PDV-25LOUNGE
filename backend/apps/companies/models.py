@@ -303,8 +303,13 @@ class BranchSettings(BaseModel):
 
 
 class FunctionalPermission(BaseModel):
+    class Scope(models.TextChoices):
+        COMPANY = 'COMPANY', 'Company'
+        BRANCH = 'BRANCH', 'Branch'
+
     code = models.CharField(max_length=100, unique=True)
     module = models.CharField(max_length=50)
+    scope = models.CharField(max_length=10, choices=Scope.choices, default=Scope.COMPANY)
     label = models.CharField(max_length=150)
     description = models.TextField(blank=True)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
@@ -608,10 +613,10 @@ class UserPermissionBlock(BaseModel):
         if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
             raise ValidationError({'branch': 'A filial deve pertencer a empresa do bloqueio.'})
         if self.permission_id and self.branch_id:
-            from .rbac import OPERATING_PERMISSION_CODES
+            from .rbac import PERMISSION_SCOPE_BRANCH, permission_scope
 
-            if self.permission.code not in OPERATING_PERMISSION_CODES:
-                raise ValidationError({'permission': 'Bloqueios por filial aceitam somente permissões operacionais.'})
+            if permission_scope(self.permission.code) != PERMISSION_SCOPE_BRANCH:
+                raise ValidationError({'permission': 'Bloqueios por filial aceitam somente permissões de escopo Branch.'})
         if not self.is_active and not self.revoked_at:
             raise ValidationError({'revoked_at': 'Informe a data de revogacao.'})
 

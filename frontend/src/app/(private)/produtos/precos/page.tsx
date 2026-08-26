@@ -29,7 +29,7 @@ type LineErrors = Record<number, Record<string, string[]>>;
 
 function BranchPrices() {
   const { currentCompany, currentBranch, hasPermission } = useAuth();
-  const canChange = hasPermission(permissions.changeBranchPrice);
+  const canChange = hasPermission(permissions.changeBranchPrice) || hasPermission(permissions.changeCompanyBranchPrice);
   const [comparison, setComparison] = useState<ProductPriceComparison | null>(null);
   const [overrides, setOverrides] = useState<Record<number, BranchProductPrice>>({});
   const [drafts, setDrafts] = useState<Record<number, string>>({});
@@ -160,5 +160,8 @@ function BranchPrices() {
 }
 
 export default function BranchPricesPage() {
-  return <AdminGuard requiredPermissions={[permissions.changeBranchPrice]}><BranchPrices /></AdminGuard>;
+  return <AdminGuard requiredPermissions={[
+    permissions.viewBranchPrice, permissions.viewCompanyBranchPrice,
+    permissions.changeBranchPrice, permissions.changeCompanyBranchPrice,
+  ]}><BranchPrices /></AdminGuard>;
 }

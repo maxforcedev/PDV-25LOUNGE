@@ -27,6 +27,11 @@ class Category(BaseModel):
     name = models.CharField(max_length=150)
     description = models.TextField(blank=True)
     sort_order = models.PositiveIntegerField(default=0)
+    available_counter = models.BooleanField(default=True)
+    available_table = models.BooleanField(default=True)
+    available_command = models.BooleanField(default=True)
+    participates_in_service_fee = models.BooleanField(default=True)
+    participates_in_commission = models.BooleanField(default=True)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
 
     class Meta:

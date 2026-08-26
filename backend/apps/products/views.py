@@ -1,7 +1,7 @@
 import uuid
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import BooleanField, Count, OuterRef, Q, Subquery, Value
+from django.db.models import BooleanField, Count, Max, OuterRef, Q, Subquery, Value
 from django.db.models.functions import Coalesce
 from django.db import IntegrityError, transaction
 from rest_framework import status, viewsets
@@ -11,7 +11,9 @@ from rest_framework.response import Response
 
 from apps.base.audit import audit_log, model_snapshot
 from apps.companies.models import Branch, Company, Status
-from apps.companies.selectors import user_has_branch_permission, user_has_company_permission
+from apps.companies.selectors import (
+    accessible_companies, user_has_branch_permission, user_has_company_permission,
+)
 from .models import BranchProductPrice, Category, InventoryBehavior, Product, SalesChannel
 from .models import (
     FractionableProductConfig, ModifierGroup, ModifierOption, ProductBranchConfig,
@@ -39,6 +41,7 @@ from .serializers import (
 )
 from .services import (
     copy_branch_configuration, duplicate_product, reorder_categories,
+    reorder_modifier_groups, reorder_modifier_options, reorder_product_modifier_groups,
 )
 
 
@@ -179,15 +182,24 @@ class CategoryViewSet(CatalogViewSet):
     @transaction.atomic
     def perform_create(self, serializer):
         category = serializer.save()
+        fields = (
+            'name', 'description', 'sort_order', 'available_counter', 'available_table',
+            'available_command', 'participates_in_service_fee',
+            'participates_in_commission', 'status',
+        )
         audit_log(
             actor=self.request.user, action='category.create', obj=category,
             company=category.company,
-            after=model_snapshot(category, ('name', 'description', 'sort_order', 'status')),
+            after=model_snapshot(category, fields),
         )
 
     @transaction.atomic
     def perform_update(self, serializer):
-        fields = ('name', 'description', 'sort_order', 'status')
+        fields = (
+            'name', 'description', 'sort_order', 'available_counter', 'available_table',
+            'available_command', 'participates_in_service_fee',
+            'participates_in_commission', 'status',
+        )
         before = model_snapshot(serializer.instance, fields)
         category = serializer.save()
         audit_log(
@@ -250,10 +262,12 @@ class CategoryViewSet(CatalogViewSet):
         reference = uuid.uuid4()
         for product in products:
             changed = {}
+            before = {}
             for field in fields_to_apply:
                 current = getattr(product, field, None)
                 target = getattr(category, field)
                 if current is None or current != target:
+                    before[field] = current
                     setattr(product, field, target)
                     changed[field] = target
             if changed:
@@ -262,7 +276,7 @@ class CategoryViewSet(CatalogViewSet):
                 audit_log(
                     actor=request.user, action='category.apply_config',
                     obj=product, company=category.company,
-                    before={f: getattr(product, f) for f in changed.keys()},
+                    before=before,
                     after=changed,
                     metadata={
                         'category_id': str(category.pk),
@@ -772,17 +786,41 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
     permission_classes = [ProductFunctionalPermission]
     http_method_names = ('get', 'post', 'patch', 'put', 'delete', 'head', 'options')
     permission_codes = {
-        'list': 'products.view', 'retrieve': 'products.view',
+        'list': 'branch_prices.view', 'retrieve': 'branch_prices.view',
         'create': 'branch_prices.change', 'update': 'branch_prices.change',
         'partial_update': 'branch_prices.change', 'destroy': 'branch_prices.change',
-        'table': 'branch_prices.change', 'bulk': 'branch_prices.change',
+        'table': 'branch_prices.view', 'bulk': 'branch_prices.change',
     }
+
+    def _has_company_permission(self, code):
+        branch = self.request.branch_context
+        return self.request.user.is_superuser or user_has_company_permission(
+            self.request.user, branch.company_id, code
+        )
+
+    def _assert_mutation_scope(self, target_branch):
+        context_branch = self.request.branch_context
+        if target_branch.company_id != context_branch.company_id:
+            raise PermissionDenied('Filial fora da empresa atual.')
+        if target_branch.pk == context_branch.pk:
+            if not self.request.user.is_superuser and not user_has_branch_permission(
+                self.request.user, context_branch.pk, 'branch_prices.change'
+            ):
+                raise PermissionDenied('Você não possui permissão para alterar preços desta filial.')
+            return
+        if not self._has_company_permission('branch_prices.change_company'):
+            raise PermissionDenied('Você não possui permissão para alterar preços de outra filial.')
 
     def get_queryset(self):
         branch = self.request.branch_context
         queryset = BranchProductPrice.objects.select_related('product', 'branch').filter(
             product__company_id=branch.company_id
         )
+        if self.action in {'list', 'retrieve', 'table'}:
+            if not self._has_company_permission('branch_prices.view_company'):
+                queryset = queryset.filter(branch=branch)
+        elif not self._has_company_permission('branch_prices.change_company'):
+            queryset = queryset.filter(branch=branch)
         params = self.request.query_params
         if params.get('product'):
             queryset = queryset.filter(product_id=params['product'])
@@ -791,6 +829,7 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
         return queryset
 
     def perform_create(self, serializer):
+        self._assert_mutation_scope(serializer.validated_data['branch'])
         price = serializer.save()
         audit_log(
             actor=self.request.user, action='branch_price.create', obj=price,
@@ -799,6 +838,7 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
         )
 
     def perform_update(self, serializer):
+        self._assert_mutation_scope(serializer.instance.branch)
         before = model_snapshot(serializer.instance, ('sale_price',))
         price = serializer.save()
         audit_log(
@@ -813,14 +853,15 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
         if branch is None:
             raise ValidationError({'branch': ['Informe a filial ativa no cabecalho.']})
         data = branch_price_comparison(branch.company_id)
-        data['branches'] = [
-            item for item in data['branches'] if item['id'] == branch.pk
-        ]
-        for product in data['products']:
-            product['prices'] = {
-                str(branch.pk): product['prices'].get(str(branch.pk))
-            }
-        overrides = self.get_queryset().filter(branch=branch).order_by('product__name', 'id')
+        if not self._has_company_permission('branch_prices.view_company'):
+            data['branches'] = [
+                item for item in data['branches'] if item['id'] == branch.pk
+            ]
+            for product in data['products']:
+                product['prices'] = {
+                    str(branch.pk): product['prices'].get(str(branch.pk))
+                }
+        overrides = self.get_queryset().order_by('product__name', 'id')
         data['overrides'] = self.get_serializer(overrides, many=True).data
         return Response(data)
 
@@ -852,11 +893,12 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
             })
 
         context_branch = getattr(request, 'branch_context', None)
-        if context_branch and branch.pk != context_branch.pk:
+        if context_branch and branch.company_id != context_branch.company_id:
             raise ValidationError({
                 'detail': 'O lote de preços não foi salvo.',
-                'branch': ['A filial deve ser a mesma informada em X-Branch-ID.'],
+                'branch': ['Filial fora da empresa atual.'],
             })
+        self._assert_mutation_scope(branch)
 
         items = request.data.get('items')
         if not isinstance(items, list) or not items:
@@ -1081,10 +1123,14 @@ class ModifierGroupViewSet(viewsets.ModelViewSet):
             'partial_update': 'modifiers.change',
             'activate': 'modifiers.change',
             'deactivate': 'modifiers.change',
+            'reorder': 'modifiers.change',
         }
 
     def perform_create(self, serializer):
-        group = serializer.save()
+        last_order = ModifierGroup.objects.filter(
+            company=serializer.validated_data['company']
+        ).aggregate(value=Max('sort_order'))['value']
+        group = serializer.save(sort_order=(last_order if last_order is not None else -1) + 1)
         audit_log(
             actor=self.request.user, action='modifier_group.create',
             obj=group, company=group.company,
@@ -1117,6 +1163,21 @@ class ModifierGroupViewSet(viewsets.ModelViewSet):
             after=model_snapshot(group, ('status',)),
         )
         return Response(self.get_serializer(group).data)
+
+    @action(detail=False, methods=('post',), url_path='reorder')
+    @transaction.atomic
+    def reorder(self, request):
+        branch = request.branch_context
+        group_ids = request.data.get('group_ids')
+        if not isinstance(group_ids, list):
+            raise ValidationError({'group_ids': 'Informe uma lista de grupos.'})
+        groups = reorder_modifier_groups(company=branch.company, group_ids=group_ids)
+        reference = str(uuid.uuid4())
+        for group in groups:
+            audit_log(actor=request.user, action='modifier_group.reorder', obj=group,
+                      company=branch.company, after={'sort_order': group.sort_order},
+                      metadata={'operation_reference': reference})
+        return Response(self.get_serializer(groups, many=True).data)
 
     @action(detail=True, methods=('post',))
     @transaction.atomic
@@ -1163,10 +1224,14 @@ class ProductModifierGroupViewSet(viewsets.ModelViewSet):
             'partial_update': 'modifiers.change',
             'activate': 'modifiers.change',
             'deactivate': 'modifiers.change',
+            'reorder': 'modifiers.change',
         }
 
     def perform_create(self, serializer):
-        link = serializer.save()
+        last_order = ProductModifierGroup.objects.filter(
+            product=serializer.validated_data['product']
+        ).aggregate(value=Max('sort_order'))['value']
+        link = serializer.save(sort_order=(last_order if last_order is not None else -1) + 1)
         audit_log(
             actor=self.request.user, action='product_modifier_link.create',
             obj=link, company=link.product.company,
@@ -1196,6 +1261,26 @@ class ProductModifierGroupViewSet(viewsets.ModelViewSet):
         )
         return Response(self.get_serializer(link).data)
 
+    @action(detail=False, methods=('post',), url_path='reorder')
+    @transaction.atomic
+    def reorder(self, request):
+        product_id = request.data.get('product')
+        link_ids = request.data.get('link_ids')
+        branch = request.branch_context
+        try:
+            product = Product.objects.get(pk=product_id, company_id=branch.company_id)
+        except Product.DoesNotExist:
+            raise ValidationError({'product': 'Produto fora da empresa atual.'})
+        if not isinstance(link_ids, list):
+            raise ValidationError({'link_ids': 'Informe uma lista de vínculos.'})
+        links = reorder_product_modifier_groups(product=product, link_ids=link_ids)
+        reference = str(uuid.uuid4())
+        for link in links:
+            audit_log(actor=request.user, action='product_modifier_link.reorder', obj=link,
+                      company=branch.company, after={'sort_order': link.sort_order},
+                      metadata={'operation_reference': reference})
+        return Response(self.get_serializer(links, many=True).data)
+
     @action(detail=True, methods=('post',))
     @transaction.atomic
     def activate(self, request, pk=None):
@@ -1215,6 +1300,7 @@ class ModifierOptionViewSet(CatalogViewSet):
         'create': 'modifiers.change', 'update': 'modifiers.change',
         'partial_update': 'modifiers.change',
         'activate': 'modifiers.change', 'deactivate': 'modifiers.change',
+        'reorder': 'modifiers.change',
     }
 
     def get_queryset(self):
@@ -1233,7 +1319,10 @@ class ModifierOptionViewSet(CatalogViewSet):
 
     @transaction.atomic
     def perform_create(self, serializer):
-        option = serializer.save()
+        last_order = ModifierOption.objects.filter(
+            modifier_group=serializer.validated_data['modifier_group']
+        ).aggregate(value=Max('sort_order'))['value']
+        option = serializer.save(sort_order=(last_order if last_order is not None else -1) + 1)
         audit_log(
             actor=self.request.user, action='modifier_option.create',
             obj=option, company=option.modifier_group.company,
@@ -1250,6 +1339,26 @@ class ModifierOptionViewSet(CatalogViewSet):
             obj=option, company=option.modifier_group.company,
             before=before, after=model_snapshot(option, fields),
         )
+
+    @action(detail=False, methods=('post',), url_path='reorder')
+    @transaction.atomic
+    def reorder(self, request):
+        group_id = request.data.get('modifier_group')
+        option_ids = request.data.get('option_ids')
+        branch = request.branch_context
+        try:
+            group = ModifierGroup.objects.get(pk=group_id, company_id=branch.company_id)
+        except ModifierGroup.DoesNotExist:
+            raise ValidationError({'modifier_group': 'Grupo fora da empresa atual.'})
+        if not isinstance(option_ids, list):
+            raise ValidationError({'option_ids': 'Informe uma lista de opções.'})
+        options = reorder_modifier_options(group=group, option_ids=option_ids)
+        reference = str(uuid.uuid4())
+        for option in options:
+            audit_log(actor=request.user, action='modifier_option.reorder', obj=option,
+                      company=branch.company, after={'sort_order': option.sort_order},
+                      metadata={'operation_reference': reference})
+        return Response(self.get_serializer(options, many=True).data)
 
     @action(detail=True, methods=('post',))
     @transaction.atomic

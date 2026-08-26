@@ -90,6 +90,7 @@ class PayableInstallmentSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'purchase_order', 'order_number', 'supplier', 'supplier_name',
             'installment_number', 'amount', 'due_date', 'status', 'paid_at', 'paid_by',
+            'paid_amount', 'paid_payment_method',
             'cancelled_at', 'cancelled_by', 'cancellation_reason', 'notes',
             'created_at', 'updated_at',
         )
@@ -248,12 +249,18 @@ class PurchaseOrderCreateSerializer(serializers.Serializer):
     document_date = serializers.DateField(required=False, allow_null=True)
     notes = serializers.CharField(required=False, allow_blank=True)
     installments = InstallmentInputSerializer(many=True, required=False)
+    installment_count = serializers.IntegerField(min_value=1, max_value=120, required=False)
+    first_due_date = serializers.DateField(required=False)
 
     def validate(self, attrs):
         if 'attachment_reference' in self.initial_data:
             raise serializers.ValidationError({
                 'attachment_reference': 'Envie anexos pelo endpoint protegido da compra.'
             })
+        if attrs.get('installments') and attrs.get('installment_count'):
+            raise serializers.ValidationError({'installments': 'Informe parcelas manuais ou o número de parcelas, não ambos.'})
+        if attrs.get('installment_count') and not attrs.get('first_due_date'):
+            raise serializers.ValidationError({'first_due_date': 'Informe o primeiro vencimento para gerar as parcelas.'})
         return attrs
 
 
@@ -273,12 +280,18 @@ class PurchaseOrderUpdateSerializer(serializers.Serializer):
     document_date = serializers.DateField(required=False, allow_null=True)
     notes = serializers.CharField(required=False, allow_blank=True)
     installments = InstallmentInputSerializer(many=True, required=False)
+    installment_count = serializers.IntegerField(min_value=1, max_value=120, required=False)
+    first_due_date = serializers.DateField(required=False)
 
     def validate(self, attrs):
         if 'attachment_reference' in self.initial_data:
             raise serializers.ValidationError({
                 'attachment_reference': 'Envie anexos pelo endpoint protegido da compra.'
             })
+        if attrs.get('installments') and attrs.get('installment_count'):
+            raise serializers.ValidationError({'installments': 'Informe parcelas manuais ou o número de parcelas, não ambos.'})
+        if attrs.get('installment_count') and not attrs.get('first_due_date'):
+            raise serializers.ValidationError({'first_due_date': 'Informe o primeiro vencimento para gerar as parcelas.'})
         return attrs
 
 
@@ -302,6 +315,9 @@ class ReasonSerializer(serializers.Serializer):
 
 
 class PayInstallmentSerializer(serializers.Serializer):
+    payment_method = serializers.CharField(min_length=1, max_length=50)
+    paid_amount = serializers.DecimalField(max_digits=16, decimal_places=2, min_value=Decimal('0.01'), required=False)
+    paid_date = serializers.DateField(required=False)
     notes = serializers.CharField(required=False, allow_blank=True)
 
 

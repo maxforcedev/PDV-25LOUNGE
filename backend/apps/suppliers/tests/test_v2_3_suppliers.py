@@ -370,6 +370,46 @@ class SupplierApiTests(TestCase):
         self.assertEqual(response.status_code, 400, response.data)
         self.assertIn('address', response.data)
 
+    def test_legal_name_is_optional_and_trade_name_is_required(self):
+        payload = self.supplier_payload(tax_id='')
+        payload.pop('legal_name')
+        response = self.client.post(reverse('supplier-list'), payload, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['legal_name'], '')
+
+        response = self.client.post(
+            reverse('supplier-list'),
+            self.supplier_payload(legal_name='', trade_name='   ', tax_id=''),
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn('trade_name', response.data)
+
+    def test_presentation_description_is_required(self):
+        supplier = create_supplier(self.company, 'Fornecedor apresentação')
+        relation = ProductSupplier.objects.create(
+            company=self.company, product=self.product, supplier=supplier
+        )
+        payload = {
+            'company': self.company.pk,
+            'product_supplier': relation.pk,
+            'unit_code': 'CX',
+            'conversion_factor': '24',
+        }
+        response = self.client.post(
+            reverse('product-supplier-unit-list'), payload, format='json'
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn('description', response.data)
+
+        response = self.client.post(
+            reverse('product-supplier-unit-list'),
+            {**payload, 'description': '   '},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn('description', response.data)
+
     def test_update_audit_uses_locked_current_snapshot(self):
         supplier = create_supplier(self.company, 'Snapshot')
         stale = Supplier.objects.get(pk=supplier.pk)
@@ -492,8 +532,9 @@ class SupplierSupportSessionTests(TestCase):
         self.assertEqual(context['id'], self.company.pk)
         self.assertTrue(context['support_context'])
         self.assertFalse(context['is_owner'])
-        self.assertIn('suppliers.view', context['permissions'])
-        self.assertIn('suppliers.change', context['permissions'])
+        branch_context = response.data['branches'][0]
+        self.assertIn('suppliers.view', branch_context['permissions'])
+        self.assertIn('suppliers.change', branch_context['permissions'])
         self.assertFalse(UserCompanyAccess.objects.filter(
             user=self.agent, company=self.company
         ).exists())

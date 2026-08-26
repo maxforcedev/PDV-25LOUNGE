@@ -49,8 +49,8 @@ class Supplier(ProtectedSupplierModel):
     company = models.ForeignKey(
         Company, on_delete=models.PROTECT, related_name='suppliers'
     )
-    legal_name = models.CharField(max_length=200)
-    trade_name = models.CharField(max_length=200)
+    legal_name = models.CharField(max_length=200, blank=True)
+    trade_name = models.CharField(max_length=200, blank=False)
     tax_id = models.CharField(
         max_length=14, blank=True, null=True, validators=[validate_tax_id]
     )
@@ -80,14 +80,19 @@ class Supplier(ProtectedSupplierModel):
         self.phone = self.phone.strip()
         self.email = self.email.strip().lower()
         self.contact_name = ' '.join(self.contact_name.split())
+        errors = {}
+        if not self.trade_name:
+            errors['trade_name'] = 'Informe o nome fantasia.'
         if not isinstance(self.address, dict):
-            raise ValidationError({'address': 'Informe o endereço como um objeto.'})
+            errors['address'] = 'Informe o endereço como um objeto.'
         if self.pk:
             original_company_id = type(self).objects.filter(pk=self.pk).values_list(
                 'company_id', flat=True
             ).first()
             if original_company_id and self.company_id != original_company_id:
-                raise ValidationError({'company': 'A empresa do fornecedor não pode ser alterada.'})
+                errors['company'] = 'A empresa do fornecedor não pode ser alterada.'
+        if errors:
+            raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
         self.full_clean()
@@ -191,7 +196,7 @@ class ProductSupplierUnit(ProtectedSupplierModel):
         ProductSupplier, on_delete=models.PROTECT, related_name='units'
     )
     unit_code = models.CharField(max_length=20)
-    description = models.CharField(max_length=200)
+    description = models.CharField(max_length=200, blank=False)
     conversion_factor = models.DecimalField(
         max_digits=18, decimal_places=6, default=Decimal('1.000000')
     )
@@ -216,9 +221,11 @@ class ProductSupplierUnit(ProtectedSupplierModel):
     def clean(self):
         super().clean()
         self.unit_code = self.unit_code.strip().upper()
-        self.description = ' '.join(self.description.split())
+        self.description = ' '.join((self.description or '').split())
         self.barcode = self.barcode.strip()
         errors = {}
+        if not self.description:
+            errors['description'] = 'Informe a descrição da apresentação.'
         if self.conversion_factor is not None and self.conversion_factor <= 0:
             errors['conversion_factor'] = 'O fator de conversão deve ser maior que zero.'
         if (

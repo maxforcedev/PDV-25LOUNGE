@@ -24,6 +24,7 @@ from .content import (
 
 from .models import (
     InventoryCount,
+    InventoryCountMode,
     InventoryCountItem,
     InventoryCountStatus,
     InventoryOperation,
@@ -666,20 +667,35 @@ def adjustment(product, branch, user, final_quantity=None, final_content=None, r
 
 
 @transaction.atomic
-def group_entry(*, branch, category, items, user, operation_reference,
+def group_entry(*, branch, category=None, items, user, operation_reference,
                 nature=MovementNature.NORMAL, reason=''):
     branch = _authorized_branch(branch, user, 'inventory.entry')
     branch = Branch.objects.select_for_update().select_related('company').get(pk=branch.pk)
     reference = operation_reference
-    requested = sorted(
-        (int(_pk(item.get('product'))), _decimal(item.get('quantity'), 'quantity', nonnegative=True))
-        for item in items if _decimal(item.get('quantity'), 'quantity', nonnegative=True) > 0
-    )
+    requested = []
+    for item in items:
+        quantity = item.get('quantity')
+        content_quantity = item.get('content_quantity')
+        if (quantity is None) == (content_quantity is None):
+            raise ValidationError({'items': 'Informe somente quantity ou content_quantity.'})
+        amount = (
+            _decimal(quantity, 'quantity', nonnegative=True)
+            if quantity is not None
+            else _content_decimal(content_quantity, 'content_quantity', nonnegative=True)
+        )
+        if amount > 0:
+            requested.append((int(_pk(item.get('product'))), quantity, content_quantity))
+    requested.sort(key=lambda item: item[0])
     payload = {
-        'category': int(_pk(category)),
+        'category': int(_pk(category)) if category is not None else None,
         'items': [
-            {'product': product_id, 'quantity': str(quantity)}
-            for product_id, quantity in requested
+            {
+                'product': product_id,
+                **({'quantity': str(quantity)} if quantity is not None else {
+                    'content_quantity': str(content_quantity),
+                }),
+            }
+            for product_id, quantity, content_quantity in requested
         ],
         'nature': str(nature),
         'reason': (reason or '').strip(),
@@ -701,8 +717,8 @@ def group_entry(*, branch, category, items, user, operation_reference,
         for movement in existing:
             movement._idempotency_replayed = True
         return existing
-    product_ids = [product_id for product_id, _quantity in requested]
-    if not Category.objects.filter(
+    product_ids = [product_id for product_id, _quantity, _content in requested]
+    if category is not None and not Category.objects.filter(
         pk=_pk(category), company_id=branch.company_id, status=Status.ACTIVE
     ).exists():
         raise DomainValidationError(
@@ -710,24 +726,33 @@ def group_entry(*, branch, category, items, user, operation_reference,
             message='A categoria informada nao esta ativa nesta empresa.',
             details={'category_id': _pk(category)},
         )
-    valid_ids = set(Product.objects.filter(
+    valid_products = Product.objects.filter(
         id__in=product_ids,
         company_id=branch.company_id,
-        category_id=_pk(category),
         inventory_behavior=InventoryBehavior.DIRECT,
         status=Status.ACTIVE,
-    ).values_list('id', flat=True))
-    if valid_ids != set(product_ids):
+    )
+    if category is not None:
+        valid_products = valid_products.filter(category_id=_pk(category))
+    valid_ids = set(valid_products.values_list('id', flat=True))
+    if valid_ids != set(product_ids) or len(product_ids) != len(set(product_ids)):
         raise ValidationError({
-            'items': 'Todos os produtos devem ser fisicos, ativos e pertencer a categoria informada.'
+            'items': 'Todos os produtos devem ser fisicos, ativos e elegiveis para esta entrada.'
         })
     movements = []
     for item in items:
-        quantity = _decimal(item.get('quantity'), 'quantity', nonnegative=True)
-        if quantity == 0:
+        quantity = item.get('quantity')
+        content_quantity = item.get('content_quantity')
+        amount = (
+            _decimal(quantity, 'quantity', nonnegative=True)
+            if quantity is not None
+            else _content_decimal(content_quantity, 'content_quantity', nonnegative=True)
+        )
+        if amount == 0:
             continue
         movements.append(entry(
-            product=item.get('product'), branch=branch, quantity=quantity, user=user,
+            product=item.get('product'), branch=branch,
+            quantity=quantity, content_quantity=content_quantity, user=user,
             nature=nature, reason=reason, operation_reference=reference,
         ))
     if not movements:
@@ -1396,7 +1421,7 @@ def resolve_transfer_divergence(*, divergence, idempotency_key, resolution_type,
 
 @transaction.atomic
 def record_loss(*, branch, product, idempotency_key, quantity=None, reason,
-                observation, user, content_quantity=None, support_session=None):
+                observation='', attachment=None, user, content_quantity=None, support_session=None):
     branch = _authorized_branch(
         branch, user, 'inventory.loss.record', support_session=support_session
     )
@@ -1408,8 +1433,8 @@ def record_loss(*, branch, product, idempotency_key, quantity=None, reason,
     observation = (observation or '').strip()
     if reason not in LossReason.values:
         raise ValidationError({'reason': 'Motivo de perda invalido.'})
-    if len(observation) < 3:
-        raise ValidationError({'observation': 'Informe a observacao da perda.'})
+    if reason == LossReason.OTHER and len(observation) < 3:
+        raise ValidationError({'observation': 'Descreva a perda quando o motivo for Outro.'})
     try:
         product = Product.objects.select_for_update().get(pk=_pk(product))
     except Product.DoesNotExist as error:
@@ -1471,6 +1496,7 @@ def record_loss(*, branch, product, idempotency_key, quantity=None, reason,
         package_content_snapshot=config.package_content if config else None,
         reason=reason,
         observation=observation,
+        attachment=attachment,
         unit_cost_snapshot=cost,
         sale_price_snapshot=sale_price,
         cost_impact=exact_multiply_quantized(
@@ -1507,7 +1533,7 @@ def record_loss(*, branch, product, idempotency_key, quantity=None, reason,
         branch=branch,
         after={
             **model_snapshot(loss, (
-                'product_id', 'quantity', 'reason', 'observation',
+                'product_id', 'quantity', 'reason', 'observation', 'attachment',
                 'unit_cost_snapshot', 'sale_price_snapshot', 'cost_impact',
                 'potential_sale_value', 'recorded_by_id', 'recorded_at',
             )),
@@ -1519,14 +1545,15 @@ def record_loss(*, branch, product, idempotency_key, quantity=None, reason,
 
 
 @transaction.atomic
-def create_inventory_count(*, branch, items, observation, user, support_session=None):
+def create_inventory_count(*, branch, items, observation='', mode=InventoryCountMode.PARTIAL,
+                           user=None, support_session=None):
     branch = _authorized_branch(
         branch, user, 'inventory.count.perform', support_session=support_session
     )
     branch = _lock_active_company_branch(branch)
     observation = (observation or '').strip()
-    if len(observation) < 3:
-        raise ValidationError({'observation': 'Informe a observacao do inventario.'})
+    if mode not in InventoryCountMode.values:
+        raise ValidationError({'mode': 'Modo de contagem invalido.'})
     if not isinstance(items, list) or not items:
         raise ValidationError({'items': 'Informe ao menos um item contado.'})
     prepared = []
@@ -1553,6 +1580,16 @@ def create_inventory_count(*, branch, items, observation, user, support_session=
     }
     if set(products) != seen:
         raise ValidationError({'items': 'Todos os produtos devem possuir estoque proprio nesta empresa.'})
+    if mode == InventoryCountMode.FULL:
+        expected_ids = set(Product.objects.filter(
+            company=branch.company,
+            inventory_behavior=InventoryBehavior.DIRECT,
+            status=Status.ACTIVE,
+        ).values_list('pk', flat=True))
+        if seen != expected_ids:
+            raise ValidationError({
+                'items': 'A contagem completa deve incluir todos os produtos controlados ativos da filial.'
+            })
     for product in products.values():
         _validate_operational_stock(product, branch)
     overlapping = InventoryCountItem.objects.select_for_update().filter(
@@ -1568,6 +1605,7 @@ def create_inventory_count(*, branch, items, observation, user, support_session=
     count = InventoryCount.objects.create(
         company=branch.company,
         branch=branch,
+        mode=mode,
         observation=observation,
         created_by=user,
     )
@@ -1666,6 +1704,7 @@ def create_inventory_count(*, branch, items, observation, user, support_session=
         branch=branch,
         after={
             'status': count.status,
+            'mode': count.mode,
             'observation': observation,
             'items': [
                 {'id': item.pk, 'product_id': item.product_id,

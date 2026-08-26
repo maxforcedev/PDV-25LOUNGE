@@ -29,14 +29,15 @@ import { useAuth } from "@/providers/auth-provider";
 import type {
   ProductSupplier,
   ProductSupplierUnit,
+  Product,
   PurchaseOrder,
   PurchaseOrderType,
   Supplier,
 } from "@/types";
 
-type Line = { unit: string; quantity: string; price: string };
+type Line = { product: string; unit: string; quantity: string; price: string };
 type Installment = { amount: string; due_date: string; notes: string };
-const emptyLine = (): Line => ({ unit: "", quantity: "1", price: "" });
+const emptyLine = (): Line => ({ product: "", unit: "", quantity: "1", price: "" });
 
 function NewPurchase() {
   const router = useRouter();
@@ -52,6 +53,7 @@ function NewPurchase() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [relations, setRelations] = useState<ProductSupplier[]>([]);
   const [units, setUnits] = useState<ProductSupplierUnit[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
   const [lines, setLines] = useState<Line[]>([emptyLine()]);
   const [discount, setDiscount] = useState("0.00");
   const [freight, setFreight] = useState("0.00");
@@ -64,6 +66,8 @@ function NewPurchase() {
   const [attachmentError, setAttachmentError] = useState("");
   const [notes, setNotes] = useState("");
   const [installments, setInstallments] = useState<Installment[]>([]);
+  const [installmentCount, setInstallmentCount] = useState("1");
+  const [firstDueDate, setFirstDueDate] = useState("");
   const [loadingOptions, setLoadingOptions] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -116,6 +120,9 @@ function NewPurchase() {
       .finally(() => {
         if (context.current === key) setLoadingOptions(false);
       });
+    void http.getAll<Product>(`products/?company=${companyId}&inventory_behavior=direct&status=active`).then((items) => {
+      if (context.current === key) setProducts(items);
+    }).catch(() => { if (context.current === key) setProducts([]); });
   }, [companyId, branchId]);
 
   useEffect(() => {
@@ -177,6 +184,20 @@ function NewPurchase() {
       },
     ]);
   }
+  function generateInstallments() {
+    const count = Number(installmentCount);
+    if (!Number.isInteger(count) || count < 1 || !firstDueDate || payableCents <= BigInt(0)) {
+      setError("Informe o número de parcelas, o primeiro vencimento e um total positivo.");
+      return;
+    }
+    const base = payableCents / BigInt(count);
+    const remainder = payableCents % BigInt(count);
+    const first = new Date(`${firstDueDate}T12:00:00`);
+    setInstallments(Array.from({ length: count }, (_, index) => {
+      const date = new Date(first); date.setMonth(first.getMonth() + index);
+      return { amount: centsText(base + (BigInt(index) < remainder ? BigInt(1) : BigInt(0))), due_date: date.toISOString().slice(0, 10), notes: "" };
+    }));
+  }
   async function chooseAttachment(file: File | null) {
     setAttachmentFile(null);
     setAttachmentError("");
@@ -192,9 +213,9 @@ function NewPurchase() {
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (!currentBranch || readOnly) return;
-    const selectedUnits = lines.map((line) => Number(line.unit));
-    if (new Set(selectedUnits).size !== selectedUnits.length) {
-      setError("Não repita a mesma apresentação na compra.");
+    const selectedProducts = lines.map((line) => Number(line.product));
+    if (selectedProducts.some((item) => !item) || new Set(selectedProducts).size !== selectedProducts.length) {
+      setError("Informe produtos sem repeti-los na compra.");
       return;
     }
     if (payableCents < BigInt(0)) {
@@ -215,10 +236,10 @@ function NewPurchase() {
         supplier: Number(supplier),
         order_type: type,
         items: lines.map((line) => {
-          const unit = units.find((item) => item.id === Number(line.unit))!;
+          const unit = units.find((item) => item.id === Number(line.unit));
           return {
-            product: relationById.get(unit.product_supplier)?.product,
-            product_supplier_unit: unit.id,
+            product: Number(line.product),
+            ...(unit ? { product_supplier_unit: unit.id } : {}),
             ordered_quantity: line.quantity,
             purchase_unit_price: line.price,
           };
@@ -261,7 +282,7 @@ function NewPurchase() {
     } catch (caught) {
       setError(
         caught instanceof ApiError
-          ? caught.message
+          ? Object.values(caught.fields).flat().join(" ") || caught.message
           : "Não foi possível criar a compra.",
       );
       setSaving(false);
@@ -328,14 +349,14 @@ function NewPurchase() {
             <div>
               <h2 className="text-sm font-bold">Itens</h2>
               <p className="mt-1 text-[11px] text-muted">
-                Somente relações e apresentações ativas do fornecedor.
+                Escolha qualquer produto comprável. Apresentações do fornecedor são opcionais.
               </p>
             </div>
             <Button
               type="button"
               variant="secondary"
               onClick={() => setLines((current) => [...current, emptyLine()])}
-              disabled={!supplier || !units.length || saving}
+              disabled={!supplier || saving}
             >
               <Plus className="size-4" />
               Item
@@ -349,32 +370,37 @@ function NewPurchase() {
               return (
                 <div
                   key={index}
-                  className="grid gap-3 rounded-lg border border-subtle p-3 md:grid-cols-[minmax(15rem,1fr)_9rem_10rem_8rem_auto] md:items-end"
+                  className="grid gap-3 rounded-lg border border-subtle p-3 md:grid-cols-[minmax(14rem,1fr)_minmax(14rem,1fr)_8rem_10rem_auto] md:items-end"
                 >
-                  <Field label={`Apresentação ${index + 1}`}>
+                  <Field label={`Produto ${index + 1}`}>
                     <Select
                       required
-                      value={line.unit}
+                      value={line.product}
                       onChange={(event) =>
-                        updateLine(index, { unit: event.target.value })
+                        updateLine(index, { product: event.target.value, unit: "" })
                       }
                       disabled={!supplier || loadingOptions || saving}
                     >
                       <option value="">Selecione</option>
-                      {units.map((unit) => (
+                      {products.map((product) => (
                         <option
-                          key={unit.id}
-                          value={unit.id}
+                          key={product.id}
+                          value={product.id}
                           disabled={lines.some(
                             (other, position) =>
                               position !== index &&
-                              other.unit === String(unit.id),
+                              other.product === String(product.id),
                           )}
                         >
-                          {unit.product_name} · {unit.unit_code} /{" "}
-                          {unit.description} ({unit.conversion_factor} un.)
+                          {product.name} · {product.internal_code}
                         </option>
                       ))}
+                    </Select>
+                  </Field>
+                  <Field label="Unidade de compra / Apresentação">
+                    <Select value={line.unit} onChange={(event) => updateLine(index, { unit: event.target.value })} disabled={!line.product || saving}>
+                      <option value="">Unidade de estoque (fator 1)</option>
+                      {units.filter((unit) => relationById.get(unit.product_supplier)?.product === Number(line.product)).map((unit) => <option key={unit.id} value={unit.id}>{unit.unit_code} · {unit.description} (fator {unit.conversion_factor})</option>)}
                     </Select>
                   </Field>
                   <Field label="Quantidade">
@@ -556,6 +582,7 @@ function NewPurchase() {
                 Parcela
               </Button>
             </div>
+            <div className="grid gap-3 border-t border-subtle p-4 sm:grid-cols-[10rem_12rem_auto]"><Field label="Número de parcelas"><Input inputMode="numeric" min="1" step="1" value={installmentCount} onChange={(event) => setInstallmentCount(event.target.value.replace(/\D/g, ""))} /></Field><Field label="Primeiro vencimento"><Input type="date" value={firstDueDate} onChange={(event) => setFirstDueDate(event.target.value)} /></Field><div className="flex items-end"><Button type="button" variant="secondary" onClick={generateInstallments} disabled={saving}>Gerar automaticamente</Button></div></div>
             <div className="space-y-3 p-4">
               {installments.length ? (
                 installments.map((item, index) => (
@@ -646,7 +673,7 @@ function NewPurchase() {
             disabled={
               !currentBranch ||
               !supplier ||
-              !units.length ||
+               !lines.every((line) => line.product && line.quantity && line.price) ||
               payableCents < BigInt(0) ||
               readOnly
             }

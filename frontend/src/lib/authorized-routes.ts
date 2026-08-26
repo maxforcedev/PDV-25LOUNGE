@@ -1,18 +1,6 @@
 import { permissions, reportMenuPermissions } from "@/lib/permissions";
 import type { BranchFeature, FeaturePermissionAlternative, User, UserBranch, UserCompany } from "@/types";
 
-const OPERATING_MODULES = new Set([
-  "products", "categories", "branch_prices", "inventory", "cash_registers",
-  "sales", "payment_methods", "reports", "dashboard", "promotions", "audit_logs", "purchases",
-  "commands", "modifiers",
-]);
-
-const OPERATING_PERMISSIONS = new Set<string>([
-  permissions.viewCommission,
-  permissions.changeBranchCommission,
-  permissions.changeUserCommission,
-]);
-
 const routes: Array<{
   href: string;
   permissions: readonly string[];
@@ -40,8 +28,11 @@ const routes: Array<{
   { href: "/relatorios", permissions: reportMenuPermissions },
 ];
 
-export function isOperatingPermission(permission: string) {
-  return OPERATING_MODULES.has(permission.split(".")[0]) || OPERATING_PERMISSIONS.has(permission);
+export function isOperatingPermission(
+  permission: string,
+  permissionScopes: Record<string, "COMPANY" | "BRANCH">,
+) {
+  return permissionScopes[permission] === "BRANCH";
 }
 
 export function firstAuthorizedRoute(
@@ -53,7 +44,7 @@ export function firstAuthorizedRoute(
   if (user.is_superuser) return branch ? "/dashboard" : "/perfil";
   for (const route of routes) {
     const permitted = route.permissions.some((permission) => {
-      const source = isOperatingPermission(permission) ? branch : company;
+      const source = isOperatingPermission(permission, user.permission_scopes) ? branch : company;
       return source?.permissions.includes(permission);
     });
     const featureAllowed = !route.features || (

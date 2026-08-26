@@ -869,8 +869,19 @@ class BranchProductPriceSerializer(serializers.ModelSerializer):
         context_branch = getattr(request, 'branch_context', None) if request else None
         if context_branch and product and product.company_id != context_branch.company_id:
             raise serializers.ValidationError({'product': 'Produto fora do contexto autorizado.'})
-        if context_branch and branch and branch.pk != context_branch.pk:
-            raise serializers.ValidationError({'branch': 'Selecione a filial ativa.'})
+        if context_branch and branch:
+            if branch.company_id != context_branch.company_id:
+                raise serializers.ValidationError({'branch': 'Filial fora da empresa atual.'})
+            if (
+                branch.pk != context_branch.pk
+                and not request.user.is_superuser
+                and not user_has_company_permission(
+                    request.user, context_branch.company_id, 'branch_prices.change_company'
+                )
+            ):
+                raise serializers.ValidationError({
+                    'branch': 'Você não possui permissão para alterar preços de outra filial.'
+                })
         if product and branch and product.company_id != branch.company_id:
             raise serializers.ValidationError({'branch': 'A filial deve pertencer a empresa do produto.'})
         return attrs

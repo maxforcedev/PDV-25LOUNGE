@@ -2,44 +2,32 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { Plus, SlidersHorizontal, Trash2 } from "lucide-react";
+import { SlidersHorizontal, Trash2 } from "lucide-react";
 import { AdminGuard } from "@/components/admin-guard";
 import { InventoryNav } from "@/components/inventory-nav";
 import { PageHeader } from "@/components/page-header";
 import { PeriodFilter, type PeriodValue } from "@/components/period-filter";
-import { Alert, Button, EmptyState, Field, Input, Modal, Select, TableLoading, Textarea } from "@/components/ui";
-import { fieldError, formatDate, formatDecimalBRL, formatQuantity } from "@/lib/format";
-import { contentUnitLabel, enrichFractionStockOptions, isExactContentValid, isUnitQuantityValid, lossReasonLabels, physicalQuantityDisplay } from "@/lib/inventory";
+import { Alert, Button, EmptyState, Input, Select, TableLoading } from "@/components/ui";
+import { formatDate, formatDecimalBRL } from "@/lib/format";
+import { lossReasonLabels, physicalQuantityDisplay } from "@/lib/inventory";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
-import type { InventoryWorkflowOptions, LossReason, LossRecord } from "@/types";
+import type { LossRecord } from "@/types";
 
 type Filters = { reason: string; product: string; responsible: string; period: PeriodValue };
 const empty = (): Filters => ({ reason: "", product: "", responsible: "", period: { start: "", end: "" } });
 
 function Losses() {
-  const { currentBranch, hasPermission, supportSession } = useAuth();
+  const { currentBranch, hasPermission } = useAuth();
   const canView = hasPermission(permissions.viewAdvancedInventory);
-  const canCreate = hasPermission(permissions.recordLoss) && supportSession?.mode !== "READ_ONLY";
   const [items, setItems] = useState<LossRecord[]>([]);
-  const [options, setOptions] = useState<InventoryWorkflowOptions | null>(null);
   const [draft, setDraft] = useState<Filters>(empty);
-  const [open, setOpen] = useState(false);
-  const [product, setProduct] = useState("");
-  const [quantity, setQuantity] = useState("");
-  const [quantityMode, setQuantityMode] = useState<"packages" | "content">("packages");
-  const [reason, setReason] = useState<LossReason>("BREAKAGE");
-  const [observation, setObservation] = useState("");
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
-  const [fields, setFields] = useState<Record<string, string[]>>({});
-  const key = useRef("");
   const context = useRef("");
   context.current = String(currentBranch?.id || "");
-  const selectedProduct = options?.stocks.find((item) => String(item.product) === product);
   const lossQuantity = (item: LossRecord) => physicalQuantityDisplay({ quantity: item.quantity, content: item.content_quantity, packageContent: item.package_content_snapshot, contentUnit: item.content_unit, completePackages: item.complete_packages, residualContent: item.residual_content });
 
   async function load(filters = draft, token = context.current) {
@@ -73,64 +61,16 @@ function Losses() {
     const filters = { ...empty(), reason: query.get("reason") || "", product: query.get("product") || "", responsible: query.get("responsible") || "", period: { start: query.get("start_datetime") || "", end: query.get("end_datetime") || "" } };
     setDraft(filters);
     setItems([]);
-    setOptions(null);
     setSuccess("");
     const token = context.current;
     void loadRef.current(filters, token);
-    if (currentBranch && canCreate) {
-      void http.get<InventoryWorkflowOptions>("loss-records/options/").then(async (response) => ({ ...response, stocks: await enrichFractionStockOptions(response.stocks) })).then((response) => { if (context.current === token) setOptions(response); }).catch((caught) => { if (context.current === token) setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar as opções de perda."); });
-    }
-  }, [currentBranch, canView, canCreate]);
-
-  function openCreate() {
-    setProduct(options?.stocks[0] ? String(options.stocks[0].product) : "");
-    setQuantity("");
-    setQuantityMode("packages");
-    setReason("BREAKAGE");
-    setObservation("");
-    setError("");
-    setFields({});
-    key.current = crypto.randomUUID();
-    setOpen(true);
-  }
-
-  function changed(callback: () => void) {
-    callback();
-    key.current = crypto.randomUUID();
-  }
-
-  async function create(event: React.FormEvent) {
-    event.preventDefault();
-    if (!currentBranch || !selectedProduct) return;
-    const exact = quantityMode === "content" && selectedProduct.fraction_config?.tracking_active;
-    if (exact ? !isExactContentValid(quantity) : !isUnitQuantityValid(quantity, selectedProduct.unit)) {
-      setFields({ [exact ? "content_quantity" : "quantity"]: [exact ? "Informe conteúdo positivo com até 9 casas decimais." : selectedProduct.unit.toLowerCase() === "un" ? "Informe uma quantidade inteira de embalagens." : "Informe uma quantidade positiva com até 3 casas decimais."] });
-      setError("Revise a quantidade informada.");
-      return;
-    }
-    setSaving(true);
-    setError("");
-    setFields({});
-    try {
-      const loss = await http.post<LossRecord>("loss-records/", { idempotency_key: key.current, branch: currentBranch.id, product: Number(product), ...(exact ? { content_quantity: quantity.replace(",", ".") } : { quantity: quantity.replace(",", ".") }), reason, observation });
-      setOpen(false);
-      setSuccess(`Perda de ${loss.content_quantity ? physicalQuantityDisplay({ content: loss.content_quantity, packageContent: loss.package_content_snapshot || selectedProduct.fraction_config?.package_content, contentUnit: loss.content_unit || selectedProduct.fraction_config?.content_unit, completePackages: loss.complete_packages, residualContent: loss.residual_content }) : `${formatQuantity(loss.quantity)} ${selectedProduct.unit.toUpperCase()}`} de ${loss.product_name} registrada.`);
-      if (canView) await load();
-    } catch (caught) {
-      if (caught instanceof ApiError) {
-        setError(caught.message);
-        setFields(caught.fields);
-      } else setError("Não foi possível registrar a perda.");
-    } finally {
-      setSaving(false);
-    }
-  }
+  }, [currentBranch, canView]);
 
   return <>
-    <PageHeader title="Perdas de estoque" description={`${currentBranch?.name || "Selecione uma filial"} · baixas conhecidas, justificadas e auditadas.`} action={canCreate && <Button onClick={openCreate} disabled={!currentBranch || !options}><Plus className="size-4" />Registrar perda</Button>} />
+    <PageHeader title="Registros de perda" description={`${currentBranch?.name || "Selecione uma filial"} · perdas registradas por Saída, com baixa conhecida e auditada.`} />
     <InventoryNav />
     <div className="space-y-4 p-4 sm:p-6 lg:p-8">
-      {error && !open && <Alert message={error} />}
+      {error && <Alert message={error} />}
       {success && <Alert message={success} type="success" />}
       {canView ? <>
         <form className="card grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3" onSubmit={(event) => { event.preventDefault(); void load(); }}>
@@ -147,21 +87,8 @@ function Losses() {
             <div className="table-wrap hidden md:block"><table className="data-table"><thead><tr><th>Data do evento</th><th>Produto</th><th>Quantidade exata</th><th>Motivo</th><th>Responsável</th><th>Impactos</th><th>Movimento</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}><td>{formatDate(item.recorded_at)}</td><td><strong>{item.product_name}</strong><small className="block max-w-72 text-muted">{item.observation}</small></td><td className="font-bold">{lossQuantity(item)}</td><td>{lossReasonLabels[item.reason]}</td><td>#{item.recorded_by}</td><td><span className="block">Venda: {formatDecimalBRL(item.potential_sale_value)}</span>{item.cost_impact !== undefined && <small className="text-muted">Custo: {formatDecimalBRL(item.cost_impact)}</small>}</td><td><Link href={`/estoque/movimentacoes?operation_reference=${item.id}&domain_origin=LOSS`} className="font-semibold text-link">Abrir</Link></td></tr>)}</tbody></table></div>
           </> : <EmptyState title="Nenhuma perda" description="Não há registros para os filtros aplicados." />}
         </section>
-      </> : <section className="card"><EmptyState title="Histórico restrito" description="Sua permissão permite registrar a perda, mas não consultar o histórico ou seus impactos." /></section>}
+      </> : <section className="card"><EmptyState title="Histórico restrito" description="Sua permissão não permite consultar o histórico ou seus impactos." /></section>}
     </div>
-    <Modal open={open} title="Registrar perda" description="A confirmação baixa o saldo e captura os valores históricos no servidor." onClose={() => !saving && setOpen(false)}>
-      <form onSubmit={create}>
-        <div className="space-y-4 p-5 sm:p-6">
-          {error && <Alert message={error} />}
-          <Field label="Filial"><Input readOnly value={options?.branch.name || currentBranch?.name || ""} /></Field>
-          <Field label="Produto" error={fieldError(fields, "product")}><Select required value={product} onChange={(event) => changed(() => { const next = options?.stocks.find((item) => String(item.product) === event.target.value); setProduct(event.target.value); setQuantity(""); setQuantityMode(next?.fraction_config?.tracking_active ? "content" : "packages"); })}><option value="">Selecione</option>{options?.stocks.map((item) => <option key={item.stock} value={item.product}>{item.product_name} ({item.internal_code})</option>)}</Select></Field>
-          {selectedProduct?.fraction_config?.tracking_active && <fieldset><legend className="label">Forma da baixa</legend><div className="grid grid-cols-2 gap-2"><label className={`rounded-md border p-3 text-xs ${quantityMode === "content" ? "border-primary bg-primary/5" : "border-subtle"}`}><input className="mr-2" type="radio" checked={quantityMode === "content"} onChange={() => changed(() => { setQuantityMode("content"); setQuantity(""); })} />Conteúdo exato</label><label className={`rounded-md border p-3 text-xs ${quantityMode === "packages" ? "border-primary bg-primary/5" : "border-subtle"}`}><input className="mr-2" type="radio" checked={quantityMode === "packages"} onChange={() => changed(() => { setQuantityMode("packages"); setQuantity(""); })} />Embalagens fechadas</label></div></fieldset>}
-          <div className="grid gap-4 sm:grid-cols-2"><Field label={quantityMode === "content" && selectedProduct?.fraction_config ? `Conteúdo perdido (${contentUnitLabel(selectedProduct.fraction_config.content_unit)})` : `Quantidade${selectedProduct ? ` (${selectedProduct.unit.toUpperCase()})` : ""}`} error={fieldError(fields, quantityMode === "content" ? "content_quantity" : "quantity")}><Input required inputMode="decimal" step={quantityMode === "content" ? "0.000000001" : selectedProduct?.unit.toLowerCase() === "un" ? "1" : "0.001"} min={quantityMode === "content" ? "0.000000001" : "0.001"} value={quantity} onChange={(event) => changed(() => setQuantity(event.target.value))} />{quantityMode === "content" && selectedProduct?.fraction_config && <span className="mt-1 block text-[10px] text-muted">Embalagem canônica: {formatQuantity(selectedProduct.fraction_config.package_content)} {contentUnitLabel(selectedProduct.fraction_config.content_unit)}</span>}</Field><Field label="Motivo" error={fieldError(fields, "reason")}><Select value={reason} onChange={(event) => changed(() => setReason(event.target.value as LossReason))}>{Object.entries(lossReasonLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select></Field></div>
-          <Field label="Observação" error={fieldError(fields, "observation")}><Textarea required minLength={3} value={observation} onChange={(event) => changed(() => setObservation(event.target.value))} /></Field>
-        </div>
-        <div className="flex justify-end gap-2 border-t border-subtle px-5 py-4"><Button type="button" variant="secondary" disabled={saving} onClick={() => setOpen(false)}>Cancelar</Button><Button type="submit" loading={saving} disabled={!selectedProduct}>Confirmar baixa</Button></div>
-      </form>
-    </Modal>
   </>;
 }
 

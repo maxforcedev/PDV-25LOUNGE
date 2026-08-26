@@ -58,13 +58,13 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 function isReadPermission(permission: string) {
   return permission.includes(".view") || permission.endsWith(".report.view");
 }
-const supportCompanyPermissions = Object.values(permissions).filter(
-  (permission) => !isOperatingPermission(permission),
-);
-
 function companyFromSupportSession(
   session: SupportSessionContext,
+  permissionScopes: User["permission_scopes"],
 ): UserCompany {
+  const supportCompanyPermissions = Object.values(permissions).filter(
+    (permission) => !isOperatingPermission(permission, permissionScopes),
+  );
   return {
     id: session.company,
     trade_name: session.company_name?.trim() || `Empresa ${session.company}`,
@@ -95,7 +95,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         (company) => company.id === supportSession.company,
       ) ??
       (!supportSession.impersonated_user
-        ? companyFromSupportSession(supportSession)
+        ? companyFromSupportSession(supportSession, user?.permission_scopes ?? {})
         : null))
     : null;
   const availableCompanies = supportSession
@@ -317,7 +317,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             !isReadPermission(permission)
           )
             return false;
-          const operating = isOperatingPermission(permission);
+          const operating = isOperatingPermission(permission, user.permission_scopes);
           const source = operating ? currentBranch : currentCompany;
           return (
             !!source &&
@@ -332,7 +332,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               !isReadPermission(permission)
             )
               return false;
-            const source = isOperatingPermission(permission)
+            const source = isOperatingPermission(permission, user.permission_scopes)
               ? currentBranch
               : currentCompany;
             return (

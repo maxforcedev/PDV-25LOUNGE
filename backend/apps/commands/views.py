@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.db import transaction
 from django.db.models import Count, DecimalField, F, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from rest_framework import viewsets, status
@@ -203,11 +204,14 @@ class CommandViewSet(viewsets.ReadOnlyModelViewSet):
         item = add_order_item(
             command=command, user=request.user,
             support_session=getattr(request, 'support_session', None),
-            **serializer.validated_data,
+            product_id=serializer.validated_data['product'],
+            quantity=serializer.validated_data['quantity'],
+            modifiers=serializer.validated_data['modifiers'],
         )
         return Response(OrderItemSerializer(item).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=('post',), url_path='add-items')
+    @transaction.atomic
     def add_items(self, request, pk=None):
         command = self.get_object()
         items_data = request.data.get('items', [])
@@ -222,7 +226,9 @@ class CommandViewSet(viewsets.ReadOnlyModelViewSet):
                 command=command, user=request.user,
                 support_session=getattr(request, 'support_session', None),
                 order=order,
-                **serializer.validated_data,
+                product_id=serializer.validated_data['product'],
+                quantity=serializer.validated_data['quantity'],
+                modifiers=serializer.validated_data['modifiers'],
             )
             if order is None:
                 order = item.order

@@ -11,6 +11,7 @@ from apps.saas.permissions import support_permission_decision
 from .content import content_breakdown, exact_multiply_quantized
 from .models import (
     InventoryCount,
+    InventoryCountMode,
     InventoryCountItem,
     InventoryCountStatus,
     LossReason,
@@ -28,6 +29,7 @@ from .models import (
     TransferDivergenceResolution,
     TransferResolutionType,
 )
+from .storage import MAX_LOSS_ATTACHMENT_SIZE, loss_attachment_download_name, validate_loss_attachment
 
 
 def _can_view_costs(request, branch_id):
@@ -370,14 +372,26 @@ class AdjustmentRequestSerializer(serializers.Serializer):
 class GroupMovementItemSerializer(serializers.Serializer):
     product = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
     quantity = serializers.DecimalField(
-        max_digits=14, decimal_places=3, min_value=Decimal('0')
+        max_digits=14, decimal_places=3, min_value=Decimal('0'), required=False
     )
+    content_quantity = serializers.DecimalField(
+        max_digits=24, decimal_places=9, min_value=Decimal('0'), required=False
+    )
+
+    def validate(self, attrs):
+        if (attrs.get('quantity') is None) == (attrs.get('content_quantity') is None):
+            raise serializers.ValidationError(
+                'Informe somente quantity ou content_quantity.'
+            )
+        return attrs
 
 
 class GroupEntrySerializer(serializers.Serializer):
     idempotency_key = serializers.UUIDField()
     branch = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
-    category = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
+    category = serializers.IntegerField(
+        min_value=1, max_value=MAX_BIGINT, required=False, allow_null=True,
+    )
     nature = serializers.ChoiceField(choices=(
         MovementNature.NORMAL, MovementNature.BONUS, MovementNature.RETURN,
         MovementNature.OPENING_BALANCE, MovementNature.CORRECTION, MovementNature.OTHER,
@@ -386,11 +400,15 @@ class GroupEntrySerializer(serializers.Serializer):
     items = GroupMovementItemSerializer(many=True, allow_empty=False)
 
     def validate_items(self, items):
-        if not any(item['quantity'] > 0 for item in items):
+        if not any(
+            (item.get('quantity') or Decimal('0')) > 0
+            or (item.get('content_quantity') or Decimal('0')) > 0
+            for item in items
+        ):
             raise serializers.ValidationError('Informe quantidade para ao menos um produto.')
         product_ids = [item['product'] for item in items]
         if len(product_ids) != len(set(product_ids)):
-            raise serializers.ValidationError('Não repita produtos na mesma entrada em grupo.')
+            raise serializers.ValidationError('Não repita produtos na mesma entrada.')
         return items
 
 
@@ -608,12 +626,13 @@ class LossRecordSerializer(serializers.ModelSerializer):
     movement_ids = serializers.SerializerMethodField()
     complete_packages = serializers.SerializerMethodField()
     residual_content = serializers.SerializerMethodField()
+    attachment = serializers.SerializerMethodField()
 
     class Meta:
         model = LossRecord
         fields = (
             'id', 'company', 'branch', 'branch_name', 'product', 'product_name',
-            'idempotency_key', 'quantity', 'reason', 'observation',
+            'idempotency_key', 'quantity', 'reason', 'observation', 'attachment',
             'content_quantity', 'content_unit',
             'package_content_snapshot',
             'complete_packages', 'residual_content',
@@ -642,6 +661,15 @@ class LossRecordSerializer(serializers.ModelSerializer):
     def get_residual_content(self, loss):
         breakdown = self._content_breakdown(loss)
         return format(breakdown[1], 'f') if breakdown else None
+
+    @staticmethod
+    def get_attachment(loss):
+        if not loss.attachment:
+            return None
+        return {
+            'name': loss_attachment_download_name(loss.attachment),
+            'download_url': f'/api/v1/loss-records/{loss.pk}/attachment/',
+        }
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -710,7 +738,7 @@ class InventoryCountSerializer(serializers.ModelSerializer):
     class Meta:
         model = InventoryCount
         fields = (
-            'id', 'company', 'branch', 'branch_name', 'status', 'observation',
+            'id', 'company', 'branch', 'branch_name', 'status', 'mode', 'observation',
             'created_by', 'confirmed_by', 'confirmed_at',
             'confirmation_idempotency_key', 'items', 'created_at', 'updated_at',
         )
@@ -788,7 +816,8 @@ class LossRecordCreateSerializer(serializers.Serializer):
         min_value=Decimal('0.000000001'), required=False,
     )
     reason = serializers.ChoiceField(choices=LossReason.values)
-    observation = serializers.CharField(min_length=3, max_length=2000)
+    observation = serializers.CharField(required=False, allow_blank=True, default='', max_length=2000)
+    attachment = serializers.FileField(required=False, allow_empty_file=False, max_length=120)
 
     def validate(self, attrs):
         if attrs.get('quantity') is None and attrs.get('content_quantity') is None:
@@ -799,7 +828,20 @@ class LossRecordCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 'Informe somente quantity ou content_quantity.'
             )
+        if attrs['reason'] == LossReason.OTHER and len(attrs['observation'].strip()) < 3:
+            raise serializers.ValidationError({
+                'observation': 'Descreva a perda quando o motivo for Outro.'
+            })
         return attrs
+
+    def validate_attachment(self, value):
+        if value.size > MAX_LOSS_ATTACHMENT_SIZE:
+            raise serializers.ValidationError('A foto deve ter no maximo 10 MB.')
+        try:
+            validate_loss_attachment(value)
+        except Exception as error:
+            raise serializers.ValidationError(getattr(error, 'messages', None) or str(error)) from error
+        return value
 
 
 class InventoryCountInputItemSerializer(serializers.Serializer):
@@ -830,7 +872,8 @@ class InventoryCountInputItemSerializer(serializers.Serializer):
 
 class InventoryCountCreateSerializer(serializers.Serializer):
     branch = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
-    observation = serializers.CharField(min_length=3, max_length=2000)
+    mode = serializers.ChoiceField(choices=InventoryCountMode.values, default=InventoryCountMode.PARTIAL)
+    observation = serializers.CharField(required=False, allow_blank=True, default='', max_length=2000)
     items = InventoryCountInputItemSerializer(many=True, allow_empty=False)
 
 

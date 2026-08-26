@@ -1,3 +1,5 @@
+from calendar import monthrange
+from datetime import datetime, time
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 import hashlib
 import json
@@ -135,6 +137,29 @@ def _validate_product_supplier(unit, *, company, supplier):
     return relation, product
 
 
+def _validate_purchase_item(item, *, company, supplier):
+    if item.product_supplier_unit_id:
+        return _validate_product_supplier(
+            item.product_supplier_unit, company=company, supplier=supplier,
+        )
+    product = item.product
+    errors = {}
+    if product.company_id != company.pk:
+        errors['product'] = 'O produto deve pertencer a empresa da compra.'
+    if product.status != Status.ACTIVE:
+        errors['product'] = 'O produto deve estar ativo.'
+    if product.inventory_behavior != InventoryBehavior.DIRECT:
+        errors['product'] = 'Somente produtos com estoque proprio podem ser comprados.'
+    exclusive = ProductSupplier.objects.filter(
+        product=product, status=Status.ACTIVE, is_exclusive=True
+    ).first()
+    if exclusive and exclusive.supplier_id != supplier.pk:
+        errors['supplier'] = f'O produto {product.name} possui fornecedor exclusivo ativo.'
+    if errors:
+        raise ValidationError(errors)
+    return None, product
+
+
 def _create_items(order, raw_items):
     if not isinstance(raw_items, list) or not raw_items:
         raise ValidationError({'items': 'Informe ao menos um item.'})
@@ -195,10 +220,10 @@ def _create_items(order, raw_items):
             product_supplier_unit = unit
         else:
             product = direct_products[int(raw['product'])]
-            if product.status != Status.ACTIVE:
-                raise ValidationError({'items': f'Item {index}: produto inativo.'})
-            if product.inventory_behavior != InventoryBehavior.DIRECT:
-                raise ValidationError({'items': f'Item {index}: somente produtos com estoque próprio podem ser comprados.'})
+            temporary = type('PurchaseItemValidation', (), {
+                'product_supplier_unit_id': None, 'product': product,
+            })()
+            _validate_purchase_item(temporary, company=order.company, supplier=order.supplier)
             relation = None
             conversion_factor = Decimal('1')
             presentation_unit_code = product.unit
@@ -374,8 +399,6 @@ def _create_installments(order, installments, *, user):
         return []
     if not isinstance(installments, list):
         raise ValidationError({'installments': 'Informe uma lista de parcelas.'})
-    if order.installments.exists():
-        raise ValidationError({'installments': 'As parcelas desta compra ja foram definidas.'})
     prepared = []
     total = Decimal('0.00')
     for index, raw in enumerate(installments, start=1):
@@ -392,22 +415,33 @@ def _create_installments(order, installments, *, user):
         raise ValidationError({
             'installments': f'A soma das parcelas deve ser {order.payable_total:.2f}.'
         })
-    created = [
-        PayableInstallment.objects.create(
-            purchase_order=order,
-            supplier=order.supplier,
-            installment_number=index,
-            amount=amount,
-            due_date=due_date,
-            notes=notes,
-        )
-        for index, (amount, due_date, notes) in enumerate(prepared, start=1)
-    ]
+    due_dates = [due_date for _amount, due_date, _notes in prepared]
+    if len(due_dates) != len(set(due_dates)):
+        raise ValidationError({'installments': 'Não repita vencimentos na mesma compra.'})
+    existing = list(order.installments.select_for_update().order_by('installment_number'))
+    if existing and len(existing) != len(prepared):
+        raise ValidationError({'installments': 'A edição deve manter o número de parcelas já configurado.'})
+    if any(item.status != PayableInstallmentStatus.PENDING for item in existing):
+        raise ValidationError({'installments': 'Parcelas pagas ou canceladas não podem ser editadas.'})
+    created = []
+    for index, (amount, due_date, notes) in enumerate(prepared, start=1):
+        if existing:
+            installment = existing[index - 1]
+            installment.amount = amount
+            installment.due_date = due_date
+            installment.notes = notes
+            installment.save(update_fields=('amount', 'due_date', 'notes', 'updated_at'))
+        else:
+            installment = PayableInstallment.objects.create(
+                purchase_order=order, supplier=order.supplier,
+                installment_number=index, amount=amount, due_date=due_date, notes=notes,
+            )
+        created.append(installment)
     for installment in created:
         _audit_installment(
             installment=installment,
             user=user,
-            action='purchase.payable.create',
+            action='purchase.payable.update' if existing else 'purchase.payable.create',
             summary=(
                 f'Parcela {installment.installment_number} de '
                 f'{order.order_number} criada.'
@@ -416,10 +450,31 @@ def _create_installments(order, installments, *, user):
     return created
 
 
+def _next_month(date_value, months):
+    month = date_value.month - 1 + months
+    year = date_value.year + month // 12
+    month = month % 12 + 1
+    return date_value.replace(year=year, month=month, day=min(date_value.day, monthrange(year, month)[1]))
+
+
+def _automatic_installments(order, count, first_due_date):
+    cents = int((order.payable_total * 100).to_integral_value())
+    base, remainder = divmod(cents, count)
+    return [
+        {
+            'amount': format(Decimal(base + (1 if index < remainder else 0)) / 100, '.2f'),
+            'due_date': _next_month(first_due_date, index),
+            'notes': '',
+        }
+        for index in range(count)
+    ]
+
+
 @transaction.atomic
 def create_purchase_order(*, branch, supplier, order_type, items, user,
-                          global_discount='0.00', freight_total='0.00',
-                          other_expenses_total='0.00', installments=None,
+                           global_discount='0.00', freight_total='0.00',
+                           other_expenses_total='0.00', installments=None,
+                           installment_count=None, first_due_date=None,
                           support_session=None, **document):
     if 'attachment_reference' in document:
         raise ValidationError({
@@ -428,7 +483,7 @@ def create_purchase_order(*, branch, supplier, order_type, items, user,
     branch = _authorized_branch(
         branch, user, 'purchases.create', lock=True, support_session=support_session
     )
-    if installments is not None:
+    if installments is not None or installment_count is not None:
         _authorized_branch(
             branch, user, 'purchases.manage_payables',
             support_session=support_session,
@@ -469,6 +524,8 @@ def create_purchase_order(*, branch, supplier, order_type, items, user,
     order.freight_total = requested_freight
     order.other_expenses_total = requested_other
     _allocate_order(order, created_items)
+    if installment_count is not None:
+        installments = _automatic_installments(order, installment_count, first_due_date)
     _create_installments(order, installments, user=user)
     audit_log(
         actor=user,
@@ -484,6 +541,7 @@ def create_purchase_order(*, branch, supplier, order_type, items, user,
 
 @transaction.atomic
 def update_purchase_order(*, purchase_order, user, items=None, installments=None,
+                           installment_count=None, first_due_date=None,
                           support_session=None, **values):
     if 'attachment_reference' in values:
         raise ValidationError({
@@ -495,7 +553,7 @@ def update_purchase_order(*, purchase_order, user, items=None, installments=None
     _authorized_branch(
         order.branch, user, 'purchases.create', support_session=support_session
     )
-    if installments is not None:
+    if installments is not None or installment_count is not None:
         _authorized_branch(
             order.branch, user, 'purchases.manage_payables',
             support_session=support_session,
@@ -504,7 +562,7 @@ def update_purchase_order(*, purchase_order, user, items=None, installments=None
         'global_discount', 'freight_total', 'other_expenses_total'
     }
     changes_commercial_terms = bool(
-        items is not None or installments is not None
+        items is not None or installments is not None or installment_count is not None
         or financial_fields.intersection(values)
     )
     if changes_commercial_terms and (
@@ -541,6 +599,8 @@ def update_purchase_order(*, purchase_order, user, items=None, installments=None
     )
     if document_fields:
         order.save(update_fields=(*document_fields, 'updated_at'))
+    if installment_count is not None:
+        installments = _automatic_installments(order, installment_count, first_due_date)
     if installments is not None:
         _create_installments(order, installments, user=user)
     _assert_installment_reconciliation(order)
@@ -634,9 +694,7 @@ def place_purchase_order(*, purchase_order, user, support_session=None):
     if not items:
         raise ValidationError({'items': 'A compra deve possuir itens.'})
     for item in items:
-        _validate_product_supplier(
-            item.product_supplier_unit, company=order.company, supplier=order.supplier
-        )
+        _validate_purchase_item(item, company=order.company, supplier=order.supplier)
     _assert_installment_reconciliation(order)
     order.status = PurchaseOrderStatus.PLACED
     order.placed_by = user
@@ -756,10 +814,8 @@ def receive_purchase_order(*, purchase_order, idempotency_key, items, user,
         raise ValidationError({'items': 'Entrada direta deve confirmar todos os itens.'})
     if order.order_type == PurchaseOrderType.DIRECT:
         for order_item in order_items.values():
-            _validate_product_supplier(
-                order_item.product_supplier_unit,
-                company=order.company,
-                supplier=order.supplier,
+            _validate_purchase_item(
+                order_item, company=order.company, supplier=order.supplier,
             )
 
     prepared = []
@@ -1014,7 +1070,8 @@ def cancel_purchase_order(*, purchase_order, user, reason, support_session=None)
 
 
 @transaction.atomic
-def pay_installment(*, installment, user, notes=None, support_session=None):
+def pay_installment(*, installment, user, payment_method='MANUAL', paid_amount=None,
+                    paid_date=None, notes=None, support_session=None):
     item = PayableInstallment.objects.select_for_update().select_related(
         'purchase_order__branch', 'purchase_order__company'
     ).get(pk=_pk(installment))
@@ -1024,14 +1081,28 @@ def pay_installment(*, installment, user, notes=None, support_session=None):
     )
     if item.status != PayableInstallmentStatus.PENDING:
         raise ValidationError({'status': 'Somente parcela pendente pode ser paga.'})
+    method = (payment_method or '').strip()
+    if not method:
+        raise ValidationError({'payment_method': 'Informe a forma de pagamento utilizada.'})
+    amount = _money(paid_amount if paid_amount is not None else item.amount, 'paid_amount')
+    if amount != item.amount:
+        raise ValidationError({'paid_amount': 'O valor pago deve quitar integralmente a parcela.'})
     before = _installment_snapshot(item)
     item.status = PayableInstallmentStatus.PAID
-    item.paid_at = timezone.now()
+    item.paid_at = (
+        timezone.make_aware(datetime.combine(paid_date, time.min))
+        if paid_date else timezone.now()
+    )
     item.paid_by = user
+    item.paid_amount = amount
+    item.paid_payment_method = method
     if notes is not None:
         item.notes = notes.strip()
     item._allow_status_transition = True
-    item.save(update_fields=('status', 'paid_at', 'paid_by', 'notes', 'updated_at'))
+    item.save(update_fields=(
+        'status', 'paid_at', 'paid_by', 'paid_amount', 'paid_payment_method',
+        'notes', 'updated_at',
+    ))
     _audit_installment(
         installment=item,
         user=user,

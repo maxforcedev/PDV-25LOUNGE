@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { Boxes, Check, Copy, Factory, PackageOpen, Pencil, Plus, Power, RotateCcw, Store, Truck } from "lucide-react";
+import { Boxes, Check, Copy, Factory, GripVertical, PackageOpen, Pencil, Plus, Power, RotateCcw, Store, Truck } from "lucide-react";
 import { Alert, Button, ConfirmDialog, Field, Input, Modal, Select } from "@/components/ui";
 import { fieldError, formatDecimalBRL, formatQuantity } from "@/lib/format";
 import { contentUnitLabel, packageContentDisplay } from "@/lib/inventory";
@@ -14,6 +14,8 @@ import type {
   Product,
   ProductBranchConfig,
   ProductModifierGroup,
+  PresentationPreset,
+  PresentationType,
   ProductionDestination,
   Supplier,
   UserBranch,
@@ -52,11 +54,20 @@ type UnitForm = {
   conversion_factor: string;
   barcode: string;
   is_default: boolean;
+  presentation_preset: string;
+  presentation_type: PresentationType;
+  custom_code: string;
+  custom_name: string;
+  save_as_preset: boolean;
 };
 
 const emptyRelation = (): RelationForm => ({ supplier: "", supplier_code: "", is_preferred: false, is_exclusive: false });
-const emptyUnit = (): UnitForm => ({ unit_code: "", description: "", conversion_factor: "1.000000", barcode: "", is_default: false });
+const emptyUnit = (): UnitForm => ({ unit_code: "", description: "", conversion_factor: "1.000000", barcode: "", is_default: false, presentation_preset: "", presentation_type: "UN", custom_code: "", custom_name: "", save_as_preset: false });
 const channelLabels = { counter: "Balcão", table: "Mesa", command: "Comanda" } as const;
+const presentationTypeLabels: Record<PresentationType, string> = {
+  UN: "Unidade", CX: "Caixa", FD: "Fardo", PK: "Pack", PCT: "Pacote",
+  ENG: "Engradado", DSP: "Display", BDJ: "Bandeja", SC: "Saco", KIT: "Kit", OTHER: "Outro",
+};
 
 function apiError(caught: unknown, fallback: string) {
   return caught instanceof ApiError
@@ -72,6 +83,7 @@ export function ProductV26Sections({ product, companyId, currentBranchId, branch
   const [branchConfig, setBranchConfig] = useState<ProductBranchConfig | null>(null);
   const [destinations, setDestinations] = useState<ProductionDestination[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [presentationPresets, setPresentationPresets] = useState<PresentationPreset[]>([]);
   const [modifierGroups, setModifierGroups] = useState<ModifierGroup[]>([]);
   const [modifierLinks, setModifierLinks] = useState<ProductModifierGroup[]>([]);
   const [error, setError] = useState("");
@@ -116,6 +128,7 @@ export function ProductV26Sections({ product, companyId, currentBranchId, branch
     ];
     if (permissions.viewSuppliers) {
       requests.push(http.getAll<Supplier>(`suppliers/?company=${companyId}`).then((value) => { if (active) setSuppliers(value); }));
+      requests.push(http.getAll<PresentationPreset>(`presentation-presets/?company=${companyId}`).then((value) => { if (active) setPresentationPresets(value); }));
     }
     if (permissions.viewModifiers) {
       requests.push(http.getAll<ModifierGroup>(`modifier-groups/?company=${companyId}`).then((value) => { if (active) setModifierGroups(value); }));
@@ -211,20 +224,24 @@ export function ProductV26Sections({ product, companyId, currentBranchId, branch
     const saved = await run(
       () => link
         ? http.post(`product-modifier-groups/${link.id}/${link.status === "active" ? "deactivate" : "activate"}/`, {})
-        : http.post("product-modifier-groups/", { product: product.id, modifier_group: group.id, sort_order: modifierLinks.length }),
+        : http.post("product-modifier-groups/", { product: product.id, modifier_group: group.id }),
       link?.status === "active" ? "Grupo de modificador desvinculado." : "Grupo de modificador vinculado.",
       false,
     );
     if (saved) setModifierLinks(await http.getAll<ProductModifierGroup>(`product-modifier-groups/?product=${product.id}`));
   }
 
-  async function saveModifierOrder(link: ProductModifierGroup, sortOrder: string) {
+  async function moveModifierLink(link: ProductModifierGroup, targetId: number) {
+    const previous = modifierLinks; const next = [...modifierLinks];
+    const index = next.findIndex((item) => item.id === link.id);
+    const target = next.findIndex((item) => item.id === targetId);
+    if (index < 0 || target < 0 || index === target) return;
+    next.splice(target, 0, next.splice(index, 1)[0]); setModifierLinks(next);
     const saved = await run(
-      () => http.patch(`product-modifier-groups/${link.id}/`, { sort_order: Number(sortOrder) || 0 }),
-      "Ordem dos modificadores atualizada.",
-      false,
+      () => http.post("product-modifier-groups/reorder/", { product: product.id, link_ids: next.map((item) => item.id) }),
+      "Ordem dos modificadores atualizada.", false,
     );
-    if (saved) setModifierLinks(await http.getAll<ProductModifierGroup>(`product-modifier-groups/?product=${product.id}`));
+    if (!saved) setModifierLinks(previous);
   }
 
   async function copyConfiguration() {
@@ -283,6 +300,7 @@ export function ProductV26Sections({ product, companyId, currentBranchId, branch
     setUnitRelation(relation);
     setEditingUnit(unit || null);
     setUnitForm(unit ? {
+      ...emptyUnit(),
       unit_code: unit.unit_code, description: unit.description, conversion_factor: unit.conversion_factor,
       barcode: unit.barcode, is_default: unit.is_default,
     } : emptyUnit());
@@ -293,10 +311,25 @@ export function ProductV26Sections({ product, companyId, currentBranchId, branch
   async function saveUnit(event: React.FormEvent) {
     event.preventDefault();
     if (!unitRelation) return;
-    const payload = {
-      company: companyId, product_supplier: unitRelation.id, ...unitForm,
-      conversion_factor: unitForm.conversion_factor.replace(",", "."),
+    const commonPayload = {
+      company: companyId, product_supplier: unitRelation.id, barcode: unitForm.barcode,
+      is_default: unitForm.is_default,
     };
+    const payload = editingUnit
+      ? {
+        ...commonPayload, unit_code: unitForm.unit_code, description: unitForm.description,
+        conversion_factor: unitForm.conversion_factor.replace(",", "."),
+      }
+      : unitForm.presentation_preset
+        ? { ...commonPayload, presentation_preset: Number(unitForm.presentation_preset) }
+        : {
+          ...commonPayload, presentation_type: unitForm.presentation_type,
+          conversion_factor: unitForm.conversion_factor.replace(",", "."),
+          ...(unitForm.presentation_type === "OTHER" ? {
+            custom_code: unitForm.custom_code.trim().toUpperCase(), custom_name: unitForm.custom_name.trim(),
+          } : {}),
+          save_as_preset: unitForm.save_as_preset,
+        };
     const saved = await run(
       () => editingUnit ? http.patch(`product-supplier-units/${editingUnit.id}/`, payload) : http.post("product-supplier-units/", payload),
       editingUnit ? "Apresentação atualizada." : "Apresentação adicionada.",
@@ -346,7 +379,7 @@ export function ProductV26Sections({ product, companyId, currentBranchId, branch
       <div className="mt-4 grid gap-2 sm:grid-cols-2">{modifierGroups.map((group) => {
         const link = modifierLinks.find((item) => item.modifier_group === group.id);
         const linked = link?.status === "active";
-        return <div key={group.id} className="flex items-center gap-3 rounded-md border border-subtle p-3 text-xs"><input type="checkbox" checked={linked} disabled={!permissions.changeModifiers || group.status !== "active"} onChange={() => void toggleModifierGroup(group)} /><div className="min-w-0 flex-1"><strong className="block">{group.name}</strong><span className="text-[10px] text-muted">{group.status === "active" ? `${group.is_required ? "Obrigatório" : "Opcional"} · ${group.min_selections}/${group.max_selections ?? "∞"}` : "Grupo inativo"}</span></div>{link && <Input className="h-8 w-16 text-center" inputMode="numeric" defaultValue={String(link.sort_order)} disabled={!linked || !permissions.changeModifiers} onBlur={(event) => { if (event.target.value !== String(link.sort_order)) void saveModifierOrder(link, event.target.value); }} />}</div>;
+        return <div key={group.id} draggable={Boolean(link && linked && permissions.changeModifiers)} onDragStart={(event) => link && event.dataTransfer.setData("text/plain", String(link.id))} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const source = Number(event.dataTransfer.getData("text/plain")); if (link && source) void moveModifierLink(modifierLinks.find((item) => item.id === source)!, link.id); }} className="flex items-center gap-3 rounded-md border border-subtle p-3 text-xs"><span className="cursor-grab active:cursor-grabbing"><GripVertical className="size-4 text-muted" /></span><input type="checkbox" checked={linked} disabled={!permissions.changeModifiers || group.status !== "active"} onChange={() => void toggleModifierGroup(group)} /><div className="min-w-0 flex-1"><strong className="block">{group.name}</strong><span className="text-[10px] text-muted">{group.status === "active" ? `${group.is_required ? "Obrigatório" : "Opcional"} · ${group.min_selections}/${group.max_selections ?? "∞"}` : "Grupo inativo"}</span></div></div>;
       })}</div>
       {!modifierGroups.length && <p className="mt-3 rounded-md bg-surface-muted p-3 text-xs text-muted">Cadastre grupos em Modificadores antes de vinculá-los ao produto.</p>}<AuditNote />
     </section>}
@@ -385,6 +418,25 @@ export function ProductV26Sections({ product, companyId, currentBranchId, branch
 
     <Modal open={relationOpen} title={editingRelation ? "Editar fornecedor do produto" : "Vincular fornecedor"} onClose={() => setRelationOpen(false)}><form onSubmit={saveRelation}><div className="space-y-4 p-5"><Field label="Fornecedor" error={fieldError(fields, "supplier")}><Select required value={relationForm.supplier} disabled={!!editingRelation} onChange={(event) => setRelationForm((value) => ({ ...value, supplier: event.target.value }))}><option value="">Selecione</option>{suppliers.map((item) => <option key={item.id} value={item.id}>{item.trade_name || item.legal_name}</option>)}</Select></Field><Field label="Código no fornecedor" optional error={fieldError(fields, "supplier_code")}><Input value={relationForm.supplier_code} onChange={(event) => setRelationForm((value) => ({ ...value, supplier_code: event.target.value }))} /></Field><div className="grid gap-3 sm:grid-cols-2"><label className="flex items-center gap-2 text-xs font-semibold"><input type="checkbox" checked={relationForm.is_preferred} onChange={(event) => setRelationForm((value) => ({ ...value, is_preferred: event.target.checked }))} />Preferencial</label><label className="flex items-center gap-2 text-xs font-semibold"><input type="checkbox" checked={relationForm.is_exclusive} onChange={(event) => setRelationForm((value) => ({ ...value, is_exclusive: event.target.checked, is_preferred: event.target.checked || value.is_preferred }))} />Exclusivo</label></div></div><div className="flex justify-end gap-2 border-t border-subtle px-5 py-4"><Button type="button" variant="secondary" onClick={() => setRelationOpen(false)}>Cancelar</Button><Button type="submit" loading={busy}>Salvar vínculo</Button></div></form></Modal>
 
-    <Modal open={unitOpen} title={editingUnit ? "Editar apresentação" : "Nova apresentação"} description={unitRelation?.supplier_name} onClose={() => setUnitOpen(false)}><form onSubmit={saveUnit}><div className="grid gap-4 p-5 sm:grid-cols-2"><Field label="Código da unidade" error={fieldError(fields, "unit_code")}><Input required value={unitForm.unit_code} onChange={(event) => setUnitForm((value) => ({ ...value, unit_code: event.target.value.toUpperCase() }))} /></Field><Field label="Fator de conversão" error={fieldError(fields, "conversion_factor")}><Input required inputMode="decimal" min="0.000001" step="0.000001" value={unitForm.conversion_factor} onChange={(event) => setUnitForm((value) => ({ ...value, conversion_factor: event.target.value }))} /></Field><Field label="Descrição" optional><Input value={unitForm.description} onChange={(event) => setUnitForm((value) => ({ ...value, description: event.target.value }))} /></Field><Field label="Código de barras" optional error={fieldError(fields, "barcode")}><Input value={unitForm.barcode} onChange={(event) => setUnitForm((value) => ({ ...value, barcode: event.target.value }))} /></Field><label className="flex items-center gap-2 text-xs font-semibold sm:col-span-2"><input type="checkbox" checked={unitForm.is_default} onChange={(event) => setUnitForm((value) => ({ ...value, is_default: event.target.checked }))} />Apresentação padrão</label></div><div className="flex justify-end gap-2 border-t border-subtle px-5 py-4"><Button type="button" variant="secondary" onClick={() => setUnitOpen(false)}>Cancelar</Button><Button type="submit" loading={busy}>Salvar apresentação</Button></div></form></Modal>
+    <Modal open={unitOpen} title={editingUnit ? "Editar apresentação" : "Nova apresentação"} description={unitRelation?.supplier_name} onClose={() => setUnitOpen(false)}><form onSubmit={saveUnit}><div className="grid gap-4 p-5 sm:grid-cols-2">
+      <div className="sm:col-span-2 rounded-md bg-surface-muted p-3 text-[11px] text-muted">Estoque: {product.unit.toUpperCase()}. A quantidade informa quantas unidades de estoque esta apresentação representa.</div>
+      {editingUnit ? <>
+        <Field label="Código da unidade" error={fieldError(fields, "unit_code")}><Input required value={unitForm.unit_code} onChange={(event) => setUnitForm((value) => ({ ...value, unit_code: event.target.value.toUpperCase() }))} /></Field>
+        <Field label="Quantidade na unidade de estoque" error={fieldError(fields, "conversion_factor")}><Input required inputMode="decimal" min="0.000001" step="0.000001" value={unitForm.conversion_factor} onChange={(event) => setUnitForm((value) => ({ ...value, conversion_factor: event.target.value }))} /></Field>
+        <Field label="Descrição da apresentação" error={fieldError(fields, "description")}><Input required maxLength={200} value={unitForm.description} onChange={(event) => setUnitForm((value) => ({ ...value, description: event.target.value }))} /></Field>
+        <p className="self-end text-[11px] text-muted">Esta apresentação existente permanece editável sem exigir a migração para um preset.</p>
+      </> : <>
+        <Field label="Apresentação da empresa" error={fieldError(fields, "presentation_preset")}><Select value={unitForm.presentation_preset} onChange={(event) => setUnitForm((value) => ({ ...value, presentation_preset: event.target.value }))}><option value="">Criar nova apresentação</option>{presentationPresets.filter((preset) => preset.status === "active").map((preset) => <option key={preset.id} value={preset.id}>{preset.code} · {preset.name}</option>)}</Select></Field>
+        {unitForm.presentation_preset ? <p className="self-end text-[11px] text-muted">O preset define o código, a descrição e a conversão desta apresentação.</p> : <>
+          <Field label="Tipo de apresentação" error={fieldError(fields, "presentation_type")}><Select value={unitForm.presentation_type} onChange={(event) => setUnitForm((value) => ({ ...value, presentation_type: event.target.value as PresentationType }))}>{(Object.keys(presentationTypeLabels) as PresentationType[]).map((type) => <option key={type} value={type}>{type} · {presentationTypeLabels[type]}</option>)}</Select></Field>
+          <Field label="Quantidade na unidade de estoque" error={fieldError(fields, "conversion_factor")}><Input required inputMode="decimal" min="0.000001" step="0.000001" value={unitForm.conversion_factor} onChange={(event) => setUnitForm((value) => ({ ...value, conversion_factor: event.target.value }))} /></Field>
+          {unitForm.presentation_type === "OTHER" && <><Field label="Código personalizado" error={fieldError(fields, "custom_code")}><Input required maxLength={20} value={unitForm.custom_code} onChange={(event) => setUnitForm((value) => ({ ...value, custom_code: event.target.value.toUpperCase() }))} /></Field><Field label="Nome personalizado" error={fieldError(fields, "custom_name")}><Input required maxLength={100} value={unitForm.custom_name} onChange={(event) => setUnitForm((value) => ({ ...value, custom_name: event.target.value }))} /></Field></>}
+          <label className="flex items-center gap-2 text-xs font-semibold sm:col-span-2"><input type="checkbox" checked={unitForm.save_as_preset} onChange={(event) => setUnitForm((value) => ({ ...value, save_as_preset: event.target.checked }))} />Salvar como preset da empresa</label>
+        </>}
+        <div className="rounded-md bg-surface-muted p-3 text-[11px] sm:col-span-2"><strong>Prévia:</strong> {unitForm.presentation_preset ? (() => { const preset = presentationPresets.find((item) => item.id === Number(unitForm.presentation_preset)); return `${preset?.code || "-"} · ${preset?.description || preset?.name || "-"} · conversão ${formatQuantity(preset?.conversion_factor || "1")} ${product.unit.toUpperCase()}`; })() : `${unitForm.presentation_type === "OTHER" ? unitForm.custom_code || "código" : unitForm.presentation_type} · ${unitForm.presentation_type === "OTHER" ? unitForm.custom_name || "nome" : presentationTypeLabels[unitForm.presentation_type]} · conversão ${formatQuantity(unitForm.conversion_factor || "0")} ${product.unit.toUpperCase()}`}</div>
+      </>}
+      <Field label="Código de barras" optional error={fieldError(fields, "barcode")}><Input value={unitForm.barcode} onChange={(event) => setUnitForm((value) => ({ ...value, barcode: event.target.value }))} /></Field>
+      <label className="flex items-center gap-2 self-end text-xs font-semibold"><input type="checkbox" checked={unitForm.is_default} onChange={(event) => setUnitForm((value) => ({ ...value, is_default: event.target.checked }))} />Apresentação padrão</label>
+    </div><div className="flex justify-end gap-2 border-t border-subtle px-5 py-4"><Button type="button" variant="secondary" onClick={() => setUnitOpen(false)}>Cancelar</Button><Button type="submit" loading={busy}>Salvar apresentação</Button></div></form></Modal>
   </div>;
 }

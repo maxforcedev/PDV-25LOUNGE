@@ -9,7 +9,9 @@ from apps.companies.models import (
     AccessProfile, Branch, Company, Status, UserBranchAccess, UserCompanyAccess,
     UserPermissionBlock,
 )
-from apps.companies.rbac import ALL_PERMISSION_CODES, OPERATING_PERMISSION_CODES
+from apps.companies.rbac import (
+    ALL_PERMISSION_CODES, OPERATING_PERMISSION_CODES, PERMISSION_SCOPE_BY_CODE,
+)
 from apps.companies.selectors import (
     accessible_branches,
     accessible_companies,
@@ -45,6 +47,7 @@ class UserSerializer(serializers.ModelSerializer):
     companies = serializers.SerializerMethodField()
     branches = serializers.SerializerMethodField()
     permission_blocks = serializers.SerializerMethodField()
+    permission_scopes = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -60,6 +63,7 @@ class UserSerializer(serializers.ModelSerializer):
             'companies',
             'branches',
             'permission_blocks',
+            'permission_scopes',
             'created_at',
             'updated_at',
         )
@@ -71,9 +75,13 @@ class UserSerializer(serializers.ModelSerializer):
             'companies',
             'branches',
             'permission_blocks',
+            'permission_scopes',
             'created_at',
             'updated_at',
         )
+
+    def get_permission_scopes(self, user):
+        return PERMISSION_SCOPE_BY_CODE
 
     def _visible_company_ids(self, user):
         request = self.context.get('request')

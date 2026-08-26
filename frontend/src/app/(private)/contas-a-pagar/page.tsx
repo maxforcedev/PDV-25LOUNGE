@@ -34,6 +34,9 @@ function PurchasePayables() {
   const [selected, setSelected] = useState<PayableInstallment | null>(null);
   const [action, setAction] = useState<"pay" | "cancel" | null>(null);
   const [text, setText] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState("PIX");
+  const [paidAmount, setPaidAmount] = useState("");
+  const [paidDate, setPaidDate] = useState("");
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
   const [error, setError] = useState("");
@@ -69,13 +72,13 @@ function PurchasePayables() {
 
   function apply(event: React.FormEvent) { event.preventDefault(); const next = { ...draft, period: { ...draft.period } }; setApplied(next); void load(next); }
   function clear() { const next = emptyFilters(); setDraft(next); setApplied(next); void load(next); }
-  function open(item: PayableInstallment, next: "pay" | "cancel") { if (readOnly) return; setSelected(item); setAction(next); setText(""); setError(""); }
+  function open(item: PayableInstallment, next: "pay" | "cancel") { if (readOnly) return; setSelected(item); setAction(next); setText(""); setPaymentMethod("PIX"); setPaidAmount(item.amount); setPaidDate(new Date().toISOString().slice(0, 10)); setError(""); }
   async function submit(event: React.FormEvent) {
     event.preventDefault(); if (!selected || !action || readOnly) return;
     if (action === "cancel" && text.trim().length < 3) { setError("Informe um motivo com ao menos 3 caracteres."); return; }
     setActing(true); setError(""); setSuccess("");
     try {
-      await http.post<PayableInstallment>(`payable-installments/${selected.id}/${action}/`, action === "pay" ? { notes: text.trim() } : { reason: text.trim() });
+      await http.post<PayableInstallment>(`payable-installments/${selected.id}/${action}/`, action === "pay" ? { payment_method: paymentMethod, paid_amount: paidAmount.replace(",", "."), paid_date: paidDate, notes: text.trim() } : { reason: text.trim() });
       setSelected(null); setAction(null); setSuccess(action === "pay" ? "Pagamento manual registrado." : "Parcela cancelada."); await load();
     } catch (caught) { setError(caught instanceof ApiError ? caught.message : "Não foi possível concluir a ação."); }
     finally { setActing(false); }
@@ -100,7 +103,7 @@ function PurchasePayables() {
         <div className="table-wrap hidden md:block"><table className="data-table min-w-225"><thead><tr><th>Compra</th><th>Fornecedor</th><th>Parcela</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Baixa</th><th className="text-right">Ações</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}><td><Link href={`/compras/${item.purchase_order}`} className="font-bold text-link">{item.order_number}</Link></td><td>{item.supplier_name}</td><td>{item.installment_number}</td><td>{new Date(`${item.due_date}T12:00:00`).toLocaleDateString("pt-BR")}</td><td className="font-bold">{formatBRL(item.amount)}</td><td><PayableBadge status={item.status} /></td><td>{item.paid_at ? formatDate(item.paid_at) : item.cancelled_at ? formatDate(item.cancelled_at) : "-"}</td><td><div className="flex justify-end gap-1"><Link className="icon-button" href={`/compras/${item.purchase_order}`} title="Ver compra"><Eye className="size-4" /></Link>{item.status === "PENDING" && <><button className="icon-button" title="Registrar pagamento" onClick={() => open(item, "pay")} disabled={readOnly}><Banknote className="size-4" /></button><button className="icon-button" title="Cancelar parcela" onClick={() => open(item, "cancel")} disabled={readOnly}><XCircle className="size-4" /></button></>}</div></td></tr>)}</tbody></table></div>
       </> : <EmptyState title="Nenhuma parcela encontrada" description="Não há contas de compras para os filtros informados." />}</section>
     </div>
-    <Modal open={!!action && !!selected} title={action === "pay" ? "Registrar pagamento manual" : "Cancelar parcela"} description={selected ? `${selected.order_number} · parcela ${selected.installment_number} · ${formatBRL(selected.amount)}` : ""} onClose={() => !acting && setAction(null)} size="md"><form onSubmit={submit}><div className="space-y-4 p-5">{error && <Alert message={error} />}<Field label={action === "pay" ? "Observação" : "Motivo"} optional={action === "pay"}><Textarea required={action === "cancel"} minLength={action === "cancel" ? 3 : undefined} value={text} onChange={(event) => setText(event.target.value)} disabled={acting} /></Field>{action === "pay" && <p className="text-xs text-warning-strong">Esta é uma baixa manual e auditada da parcela de compra.</p>}</div><div className="flex justify-end gap-2 border-t border-subtle p-4"><Button type="button" variant="secondary" onClick={() => setAction(null)} disabled={acting}>Voltar</Button><Button type="submit" variant={action === "cancel" ? "danger" : "primary"} loading={acting}>{action === "pay" ? "Confirmar pagamento" : "Cancelar parcela"}</Button></div></form></Modal>
+    <Modal open={!!action && !!selected} title={action === "pay" ? "Registrar pagamento manual" : "Cancelar parcela"} description={selected ? `${selected.order_number} · parcela ${selected.installment_number} · ${formatBRL(selected.amount)}` : ""} onClose={() => !acting && setAction(null)} size="md"><form onSubmit={submit}><div className="space-y-4 p-5">{error && <Alert message={error} />}{action === "pay" && <div className="grid gap-4 sm:grid-cols-2"><Field label="Forma efetivamente paga"><Select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}><option>PIX</option><option>Transferência</option><option>Boleto</option><option>Dinheiro</option><option>Cartão</option><option>Outro</option></Select></Field><Field label="Data do pagamento"><Input required type="date" value={paidDate} onChange={(event) => setPaidDate(event.target.value)} /></Field><Field label="Valor pago"><Input required inputMode="decimal" value={paidAmount} onChange={(event) => setPaidAmount(event.target.value)} /></Field></div>}<Field label={action === "pay" ? "Observação" : "Motivo"} optional={action === "pay"}><Textarea required={action === "cancel"} minLength={action === "cancel" ? 3 : undefined} value={text} onChange={(event) => setText(event.target.value)} disabled={acting} /></Field>{action === "pay" && <p className="text-xs text-warning-strong">A baixa, forma efetiva, data e valor ficam registrados na parcela de fornecedor.</p>}</div><div className="flex justify-end gap-2 border-t border-subtle p-4"><Button type="button" variant="secondary" onClick={() => setAction(null)} disabled={acting}>Voltar</Button><Button type="submit" variant={action === "cancel" ? "danger" : "primary"} loading={acting}>{action === "pay" ? "Confirmar pagamento" : "Cancelar parcela"}</Button></div></form></Modal>
   </>;
 }
 

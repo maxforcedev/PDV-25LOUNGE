@@ -349,6 +349,7 @@ class LossAndInventoryCountTests(TestCase):
         stock = Stock.objects.get(branch=self.origin, product=self.product)
         movement = loss.stock_movements.get()
         self.assertEqual(loss.pk, replay.pk)
+        self.assertEqual(loss.stock_movements.count(), 1)
         self.assertEqual(stock.current_quantity, Decimal('18.000'))
         self.assertEqual(loss.unit_cost_snapshot, Decimal('4.000000000000'))
         self.assertEqual(loss.sale_price_snapshot, Decimal('15.00'))

@@ -35,10 +35,10 @@ import {
 } from "@/components/ui";
 import { fieldError, formatBRL, formatDecimalBRL, formatQuantity } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
-import { contentUnitLabel, isUnitQuantityValid, packageContentDisplay, quantityInputMode } from "@/lib/inventory";
+import { contentUnitLabel, enrichFractionStockOptions, isExactContentValid, isUnitQuantityValid, lossReasonLabels, packageContentDisplay, quantityInputMode } from "@/lib/inventory";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
-import type { Category, FractionableProductConfig, Paginated, Product, Stock, StockMovement } from "@/types";
+import type { Category, FractionableProductConfig, InventoryWorkflowOptions, LossReason, LossRecord, Paginated, Product, Stock, StockMovement } from "@/types";
 
 type Action = "entry" | "exit" | "adjustment" | "minimum";
 type Summary = {
@@ -81,7 +81,7 @@ function StateBadge({ state }: { state: Stock["state"] }) {
 }
 
 function Inventory() {
-  const { currentCompany, currentBranch, hasPermission } = useAuth();
+  const { currentCompany, currentBranch, hasPermission, user } = useAuth();
   const canEntry = hasPermission(permissions.inventoryEntry);
   const canExit = hasPermission(permissions.inventoryExit);
   const canAdjust = hasPermission(permissions.inventoryAdjust);
@@ -92,6 +92,11 @@ function Inventory() {
   const canViewKpis = hasPermission(permissions.viewStockKpis);
   const canViewCosts = hasPermission(permissions.viewStockCosts);
   const canRegularize = hasPermission(permissions.regularizeInventory);
+  const canLoss = hasPermission(permissions.recordLoss);
+  const canTransfer = hasPermission(permissions.createTransfer) && !!currentBranch && !!user?.branches.some(
+    (branch) => branch.company_id === currentBranch.company_id && branch.status === "active" && branch.id !== currentBranch.id,
+  );
+  const canCount = hasPermission(permissions.performInventoryCount);
   const [data, setData] = useState<Paginated<Stock> | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -115,6 +120,10 @@ function Inventory() {
   const [quantity, setQuantity] = useState("");
   const [nature, setNature] = useState("normal");
   const [reason, setReason] = useState("");
+  const [lossReason, setLossReason] = useState<LossReason>("BREAKAGE");
+  const [lossQuantityMode, setLossQuantityMode] = useState<"packages" | "content">("packages");
+  const [lossAttachment, setLossAttachment] = useState<File | null>(null);
+  const [lossOptions, setLossOptions] = useState<InventoryWorkflowOptions | null>(null);
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
   const movementIdempotencyKey = useRef<string | null>(null);
@@ -122,6 +131,12 @@ function Inventory() {
   const showLegacyRecovery = canRegularize && !!summary?.legacy_negative_state && (summary?.negative_count ?? 0) > 0;
   const contextRef = useRef("");
   contextRef.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}`;
+  const isLoss = action === "exit" && nature === "loss";
+  const selectedLossOption = lossOptions?.stocks.find((item) => String(item.product) === productId);
+  const lossFractionConfig = selected
+    ? fractionConfigs[selected.product]
+    : selectedLossOption?.fraction_config;
+  const activeUnit = selected?.unit || (isLoss ? selectedLossOption?.unit : products.find((product) => String(product.id) === productId)?.unit);
   function params(
     filters: StockFilters = { state, category, status, behavior },
     searchValue = search,
@@ -209,6 +224,7 @@ function Inventory() {
     setBehavior("");
     setData(null);
     setFractionConfigs({});
+    setLossOptions(null);
     setSummary(null);
     setAction(null);
     setSuccess(null);
@@ -247,6 +263,9 @@ function Inventory() {
           : "",
     );
     setReason("");
+    setLossReason("BREAKAGE");
+    setLossQuantityMode("packages");
+    setLossAttachment(null);
     setNature(next === "entry" ? "normal" : next === "exit" ? "damage" : "balance_correction");
     setFields({});
     setError("");
@@ -278,14 +297,36 @@ function Inventory() {
       if (contextRef.current === context) setProductsLoading(false);
     }
   }
+  async function selectNature(next: string) {
+    setNature(next);
+    movementIdempotencyKey.current = null;
+    if (next !== "loss" || lossOptions || !currentBranch) return;
+    try {
+      const options = await http.get<InventoryWorkflowOptions>("loss-records/options/");
+      const stocks = await enrichFractionStockOptions(options.stocks);
+      setLossOptions({ ...options, stocks });
+      if (!selected && !stocks.some((item) => String(item.product) === productId)) {
+        setProductId(stocks[0] ? String(stocks[0].product) : "");
+      }
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar as opções de perda.");
+    }
+  }
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (!action || !currentBranch) return;
-    const operationUnit = selected?.unit || products.find((product) => String(product.id) === productId)?.unit;
-    if (!isUnitQuantityValid(quantity, operationUnit, action === "adjustment" || action === "minimum")) {
+    const validQuantity = isLoss && lossQuantityMode === "content"
+      ? isExactContentValid(quantity)
+      : isUnitQuantityValid(quantity, activeUnit, action === "adjustment" || action === "minimum");
+    if (!validQuantity) {
       const field = action === "adjustment" ? "final_quantity" : action === "minimum" ? "minimum_quantity" : "quantity";
-      setFields({ [field]: [operationUnit?.toLowerCase() === "un" ? "Informe uma quantidade inteira de unidades." : "Informe uma quantidade válida com até 3 casas decimais."] });
+      setFields({ [isLoss && lossQuantityMode === "content" ? "content_quantity" : field]: [isLoss && lossQuantityMode === "content" ? "Informe conteúdo positivo com até 9 casas decimais." : activeUnit?.toLowerCase() === "un" ? "Informe uma quantidade inteira de unidades." : "Informe uma quantidade válida com até 3 casas decimais."] });
       setError("Revise a quantidade informada.");
+      return;
+    }
+    if (isLoss && lossReason === "OTHER" && reason.trim().length < 3) {
+      setFields({ observation: ["Descreva a perda quando o motivo for Outro."] });
+      setError("Revise a descrição da perda.");
       return;
     }
     setSaving(true);
@@ -293,12 +334,29 @@ function Inventory() {
     setFields({});
     try {
       let movement: StockMovement | null = null;
+      let loss: LossRecord | null = null;
       if (action === "minimum" && selected)
         await http.patch(
           `stocks/${selected.id}/minimum/?branch=${currentBranch.id}`,
           { minimum_quantity: quantity },
         );
-      else {
+      else if (isLoss) {
+        if (!movementIdempotencyKey.current) movementIdempotencyKey.current = crypto.randomUUID();
+        const payload = {
+          idempotency_key: movementIdempotencyKey.current,
+          branch: currentBranch.id,
+          product: selected?.product || Number(productId),
+          ...(lossQuantityMode === "content" ? { content_quantity: quantity.replace(",", ".") } : { quantity: quantity.replace(",", ".") }),
+          reason: lossReason,
+          observation: reason,
+        };
+        if (lossAttachment) {
+          const body = new FormData();
+          Object.entries(payload).forEach(([name, value]) => body.append(name, String(value)));
+          body.append("attachment", lossAttachment);
+          loss = await http.postForm<LossRecord>("loss-records/", body);
+        } else loss = await http.post<LossRecord>("loss-records/", payload);
+      } else {
         if (!movementIdempotencyKey.current) movementIdempotencyKey.current = crypto.randomUUID();
         movement = await http.post<StockMovement>(
           `stock-movements/${action}/?branch=${currentBranch.id}`,
@@ -317,7 +375,12 @@ function Inventory() {
       setAction(null);
       setSelected(null);
       movementIdempotencyKey.current = null;
-      setSuccess(action === "minimum" ? { label: "Estoque mínimo atualizado." } : {
+      setSuccess(action === "minimum" ? { label: "Estoque mínimo atualizado." } : loss ? {
+        label: "Perda registrada.",
+        description: "Baixa de estoque registrada com sucesso.",
+        reference: loss.id,
+        count: loss.movement_ids.length,
+      } : {
         label: movement!.operation_label,
         description: "Movimentação registrada com sucesso.",
         reference: movement!.operation_reference,
@@ -371,17 +434,17 @@ function Inventory() {
         description={`${currentBranch?.name || "Selecione uma filial"} · posição atual dos produtos.`}
         action={
           <div className="flex flex-wrap gap-2">
-            {canEntry && <Link href="/estoque/entrada-em-grupo" className="btn btn-secondary"><Plus className="size-4" />Entrada em grupo</Link>}
-            {showRegularize && <Link href="/estoque/regularizar" className="btn btn-secondary"><TriangleAlert className="size-4" />Regularizar negativos</Link>}
             {canMove && (
               <Button
                 onClick={() => setChooser(true)}
                 disabled={!currentBranch}
               >
-                <Plus className="size-4" />
-                Movimentação
+                + Movimentações
               </Button>
             )}
+            {canTransfer && <Link href="/estoque/transferencias/nova" className="btn btn-secondary"><ArrowUp className="size-4" />Nova transferência</Link>}
+            {canCount && <Link href="/estoque/inventarios/novo" className="btn btn-secondary"><Plus className="size-4" />Nova contagem</Link>}
+            {showRegularize && <Link href="/estoque/regularizar" className="btn btn-secondary"><TriangleAlert className="size-4" />Regularizar negativos</Link>}
             {canHistory && (
               <Link href="/estoque/movimentacoes" className="btn btn-secondary">
                 <History className="size-4" />
@@ -730,30 +793,27 @@ function Inventory() {
       </div>
       <Modal
         open={chooser}
-        title="Nova movimentação"
-        description="Escolha claramente o tipo de operação antes de informar os dados."
+        title="Movimentações"
+        description="Escolha o tipo de movimentação de estoque."
         onClose={() => setChooser(false)}
       >
         <div className="grid gap-3 p-5 sm:grid-cols-3">
-          {canEntry && <button
+          {canEntry && <Link
             className="rounded-lg border border-slate-200 p-5 text-left hover:border-success hover:bg-success/5"
-            onClick={() => void choose("entry")}
+            href="/estoque/entrada-em-grupo"
+            onClick={() => setChooser(false)}
           >
             <ArrowDown className="mb-3 size-5 text-success" />
             <strong className="block text-sm">Entrada</strong>
-            <span className="text-[10px] text-slate-500">
-              Adicionar quantidade
-            </span>
-          </button>}
+            <span className="text-[10px] text-slate-500">Adicionar produtos ao estoque</span>
+          </Link>}
           {canExit && <button
             className="rounded-lg border border-slate-200 p-5 text-left hover:border-danger hover:bg-danger/5"
             onClick={() => void choose("exit")}
           >
             <ArrowUp className="mb-3 size-5 text-danger" />
             <strong className="block text-sm">Saída</strong>
-            <span className="text-[10px] text-slate-500">
-              Retirar quantidade
-            </span>
+            <span className="text-[10px] text-slate-500">Retirar quantidade do estoque</span>
           </button>}
           {canAdjust && <button
             className="rounded-lg border border-slate-200 p-5 text-left hover:border-primary hover:bg-primary/5"
@@ -761,9 +821,7 @@ function Inventory() {
           >
             <Settings2 className="mb-3 size-5 text-primary" />
             <strong className="block text-sm">Ajuste</strong>
-            <span className="text-[10px] text-slate-500">
-              Definir saldo final
-            </span>
+            <span className="text-[10px] text-slate-500">Definir saldo final</span>
           </button>}
         </div>
       </Modal>
@@ -787,14 +845,14 @@ function Inventory() {
                     required
                     value={productId}
                     onChange={(event) => { setProductId(event.target.value); movementIdempotencyKey.current = null; }}
-                    disabled={productsLoading || !canViewProducts}
+                    disabled={isLoss ? !lossOptions : productsLoading || !canViewProducts}
                   >
                     <option value="">
                       {productsLoading ? "Carregando..." : "Selecione"}
                     </option>
-                    {products.map((product) => (
-                      <option key={product.id} value={product.id}>
-                        {product.name} ({product.internal_code})
+                    {(isLoss ? lossOptions?.stocks || [] : products).map((product) => (
+                      <option key={"product_name" in product ? product.product : product.id} value={"product_name" in product ? product.product : product.id}>
+                        {"product_name" in product ? product.product_name : product.name} ({product.internal_code})
                       </option>
                     ))}
                   </Select>
@@ -814,6 +872,8 @@ function Inventory() {
                   ? "Saldo final"
                   : action === "minimum"
                     ? "Quantidade mínima"
+                  : isLoss && lossQuantityMode === "content"
+                    ? `Conteúdo perdido${lossFractionConfig ? ` (${contentUnitLabel(lossFractionConfig.content_unit)})` : ""}`
                     : "Quantidade"
               }
               error={fieldError(
@@ -822,39 +882,46 @@ function Inventory() {
                   ? "final_quantity"
                   : action === "minimum"
                     ? "minimum_quantity"
+                  : isLoss && lossQuantityMode === "content"
+                    ? "content_quantity"
                     : "quantity",
               )}
             >
                <Input
                 required
-                inputMode={quantityInputMode(selected?.unit || products.find((product) => String(product.id) === productId)?.unit)}
-                step={(selected?.unit || products.find((product) => String(product.id) === productId)?.unit)?.toLowerCase() === "un" ? "1" : "0.001"}
-                min={action === "adjustment" || action === "minimum" ? "0" : "0.001"}
+                inputMode={lossQuantityMode === "content" ? "decimal" : quantityInputMode(activeUnit)}
+                step={lossQuantityMode === "content" ? "0.000000001" : activeUnit?.toLowerCase() === "un" ? "1" : "0.001"}
+                min={action === "adjustment" || action === "minimum" ? "0" : lossQuantityMode === "content" ? "0.000000001" : "0.001"}
                 value={quantity}
                 onChange={(event) => { setQuantity(event.target.value); if (action !== "minimum") movementIdempotencyKey.current = null; }}
                />
-               {selected?.current_content != null && fractionConfigs[selected.product] && action !== "minimum" && <p className="mt-1 text-[10px] text-warning-strong">Movimentação manual deste endpoint é em embalagens inteiras. Para baixa de conteúdo residual use Perdas; para saldo físico exato use Inventário.</p>}
+                {isLoss && lossQuantityMode === "content" && lossFractionConfig && <p className="mt-1 text-[10px] text-muted">Conteúdo em {contentUnitLabel(lossFractionConfig.content_unit)}. Embalagem canônica: {formatQuantity(lossFractionConfig.package_content)} {contentUnitLabel(lossFractionConfig.content_unit)}.</p>}
              </Field>
             {action !== "minimum" && (
               <Field label="Natureza" error={fieldError(fields, "nature")}>
-                <Select value={nature} onChange={(event) => { setNature(event.target.value); movementIdempotencyKey.current = null; }}>
-                  {action === "entry" ? <><option value="normal">Entrada normal</option><option value="bonus">Bonificada</option><option value="return">Devolução</option><option value="opening_balance">Saldo inicial</option><option value="correction">Correção</option><option value="other">Outros</option></> : action === "exit" ? <><option value="damage">Avaria operacional</option><option value="internal_use">Uso interno</option><option value="correction">Correção</option><option value="other">Outros</option></> : <><option value="balance_correction">Correção de saldo</option><option value="correction">Correção</option><option value="other">Outros</option></>}
+                <Select value={nature} onChange={(event) => void selectNature(event.target.value)}>
+                  {action === "entry" ? <><option value="normal">Entrada normal</option><option value="bonus">Bonificada</option><option value="return">Devolução</option><option value="opening_balance">Saldo inicial</option><option value="correction">Correção</option><option value="other">Outros</option></> : action === "exit" ? <><option value="damage">Saída / ajuste</option>{canLoss && <option value="loss">Perda</option>}<option value="internal_use">Uso interno</option><option value="correction">Correção</option><option value="other">Outros</option></> : <><option value="balance_correction">Correção de saldo</option><option value="correction">Correção</option><option value="other">Outros</option></>}
                 </Select>
-                <p className="mt-1 text-[10px] text-muted">Transferências, perdas e inventários usam fluxos próprios auditados no menu de estoque.</p>
+                {isLoss && <p className="mt-1 text-[10px] text-muted">A perda é registrada com baixa única, motivo e rastreabilidade auditada.</p>}
               </Field>
             )}
+            {isLoss && lossFractionConfig?.tracking_active && <fieldset><legend className="label">Forma da baixa</legend><div className="grid grid-cols-2 gap-2"><label className={`rounded-md border p-3 text-xs ${lossQuantityMode === "content" ? "border-primary bg-primary/5" : "border-subtle"}`}><input className="mr-2" type="radio" checked={lossQuantityMode === "content"} onChange={() => { setLossQuantityMode("content"); setQuantity(""); movementIdempotencyKey.current = null; }} />Conteúdo exato</label><label className={`rounded-md border p-3 text-xs ${lossQuantityMode === "packages" ? "border-primary bg-primary/5" : "border-subtle"}`}><input className="mr-2" type="radio" checked={lossQuantityMode === "packages"} onChange={() => { setLossQuantityMode("packages"); setQuantity(""); movementIdempotencyKey.current = null; }} />Embalagens fechadas</label></div></fieldset>}
+            {isLoss && <Field label="Motivo da perda" error={fieldError(fields, "reason")}><Select value={lossReason} onChange={(event) => { setLossReason(event.target.value as LossReason); movementIdempotencyKey.current = null; }}>{Object.entries(lossReasonLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select></Field>}
             {action !== "minimum" && (
               <Field
-                label="Motivo"
-                optional
-                error={fieldError(fields, "reason")}
+                label={isLoss ? "Observação" : "Motivo"}
+                optional={!isLoss || lossReason !== "OTHER"}
+                error={fieldError(fields, isLoss ? "observation" : "reason")}
               >
                 <Textarea
+                  required={isLoss && lossReason === "OTHER"}
+                  minLength={isLoss && lossReason === "OTHER" ? 3 : undefined}
                   value={reason}
                   onChange={(event) => { setReason(event.target.value); movementIdempotencyKey.current = null; }}
                 />
               </Field>
             )}
+            {isLoss && <Field label="Foto" optional error={fieldError(fields, "attachment")}><Input type="file" accept="image/png,image/jpeg" onChange={(event) => { setLossAttachment(event.target.files?.[0] || null); movementIdempotencyKey.current = null; }} /><span className="mt-1 block text-[10px] text-muted">PNG ou JPG de até 10 MB. O arquivo fica privado e exige autorização para download.</span></Field>}
           </div>
           <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4">
             <Button
@@ -869,7 +936,7 @@ function Inventory() {
               type="submit"
               loading={saving}
               disabled={
-                !selected && (!canViewProducts || productsLoading || !productId)
+                !selected && (isLoss ? !lossOptions || !productId : !canViewProducts || productsLoading || !productId)
               }
             >
               Confirmar

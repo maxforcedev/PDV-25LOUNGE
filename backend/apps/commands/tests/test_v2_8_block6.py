@@ -143,6 +143,51 @@ class MultipleCommandsPerTableTests(Block6Fixture, TestCase):
         table = create_table(branch=self.branch, name='Mesa 4', user=self.owner)
         self.assertEqual(table.commands.filter(status=CommandStatus.OPEN).count(), 0)
 
+
+class CommandStabilizationTests(Block6Fixture, TestCase):
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.owner)
+        client.defaults['HTTP_X_BRANCH_ID'] = str(self.branch.pk)
+        return client
+
+    def test_batch_add_items_is_all_or_nothing(self):
+        command = open_command(branch=self.branch, user=self.owner, identifier='Atomic')
+        response = self._client().post(
+            f'/api/v1/commands/{command.pk}/add-items/',
+            {
+                'items': [
+                    {'product': self.product.pk, 'quantity': '1'},
+                    {'product': 999999, 'quantity': '1'},
+                ],
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertFalse(OrderItem.objects.filter(order__command=command).exists())
+
+    def test_add_item_with_unknown_product_returns_validation_error(self):
+        command = open_command(branch=self.branch, user=self.owner, identifier='Unknown')
+        response = self._client().post(
+            f'/api/v1/commands/{command.pk}/add-item/',
+            {'product': 999999, 'quantity': '1'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(response.data['product'], 'Produto não encontrado.')
+        self.assertFalse(OrderItem.objects.filter(order__command=command).exists())
+
+    def test_open_commands_block_disabling_feature(self):
+        open_command(branch=self.branch, user=self.owner, identifier='Keep open')
+        response = self._client().patch(
+            f'/api/v1/branches/{self.branch.pk}/settings/',
+            {'uses_commands': False},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.branch.settings.refresh_from_db()
+        self.assertTrue(self.branch.settings.uses_commands)
+
     def test_table_remains_occupied_when_one_of_two_finalizes(self):
         table = create_table(branch=self.branch, name='Mesa 5', user=self.owner)
         cmd1 = open_command(branch=self.branch, user=self.owner, table=table, identifier='A')

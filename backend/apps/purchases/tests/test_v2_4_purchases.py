@@ -323,6 +323,44 @@ class PurchaseFlowTests(TestCase):
         self.assertEqual(payment_log.before['status'], PayableInstallmentStatus.PENDING)
         self.assertEqual(payment_log.after['status'], PayableInstallmentStatus.PAID)
 
+    def test_purchase_accepts_product_without_supplier_presentation(self):
+        order = create_purchase_order(
+            branch=self.branch,
+            supplier=self.supplier,
+            order_type='ORDER',
+            items=[{
+                'product': self.product.pk,
+                'ordered_quantity': '2',
+                'purchase_unit_price': '10.00',
+            }],
+            user=self.user,
+        )
+
+        item = order.items.get()
+        self.assertIsNone(item.product_supplier_unit)
+        self.assertEqual(item.conversion_factor, Decimal('1.000000'))
+        self.assertEqual(item.ordered_stock_quantity, Decimal('2.000000'))
+
+    def test_automatic_installments_distribute_remainder_cents(self):
+        due = date.today() + timedelta(days=10)
+        order = create_order(
+            self.branch, self.supplier, self.unit, self.user,
+            quantity='1', price='10.01',
+            installment_count=3,
+            first_due_date=due,
+        )
+
+        installments = list(order.installments.order_by('installment_number'))
+        self.assertEqual([item.amount for item in installments], [
+            Decimal('3.34'), Decimal('3.34'), Decimal('3.33'),
+        ])
+        self.assertEqual(installments[0].due_date, due)
+        self.assertEqual(
+            [item.due_date.month for item in installments],
+            [due.month, due.month % 12 + 1, (due.month + 1) % 12 + 1],
+        )
+        self.assertEqual(sum((item.amount for item in installments)), order.payable_total)
+
     def test_purchase_models_block_bulk_and_physical_deletion(self):
         order = create_order(self.branch, self.supplier, self.unit, self.user)
         with self.assertRaises(ValidationError):

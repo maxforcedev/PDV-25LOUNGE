@@ -18,6 +18,7 @@ from apps.companies.models import (
 from apps.companies.services import (
     create_company_with_matrix, ensure_permission_catalog,
 )
+from apps.base.models import AuditLog
 from apps.inventory.models import Stock
 from apps.products.models import (
     Category, ModifierGroup, ModifierOption, ModifierOptionType,
@@ -189,6 +190,112 @@ class BranchPriceTests(ProductRbacFixture, TestCase):
         }, format='json')
         self.assertIn(resp.status_code, (403, 400))
 
+    def test_branch_price_permissions_have_explicit_scopes(self):
+        self.assertEqual(
+            FunctionalPermission.objects.get(code='branch_prices.view').scope,
+            FunctionalPermission.Scope.BRANCH,
+        )
+        self.assertEqual(
+            FunctionalPermission.objects.get(code='branch_prices.view_company').scope,
+            FunctionalPermission.Scope.COMPANY,
+        )
+
+
+class CategoryConfigurationTests(ProductRbacFixture, TestCase):
+    def test_apply_config_preserves_audit_before_state(self):
+        self.product_a.available_counter = True
+        self.product_a.available_table = True
+        self.product_a.available_command = True
+        self.product_a.participates_in_service_fee = True
+        self.product_a.participates_in_commission = True
+        self.product_a.save()
+        self.cat_a.available_counter = False
+        self.cat_a.available_table = False
+        self.cat_a.available_command = False
+        self.cat_a.participates_in_service_fee = False
+        self.cat_a.participates_in_commission = False
+        self.cat_a.save()
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).post(
+            f'/api/v1/categories/{self.cat_a.pk}/apply-config/', {}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['affected_count'], 1)
+        self.product_a.refresh_from_db()
+        self.assertFalse(self.product_a.available_command)
+        audit = AuditLog.objects.filter(
+            action='category.apply_config', object_id=str(self.product_a.pk)
+        ).latest('pk')
+        self.assertTrue(audit.before['available_command'])
+        self.assertFalse(audit.after['available_command'])
+
+
+class ModifierReorderTests(ProductRbacFixture, TestCase):
+    def setUp(self):
+        super().setUp()
+        self.groups = [
+            ModifierGroup.objects.create(company=self.company_a, name=name, sort_order=index)
+            for index, name in enumerate(('Primeiro', 'Segundo', 'Terceiro'))
+        ]
+        self.options = [
+            ModifierOption.objects.create(modifier_group=self.groups[0], name=name, sort_order=index)
+            for index, name in enumerate(('A', 'B', 'C'))
+        ]
+        self.links = [
+            ProductModifierGroup.objects.create(
+                product=self.product_a, modifier_group=group, sort_order=index,
+            ) for index, group in enumerate(self.groups)
+        ]
+
+    def _post(self, path, payload, user=None):
+        return self.api_client(user or self.owner_a, self.branch_a.pk).post(
+            path, payload, format='json'
+        )
+
+    def test_group_reorder_persists_and_audits(self):
+        response = self._post(' /api/v1/modifier-groups/reorder/'.strip(), {
+            'group_ids': [self.groups[2].pk, self.groups[0].pk, self.groups[1].pk],
+        })
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(list(ModifierGroup.objects.filter(company=self.company_a).values_list('pk', flat=True)), [self.groups[2].pk, self.groups[0].pk, self.groups[1].pk])
+        self.assertEqual(AuditLog.objects.filter(action='modifier_group.reorder').count(), 3)
+
+    def test_option_and_link_reorder_reject_invalid_batch_without_partial_update(self):
+        original_options = list(ModifierOption.objects.filter(modifier_group=self.groups[0]).values_list('sort_order', flat=True))
+        response = self._post('/api/v1/modifier-options/reorder/', {
+            'modifier_group': self.groups[0].pk,
+            'option_ids': [self.options[0].pk, self.options[0].pk, self.options[2].pk],
+        })
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(list(ModifierOption.objects.filter(modifier_group=self.groups[0]).values_list('sort_order', flat=True)), original_options)
+        response = self._post('/api/v1/product-modifier-groups/reorder/', {
+            'product': self.product_a.pk,
+            'link_ids': [self.links[2].pk, self.links[0].pk, self.links[1].pk],
+        })
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(list(ProductModifierGroup.objects.filter(product=self.product_a).values_list('pk', flat=True)), [self.links[2].pk, self.links[0].pk, self.links[1].pk])
+
+    def test_reorder_rejects_cross_tenant_and_missing_ids(self):
+        foreign = ModifierGroup.objects.create(company=self.company_b, name='Externo')
+        response = self._post('/api/v1/modifier-groups/reorder/', {
+            'group_ids': [self.groups[0].pk, self.groups[1].pk, foreign.pk],
+        })
+        self.assertEqual(response.status_code, 400, response.data)
+        response = self._post('/api/v1/modifier-options/reorder/', {
+            'modifier_group': self.groups[0].pk,
+            'option_ids': [self.options[0].pk, self.options[1].pk],
+        })
+        self.assertEqual(response.status_code, 400, response.data)
+
+    def test_new_modifier_records_are_appended(self):
+        client = self.api_client(self.owner_a, self.branch_a.pk)
+        created = client.post('/api/v1/modifier-groups/', {
+            'company': self.company_a.pk, 'name': 'Último',
+        }, format='json')
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(created.data['sort_order'], 3)
+
 
 # ---------------------------------------------------------------------------
 # Area 5: MODIFIERS
@@ -216,7 +323,7 @@ class ModifierTests(ProductRbacFixture, TestCase):
     def test_activate_deactivate_reactivate_modifier_group(self):
         client = self.api_client(self.owner_a, self.branch_a.pk)
         resp = client.post(f'/api/v1/modifier-groups/{self.group_a.pk}/deactivate/')
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 200, resp.data)
         self.group_a.refresh_from_db()
         self.assertEqual(self.group_a.status, 'inactive')
         resp = client.post(f'/api/v1/modifier-groups/{self.group_a.pk}/activate/')
@@ -236,7 +343,7 @@ class ModifierTests(ProductRbacFixture, TestCase):
         admin_profile.permissions.add(perm)
         client = self.api_client(self.owner_a, self.branch_a.pk)
         resp = client.post(f'/api/v1/modifier-options/{self.option_a1.pk}/deactivate/')
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 200, resp.data)
         self.option_a1.refresh_from_db()
         self.assertEqual(self.option_a1.status, 'inactive')
 

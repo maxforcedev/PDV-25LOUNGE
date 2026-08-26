@@ -27,6 +27,8 @@ class ImmutableTenantSerializer(serializers.ModelSerializer):
 
 class SupplierSerializer(ImmutableTenantSerializer):
     company_name = serializers.CharField(source='company.trade_name', read_only=True)
+    legal_name = serializers.CharField(required=False, allow_blank=True, max_length=200)
+    trade_name = serializers.CharField(required=True, allow_blank=False, max_length=200)
     tax_id = serializers.CharField(
         required=False, allow_blank=True, allow_null=True, max_length=18
     )
@@ -45,6 +47,12 @@ class SupplierSerializer(ImmutableTenantSerializer):
     def validate_tax_id(self, value):
         value = normalize_tax_id(value)
         validate_tax_id(value)
+        return value
+
+    def validate_trade_name(self, value):
+        value = ' '.join(value.split())
+        if not value:
+            raise serializers.ValidationError('Informe o nome fantasia.')
         return value
 
     def validate_address(self, value):
@@ -145,6 +153,7 @@ class ProductSupplierUnitSerializer(ImmutableTenantSerializer):
     conversion_factor = serializers.DecimalField(
         max_digits=18, decimal_places=6, min_value=Decimal('0.000001')
     )
+    description = serializers.CharField(required=True, allow_blank=False, max_length=200)
 
     class Meta:
         model = ProductSupplierUnit
@@ -161,6 +170,12 @@ class ProductSupplierUnitSerializer(ImmutableTenantSerializer):
 
     def validate_unit_code(self, value):
         return value.strip().upper()
+
+    def validate_description(self, value):
+        value = ' '.join(value.split())
+        if not value:
+            raise serializers.ValidationError('Informe a descrição da apresentação.')
+        return value
 
     def validate_barcode(self, value):
         return value.strip()

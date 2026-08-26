@@ -7,7 +7,7 @@ from .models import (
     AccessProfile, Branch, BranchSettings, Company, FunctionalPermission, Status,
     UserBranchAccess, UserCommissionOverride, UserCompanyAccess, UserPermissionBlock,
 )
-from .rbac import OPERATING_PERMISSION_CODES
+from .rbac import PERMISSION_SCOPE_BRANCH, permission_scope
 from .selectors import (
     accessible_branches,
     company_permission_codes,
@@ -299,6 +299,22 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
                     message='Regularize os estoques negativos antes de desativar esta opcao.',
                     details={'count': negatives.count(), 'stocks': rows},
                 )
+        if (
+            self.instance
+            and self.instance.uses_commands
+            and attrs.get('uses_commands') is False
+        ):
+            from apps.commands.models import Command, CommandStatus
+
+            open_commands = Command.objects.filter(
+                branch=self.instance.branch, status=CommandStatus.OPEN
+            )
+            if open_commands.exists():
+                raise DomainValidationError(
+                    code='open_commands_must_be_closed',
+                    message='Existem Comandas abertas. Encerre-as antes de desativar o recurso.',
+                    details={'count': open_commands.count()},
+                )
         if self.instance and request and not request.user.is_superuser:
             company = self.instance.branch.company
             entitled = self._entitled_features(company)
@@ -418,7 +434,7 @@ class TransferCompanyOwnerSerializer(serializers.Serializer):
 class FunctionalPermissionSerializer(serializers.ModelSerializer):
     class Meta:
         model = FunctionalPermission
-        fields = ('code', 'module', 'label', 'description')
+        fields = ('code', 'module', 'scope', 'label', 'description')
 
 
 class AccessProfileSerializer(serializers.ModelSerializer):
@@ -494,7 +510,10 @@ class AccessProfileSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'commission_rate': 'Você não possui permissão para alterar comissão de perfil.'})
         if permissions is not None and not request.user.is_superuser:
             requested_codes = {permission.code for permission in permissions}
-            requested_operating = requested_codes & set(OPERATING_PERMISSION_CODES)
+            requested_operating = {
+                code for code in requested_codes
+                if permission_scope(code) == PERMISSION_SCOPE_BRANCH
+            }
             requested_company = requested_codes - requested_operating
             actor_company = company_permission_codes(request.user, company.id)
             unauthorized = requested_company - actor_company

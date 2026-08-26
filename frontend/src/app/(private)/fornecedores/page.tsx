@@ -713,10 +713,10 @@ function Suppliers() {
             </Field>
             <Field
               label="Razão social"
+              optional
               error={fieldError(fields, "legal_name")}
             >
               <Input
-                required
                 maxLength={200}
                 value={form.legal_name}
                 onChange={(event) => update("legal_name", event.target.value)}

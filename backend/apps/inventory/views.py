@@ -1,6 +1,9 @@
 from decimal import ROUND_HALF_UP, Decimal
 
+import mimetypes
+
 from django.core.exceptions import ObjectDoesNotExist
+from django.http import FileResponse
 from django.db.models import (
     CharField, Count, F, IntegerField, OuterRef, Prefetch, Q, Subquery,
 )
@@ -8,6 +11,8 @@ from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import NotFound
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
 from apps.base.datetimes import (
@@ -68,6 +73,7 @@ from .serializers import (
     TransferResolutionSerializer,
     _can_view_costs,
 )
+from .storage import loss_attachment_download_name
 from .services import adjustment as adjust_stock
 from .services import entry as enter_stock
 from .services import exit as exit_stock
@@ -435,7 +441,7 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
         if current.pk != data['branch']:
             raise PermissionDenied('Filial fora do contexto autorizado.')
         movements = group_entry(
-            branch=data['branch'], category=data['category'], items=data['items'],
+            branch=data['branch'], category=data.get('category'), items=data['items'],
             nature=data['nature'],
             reason=data['reason'], user=request.user,
             operation_reference=data['idempotency_key'],
@@ -471,6 +477,7 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
             products__inventory_behavior='direct',
         ).distinct().order_by('sort_order', 'name', 'id')
         category_id = request.query_params.get('category')
+        search = (request.query_params.get('search') or '').strip()
         products = Product.objects.none()
         if category_id:
             try:
@@ -484,7 +491,20 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
             products = Product.objects.filter(
                 company_id=branch.company_id, category=category,
                 inventory_behavior='direct', status=Status.ACTIVE,
-            ).order_by('name', 'id')
+            ).select_related('category', 'fraction_config').order_by('name', 'id')
+        elif request.query_params.get('all') == 'true':
+            products = Product.objects.filter(
+                company_id=branch.company_id, inventory_behavior='direct', status=Status.ACTIVE,
+            ).select_related('category', 'fraction_config').order_by('name', 'id')
+        elif search:
+            products = Product.objects.filter(
+                company_id=branch.company_id, inventory_behavior='direct', status=Status.ACTIVE,
+            ).filter(
+                Q(name__icontains=search)
+                | Q(internal_code__icontains=search)
+                | Q(barcode__icontains=search)
+                | Q(sku__icontains=search)
+            ).select_related('category', 'fraction_config').order_by('name', 'id')[:50]
         balances = dict(Stock.objects.filter(
             branch=branch, product__in=products
         ).values_list('product_id', 'current_quantity'))
@@ -495,8 +515,21 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
                 'id': product.pk,
                 'name': product.name,
                 'internal_code': product.internal_code,
+                'barcode': product.barcode,
+                'sku': product.sku,
+                'category_id': product.category_id,
+                'category_name': product.category.name,
                 'unit': product.unit,
                 'current_quantity': str(balances.get(product.pk, 0)),
+                'fraction_config': (
+                    {
+                        'tracking_active': product.fraction_config.tracking_active,
+                        'package_content': str(product.fraction_config.package_content),
+                        'content_unit': product.fraction_config.content_unit,
+                    }
+                    if hasattr(product, 'fraction_config') and product.fraction_config.tracking_active
+                    else None
+                ),
             } for product in products],
         })
 
@@ -815,12 +848,14 @@ class LossRecordViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = LossRecordSerializer
     permission_classes = (InventoryFunctionalPermission,)
     http_method_names = ('get', 'post', 'head', 'options')
+    parser_classes = (JSONParser, MultiPartParser, FormParser)
     permission_codes = {
         'list': 'inventory.report.view',
         'retrieve': 'inventory.report.view',
         'destroy': 'inventory.report.view',
         'create': 'inventory.loss.record',
         'workflow_options': 'inventory.loss.record',
+        'attachment': 'inventory.report.view',
     }
 
     def get_queryset(self):
@@ -870,6 +905,19 @@ class LossRecordViewSet(viewsets.ReadOnlyModelViewSet):
             'branch': {'id': branch.pk, 'name': branch.name},
             'stocks': _workflow_stock_options(request, branch),
         })
+
+    @action(detail=True, methods=('get',))
+    def attachment(self, request, pk=None):
+        loss = self.get_object()
+        if not loss.attachment or not loss.attachment.storage.exists(loss.attachment.name):
+            raise NotFound('Foto nao encontrada.')
+        filename = loss_attachment_download_name(loss.attachment)
+        return FileResponse(
+            loss.attachment.open('rb'),
+            as_attachment=True,
+            filename=filename,
+            content_type=mimetypes.guess_type(filename)[0] or 'application/octet-stream',
+        )
 
 
 class InventoryCountViewSet(viewsets.ReadOnlyModelViewSet):
@@ -929,11 +977,52 @@ class InventoryCountViewSet(viewsets.ReadOnlyModelViewSet):
             or branch.company.status != Status.ACTIVE
         ):
             raise PermissionDenied('Selecione uma filial ativa para realizar o inventario.')
+        open_product_ids = InventoryCountItem.objects.filter(
+            branch=branch, is_open=True
+        ).values_list('product_id', flat=True)
+        stocks = {
+            stock.product_id: stock
+            for stock in eligible_workflow_stocks(branch, exclude_open_counts=True)
+        }
+        products = Product.objects.filter(
+            company=branch.company,
+            status=Status.ACTIVE,
+            inventory_behavior='direct',
+        ).exclude(pk__in=open_product_ids).select_related(
+            'category', 'fraction_config'
+        ).order_by('category__name', 'name', 'pk')
+        options = []
+        for product in products:
+            stock = stocks.get(product.pk)
+            item = {
+                'stock': stock.pk if stock else None,
+                'product': product.pk,
+                'product_name': product.name,
+                'internal_code': product.internal_code,
+                'unit': product.unit,
+                'category': product.category_id,
+                'category_name': product.category.name if product.category_id else '',
+                'current_quantity': format(stock.current_quantity, 'f') if stock else '0',
+                'equivalent_quantity': format(stock.equivalent_quantity(), 'f') if stock else '0',
+            }
+            try:
+                config = product.fraction_config
+            except ObjectDoesNotExist:
+                config = None
+            if config and config.tracking_active:
+                current_content = stock.current_content if stock else Decimal('0')
+                complete, residual = content_breakdown(current_content, config.package_content)
+                item.update({
+                    'current_content': format(current_content, 'f'),
+                    'package_content': format(config.package_content, 'f'),
+                    'content_unit': config.content_unit,
+                    'complete_packages': format(complete, 'f'),
+                    'residual_content': format(residual, 'f'),
+                })
+            options.append(item)
         return Response({
             'branch': {'id': branch.pk, 'name': branch.name},
-            'stocks': _workflow_stock_options(
-                request, branch, exclude_open_counts=True
-            ),
+            'stocks': options,
         })
 
     @action(detail=True, methods=('post',))
