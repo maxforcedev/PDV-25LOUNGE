@@ -94,19 +94,20 @@ A imagem de producao foi reconstruida sem cache com a API publica e validada:
 
 - `.venv`, `venv`, `node_modules`, `.next`, `.env*`, logs, caches e backups
   locais sao ignorados conforme o tipo de artefato;
-- `.dockerignore` impede que environments locais entrem nos dois contextos;
+- `.dockerignore` impede que environments locais entrem nos tres contextos;
 - `.env.production.example` documenta dominios, imagens, tag, database,
   hardening, Gunicorn, build publico e caminhos de Docker Secrets;
-- os exemplos de backend e frontend continuam sendo exclusivos de dev;
+- os exemplos de backend e dos dois frontends continuam sendo exclusivos de dev;
 - `.gitattributes` garante LF em scripts shell;
 - imagens inspecionadas nao contem `.env`, ambientes virtuais ou source local
   indevido, e a varredura nao encontrou formatos conhecidos de credencial.
 
 ## Contrato do stack
 
-`docker-stack.yml` declara somente PostgreSQL 16, backend e frontend. Nao ha
-portas publicadas. O PostgreSQL usa volume persistente e rede overlay interna;
-as aplicacoes usam a rede externa do proxy apenas quando necessario.
+`docker-stack.yml` declara PostgreSQL 16, backend, Backoffice e Platform Admin
+como servicos independentes. Nao ha portas publicadas. PostgreSQL e os anexos
+privados de compras usam volumes persistentes; as aplicacoes usam a rede
+externa do proxy apenas quando necessario.
 
 Validacao sem deploy:
 
@@ -119,7 +120,7 @@ Dependencias externas que deverao existir antes do deploy na VPS:
 
 - rede overlay `traefik_public`;
 - secrets `corepdv_django_secret_key` e `corepdv_postgres_password`;
-- imagens backend/frontend no GHCR com a mesma tag SHA;
+- imagens backend/frontend/platform-admin no GHCR com a mesma tag SHA;
 - acesso do Swarm ao GHCR quando os pacotes forem privados;
 - proxy central com entrypoint `websecure` e suporte aos hosts declarados.
 
@@ -131,17 +132,16 @@ e mover `migrate --noinput` para uma etapa unica de release.
 
 `.github/workflows/ci.yml` executa em push para `dev`, em pull request para
 `main` e por chamada reutilizavel. Ele valida Django, migrations, deployment
-settings, static files, frontend, Compose, stack e as duas imagens finais. O job
-tambem falha se uma imagem rodar como root ou usar comandos de desenvolvimento.
+settings, static files, Backoffice, lint/build do Platform Admin, Compose, stack
+e as tres imagens finais. O job tambem falha se uma imagem rodar como root ou
+usar comandos de desenvolvimento.
 
 A CI possui apenas `contents: read` e nao autentica em registry, nao publica
 imagem, nao acessa a VPS e nao executa deploy.
 
-Revalidacao de entrega: os arquivos `ci.yml` e `ghcr.yml` existem em
-`.github/workflows/`, nao sao ignorados e passaram em `yaml-lint` e
-`actionlint`. Eles ainda aparecem como arquivos nao rastreados sobre o commit
-`50d36a4`; portanto devem ser incluidos no proximo commit para nao serem
-omitidos novamente de uma entrega baseada apenas no historico Git.
+Os arquivos `ci.yml` e `ghcr.yml` estao versionados em `.github/workflows/` e
+nao sao ignorados. A validacao local deve analisar ambos sempre que a matriz de
+imagens ou o contrato de deploy mudar.
 
 ## Imagens no GHCR
 
@@ -151,12 +151,14 @@ CI e publica:
 ```text
 ghcr.io/maxforcedev/core-pdv-backend:<full-commit-sha>
 ghcr.io/maxforcedev/core-pdv-frontend:<full-commit-sha>
+ghcr.io/maxforcedev/core-pdv-platform-admin:<full-commit-sha>
 ```
 
 `latest` tambem e publicado como conveniencia, mas `RELEASE_TAG` no stack deve
-sempre receber o SHA completo. A imagem frontend e compilada com
-`https://api.corepdv.com/api/v1`. O workflow usa apenas `GITHUB_TOKEN` para o
-GHCR e nao possui dados ou comandos de acesso a servidor.
+sempre receber o SHA completo. Os dois frontends sao compilados com
+`https://api.corepdv.com/api/v1`; o Platform Admin tambem recebe
+`https://corepdv.com` como URL publica do Backoffice. O workflow usa apenas
+`GITHUB_TOKEN` para o GHCR e nao possui dados ou comandos de acesso a servidor.
 
 As imagens base e as Actions estao fixadas por digest/commit. Antes de publicar,
 o workflow consulta a tag SHA no GHCR e se recusa a sobrescreve-la. Falhas de
@@ -173,6 +175,12 @@ Variaveis minimas para renderizar o stack:
 ```bash
 export BACKEND_IMAGE=ghcr.io/maxforcedev/core-pdv-backend
 export FRONTEND_IMAGE=ghcr.io/maxforcedev/core-pdv-frontend
+export PLATFORM_ADMIN_IMAGE=ghcr.io/maxforcedev/core-pdv-platform-admin
+export FRONTEND_DOMAIN=corepdv.com
+export PLATFORM_ADMIN_DOMAIN=admin.corepdv.com
+export ALLOWED_HOSTS=api.corepdv.com,corepdv.com,admin.corepdv.com,127.0.0.1
+export CSRF_TRUSTED_ORIGINS=https://corepdv.com,https://admin.corepdv.com,https://*.corepdv.com
+export CORS_ALLOWED_ORIGINS=https://corepdv.com,https://admin.corepdv.com
 export RELEASE_TAG=<full-commit-sha>
 docker stack config --compose-file docker-stack.yml >/dev/null
 ```
@@ -183,8 +191,9 @@ rollback deve repetir o deploy usando o SHA completo da release anterior, nunca
 apenas `latest`.
 
 Logs de Django, Gunicorn e Next sao emitidos em stdout/stderr. O projeto nao
-grava logs em volume e nao possui uploads persistentes; somente o volume do
-PostgreSQL requer persistencia e backup nesta versao.
+grava logs em volume. Os volumes `postgres_data` e `private_media` requerem
+persistencia e backup; anexos privados nunca sao publicados diretamente pelo
+proxy e trafegam apenas pelos endpoints autenticados do backend.
 
 ## Limite de confianca do proxy
 
@@ -212,28 +221,58 @@ estaveis do proxy, restringir `GUNICORN_FORWARDED_ALLOW_IPS` por environment.
 - configurar firewall, SSH e estrutura operacional em `/opt`;
 - criar e controlar a rede overlay externa `traefik_public`;
 - instalar/configurar o Traefik central, DNS Cloudflare e certificados TLS;
+- apontar `admin.corepdv.com` para o proxy central existente;
 - criar os dois Docker Secrets externos e o acesso de pull ao GHCR;
 - configurar backups e restauracao do volume PostgreSQL;
 - executar o primeiro deploy, smoke remoto, teste de rollback e observacao de
   logs/healthchecks.
 
-## Validacao final local
+## Validacao local V2.2
 
-Resultado final antes da entrega:
+Resultado da revisao da infraestrutura V2.2:
 
-- `python manage.py check`: aprovado;
-- `python manage.py makemigrations --check --dry-run`: nenhuma alteracao;
-- `python manage.py check --deploy --fail-level WARNING`: aprovado com o perfil
-  HSTS final; `security.W004` analisado para o perfil inicial reversivel;
-- `npm ci`: lockfile valido e nenhuma vulnerabilidade reportada;
-- `npm run build`: aprovado, 44 rotas;
-- builds backend/frontend `--no-cache`: aprovados apos a revisao final;
-- Gunicorn, Next Standalone, static files, secrets por arquivo, usuarios
-  nao-root e healthchecks: aprovados nos containers finais;
-- persistencia PostgreSQL: registro temporario sobreviveu a recriacao do
-  container e foi removido depois do teste;
-- `docker compose up -d --build`: tres servicos saudaveis;
-- `scripts/smoke-test.sh`: aprovado no Compose local;
-- `docker stack config`, Compose config, YAML lint e `git diff --check`:
+- `npm ci --dry-run --ignore-scripts` do Platform Admin: aprovado;
+- `npm run lint` do Platform Admin: aprovado;
+- imagem `runner` do Platform Admin: build aprovado, com 10 rotas;
+- runtime da imagem: usuario `operator`, `node server.js`, porta 3100 e
+  healthcheck estrito em `/login`;
+- bundle final contem `https://api.corepdv.com/api/v1` e
+  `https://corepdv.com`, sem URLs HTTP de loopback;
+- `docker compose config` e `docker stack config` com valores placeholder:
   aprovados;
-- checklist do PRD: nenhum item aberto.
+- sintaxe dos dois workflows, sintaxe POSIX e ShellCheck do smoke test:
+  aprovados;
+- `git diff --check` nos arquivos desta entrega: aprovado.
+
+## Platform Admin V2.2
+
+O Platform Admin possui servico, imagem, healthcheck e router Traefik proprios.
+Em desenvolvimento ele usa `http://localhost:3001`; em producao o router atende
+`https://admin.corepdv.com` no mesmo entrypoint `websecure` e resolver
+`letsencrypt` dos servicos existentes. Nenhum proxy ou mecanismo adicional de
+certificado faz parte deste stack.
+
+O backend aceita somente as origens explicitas dos dois frontends. Em producao:
+
+```env
+CSRF_TRUSTED_ORIGINS=https://corepdv.com,https://admin.corepdv.com,https://*.corepdv.com
+CORS_ALLOWED_ORIGINS=https://corepdv.com,https://admin.corepdv.com
+```
+
+O wildcard e exclusivo da confianca CSRF prevista no PRD. CORS autenticado
+permanece restrito aos dois origins concretos.
+
+O smoke remoto inclui `${PLATFORM_ADMIN_BASE_URL:-https://admin.corepdv.com}/login`.
+Para validacao local, sobrescrever as tres URLs publicas quando os servicos de
+desenvolvimento estiverem ativos:
+
+```bash
+API_BASE_URL=http://127.0.0.1:18000 \
+FRONTEND_BASE_URL=http://127.0.0.1:3000 \
+PLATFORM_ADMIN_BASE_URL=http://127.0.0.1:3001 \
+scripts/smoke-test.sh
+```
+
+O fato de `platform-admin/` ainda estar nao rastreado no worktree atual nao e
+falha de codigo nem bloqueio tecnico da imagem; o diretorio deve integrar o
+mesmo commit da infraestrutura antes da publicacao.

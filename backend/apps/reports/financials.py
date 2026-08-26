@@ -113,12 +113,22 @@ class FinancialAggregator:
             item.pk: money(item.net_subtotal - account_discounts[item.pk])
             for item in items
         }
-        service_fees = allocate_money(
-            sale.service_fee_amount, [(item.pk, revenues[item.pk]) for item in items]
-        )
-        commissions = allocate_money(
-            sale.commission_amount, [(item.pk, revenues[item.pk]) for item in items]
-        )
+        service_fees = {item.pk: ZERO for item in items}
+        service_fees.update(allocate_money(
+            sale.service_fee_amount,
+            [
+                (item.pk, revenues[item.pk]) for item in items
+                if item.participates_in_service_fee
+            ],
+        ))
+        commissions = {item.pk: ZERO for item in items}
+        commissions.update(allocate_money(
+            sale.commission_amount,
+            [
+                (item.pk, revenues[item.pk]) for item in items
+                if item.participates_in_commission
+            ],
+        ))
         return [
             {
                 'item': item,

@@ -20,6 +20,7 @@ from apps.cash.models import (
 from apps.cash.services import build_session_operational_summary
 from apps.companies.rbac import OPERATING_PERMISSION_CODES
 from apps.companies.selectors import branch_permission_codes, eligible_branch_users, user_has_company_permission
+from apps.inventory.content import exact_sum
 from apps.inventory.models import MovementType
 from apps.products.models import Category, Product
 from apps.sales.models import OperationType, PaymentMethod, Sale, SaleStatus
@@ -701,7 +702,7 @@ class SalesReportView(BaseReportView):
     row_serializer_class = ReportSaleSerializer
     csv_filename = 'relatorio-vendas.csv'
     csv_headers = (
-        'id', 'event_type', 'event_at', 'event_sign', 'sale_number', 'status',
+        'id', 'event_type', 'event_at', 'event_sign', 'sale_number', 'channel', 'status',
         'operator', 'seller', 'subtotal',
         'promotion_discount_total', 'item_discount_total', 'discount',
         'sales_revenue', 'consumption_charged', 'effective_revenue', 'service_fee',
@@ -1268,7 +1269,7 @@ class ConsumptionsReportView(BaseReportView):
     row_serializer_class = ReportSaleSerializer
     csv_filename = 'relatorio-consumacoes.csv'
     csv_headers = (
-        'id', 'event_type', 'event_at', 'event_sign', 'sale_number', 'status',
+        'id', 'event_type', 'event_at', 'event_sign', 'sale_number', 'channel', 'status',
         'beneficiary', 'subtotal',
         'sales_revenue', 'consumption_charged', 'effective_revenue', 'service_fee',
         'total_received', 'payment_total', 'reconciliation_delta',
@@ -1614,7 +1615,10 @@ class InventoryMovementsReportView(BaseReportView):
     csv_filename = 'relatorio-movimentacoes-estoque.csv'
     csv_headers = (
         'id', 'created_at', 'movement_type', 'nature', 'operation_reference', 'product', 'previous_quantity', 'quantity',
-        'final_quantity', 'reason', 'user', 'sale',
+        'final_quantity', 'equivalent_quantity', 'legacy_equivalent_quantity',
+        'exact_content_equivalent_quantity', 'previous_content', 'content_quantity',
+        'final_content', 'package_content', 'content_unit', 'complete_packages',
+        'residual_content', 'reason', 'user', 'sale',
     )
 
     def get(self, request):
@@ -1622,19 +1626,50 @@ class InventoryMovementsReportView(BaseReportView):
         rows = filtered_inventory_movements(
             branch=request.branch_context, start=start, end=end, filters=filters
         )
-        totals = rows.aggregate(
-            count=Count('id'),
-            quantity=Coalesce(
-                Sum('quantity'),
-                Decimal('0.000'),
-                output_field=DecimalField(max_digits=20, decimal_places=3),
-            ),
+        movements = list(rows)
+        equivalent_quantity = exact_sum(
+            movement.equivalent_quantity() for movement in movements
         )
+        legacy_equivalent_quantity = exact_sum(
+            quantity
+            for movement in movements
+            if (quantity := movement.legacy_equivalent_quantity()) is not None
+        )
+        exact_content_equivalent_quantity = exact_sum(
+            quantity
+            for movement in movements
+            if (quantity := movement.exact_content_equivalent_quantity()) is not None
+        )
+        content_by_unit = {}
+        for movement in movements:
+            if movement.content_quantity is None:
+                continue
+            unit = movement.stock.product.fraction_config.content_unit
+            content_by_unit[unit] = (
+                content_by_unit.get(unit, Decimal('0')) + movement.content_quantity
+            )
         return self.respond(
             request,
-            rows=rows,
+            rows=movements,
             period=canonical_datetime_range(start, end),
-            summary={'count': totals['count'], 'quantity': decimal_string(totals['quantity'], 3)},
+            summary={
+                'count': len(movements),
+                'quantity': format(equivalent_quantity, 'f'),
+                'equivalent_quantity': format(equivalent_quantity, 'f'),
+                'legacy_equivalent_quantity': format(
+                    legacy_equivalent_quantity, 'f'
+                ),
+                'exact_content_equivalent_quantity': format(
+                    exact_content_equivalent_quantity, 'f'
+                ),
+                'combined_exact_equivalent_total': format(
+                    equivalent_quantity, 'f'
+                ),
+                'content_by_unit': {
+                    unit: format(value, 'f')
+                    for unit, value in sorted(content_by_unit.items())
+                },
+            },
         )
 
 
@@ -1645,7 +1680,10 @@ class StockConsumptionReportView(BaseReportView):
     csv_filename = 'relatorio-consumo-fisico.csv'
     csv_headers = (
         'id', 'created_at', 'origin', 'movement_type', 'nature', 'operation_reference', 'product', 'quantity',
-        'reason', 'user', 'sale',
+        'equivalent_quantity', 'legacy_equivalent_quantity',
+        'exact_content_equivalent_quantity', 'content_quantity',
+        'package_content', 'content_unit',
+        'complete_packages', 'residual_content', 'reason', 'user', 'sale',
     )
 
     def serialize_rows(self, rows, request):
@@ -1657,14 +1695,59 @@ class StockConsumptionReportView(BaseReportView):
             branch=request.branch_context, start=start, end=end, filters=filters,
         )
         include_cost = user_has_code(request, 'inventory.view_stock_costs')
+        legacy_gross = exact_sum(
+            row['legacy_gross_equivalent_quantity'] for row in summary_rows
+        )
+        legacy_returned = exact_sum(
+            row['legacy_returned_equivalent_quantity'] for row in summary_rows
+        )
+        legacy_net = exact_sum(
+            row['legacy_net_equivalent_quantity'] for row in summary_rows
+        )
+        exact_gross = exact_sum(
+            row['exact_gross_equivalent_quantity'] for row in summary_rows
+        )
+        exact_returned = exact_sum(
+            row['exact_returned_equivalent_quantity'] for row in summary_rows
+        )
+        exact_net = exact_sum(
+            row['exact_net_equivalent_quantity'] for row in summary_rows
+        )
+        combined_net = exact_sum(row['net_quantity'] for row in summary_rows)
         summary = {
             'products': StockConsumptionSummarySerializer(
                 summary_rows, many=True, context={'include_cost': include_cost}
             ).data,
             'count': rows.count(),
-            'gross_quantity': decimal_string(sum((row['gross_quantity'] for row in summary_rows), Decimal('0.000')), 3),
-            'returned_quantity': decimal_string(sum((row['returned_quantity'] for row in summary_rows), Decimal('0.000')), 3),
-            'net_quantity': decimal_string(sum((row['net_quantity'] for row in summary_rows), Decimal('0.000')), 3),
+            'gross_quantity': format(exact_sum(row['gross_quantity'] for row in summary_rows), 'f'),
+            'returned_quantity': format(exact_sum(row['returned_quantity'] for row in summary_rows), 'f'),
+            'net_quantity': format(combined_net, 'f'),
+            'legacy_gross_equivalent_quantity': format(legacy_gross, 'f'),
+            'legacy_returned_equivalent_quantity': format(legacy_returned, 'f'),
+            'legacy_equivalent_quantity': format(legacy_net, 'f'),
+            'exact_gross_equivalent_quantity': format(exact_gross, 'f'),
+            'exact_returned_equivalent_quantity': format(exact_returned, 'f'),
+            'exact_content_equivalent_quantity': format(exact_net, 'f'),
+            'combined_exact_equivalent_total': format(combined_net, 'f'),
+            'content_by_unit': {
+                unit: {
+                    'gross_content': format(exact_sum(
+                        row['gross_content'] for row in summary_rows
+                        if row['content_unit'] == unit
+                    ), 'f'),
+                    'returned_content': format(exact_sum(
+                        row['returned_content'] for row in summary_rows
+                        if row['content_unit'] == unit
+                    ), 'f'),
+                    'net_content': format(exact_sum(
+                        row['net_content'] for row in summary_rows
+                        if row['content_unit'] == unit
+                    ), 'f'),
+                }
+                for unit in sorted({
+                    row['content_unit'] for row in summary_rows if row['content_unit']
+                })
+            },
         }
         if include_cost:
             summary['estimated_cost'] = decimal_string(sum((row['estimated_cost'] for row in summary_rows), Decimal('0.00')))
@@ -1681,6 +1764,20 @@ class StockConsumptionReportView(BaseReportView):
                     'gross_quantity': row['gross_quantity'],
                     'returned_quantity': row['returned_quantity'],
                     'net_quantity': row['net_quantity'],
+                    'legacy_gross_equivalent_quantity': row['legacy_gross_equivalent_quantity'],
+                    'legacy_returned_equivalent_quantity': row['legacy_returned_equivalent_quantity'],
+                    'legacy_net_equivalent_quantity': row['legacy_net_equivalent_quantity'],
+                    'exact_gross_equivalent_quantity': row['exact_gross_equivalent_quantity'],
+                    'exact_returned_equivalent_quantity': row['exact_returned_equivalent_quantity'],
+                    'exact_net_equivalent_quantity': row['exact_net_equivalent_quantity'],
+                    'combined_exact_equivalent_total': row['combined_exact_equivalent_total'],
+                    'gross_content': row['gross_content'],
+                    'returned_content': row['returned_content'],
+                    'net_content': row['net_content'],
+                    'package_content': row['package_content'],
+                    'content_unit': row['content_unit'],
+                    'complete_packages': row['complete_packages'],
+                    'residual_content': row['residual_content'],
                     'movement_count': row['movement_count'],
                     **(
                         {'estimated_cost': row['estimated_cost']}
@@ -1692,6 +1789,16 @@ class StockConsumptionReportView(BaseReportView):
             headers = (
                 'product_name', 'internal_code', 'category', 'unit',
                 'gross_quantity', 'returned_quantity', 'net_quantity',
+                'legacy_gross_equivalent_quantity',
+                'legacy_returned_equivalent_quantity',
+                'legacy_net_equivalent_quantity',
+                'exact_gross_equivalent_quantity',
+                'exact_returned_equivalent_quantity',
+                'exact_net_equivalent_quantity',
+                'combined_exact_equivalent_total',
+                'gross_content', 'returned_content', 'net_content',
+                'package_content', 'content_unit', 'complete_packages',
+                'residual_content',
                 'movement_count',
             )
             if include_cost:

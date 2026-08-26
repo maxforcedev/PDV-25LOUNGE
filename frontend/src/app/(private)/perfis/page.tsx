@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Pencil, Plus, Power, ShieldCheck } from "lucide-react";
+import { Pencil, Plus, Power, ShieldCheck, Users } from "lucide-react";
 import { AdminGuard } from "@/components/admin-guard";
 import { PageHeader } from "@/components/page-header";
 import { Alert, Button, ConfirmDialog, EmptyState, Field, Input, Modal, Pagination, StatusBadge, TableLoading, Textarea } from "@/components/ui";
@@ -15,7 +15,7 @@ type ProfileForm = { company: number; name: string; description: string; receive
 
 type CrudColumn = "view" | "create" | "change" | "change_status";
 const columnLabels: Record<CrudColumn, string> = { view: "Visualizar", create: "Cadastrar", change: "Editar", change_status: "Inativar" };
-const moduleLabels: Record<string, string> = { companies: "Empresas e filiais", accounts: "Usuários e perfis", products: "Produtos", branch_prices: "Preços por filial", inventory: "Estoque", cash_registers: "Caixa", sales: "Vendas", payment_methods: "Formas de pagamento", promotions: "Promoções", reports: "Relatórios", audit_logs: "Auditoria", commissions: "Comissões" };
+const moduleLabels: Record<string, string> = { companies: "Empresas e filiais", accounts: "Usuários e perfis", products: "Produtos", suppliers: "Fornecedores", branch_prices: "Preços por filial", inventory: "Estoque", cash_registers: "Caixa", sales: "Vendas", payment_methods: "Formas de pagamento", promotions: "Promoções", reports: "Relatórios", audit_logs: "Auditoria", commissions: "Comissões" };
 function permissionSuffix(code: string) { return code.split(".").slice(1).join("."); }
 function PermissionMatrix({ catalog, selected, onChange }: { catalog: FunctionalPermission[]; selected: string[]; onChange: (codes: string[]) => void }) {
   const modules = Object.entries(Object.groupBy(catalog, (item) => item.module || "general"));
@@ -53,6 +53,8 @@ function Profiles() {
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState<AccessProfile | null>(null);
+  const [usersModal, setUsersModal] = useState<{ name: string; users: Array<{ id: number; email: string; first_name: string; last_name: string }> } | null>(null);
+  const [usersLoading, setUsersLoading] = useState(false);
   const companyIdRef = useRef(currentCompany?.id);
   companyIdRef.current = currentCompany?.id;
 
@@ -112,11 +114,36 @@ function Profiles() {
     finally { setSaving(false); }
   }
 
+  async function viewUsers(profile: AccessProfile) {
+    setUsersLoading(true);
+    setError("");
+    try {
+      const users = await http.get<Array<{ id: number; email: string; first_name: string; last_name: string }>>(`access-profiles/${profile.id}/users/`);
+      setUsersModal({ name: profile.name, users });
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar os usuários.");
+    } finally { setUsersLoading(false); }
+  }
+
   return <>
     <PageHeader title="Perfis de acesso" description={`Permissões funcionais de ${currentCompany?.trade_name || "sua empresa"}.`} action={<Button onClick={openCreate} disabled={!canAdd}><Plus className="size-4" />Novo perfil</Button>} />
-    <div className="space-y-4 p-4 sm:p-6 lg:p-8">{error && !open && <Alert message={error} />}{success && <Alert type="success" message={success} />}<section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Perfis cadastrados</h2><p className="mt-1 text-[11px] text-slate-500">Acesso definido por empresa, sem papéis fixos</p></div><ShieldCheck className="size-5 text-slate-300" /></div>{loading ? <TableLoading /> : data?.results.length ? <><div className="table-wrap"><table className="data-table"><thead><tr><th>Perfil</th><th>Permissões</th><th>Tipo</th><th>Status</th><th>Atualização</th><th className="text-right">Ações</th></tr></thead><tbody>{data.results.map((profile) => <tr key={profile.id}><td><strong className="block">{profile.name}</strong><span className="text-[11px] text-slate-400">{profile.description || "Sem descrição"}</span></td><td>{profile.permission_codes.length}</td><td>{profile.is_system ? "Padrão do sistema" : "Personalizado"}</td><td><StatusBadge active={profile.status === "active"} /></td><td>{formatDate(profile.updated_at)}</td><td><div className="flex justify-end gap-1"><button className="icon-button" onClick={() => void openEdit(profile)} disabled={!canChange}><Pencil className="size-4" /></button><button className="icon-button" onClick={() => setConfirming(profile)} disabled={!canStatus}><Power className="size-4" /></button></div></td></tr>)}</tbody></table></div><Pagination count={data.count} next={data.next} previous={data.previous} onPage={load} /></> : <EmptyState title="Nenhum perfil cadastrado" description="Crie um perfil e selecione as permissões funcionais." />}</section></div>
+    <div className="space-y-4 p-4 sm:p-6 lg:p-8">{error && !open && <Alert message={error} />}{success && <Alert type="success" message={success} />}<section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Perfis cadastrados</h2>{/* <p className="mt-1 text-[11px] text-slate-500">Acesso definido por empresa, sem papéis fixos</p> */}</div><ShieldCheck className="size-5 text-slate-300" /></div>{loading ? <TableLoading /> : data?.results.length ? <><div className="table-wrap"><table className="data-table"><thead><tr><th>Perfil</th><th>Permissões</th><th>Usuários</th><th>Tipo</th><th>Status</th><th>Atualização</th><th className="text-right">Ações</th></tr></thead><tbody>{data.results.map((profile) => <tr key={profile.id}><td><strong className="block">{profile.name}</strong><span className="text-[11px] text-slate-400">{profile.description || "Sem descrição"}</span></td><td>{profile.permission_codes.length}</td><td><button className="text-xs font-semibold text-primary hover:underline" onClick={() => void viewUsers(profile)} disabled={usersLoading}>{profile.user_count ?? 0}</button></td><td>{profile.is_system ? "Padrão do sistema" : "Personalizado"}</td><td><StatusBadge active={profile.status === "active"} /></td><td>{formatDate(profile.updated_at)}</td><td><div className="flex justify-end gap-1"><button className="icon-button" onClick={() => void viewUsers(profile)} disabled={usersLoading} title="Ver usuários"><Users className="size-4" /></button><button className="icon-button" onClick={() => void openEdit(profile)} disabled={!canChange}><Pencil className="size-4" /></button><button className="icon-button" onClick={() => setConfirming(profile)} disabled={!canStatus}><Power className="size-4" /></button></div></td></tr>)}</tbody></table></div><Pagination count={data.count} next={data.next} previous={data.previous} onPage={load} /></> : <EmptyState title="Nenhum perfil cadastrado" description="Crie um perfil e selecione as permissões funcionais." />}</section></div>
     <Modal open={open} title={editing ? "Editar perfil" : "Novo perfil"} description="Matriz gerada exclusivamente pelo catálogo de permissões da API." onClose={() => !saving && setOpen(false)} size="xl"><form onSubmit={submit}><div className="grid gap-5 p-5 sm:grid-cols-2 sm:p-6"><div className="sm:col-span-2">{error && <Alert message={error} />}</div><Field label="Nome" error={fieldError(fields, "name")}><Input required value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} disabled={saving} /></Field><Field label="Descrição" optional error={fieldError(fields, "description")}><Textarea value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} disabled={saving} /></Field><label className="flex items-center gap-3 rounded-lg border border-slate-200 p-4 text-xs font-semibold"><input type="checkbox" className="size-4 accent-primary" checked={form.receives_commission} onChange={(event) => setForm((current) => ({ ...current, receives_commission: event.target.checked }))} /><span><strong className="block">Recebe comissão</strong><small className="font-normal text-slate-400">Quando desmarcado, vendas deste perfil não geram comissão.</small></span></label><Field label="Comissão do perfil" optional error={fieldError(fields, "commission_rate")}><Input inputMode="decimal" placeholder="Usar padrão da filial" value={form.commission_rate || ""} onChange={(event) => setForm((current) => ({ ...current, commission_rate: event.target.value || null }))} disabled={saving || !form.receives_commission} /></Field><div className="sm:col-span-2"><h3 className="mb-3 text-xs font-bold">Permissões</h3><PermissionMatrix catalog={catalog} selected={form.permission_codes} onChange={(permission_codes) => setForm((current) => ({ ...current, permission_codes }))} />{fieldError(fields, "permission_codes") && <p className="field-error">{fieldError(fields, "permission_codes")}</p>}</div></div><div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4"><Button type="button" variant="secondary" onClick={() => setOpen(false)} disabled={saving}>Cancelar</Button><Button type="submit" loading={saving}>Salvar perfil</Button></div></form></Modal>
     <ConfirmDialog open={!!confirming} title={`${confirming?.status === "active" ? "Inativar" : "Ativar"} perfil`} message={`Confirma a alteração de status de “${confirming?.name || ""}”?`} confirmLabel={confirming?.status === "active" ? "Inativar" : "Ativar"} danger={confirming?.status === "active"} loading={saving} onClose={() => !saving && setConfirming(null)} onConfirm={changeStatus} />
+    <Modal open={!!usersModal} title={`Usuários do perfil "${usersModal?.name || ""}"`} onClose={() => setUsersModal(null)}>
+      <div className="p-5">
+        {usersModal?.users.length ? (
+          <div className="space-y-2">
+            {usersModal.users.map((u) => (
+              <div key={u.id} className="flex items-center gap-3 rounded-md border border-slate-100 p-3 text-xs">
+                <span className="flex size-8 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary">{(u.first_name?.[0] || "") + (u.last_name?.[0] || "") || u.email?.[0]?.toUpperCase() || "?"}</span>
+                <div><strong className="block">{u.first_name} {u.last_name}</strong><small className="text-slate-400">{u.email}</small></div>
+              </div>
+            ))}
+          </div>
+        ) : <EmptyState title="Nenhum usuário vinculado" description="Este perfil não possui usuários ativos no momento." />}
+      </div>
+    </Modal>
   </>;
 }
 

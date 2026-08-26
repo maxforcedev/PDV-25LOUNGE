@@ -43,6 +43,9 @@ class AuditLogPermission(BasePermission):
         user = request.user
         if not user.is_authenticated or not user.can_login or not user.is_active:
             return False
+        support_session = getattr(request, 'support_session', None)
+        if support_session and not support_session.impersonated_user_id:
+            return True
         if user.is_superuser:
             return True
         if request.query_params.get('scope') == 'all':
@@ -65,7 +68,10 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     def scoped_queryset(self):
         queryset = AuditLog.objects.select_related('company', 'branch', 'actor')
         user = self.request.user
-        if not user.is_superuser:
+        support_session = getattr(self.request, 'support_session', None)
+        if support_session and not support_session.impersonated_user_id:
+            queryset = queryset.filter(company_id=support_session.company_id)
+        elif not user.is_superuser:
             branches = accessible_branches(user, 'audit_logs.view')
             branch_ids = branches.values_list('id', flat=True)
             company_ids = branches.values_list('company_id', flat=True)

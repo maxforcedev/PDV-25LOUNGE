@@ -20,6 +20,9 @@ from django.utils import timezone
 
 from apps.cash.models import CashMovement, CashMovementType, CashSession, CashSessionStatus, ResultEffect
 from apps.companies.models import BranchSettings
+from apps.inventory.content import (
+    exact_multiply, exact_multiply_quantized, exact_sum,
+)
 from apps.inventory.models import Stock, StockMovement
 from apps.inventory.models import MovementType
 from apps.products.models import InventoryBehavior
@@ -56,6 +59,7 @@ def _apply_sale_filters(queryset, filters, *, timestamp_field):
         'status': 'status',
         'beneficiary': 'beneficiary_user_id',
         'user_type': 'beneficiary_user__user_type',
+        'channel': 'channel',
     }
     for parameter, lookup in mappings.items():
         if filters.get(parameter) is not None:
@@ -749,7 +753,9 @@ def withdrawal_summary(queryset):
 def filtered_inventory_movements(*, branch, start, end, filters):
     queryset = period_filter(
         StockMovement.objects.filter(stock__branch=branch), 'created_at', start, end
-    ).select_related('stock__product__category', 'user', 'sale')
+    ).select_related(
+        'stock__product__category', 'stock__product__fraction_config', 'user', 'sale'
+    )
     mappings = {
         'product': 'stock__product_id',
         'category': 'stock__product__category_id',
@@ -773,7 +779,10 @@ def stock_consumption_report(*, branch, start, end, filters):
     rows = period_filter(
         StockMovement.objects.filter(stock__branch=branch, movement_type__in=movement_types),
         'created_at', start, end,
-    ).select_related('stock__product__category', 'user', 'sale', 'original_movement')
+    ).select_related(
+        'stock__product__category', 'stock__product__fraction_config', 'user', 'sale',
+        'original_movement__stock__product',
+    ).prefetch_related('sale__items')
     if filters.get('product') is not None:
         rows = rows.filter(stock__product_id=filters['product'])
     if filters.get('category') is not None:
@@ -788,6 +797,28 @@ def stock_consumption_report(*, branch, start, end, filters):
     elif origin == 'reversal':
         rows = rows.filter(movement_type__in=(MovementType.SALE_CANCELLATION, MovementType.CONSUMPTION_CANCELLATION))
     summary = {}
+
+    def historical_unit_cost(movement):
+        if movement.unit_cost_snapshot is not None:
+            return movement.unit_cost_snapshot
+        if movement.original_movement_id:
+            return historical_unit_cost(movement.original_movement)
+        if movement.sale_id:
+            for sale_item in movement.sale.items.all():
+                if sale_item.product_id == movement.stock.product_id:
+                    return sale_item.unit_cost
+                for component in sale_item.component_cost_snapshot or []:
+                    if int(component.get('product', 0)) == movement.stock.product_id:
+                        try:
+                            return Decimal(component['unit_cost'])
+                        except (KeyError, TypeError, ValueError):
+                            break
+        # Legacy manual movements predate immutable movement cost snapshots.
+        return movement.stock.product.cost
+
+    def add_quantity(entry, field, value):
+        entry[field] = exact_sum((entry[field], value))
+
     for movement in rows:
         product = movement.stock.product
         key = product.pk
@@ -796,23 +827,58 @@ def stock_consumption_report(*, branch, start, end, filters):
             'gross_quantity': Decimal('0.000'),
             'returned_quantity': Decimal('0.000'),
             'net_quantity': Decimal('0.000'),
+            'legacy_gross_equivalent_quantity': Decimal('0'),
+            'legacy_returned_equivalent_quantity': Decimal('0'),
+            'legacy_net_equivalent_quantity': Decimal('0'),
+            'exact_gross_equivalent_quantity': Decimal('0'),
+            'exact_returned_equivalent_quantity': Decimal('0'),
+            'exact_net_equivalent_quantity': Decimal('0'),
             'estimated_cost': Decimal('0.00'),
             'movement_count': 0,
+            'gross_content': Decimal('0.000000000'),
+            'returned_content': Decimal('0.000000000'),
+            'net_content': Decimal('0.000000000'),
+            'package_content': None,
+            'content_unit': None,
         })
-        quantity = movement.quantity.copy_abs()
-        if movement.quantity < 0:
-            entry['gross_quantity'] += quantity
-            entry['estimated_cost'] += (quantity * product.cost).quantize(
-                Decimal('0.01'), rounding=ROUND_HALF_UP
+        quantity = abs(movement.equivalent_quantity())
+        content = abs(movement.content_quantity) if movement.content_quantity is not None else None
+        if content is not None:
+            config = product.fraction_config
+            entry['package_content'] = config.package_content
+            entry['content_unit'] = config.content_unit
+        if movement.equivalent_quantity() < 0:
+            add_quantity(entry, 'gross_quantity', quantity)
+            if content is not None:
+                entry['gross_content'] += content
+                add_quantity(entry, 'exact_gross_equivalent_quantity', quantity)
+            else:
+                add_quantity(entry, 'legacy_gross_equivalent_quantity', quantity)
+            entry['estimated_cost'] += exact_multiply_quantized(
+                quantity, historical_unit_cost(movement), Decimal('0.01')
             )
         else:
-            entry['returned_quantity'] += quantity
-            entry['estimated_cost'] -= (quantity * product.cost).quantize(
-                Decimal('0.01'), rounding=ROUND_HALF_UP
+            add_quantity(entry, 'returned_quantity', quantity)
+            if content is not None:
+                entry['returned_content'] += content
+                add_quantity(entry, 'exact_returned_equivalent_quantity', quantity)
+            else:
+                add_quantity(entry, 'legacy_returned_equivalent_quantity', quantity)
+            entry['estimated_cost'] -= exact_multiply_quantized(
+                quantity, historical_unit_cost(movement), Decimal('0.01')
             )
         entry['movement_count'] += 1
     for entry in summary.values():
         entry['net_quantity'] = entry['gross_quantity'] - entry['returned_quantity']
+        entry['legacy_net_equivalent_quantity'] = (
+            entry['legacy_gross_equivalent_quantity']
+            - entry['legacy_returned_equivalent_quantity']
+        )
+        entry['exact_net_equivalent_quantity'] = (
+            entry['exact_gross_equivalent_quantity']
+            - entry['exact_returned_equivalent_quantity']
+        )
+        entry['net_content'] = entry['gross_content'] - entry['returned_content']
     summary_rows = sorted(
         summary.values(), key=lambda item: (-item['net_quantity'], item['product'].name)
     )
@@ -820,28 +886,30 @@ def stock_consumption_report(*, branch, start, end, filters):
 
 
 def inventory_kpis(branch, *, include_value=False, category=None):
-    stocks = Stock.objects.filter(
+    stocks = list(Stock.objects.select_related(
+        'product', 'product__fraction_config'
+    ).filter(
         branch=branch, product__inventory_behavior=InventoryBehavior.DIRECT,
-    )
+    ))
     if category:
-        stocks = stocks.filter(product__category_id=category)
+        stocks = [stock for stock in stocks if stock.product.category_id == category]
+    quantities = [stock.equivalent_quantity() for stock in stocks]
     result = {
-        'zero_count': stocks.filter(current_quantity=0).count(),
-        'negative_count': stocks.filter(current_quantity__lt=0).count(),
-        'below_minimum_count': stocks.filter(
-            current_quantity__gt=0, current_quantity__lt=F('minimum_quantity')
-        ).count(),
-        'physical_products': stocks.count(),
+        'zero_count': sum(quantity == 0 for quantity in quantities),
+        'negative_count': sum(quantity < 0 for quantity in quantities),
+        'below_minimum_count': sum(
+            quantity > 0 and quantity < stock.minimum_quantity
+            for stock, quantity in zip(stocks, quantities)
+        ),
+        'physical_products': len(stocks),
     }
     if include_value:
-        value = ExpressionWrapper(
-            Case(
-                When(current_quantity__gt=0, then=F('current_quantity')),
-                default=Value(Decimal('0.000')),
-                output_field=QUANTITY_FIELD,
-            ) * F('product__cost'), output_field=MONEY_FIELD
-        )
-        result['inventory_value'] = stocks.aggregate(
-            value=Coalesce(Sum(value), ZERO_MONEY)
-        )['value']
+        result['inventory_value'] = exact_sum(
+            exact_multiply(
+                max(quantity, Decimal('0')),
+                stock.average_unit_cost
+                if stock.average_unit_cost is not None else stock.product.cost,
+            )
+            for stock, quantity in zip(stocks, quantities)
+        ).quantize(CENT, rounding=ROUND_HALF_UP)
     return result

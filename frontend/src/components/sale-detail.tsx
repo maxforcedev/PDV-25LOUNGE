@@ -267,6 +267,14 @@ export function SaleDetail({
                         <span className="text-[11px] text-slate-400">
                           {item.internal_code} · {item.unit.toUpperCase()}
                         </span>
+                        {!!item.modifier_snapshot?.length && (
+                          <span className="mt-1 block text-[10px] text-slate-500">
+                            {item.modifier_snapshot.map((mod) => mod.option_name).join(", ")}
+                            {item.modifier_unit_total && item.modifier_unit_total !== "0.00"
+                              ? ` (+${formatBRL(item.modifier_unit_total)})`
+                              : ""}
+                          </span>
+                        )}
                         {item.promotion_name && (
                           <span className="mt-1 block text-[10px] font-bold text-success-strong">
                             {item.promotion_name} · benefício{" "}

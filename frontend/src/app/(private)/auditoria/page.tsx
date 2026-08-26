@@ -50,7 +50,37 @@ const valueLabels: Record<string, string> = {
   balance_correction: "Correção de saldo",
   operating_expense: "Despesa operacional",
   neutral: "Não afeta o resultado",
+  direct: "Estoque próprio",
+  none: "Sem estoque",
+  components: "Baixa por componentes",
+  counter: "Balcão",
+  table: "Mesa",
+  command: "Comanda",
+  ml: "mL",
+  g: "g",
 };
+const auditActionLabels: Record<string, string> = {
+  "product.branch_config.copy": "Configuração do produto copiada entre filiais",
+  "category.branch_config.copy": "Configuração da categoria copiada entre filiais",
+};
+const auditFieldLabels: Record<string, string> = {
+  branch_id: "Filial de destino",
+  is_available: "Disponibilidade",
+  channel_overrides: "Disponibilidade por canal",
+  effective_channels: "Canais efetivos",
+  price_override: "Preço específico da filial",
+  effective_price: "Preço efetivo",
+  destinations: "Destinos de produção",
+  source_branch: "Filial de origem",
+  copied_from: "Configuração da filial de origem",
+  category_id: "Categoria",
+};
+function auditActionLabel(action: string, fallback: string) {
+  return auditActionLabels[action] || fallback;
+}
+function auditFieldLabel(field: string, fallback: string) {
+  return auditFieldLabels[field] || fallback;
+}
 function humanValue(value: unknown): string {
   if (value === null || value === undefined || value === "")
     return "Não informado";
@@ -62,13 +92,13 @@ function humanValue(value: unknown): string {
 }
 function changeSummary(log: AuditLog) {
   const changed = (log.changes || [])
-    .filter((change) => change.field_label !== "Campo técnico")
+    .filter((change) => auditFieldLabel(change.field, change.field_label) !== "Campo técnico")
     .slice(0, 2);
   if (!changed.length) return "Alteração registrada";
   return changed
     .map(
       (change) =>
-        `${change.field_label}: ${change.before_label} → ${change.after_label}`,
+        `${auditFieldLabel(change.field, change.field_label)}: ${change.before_label} → ${change.after_label}`,
     )
     .join(" · ");
 }
@@ -118,6 +148,8 @@ function objectHref(log: AuditLog) {
   if (model === "branch") return "/filiais";
   if (model === "user") return "/usuarios";
   if (model === "accessprofile") return "/perfis";
+  if (model === "product") return `/produtos?edit=${log.object_id}`;
+  if (["productsupplier", "productsupplierunit"].includes(model || "")) return "/produtos";
   return null;
 }
 
@@ -439,7 +471,7 @@ function AuditPageInner() {
                 </option>
                 {options.actions.map((item) => (
                   <option key={item.value} value={item.value}>
-                    {item.label}
+                    {auditActionLabel(item.value, item.label)}
                   </option>
                 ))}
               </Select>
@@ -487,7 +519,7 @@ function AuditPageInner() {
                       <tr key={log.id}>
                         <td>{formatDate(log.created_at)}</td>
                         <td>
-                          <strong>{log.action_label}</strong>
+                          <strong>{auditActionLabel(log.action, log.action_label)}</strong>
                           <span className="block text-[11px] text-muted">
                             {log.branch_name ||
                               log.company_name ||
@@ -543,7 +575,7 @@ function AuditPageInner() {
         title="Detalhes da auditoria"
         description={
           selected
-            ? `${selected.action_label} em ${formatDate(selected.created_at)}`
+            ? `${auditActionLabel(selected.action, selected.action_label)} em ${formatDate(selected.created_at)}`
             : ""
         }
         onClose={() => setSelected(null)}
@@ -611,7 +643,7 @@ function AuditPageInner() {
                 <tbody>
                   {selected.changes?.length ? selected.changes.map((change, index) => (
                     <tr key={`${change.field}-${index}`}>
-                      <td className="font-semibold">{change.field_label}</td>
+                      <td className="font-semibold">{auditFieldLabel(change.field, change.field_label)}</td>
                       <td>{change.before_label}</td>
                       <td>{change.after_label}</td>
                     </tr>

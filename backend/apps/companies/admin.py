@@ -38,8 +38,8 @@ class BranchAdmin(admin.ModelAdmin):
 
 @admin.register(UserCompanyAccess)
 class UserCompanyAccessAdmin(admin.ModelAdmin):
-    list_display = ('user', 'company', 'access_profile', 'is_active')
-    list_filter = ('access_profile', 'is_active')
+    list_display = ('user', 'company', 'access_profile', 'is_active', 'is_owner')
+    list_filter = ('access_profile', 'is_active', 'is_owner')
     search_fields = ('user__email', 'company__trade_name')
 
     def has_add_permission(self, request):

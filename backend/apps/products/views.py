@@ -1,7 +1,8 @@
 import uuid
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import Count, Q
+from django.db.models import BooleanField, Count, OuterRef, Q, Subquery, Value
+from django.db.models.functions import Coalesce
 from django.db import IntegrityError, transaction
 from rest_framework import status, viewsets
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -10,16 +11,35 @@ from rest_framework.response import Response
 
 from apps.base.audit import audit_log, model_snapshot
 from apps.companies.models import Branch, Company, Status
-from .models import BranchProductPrice, Category, InventoryBehavior, Product
+from apps.companies.selectors import user_has_branch_permission, user_has_company_permission
+from .models import BranchProductPrice, Category, InventoryBehavior, Product, SalesChannel
+from .models import (
+    FractionableProductConfig, ModifierGroup, ModifierOption, ProductBranchConfig,
+    ProductComponent, ProductFractionComponent, ProductModifierGroup,
+    ProductProductionDestination, ProductionDestination,
+)
 from .permissions import ProductFunctionalPermission
 from .serializers import (
     BranchProductPriceSerializer,
     CategorySerializer,
     CompositionSerializer,
+    CopyBranchConfigurationSerializer,
+    CopyCategoryConfigurationSerializer,
+    DuplicateProductSerializer,
+    FractionableProductConfigSerializer,
+    ModifierGroupSerializer,
+    ModifierOptionSerializer,
+    ProductBranchConfigSerializer,
     ProductComponentSerializer,
+    ProductDestinationsSerializer,
+    ProductFractionComponentSerializer,
+    ProductModifierGroupSerializer,
     ProductSerializer,
+    ProductionDestinationSerializer,
 )
-from .services import reorder_categories
+from .services import (
+    copy_branch_configuration, duplicate_product, reorder_categories,
+)
 
 
 def branch_price_comparison(company_id, *, product=None, category=None, status=None):
@@ -125,6 +145,7 @@ class CategoryViewSet(CatalogViewSet):
         'partial_update': 'categories.change',
         'activate': 'categories.change_status', 'deactivate': 'categories.change_status',
         'reorder': 'categories.change',
+        'apply_config_to_products': 'categories.change',
     }
 
     def get_queryset(self):
@@ -216,33 +237,112 @@ class CategoryViewSet(CatalogViewSet):
             ).data
         )
 
+    @action(detail=True, methods=['post'], url_path='apply-config')
+    @transaction.atomic
+    def apply_config_to_products(self, request, pk=None):
+        category = self.get_object()
+        fields_to_apply = (
+            'available_counter', 'available_table', 'available_command',
+            'participates_in_service_fee', 'participates_in_commission',
+        )
+        products = list(category.products.all())
+        affected = 0
+        reference = uuid.uuid4()
+        for product in products:
+            changed = {}
+            for field in fields_to_apply:
+                current = getattr(product, field, None)
+                target = getattr(category, field)
+                if current is None or current != target:
+                    setattr(product, field, target)
+                    changed[field] = target
+            if changed:
+                product.save(update_fields=list(changed.keys()) + ['updated_at'])
+                affected += 1
+                audit_log(
+                    actor=request.user, action='category.apply_config',
+                    obj=product, company=category.company,
+                    before={f: getattr(product, f) for f in changed.keys()},
+                    after=changed,
+                    metadata={
+                        'category_id': str(category.pk),
+                        'operation_reference': str(reference),
+                    },
+                )
+        return Response({
+            'category': category.name,
+            'affected_count': affected,
+            'total_products': len(products),
+        })
+
 
 class ProductViewSet(CatalogViewSet):
     serializer_class = ProductSerializer
+    permission_codes = {
+        **CatalogViewSet.permission_codes,
+        'components': 'products.configure_composition',
+        'branch_config': 'products.configure_branch',
+        'fraction_config': 'products.configure_fraction',
+        'activate_fraction_config': 'products.configure_fraction',
+        'production_destinations': 'products.configure_destinations',
+        'duplicate': 'products.duplicate',
+        'copy_branch_config': 'products.configure_branch',
+        'copy_category_config': 'products.configure_branch',
+    }
 
     audit_fields = (
-        'category_id', 'name', 'description', 'internal_code', 'barcode', 'unit',
+        'category_id', 'name', 'description', 'internal_code', 'sku', 'barcode', 'unit',
         'cost', 'sale_price', 'image', 'status', 'inventory_behavior',
-        'is_sellable', 'is_favorite',
+        'is_sellable', 'is_favorite', 'available_counter', 'available_table',
+        'available_command', 'participates_in_service_fee',
+        'participates_in_commission',
     )
 
     @staticmethod
     def composition_snapshot(product):
-        return [
-            {
-                'component_product': item.component_product_id,
-                'component_name': item.component_product.name,
-                'component_unit': item.component_product.unit,
-                'quantity': format(item.quantity, 'f'),
-            }
-            for item in product.components.select_related('component_product').order_by(
-                'component_product_id'
-            )
-        ]
+        return {
+            'ordinary': [
+                {
+                    'component_product': item.component_product_id,
+                    'component_name': item.component_product.name,
+                    'component_internal_code': item.component_product.internal_code,
+                    'component_unit': item.component_product.unit,
+                    'quantity': format(item.quantity, 'f'),
+                }
+                for item in ProductComponent.objects.filter(
+                    parent_product=product
+                ).select_related('component_product').order_by('component_product_id')
+            ],
+            'fractional': [
+                {
+                    'component_product': item.component_product_id,
+                    'component_name': item.component_product.name,
+                    'component_internal_code': item.component_product.internal_code,
+                    'content_quantity': format(item.content_quantity, 'f'),
+                    'content_unit': item.component_product.fraction_config.content_unit,
+                    'source_fraction_config': item.component_product.fraction_config.pk,
+                    'source_package_content': format(
+                        item.component_product.fraction_config.package_content, 'f'
+                    ),
+                    'source_tracking_active': (
+                        item.component_product.fraction_config.tracking_active
+                    ),
+                }
+                for item in ProductFractionComponent.objects.filter(
+                    parent_product=product
+                ).select_related(
+                    'component_product__fraction_config'
+                ).order_by('component_product_id')
+            ],
+        }
 
     def get_queryset(self):
         queryset = Product.objects.select_related('company', 'category').prefetch_related(
-            'components__component_product'
+            'components__component_product',
+            'fraction_components__component_product__fraction_config',
+            'branch_configs', 'branch_prices',
+            'production_destination_links__destination',
+            'product_suppliers__supplier', 'product_suppliers__units',
         )
         branch = getattr(self.request, 'branch_context', None)
         if branch:
@@ -267,8 +367,35 @@ class ProductViewSet(CatalogViewSet):
                 Q(name__icontains=search)
                 | Q(internal_code__icontains=search)
                 | Q(barcode__icontains=search)
+                | Q(sku__icontains=search)
             )
         if params.get('pos') == 'true':
+            channel = params.get('channel', SalesChannel.COUNTER)
+            if channel not in SalesChannel.values:
+                raise ValidationError({'channel': 'Canal de venda invalido.'})
+            if branch:
+                config = ProductBranchConfig.objects.filter(
+                    branch=branch, product_id=OuterRef('pk')
+                )
+                queryset = queryset.annotate(
+                    effective_branch_available=Coalesce(
+                        Subquery(
+                            config.values('is_available')[:1],
+                            output_field=BooleanField(),
+                        ),
+                        Value(True),
+                    ),
+                    effective_branch_channel=Coalesce(
+                        Subquery(
+                            config.values(f'available_{channel}')[:1],
+                            output_field=BooleanField(),
+                        ),
+                        f'available_{channel}',
+                    ),
+                ).filter(
+                    effective_branch_available=True,
+                    effective_branch_channel=True,
+                )
             return queryset.filter(status=Status.ACTIVE, is_sellable=True).order_by(
                 '-is_favorite', 'category__sort_order', 'name', 'id'
             )
@@ -278,7 +405,7 @@ class ProductViewSet(CatalogViewSet):
     def perform_create(self, serializer):
         product = serializer.save()
         after = model_snapshot(product, self.audit_fields)
-        after['components'] = self.composition_snapshot(product)
+        after['composition'] = self.composition_snapshot(product)
         audit_log(
             actor=self.request.user, action='product.create', obj=product,
             company=product.company, after=after,
@@ -287,10 +414,10 @@ class ProductViewSet(CatalogViewSet):
     @transaction.atomic
     def perform_update(self, serializer):
         before = model_snapshot(serializer.instance, self.audit_fields)
-        before['components'] = self.composition_snapshot(serializer.instance)
+        before['composition'] = self.composition_snapshot(serializer.instance)
         product = serializer.save()
         after = model_snapshot(product, self.audit_fields)
-        after['components'] = self.composition_snapshot(product)
+        after['composition'] = self.composition_snapshot(product)
         audit_log(
             actor=self.request.user, action='product.update', obj=product,
             company=product.company, before=before,
@@ -310,6 +437,7 @@ class ProductViewSet(CatalogViewSet):
         normalized = []
         seen_codes = set()
         seen_barcodes = set()
+        seen_skus = set()
         seen_names = set()
         duplicate_errors = {}
         for row in rows:
@@ -323,8 +451,10 @@ class ProductViewSet(CatalogViewSet):
                 _display_name, name = normalize_product_name(str(item.get('name') or ''))
                 code = str(item.get('internal_code') or '').strip().casefold()
                 barcode = str(item.get('barcode') or '').strip().casefold()
+                sku = str(item.get('sku') or '').strip().casefold()
                 for field, value, seen in (
-                    ('internal_code', code, seen_codes), ('barcode', barcode, seen_barcodes)
+                    ('internal_code', code, seen_codes), ('barcode', barcode, seen_barcodes),
+                    ('sku', sku, seen_skus),
                 ):
                     if not value:
                         continue
@@ -350,13 +480,16 @@ class ProductViewSet(CatalogViewSet):
                 products = serializer.save()
         except IntegrityError:
             raise ValidationError({
-                'products': 'Outro cadastro gravou um código ou código de barras igual. Revise o lote.'
+                'products': 'Outro cadastro gravou um codigo, codigo de barras ou SKU igual. Revise o lote.'
             })
         for product in products:
             audit_log(
                 actor=request.user, action='product.bulk_create', obj=product,
                 company=product.company,
-                after=model_snapshot(product, self.audit_fields),
+                after={
+                    **model_snapshot(product, self.audit_fields),
+                    'composition': self.composition_snapshot(product),
+                },
             )
         return Response(
             {'count': len(products), 'results': self.get_serializer(products, many=True).data},
@@ -368,7 +501,14 @@ class ProductViewSet(CatalogViewSet):
     def components(self, request, pk=None):
         product = self.get_object()
         if request.method == 'GET':
-            return Response(ProductComponentSerializer(product.components.all(), many=True).data)
+            return Response({
+                'components': ProductComponentSerializer(
+                    product.components.all(), many=True
+                ).data,
+                'fraction_components': ProductFractionComponentSerializer(
+                    product.fraction_components.all(), many=True
+                ).data,
+            })
 
         data = request.data
         if isinstance(data, list):
@@ -384,10 +524,226 @@ class ProductViewSet(CatalogViewSet):
         after = self.composition_snapshot(product)
         audit_log(
             actor=request.user, action='product.composition.update', obj=product,
-            company=product.company, before={'components': before},
-            after={'components': after},
+            company=product.company, before=before, after=after,
         )
-        return Response(ProductComponentSerializer(product.components.all(), many=True).data)
+        return Response({
+            'components': ProductComponentSerializer(
+                product.components.all(), many=True
+            ).data,
+            'fraction_components': ProductFractionComponentSerializer(
+                product.fraction_components.all(), many=True
+            ).data,
+        })
+
+    @action(detail=True, methods=('get', 'put'), url_path='branch-config')
+    @transaction.atomic
+    def branch_config(self, request, pk=None):
+        product = self.get_object()
+        branch = request.branch_context
+        config = ProductBranchConfig.objects.filter(
+            product=product, branch=branch
+        ).first()
+        if request.method == 'GET':
+            if config is None:
+                config = ProductBranchConfig(
+                    product=product, branch=branch, is_available=True
+                )
+            return Response(ProductBranchConfigSerializer(
+                config, context={'request': request}
+            ).data)
+        before = model_snapshot(config, (
+            'is_available', 'available_counter', 'available_table',
+            'available_command',
+        )) if config else {}
+        payload = {**request.data, 'product': product.pk, 'branch': branch.pk}
+        serializer = ProductBranchConfigSerializer(
+            config, data=payload, context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        config = serializer.save()
+        audit_log(
+            actor=request.user, action='product.branch_config.update', obj=config,
+            company=product.company, branch=branch, before=before,
+            after=model_snapshot(config, (
+                'is_available', 'available_counter', 'available_table',
+                'available_command',
+            )),
+        )
+        return Response(serializer.data)
+
+    @action(detail=True, methods=('get', 'put'), url_path='fraction-config')
+    @transaction.atomic
+    def fraction_config(self, request, pk=None):
+        product = self.get_object()
+        config = FractionableProductConfig.objects.filter(product=product).first()
+        if request.method == 'GET':
+            return Response(
+                FractionableProductConfigSerializer(config).data if config else None
+            )
+        before = model_snapshot(config, (
+            'package_content', 'content_unit', 'tracking_active',
+        )) if config else {}
+        serializer = FractionableProductConfigSerializer(
+            config, data={**request.data, 'product': product.pk}
+        )
+        serializer.is_valid(raise_exception=True)
+        config = serializer.save()
+        audit_log(
+            actor=request.user, action='product.fraction_config.update', obj=config,
+            company=product.company, before=before,
+            after=model_snapshot(config, (
+                'package_content', 'content_unit', 'tracking_active',
+            )),
+        )
+        return Response(serializer.data)
+
+    @action(
+        detail=True, methods=('post',),
+        url_path='fraction-config/activate', url_name='fraction-config-activate',
+    )
+    def activate_fraction_config(self, request, pk=None):
+        product = self.get_object()
+        try:
+            config = product.fraction_config
+        except FractionableProductConfig.DoesNotExist:
+            raise ValidationError({'fraction_config': 'Configure o produto antes de ativar.'})
+        from apps.inventory.services import activate_fraction_tracking
+
+        config = activate_fraction_tracking(config=config, user=request.user)
+        return Response(FractionableProductConfigSerializer(config).data)
+
+    @action(detail=True, methods=('get', 'put'), url_path='production-destinations')
+    @transaction.atomic
+    def production_destinations(self, request, pk=None):
+        product = self.get_object()
+        branch = request.branch_context
+        queryset = ProductionDestination.objects.filter(
+            branch=branch, product_links__product=product
+        ).order_by('name', 'id')
+        if request.method == 'GET':
+            return Response(ProductionDestinationSerializer(queryset, many=True).data)
+        serializer = ProductDestinationsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        destinations = serializer.validated_data['destinations']
+        if any(destination.branch_id != branch.pk for destination in destinations):
+            raise ValidationError({'destinations': 'Todos os destinos devem pertencer a filial ativa.'})
+        before = list(queryset.values_list('pk', flat=True))
+        for link in ProductProductionDestination.objects.filter(
+            product=product, destination__branch=branch
+        ):
+            link.delete()
+        for destination in destinations:
+            ProductProductionDestination.objects.create(
+                product=product, destination=destination
+            )
+        audit_log(
+            actor=request.user, action='product.production_destinations.update',
+            obj=product, company=product.company, branch=branch,
+            before={'destinations': before},
+            after={'destinations': [item.pk for item in destinations]},
+        )
+        return Response(ProductionDestinationSerializer(destinations, many=True).data)
+
+    @action(detail=True, methods=('post',))
+    @transaction.atomic
+    def duplicate(self, request, pk=None):
+        source = self.get_object()
+        serializer = DuplicateProductSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        if serializer.validated_data['suppliers'] and not (
+            request.user.is_superuser
+            or user_has_company_permission(
+                request.user, source.company_id, 'suppliers.change'
+            )
+        ):
+            raise PermissionDenied('Voce nao possui permissao para copiar fornecedores.')
+        duplicate = duplicate_product(
+            product=source, options=serializer.validated_data
+        )
+        audit_log(
+            actor=request.user, action='product.duplicate', obj=duplicate,
+            company=duplicate.company,
+            after={
+                **model_snapshot(duplicate, self.audit_fields),
+                'composition': self.composition_snapshot(duplicate),
+                'source_product_id': source.pk,
+                'copied_relations': serializer.validated_data,
+            },
+        )
+        return Response(
+            self.get_serializer(duplicate).data, status=status.HTTP_201_CREATED
+        )
+
+    def _validate_copy_branches(self, request, source, targets):
+        for branch_id in [source, *targets]:
+            if not request.user.is_superuser and not user_has_branch_permission(
+                request.user, branch_id, 'products.configure_branch'
+            ):
+                raise PermissionDenied('Filial fora do contexto autorizado para copia.')
+
+    @action(detail=True, methods=('post',), url_path='copy-branch-config')
+    def copy_branch_config(self, request, pk=None):
+        product = self.get_object()
+        serializer = CopyBranchConfigurationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        self._validate_copy_branches(
+            request, data['source_branch'], data['target_branches']
+        )
+        copied = copy_branch_configuration(
+            products=[product], **data
+        )
+        reference = uuid.uuid4()
+        for copied_row in copied:
+            copied_product = copied_row['product']
+            branch = copied_row['target_branch']
+            audit_log(
+                actor=request.user, action='product.branch_config.copy',
+                obj=copied_product, company=copied_product.company, branch=branch,
+                before=copied_row['before'],
+                after={
+                    **copied_row['after'],
+                    'source_branch': data['source_branch'],
+                    'copied_from': copied_row['source'],
+                },
+                metadata={'operation_reference': str(reference)},
+            )
+        return Response({'operation_reference': str(reference), 'count': len(copied)})
+
+    @action(detail=False, methods=('post',), url_path='copy-category-config')
+    def copy_category_config(self, request):
+        serializer = CopyCategoryConfigurationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        branch = request.branch_context
+        try:
+            category = Category.objects.get(
+                pk=data.pop('category'), company_id=branch.company_id
+            )
+        except Category.DoesNotExist:
+            raise ValidationError({'category': 'Categoria fora da empresa atual.'})
+        self._validate_copy_branches(
+            request, data['source_branch'], data['target_branches']
+        )
+        products = list(Product.objects.filter(category=category).order_by('pk'))
+        copied = copy_branch_configuration(products=products, **data)
+        reference = uuid.uuid4()
+        for copied_row in copied:
+            product = copied_row['product']
+            target = copied_row['target_branch']
+            audit_log(
+                actor=request.user, action='category.branch_config.copy', obj=product,
+                company=product.company, branch=target,
+                before=copied_row['before'],
+                after={
+                    **copied_row['after'],
+                    'category_id': category.pk,
+                    'source_branch': data['source_branch'],
+                    'copied_from': copied_row['source'],
+                },
+                metadata={'operation_reference': str(reference)},
+            )
+        return Response({'operation_reference': str(reference), 'count': len(copied)})
 
     @action(detail=False, methods=['get'], url_path='price-comparison')
     def price_comparison(self, request):
@@ -618,3 +974,297 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
             company=instance.branch.company, branch=instance.branch, before=before,
         )
         instance.delete()
+
+
+class ProductionDestinationViewSet(viewsets.ModelViewSet):
+    serializer_class = ProductionDestinationSerializer
+    permission_classes = (ProductFunctionalPermission,)
+    http_method_names = ('get', 'post', 'put', 'patch', 'head', 'options')
+    permission_codes = {
+        'list': 'products.view',
+        'retrieve': 'products.view',
+        'create': 'products.configure_destinations',
+        'update': 'products.configure_destinations',
+        'partial_update': 'products.configure_destinations',
+        'activate': 'products.configure_destinations',
+        'deactivate': 'products.configure_destinations',
+    }
+
+    def get_queryset(self):
+        branch = self.request.branch_context
+        queryset = ProductionDestination.objects.filter(branch=branch)
+        item_status = self.request.query_params.get('status')
+        if item_status:
+            queryset = queryset.filter(status=item_status)
+        search = self.request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(Q(name__icontains=search) | Q(code__icontains=search))
+        return queryset.order_by('name', 'id')
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        destination = serializer.save()
+        audit_log(
+            actor=self.request.user, action='production_destination.create',
+            obj=destination, company=destination.branch.company,
+            branch=destination.branch,
+            after=model_snapshot(destination, ('name', 'code', 'status')),
+        )
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        before = model_snapshot(serializer.instance, ('name', 'code', 'status'))
+        destination = serializer.save()
+        audit_log(
+            actor=self.request.user, action='production_destination.update',
+            obj=destination, company=destination.branch.company,
+            branch=destination.branch, before=before,
+            after=model_snapshot(destination, ('name', 'code', 'status')),
+        )
+
+    def _status(self, request, value):
+        destination = self.get_object()
+        before = model_snapshot(destination, ('status',))
+        destination.status = value
+        destination.save(update_fields=('status', 'updated_at'))
+        audit_log(
+            actor=request.user,
+            action=f'production_destination.{"activate" if value == Status.ACTIVE else "deactivate"}',
+            obj=destination, company=destination.branch.company,
+            branch=destination.branch, before=before,
+            after=model_snapshot(destination, ('status',)),
+        )
+        return Response(self.get_serializer(destination).data)
+
+    @action(detail=True, methods=('post',))
+    @transaction.atomic
+    def activate(self, request, pk=None):
+        return self._status(request, Status.ACTIVE)
+
+    @action(detail=True, methods=('post',))
+    @transaction.atomic
+    def deactivate(self, request, pk=None):
+        return self._status(request, Status.INACTIVE)
+
+
+class ModifierGroupViewSet(viewsets.ModelViewSet):
+    serializer_class = ModifierGroupSerializer
+    http_method_names = ('get', 'post', 'patch', 'put', 'head', 'options')
+
+    def get_queryset(self):
+        from apps.companies.selectors import accessible_companies
+        queryset = ModifierGroup.objects.select_related('company').prefetch_related('options')
+        branch = getattr(self.request, 'branch_context', None)
+        if branch:
+            queryset = queryset.filter(company_id=branch.company_id)
+        if not self.request.user.is_superuser:
+            queryset = queryset.filter(
+                company__in=accessible_companies(self.request.user, 'modifiers.view')
+            )
+        company = self.request.query_params.get('company')
+        if company:
+            queryset = queryset.filter(company_id=company)
+        return queryset
+
+    def get_permissions(self):
+        if self.action == 'create':
+            return [ProductFunctionalPermission()]
+        return [ProductFunctionalPermission()]
+
+    @property
+    def permission_codes(self):
+        return {
+            'list': 'modifiers.view',
+            'retrieve': 'modifiers.view',
+            'create': 'modifiers.change',
+            'update': 'modifiers.change',
+            'partial_update': 'modifiers.change',
+            'activate': 'modifiers.change',
+            'deactivate': 'modifiers.change',
+        }
+
+    def perform_create(self, serializer):
+        group = serializer.save()
+        audit_log(
+            actor=self.request.user, action='modifier_group.create',
+            obj=group, company=group.company,
+            after=model_snapshot(group, (
+                'company_id', 'name', 'is_required', 'min_selections',
+                'max_selections', 'allow_option_quantity', 'sort_order', 'status',
+            )),
+        )
+
+    def perform_update(self, serializer):
+        fields = ('company_id', 'name', 'is_required', 'min_selections',
+                   'max_selections', 'allow_option_quantity', 'sort_order', 'status')
+        before = model_snapshot(serializer.instance, fields)
+        group = serializer.save()
+        audit_log(
+            actor=self.request.user, action='modifier_group.update',
+            obj=group, company=group.company, before=before,
+            after=model_snapshot(group, fields),
+        )
+
+    def _status(self, request, value):
+        group = self.get_object()
+        before = model_snapshot(group, ('status',))
+        group.status = value
+        group.save(update_fields=('status', 'updated_at'))
+        audit_log(
+            actor=request.user,
+            action=f'modifier_group.{"activate" if value == Status.ACTIVE else "deactivate"}',
+            obj=group, company=group.company, before=before,
+            after=model_snapshot(group, ('status',)),
+        )
+        return Response(self.get_serializer(group).data)
+
+    @action(detail=True, methods=('post',))
+    @transaction.atomic
+    def activate(self, request, pk=None):
+        return self._status(request, Status.ACTIVE)
+
+    @action(detail=True, methods=('post',))
+    @transaction.atomic
+    def deactivate(self, request, pk=None):
+        return self._status(request, Status.INACTIVE)
+
+
+class ProductModifierGroupViewSet(viewsets.ModelViewSet):
+    serializer_class = ProductModifierGroupSerializer
+    permission_classes = (ProductFunctionalPermission,)
+    http_method_names = ('get', 'post', 'patch', 'put', 'head', 'options')
+
+    def get_queryset(self):
+        from apps.companies.selectors import accessible_companies
+        queryset = ProductModifierGroup.objects.select_related(
+            'product', 'modifier_group'
+        )
+        branch = getattr(self.request, 'branch_context', None)
+        if branch:
+            queryset = queryset.filter(product__company_id=branch.company_id)
+        if not self.request.user.is_superuser:
+            queryset = queryset.filter(
+                product__company__in=accessible_companies(
+                    self.request.user, 'modifiers.view'
+                )
+            )
+        product = self.request.query_params.get('product')
+        if product:
+            queryset = queryset.filter(product_id=product)
+        return queryset
+
+    @property
+    def permission_codes(self):
+        return {
+            'list': 'modifiers.view',
+            'retrieve': 'modifiers.view',
+            'create': 'modifiers.change',
+            'update': 'modifiers.change',
+            'partial_update': 'modifiers.change',
+            'activate': 'modifiers.change',
+            'deactivate': 'modifiers.change',
+        }
+
+    def perform_create(self, serializer):
+        link = serializer.save()
+        audit_log(
+            actor=self.request.user, action='product_modifier_link.create',
+            obj=link, company=link.product.company,
+            after=model_snapshot(link, ('product_id', 'modifier_group_id', 'sort_order', 'status')),
+        )
+
+    def perform_update(self, serializer):
+        fields = ('product_id', 'modifier_group_id', 'sort_order', 'status')
+        before = model_snapshot(serializer.instance, fields)
+        link = serializer.save()
+        audit_log(
+            actor=self.request.user, action='product_modifier_link.update',
+            obj=link, company=link.product.company, before=before,
+            after=model_snapshot(link, fields),
+        )
+
+    def _status(self, request, value):
+        link = self.get_object()
+        before = model_snapshot(link, ('status',))
+        link.status = value
+        link.save(update_fields=('status', 'updated_at'))
+        audit_log(
+            actor=request.user,
+            action=f'product_modifier_link.{"activate" if value == Status.ACTIVE else "deactivate"}',
+            obj=link, company=link.product.company, before=before,
+            after=model_snapshot(link, ('status',)),
+        )
+        return Response(self.get_serializer(link).data)
+
+    @action(detail=True, methods=('post',))
+    @transaction.atomic
+    def activate(self, request, pk=None):
+        return self._status(request, Status.ACTIVE)
+
+    @action(detail=True, methods=('post',))
+    @transaction.atomic
+    def deactivate(self, request, pk=None):
+        return self._status(request, Status.INACTIVE)
+
+
+class ModifierOptionViewSet(CatalogViewSet):
+    serializer_class = ModifierOptionSerializer
+    http_method_names = ('get', 'post', 'patch', 'head', 'options')
+    permission_codes = {
+        'list': 'modifiers.view', 'retrieve': 'modifiers.view',
+        'create': 'modifiers.change', 'update': 'modifiers.change',
+        'partial_update': 'modifiers.change',
+        'activate': 'modifiers.change', 'deactivate': 'modifiers.change',
+    }
+
+    def get_queryset(self):
+        queryset = ModifierOption.objects.select_related('modifier_group__company')
+        branch = getattr(self.request, 'branch_context', None)
+        if branch:
+            queryset = queryset.filter(modifier_group__company_id=branch.company_id)
+        if not self.request.user.is_superuser:
+            queryset = queryset.filter(
+                modifier_group__company__in=accessible_companies(self.request.user, 'modifiers.view')
+            )
+        group_id = self.request.query_params.get('modifier_group')
+        if group_id:
+            queryset = queryset.filter(modifier_group_id=group_id)
+        return queryset
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        option = serializer.save()
+        audit_log(
+            actor=self.request.user, action='modifier_option.create',
+            obj=option, company=option.modifier_group.company,
+            after=model_snapshot(option, ('name', 'option_type', 'additional_price', 'sort_order', 'status')),
+        )
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        fields = ('name', 'option_type', 'additional_price', 'sort_order', 'status')
+        before = model_snapshot(serializer.instance, fields)
+        option = serializer.save()
+        audit_log(
+            actor=self.request.user, action='modifier_option.update',
+            obj=option, company=option.modifier_group.company,
+            before=before, after=model_snapshot(option, fields),
+        )
+
+    @action(detail=True, methods=('post',))
+    @transaction.atomic
+    def activate(self, request, pk=None):
+        option = self.get_object()
+        option.status = Status.ACTIVE
+        option.save(update_fields=('status', 'updated_at'))
+        audit_log(actor=request.user, action='modifier_option.activate', obj=option, company=option.modifier_group.company)
+        return Response(self.get_serializer(option).data)
+
+    @action(detail=True, methods=('post',))
+    @transaction.atomic
+    def deactivate(self, request, pk=None):
+        option = self.get_object()
+        option.status = Status.INACTIVE
+        option.save(update_fields=('status', 'updated_at'))
+        audit_log(actor=request.user, action='modifier_option.deactivate', obj=option, company=option.modifier_group.company)
+        return Response(self.get_serializer(option).data)

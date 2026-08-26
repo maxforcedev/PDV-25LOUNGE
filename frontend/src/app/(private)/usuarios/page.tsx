@@ -7,10 +7,11 @@ import {
   Plus,
   Power,
   Search,
-  Shield,
+  ShieldX,
   SlidersHorizontal,
   Users,
 } from "lucide-react";
+import Link from "next/link";
 import { AdminGuard } from "@/components/admin-guard";
 import { UserCommissionSection } from "@/components/user-commission-section";
 import { PageHeader } from "@/components/page-header";
@@ -112,6 +113,10 @@ function UsersAdministration() {
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState<User | null>(null);
+  const [resetTarget, setResetTarget] = useState<User | null>(null);
+  const [resetPassword, setResetPassword] = useState("");
+  const [resetFields, setResetFields] = useState<Record<string, string[]>>({});
+  const [resetSaving, setResetSaving] = useState(false);
   const [draftFilters, setDraftFilters] = useState<UserFilters>(emptyFilters);
   const [appliedFilters, setAppliedFilters] =
     useState<UserFilters>(emptyFilters);
@@ -236,7 +241,7 @@ function UsersAdministration() {
     const accesses =
       target?.companies.map((company) => ({
         company_id: company.id,
-        access_profile_id: company.access_profile?.id ?? null,
+        access_profile_id: null,
         branch_accesses: target.branches
           .filter(
             (branch) =>
@@ -379,13 +384,12 @@ function UsersAdministration() {
       form.can_login &&
       form.company_accesses.some(
         (access) =>
-          !access.access_profile_id ||
           !access.branch_accesses.length ||
           access.branch_accesses.some((branch) => !branch.access_profile_id),
       )
     ) {
       setError(
-        "Com login, selecione perfil administrativo e ao menos uma filial com perfil.",
+        "Com login, selecione ao menos uma filial com perfil operacional.",
       );
       return;
     }
@@ -435,6 +439,30 @@ function UsersAdministration() {
       );
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function doResetPassword() {
+    if (!resetTarget || !resetPassword.trim()) return;
+    setResetSaving(true);
+    setResetFields({});
+    setError("");
+    try {
+      await http.post(`users/${resetTarget.id}/reset-password/`, {
+        new_password: resetPassword,
+      });
+      setResetTarget(null);
+      setResetPassword("");
+      setSuccess("Senha redefinida com sucesso.");
+    } catch (caught) {
+      if (caught instanceof ApiError) {
+        setError(caught.message);
+        setResetFields(caught.fields);
+      } else {
+        setError("Não foi possível redefinir a senha.");
+      }
+    } finally {
+      setResetSaving(false);
     }
   }
 
@@ -581,9 +609,9 @@ function UsersAdministration() {
           <div className="card-header">
             <div>
               <h2 className="text-sm font-bold">Usuários cadastrados</h2>
-              <p className="mt-1 text-[11px] text-slate-500">
+              {/* <p className="mt-1 text-[11px] text-slate-500">
                 Pessoas operacionais também podem existir sem login
-              </p>
+              </p> */}
             </div>
             <Users className="size-5 text-slate-300" />
           </div>
@@ -598,7 +626,6 @@ function UsersAdministration() {
                       <th>Usuário</th>
                       <th>Tipo</th>
                       <th>Login</th>
-                      <th>Perfil administrativo</th>
                       <th>Status</th>
                       <th>Cadastro</th>
                       <th className="text-right">Ações</th>
@@ -639,14 +666,6 @@ function UsersAdministration() {
                             </span>
                           </td>
                           <td>
-                            <span className="inline-flex items-center gap-1.5">
-                              <Shield className="size-3.5 text-primary" />
-                              {item.is_superuser
-                                ? "Superusuário"
-                                : company?.access_profile?.name || "Sem perfil"}
-                            </span>
-                          </td>
-                          <td>
                             <StatusBadge active={item.is_active} />
                           </td>
                           <td>{formatDate(item.created_at)}</td>
@@ -660,6 +679,21 @@ function UsersAdministration() {
                               >
                                 <Pencil className="size-4" />
                               </button>
+                              <button
+                                className="icon-button"
+                                aria-label="Redefinir senha"
+                                disabled={!canChange || !!item.is_superuser}
+                                onClick={() => { setResetTarget(item); setResetPassword(""); setResetFields({}); }}
+                              >
+                                <KeyRound className="size-4" />
+                              </button>
+                              <Link
+                                className="icon-button"
+                                aria-label="Bloqueios de acesso"
+                                href={`/usuarios/bloqueios?user=${item.id}`}
+                              >
+                                <ShieldX className="size-4" />
+                              </Link>
                               <button
                                 className="icon-button"
                                 aria-label="Alterar status"
@@ -823,51 +857,6 @@ function UsersAdministration() {
                     </label>
                     {access && (
                       <div className="mt-4 space-y-3">
-                        <Field
-                          label="Perfil administrativo"
-                          optional={!form.can_login}
-                        >
-                          <Select
-                            required={form.can_login}
-                            value={access.access_profile_id || ""}
-                            onChange={(event) =>
-                              updateAccess(company.id, {
-                                access_profile_id: event.target.value
-                                  ? Number(event.target.value)
-                                  : null,
-                                branch_accesses: event.target.value
-                                  ? access.branch_accesses
-                                  : [],
-                              })
-                            }
-                          >
-                            <option value="">Sem perfil administrativo</option>
-                            {access.access_profile_id &&
-                              !profiles[company.id]?.some(
-                                (profile) =>
-                                  profile.id === access.access_profile_id &&
-                                  profile.company_assignable,
-                              ) && (
-                                <option
-                                  value={access.access_profile_id}
-                                  disabled
-                                >
-                                  {profiles[company.id]?.find(
-                                    (profile) =>
-                                      profile.id === access.access_profile_id,
-                                  )?.name || "Perfil atual"}{" "}
-                                  (mantido sem permissão para reatribuir)
-                                </option>
-                              )}
-                            {profiles[company.id]
-                              ?.filter((profile) => profile.company_assignable)
-                              .map((profile) => (
-                                <option key={profile.id} value={profile.id}>
-                                  {profile.name}
-                                </option>
-                              ))}
-                          </Select>
-                        </Field>
                         {form.can_login && (
                           <div>
                             <p className="label">
@@ -994,6 +983,19 @@ function UsersAdministration() {
         onClose={() => setConfirming(null)}
         onConfirm={changeStatus}
       />
+      <Modal open={!!resetTarget} title="Redefinir senha" onClose={() => setResetTarget(null)}>
+        <div className="space-y-4 p-5">
+          <p className="text-sm text-muted">Defina uma nova senha para {resetTarget?.first_name} {resetTarget?.last_name} ({resetTarget?.email}).</p>
+          <Field label="Nova senha" error={fieldError(resetFields, "new_password")}>
+            <Input type="password" required value={resetPassword} onChange={(e) => setResetPassword(e.target.value)} disabled={resetSaving} autoComplete="new-password" />
+          </Field>
+          {error && <Alert message={error} />}
+          <div className="flex justify-end gap-2 border-t border-subtle pt-4">
+            <Button variant="secondary" onClick={() => setResetTarget(null)}>Cancelar</Button>
+            <Button loading={resetSaving} onClick={() => void doResetPassword()}>Redefinir senha</Button>
+          </div>
+        </div>
+      </Modal>
     </>
   );
 }

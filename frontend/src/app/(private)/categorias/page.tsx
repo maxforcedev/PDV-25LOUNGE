@@ -58,7 +58,12 @@ function Categories() {
   const [orderState, setOrderState] = useState<"" | "saving" | "error">("");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Category | null>(null);
-  const [form, setForm] = useState({ company: 0, name: "", description: "" });
+  const [form, setForm] = useState({
+    company: 0, name: "", description: "",
+    available_counter: true, available_table: true, available_command: true,
+    participates_in_service_fee: true, participates_in_commission: true,
+  });
+  const [applyingConfig, setApplyingConfig] = useState<Category | null>(null);
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState<Category | null>(null);
@@ -136,7 +141,11 @@ function Categories() {
     setError("");
     if (!category) {
       setEditing(null);
-      setForm({ company: currentCompany?.id || 0, name: "", description: "" });
+      setForm({
+        company: currentCompany?.id || 0, name: "", description: "",
+        available_counter: true, available_table: true, available_command: true,
+        participates_in_service_fee: true, participates_in_commission: true,
+      });
       setOpen(true);
       return;
     }
@@ -149,6 +158,11 @@ function Categories() {
         company: detail.company,
         name: detail.name,
         description: detail.description || "",
+        available_counter: detail.available_counter,
+        available_table: detail.available_table,
+        available_command: detail.available_command,
+        participates_in_service_fee: detail.participates_in_service_fee,
+        participates_in_commission: detail.participates_in_commission,
       });
     } catch (caught) {
       setOpen(false);
@@ -217,6 +231,22 @@ function Categories() {
           ? caught.message
           : "Não foi possível salvar a ordem.",
       );
+    }
+  }
+
+  async function applyConfig() {
+    if (!applyingConfig) return;
+    setSaving(true);
+    setError("");
+    try {
+      const result = await http.post<{ affected_count: number; total_products: number }>(`categories/${applyingConfig.id}/apply-config/`, {});
+      setApplyingConfig(null);
+      setSuccess(`${result.affected_count} de ${result.total_products} produto(s) atualizado(s).`);
+    } catch (caught) {
+      setApplyingConfig(null);
+      setError(caught instanceof ApiError ? caught.message : "Não foi possível aplicar a configuração.");
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -439,6 +469,16 @@ function Categories() {
                           >
                             <Pencil className="size-4" />
                           </button>
+                          {item.product_count > 0 && (
+                            <button
+                              className="icon-button"
+                              disabled={!canChange}
+                              title="Aplicar configuração aos produtos"
+                              onClick={() => setApplyingConfig(item)}
+                            >
+                              <SlidersHorizontal className="size-4" />
+                            </button>
+                          )}
                           <button
                             className="icon-button"
                             disabled={!canStatus}
@@ -506,6 +546,34 @@ function Categories() {
               />
             </Field>
             {editing && (
+              <fieldset className="rounded-lg border border-slate-200 p-4">
+                <h3 className="text-xs font-bold">Padrões da categoria</h3>
+                <p className="mt-1 text-[11px] text-slate-500">Novos produtos herdam estes valores. Use &ldquo;Aplicar config&rdquo; para propagar aos produtos existentes.</p>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <label className="flex items-center gap-2 text-xs">
+                    <input type="checkbox" className="size-4 accent-primary" checked={form.available_counter} onChange={(e) => setForm((c) => ({ ...c, available_counter: e.target.checked }))} />
+                    Vende em balcão
+                  </label>
+                  <label className="flex items-center gap-2 text-xs">
+                    <input type="checkbox" className="size-4 accent-primary" checked={form.available_table} onChange={(e) => setForm((c) => ({ ...c, available_table: e.target.checked }))} />
+                    Vende em mesa
+                  </label>
+                  <label className="flex items-center gap-2 text-xs">
+                    <input type="checkbox" className="size-4 accent-primary" checked={form.available_command} onChange={(e) => setForm((c) => ({ ...c, available_command: e.target.checked }))} />
+                    Vende em comanda
+                  </label>
+                  <label className="flex items-center gap-2 text-xs">
+                    <input type="checkbox" className="size-4 accent-primary" checked={form.participates_in_service_fee} onChange={(e) => setForm((c) => ({ ...c, participates_in_service_fee: e.target.checked }))} />
+                    Participa da taxa de serviço
+                  </label>
+                  <label className="flex items-center gap-2 text-xs">
+                    <input type="checkbox" className="size-4 accent-primary" checked={form.participates_in_commission} onChange={(e) => setForm((c) => ({ ...c, participates_in_commission: e.target.checked }))} />
+                    Participa da comissão
+                  </label>
+                </div>
+              </fieldset>
+            )}
+            {editing && (
               <section className="rounded-lg border border-slate-200">
                 <div className="border-b border-slate-100 px-4 py-3">
                   <h3 className="text-xs font-bold">Produtos relacionados</h3>
@@ -564,6 +632,15 @@ function Categories() {
         loading={saving}
         onClose={() => setConfirming(null)}
         onConfirm={changeStatus}
+      />
+      <ConfirmDialog
+        open={!!applyingConfig}
+        title="Aplicar configuração aos produtos"
+        message={`Propagar os padrões de canais e participação financeira de "${applyingConfig?.name || ""}" para ${applyingConfig?.product_count || 0} produto(s)? Esta ação é auditada e não pode ser desfeita.`}
+        confirmLabel="Aplicar"
+        loading={saving}
+        onClose={() => setApplyingConfig(null)}
+        onConfirm={applyConfig}
       />
     </>
   );

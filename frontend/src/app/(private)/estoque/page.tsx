@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { AdminGuard } from "@/components/admin-guard";
 import { PageHeader } from "@/components/page-header";
+import { InventoryNav } from "@/components/inventory-nav";
 import { StockOperationDetails } from "@/components/stock-operation-details";
 import {
   Alert,
@@ -32,11 +33,12 @@ import {
   TableLoading,
   Textarea,
 } from "@/components/ui";
-import { fieldError, formatBRL, formatQuantity } from "@/lib/format";
+import { fieldError, formatBRL, formatDecimalBRL, formatQuantity } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
+import { contentUnitLabel, isUnitQuantityValid, packageContentDisplay, quantityInputMode } from "@/lib/inventory";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
-import type { Category, Paginated, Product, Stock, StockMovement } from "@/types";
+import type { Category, FractionableProductConfig, Paginated, Product, Stock, StockMovement } from "@/types";
 
 type Action = "entry" | "exit" | "adjustment" | "minimum";
 type Summary = {
@@ -94,6 +96,7 @@ function Inventory() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [fractionConfigs, setFractionConfigs] = useState<Record<number, FractionableProductConfig>>({});
   const [loading, setLoading] = useState(true);
   const [productsLoading, setProductsLoading] = useState(false);
   const [error, setError] = useState("");
@@ -174,6 +177,12 @@ function Inventory() {
       if (contextRef.current === context) {
         setData(stocks);
         setSummary(totals);
+        if (canViewProducts) {
+          void Promise.all(stocks.results.filter((stock) => stock.current_content != null).map((stock) => http.get<Product>(`products/${stock.product}/`).catch(() => null))).then((details) => {
+            if (contextRef.current !== context) return;
+            setFractionConfigs(Object.fromEntries(details.filter((item): item is Product => !!item?.fraction_config).map((item) => [item.id, item.fraction_config!] )));
+          });
+        }
       }
     } catch (caught) {
       if (contextRef.current === context) {
@@ -199,6 +208,7 @@ function Inventory() {
     setStatus("");
     setBehavior("");
     setData(null);
+    setFractionConfigs({});
     setSummary(null);
     setAction(null);
     setSuccess(null);
@@ -237,7 +247,7 @@ function Inventory() {
           : "",
     );
     setReason("");
-    setNature(next === "entry" ? "normal" : next === "exit" ? "loss" : "inventory");
+    setNature(next === "entry" ? "normal" : next === "exit" ? "damage" : "balance_correction");
     setFields({});
     setError("");
     setSuccess(null);
@@ -271,6 +281,13 @@ function Inventory() {
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (!action || !currentBranch) return;
+    const operationUnit = selected?.unit || products.find((product) => String(product.id) === productId)?.unit;
+    if (!isUnitQuantityValid(quantity, operationUnit, action === "adjustment" || action === "minimum")) {
+      const field = action === "adjustment" ? "final_quantity" : action === "minimum" ? "minimum_quantity" : "quantity";
+      setFields({ [field]: [operationUnit?.toLowerCase() === "un" ? "Informe uma quantidade inteira de unidades." : "Informe uma quantidade válida com até 3 casas decimais."] });
+      setError("Revise a quantidade informada.");
+      return;
+    }
     setSaving(true);
     setError("");
     setFields({});
@@ -374,6 +391,7 @@ function Inventory() {
           </div>
         }
       />
+      <InventoryNav />
       <div className="space-y-4 p-4 sm:p-6 lg:p-8">
         {error && !action && <Alert message={error} />}
         {success && <section role="status" className="rounded-md border border-success/30 bg-success/10 px-3.5 py-3 text-[13px] text-success-strong"><strong className="block">{success.label}</strong>{success.description && <p className="mt-1">{success.description}</p>}{success.reference && <StockOperationDetails reference={success.reference} count={success.count || 1} />}</section>}
@@ -598,7 +616,7 @@ function Inventory() {
             <Boxes className="size-5 text-slate-300" />
           </div>
           {loading ? (
-            <TableLoading columns={canViewCosts ? 7 : 5} />
+            <TableLoading columns={canViewCosts ? 8 : 5} />
           ) : data?.results.length ? (
             <>
               <div className="table-wrap">
@@ -610,7 +628,8 @@ function Inventory() {
                       <th>Saldo / Mínimo</th>
                       {canViewCosts && (
                         <>
-                          <th>Custo unitário</th>
+                          <th>Custo médio da filial</th>
+                          <th>Último custo da filial</th>
                           <th>Custo total</th>
                         </>
                       )}
@@ -631,17 +650,16 @@ function Inventory() {
                         </td>
                         <td>{stock.category_name || "-"}</td>
                         <td>
-                          <strong>
-                            {formatQuantity(stock.current_quantity)}{" "}
-                            {stock.unit.toUpperCase()}
-                          </strong>
-                          <span className="block text-[10px] text-slate-400">
-                            Mín. {formatQuantity(stock.minimum_quantity)}
-                          </span>
+                           <strong>{stock.current_content != null && fractionConfigs[stock.product] ? packageContentDisplay(stock.current_content, fractionConfigs[stock.product]) : `${formatQuantity(stock.current_quantity)} ${stock.unit.toUpperCase()}`}</strong>
+                           <span className="block text-[10px] text-slate-400">
+                             Mín. {formatQuantity(stock.minimum_quantity)}
+                           </span>
+                           {stock.current_content != null && fractionConfigs[stock.product] && <span className="mt-1 block text-[10px] text-muted">Total exato: {formatQuantity(stock.current_content)} {contentUnitLabel(fractionConfigs[stock.product].content_unit)}</span>}
                         </td>
                         {canViewCosts && (
                           <>
-                            <td>{formatBRL(stock.unit_cost)}</td>
+                            <td>{formatDecimalBRL(stock.average_unit_cost ?? stock.unit_cost)}</td>
+                            <td>{formatDecimalBRL(stock.last_unit_cost)}</td>
                             <td>{formatBRL(stock.total_cost)}</td>
                           </>
                         )}
@@ -790,7 +808,7 @@ function Inventory() {
                 </Field>
               </>
             )}
-            <Field
+             <Field
               label={
                 action === "adjustment"
                   ? "Saldo final"
@@ -807,18 +825,22 @@ function Inventory() {
                     : "quantity",
               )}
             >
-              <Input
+               <Input
                 required
-                inputMode="decimal"
+                inputMode={quantityInputMode(selected?.unit || products.find((product) => String(product.id) === productId)?.unit)}
+                step={(selected?.unit || products.find((product) => String(product.id) === productId)?.unit)?.toLowerCase() === "un" ? "1" : "0.001"}
+                min={action === "adjustment" || action === "minimum" ? "0" : "0.001"}
                 value={quantity}
                 onChange={(event) => { setQuantity(event.target.value); if (action !== "minimum") movementIdempotencyKey.current = null; }}
-              />
-            </Field>
+               />
+               {selected?.current_content != null && fractionConfigs[selected.product] && action !== "minimum" && <p className="mt-1 text-[10px] text-warning-strong">Movimentação manual deste endpoint é em embalagens inteiras. Para baixa de conteúdo residual use Perdas; para saldo físico exato use Inventário.</p>}
+             </Field>
             {action !== "minimum" && (
               <Field label="Natureza" error={fieldError(fields, "nature")}>
                 <Select value={nature} onChange={(event) => { setNature(event.target.value); movementIdempotencyKey.current = null; }}>
-                  {action === "entry" ? <><option value="normal">Compra / entrada normal</option><option value="bonus">Bonificada</option><option value="return">Devolução</option><option value="opening_balance">Saldo inicial</option><option value="correction">Correção</option><option value="other">Outros</option></> : action === "exit" ? <><option value="transfer">Transferência</option><option value="damage">Avaria</option><option value="loss">Perda</option><option value="internal_use">Uso interno</option><option value="correction">Correção</option><option value="other">Outros</option></> : <><option value="inventory">Inventário / contagem física</option><option value="balance_correction">Correção de saldo</option><option value="other">Outros</option></>}
+                  {action === "entry" ? <><option value="normal">Entrada normal</option><option value="bonus">Bonificada</option><option value="return">Devolução</option><option value="opening_balance">Saldo inicial</option><option value="correction">Correção</option><option value="other">Outros</option></> : action === "exit" ? <><option value="damage">Avaria operacional</option><option value="internal_use">Uso interno</option><option value="correction">Correção</option><option value="other">Outros</option></> : <><option value="balance_correction">Correção de saldo</option><option value="correction">Correção</option><option value="other">Outros</option></>}
                 </Select>
+                <p className="mt-1 text-[10px] text-muted">Transferências, perdas e inventários usam fluxos próprios auditados no menu de estoque.</p>
               </Field>
             )}
             {action !== "minimum" && (

@@ -1,0 +1,14 @@
+node_modules
+.next
+.git
+npm-debug.log*
+.env*
+!.env.example
+.npmrc
+coverage/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/

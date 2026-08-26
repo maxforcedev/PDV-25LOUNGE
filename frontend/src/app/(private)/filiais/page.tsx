@@ -372,6 +372,12 @@ function BranchesAdministration() {
             service_fee_rate: settings.service_fee_rate,
             commission_rate: settings.commission_rate,
             fixed_daily_cost: settings.fixed_daily_cost,
+            uses_tables: settings.uses_tables,
+            uses_commands: settings.uses_commands,
+            uses_counter: settings.uses_counter,
+            uses_consumption: settings.uses_consumption,
+            uses_cash_register: settings.uses_cash_register,
+            charges_service_fee: settings.charges_service_fee,
           },
         ),
       );
@@ -795,6 +801,36 @@ function BranchesAdministration() {
                   </Button>
                 </div>
               )}
+              <div className="rounded-lg border border-slate-200 p-4">
+                <strong className="block text-xs">Operação</strong>
+                <small className="mt-1 block text-[11px] text-slate-500">Ative ou desative recursos desta filial.</small>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <label className="flex items-center gap-2 text-xs">
+                    <input type="checkbox" className="size-4 accent-primary" checked={settings.uses_tables ?? false} onChange={(event) => setSettings((value) => value ? { ...value, uses_tables: event.target.checked } : value)} disabled={settingsSaving} />
+                    Mesas
+                  </label>
+                  <label className="flex items-center gap-2 text-xs">
+                    <input type="checkbox" className="size-4 accent-primary" checked={settings.uses_commands ?? false} onChange={(event) => setSettings((value) => value ? { ...value, uses_commands: event.target.checked } : value)} disabled={settingsSaving} />
+                    Comandas
+                  </label>
+                  <label className="flex items-center gap-2 text-xs">
+                    <input type="checkbox" className="size-4 accent-primary" checked={settings.uses_counter ?? true} onChange={(event) => setSettings((value) => value ? { ...value, uses_counter: event.target.checked } : value)} disabled={settingsSaving} />
+                    Balcão
+                  </label>
+                  <label className="flex items-center gap-2 text-xs">
+                    <input type="checkbox" className="size-4 accent-primary" checked={settings.uses_consumption ?? true} onChange={(event) => setSettings((value) => value ? { ...value, uses_consumption: event.target.checked } : value)} disabled={settingsSaving} />
+                    Consumação
+                  </label>
+                  <label className="flex items-center gap-2 text-xs">
+                    <input type="checkbox" className="size-4 accent-primary" checked={settings.uses_cash_register ?? true} onChange={(event) => setSettings((value) => value ? { ...value, uses_cash_register: event.target.checked } : value)} disabled={settingsSaving} />
+                    Caixa
+                  </label>
+                  <label className="flex items-center gap-2 text-xs">
+                    <input type="checkbox" className="size-4 accent-primary" checked={settings.charges_service_fee ?? false} onChange={(event) => setSettings((value) => value ? { ...value, charges_service_fee: event.target.checked } : value)} disabled={settingsSaving} />
+                    Cobra taxa de serviço
+                  </label>
+                </div>
+              </div>
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field
                   label="Taxa de serviço (%)"

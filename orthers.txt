@@ -2,23 +2,39 @@
 
 Referencia: ZIG, BARFACIL, MOGO GOURMET, ON CHEF, PDV LEGAL, TAKEAT, CONTROLE NA MAO
 opencode -s ses_ff9d0e215ffeTtoqj8gL2pSXeo
-
+ses_fc8d4c2c8ffeGCI1dz79beCGeG
 --------------------------------------------------------------------------------------------
-
-
-Analise com cuidado todos os detalhes do@PRD.md, do
-@design_system/design-system.html e do código, implementações e padrões
+NOSSA CONEXAO CAIU, VOLTE E Analise com cuidado todos os detalhes do@PRD.md, do código, implementações e padrões
 já realizados no projeto, e em seguida execute as sprints
-"Sprint 11.9 — Auditoria, Bloqueios Individuais, CMV e Consumo Físico" até "Sprint 12.3 — Validação Manual Final pelo Responsável do Produto" descritas
-na sessão "50. Sprints de Implementação" do @PRD.md.
+"V2.4 — Compras + contas a pagar + custo por Branch" até "V2.8 — Mesas e Comandas" descritas
+na sessão "65. V2 — Ordem de Implementação" do @PRD.md E NAO REALIZE TESTES AUTOMATIZADOS.
 Marque X nas tarefas conforme finalize as mesmas. Ignore tarefas já marcadas
 com X.
 
-nossa conexao caiu, volte a fazer o que foi pedido e 
-Analise com cuidado todos os detalhes do @PRD.md, do
-@design_system/design-system.html e do código, implementações e padrões
-já realizados no projeto, e em seguida execute a "Sprint 12.4 — Correções Finais Pós-Validação e Reconciliação Financeira" na sessão "50. Sprints de Implementação" do @PRD.md.
-Marque X nas tarefas conforme finalize as mesmas. Ignore tarefas já marcadas com X.
-
 ---------------------------------------------------------------------------------------------
  ssh-keygen -t ed25519 -C "lfcvs.rj@gmail.com"
+
+
+
+Use o contexto atual do projeto e o @PRD.md como fonte de verdade.
+
+Execute, em ordem, somente as sprints da seção 65. V2 — Ordem de Implementação, de:
+
+V2.6 — Product V2
+até
+V2.8 — Mesas e Comandas
+
+Regras:
+
+Analise o código existente antes de implementar e reutilize as estruturas e padrões já existentes.
+Não recrie funcionalidades já implementadas em estruturas paralelas.
+Ignore tarefas já marcadas com [X].
+Execute somente as tarefas ainda marcadas com [ ].
+Marque [X] no @PRD.md somente após concluir e validar cada tarefa.
+Não implemente nenhuma sprint posterior à V2.8.
+Não antecipe funcionalidades futuras fora dessas sprints.
+Não altere outras regras do PRD sem necessidade.
+Não realize nem crie testes automatizados.
+Faça apenas as validações técnicas já previstas no projeto, como migrations, manage.py check, build e verificações necessárias.
+
+Ao concluir a V2.8, pare.

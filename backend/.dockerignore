@@ -9,3 +9,11 @@ htmlcov/
 staticfiles/
 *.log
 .git/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+private_media/
+media/

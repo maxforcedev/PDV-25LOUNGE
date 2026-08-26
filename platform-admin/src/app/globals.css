@@ -1,0 +1,55 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Arial", "Helvetica Neue", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", "Cascadia Code", Consolas, monospace;
+  --color-ink: #111820;
+  --color-steel: #28343f;
+  --color-canvas: #eef0ed;
+  --color-paper: #f8f9f6;
+  --color-line: #d4d8d3;
+  --color-signal: #b8f12f;
+  --color-alert: #dc4b37;
+  --color-amber: #c58420;
+  --color-cyan: #168da0;
+}
+
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+html { background: #111820; }
+body { margin: 0; background: #eef0ed; color: #111820; font-family: var(--font-sans); }
+button, input, select, textarea { font: inherit; }
+button:not(:disabled), a { cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: .48; }
+::selection { background: #b8f12f; color: #111820; }
+
+@layer components {
+  .panel { @apply border border-line bg-paper shadow-[0_1px_0_rgba(17,24,32,.05)]; }
+  .panel-head { @apply flex min-h-14 items-center justify-between gap-4 border-b border-line px-4 py-3 sm:px-5; }
+  .eyebrow { @apply font-mono text-[10px] font-bold uppercase tracking-[.16em] text-steel/65; }
+  .field { @apply grid gap-1.5; }
+  .field label { @apply text-[11px] font-bold uppercase tracking-[.08em] text-steel/75; }
+  .input { @apply h-10 w-full rounded-none border border-line bg-white px-3 text-sm outline-none transition focus:border-steel focus:ring-2 focus:ring-signal/45; }
+  .textarea { @apply min-h-24 w-full resize-y rounded-none border border-line bg-white px-3 py-2 text-sm outline-none transition focus:border-steel focus:ring-2 focus:ring-signal/45; }
+  .btn { @apply inline-flex h-10 items-center justify-center gap-2 border px-4 text-xs font-bold uppercase tracking-[.06em] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal focus-visible:ring-offset-2; }
+  .btn-primary { @apply border-ink bg-ink text-white hover:bg-steel; }
+  .btn-signal { @apply border-ink bg-signal text-ink hover:bg-[#a6dd22]; }
+  .btn-quiet { @apply border-line bg-paper text-ink hover:border-steel hover:bg-white; }
+  .btn-danger { @apply border-alert bg-alert text-white hover:bg-[#be3927]; }
+  .status { @apply inline-flex items-center gap-1.5 whitespace-nowrap border px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-[.06em]; }
+  .table-wrap { @apply overflow-x-auto; }
+  .data-table { @apply w-full min-w-180 border-collapse text-left text-sm; }
+  .data-table th { @apply border-b border-line bg-[#e8ebe7] px-4 py-3 font-mono text-[10px] uppercase tracking-[.1em] text-steel/70; }
+  .data-table td { @apply border-b border-line px-4 py-3.5; }
+  .data-table tbody tr { @apply transition hover:bg-white; }
+}
+
+.core-grid {
+  background-image: linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+.spinner { width: 18px; height: 18px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .65s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+.enter { animation: enter .18s ease-out; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; } }

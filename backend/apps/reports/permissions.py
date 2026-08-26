@@ -6,6 +6,7 @@ from apps.companies.selectors import (
     user_has_branch_permission,
     user_has_company_permission,
 )
+from apps.saas.permissions import support_permission_decision
 
 
 REPORT_PERMISSIONS = (
@@ -40,6 +41,9 @@ class ReportsPermission(BasePermission):
         if not user.is_authenticated or not user.can_login or not user.is_active:
             return False
         branch_id = request.headers.get('X-Branch-ID')
+        support = support_permission_decision(request, branch_id=branch_id)
+        if support is not None:
+            return support
         try:
             branch = Branch.objects.select_related('company').get(
                 pk=branch_id, status=Status.ACTIVE, company__status=Status.ACTIVE

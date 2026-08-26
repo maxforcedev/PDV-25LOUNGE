@@ -16,6 +16,7 @@ import {
 } from "@/components/ui";
 import { domainLabel } from "@/lib/domain-labels";
 import { formatBRL, formatDate, formatQuantity } from "@/lib/format";
+import { contentUnitLabel, physicalQuantityDisplay } from "@/lib/inventory";
 import { ApiError, http } from "@/lib/http";
 import { businessMonthToDate } from "@/lib/period";
 import { permissions } from "@/lib/permissions";
@@ -155,6 +156,45 @@ function money(value: unknown) {
 function firstValue(summary: Record<string, unknown>, ...keys: string[]) {
   const key = keys.find((candidate) => summary[candidate] !== undefined);
   return key ? summary[key] : "0";
+}
+
+function reportValue(record: Record<string, unknown>, ...keys: string[]) {
+  const key = keys.find((candidate) => record[candidate] !== undefined && record[candidate] !== null);
+  return key ? record[key] as string | number : undefined;
+}
+
+function reportPhysicalQuantity(row: Record<string, unknown>, quantityKey: string, prefix?: string) {
+  const product = (row.product || {}) as Record<string, unknown>;
+  const fraction = (product.fraction_config || {}) as Record<string, unknown>;
+  const contentKeys = prefix ? [`${prefix}_content`, `${prefix}_content_quantity`] : ["content_quantity"];
+  const completeKeys = prefix ? [`${prefix}_complete_packages`] : ["complete_packages", "movement_complete_packages"];
+  const residualKeys = prefix ? [`${prefix}_residual_content`] : ["residual_content", "movement_residual_content"];
+  return physicalQuantityDisplay({
+    quantity: reportValue(row, quantityKey),
+    unit: String(product.unit || row.unit || ""),
+    content: reportValue(row, ...contentKeys),
+    packageContent: reportValue(row, "package_content") ?? reportValue(product, "package_content") ?? reportValue(fraction, "package_content"),
+    contentUnit: String(reportValue(row, "content_unit") ?? reportValue(product, "content_unit") ?? reportValue(fraction, "content_unit") ?? ""),
+    completePackages: reportValue(row, ...completeKeys),
+    residualContent: reportValue(row, ...residualKeys),
+  });
+}
+
+function ConsumptionQuantity({ row, quantityKey, prefix }: { row: Record<string, unknown>; quantityKey: string; prefix?: string }) {
+  const product = (row.product || {}) as Record<string, unknown>;
+  const content = reportValue(row, ...(prefix ? [`${prefix}_content`, `${prefix}_content_quantity`] : ["content_quantity"]));
+  const packageContent = reportValue(row, "package_content");
+  const combined = reportValue(row, quantityKey) ?? 0;
+  const unit = String(product.unit || "equiv.").toUpperCase();
+  if (content == null || packageContent == null || Number(packageContent) <= 0) {
+    return <span><strong>{formatQuantity(String(combined))} {unit}</strong><small className="block text-muted">Equivalente legado</small></span>;
+  }
+  const legacy = Number(combined) - Number(content) / Number(packageContent);
+  return <span>
+    <strong className="block">{reportPhysicalQuantity(row, quantityKey, prefix)}</strong>
+    <small className="block text-muted">Equivalente legado: {formatQuantity(String(legacy))} {unit}</small>
+    <small className="block text-muted">Total combinado equivalente: {formatQuantity(String(combined))} {unit}</small>
+  </span>;
 }
 
 function hasDelta(value: unknown) {
@@ -392,9 +432,9 @@ function reportKpis(kind: ReportKind, summary: Record<string, unknown>) {
       ["Movimentos", summary.count, "number"],
     ],
     "stock-consumption": [
-      ["Consumo bruto", summary.gross_quantity, "quantity"],
-      ["Devoluções", summary.returned_quantity, "quantity"],
-      ["Consumo líquido", summary.net_quantity, "quantity"],
+      ["Consumo bruto · total equivalente", summary.gross_quantity, "quantity"],
+      ["Devoluções · total equivalente", summary.returned_quantity, "quantity"],
+      ["Consumo líquido · total equivalente", summary.net_quantity, "quantity"],
       ...(summary.estimated_cost !== undefined
         ? [
             [
@@ -1603,8 +1643,20 @@ function StockConsumption({
 }) {
   const products = rows(data.summary.products);
   const showCost = products.some((row) => row.estimated_cost !== undefined);
+  const contentByUnit = Object.entries((data.summary.content_by_unit || {}) as Record<string, Record<string, unknown>>);
   return (
     <div className="space-y-5">
+      {contentByUnit.length > 0 && <section className="card p-5">
+        <h2 className="text-sm font-bold">Conteúdo exato rastreado</h2>
+        <p className="mt-1 text-[11px] text-muted">Parcela canônica rastreada dentro dos totais equivalentes combinados do relatório.</p>
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          {contentByUnit.flatMap(([unit, values]) => ([
+            ["Consumo bruto", values.gross_content],
+            ["Devoluções", values.returned_content],
+            ["Consumo líquido", values.net_content],
+          ] as Array<[string, unknown]>).map(([label, value]) => <div key={`${unit}-${label}`} className="rounded-lg bg-surface-muted p-3"><small className="block text-[10px] font-semibold text-muted">{label} rastreado</small><strong className="mt-1 block text-sm">{formatQuantity(String(value || "0"))} {contentUnitLabel(unit)}</strong></div>))}
+        </div>
+      </section>}
       <section className="card overflow-hidden">
         <div className="card-header">
           <h2 className="text-sm font-bold">Resumo por produto físico</h2>
@@ -1633,11 +1685,10 @@ function StockConsumption({
                         <strong>{product.name}</strong>
                       </td>
                       <td>
-                        {formatQuantity(String(row.gross_quantity))}{" "}
-                        {product.unit?.toUpperCase()}
+                        <ConsumptionQuantity row={row} quantityKey="gross_quantity" prefix="gross" />
                       </td>
-                      <td>{formatQuantity(String(row.returned_quantity))}</td>
-                      <td>{formatQuantity(String(row.net_quantity))}</td>
+                      <td><ConsumptionQuantity row={row} quantityKey="returned_quantity" prefix="returned" /></td>
+                      <td><ConsumptionQuantity row={row} quantityKey="net_quantity" prefix="net" /></td>
                       {showCost && (
                         <td>{formatBRL(String(row.estimated_cost || "0"))}</td>
                       )}
@@ -1679,7 +1730,7 @@ function StockConsumption({
                       <td>{product.name}</td>
                       <td>{domainLabel(row.origin)}</td>
                       <td>{domainLabel(row.nature)}</td>
-                      <td>{formatQuantity(String(row.quantity))}</td>
+                      <td><ConsumptionQuantity row={row} quantityKey="equivalent_quantity" /></td>
                     </tr>
                   );
                 })}

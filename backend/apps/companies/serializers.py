@@ -5,7 +5,7 @@ from rest_framework import serializers
 from apps.base.exceptions import DomainValidationError
 from .models import (
     AccessProfile, Branch, BranchSettings, Company, FunctionalPermission, Status,
-    UserBranchAccess, UserCommissionOverride, UserPermissionBlock,
+    UserBranchAccess, UserCommissionOverride, UserCompanyAccess, UserPermissionBlock,
 )
 from .rbac import OPERATING_PERMISSION_CODES
 from .selectors import (
@@ -179,6 +179,7 @@ class BranchSerializer(serializers.ModelSerializer):
 class BranchSettingsSerializer(serializers.ModelSerializer):
     negative_stock_count = serializers.SerializerMethodField()
     negative_stock_state = serializers.SerializerMethodField()
+    feature_flags = serializers.SerializerMethodField()
     allow_negative_stock = serializers.BooleanField(required=False)
     service_fee_rate = serializers.DecimalField(
         max_digits=5, decimal_places=2, min_value=Decimal('0.00'), max_value=Decimal('100.00'),
@@ -192,18 +193,32 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
         max_digits=14, decimal_places=2, min_value=Decimal('0.00'),
         coerce_to_string=True, required=False,
     )
+    uses_tables = serializers.BooleanField(required=False)
+    uses_commands = serializers.BooleanField(required=False)
+    uses_counter = serializers.BooleanField(required=False)
+    uses_consumption = serializers.BooleanField(required=False)
+    uses_cash_register = serializers.BooleanField(required=False)
+    charges_service_fee = serializers.BooleanField(required=False)
 
     class Meta:
         model = BranchSettings
         fields = (
             'id', 'branch', 'allow_negative_stock', 'service_fee_rate',
-            'commission_rate', 'fixed_daily_cost', 'created_at', 'updated_at',
+            'commission_rate', 'fixed_daily_cost',
+            'uses_tables', 'uses_commands', 'uses_counter',
+            'uses_consumption', 'uses_cash_register', 'charges_service_fee',
+            'feature_flags',
+            'created_at', 'updated_at',
             'negative_stock_count', 'negative_stock_state',
         )
         read_only_fields = (
-            'id', 'branch', 'created_at', 'updated_at',
+            'id', 'branch', 'feature_flags',
+            'created_at', 'updated_at',
             'negative_stock_count', 'negative_stock_state',
         )
+
+    def get_feature_flags(self, settings):
+        return settings.feature_flags()
 
     def get_negative_stock_count(self, settings):
         from apps.inventory.models import Stock
@@ -217,7 +232,42 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
             return 'clear'
         return 'enabled_with_negatives' if settings.allow_negative_stock else 'legacy_inconsistent'
 
+    def _entitled_features(self, company):
+        try:
+            from apps.saas.services import get_entitled_features
+            return set(get_entitled_features(company))
+        except Exception:
+            return set()
+
     def validate(self, attrs):
+        dependent_features = {
+            'uses_counter': 'Balcão',
+            'uses_consumption': 'Consumação',
+            'uses_commands': 'Comandas',
+        }
+        effective_cash_register = attrs.get(
+            'uses_cash_register',
+            self.instance.uses_cash_register if self.instance else False,
+        )
+        enabled_dependents = [
+            field for field in dependent_features
+            if attrs.get(field, getattr(self.instance, field, False))
+        ]
+        dependency_errors = {}
+        if not effective_cash_register:
+            for field in enabled_dependents:
+                if attrs.get(field) is True:
+                    dependency_errors[field] = (
+                        f'{dependent_features[field]} requer Caixa habilitado nesta filial.'
+                    )
+            if attrs.get('uses_cash_register') is False and enabled_dependents:
+                labels = ', '.join(dependent_features[field] for field in enabled_dependents)
+                dependency_errors['uses_cash_register'] = (
+                    f'Não é possível desabilitar Caixa enquanto {labels} estiver habilitado.'
+                )
+        if dependency_errors:
+            raise serializers.ValidationError(dependency_errors)
+
         request = self.context.get('request')
         commission_changed = bool(
             self.instance
@@ -249,6 +299,21 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
                     message='Regularize os estoques negativos antes de desativar esta opcao.',
                     details={'count': negatives.count(), 'stocks': rows},
                 )
+        if self.instance and request and not request.user.is_superuser:
+            company = self.instance.branch.company
+            entitled = self._entitled_features(company)
+            feature_map = {
+                'uses_tables': 'feature.tables',
+                'uses_commands': 'feature.commands',
+                'uses_counter': 'feature.counter',
+                'uses_consumption': 'feature.consumption',
+                'uses_cash_register': 'feature.cash_register',
+            }
+            for field, feature in feature_map.items():
+                if attrs.get(field) is True and feature not in entitled:
+                    raise serializers.ValidationError(
+                        {field: f'O plano não permite a funcionalidade "{feature}".'}
+                    )
         return attrs
 
     def to_representation(self, instance):
@@ -269,6 +334,7 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
 
 class CompanySerializer(serializers.ModelSerializer):
     branches = serializers.SerializerMethodField()
+    owner = serializers.SerializerMethodField()
     cnpj = serializers.CharField(
         allow_blank=True,
         allow_null=True,
@@ -287,11 +353,14 @@ class CompanySerializer(serializers.ModelSerializer):
             'email',
             'phone',
             'status',
+            'owner',
             'branches',
             'created_at',
             'updated_at',
         )
-        read_only_fields = ('id', 'status', 'branches', 'created_at', 'updated_at')
+        read_only_fields = (
+            'id', 'status', 'owner', 'branches', 'created_at', 'updated_at'
+        )
 
     def create(self, validated_data):
         validated_data['status'] = Status.ACTIVE
@@ -309,24 +378,6 @@ class CompanySerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('Ja existe uma empresa com este CNPJ.')
         return cnpj
 
-    def validate_trade_name(self, value):
-        trade_name = ' '.join(value.split())
-        queryset = Company.objects.filter(trade_name__iexact=trade_name)
-        if self.instance:
-            queryset = queryset.exclude(pk=self.instance.pk)
-        if queryset.exists():
-            raise serializers.ValidationError('Ja existe uma empresa com este nome fantasia.')
-        return trade_name
-
-    def validate_legal_name(self, value):
-        legal_name = ' '.join(value.split())
-        queryset = Company.objects.filter(legal_name__iexact=legal_name)
-        if self.instance:
-            queryset = queryset.exclude(pk=self.instance.pk)
-        if queryset.exists():
-            raise serializers.ValidationError('Ja existe uma empresa com esta razao social.')
-        return legal_name
-
     def get_branches(self, company):
         visible_branches = getattr(company, 'visible_branches', None)
         if visible_branches is None:
@@ -339,6 +390,30 @@ class CompanySerializer(serializers.ModelSerializer):
             context=self.context,
         ).data
 
+    def get_owner(self, company):
+        owner_accesses = getattr(company, 'owner_accesses', None)
+        access = (
+            owner_accesses[0]
+            if owner_accesses
+            else UserCompanyAccess.objects.filter(company=company, is_owner=True)
+            .select_related('user')
+            .first()
+        )
+        if not access:
+            return None
+        return {
+            'membership_id': access.pk,
+            'user_id': access.user_id,
+            'name': access.user.get_full_name().strip() or str(access.user),
+            'email': access.user.email,
+        }
+
+
+class TransferCompanyOwnerSerializer(serializers.Serializer):
+    target_user_id = serializers.IntegerField(min_value=1)
+    current_password = serializers.CharField(trim_whitespace=False, write_only=True)
+    reason = serializers.CharField(max_length=500, allow_blank=False, trim_whitespace=True)
+
 
 class FunctionalPermissionSerializer(serializers.ModelSerializer):
     class Meta:
@@ -348,6 +423,7 @@ class FunctionalPermissionSerializer(serializers.ModelSerializer):
 
 class AccessProfileSerializer(serializers.ModelSerializer):
     company_name = serializers.CharField(source='company.trade_name', read_only=True)
+    user_count = serializers.SerializerMethodField()
     permission_codes = serializers.SlugRelatedField(
         source='permissions',
         slug_field='code',
@@ -369,6 +445,7 @@ class AccessProfileSerializer(serializers.ModelSerializer):
             'receives_commission',
             'commission_rate',
             'permission_codes',
+            'user_count',
             'created_at',
             'updated_at',
         )
@@ -377,8 +454,21 @@ class AccessProfileSerializer(serializers.ModelSerializer):
             'company_name',
             'is_system',
             'status',
+            'user_count',
             'created_at',
             'updated_at',
+        )
+
+    def get_user_count(self, obj):
+        if hasattr(obj, '_user_count'):
+            return obj._user_count
+        return (
+            UserBranchAccess.objects.filter(
+                access_profile=obj,
+                is_active=True,
+                user__is_active=True,
+            )
+            .values('user_id').distinct().count()
         )
 
     def validate(self, attrs):

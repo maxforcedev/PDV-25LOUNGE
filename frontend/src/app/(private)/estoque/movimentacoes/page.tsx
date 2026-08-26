@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, History, Search, SlidersHorizontal } from "lucide-react";
 import { AdminGuard } from "@/components/admin-guard";
 import { PageHeader } from "@/components/page-header";
+import { InventoryNav } from "@/components/inventory-nav";
 import { PeriodFilter, type PeriodValue } from "@/components/period-filter";
 import { StockOperationDetails } from "@/components/stock-operation-details";
 import {
@@ -17,6 +18,7 @@ import {
   TableLoading,
 } from "@/components/ui";
 import { domainLabel } from "@/lib/domain-labels";
+import { movementDomainOriginLabel, movementDomainOriginLabels, physicalQuantityDisplay } from "@/lib/inventory";
 import { formatDate, formatQuantity } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
@@ -45,24 +47,38 @@ const tones: Record<string, string> = {
 };
 interface MovementFilters {
   search: string;
+  product: string;
   type: string;
   nature: string;
+  domainOrigin: string;
   operationReference: string;
   period: PeriodValue;
 }
 const emptyFilters = (): MovementFilters => ({
   search: "",
+  product: "",
   type: "",
   nature: "",
+  domainOrigin: "",
   operationReference: "",
   period: { start: "", end: "" },
 });
 
 function signed(movement: StockMovement) {
+  if (movement.content_quantity != null) {
+    const display = physicalQuantityDisplay({
+      content: movement.content_quantity,
+      packageContent: movement.package_content,
+      contentUnit: movement.content_unit,
+      completePackages: movement.movement_complete_packages,
+      residualContent: movement.movement_residual_content,
+    });
+    return `${Number(movement.content_quantity) > 0 ? "+" : ""}${display}`;
+  }
   if (movement.type === "adjustment") {
     const difference =
       Number(movement.final_quantity) - Number(movement.previous_quantity);
-    return `${difference > 0 ? "+" : ""}${formatQuantity(difference.toFixed(3))}`;
+    return `${difference > 0 ? "+" : ""}${formatQuantity(difference.toFixed(3))} ${movement.unit.toUpperCase()}`;
   }
   const positive = [
     "entry",
@@ -70,7 +86,19 @@ function signed(movement: StockMovement) {
     "sale_cancellation",
     "consumption_cancellation",
   ].includes(movement.type);
-  return `${positive ? "+" : "-"}${formatQuantity(movement.movement_quantity.replace("-", ""))}`;
+  return `${positive ? "+" : "-"}${formatQuantity(movement.movement_quantity.replace("-", ""))} ${movement.unit.toUpperCase()}`;
+}
+
+function balance(movement: StockMovement, final = false) {
+  return physicalQuantityDisplay({
+    quantity: final ? movement.final_quantity : movement.previous_quantity,
+    unit: movement.unit,
+    content: final ? movement.final_content : movement.previous_content,
+    packageContent: movement.package_content,
+    contentUnit: movement.content_unit,
+    completePackages: final ? movement.final_complete_packages : movement.previous_complete_packages,
+    residualContent: final ? movement.final_residual_content : movement.previous_residual_content,
+  });
 }
 
 function Movements() {
@@ -79,8 +107,10 @@ function Movements() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
+  const [product, setProduct] = useState("");
   const [type, setType] = useState("");
   const [nature, setNature] = useState("");
+  const [domainOrigin, setDomainOrigin] = useState("");
   const [operationReference, setOperationReference] = useState("");
   const [period, setPeriod] = useState<PeriodValue>({ start: "", end: "" });
   const [appliedFilters, setAppliedFilters] =
@@ -95,8 +125,10 @@ function Movements() {
       branch: String(currentBranch?.id || ""),
     });
     if (selected.search.trim()) params.set("search", selected.search.trim());
+    if (selected.product) params.set("product", selected.product);
     if (selected.type) params.set("type", selected.type);
     if (selected.nature) params.set("nature", selected.nature);
+    if (selected.domainOrigin) params.set("domain_origin", selected.domainOrigin);
     if (selected.operationReference)
       params.set("operation_reference", selected.operationReference);
     if (selected.period.start)
@@ -117,8 +149,10 @@ function Movements() {
   function syncUrl(selected: MovementFilters) {
     const params = new URLSearchParams();
     if (selected.search.trim()) params.set("search", selected.search.trim());
+    if (selected.product) params.set("product", selected.product);
     if (selected.type) params.set("type", selected.type);
     if (selected.nature) params.set("nature", selected.nature);
+    if (selected.domainOrigin) params.set("domain_origin", selected.domainOrigin);
     if (selected.operationReference)
       params.set("operation_reference", selected.operationReference);
     if (selected.period.start)
@@ -171,8 +205,10 @@ function Movements() {
     const queryParams = new URLSearchParams(window.location.search);
     const selected = {
       search: queryParams.get("search") || "",
+      product: queryParams.get("product") || "",
       type: queryParams.get("type") || "",
       nature: queryParams.get("nature") || "",
+      domainOrigin: queryParams.get("domain_origin") || "",
       operationReference: queryParams.get("operation_reference") || "",
       period: {
         start: queryParams.get("start_datetime") || "",
@@ -180,8 +216,10 @@ function Movements() {
       },
     };
     setSearch(selected.search);
+    setProduct(selected.product);
     setType(selected.type);
     setNature(selected.nature);
+    setDomainOrigin(selected.domainOrigin);
     setPeriod(selected.period);
     setData(null);
     setOperationReference(selected.operationReference);
@@ -191,15 +229,17 @@ function Movements() {
 
   function applyFilters(event: React.FormEvent) {
     event.preventDefault();
-    const selected = { search, type, nature, operationReference, period };
+    const selected = { search, product, type, nature, domainOrigin, operationReference, period };
     void load(undefined, contextRef.current, selected);
   }
 
   function clearFilters() {
     const selected = emptyFilters();
     setSearch("");
+    setProduct("");
     setType("");
     setNature("");
+    setDomainOrigin("");
     setOperationReference("");
     setPeriod(selected.period);
     void load(undefined, contextRef.current, selected);
@@ -217,6 +257,7 @@ function Movements() {
           </Link>
         }
       />
+      <InventoryNav />
       <div className="space-y-4 p-4 sm:p-6 lg:p-8">
         {error && <Alert message={error} />}
         {operationReference && (
@@ -238,7 +279,7 @@ function Movements() {
           </section>
         )}
         <form
-          className="card grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-[1fr_180px_220px]"
+          className="card grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-5"
           onSubmit={applyFilters}
         >
           <div className="relative">
@@ -250,6 +291,13 @@ function Movements() {
               onChange={(event) => setSearch(event.target.value)}
             />
           </div>
+          <Input
+            inputMode="numeric"
+            placeholder="ID do produto"
+            aria-label="Produto"
+            value={product}
+            onChange={(event) => setProduct(event.target.value.replace(/\D/g, ""))}
+          />
           <Select
             value={type}
             onChange={(event) => setType(event.target.value)}
@@ -280,8 +328,18 @@ function Movements() {
             <option value="correction">Correção</option>
             <option value="other">Outros</option>
           </Select>
+          <Select
+            aria-label="Origem de domínio"
+            value={domainOrigin}
+            onChange={(event) => setDomainOrigin(event.target.value)}
+          >
+            <option value="">Todas as origens</option>
+            {Object.entries(movementDomainOriginLabels).map(([value, label]) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </Select>
           <PeriodFilter
-            className="sm:col-span-2 xl:col-span-3"
+            className="sm:col-span-2 xl:col-span-5"
             value={period}
             onChange={setPeriod}
             onApply={(next) => {
@@ -291,7 +349,7 @@ function Movements() {
             }}
             showActions={false}
           />
-          <div className="flex flex-wrap justify-end gap-2 sm:col-span-2 xl:col-span-3">
+          <div className="flex flex-wrap justify-end gap-2 sm:col-span-2 xl:col-span-5">
             <Button type="button" variant="secondary" onClick={clearFilters}>
               Limpar
             </Button>
@@ -356,18 +414,20 @@ function Movements() {
                             >
                               {labels[movement.type] || movement.type}
                             </span>
-                            <small className="mt-1 block text-slate-400">
-                              {domainLabel(movement.nature)}
-                            </small>
+                             <small className="mt-1 block text-slate-400">
+                               {domainLabel(movement.nature)}
+                             </small>
+                             <small className="mt-1 block font-semibold text-muted">
+                               {movementDomainOriginLabel(movement.domain_origin)}
+                             </small>
                           </td>
                           <td
                             className={`font-bold ${amount.startsWith("+") ? "text-emerald-700" : "text-red-700"}`}
                           >
-                            {amount} {movement.unit.toUpperCase()}
+                            {amount}
                           </td>
                           <td>
-                            {formatQuantity(movement.previous_quantity)} →{" "}
-                            {formatQuantity(movement.final_quantity)}
+                            {balance(movement)} → {balance(movement, true)}
                           </td>
                           <td>{movement.user_name}</td>
                           <td className="min-w-52">

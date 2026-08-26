@@ -3,13 +3,17 @@ import re
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 
-from apps.companies.models import Company
+from apps.companies.models import Branch, Company
 
-from .models import Category, InventoryBehavior, Product, ProductComponent, Unit
+from .models import (
+    BranchProductPrice, Category, FractionableProductConfig, InventoryBehavior,
+    Product, ProductBranchConfig, ProductComponent, ProductFractionComponent,
+    ProductProductionDestination, ProductionDestination, SalesChannel, Unit,
+)
 
 
 @transaction.atomic
-def create_product(*, components=None, **product_data):
+def create_product(*, components=None, fraction_components=None, **product_data):
     company = Company.objects.select_for_update().get(pk=product_data['company'].pk)
     product_data['company'] = company
     desired_sellable = product_data.get('is_sellable', True)
@@ -45,6 +49,9 @@ def create_product(*, components=None, **product_data):
 
     if product.inventory_behavior == InventoryBehavior.COMPONENTS:
         replace_composition(product=product, components=components or [])
+        replace_fraction_composition(
+            product=product, components=fraction_components or []
+        )
         if desired_sellable:
             product.is_sellable = True
             product.save(update_fields=('is_sellable', 'updated_at'))
@@ -135,3 +142,291 @@ def replace_composition(*, product, components):
     for candidate in prepared:
         candidate.save()
     return product
+
+
+@transaction.atomic
+def replace_fraction_composition(*, product, components):
+    Company.objects.select_for_update().get(pk=product.company_id)
+    component_ids = [item['component_product'].pk for item in components]
+    if len(component_ids) != len(set(component_ids)):
+        raise ValidationError({'fraction_components': 'Nao repita produtos na composicao.'})
+    products = {
+        item.pk: item
+        for item in Product.objects.select_for_update().filter(
+            pk__in=sorted(set(component_ids) | {product.pk})
+        ).order_by('pk')
+    }
+    product = products[product.pk]
+    if product.inventory_behavior != InventoryBehavior.COMPONENTS:
+        raise ValidationError({
+            'inventory_behavior': 'Somente produtos components possuem composicao.'
+        })
+    if product.is_sellable and not components and not product.components.exists():
+        raise ValidationError({
+            'fraction_components': 'Um produto composto vendavel deve possuir componentes.'
+        })
+    prepared = []
+    for index, item in enumerate(components):
+        component = products.get(item['component_product'].pk)
+        if component is None:
+            raise ValidationError({'fraction_components': {index: 'Componente invalido.'}})
+        candidate = ProductFractionComponent(
+            parent_product=product,
+            component_product=component,
+            content_quantity=item['content_quantity'],
+        )
+        candidate.full_clean(validate_unique=False, validate_constraints=False)
+        prepared.append(candidate)
+    for row in ProductFractionComponent.objects.filter(parent_product=product):
+        row.delete()
+    for candidate in prepared:
+        candidate.save()
+    return product
+
+
+@transaction.atomic
+def copy_branch_configuration(*, products, source_branch, target_branches):
+    product_ids = sorted({_item.pk if hasattr(_item, 'pk') else int(_item) for _item in products})
+    locked_products = list(Product.objects.select_for_update().filter(pk__in=product_ids))
+    if len(locked_products) != len(product_ids):
+        raise ValidationError({'products': 'Um ou mais produtos sao invalidos.'})
+    company_ids = {product.company_id for product in locked_products}
+    if len(company_ids) != 1:
+        raise ValidationError({'products': 'Todos os produtos devem pertencer a mesma empresa.'})
+    company_id = company_ids.pop()
+    source = Branch.objects.select_for_update().get(pk=source_branch, company_id=company_id)
+    if source.pk in set(target_branches):
+        raise ValidationError({'target_branches': 'A origem nao pode ser um destino.'})
+    targets = list(Branch.objects.select_for_update().filter(
+        pk__in=target_branches, company_id=company_id
+    ).order_by('pk'))
+    if len(targets) != len(set(target_branches)):
+        raise ValidationError({'target_branches': 'Uma filial de destino e invalida.'})
+    source_configs = {
+        row.product_id: row for row in ProductBranchConfig.objects.filter(
+            branch=source, product_id__in=product_ids
+        )
+    }
+    source_prices = {
+        row.product_id: row for row in BranchProductPrice.objects.filter(
+            branch=source, product_id__in=product_ids
+        )
+    }
+    source_links = list(ProductProductionDestination.objects.select_related(
+        'destination'
+    ).filter(product_id__in=product_ids, destination__branch=source))
+    copied = []
+    for target in targets:
+        destination_map = {}
+        for link in source_links:
+            source_destination = link.destination
+            destination = ProductionDestination.objects.filter(
+                branch=target, code__iexact=source_destination.code
+            ).first()
+            if destination is None:
+                destination = ProductionDestination.objects.create(
+                    branch=target,
+                    name=source_destination.name,
+                    code=source_destination.code,
+                    status=source_destination.status,
+                )
+            destination_map[source_destination.pk] = destination
+        for product in locked_products:
+            before = branch_configuration_snapshot(product, target)
+            source_snapshot = branch_configuration_snapshot(product, source)
+            source_config = source_configs.get(product.pk)
+            config, _created = ProductBranchConfig.objects.get_or_create(
+                product=product,
+                branch=target,
+                defaults={'is_available': True},
+            )
+            config.is_available = source_config.is_available if source_config else True
+            for field in ('available_counter', 'available_table', 'available_command'):
+                setattr(config, field, getattr(source_config, field) if source_config else None)
+            config.save()
+            source_price = source_prices.get(product.pk)
+            target_price = BranchProductPrice.objects.filter(
+                product=product, branch=target
+            ).first()
+            if source_price:
+                if target_price:
+                    target_price.sale_price = source_price.sale_price
+                    target_price.save()
+                else:
+                    BranchProductPrice.objects.create(
+                        product=product, branch=target, sale_price=source_price.sale_price
+                    )
+            elif target_price:
+                target_price.delete()
+            for link in list(ProductProductionDestination.objects.filter(
+                product=product, destination__branch=target
+            )):
+                link.delete()
+            for source_link in source_links:
+                if source_link.product_id == product.pk:
+                    ProductProductionDestination.objects.create(
+                        product=product,
+                        destination=destination_map[source_link.destination_id],
+                    )
+            copied.append({
+                'product': product,
+                'target_branch': target,
+                'source': source_snapshot,
+                'before': before,
+                'after': branch_configuration_snapshot(product, target),
+            })
+    return copied
+
+
+def branch_configuration_snapshot(product, branch):
+    config = ProductBranchConfig.objects.filter(
+        product=product, branch=branch
+    ).first()
+    price = BranchProductPrice.objects.filter(
+        product=product, branch=branch
+    ).values_list('sale_price', flat=True).first()
+    overrides = {
+        channel: getattr(config, f'available_{channel}') if config else None
+        for channel in SalesChannel.values
+    }
+    return {
+        'branch_id': branch.pk,
+        'is_available': config.is_available if config else True,
+        'channel_overrides': overrides,
+        'effective_channels': {
+            channel: (
+                getattr(product, f'available_{channel}')
+                if overrides[channel] is None else overrides[channel]
+            )
+            for channel in SalesChannel.values
+        },
+        'price_override': format(price, 'f') if price is not None else None,
+        'effective_price': format(
+            product.sale_price if price is None else price, 'f'
+        ),
+        'destinations': [
+            {
+                'id': destination.pk,
+                'name': destination.name,
+                'code': destination.code,
+                'status': destination.status,
+            }
+            for destination in ProductionDestination.objects.filter(
+                branch=branch, product_links__product=product
+            ).order_by('code', 'pk')
+        ],
+    }
+
+
+@transaction.atomic
+def duplicate_product(*, product, options):
+    source = Product.objects.select_for_update().select_related('company', 'category').get(
+        pk=product.pk if hasattr(product, 'pk') else product
+    )
+    Company.objects.select_for_update().get(pk=source.company_id)
+    base_name = f'{source.name} (copia)'
+    name = base_name
+    suffix = 2
+    while Product.objects.filter(company=source.company, normalized_name=normalize_name(name)).exists():
+        name = f'{base_name} {suffix}'
+        suffix += 1
+    duplicate = create_product(
+        company=source.company,
+        category=source.category,
+        name=name,
+        description=source.description,
+        internal_code='',
+        sku=None,
+        barcode='',
+        unit=source.unit,
+        cost=source.cost,
+        sale_price=source.sale_price,
+        image=source.image,
+        is_sellable=False if source.inventory_behavior == InventoryBehavior.COMPONENTS else source.is_sellable,
+        is_favorite=False,
+        available_counter=source.available_counter,
+        available_table=source.available_table,
+        available_command=source.available_command,
+        participates_in_service_fee=source.participates_in_service_fee,
+        participates_in_commission=source.participates_in_commission,
+        inventory_behavior=source.inventory_behavior,
+        status=source.status,
+        components=[],
+        fraction_components=[],
+    )
+    if options.get('composition') and source.inventory_behavior == InventoryBehavior.COMPONENTS:
+        replace_composition(product=duplicate, components=[
+            {'component_product': row.component_product, 'quantity': row.quantity}
+            for row in source.components.select_related('component_product')
+        ])
+        replace_fraction_composition(product=duplicate, components=[
+            {
+                'component_product': row.component_product,
+                'content_quantity': row.content_quantity,
+            }
+            for row in source.fraction_components.select_related('component_product')
+        ])
+        if source.is_sellable:
+            duplicate.is_sellable = True
+            duplicate.save(update_fields=('is_sellable', 'updated_at'))
+    if options.get('fraction'):
+        try:
+            fraction = source.fraction_config
+        except FractionableProductConfig.DoesNotExist:
+            fraction = None
+        if fraction:
+            FractionableProductConfig.objects.create(
+                product=duplicate,
+                package_content=fraction.package_content,
+                content_unit=fraction.content_unit,
+            )
+    if options.get('branch_config'):
+        for config in source.branch_configs.all():
+            ProductBranchConfig.objects.create(
+                product=duplicate,
+                branch=config.branch,
+                is_available=config.is_available,
+                available_counter=config.available_counter,
+                available_table=config.available_table,
+                available_command=config.available_command,
+            )
+        for price in source.branch_prices.all():
+            BranchProductPrice.objects.create(
+                product=duplicate, branch=price.branch, sale_price=price.sale_price
+            )
+    if options.get('destinations'):
+        for link in source.production_destination_links.all():
+            ProductProductionDestination.objects.create(
+                product=duplicate, destination=link.destination
+            )
+    if options.get('suppliers'):
+        from apps.suppliers.models import ProductSupplier, ProductSupplierUnit
+
+        for relation in source.product_suppliers.select_related('supplier').prefetch_related('units'):
+            new_relation = ProductSupplier.objects.create(
+                company=source.company,
+                product=duplicate,
+                supplier=relation.supplier,
+                supplier_code=relation.supplier_code,
+                is_preferred=relation.is_preferred,
+                is_exclusive=relation.is_exclusive,
+                status=relation.status,
+            )
+            for unit in relation.units.all():
+                ProductSupplierUnit.objects.create(
+                    company=source.company,
+                    product_supplier=new_relation,
+                    unit_code=unit.unit_code,
+                    description=unit.description,
+                    conversion_factor=unit.conversion_factor,
+                    barcode=unit.barcode,
+                    is_default=unit.is_default,
+                    status=unit.status,
+                )
+    return duplicate
+
+
+def normalize_name(value):
+    from .models import normalize_product_name
+
+    return normalize_product_name(value)[1]

@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 @theme {
-  --color-primary: #3454d1;
-  --color-primary-dark: #2945b6;
+  --color-primary: var(--brand-primary);
+  --color-primary-dark: var(--brand-primary-dark);
   --color-success: #17c666;
   --color-warning: #ffa21d;
   --color-danger: #ea4d4d;
@@ -50,6 +50,8 @@
 }
 
 :root {
+  --brand-primary: #3454d1;
+  --brand-primary-dark: #2945b6;
   --canvas: #f0f2f8;
   --surface: #ffffff;
   --surface-muted: #f8fafc;

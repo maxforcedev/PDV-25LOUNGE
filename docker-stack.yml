@@ -44,9 +44,9 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-corepdv}@db:5432/${POSTGRES_DB:-corepdv}
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       DATABASE_CONNECT_TIMEOUT: ${DATABASE_CONNECT_TIMEOUT:-3}
-      ALLOWED_HOSTS: ${DOMAIN:-corepdv.com},${API_DOMAIN:-api.corepdv.com},127.0.0.1
-      CSRF_TRUSTED_ORIGINS: https://${DOMAIN:-corepdv.com},https://*.${DOMAIN:-corepdv.com}
-      CORS_ALLOWED_ORIGINS: https://${DOMAIN:-corepdv.com}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-api.corepdv.com,corepdv.com,admin.corepdv.com,127.0.0.1}
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-https://corepdv.com,https://admin.corepdv.com,https://*.corepdv.com}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://corepdv.com,https://admin.corepdv.com}
       TIME_ZONE: ${TIME_ZONE:-America/Sao_Paulo}
       LANGUAGE_CODE: ${LANGUAGE_CODE:-pt-br}
       TRUST_PROXY_HEADERS: 'True'
@@ -64,9 +64,12 @@ services:
       GUNICORN_KEEP_ALIVE: ${GUNICORN_KEEP_ALIVE:-5}
       GUNICORN_FORWARDED_ALLOW_IPS: ${GUNICORN_FORWARDED_ALLOW_IPS:-*}
       EMAIL_BACKEND: ${EMAIL_BACKEND:-django.core.mail.backends.smtp.EmailBackend}
+      PRIVATE_MEDIA_ROOT: /app/private_media
     secrets:
       - django_secret_key
       - postgres_password
+    volumes:
+      - private_media:/app/private_media
     networks:
       - corepdv_internal
       - traefik_public
@@ -103,10 +106,11 @@ services:
         order: stop-first
       labels:
         - traefik.enable=true
-        - traefik.docker.network=${TRAEFIK_NETWORK:-traefik_public}
+        - traefik.swarm.network=${TRAEFIK_NETWORK:-traefik_public}
         - traefik.http.routers.corepdv-backend.rule=Host(`${API_DOMAIN:-api.corepdv.com}`)
         - traefik.http.routers.corepdv-backend.entrypoints=websecure
         - traefik.http.routers.corepdv-backend.tls=true
+        - traefik.http.routers.corepdv-backend.tls.certresolver=letsencrypt
         - traefik.http.services.corepdv-backend.loadbalancer.server.port=8000
 
   frontend:
@@ -151,14 +155,65 @@ services:
         order: stop-first
       labels:
         - traefik.enable=true
-        - traefik.docker.network=${TRAEFIK_NETWORK:-traefik_public}
-        - traefik.http.routers.corepdv-frontend.rule=Host(`${DOMAIN:-corepdv.com}`)
+        - traefik.swarm.network=${TRAEFIK_NETWORK:-traefik_public}
+        - traefik.http.routers.corepdv-frontend.rule=Host(`${FRONTEND_DOMAIN:-corepdv.com}`)
         - traefik.http.routers.corepdv-frontend.entrypoints=websecure
         - traefik.http.routers.corepdv-frontend.tls=true
+        - traefik.http.routers.corepdv-frontend.tls.certresolver=letsencrypt
         - traefik.http.services.corepdv-frontend.loadbalancer.server.port=3000
+
+  platform-admin:
+    image: ${PLATFORM_ADMIN_IMAGE:-ghcr.io/maxforcedev/core-pdv-platform-admin}:${RELEASE_TAG:?Set RELEASE_TAG to the full commit SHA}
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: '1'
+      HOSTNAME: 0.0.0.0
+      PORT: '3100'
+    networks:
+      - traefik_public
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:3100/login', {signal: AbortSignal.timeout(4000)})
+          .then(response => process.exit(response.status === 200 ? 0 : 1))
+          .catch(() => process.exit(1))
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 60s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: pause
+        monitor: 60s
+        order: stop-first
+      labels:
+        - traefik.enable=true
+        - traefik.swarm.network=${TRAEFIK_NETWORK:-traefik_public}
+        - traefik.http.routers.corepdv-platform-admin.rule=Host(`${PLATFORM_ADMIN_DOMAIN:-admin.corepdv.com}`)
+        - traefik.http.routers.corepdv-platform-admin.entrypoints=websecure
+        - traefik.http.routers.corepdv-platform-admin.tls=true
+        - traefik.http.routers.corepdv-platform-admin.tls.certresolver=letsencrypt
+        - traefik.http.services.corepdv-platform-admin.loadbalancer.server.port=3100
 
 volumes:
   postgres_data:
+  private_media:
 
 networks:
   corepdv_internal:

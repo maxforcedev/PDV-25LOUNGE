@@ -36,21 +36,30 @@ def _permission_blocked(user, *, company_id=None, branch_id=None, code):
     return code in _company_blocked_codes(user, company_id)
 
 
+def _company_membership_filters(user):
+    return {
+        'user_accesses__user': user,
+        'user_accesses__is_active': True,
+        'user_accesses__saas_status': UserCompanyAccess.SaaSStatus.ACTIVE,
+    }
+
+
 def accessible_companies(user, permission_code=None):
     if not user.is_authenticated or not user.can_login or not user.is_active:
         return Company.objects.none()
     if user.is_authenticated and user.is_superuser:
         return Company.objects.all()
-    filters = {
-        'user_accesses__user': user,
-        'user_accesses__is_active': True,
-        'user_accesses__access_profile__status': 'active',
-    }
+    filters = _company_membership_filters(user)
+    filters.update({
+        'branches__user_accesses__user': user,
+        'branches__user_accesses__is_active': True,
+        'branches__user_accesses__access_profile__status': 'active',
+    })
     if permission_code:
         filters.update(
             {
-                'user_accesses__access_profile__permissions__status': 'active',
-                'user_accesses__access_profile__permissions__code': permission_code,
+                'branches__user_accesses__access_profile__permissions__status': 'active',
+                'branches__user_accesses__access_profile__permissions__code': permission_code,
             }
         )
     queryset = Company.objects.filter(**filters).distinct()
@@ -68,28 +77,42 @@ def accessible_branches(user, permission_code=None):
         return Branch.objects.none()
     if user.is_authenticated and user.is_superuser:
         return Branch.objects.all()
-    filters = {
+    membership_filters = {
         'user_accesses__user': user,
         'user_accesses__is_active': True,
         'user_accesses__access_profile__status': 'active',
         'company__user_accesses__user': user,
         'company__user_accesses__is_active': True,
-        'company__user_accesses__access_profile__status': 'active',
+        'company__user_accesses__saas_status': UserCompanyAccess.SaaSStatus.ACTIVE,
     }
     if permission_code:
         from .rbac import OPERATING_PERMISSION_CODES
 
         if permission_code in OPERATING_PERMISSION_CODES:
-            filters.update({
+            membership_filters.update({
                 'user_accesses__access_profile__permissions__status': 'active',
                 'user_accesses__access_profile__permissions__code': permission_code,
             })
+            queryset = Branch.objects.filter(**membership_filters).distinct()
         else:
-            filters.update({
-                'company__user_accesses__access_profile__permissions__status': 'active',
-                'company__user_accesses__access_profile__permissions__code': permission_code,
-            })
-    queryset = Branch.objects.filter(**filters).distinct()
+            company_ids_with_perm = set(
+                UserBranchAccess.objects.filter(
+                    user=user,
+                    is_active=True,
+                    access_profile__status='active',
+                    access_profile__permissions__status='active',
+                    access_profile__permissions__code=permission_code,
+                    branch__company__user_accesses__user=user,
+                    branch__company__user_accesses__is_active=True,
+                    branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
+                ).values_list('branch__company_id', flat=True).distinct()
+            )
+            queryset = Branch.objects.filter(**{
+                k: v for k, v in membership_filters.items()
+                if not k.startswith('user_accesses__access_profile__permissions')
+            }).filter(company_id__in=company_ids_with_perm).distinct()
+    else:
+        queryset = Branch.objects.filter(**membership_filters).distinct()
     if permission_code and not user.is_superuser:
         blocked = UserPermissionBlock.objects.filter(
             user=user, is_active=True, permission__code=permission_code,
@@ -107,7 +130,7 @@ def active_operational_companies(user):
         status='active',
         user_accesses__user=user,
         user_accesses__is_active=True,
-        user_accesses__access_profile__status='active',
+        user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
     ).distinct()
 
 
@@ -122,7 +145,7 @@ def active_operational_branches(user):
         user_accesses__access_profile__status='active',
         company__user_accesses__user=user,
         company__user_accesses__is_active=True,
-        company__user_accesses__access_profile__status='active',
+        company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
     ).distinct()
 
 
@@ -134,12 +157,15 @@ def company_permission_codes(user, company_id):
 
         return set(ALL_PERMISSION_CODES)
     codes = set(
-        UserCompanyAccess.objects.filter(
+        UserBranchAccess.objects.filter(
             user=user,
-            company_id=company_id,
+            branch__company_id=company_id,
             is_active=True,
             access_profile__status='active',
             access_profile__permissions__status='active',
+            branch__company__user_accesses__user=user,
+            branch__company__user_accesses__is_active=True,
+            branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
         ).values_list('access_profile__permissions__code', flat=True)
     )
     return codes - _company_blocked_codes(user, company_id)
@@ -152,13 +178,16 @@ def user_has_company_permission(user, company_id, code):
         return True
     if _permission_blocked(user, company_id=company_id, code=code):
         return False
-    return UserCompanyAccess.objects.filter(
+    return UserBranchAccess.objects.filter(
         user=user,
-        company_id=company_id,
+        branch__company_id=company_id,
         is_active=True,
         access_profile__status='active',
         access_profile__permissions__status='active',
         access_profile__permissions__code=code,
+        branch__company__user_accesses__user=user,
+        branch__company__user_accesses__is_active=True,
+        branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
     ).exists()
 
 
@@ -178,7 +207,7 @@ def user_has_branch_permission(user, branch_id, code):
         access_profile__permissions__code=code,
         branch__company__user_accesses__user=user,
         branch__company__user_accesses__is_active=True,
-        branch__company__user_accesses__access_profile__status='active',
+        branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
     ).exists()
 
 
@@ -204,7 +233,7 @@ def eligible_branch_users(branch, permission_code):
         branch_accesses__access_profile__permissions__code=permission_code,
         company_accesses__company_id=branch.company_id,
         company_accesses__is_active=True,
-        company_accesses__access_profile__status='active',
+        company_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
     ).exclude(id__in=blocked_users).exclude(id__in=company_blocked_users).distinct().order_by('first_name', 'last_name', 'email', 'id')
 
 
@@ -224,14 +253,13 @@ def branch_permission_codes(user, branch_id):
             access_profile__permissions__status='active',
             branch__company__user_accesses__user=user,
             branch__company__user_accesses__is_active=True,
-            branch__company__user_accesses__access_profile__status='active',
+            branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
         ).values_list('access_profile__permissions__code', flat=True)
     )
     return codes - _branch_blocked_codes(user, branch_id)
 
 
 def inherited_permission_codes(user, company_id, branch_id=None):
-    """Return profile permissions before individual blocks are applied."""
     if not user.is_authenticated or not user.can_login or not user.is_active:
         return set()
     if user.is_superuser:
@@ -240,8 +268,6 @@ def inherited_permission_codes(user, company_id, branch_id=None):
         return set(ALL_PERMISSION_CODES)
 
     if branch_id:
-        from .rbac import OPERATING_PERMISSION_CODES
-
         return set(
             UserBranchAccess.objects.filter(
                 user=user,
@@ -252,22 +278,11 @@ def inherited_permission_codes(user, company_id, branch_id=None):
                 access_profile__permissions__status='active',
                 branch__company__user_accesses__user=user,
                 branch__company__user_accesses__is_active=True,
-                branch__company__user_accesses__access_profile__status='active',
+                branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
             ).values_list('access_profile__permissions__code', flat=True)
-        ) & set(OPERATING_PERMISSION_CODES)
+        )
 
-    from .rbac import OPERATING_PERMISSION_CODES
-
-    company_codes = set(
-        UserCompanyAccess.objects.filter(
-            user=user,
-            company_id=company_id,
-            is_active=True,
-            access_profile__status='active',
-            access_profile__permissions__status='active',
-        ).values_list('access_profile__permissions__code', flat=True)
-    )
-    branch_codes = set(
+    return set(
         UserBranchAccess.objects.filter(
             user=user,
             branch__company_id=company_id,
@@ -276,13 +291,8 @@ def inherited_permission_codes(user, company_id, branch_id=None):
             access_profile__permissions__status='active',
             branch__company__user_accesses__user=user,
             branch__company__user_accesses__is_active=True,
-            branch__company__user_accesses__access_profile__status='active',
+            branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
         ).values_list('access_profile__permissions__code', flat=True)
-    )
-    return (
-        company_codes - set(OPERATING_PERMISSION_CODES)
-    ) | (
-        branch_codes & set(OPERATING_PERMISSION_CODES)
     )
 
 

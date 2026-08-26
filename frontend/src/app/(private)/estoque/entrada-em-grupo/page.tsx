@@ -8,10 +8,15 @@ import { StockOperationDetails } from "@/components/stock-operation-details";
 import { Alert, Button, EmptyState, Field, Input, Select, Spinner, Textarea } from "@/components/ui";
 import { formatQuantity } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
+import { contentUnitLabel, isUnitQuantityValid, physicalQuantityDisplay, quantityInputMode } from "@/lib/inventory";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
 type EntryCategory = { id: number; name: string };
-type EntryProduct = { id: number; name: string; internal_code: string; unit: string; current_quantity: string };
+type EntryProduct = {
+  id: number; name: string; internal_code: string; unit: string; current_quantity: string;
+  equivalent_quantity?: string; current_content?: string | null; package_content?: string | null;
+  content_unit?: string | null; complete_packages?: string | null; residual_content?: string | null;
+};
 type EntryOptions = { branch: { id: number; name: string }; categories: EntryCategory[]; products: EntryProduct[] };
 type OperationSuccess = { label: string; reference: string; count: number };
 
@@ -57,6 +62,15 @@ export default function GroupedEntryPage() {
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (!currentBranch) return;
+    const invalid = products.find((product) => {
+      const tracked = product.current_content != null && product.package_content && product.content_unit;
+      return quantities[product.id] && !isUnitQuantityValid(quantities[product.id], tracked ? "un" : product.unit, true);
+    });
+    if (invalid) {
+      const tracked = invalid.current_content != null && invalid.package_content && invalid.content_unit;
+      setError(`${invalid.name}: informe ${tracked ? "um número inteiro de embalagens fechadas" : invalid.unit.toLowerCase() === "un" ? "uma quantidade inteira" : "uma quantidade válida com até 3 casas decimais"}.`);
+      return;
+    }
     setSaving(true); setError(""); setSuccess(null);
     try {
       const result = await http.post<{ count: number; operation_reference: string }>(`stock-movements/group-entry/?branch=${currentBranch.id}`, {
@@ -88,7 +102,7 @@ export default function GroupedEntryPage() {
       </section>
       <section className="card overflow-hidden">
         <div className="card-header"><div><h2 className="text-sm font-bold">Grade completa da categoria</h2><p className="mt-1 text-[11px] text-muted">Preencha somente o que foi recebido. Campos vazios ou zero não geram movimento.</p></div>{loadingProducts && <Spinner />}</div>
-        {products.length ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Produto</th><th>Saldo atual</th><th>Entrada</th></tr></thead><tbody>{products.map((product) => <tr key={product.id}><td><strong className="block">{product.name}</strong><small className="text-muted">{product.internal_code}</small></td><td>{formatQuantity(product.current_quantity)} {product.unit.toUpperCase()}</td><td className="max-w-48"><Input inputMode="decimal" min="0" placeholder="0" value={quantities[product.id] || ""} onChange={(event) => { setQuantities((current) => ({ ...current, [product.id]: event.target.value })); rotateIdempotencyKey(); }} /></td></tr>)}</tbody></table></div> : !loadingProducts && category ? <EmptyState title="Categoria sem produtos elegíveis" description="Não há produtos ativos com estoque próprio nesta categoria." /> : null}
+        {products.length ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Produto</th><th>Saldo atual</th><th>Entrada</th></tr></thead><tbody>{products.map((product) => { const tracked = product.current_content != null && product.package_content && product.content_unit; const balance = physicalQuantityDisplay({ quantity: product.current_quantity, unit: product.unit, content: product.current_content, packageContent: product.package_content, contentUnit: product.content_unit, completePackages: product.complete_packages, residualContent: product.residual_content }); return <tr key={product.id}><td><strong className="block">{product.name}</strong><small className="text-muted">{product.internal_code}</small></td><td>{balance}</td><td className="max-w-56"><Input inputMode={quantityInputMode(tracked ? "un" : product.unit)} pattern={tracked ? "\d+" : undefined} step={tracked || product.unit.toLowerCase() === "un" ? "1" : "0.001"} min="0" placeholder="0" value={quantities[product.id] || ""} onChange={(event) => { setQuantities((current) => ({ ...current, [product.id]: tracked ? event.target.value.replace(/\D/g, "") : event.target.value })); rotateIdempotencyKey(); }} />{tracked && <span className="mt-1 block text-[10px] text-muted">Embalagens fechadas de {formatQuantity(product.package_content)} {contentUnitLabel(product.content_unit)}</span>}</td></tr>; })}</tbody></table></div> : !loadingProducts && category ? <EmptyState title="Categoria sem produtos elegíveis" description="Não há produtos ativos com estoque próprio nesta categoria." /> : null}
         <div className="flex justify-end border-t border-subtle p-4"><Button type="submit" loading={saving} disabled={!category || !products.length || !products.some((product) => Number((quantities[product.id] || "0").replace(",", ".")) > 0)}>Confirmar entrada agrupada</Button></div>
       </section>
     </form>

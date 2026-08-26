@@ -8,13 +8,12 @@ import {
   Banknote,
   BarChart3,
   Boxes,
-  Building2,
   ChevronDown,
   ClipboardList,
   CircleHelp,
   CreditCard,
-  FileSearch,
   GitBranch,
+  KeyRound,
   LayoutDashboard,
   LogOut,
   Maximize2,
@@ -24,12 +23,14 @@ import {
   Package,
   PanelLeftClose,
   PanelLeftOpen,
-  ReceiptText,
   ShieldCheck,
-  ShieldX,
   ShoppingCart,
   Sun,
   Tags,
+  Layers,
+  LayoutGrid,
+  Truck,
+  WalletCards,
   UserRound,
   Users,
   X,
@@ -38,135 +39,68 @@ import { useAuth } from "@/providers/auth-provider";
 import { initials } from "@/lib/format";
 import { permissions, reportMenuPermissions } from "@/lib/permissions";
 import { Alert, Spinner } from "@/components/ui";
+import { useBranding } from "@/providers/branding-provider";
+import type { BranchFeature, FeaturePermissionAlternative } from "@/types";
 
-const mainNavigation = [
+type NavItem = { href: string; label: string; icon: typeof LayoutDashboard; requiredPermissions: readonly string[]; requiredFeatures?: readonly BranchFeature[]; anyFeature?: boolean; alternatives?: readonly FeaturePermissionAlternative[] };
+
+const mainNavigation: NavItem[] = [
   {
     href: "/dashboard",
     label: "Visão geral",
     icon: LayoutDashboard,
     requiredPermissions: [permissions.viewDashboard],
   },
-  {
-    href: "/sobre-mim",
-    label: "Sobre mim",
-    icon: UserRound,
-    requiredPermissions: [],
-  },
 ];
 
-const adminNavigation = [
-  {
-    href: "/empresas",
-    label: "Empresas",
-    icon: Building2,
-    requiredPermissions: [permissions.viewCompany, permissions.changeCompany],
-  },
-  {
-    href: "/filiais",
-    label: "Filiais",
-    icon: GitBranch,
-    requiredPermissions: [
-      permissions.viewBranch,
-      permissions.addBranch,
-      permissions.changeBranch,
-    ],
-  },
-  {
-    href: "/perfis",
-    label: "Perfis de acesso",
-    icon: ShieldCheck,
-    requiredPermissions: [permissions.viewAccessProfile],
-  },
-  {
-    href: "/usuarios",
-    label: "Usuários",
-    icon: Users,
-    requiredPermissions: [permissions.viewUser],
-  },
-  {
-    href: "/usuarios/bloqueios",
-    label: "Bloqueios de acesso",
-    icon: ShieldX,
-    requiredPermissions: [permissions.viewPermissionBlock],
-  },
-  {
-    href: "/categorias",
-    label: "Categorias",
-    icon: Tags,
-    requiredPermissions: [permissions.viewCategory],
-  },
-  {
-    href: "/produtos",
-    label: "Produtos",
-    icon: Package,
-    requiredPermissions: [permissions.viewProduct],
-  },
-  {
-    href: "/estoque",
-    label: "Estoque",
-    icon: Boxes,
-    requiredPermissions: [permissions.viewInventory],
-  },
-  {
-    href: "/estoque/movimentacoes",
-    label: "Movimentações",
-    icon: LayoutDashboard,
-    requiredPermissions: [permissions.viewInventoryHistory],
-  },
-  {
-    href: "/caixas",
-    label: "Operação de caixa",
-    icon: Banknote,
-    requiredPermissions: [permissions.viewCashRegister],
-  },
-  {
-    href: "/pdv",
-    label: "PDV",
-    icon: ShoppingCart,
-    requiredPermissions: [
-      permissions.createSale,
-      permissions.createConsumption,
-    ],
-  },
-  {
-    href: "/vendas",
-    label: "Vendas",
-    icon: ReceiptText,
-    requiredPermissions: [permissions.viewSale],
-  },
-  {
-    href: "/consumacoes",
-    label: "Consumações",
-    icon: ClipboardList,
-    requiredPermissions: [permissions.viewConsumption],
-  },
-  {
-    href: "/formas-de-pagamento",
-    label: "Formas de pagamento",
-    icon: CreditCard,
-    requiredPermissions: [permissions.viewPaymentMethod],
-  },
-  {
-    href: "/promocoes",
-    label: "Promoções",
-    icon: BadgePercent,
-    requiredPermissions: [
-      permissions.viewPromotion,
-      permissions.changePromotion,
-    ],
-  },
-  {
-    href: "/relatorios",
-    label: "Relatórios",
-    icon: BarChart3,
-    requiredPermissions: reportMenuPermissions,
-  },
-  {
-    href: "/auditoria",
-    label: "Auditoria",
-    icon: FileSearch,
-    requiredPermissions: [permissions.viewAuditLog],
-  },
+const operationNavigation: NavItem[] = [
+  { href: "/pdv", label: "PDV", icon: ShoppingCart, requiredPermissions: [], alternatives: [{ permission: permissions.createSale, features: ["counter", "cash_register"] }, { permission: permissions.createConsumption, features: ["consumption"] }] },
+  { href: "/mesas", label: "Mesas", icon: LayoutGrid, requiredPermissions: [permissions.viewCommands], requiredFeatures: ["tables"] },
+  { href: "/comandas", label: "Comandas", icon: ClipboardList, requiredPermissions: [permissions.viewCommands], requiredFeatures: ["commands"] },
+  { href: "/caixas", label: "Caixa", icon: Banknote, requiredPermissions: [permissions.viewCashRegister], requiredFeatures: ["cash_register"] },
+];
+
+const cadastrosNavigation: NavItem[] = [
+  { href: "/produtos", label: "Produtos", icon: Package, requiredPermissions: [permissions.viewProduct] },
+  { href: "/categorias", label: "Categorias", icon: Tags, requiredPermissions: [permissions.viewCategory] },
+  { href: "/modificadores", label: "Modificadores", icon: Layers, requiredPermissions: [permissions.viewModifiers] },
+  { href: "/fornecedores", label: "Fornecedores", icon: Truck, requiredPermissions: [permissions.viewSupplier] },
+  { href: "/formas-de-pagamento", label: "Formas de pagamento", icon: CreditCard, requiredPermissions: [permissions.viewPaymentMethod] },
+  { href: "/promocoes", label: "Promoções", icon: BadgePercent, requiredPermissions: [permissions.viewPromotion, permissions.changePromotion] },
+];
+
+const suprimentosNavigation: NavItem[] = [
+  { href: "/compras", label: "Compras", icon: ClipboardList, requiredPermissions: [permissions.viewPurchase] },
+  { href: "/contas-a-pagar", label: "Contas a pagar", icon: WalletCards, requiredPermissions: [permissions.managePurchasePayables] },
+  { href: "/estoque", label: "Estoque", icon: Boxes, requiredPermissions: [permissions.viewInventory] },
+];
+
+const gestaoNavigation: NavItem[] = [
+  { href: "/usuarios", label: "Usuários", icon: Users, requiredPermissions: [permissions.viewUser] },
+  { href: "/perfis", label: "Perfis de acesso", icon: ShieldCheck, requiredPermissions: [permissions.viewAccessProfile] },
+  { href: "/filiais", label: "Filiais", icon: GitBranch, requiredPermissions: [permissions.viewBranch, permissions.addBranch, permissions.changeBranch] },
+];
+
+const relatoriosNavigation: NavItem[] = [
+  { href: "/relatorios", label: "Relatórios", icon: BarChart3, requiredPermissions: reportMenuPermissions },
+];
+
+type NavSection = { title: string; items: NavItem[] };
+
+const navSections: NavSection[] = [
+  { title: "Operação", items: operationNavigation },
+  { title: "Cadastros", items: cadastrosNavigation },
+  { title: "Suprimentos", items: suprimentosNavigation },
+  { title: "Gestão", items: gestaoNavigation },
+  { title: "Relatórios", items: relatoriosNavigation },
+];
+
+const adminNavigation: NavItem[] = [
+  ...operationNavigation,
+  ...cadastrosNavigation,
+  ...suprimentosNavigation,
+  ...gestaoNavigation,
+  ...relatoriosNavigation,
 ];
 
 function Sidebar({
@@ -177,16 +111,39 @@ function Sidebar({
   collapsed?: boolean;
 }) {
   const pathname = usePathname();
-  const { hasAnyPermission } = useAuth();
-  const navigation = [
+  const { hasAnyPermission, hasFeature, hasPermission, currentCompany } = useAuth();
+  const branding = useBranding();
+  const restrictedOwner = Boolean(currentCompany?.is_owner && !currentCompany.can_operate);
+  const navigation = restrictedOwner ? [{
+    href: "/assinatura",
+    label: "Assinatura",
+    icon: CreditCard,
+    requiredPermissions: [],
+  }] : [
     ...mainNavigation.filter(
       (item) =>
         !item.requiredPermissions.length ||
         hasAnyPermission(item.requiredPermissions),
     ),
-    ...adminNavigation.filter((item) =>
-      hasAnyPermission(item.requiredPermissions),
-    ),
+    ...(currentCompany?.is_owner ? [{
+      href: "/assinatura",
+      label: "Assinatura",
+      icon: CreditCard,
+      requiredPermissions: [],
+    }] : []),
+    ...adminNavigation.filter((item) => {
+      const featuresAllowed = !item.requiredFeatures || (
+        item.anyFeature
+          ? item.requiredFeatures.some(hasFeature)
+          : item.requiredFeatures.every(hasFeature)
+      );
+      const alternativesAllowed = item.alternatives?.some(({ permission, features }) =>
+        hasPermission(permission) && features.every(hasFeature)
+      );
+      return item.alternatives
+        ? alternativesAllowed
+        : featuresAllowed && hasAnyPermission(item.requiredPermissions);
+    }),
   ];
   const activeHref = navigation
     .filter(
@@ -205,7 +162,7 @@ function Sidebar({
         </div>
         {!collapsed && (
           <div>
-            <strong className="block text-sm tracking-wide">Core PDV</strong>
+            <strong className="block max-w-40 truncate text-sm tracking-wide">{branding.platform_name}</strong>
             <span className="text-[10px] uppercase tracking-[0.18em] text-operational-muted">
               Administração
             </span>
@@ -218,11 +175,11 @@ function Sidebar({
       >
         {!collapsed && (
           <p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-[0.16em] text-operational-muted">
-            Gestão
+            Principal
           </p>
         )}
         <div className="space-y-1">
-          {navigation.map(({ href, label, icon: Icon }) => {
+          {navigation.filter(item => !navSections.some(s => s.items.includes(item))).map(({ href, label, icon: Icon }) => {
             const active = activeHref === href;
             return (
               <Link
@@ -239,6 +196,37 @@ function Sidebar({
             );
           })}
         </div>
+        {navSections.map((section) => {
+          const sectionItems = navigation.filter(item => section.items.includes(item));
+          if (!sectionItems.length) return null;
+          return (
+            <div key={section.title} className="mt-6">
+              {!collapsed && (
+                <p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-[0.16em] text-operational-muted">
+                  {section.title}
+                </p>
+              )}
+              <div className="space-y-1">
+                {sectionItems.map(({ href, label, icon: Icon }) => {
+                  const active = activeHref === href;
+                  return (
+                    <Link
+                      key={href}
+                      href={href}
+                      onClick={onNavigate}
+                      title={collapsed ? label : undefined}
+                      aria-label={collapsed ? label : undefined}
+                      className={`flex items-center rounded-md py-2.5 text-[13px] font-medium transition focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-focus ${collapsed ? "justify-center px-2" : "gap-3 px-3"} ${active ? "bg-primary text-white shadow-md shadow-black/10" : "text-operational-muted hover:bg-white/6 hover:text-operational-fg"}`}
+                    >
+                      <Icon className="size-[17px] shrink-0" />
+                      {!collapsed && <span>{label}</span>}
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
       </nav>
       {!collapsed && (
         <div className="border-t border-white/8 px-6 py-4 text-[10px] text-operational-muted">
@@ -255,9 +243,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     logout,
     currentCompany,
     currentBranch,
+    availableCompanies,
     setCurrentCompanyId,
     setCurrentBranchId,
+    supportSession,
+    endSupportSession,
   } = useAuth();
+  const branding = useBranding();
   const [drawer, setDrawer] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -266,6 +258,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [fullscreenSupported, setFullscreenSupported] = useState(false);
+  const [endingSupport, setEndingSupport] = useState(false);
+  const [supportError, setSupportError] = useState("");
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const pathname = usePathname();
   useEffect(() => setDrawer(false), [pathname]);
@@ -284,6 +278,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!drawer) return;
     const previous = document.body.style.overflow;
+    const menuButton = menuButtonRef.current;
     document.body.style.overflow = "hidden";
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") setDrawer(false);
@@ -292,7 +287,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => {
       document.body.style.overflow = previous;
       window.removeEventListener("keydown", closeOnEscape);
-      menuButtonRef.current?.focus();
+      menuButton?.focus();
     };
   }, [drawer]);
 
@@ -334,6 +329,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   }
 
+  async function handleEndSupport() {
+    setEndingSupport(true);
+    setSupportError("");
+    try {
+      await endSupportSession();
+    } catch (caught) {
+      setSupportError(caught instanceof Error ? caught.message : "Não foi possível encerrar a sessão de suporte.");
+      setEndingSupport(false);
+    }
+  }
+
   return (
     <div
       className={`min-h-screen bg-canvas transition-[padding] duration-200 ${collapsed ? "lg:pl-20" : "lg:pl-65"}`}
@@ -362,7 +368,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </aside>
         </div>
       )}
-      <header className="sticky top-0 z-30 flex min-h-18 items-center border-b border-subtle bg-surface/95 px-4 py-2 backdrop-blur sm:px-6 lg:px-8">
+      <div className="sticky top-0 z-30">
+      {supportSession && (
+        <div role="status" className="border-b border-warning/35 bg-warning-surface px-4 py-2.5 text-warning-strong sm:px-6 lg:px-8">
+          <div className="mx-auto flex max-w-[1600px] flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0 text-xs">
+              <strong className="font-extrabold">Sessão de suporte ativa · {supportSession.mode === "READ_ONLY" ? "somente leitura" : "leitura e escrita"}</strong>
+              <span className="ml-2 block text-[11px] sm:inline">{supportSession.actor_email || "Equipe de suporte"} em {supportSession.company_name || currentCompany?.trade_name || `empresa ${supportSession.company}`}</span>
+              {supportError && <span className="mt-1 block font-semibold text-danger-strong" role="alert">{supportError}</span>}
+            </div>
+            <button type="button" className="btn h-8 shrink-0 border border-warning/40 bg-surface px-3 text-[11px] text-warning-strong hover:bg-warning-surface" onClick={() => void handleEndSupport()} disabled={endingSupport}>
+              {endingSupport && <Spinner />} Encerrar sessão
+            </button>
+          </div>
+        </div>
+      )}
+      <header className="flex min-h-18 items-center border-b border-subtle bg-surface/95 px-4 py-2 backdrop-blur sm:px-6 lg:px-8">
         <button
           ref={menuButtonRef}
           className="icon-button mr-2 lg:hidden"
@@ -386,7 +407,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           )}
         </button>
         <div className="hidden sm:block">
-          <p className="text-xs font-semibold text-fg">Painel administrativo</p>
+          <p className="text-xs font-semibold text-fg">Painel {branding.platform_name}</p>
           <p className="mt-0.5 text-[11px] text-muted">
             Operação e acessos em um só lugar
           </p>
@@ -402,12 +423,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             onChange={(event) =>
               setCurrentCompanyId(Number(event.target.value))
             }
-            disabled={!user?.companies.length}
+            disabled={!availableCompanies.length || !!supportSession}
           >
-            {!user?.companies.length && (
+            {!availableCompanies.length && (
               <option value="">Sem empresa vinculada</option>
             )}
-            {user?.companies.map((company) => (
+            {availableCompanies.map((company) => (
               <option key={company.id} value={company.id}>
                 {company.trade_name}
                 {company.status === "inactive" ? " (inativa)" : ""}
@@ -505,13 +526,31 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 Central de ajuda
               </Link>
               <Link
-                href="/sobre-mim"
+                href="/perfil"
                 onClick={() => setProfileOpen(false)}
                 className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-xs font-medium text-muted hover:bg-surface-muted hover:text-fg"
               >
                 <UserRound className="size-4" />
-                Sobre mim
+                Meu perfil
               </Link>
+              <Link
+                href="/perfil/alterar-senha"
+                onClick={() => setProfileOpen(false)}
+                className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-xs font-medium text-muted hover:bg-surface-muted hover:text-fg"
+              >
+                <KeyRound className="size-4" />
+                Alterar senha
+              </Link>
+              {currentCompany?.is_owner && (
+                <Link
+                  href="/assinatura"
+                  onClick={() => setProfileOpen(false)}
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-xs font-medium text-muted hover:bg-surface-muted hover:text-fg"
+                >
+                  <CreditCard className="size-4" />
+                  Assinatura
+                </Link>
+              )}
               <button
                 onClick={handleLogout}
                 disabled={loggingOut}
@@ -524,6 +563,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           )}
         </div>
       </header>
+      </div>
       {logoutError && (
         <div className="px-4 pt-4 sm:px-6 lg:px-8">
           <Alert message={logoutError} />

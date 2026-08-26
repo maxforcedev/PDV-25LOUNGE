@@ -43,7 +43,7 @@ function Kpi({
 }: {
   label: string;
   value: string;
-  note: string;
+  note?: string;
   icon: typeof TrendingUp;
   href?: string;
   tone?: "primary" | "danger" | "warning" | "success";
@@ -173,7 +173,7 @@ function PaymentChart({
 }) {
   const title = "Formas de pagamento";
   const subtitle = scope === "operational"
-    ? "Inclui vendas comerciais, consumações cobradas e reversões no recorte."
+    ? "Inclui vendas comerciais, consumações cobradas e reversões no periodo."
     : "Escopo comercial: não inclui consumações sem permissão de visualização.";
   const colors = [
     "var(--chart-1)",
@@ -223,15 +223,15 @@ function PaymentChart({
     roundedPercentageTotal > 0;
   const unavailableReason =
     total <= 0 || !Number.isFinite(total)
-      ? "O Total recebido não é positivo neste recorte."
+      ? "O Total recebido não é positivo neste periodo."
       : hasInvalidMethod
         ? "Há valores líquidos negativos ou inválidos por forma de pagamento após reversões."
         : hasInconsistentPercentage
           ? "Os percentuais por forma não reconciliam com o Total recebido."
           : hasReconciliationDelta
-            ? "Os pagamentos não reconciliam com o Total recebido neste recorte."
+            ? "Os pagamentos não reconciliam com o Total recebido neste periodo."
         : roundedPercentageTotal <= 0
-          ? "Não há participação positiva por forma de pagamento neste recorte."
+          ? "Não há participação positiva por forma de pagamento neste periodo."
           : "A distribuição excede 100% do Total recebido e não pode ser representada com segurança.";
   let cursor = 0;
   const visualScale = 100 / percentageTotal;
@@ -252,7 +252,6 @@ function PaymentChart({
       <div className="card-header">
         <div>
           <h2 className="text-sm font-bold">{title}</h2>
-          <p className="mt-1 text-[11px] text-slate-500">{subtitle}</p>
         </div>
         {href && (
           <Link className="text-xs font-bold text-link" href={href}>
@@ -374,7 +373,7 @@ function FinancialBridge({
         <div>
           <h2 className="text-sm font-bold">Composição do recebimento</h2>
           <p className="mt-1 text-[11px] text-slate-500">
-            Faturamento efetivo e Total recebido no período aplicado.
+            {/* Faturamento efetivo e Total recebido no período aplicado. */}
           </p>
         </div>
         {href && (
@@ -553,7 +552,7 @@ function SellerRanking({
       row.user !== null,
   );
   const showCommission = rankedRows.some(
-    (row) => row.commission !== undefined,
+    (row) => row.commission !== undefined || row.commission_rate !== undefined,
   );
   return (
     <section className="card overflow-hidden">
@@ -561,7 +560,7 @@ function SellerRanking({
         <div>
           <h2 className="text-sm font-bold">Ranking de atendentes</h2>
           <p className="mt-1 text-[11px] text-slate-500">
-            Desempenho por seller_user nas vendas comerciais.
+            Desempenho por atendentes nas vendas comerciais.
           </p>
         </div>
         {href && (
@@ -576,11 +575,11 @@ function SellerRanking({
             <thead>
               <tr>
                 <th>#</th>
-                <th>Pessoa</th>
-                <th>Faturamento de vendas</th>
+                <th>Atendente</th>
                 <th>Vendas</th>
-                <th>Ticket</th>
+                <th>Ticket médio</th>
                 {showCommission && <th>Comissão</th>}
+                {showCommission && <th>Total comissão</th>}
               </tr>
             </thead>
             <tbody>
@@ -600,8 +599,12 @@ function SellerRanking({
                     )}
                   </td>
                   <td>{formatBRL(row.sales_revenue)}</td>
-                  <td>{row.count}</td>
                   <td>{formatBRL(row.average)}</td>
+                  {showCommission && (
+                    <td>
+                      {row.commission_rate ? `${row.commission_rate}%` : "-"}
+                    </td>
+                  )}
                   {showCommission && (
                     <td>
                       {row.commission === undefined
@@ -641,7 +644,7 @@ function OperatorTable({
         <div>
           <h2 className="text-sm font-bold">Operadores de caixa</h2>
           <p className="mt-1 text-[11px] text-slate-500">
-            Vendas processadas por created_by, sem atribuição de comissão.
+            Vendas processadas por operadores de caixa duretante o periodo selecionado
           </p>
         </div>
         {href && (
@@ -1048,15 +1051,6 @@ function DashboardPage() {
                   href={canViewConsumptionsReport ? report("consumacoes") : undefined}
                 />
               )}
-              {sales?.commission !== undefined && (
-                <Kpi
-                  label="Comissão"
-                  value={formatBRL(sales.commission)}
-                  note="Custo separado do faturamento"
-                  icon={Users}
-                  href={canViewCommissionReport ? report("comissoes") : undefined}
-                />
-              )}
             </div>
             <div className="grid gap-5 xl:grid-cols-2">
               {data.inventory && (
@@ -1077,7 +1071,6 @@ function DashboardPage() {
                       <Kpi
                         label="Valor em estoque"
                         value={formatBRL(data.inventory.inventory_value)}
-                        note="Saldos positivos no recorte"
                         icon={Boxes}
                         href={canViewInventory ? "/estoque" : undefined}
                       />
@@ -1085,7 +1078,6 @@ function DashboardPage() {
                     <Kpi
                       label="Negativos"
                       value={String(data.inventory.negative_count)}
-                      note="Produtos físicos"
                       icon={Boxes}
                       tone="danger"
                       href={canViewInventory ? "/estoque?state=negative" : undefined}
@@ -1093,7 +1085,6 @@ function DashboardPage() {
                     <Kpi
                       label="Abaixo do mínimo"
                       value={String(data.inventory.below_minimum_count)}
-                      note="Exigem atenção"
                       icon={Boxes}
                       tone="warning"
                       href={canViewInventory ? "/estoque?state=below_minimum" : undefined}
@@ -1101,7 +1092,6 @@ function DashboardPage() {
                     <Kpi
                       label="Produtos físicos"
                       value={String(data.inventory.physical_products)}
-                      note="Somente estoque direto"
                       icon={Boxes}
                       href={canViewInventory ? "/estoque" : undefined}
                     />
@@ -1240,9 +1230,9 @@ function DashboardPage() {
                       <h2 className="text-sm font-bold">
                         Mapa de calor · dia × hora
                       </h2>
-                      <p className="mt-1 text-[11px] text-slate-500">
+                      {/* <p className="mt-1 text-[11px] text-slate-500">
                         Faturamento de vendas, quantidade e ticket no tooltip.
-                      </p>
+                      </p> */}
                     </div>
                   </div>
                   {sales.heatmap.length ? (
@@ -1329,7 +1319,7 @@ function DashboardPage() {
                 <section className="card overflow-hidden">
                   <div className="card-header">
                     <h2 className="text-sm font-bold">
-                      Últimas vendas do recorte
+                      Últimas vendas
                     </h2>
                     <div className="flex items-center gap-3">
                       <span className="text-[11px] text-slate-500">

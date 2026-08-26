@@ -29,16 +29,17 @@ import { permissions } from "@/lib/permissions";
 import {
   centsToDecimal,
   moneyToCents,
-  provisionalCartTotal,
   provisionalItemTotal,
   quantityToThousandths,
   sumMoney,
 } from "@/lib/sales";
 import { useAuth } from "@/providers/auth-provider";
+import { ModifierPicker } from "@/components/modifier-picker";
 import type {
   CheckoutCashSession,
   CheckoutOptions,
   CheckoutPaymentMethod,
+  ModifierSelection,
   Paginated,
   Product,
   Sale,
@@ -49,7 +50,7 @@ import type {
   SaleUserOption,
 } from "@/types";
 
-type CartItem = Product & { quantity: string; item_discount: string };
+type CartItem = Product & { cartLineId: number; quantity: string; item_discount: string; modifiers: ModifierSelection[]; modifierUnitTotal: string };
 type PaymentRow = {
   key: number;
   payment_method: string;
@@ -58,13 +59,14 @@ type PaymentRow = {
 };
 type PricingPayload = {
   operation_type: SaleOperation;
-  items: Array<{ product: number; quantity: string }>;
+  items: Array<{ product: number; quantity: string; discount: string; modifiers: ModifierSelection[] }>;
   beneficiary_user?: number;
   charged_amount?: string;
   discount?: string;
   service_fee_waived?: boolean;
 };
 let paymentKey = 1;
+let cartLineKey = 1;
 const canonicalDecimal = /^\d+\.\d{2}$/;
 const userTypeLabels: Record<string, string> = {
   employee: "Funcionário",
@@ -134,9 +136,10 @@ function validPreviewContract(value: unknown): value is SalePreview {
 }
 
 export function SalesPdv() {
-  const { user, currentCompany, currentBranch, hasPermission } = useAuth();
-  const canSale = hasPermission(permissions.createSale);
-  const canConsumption = hasPermission(permissions.createConsumption);
+  const { user, currentCompany, currentBranch, hasFeature, hasPermission } = useAuth();
+  const cashEnabled = hasFeature("cash_register");
+  const canSale = hasPermission(permissions.createSale) && hasFeature("counter") && cashEnabled;
+  const canConsumption = hasPermission(permissions.createConsumption) && hasFeature("consumption");
   const [operation, setOperation] = useState<SaleOperation>(
     canSale ? "sale" : "consumption",
   );
@@ -156,6 +159,7 @@ export function SalesPdv() {
   const [category, setCategory] = useState("");
   const [categories, setCategories] = useState<SaleCategory[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [modifierProduct, setModifierProduct] = useState<Product | null>(null);
   const [methods, setMethods] = useState<CheckoutPaymentMethod[]>([]);
   const [sessions, setSessions] = useState<CheckoutCashSession[]>([]);
   const [beneficiaries, setBeneficiaries] = useState<SaleBeneficiary[]>([]);
@@ -293,38 +297,40 @@ export function SalesPdv() {
       false,
       context,
     );
-    http
-      .get<CheckoutOptions>(
-        `sales/checkout-options/?operation_type=${initialOperation}`,
-      )
-      .then((options) => {
-        if (contextRef.current !== context) return;
-        const activeMethods = options.payment_methods.filter(
-          (method) => method.status === "active",
-        );
-        setMethods(activeMethods);
-        setSessions(options.cash_sessions);
-        setPayments([
-          {
-            key: paymentKey++,
-            payment_method: activeMethods[0] ? String(activeMethods[0].id) : "",
-            amount: "",
-            received_amount: "",
-          },
-        ]);
-        if (options.cash_sessions.length === 1)
-          setCashSession(String(options.cash_sessions[0].id));
-      })
-      .catch((caught) => {
-        if (contextRef.current === context)
-          setResourceErrors((current) => ({
-            ...current,
-            options: errorText(
-              caught,
-              "Não foi possível carregar caixa e formas de pagamento.",
-            ),
-          }));
-      });
+    if (cashEnabled) {
+      http
+        .get<CheckoutOptions>(
+          `sales/checkout-options/?operation_type=${initialOperation}`,
+        )
+        .then((options) => {
+          if (contextRef.current !== context) return;
+          const activeMethods = options.payment_methods.filter(
+            (method) => method.status === "active",
+          );
+          setMethods(activeMethods);
+          setSessions(options.cash_sessions);
+          setPayments([
+            {
+              key: paymentKey++,
+              payment_method: activeMethods[0] ? String(activeMethods[0].id) : "",
+              amount: "",
+              received_amount: "",
+            },
+          ]);
+          if (options.cash_sessions.length === 1)
+            setCashSession(String(options.cash_sessions[0].id));
+        })
+        .catch((caught) => {
+          if (contextRef.current === context)
+            setResourceErrors((current) => ({
+              ...current,
+              options: errorText(
+                caught,
+                "Não foi possível carregar caixa e formas de pagamento.",
+              ),
+            }));
+        });
+    }
     http
       .get<SaleCategory[]>(
         `sales/categories/?operation_type=${initialOperation}`,
@@ -342,35 +348,38 @@ export function SalesPdv() {
             ),
           }));
       });
-    Promise.all([
-      http.getAll<SaleUserOption>("sales/sellers/"),
-      http.getAll<SaleUserOption>("sales/discount-authorizers/"),
-      http.getAll<SaleUserOption>("sales/item-discount-authorizers/"),
-    ])
-      .then(([sellerOptions, authorizerOptions, itemAuthorizerOptions]) => {
-        if (contextRef.current !== context) return;
-        setSellers(sellerOptions);
-        setAuthorizers(authorizerOptions);
-        setItemAuthorizers(itemAuthorizerOptions);
-        const ownOption = sellerOptions.find((item) => item.id === user?.id);
-        setSeller(ownOption ? String(ownOption.id) : "");
-      })
-      .catch((caught) => {
-        if (contextRef.current === context)
-          setResourceErrors((current) => ({
-            ...current,
-            users: errorText(
-              caught,
-              "Não foi possível carregar atendentes e autorizadores.",
-            ),
-          }));
-      });
-  }, [currentCompany?.id, currentBranch?.id, canSale, user?.id]);
+    if (initialOperation === "sale") {
+      Promise.all([
+        http.getAll<SaleUserOption>("sales/sellers/"),
+        http.getAll<SaleUserOption>("sales/discount-authorizers/"),
+        http.getAll<SaleUserOption>("sales/item-discount-authorizers/"),
+      ])
+        .then(([sellerOptions, authorizerOptions, itemAuthorizerOptions]) => {
+          if (contextRef.current !== context) return;
+          setSellers(sellerOptions);
+          setAuthorizers(authorizerOptions);
+          setItemAuthorizers(itemAuthorizerOptions);
+          const ownOption = sellerOptions.find((item) => item.id === user?.id);
+          setSeller(ownOption ? String(ownOption.id) : "");
+        })
+        .catch((caught) => {
+          if (contextRef.current === context)
+            setResourceErrors((current) => ({
+              ...current,
+              users: errorText(
+                caught,
+                "Não foi possível carregar atendentes e autorizadores.",
+              ),
+            }));
+        });
+    }
+  }, [currentCompany?.id, currentBranch?.id, canSale, cashEnabled, user?.id]);
 
   const rawItems = cart.map((item) => ({
     product: item.id,
     quantity: item.quantity.replace(",", "."),
     discount: consumption ? "0.00" : item.item_discount.replace(",", "."),
+    modifiers: item.modifiers || [],
   }));
   const pricingPayload: PricingPayload = {
     operation_type: operation,
@@ -452,13 +461,13 @@ export function SalesPdv() {
     }
   }
 
-  function add(product: Product) {
+  function add(product: Product, modifiers: ModifierSelection[] = []) {
     invalidatePreview();
     setSale(null);
     setCart((current) =>
-      current.some((item) => item.id === product.id)
+      !modifiers.length && current.some((item) => item.id === product.id && !item.modifiers.length)
         ? current.map((item) => {
-            if (item.id !== product.id) return item;
+            if (item.id !== product.id || item.modifiers.length) return item;
             const next =
               (quantityToThousandths(item.quantity) || BigInt(0)) +
               BigInt(1000);
@@ -474,31 +483,41 @@ export function SalesPdv() {
             ...current,
             {
               ...product,
+              cartLineId: cartLineKey++,
               quantity: product.unit === "un" ? "1" : "1.000",
               item_discount: "0.00",
+              modifiers,
+              modifierUnitTotal: modifiers.reduce((total, selection) => {
+                const option = (product.modifier_groups || []).flatMap((group) => group.options || []).find((item) => item.id === selection.option);
+                return total + Number(option?.additional_price || 0) * Number(selection.quantity);
+              }, 0).toFixed(2),
             },
           ],
     );
   }
-  function quantity(id: number, value: string) {
+  function requestAdd(product: Product) {
+    if ((product.modifier_groups || []).some((group) => group.status === "active")) setModifierProduct(product);
+    else add(product);
+  }
+  function quantity(cartLineId: number, value: string) {
     invalidatePreview();
     setCart((current) =>
       current.map((item) =>
-        item.id === id ? { ...item, quantity: value } : item,
+        item.cartLineId === cartLineId ? { ...item, quantity: value } : item,
       ),
     );
   }
-  function itemDiscount(id: number, value: string) {
+  function itemDiscount(cartLineId: number, value: string) {
     invalidatePreview();
     setCart((current) =>
       current.map((item) =>
-        item.id === id ? { ...item, item_discount: value } : item,
+        item.cartLineId === cartLineId ? { ...item, item_discount: value } : item,
       ),
     );
   }
-  function remove(id: number) {
+  function remove(cartLineId: number) {
     invalidatePreview();
-    setCart((current) => current.filter((item) => item.id !== id));
+    setCart((current) => current.filter((item) => item.cartLineId !== cartLineId));
   }
   function updatePayment(
     key: number,
@@ -522,6 +541,7 @@ export function SalesPdv() {
   }
 
   function openConsumption() {
+    if (!canConsumption) return;
     setConsumptionModal(true);
     setConsumptionError("");
     if (beneficiaries.length || beneficiariesLoading) return;
@@ -537,7 +557,7 @@ export function SalesPdv() {
       .finally(() => setBeneficiariesLoading(false));
   }
   function applyConsumption() {
-    const canonical = canonicalMoney(charged);
+    const canonical = cashEnabled ? canonicalMoney(charged) : "0.00";
     if (!beneficiary || canonical === null) {
       setConsumptionError(
         "Selecione o beneficiário e informe um valor cobrado válido, inclusive zero.",
@@ -560,7 +580,14 @@ export function SalesPdv() {
     invalidatePreview();
   }
 
-  const provisionalCents = provisionalCartTotal(cart);
+  const provisionalCents = cart.reduce<bigint | null>((total, item) => {
+    if (total === null) return null;
+    const itemTotal = provisionalItemTotal(
+      (Number(item.sale_price) + Number(item.modifierUnitTotal)).toFixed(2),
+      item.quantity,
+    );
+    return itemTotal === null ? null : total + itemTotal;
+  }, BigInt(0));
   const provisional =
     provisionalCents === null ? null : centsToDecimal(provisionalCents);
   const totalCents = preview ? moneyToCents(preview.total) : null;
@@ -586,27 +613,30 @@ export function SalesPdv() {
       : BigInt(0));
   const free = consumption && totalCents === BigInt(0);
   const paymentValid =
-    free ||
-    (!!preview &&
-      !!cashSession &&
-      payments.length > 0 &&
-      effectivePaymentCents === totalCents &&
-      payments.every((row) => {
-        const method = methods.find(
-          (item) => String(item.id) === row.payment_method,
-        );
-        if (!method) return false;
-        if (method.code === "cash") {
-          const received = moneyToCents(row.received_amount);
-          return (
-            received !== null &&
-            cashRemainingCents !== null &&
-            received >= cashRemainingCents
+    !!cashSession && (
+      free ||
+      (
+        !!preview &&
+        payments.length > 0 &&
+        effectivePaymentCents === totalCents &&
+        payments.every((row) => {
+          const method = methods.find(
+            (item) => String(item.id) === row.payment_method,
           );
-        }
-        const amount = moneyToCents(row.amount);
-        return amount !== null && amount > 0 && !row.received_amount;
-      }));
+          if (!method) return false;
+          if (method.code === "cash") {
+            const received = moneyToCents(row.received_amount);
+            return (
+              received !== null &&
+              cashRemainingCents !== null &&
+              received >= cashRemainingCents
+            );
+          }
+          const amount = moneyToCents(row.amount);
+          return amount !== null && amount > 0 && !row.received_amount;
+        })
+      )
+    );
   const discountAuthorizationRequired = Boolean(
     !consumption && !canDiscount && preview && preview.discount !== "0.00",
   );
@@ -688,7 +718,7 @@ export function SalesPdv() {
                   }
                 : {}),
             }),
-        cash_session: free ? null : Number(cashSession),
+        cash_session: Number(cashSession),
         payments: free
           ? []
           : payments.map((row) => {
@@ -863,7 +893,7 @@ export function SalesPdv() {
                   {catalog.map((product) => (
                     <button
                       key={product.id}
-                      onClick={() => add(product)}
+                      onClick={() => requestAdd(product)}
                       className={`group relative min-h-36 rounded-xl border bg-surface p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-primary hover:shadow-md focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-focus/30 ${product.is_favorite ? "border-primary/40" : "border-subtle"}`}
                     >
                       {product.is_favorite && (
@@ -908,7 +938,7 @@ export function SalesPdv() {
               <div>
                 <h2 className="flex items-center gap-2 text-sm font-bold">
                   <ShoppingBasket className="size-4 text-primary" />
-                  Comanda atual
+                  Carrinho atual
                 </h2>
                 <p className="mt-1 text-[10px] text-slate-400">
                   {cart.length} {cart.length === 1 ? "item" : "itens"}
@@ -918,24 +948,28 @@ export function SalesPdv() {
             </div>
             {!cart.length ? (
               <EmptyState
-                title="Comanda vazia"
+                title="Carrinho vazio"
                 description="Toque em um produto do catálogo para adicionar."
               />
             ) : (
               <div className="max-h-72 divide-y divide-slate-100 overflow-y-auto">
                 {cart.map((item) => (
-                  <div key={item.id} className="p-4">
+                  <div key={item.cartLineId} className="p-4">
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <strong className="text-xs">{item.name}</strong>
                         <p className="text-[10px] text-slate-400">
-                          {formatBRL(item.sale_price)} /{" "}
+                          {formatBRL((Number(item.sale_price) + Number(item.modifierUnitTotal)).toFixed(2))} /{" "}
                           {item.unit.toUpperCase()}
                         </p>
+                        {item.modifiers.length > 0 && <p className="mt-1 text-[10px] text-muted">{item.modifiers.map((selection) => {
+                          const option = (item.modifier_groups || []).flatMap((group) => group.options || []).find((value) => value.id === selection.option);
+                          return option ? `${option.name}${selection.quantity !== "1" ? ` × ${selection.quantity}` : ""}` : "";
+                        }).filter(Boolean).join(" · ")}</p>}
                       </div>
                       <button
                         className="icon-button size-7"
-                        onClick={() => remove(item.id)}
+                        onClick={() => remove(item.cartLineId)}
                         aria-label={`Remover ${item.name}`}
                       >
                         <Trash2 className="size-3.5" />
@@ -951,7 +985,7 @@ export function SalesPdv() {
                             item.unit === "un" ? BigInt(1000) : BigInt(1);
                           if (q > step)
                             quantity(
-                              item.id,
+                              item.cartLineId,
                               item.unit === "un"
                                 ? String((q - step) / BigInt(1000))
                                 : `${(q - step) / BigInt(1000)}.${String((q - step) % BigInt(1000)).padStart(3, "0")}`,
@@ -965,7 +999,7 @@ export function SalesPdv() {
                         inputMode="decimal"
                         value={item.quantity}
                         onChange={(event) =>
-                          quantity(item.id, event.target.value)
+                          quantity(item.cartLineId, event.target.value)
                         }
                         aria-label={`Quantidade de ${item.name}`}
                       />
@@ -978,7 +1012,7 @@ export function SalesPdv() {
                             item.unit === "un" ? BigInt(1000) : BigInt(1);
                           const next = q + step;
                           quantity(
-                            item.id,
+                              item.cartLineId,
                             item.unit === "un"
                               ? String(next / BigInt(1000))
                               : `${next / BigInt(1000)}.${String(next % BigInt(1000)).padStart(3, "0")}`,
@@ -990,13 +1024,13 @@ export function SalesPdv() {
                       <span className="ml-auto text-xs font-bold">
                         {formatBRL(
                           provisionalItemTotal(
-                            item.sale_price,
+                            (Number(item.sale_price) + Number(item.modifierUnitTotal)).toFixed(2),
                             item.quantity,
                           ) === null
                             ? null
                             : centsToDecimal(
                                 provisionalItemTotal(
-                                  item.sale_price,
+                                  (Number(item.sale_price) + Number(item.modifierUnitTotal)).toFixed(2),
                                   item.quantity,
                                 )!,
                               ),
@@ -1012,17 +1046,17 @@ export function SalesPdv() {
                       <div className="mt-2 flex items-center gap-2">
                         <label
                           className="text-[10px] font-semibold text-slate-500"
-                          htmlFor={`item-discount-${item.id}`}
+                          htmlFor={`item-discount-${item.cartLineId}`}
                         >
                           Desconto do item (R$)
                         </label>
                         <Input
-                          id={`item-discount-${item.id}`}
+                          id={`item-discount-${item.cartLineId}`}
                           className="ml-auto h-8 w-24 text-right"
                           inputMode="decimal"
                           value={item.item_discount}
                           onChange={(event) =>
-                            itemDiscount(item.id, event.target.value)
+                            itemDiscount(item.cartLineId, event.target.value)
                           }
                         />
                       </div>
@@ -1502,8 +1536,8 @@ export function SalesPdv() {
                 )}
                 {preview && free && (
                   <div className="rounded-lg border border-success/20 bg-success-surface p-3 text-xs text-success-strong">
-                    Consumação sem cobrança: não utiliza caixa nem forma de
-                    pagamento.
+                    Consumação sem cobrança: dispensa forma de pagamento, mas exige
+                    uma sessão de Caixa aberta.
                   </div>
                 )}
                 <div className="flex gap-2">
@@ -1570,9 +1604,12 @@ export function SalesPdv() {
                 inputMode="decimal"
                 value={charged}
                 onChange={(event) => setCharged(event.target.value)}
+                disabled={!cashEnabled}
               />
               <span className="mt-1 block text-[10px] text-slate-400">
-                Pode ser zero; o servidor validará o limite pelo subtotal.
+                {cashEnabled
+                  ? "Pode ser zero; o servidor validará o limite pelo subtotal."
+                  : "A Consumação requer Caixa habilitado nesta filial."}
               </span>
             </Field>
           </div>
@@ -1588,6 +1625,7 @@ export function SalesPdv() {
             </Button>
           </div>
         </Modal>
+        {modifierProduct && <ModifierPicker product={modifierProduct} onClose={() => setModifierProduct(null)} onConfirm={(selections) => { add(modifierProduct, selections); setModifierProduct(null); }} />}
       </div>
     </div>
   );

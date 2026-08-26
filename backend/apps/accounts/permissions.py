@@ -6,6 +6,7 @@ from apps.companies.selectors import (
     user_has_company_permission,
 )
 from apps.companies.rbac import OPERATING_PERMISSION_CODES
+from apps.saas.permissions import support_permission_decision
 
 
 class UserFunctionalPermission(BasePermission):
@@ -18,6 +19,7 @@ class UserFunctionalPermission(BasePermission):
         'partial_update': 'users.change',
         'activate': 'users.change_status',
         'deactivate': 'users.change_status',
+        'reset_password': 'users.change',
         'management_options': ('users.view', 'users.add', 'users.change'),
     }
 
@@ -25,6 +27,9 @@ class UserFunctionalPermission(BasePermission):
         user = request.user
         if not user.is_authenticated or not user.can_login or not user.is_active:
             return False
+        support = support_permission_decision(request)
+        if support is not None:
+            return support
         if user.is_superuser:
             return True
         code = self.codes.get(view.action)
@@ -33,6 +38,9 @@ class UserFunctionalPermission(BasePermission):
         return accessible_companies(user, code).exists()
 
     def has_object_permission(self, request, view, obj):
+        support = support_permission_decision(request, obj=obj)
+        if support is not None:
+            return support
         user = request.user
         if user.is_superuser:
             return True

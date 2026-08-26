@@ -1,0 +1,225 @@
+from django.db import transaction
+from django.db.models import Q
+from rest_framework import viewsets
+from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
+
+from apps.base.audit import audit_log, model_snapshot
+from apps.companies.models import Status
+from apps.companies.permissions import FunctionalCompanyPermission
+from apps.companies.selectors import accessible_companies
+
+from .models import ProductSupplier, ProductSupplierUnit, Supplier
+from .serializers import (
+    ProductSupplierSerializer,
+    ProductSupplierUnitSerializer,
+    SupplierSerializer,
+)
+from .services import (
+    _lock_instance,
+    _set_product_supplier_status,
+    _set_product_supplier_unit_status,
+    _set_supplier_status,
+)
+
+
+class SupplierDomainViewSet(viewsets.ModelViewSet):
+    permission_classes = (FunctionalCompanyPermission,)
+    http_method_names = ('get', 'post', 'put', 'patch', 'head', 'options')
+    permission_codes = {
+        'list': 'suppliers.view',
+        'retrieve': 'suppliers.view',
+        'create': 'suppliers.change',
+        'update': 'suppliers.change',
+        'partial_update': 'suppliers.change',
+        'destroy': 'suppliers.change',
+        'activate': 'suppliers.change',
+        'deactivate': 'suppliers.change',
+    }
+    audit_name = None
+    audit_fields = ()
+    status_service = None
+
+    def scope_company(self, queryset):
+        support_session = getattr(self.request, 'support_session', None)
+        if support_session:
+            queryset = queryset.filter(company_id=support_session.company_id)
+        elif not self.request.user.is_superuser:
+            code = self.permission_codes[self.action]
+            queryset = queryset.filter(
+                company__in=accessible_companies(self.request.user, code)
+            )
+        company = self.request.query_params.get('company')
+        if company:
+            queryset = queryset.filter(company_id=company)
+        return queryset
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        instance = serializer.save()
+        audit_log(
+            actor=self.request.user,
+            action=f'{self.audit_name}.create',
+            obj=instance,
+            company=instance.company,
+            after=model_snapshot(instance, self.audit_fields),
+        )
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        serializer.instance = _lock_instance(serializer.instance)
+        before = model_snapshot(serializer.instance, self.audit_fields)
+        instance = serializer.save()
+        audit_log(
+            actor=self.request.user,
+            action=f'{self.audit_name}.update',
+            obj=instance,
+            company=instance.company,
+            before=before,
+            after=model_snapshot(instance, self.audit_fields),
+        )
+
+    def _set_status(self, request, status, action_name):
+        instance = self.get_object()
+        instance = _lock_instance(instance)
+        before = model_snapshot(instance, self.audit_fields)
+        instance = self.status_service(instance=instance, status=status)
+        audit_log(
+            actor=request.user,
+            action=f'{self.audit_name}.{action_name}',
+            obj=instance,
+            company=instance.company,
+            before=before,
+            after=model_snapshot(instance, self.audit_fields),
+        )
+        return Response(self.get_serializer(instance).data)
+
+    @action(detail=True, methods=('post',))
+    @transaction.atomic
+    def activate(self, request, pk=None):
+        return self._set_status(request, Status.ACTIVE, 'activate')
+
+    @action(detail=True, methods=('post',))
+    @transaction.atomic
+    def deactivate(self, request, pk=None):
+        return self._set_status(request, Status.INACTIVE, 'deactivate')
+
+
+class SupplierViewSet(SupplierDomainViewSet):
+    queryset = Supplier.objects.all()
+    serializer_class = SupplierSerializer
+    audit_name = 'supplier'
+    audit_fields = (
+        'company_id', 'legal_name', 'trade_name', 'tax_id', 'phone', 'email',
+        'contact_name', 'address', 'notes', 'status',
+    )
+    status_service = staticmethod(_set_supplier_status)
+
+    def get_queryset(self):
+        queryset = self.scope_company(Supplier.objects.select_related('company'))
+        params = self.request.query_params
+        supplier_status = params.get('status')
+        if supplier_status:
+            if supplier_status not in Status.values:
+                raise ValidationError({'status': 'Informe um status válido.'})
+            queryset = queryset.filter(status=supplier_status)
+        search = params.get('search', '').strip()
+        if search:
+            queryset = queryset.filter(
+                Q(legal_name__icontains=search)
+                | Q(trade_name__icontains=search)
+                | Q(tax_id__icontains=search)
+                | Q(email__icontains=search)
+                | Q(phone__icontains=search)
+                | Q(contact_name__icontains=search)
+            )
+        return queryset.order_by('trade_name', 'legal_name', 'id')
+
+
+class ProductSupplierViewSet(SupplierDomainViewSet):
+    queryset = ProductSupplier.objects.all()
+    serializer_class = ProductSupplierSerializer
+    audit_name = 'product_supplier'
+    audit_fields = (
+        'company_id', 'product_id', 'supplier_id', 'supplier_code', 'is_preferred',
+        'is_exclusive', 'status',
+    )
+    status_service = staticmethod(_set_product_supplier_status)
+
+    def get_queryset(self):
+        queryset = self.scope_company(ProductSupplier.objects.select_related(
+            'company', 'product', 'supplier'
+        ))
+        params = self.request.query_params
+        for field in ('product', 'supplier'):
+            if params.get(field):
+                queryset = queryset.filter(**{f'{field}_id': params[field]})
+        relation_status = params.get('status')
+        if relation_status:
+            if relation_status not in Status.values:
+                raise ValidationError({'status': 'Informe um status válido.'})
+            queryset = queryset.filter(status=relation_status)
+        for field in ('is_preferred', 'is_exclusive'):
+            value = params.get(field)
+            if value:
+                if value not in ('true', 'false'):
+                    raise ValidationError({field: 'Informe true ou false.'})
+                queryset = queryset.filter(**{field: value == 'true'})
+        search = params.get('search', '').strip()
+        if search:
+            queryset = queryset.filter(
+                Q(product__name__icontains=search)
+                | Q(supplier__trade_name__icontains=search)
+                | Q(supplier__legal_name__icontains=search)
+                | Q(supplier_code__icontains=search)
+            )
+        return queryset.order_by(
+            'product__name', '-is_exclusive', '-is_preferred', 'supplier__trade_name', 'id'
+        )
+
+
+class ProductSupplierUnitViewSet(SupplierDomainViewSet):
+    queryset = ProductSupplierUnit.objects.all()
+    serializer_class = ProductSupplierUnitSerializer
+    audit_name = 'product_supplier_unit'
+    audit_fields = (
+        'company_id', 'product_supplier_id', 'unit_code', 'description',
+        'conversion_factor', 'barcode', 'is_default', 'status',
+    )
+    status_service = staticmethod(_set_product_supplier_unit_status)
+
+    def get_queryset(self):
+        queryset = self.scope_company(ProductSupplierUnit.objects.select_related(
+            'company', 'product_supplier__product', 'product_supplier__supplier'
+        ))
+        params = self.request.query_params
+        for parameter, lookup in (
+            ('product_supplier', 'product_supplier_id'),
+            ('product', 'product_supplier__product_id'),
+            ('supplier', 'product_supplier__supplier_id'),
+        ):
+            if params.get(parameter):
+                queryset = queryset.filter(**{lookup: params[parameter]})
+        unit_status = params.get('status')
+        if unit_status:
+            if unit_status not in Status.values:
+                raise ValidationError({'status': 'Informe um status válido.'})
+            queryset = queryset.filter(status=unit_status)
+        is_default = params.get('is_default')
+        if is_default:
+            if is_default not in ('true', 'false'):
+                raise ValidationError({'is_default': 'Informe true ou false.'})
+            queryset = queryset.filter(is_default=is_default == 'true')
+        search = params.get('search', '').strip()
+        if search:
+            queryset = queryset.filter(
+                Q(unit_code__icontains=search)
+                | Q(description__icontains=search)
+                | Q(barcode__icontains=search)
+                | Q(product_supplier__product__name__icontains=search)
+                | Q(product_supplier__supplier__trade_name__icontains=search)
+            )
+        return queryset.order_by(
+            'product_supplier__product__name', '-is_default', 'unit_code', 'id'
+        )

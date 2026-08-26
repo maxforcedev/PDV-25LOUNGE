@@ -10,11 +10,11 @@ CONSTRAINT_ERRORS = {
     'companies_company_cnpj_unique': {
         'cnpj': ['Já existe uma empresa com este CNPJ.'],
     },
-    'companies_company_trade_name_ci_unique': {
-        'trade_name': ['Já existe uma empresa com este nome fantasia.'],
+    'companies_user_company_one_owner': {
+        'is_owner': ['A empresa já possui um proprietário.'],
     },
-    'companies_company_legal_name_ci_unique': {
-        'legal_name': ['Já existe uma empresa com esta razão social.'],
+    'companies_user_company_owner_active': {
+        'is_active': ['O acesso do proprietário deve permanecer ativo.'],
     },
     'companies_branch_cnpj_unique': {
         'cnpj': ['Já existe uma filial com este CNPJ.'],

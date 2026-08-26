@@ -8,7 +8,7 @@ from apps.accounts.models import User
 from apps.base.constants import MAX_BIGINT
 from apps.companies.models import Branch
 from apps.companies.selectors import user_has_branch_permission
-from apps.products.models import Category, Product
+from apps.products.models import Category, Product, SalesChannel
 from apps.products.serializers import ProductSerializer
 
 from .models import (
@@ -270,10 +270,12 @@ class SaleItemSerializer(serializers.ModelSerializer):
         model = SaleItem
         fields = (
             'id', 'product', 'quantity', 'product_name', 'internal_code', 'unit',
-            'unit_cost', 'unit_price', 'subtotal', 'promotion', 'promotion_name',
+            'unit_cost', 'base_unit_price', 'modifier_unit_total', 'modifier_snapshot',
+            'unit_price', 'subtotal', 'promotion', 'promotion_name',
             'promotion_discount_type', 'promotion_discount_value', 'promotion_benefit',
             'manual_discount', 'discount_approved_by', 'discount_approved_by_name',
             'component_cost_snapshot', 'net_subtotal', 'created_at',
+            'participates_in_service_fee', 'participates_in_commission',
         )
 
 
@@ -347,7 +349,7 @@ class SaleSerializer(serializers.ModelSerializer):
         model = Sale
         fields = (
             'id', 'company', 'company_name', 'branch', 'branch_name', 'cash_session',
-            'cash_session_status', 'sale_number', 'operation_type', 'status',
+            'cash_session_status', 'sale_number', 'operation_type', 'channel', 'status',
             'idempotency_key',
             'created_by', 'created_by_name', 'seller_user', 'seller_user_name',
             'discount_approved_by', 'discount_approved_by_name',
@@ -446,13 +448,42 @@ class SaleUserOptionSerializer(serializers.ModelSerializer):
 
 class SaleCatalogProductSerializer(ProductSerializer):
     sale_price = serializers.SerializerMethodField()
+    modifier_groups = serializers.SerializerMethodField()
 
     class Meta(ProductSerializer.Meta):
-        read_only_fields = ProductSerializer.Meta.fields
+        fields = ProductSerializer.Meta.fields + ('modifier_groups',)
+        read_only_fields = fields
 
     def get_sale_price(self, product):
         price = getattr(product, 'effective_sale_price', product.sale_price)
         return f'{price:.2f}'
+
+    def get_modifier_groups(self, product):
+        return [
+            {
+                'id': link.modifier_group_id,
+                'name': link.modifier_group.name,
+                'is_required': link.modifier_group.is_required,
+                'min_selections': link.modifier_group.min_selections,
+                'max_selections': link.modifier_group.max_selections,
+                'allow_option_quantity': link.modifier_group.allow_option_quantity,
+                'sort_order': link.sort_order,
+                'status': link.modifier_group.status,
+                'options': [
+                    {
+                        'id': option.pk,
+                        'modifier_group': option.modifier_group_id,
+                        'name': option.name,
+                        'option_type': option.option_type,
+                        'additional_price': f'{option.additional_price:.2f}',
+                        'sort_order': option.sort_order,
+                        'status': option.status,
+                    }
+                    for option in getattr(link.modifier_group, 'operational_options', ())
+                ],
+            }
+            for link in getattr(product, 'operational_modifier_group_links', ())
+        ]
 
 
 class StrictDecimalField(serializers.DecimalField):
@@ -475,6 +506,7 @@ class ItemInputSerializer(serializers.Serializer):
         max_digits=14, decimal_places=3, min_value=Decimal('0.001')
     )
     discount = serializers.JSONField(required=False, default='0.00')
+    modifiers = serializers.JSONField(required=False, default=list)
 
 
 class PaymentInputSerializer(serializers.Serializer):
@@ -488,6 +520,9 @@ class PaymentInputSerializer(serializers.Serializer):
 
 class CalculationSerializer(serializers.Serializer):
     operation_type = serializers.ChoiceField(choices=('sale', 'consumption'))
+    channel = serializers.ChoiceField(
+        choices=SalesChannel.values, required=False, default=SalesChannel.COUNTER
+    )
     items = ItemInputSerializer(many=True, allow_empty=False)
     discount = serializers.JSONField(required=False)
     charged_amount = serializers.JSONField(required=False)
@@ -508,6 +543,9 @@ class CalculationItemOutputSerializer(serializers.Serializer):
     product_name = serializers.CharField()
     internal_code = serializers.CharField()
     unit = serializers.CharField()
+    modifier_snapshot = serializers.ListField(
+        child=serializers.DictField(), required=False, default=list
+    )
     unit_price = InternalDecimalField(
         max_digits=14, decimal_places=2, coerce_to_string=True
     )
@@ -533,10 +571,13 @@ class CalculationItemOutputSerializer(serializers.Serializer):
     net_subtotal = InternalDecimalField(
         max_digits=14, decimal_places=2, coerce_to_string=True
     )
+    participates_in_service_fee = serializers.BooleanField()
+    participates_in_commission = serializers.BooleanField()
 
 
 class CalculationOutputSerializer(serializers.Serializer):
     operation_type = serializers.ChoiceField(choices=('sale', 'consumption'))
+    channel = serializers.ChoiceField(choices=SalesChannel.values)
     items = CalculationItemOutputSerializer(many=True, allow_empty=False)
     subtotal = InternalDecimalField(
         max_digits=14, decimal_places=2, coerce_to_string=True
@@ -625,6 +666,9 @@ class SalesQuerySerializer(serializers.Serializer):
     )
     category = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
     beneficiary = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    channel = serializers.ChoiceField(
+        choices=SalesChannel.values, required=False, default=SalesChannel.COUNTER
+    )
 
 
 class CancelSaleSerializer(serializers.Serializer):

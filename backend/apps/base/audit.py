@@ -18,6 +18,7 @@ SENSITIVE_KEYS = {
 
 _request_metadata = ContextVar('audit_request_metadata', default={})
 _request_event_count = ContextVar('audit_request_event_count', default=0)
+_actor_override = ContextVar('audit_actor_override', default=None)
 logger = logging.getLogger(__name__)
 MUTATING_METHODS = {'POST', 'PUT', 'PATCH', 'DELETE'}
 SAFE_REQUEST_ID = re.compile(r'^[A-Za-z0-9._:-]{1,100}$')
@@ -48,6 +49,16 @@ def model_snapshot(instance, fields):
     return data
 
 
+def set_support_audit_context(actor, support_session):
+    _actor_override.set(actor)
+    _request_metadata.set({
+        **_request_metadata.get(),
+        'support_session_id': support_session.pk,
+        'support_actor_id': actor.pk,
+        'support_mode': support_session.mode,
+    })
+
+
 def audit_log(*, actor=None, action, obj=None, company=None, branch=None, before=None, after=None, metadata=None):
     from .models import AuditLog
 
@@ -59,6 +70,7 @@ def audit_log(*, actor=None, action, obj=None, company=None, branch=None, before
     else:
         object_type = (metadata or {}).get('object_type', '')
         object_id = str((metadata or {}).get('object_id', '') or '')
+    actor = _actor_override.get() or actor
     log = AuditLog.objects.create(
         company=company,
         branch=branch,
@@ -103,12 +115,16 @@ class AuditRequestContextMiddleware:
             'correlation_id': correlation_id,
         })
         count_token = _request_event_count.set(0)
+        actor_token = _actor_override.set(None)
         actor = request.user if getattr(request.user, 'is_authenticated', False) else None
         try:
             response = self.get_response(request)
             response['X-Request-ID'] = request_id
             response['X-Correlation-ID'] = correlation_id
-            if (
+            support_session = getattr(request, 'support_session', None)
+            if support_session:
+                self._support_request(request, response, support_session)
+            elif (
                 request.method in MUTATING_METHODS
                 and request.path.startswith('/api/v1/')
                 and 200 <= response.status_code < 400
@@ -121,8 +137,36 @@ class AuditRequestContextMiddleware:
                 self._fallback(request, response, actor)
             return response
         finally:
+            _actor_override.reset(actor_token)
             _request_event_count.reset(count_token)
             _request_metadata.reset(token)
+
+    @staticmethod
+    def _support_request(request, response, support_session):
+        try:
+            effective_user = getattr(request, 'support_effective_user', None)
+            actor = getattr(request, 'support_actor', None)
+            match = getattr(request, 'resolver_match', None)
+            audit_log(
+                actor=actor,
+                action='saas.support.request',
+                obj=support_session,
+                company=support_session.company,
+                after={
+                    'status_code': response.status_code,
+                    'result': 'success' if 200 <= response.status_code < 400 else 'failure',
+                },
+                metadata={
+                    'support_effective_user_id': getattr(effective_user, 'pk', None),
+                    'company_id': support_session.company_id,
+                    'method': request.method,
+                    'path': request.path,
+                    'view_name': match.view_name if match else '',
+                    'status_code': response.status_code,
+                },
+            )
+        except Exception:
+            logger.exception('Failed to persist support request audit for %s %s', request.method, request.path)
 
     @staticmethod
     def _fallback(request, response, actor):

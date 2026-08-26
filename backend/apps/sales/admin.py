@@ -18,10 +18,10 @@ class PromotionAdmin(admin.ModelAdmin):
 
 @admin.register(Sale)
 class SaleAdmin(admin.ModelAdmin):
-    list_display = ('sale_number', 'operation_type', 'branch', 'status', 'total', 'created_at')
-    list_filter = ('operation_type', 'status', 'company', 'branch')
+    list_display = ('sale_number', 'operation_type', 'channel', 'branch', 'status', 'total', 'created_at')
+    list_filter = ('operation_type', 'channel', 'status', 'company', 'branch')
     readonly_fields = (
-        'company', 'branch', 'cash_session', 'sale_number', 'operation_type', 'status',
+        'company', 'branch', 'cash_session', 'sale_number', 'operation_type', 'channel', 'status',
         'created_by', 'beneficiary_user', 'subtotal', 'promotion_discount_total',
         'discount', 'charged_amount',
         'total', 'cancelled_at', 'cancelled_by', 'cancellation_reason',

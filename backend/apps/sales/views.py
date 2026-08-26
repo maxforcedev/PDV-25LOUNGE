@@ -1,6 +1,6 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import DecimalField, OuterRef, Q, Subquery
+from django.db.models import DecimalField, OuterRef, Prefetch, Q, Subquery, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -16,7 +16,10 @@ from apps.base.exceptions import InternalContractError
 from apps.cash.models import CashSession, CashSessionStatus
 from apps.companies.selectors import eligible_branch_users, user_has_branch_permission
 from apps.companies.models import Status
-from apps.products.models import BranchProductPrice, Category, Product
+from apps.products.models import (
+    BranchProductPrice, Category, ModifierOption, Product, ProductBranchConfig,
+    ProductModifierGroup,
+)
 
 from .models import PaymentMethod, Promotion, Sale
 from .permissions import SalesFunctionalPermission
@@ -352,16 +355,47 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
         branch_price = BranchProductPrice.objects.filter(
             branch=request.branch_context, product_id=OuterRef('pk')
         ).values('sale_price')[:1]
+        branch_config = ProductBranchConfig.objects.filter(
+            branch=request.branch_context, product_id=OuterRef('pk')
+        )
+        channel = query.validated_data['channel']
+        channel_field = f'available_{channel}'
         queryset = Product.objects.select_related(
             'company', 'category'
-        ).prefetch_related('components__component_product').annotate(
+        ).prefetch_related(
+            'components__component_product',
+            Prefetch(
+                'modifier_groups',
+                queryset=ProductModifierGroup.objects.filter(
+                    status=Status.ACTIVE,
+                    modifier_group__status=Status.ACTIVE,
+                ).select_related('modifier_group').prefetch_related(
+                    Prefetch(
+                        'modifier_group__options',
+                        queryset=ModifierOption.objects.filter(status=Status.ACTIVE),
+                        to_attr='operational_options',
+                    )
+                ).order_by('sort_order', 'id'),
+                to_attr='operational_modifier_group_links',
+            ),
+        ).annotate(
             effective_sale_price=Coalesce(
                 Subquery(branch_price), 'sale_price', output_field=DecimalField()
-            )
+            ),
+            branch_available=Coalesce(
+                Subquery(branch_config.values('is_available')[:1]),
+                Value(True),
+            ),
+            branch_channel=Coalesce(
+                Subquery(branch_config.values(channel_field)[:1]),
+                channel_field,
+            ),
         ).filter(
             company_id=request.branch_context.company_id,
             status=Status.ACTIVE,
             is_sellable=True,
+            branch_available=True,
+            branch_channel=True,
         )
         if query.validated_data.get('category'):
             queryset = queryset.filter(category_id=query.validated_data['category'])
@@ -469,6 +503,7 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
                 charged_amount=data.get('charged_amount'),
                 beneficiary_user=beneficiary,
                 branch=request.branch_context,
+                channel=data['channel'],
                 service_fee_waived=data.get('service_fee_waived', False),
             )
         except DjangoValidationError as exc:

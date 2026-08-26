@@ -2,6 +2,7 @@ from rest_framework.permissions import BasePermission
 
 from apps.companies.models import Branch
 from apps.companies.selectors import user_has_branch_permission
+from apps.saas.permissions import support_permission_decision
 
 
 class ProductFunctionalPermission(BasePermission):
@@ -14,14 +15,20 @@ class ProductFunctionalPermission(BasePermission):
                 if request.method == 'PUT'
                 else 'products.view'
             )
+        if view.action in ('branch_config', 'fraction_config', 'production_destinations'):
+            if request.method == 'GET':
+                return 'products.view'
         return view.permission_codes.get(view.action)
 
     def has_permission(self, request, view):
         user = request.user
         if not user.is_authenticated or not user.can_login or not user.is_active:
             return False
+        branch_id = request.headers.get('X-Branch-ID')
+        support = support_permission_decision(request, branch_id=branch_id)
+        if support is not None:
+            return support
         if user.is_superuser:
-            branch_id = request.headers.get('X-Branch-ID')
             if branch_id:
                 try:
                     request.branch_context = Branch.objects.get(pk=branch_id)
@@ -31,7 +38,6 @@ class ProductFunctionalPermission(BasePermission):
         code = self.get_code(request, view)
         if not code:
             return False
-        branch_id = request.headers.get('X-Branch-ID')
         if not branch_id or not user_has_branch_permission(user, branch_id, code):
             return False
         try:
@@ -41,6 +47,9 @@ class ProductFunctionalPermission(BasePermission):
         return True
 
     def has_object_permission(self, request, view, obj):
+        support = support_permission_decision(request, obj=obj)
+        if support is not None:
+            return support
         branch = getattr(request, 'branch_context', None)
         if request.user.is_superuser and branch is None:
             return True
@@ -49,4 +58,6 @@ class ProductFunctionalPermission(BasePermission):
         company_id = getattr(obj, 'company_id', None)
         if company_id is None and getattr(obj, 'product_id', None):
             company_id = obj.product.company_id
+        if company_id is None and getattr(obj, 'modifier_group_id', None):
+            company_id = obj.modifier_group.company_id
         return bool(branch and branch.company_id == company_id)

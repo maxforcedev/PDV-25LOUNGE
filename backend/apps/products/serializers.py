@@ -4,13 +4,17 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework import serializers
 
-from apps.companies.selectors import user_has_branch_permission
+from apps.companies.models import Status
+from apps.companies.selectors import user_has_branch_permission, user_has_company_permission
 
 from .models import (
-    BranchProductPrice, Category, InventoryBehavior, Product, ProductComponent, Unit,
-    normalize_product_name,
+    BranchProductPrice, Category, ContentUnit, FractionableProductConfig,
+    InventoryBehavior, ModifierGroup, ModifierOption, ModifierOptionType,
+    Product, ProductBranchConfig, ProductComponent, ProductFractionComponent,
+    ProductModifierGroup, ProductProductionDestination, ProductionDestination,
+    SalesChannel, Unit, normalize_product_name,
 )
-from .services import create_product, replace_composition
+from .services import create_product, replace_composition, replace_fraction_composition
 
 
 class CompanyBoundSerializer(serializers.ModelSerializer):
@@ -33,11 +37,9 @@ class CategorySerializer(CompanyBoundSerializer):
         model = Category
         fields = (
             'id', 'company', 'company_name', 'name', 'description', 'sort_order',
+            'available_counter', 'available_table', 'available_command',
+            'participates_in_service_fee', 'participates_in_commission',
             'status', 'product_count', 'related_products',
-            'created_at', 'updated_at',
-        )
-        read_only_fields = (
-            'id', 'company_name', 'category_name', 'status', 'components',
             'created_at', 'updated_at',
         )
         read_only_fields = (
@@ -109,15 +111,136 @@ class ProductComponentSerializer(serializers.ModelSerializer):
         return f'{quantity} {obj.component_product.unit.upper()}'
 
 
+class ProductFractionComponentSerializer(serializers.ModelSerializer):
+    component_name = serializers.CharField(source='component_product.name', read_only=True)
+    component_internal_code = serializers.CharField(
+        source='component_product.internal_code', read_only=True
+    )
+    content_unit = serializers.CharField(
+        source='component_product.fraction_config.content_unit', read_only=True
+    )
+    source_fraction_config = serializers.IntegerField(
+        source='component_product.fraction_config.pk', read_only=True
+    )
+    source_package_content = serializers.DecimalField(
+        source='component_product.fraction_config.package_content',
+        max_digits=24, decimal_places=9, read_only=True,
+    )
+    source_tracking_active = serializers.BooleanField(
+        source='component_product.fraction_config.tracking_active', read_only=True
+    )
+    content_quantity = serializers.DecimalField(
+        max_digits=24, decimal_places=9, min_value=Decimal('0.000000001')
+    )
+
+    class Meta:
+        model = ProductFractionComponent
+        fields = (
+            'component_product', 'component_name', 'component_internal_code',
+            'content_quantity', 'content_unit', 'source_fraction_config',
+            'source_package_content', 'source_tracking_active',
+        )
+
+
+class FractionableProductConfigSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FractionableProductConfig
+        fields = (
+            'id', 'product', 'package_content', 'content_unit', 'tracking_active',
+            'activated_at', 'activated_by', 'created_at', 'updated_at',
+        )
+        read_only_fields = (
+            'id', 'tracking_active', 'activated_at', 'activated_by',
+            'created_at', 'updated_at',
+        )
+
+    def validate(self, attrs):
+        product = attrs.get('product', getattr(self.instance, 'product', None))
+        if product and (
+            product.inventory_behavior != InventoryBehavior.DIRECT
+            or product.unit != Unit.UNIT
+        ):
+            raise serializers.ValidationError({
+                'product': 'Somente produto DIRECT em UN pode ser fracionavel.'
+            })
+        return attrs
+
+
+class ProductBranchConfigSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.name', read_only=True)
+    branch_name = serializers.CharField(source='branch.name', read_only=True)
+    effective_channels = serializers.SerializerMethodField()
+    effective_sale_price = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProductBranchConfig
+        fields = (
+            'id', 'product', 'product_name', 'branch', 'branch_name', 'is_available',
+            'available_counter', 'available_table', 'available_command',
+            'effective_channels', 'effective_sale_price', 'created_at', 'updated_at',
+        )
+        read_only_fields = (
+            'id', 'product_name', 'branch_name', 'effective_channels',
+            'effective_sale_price', 'created_at', 'updated_at',
+        )
+
+    def get_effective_channels(self, config):
+        return {
+            channel: config.effective_channel(channel)
+            for channel in SalesChannel.values
+        }
+
+    def get_effective_sale_price(self, config):
+        price = BranchProductPrice.objects.filter(
+            product=config.product, branch=config.branch
+        ).values_list('sale_price', flat=True).first()
+        return f'{(config.product.sale_price if price is None else price):.2f}'
+
+    def validate(self, attrs):
+        product = attrs.get('product', getattr(self.instance, 'product', None))
+        branch = attrs.get('branch', getattr(self.instance, 'branch', None))
+        context_branch = getattr(self.context.get('request'), 'branch_context', None)
+        if product and branch and product.company_id != branch.company_id:
+            raise serializers.ValidationError({'branch': 'Filial fora da empresa do produto.'})
+        if context_branch and branch and context_branch.pk != branch.pk:
+            raise serializers.ValidationError({'branch': 'Selecione a filial ativa.'})
+        return attrs
+
+
+class ProductionDestinationSerializer(serializers.ModelSerializer):
+    branch_name = serializers.CharField(source='branch.name', read_only=True)
+
+    class Meta:
+        model = ProductionDestination
+        fields = (
+            'id', 'branch', 'branch_name', 'name', 'code', 'status',
+            'created_at', 'updated_at',
+        )
+        read_only_fields = ('id', 'branch_name', 'status', 'created_at', 'updated_at')
+
+    def validate(self, attrs):
+        branch = attrs.get('branch', getattr(self.instance, 'branch', None))
+        context_branch = getattr(self.context.get('request'), 'branch_context', None)
+        if context_branch and branch and context_branch.pk != branch.pk:
+            raise serializers.ValidationError({'branch': 'Selecione a filial ativa.'})
+        return attrs
+
+
 class ProductSerializer(CompanyBoundSerializer):
     company_name = serializers.CharField(source='company.trade_name', read_only=True)
     category_name = serializers.CharField(source='category.name', read_only=True, default='')
     components = ProductComponentSerializer(many=True, required=False)
+    fraction_components = ProductFractionComponentSerializer(many=True, required=False)
     internal_code = serializers.CharField(
         allow_blank=True, required=False, max_length=100
     )
     suggested_cost = serializers.SerializerMethodField()
     suggested_sale_price = serializers.SerializerMethodField()
+    branch_configuration = serializers.SerializerMethodField()
+    branch_stock = serializers.SerializerMethodField()
+    fraction_config = serializers.SerializerMethodField()
+    production_destinations = serializers.SerializerMethodField()
+    suppliers = serializers.SerializerMethodField()
     cost = serializers.DecimalField(
         max_digits=12, decimal_places=2, min_value=Decimal('0.00')
     )
@@ -130,8 +253,13 @@ class ProductSerializer(CompanyBoundSerializer):
         fields = (
             'id', 'company', 'company_name', 'category', 'category_name', 'name',
             'description', 'internal_code', 'barcode', 'unit', 'cost', 'sale_price',
+            'sku',
             'image', 'is_sellable', 'is_favorite', 'inventory_behavior', 'status',
-            'components', 'suggested_cost', 'suggested_sale_price',
+            'available_counter', 'available_table', 'available_command',
+            'participates_in_service_fee', 'participates_in_commission',
+            'components', 'fraction_components', 'suggested_cost', 'suggested_sale_price',
+            'branch_configuration', 'branch_stock', 'fraction_config',
+            'production_destinations', 'suppliers',
             'created_at', 'updated_at',
         )
 
@@ -150,6 +278,19 @@ class ProductSerializer(CompanyBoundSerializer):
         if not can_view_costs:
             fields.pop('cost', None)
             fields.pop('suggested_cost', None)
+        if getattr(self.context.get('view'), 'action', None) != 'retrieve':
+            for field in (
+                'branch_configuration', 'branch_stock', 'fraction_config',
+                'production_destinations', 'suppliers',
+            ):
+                fields.pop(field, None)
+        elif not (
+            request and (
+                request.user.is_superuser
+                or user_has_company_permission(request.user, obj_company_id(self.instance), 'suppliers.view')
+            )
+        ):
+            fields.pop('suppliers', None)
         return fields
 
     def validate(self, attrs):
@@ -185,6 +326,14 @@ class ProductSerializer(CompanyBoundSerializer):
                 same_barcode = same_barcode.exclude(pk=self.instance.pk)
             if same_barcode.exists():
                 raise serializers.ValidationError({'barcode': 'Já existe um produto com este código de barras nesta empresa.'})
+        sku = (attrs.get('sku', getattr(self.instance, 'sku', '')) or '').strip()
+        if sku:
+            same_sku = Product.objects.filter(company=company, sku__iexact=sku)
+            if self.instance:
+                same_sku = same_sku.exclude(pk=self.instance.pk)
+            if same_sku.exists():
+                raise serializers.ValidationError({'sku': 'Ja existe um produto com este SKU nesta empresa.'})
+        attrs['sku'] = sku or None
         behavior = attrs.get(
             'inventory_behavior',
             getattr(self.instance, 'inventory_behavior', InventoryBehavior.DIRECT),
@@ -195,6 +344,7 @@ class ProductSerializer(CompanyBoundSerializer):
             })
         sellable = attrs.get('is_sellable', getattr(self.instance, 'is_sellable', True))
         components = attrs.get('components')
+        fraction_components = attrs.get('fraction_components')
         if components is not None:
             request = self.context.get('request')
             branch = getattr(request, 'branch_context', None) if request else None
@@ -211,9 +361,40 @@ class ProductSerializer(CompanyBoundSerializer):
                     {'components': 'Somente produtos com baixa por componentes possuem composição.'}
                 )
             self._validate_components(components, company)
+        if fraction_components is not None:
+            request = self.context.get('request')
+            branch = getattr(request, 'branch_context', None) if request else None
+            if request and not request.user.is_superuser and not (
+                branch and user_has_branch_permission(
+                    request.user, branch.pk, 'products.configure_composition'
+                )
+            ):
+                raise serializers.ValidationError({
+                    'fraction_components': 'Voce nao possui permissao para configurar a composicao.'
+                })
+            if behavior != InventoryBehavior.COMPONENTS:
+                raise serializers.ValidationError({
+                    'fraction_components': 'Somente produtos compostos possuem consumo fracionado.'
+                })
+            self._validate_fraction_components(
+                fraction_components, company, require_active=sellable
+            )
+        if components is not None and fraction_components is not None:
+            repeated = (
+                {item['component_product'].pk for item in components}
+                & {item['component_product'].pk for item in fraction_components}
+            )
+            if repeated:
+                raise serializers.ValidationError({
+                    'fraction_components': 'Use apenas um modo de consumo para cada componente.'
+                })
         if behavior == InventoryBehavior.COMPONENTS and sellable:
-            has_components = bool(components) if components is not None else bool(
-                self.instance and self.instance.components.exists()
+            has_components = (
+                bool(components) if components is not None
+                else bool(self.instance and self.instance.components.exists())
+            ) or (
+                bool(fraction_components) if fraction_components is not None
+                else bool(self.instance and self.instance.fraction_components.exists())
             )
             if not has_components:
                 raise serializers.ValidationError(
@@ -238,6 +419,35 @@ class ProductSerializer(CompanyBoundSerializer):
             ):
                 raise serializers.ValidationError({'sale_price': 'Você não possui permissão para alterar o preço padrão.'})
         return attrs
+
+    def _validate_fraction_components(self, components, company, *, require_active):
+        seen = set()
+        errors = {}
+        for index, item in enumerate(components):
+            component = item['component_product']
+            item_errors = {}
+            if component.pk in seen:
+                item_errors['component_product'] = ['Nao repita produtos.']
+            seen.add(component.pk)
+            if component.company_id != company.pk:
+                item_errors['component_product'] = ['O componente deve pertencer a empresa.']
+            if component.inventory_behavior != InventoryBehavior.DIRECT:
+                item_errors['component_product'] = ['O componente deve possuir estoque proprio.']
+            try:
+                config = component.fraction_config
+            except FractionableProductConfig.DoesNotExist:
+                config = None
+                item_errors['component_product'] = ['O componente deve ser fracionavel.']
+            if require_active and component.status != Status.ACTIVE:
+                item_errors['component_product'] = ['A fonte fracionada deve estar ativa.']
+            if require_active and config and not config.tracking_active:
+                item_errors['component_product'] = [
+                    'Ative o rastreamento da fonte fracionada antes da venda.'
+                ]
+            if item_errors:
+                errors[index] = item_errors
+        if errors:
+            raise serializers.ValidationError({'fraction_components': errors})
 
     def _validate_components(self, components, company):
         errors = {}
@@ -271,8 +481,13 @@ class ProductSerializer(CompanyBoundSerializer):
 
     def create(self, validated_data):
         components = validated_data.pop('components', None)
+        fraction_components = validated_data.pop('fraction_components', None)
         try:
-            return create_product(components=components, **validated_data)
+            return create_product(
+                components=components,
+                fraction_components=fraction_components,
+                **validated_data,
+            )
         except DjangoValidationError as error:
             detail = getattr(error, 'message_dict', {'non_field_errors': error.messages})
             raise serializers.ValidationError(detail)
@@ -281,15 +496,24 @@ class ProductSerializer(CompanyBoundSerializer):
     def update(self, instance, validated_data):
         instance.company.__class__.objects.select_for_update().get(pk=instance.company_id)
         components = validated_data.pop('components', None)
+        fraction_components = validated_data.pop('fraction_components', None)
         if not validated_data.get('internal_code', instance.internal_code):
             validated_data.pop('internal_code', None)
         desired_sellable = validated_data.get('is_sellable', instance.is_sellable)
-        if components is not None and desired_sellable:
+        if (components is not None or fraction_components is not None) and desired_sellable:
             validated_data['is_sellable'] = False
         try:
             instance = super().update(instance, validated_data)
+            if components is not None and fraction_components is not None:
+                for row in ProductFractionComponent.objects.filter(parent_product=instance):
+                    row.delete()
             if components is not None:
                 instance = replace_composition(product=instance, components=components)
+            if fraction_components is not None:
+                instance = replace_fraction_composition(
+                    product=instance, components=fraction_components
+                )
+            if components is not None or fraction_components is not None:
                 if desired_sellable:
                     instance.is_sellable = True
                     instance.save(update_fields=('is_sellable', 'updated_at'))
@@ -301,30 +525,237 @@ class ProductSerializer(CompanyBoundSerializer):
     def get_suggested_cost(self, obj):
         if obj.inventory_behavior != InventoryBehavior.COMPONENTS:
             return None
-        value = sum(
-            (item.component_product.cost * item.quantity for item in obj.components.all()),
-            Decimal('0'),
-        ).quantize(Decimal('0.01'))
+        from apps.inventory.content import (
+            exact_content_equivalent, exact_multiply, exact_sum,
+        )
+
+        contributions = [
+            exact_multiply(item.component_product.cost, item.quantity)
+            for item in obj.components.all()
+        ]
+        contributions.extend(
+            exact_multiply(
+                item.component_product.cost,
+                exact_content_equivalent(
+                    item.content_quantity,
+                    item.component_product.fraction_config.package_content,
+                ),
+            )
+            for item in obj.fraction_components.select_related(
+                'component_product__fraction_config'
+            )
+        )
+        value = exact_sum(contributions)
+        value = value.quantize(Decimal('0.01'))
         return f'{value:.2f}'
 
     def get_suggested_sale_price(self, obj):
         if obj.inventory_behavior != InventoryBehavior.COMPONENTS:
             return None
-        value = sum(
-            (
-                item.component_product.sale_price * item.quantity
-                for item in obj.components.all()
-            ),
-            Decimal('0'),
-        ).quantize(Decimal('0.01'))
+        from apps.inventory.content import (
+            exact_content_equivalent, exact_multiply, exact_sum,
+        )
+
+        contributions = [
+            exact_multiply(item.component_product.sale_price, item.quantity)
+            for item in obj.components.all()
+        ]
+        contributions.extend(
+            exact_multiply(
+                item.component_product.sale_price,
+                exact_content_equivalent(
+                    item.content_quantity,
+                    item.component_product.fraction_config.package_content,
+                ),
+            )
+            for item in obj.fraction_components.select_related(
+                'component_product__fraction_config'
+            )
+        )
+        value = exact_sum(contributions)
+        value = value.quantize(Decimal('0.01'))
         return f'{value:.2f}'
 
     def validate_barcode(self, value):
         return (value or '').strip()
 
+    def get_branch_configuration(self, product):
+        branch = getattr(self.context.get('request'), 'branch_context', None)
+        if not branch or branch.status != Status.ACTIVE:
+            return None
+        config = ProductBranchConfig.objects.filter(product=product, branch=branch).first()
+        branch_price = BranchProductPrice.objects.filter(
+            product=product, branch=branch
+        ).values_list('sale_price', flat=True).first()
+        return {
+            'branch': branch.pk,
+            'is_available': config.is_available if config else True,
+            'channels': {
+                channel: (
+                    config.effective_channel(channel) if config
+                    else getattr(product, f'available_{channel}')
+                )
+                for channel in SalesChannel.values
+            },
+            'sale_price': f'{(product.sale_price if branch_price is None else branch_price):.2f}',
+        }
+
+    def get_branch_stock(self, product):
+        from apps.inventory.content import (
+            content_breakdown, exact_content_equivalent, exact_multiply,
+        )
+
+        branch = getattr(self.context.get('request'), 'branch_context', None)
+        if not branch or branch.status != Status.ACTIVE:
+            return None
+        if product.inventory_behavior == InventoryBehavior.NONE:
+            return {'applicable': False, 'semantic': 'not_applicable'}
+        from apps.inventory.models import Stock
+
+        if product.inventory_behavior == InventoryBehavior.DIRECT:
+            stock = Stock.objects.filter(product=product, branch=branch).first()
+            result = {
+                'applicable': True,
+                'semantic': 'actual',
+                'current_quantity': format(stock.current_quantity if stock else Decimal('0'), 'f'),
+                'unit': product.unit,
+            }
+            try:
+                config = product.fraction_config
+            except FractionableProductConfig.DoesNotExist:
+                config = None
+            if config and config.tracking_active:
+                complete, residual = content_breakdown(
+                    stock.current_content if stock else Decimal('0'),
+                    config.package_content,
+                )
+                result.update({
+                    'current_content': format(
+                        stock.current_content if stock else Decimal('0'), 'f'
+                    ),
+                    'content_unit': config.content_unit,
+                    'package_content': format(config.package_content, 'f'),
+                    'equivalent_quantity': format(
+                        stock.equivalent_quantity() if stock else Decimal('0'), 'f'
+                    ),
+                    'complete_packages': format(complete, 'f'),
+                    'residual_content': format(residual, 'f'),
+                })
+            if self._can_view_costs(branch):
+                cost = (
+                    stock.average_unit_cost
+                    if stock and stock.average_unit_cost is not None else product.cost
+                )
+                result['unit_cost'] = f'{cost:.12f}'
+            return result
+        capacities = []
+        cost_contributions = []
+        for component in product.components.select_related('component_product'):
+            stock = Stock.objects.filter(
+                product=component.component_product, branch=branch
+            ).first()
+            available = stock.current_quantity if stock else Decimal('0')
+            capacities.append(available / component.quantity)
+            if self._can_view_costs(branch):
+                unit_cost = (
+                    stock.average_unit_cost
+                    if stock and stock.average_unit_cost is not None
+                    else component.component_product.cost
+                )
+                cost_contributions.append(exact_multiply(
+                    unit_cost, component.quantity
+                ))
+        for component in product.fraction_components.select_related(
+            'component_product__fraction_config'
+        ):
+            stock = Stock.objects.filter(
+                product=component.component_product, branch=branch
+            ).first()
+            available = stock.current_content if stock and stock.current_content else Decimal('0')
+            capacities.append(available / component.content_quantity)
+            if self._can_view_costs(branch):
+                config = component.component_product.fraction_config
+                unit_cost = (
+                    stock.average_unit_cost
+                    if stock and stock.average_unit_cost is not None
+                    else component.component_product.cost
+                )
+                cost_contributions.append(exact_multiply(
+                    unit_cost,
+                    exact_content_equivalent(
+                        component.content_quantity, config.package_content
+                    ),
+                ))
+        result = {
+            'applicable': True,
+            'semantic': 'components',
+            'current_quantity': format(min(capacities) if capacities else Decimal('0'), 'f'),
+            'unit': product.unit,
+        }
+        if self._can_view_costs(branch):
+            from apps.inventory.content import exact_sum
+
+            result['unit_cost'] = f'{exact_sum(cost_contributions):.12f}'
+        return result
+
+    def _can_view_costs(self, branch):
+        request = self.context.get('request')
+        return bool(request and (
+            request.user.is_superuser
+            or user_has_branch_permission(request.user, branch.pk, 'inventory.view_stock_costs')
+        ))
+
+    def get_fraction_config(self, product):
+        try:
+            return FractionableProductConfigSerializer(product.fraction_config).data
+        except FractionableProductConfig.DoesNotExist:
+            return None
+
+    def get_production_destinations(self, product):
+        branch = getattr(self.context.get('request'), 'branch_context', None)
+        if not branch:
+            return []
+        destinations = ProductionDestination.objects.filter(
+            branch=branch, product_links__product=product
+        ).order_by('name', 'id')
+        return ProductionDestinationSerializer(destinations, many=True).data
+
+    def get_suppliers(self, product):
+        return [
+            {
+                'id': relation.pk,
+                'supplier': relation.supplier_id,
+                'supplier_name': relation.supplier.trade_name,
+                'supplier_code': relation.supplier_code,
+                'is_preferred': relation.is_preferred,
+                'is_exclusive': relation.is_exclusive,
+                'status': relation.status,
+                'units': [
+                    {
+                        'id': unit.pk,
+                        'unit_code': unit.unit_code,
+                        'description': unit.description,
+                        'conversion_factor': format(unit.conversion_factor, 'f'),
+                        'barcode': unit.barcode,
+                        'is_default': unit.is_default,
+                        'status': unit.status,
+                    }
+                    for unit in relation.units.all()
+                ],
+            }
+            for relation in product.product_suppliers.select_related('supplier').prefetch_related('units')
+        ]
+
+
+def obj_company_id(instance):
+    return getattr(instance, 'company_id', None)
+
 
 class CompositionSerializer(serializers.Serializer):
-    components = ProductComponentSerializer(many=True)
+    components = ProductComponentSerializer(many=True, required=False, default=list)
+    fraction_components = ProductFractionComponentSerializer(
+        many=True, required=False, default=list
+    )
 
     def validate_components(self, value):
         product = self.context['product']
@@ -352,16 +783,59 @@ class CompositionSerializer(serializers.Serializer):
                 errors[index] = item_errors
         if errors:
             raise serializers.ValidationError(errors)
-        if product.is_sellable and not value:
+        if product.is_sellable and not value and not self.initial_data.get('fraction_components'):
             raise serializers.ValidationError(
                 'Um produto composto vendável deve possuir componentes.'
             )
         return value
 
+    def validate_fraction_components(self, value):
+        product = self.context['product']
+        seen = set()
+        for item in value:
+            component = item['component_product']
+            if component.pk in seen:
+                raise serializers.ValidationError('Nao repita produtos na composicao.')
+            seen.add(component.pk)
+            if component.company_id != product.company_id:
+                raise serializers.ValidationError('O componente deve pertencer a mesma empresa.')
+            if component.inventory_behavior != InventoryBehavior.DIRECT:
+                raise serializers.ValidationError('O componente deve possuir estoque proprio.')
+            try:
+                config = component.fraction_config
+            except FractionableProductConfig.DoesNotExist:
+                raise serializers.ValidationError('O componente deve ser fracionavel.')
+            if product.is_sellable and component.status != Status.ACTIVE:
+                raise serializers.ValidationError('A fonte fracionada deve estar ativa.')
+            if product.is_sellable and not config.tracking_active:
+                raise serializers.ValidationError(
+                    'Ative o rastreamento da fonte fracionada antes da venda.'
+                )
+        return value
+
+    def validate(self, attrs):
+        normal = {item['component_product'].pk for item in attrs['components']}
+        fractional = {item['component_product'].pk for item in attrs['fraction_components']}
+        if normal & fractional:
+            raise serializers.ValidationError(
+                'Use apenas um modo de consumo para cada componente.'
+            )
+        if self.context['product'].is_sellable and not normal and not fractional:
+            raise serializers.ValidationError('Um produto composto vendavel deve possuir componentes.')
+        return attrs
+
     def save(self, **kwargs):
         try:
-            return replace_composition(
+            for row in ProductFractionComponent.objects.filter(
+                parent_product=self.context['product']
+            ):
+                row.delete()
+            product = replace_composition(
                 product=self.context['product'], components=self.validated_data['components']
+            )
+            return replace_fraction_composition(
+                product=product,
+                components=self.validated_data['fraction_components'],
             )
         except DjangoValidationError as error:
             detail = getattr(error, 'message_dict', {'non_field_errors': error.messages})
@@ -399,4 +873,155 @@ class BranchProductPriceSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'branch': 'Selecione a filial ativa.'})
         if product and branch and product.company_id != branch.company_id:
             raise serializers.ValidationError({'branch': 'A filial deve pertencer a empresa do produto.'})
+        return attrs
+
+
+class DuplicateProductSerializer(serializers.Serializer):
+    composition = serializers.BooleanField(default=False)
+    fraction = serializers.BooleanField(default=False)
+    branch_config = serializers.BooleanField(default=False)
+    destinations = serializers.BooleanField(default=False)
+    suppliers = serializers.BooleanField(default=False)
+
+
+class CopyBranchConfigurationSerializer(serializers.Serializer):
+    source_branch = serializers.IntegerField(min_value=1)
+    target_branches = serializers.ListField(
+        child=serializers.IntegerField(min_value=1), allow_empty=False, max_length=100
+    )
+
+    def validate_target_branches(self, value):
+        if len(value) != len(set(value)):
+            raise serializers.ValidationError('Nao repita filiais de destino.')
+        return value
+
+
+class CopyCategoryConfigurationSerializer(CopyBranchConfigurationSerializer):
+    category = serializers.IntegerField(min_value=1)
+
+
+class ProductDestinationsSerializer(serializers.Serializer):
+    destinations = serializers.PrimaryKeyRelatedField(
+        queryset=ProductionDestination.objects.all(), many=True
+    )
+
+
+class ModifierOptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ModifierOption
+        fields = (
+            'id', 'modifier_group', 'name', 'option_type', 'additional_price',
+            'sort_order', 'status', 'created_at', 'updated_at',
+        )
+        read_only_fields = ('id', 'created_at', 'updated_at')
+
+    def validate_name(self, value):
+        return ' '.join((value or '').split())
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        group = attrs.get('modifier_group', getattr(self.instance, 'modifier_group', None))
+        if request and group and not request.user.is_superuser:
+            branch = getattr(request, 'branch_context', None)
+            if not branch or group.company_id != branch.company_id:
+                raise serializers.ValidationError({
+                    'modifier_group': 'O grupo modificador deve pertencer à empresa da filial atual.'
+                })
+        return attrs
+
+
+class ModifierGroupSerializer(serializers.ModelSerializer):
+    options = ModifierOptionSerializer(many=True, required=False)
+
+    class Meta:
+        model = ModifierGroup
+        fields = (
+            'id', 'company', 'name', 'is_required', 'min_selections',
+            'max_selections', 'allow_option_quantity', 'sort_order',
+            'status', 'options', 'created_at', 'updated_at',
+        )
+        read_only_fields = ('id', 'created_at', 'updated_at')
+
+    def validate_name(self, value):
+        return ' '.join((value or '').split())
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        company = attrs.get('company', getattr(self.instance, 'company', None))
+        if self.instance and 'company' in attrs and company != self.instance.company:
+            raise serializers.ValidationError({'company': 'A empresa não pode ser alterada.'})
+        if request and not request.user.is_superuser:
+            branch_context = getattr(request, 'branch_context', None)
+            if branch_context and company and company.pk != branch_context.company_id:
+                raise serializers.ValidationError({'company': 'A empresa deve corresponder à filial atual.'})
+            from apps.companies.selectors import user_has_company_permission
+            if company and not user_has_company_permission(request.user, company.pk, 'modifiers.change'):
+                raise serializers.ValidationError({'company': 'Você não possui permissão nesta empresa.'})
+        min_sel = attrs.get('min_selections', getattr(self.instance, 'min_selections', 0))
+        max_sel = attrs.get('max_selections', getattr(self.instance, 'max_selections', None))
+        is_req = attrs.get('is_required', getattr(self.instance, 'is_required', False))
+        allow_qty = attrs.get('allow_option_quantity', getattr(self.instance, 'allow_option_quantity', False))
+        if max_sel is not None and min_sel and min_sel > max_sel:
+            raise serializers.ValidationError({'max_selections': 'O máximo não pode ser menor que o mínimo.'})
+        if is_req and min_sel < 1:
+            raise serializers.ValidationError({'min_selections': 'Grupo obrigatório exige mínimo de 1.'})
+        if max_sel == 1 and allow_qty:
+            raise serializers.ValidationError({'allow_option_quantity': 'Seleção única não permite quantidade por opção.'})
+        return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        options = validated_data.pop('options', None)
+        group = ModifierGroup.objects.create(**validated_data)
+        if options:
+            for option_data in options:
+                ModifierOption.objects.create(modifier_group=group, **option_data)
+        return group
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        options = validated_data.pop('options', None)
+        for key, value in validated_data.items():
+            setattr(instance, key, value)
+        instance.save()
+        if options is not None:
+            current_ids = set()
+            for option_data in options:
+                option_id = option_data.get('id')
+                if option_id:
+                    current_ids.add(option_id)
+                    ModifierOption.objects.filter(pk=option_id, modifier_group=instance).update(**{
+                        k: v for k, v in option_data.items() if k != 'id'
+                    })
+                else:
+                    new_option = ModifierOption.objects.create(modifier_group=instance, **option_data)
+                    current_ids.add(new_option.pk)
+            instance.options.exclude(pk__in=current_ids).update(status=Status.INACTIVE)
+        return instance
+
+
+class ProductModifierGroupSerializer(serializers.ModelSerializer):
+    modifier_group_name = serializers.CharField(source='modifier_group.name', read_only=True)
+
+    class Meta:
+        model = ProductModifierGroup
+        fields = (
+            'id', 'product', 'modifier_group', 'modifier_group_name',
+            'sort_order', 'status', 'created_at', 'updated_at',
+        )
+        read_only_fields = ('id', 'created_at', 'updated_at')
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        product = attrs.get('product', getattr(self.instance, 'product', None))
+        modifier_group = attrs.get('modifier_group', getattr(self.instance, 'modifier_group', None))
+        if request and not request.user.is_superuser:
+            branch_context = getattr(request, 'branch_context', None)
+            company_id = branch_context.company_id if branch_context else None
+            if product and company_id and product.company_id != company_id:
+                raise serializers.ValidationError({'product': 'O produto deve pertencer à empresa da filial atual.'})
+            if modifier_group and company_id and modifier_group.company_id != company_id:
+                raise serializers.ValidationError({'modifier_group': 'O grupo modificador deve pertencer à empresa da filial atual.'})
+            if product and modifier_group and product.company_id != modifier_group.company_id:
+                raise serializers.ValidationError({'modifier_group': 'Produto e grupo modificador devem pertencer à mesma empresa.'})
         return attrs

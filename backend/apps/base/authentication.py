@@ -9,6 +9,10 @@ class SessionAuthentication(BaseSessionAuthentication):
             user, _ = result
             if not user.can_login or not user.is_active:
                 raise AuthenticationFailed('Sessão de usuário sem acesso ao sistema.')
+            if not request.headers.get('X-Support-Session-ID'):
+                from apps.saas.permissions import enforce_saas_request
+
+                enforce_saas_request(request, user)
         return result
 
     def authenticate_header(self, request):

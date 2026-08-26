@@ -1,9 +1,10 @@
 import { permissions, reportMenuPermissions } from "@/lib/permissions";
-import type { User, UserBranch, UserCompany } from "@/types";
+import type { BranchFeature, FeaturePermissionAlternative, User, UserBranch, UserCompany } from "@/types";
 
 const OPERATING_MODULES = new Set([
   "products", "categories", "branch_prices", "inventory", "cash_registers",
-  "sales", "payment_methods", "reports", "dashboard", "promotions", "audit_logs",
+  "sales", "payment_methods", "reports", "dashboard", "promotions", "audit_logs", "purchases",
+  "commands", "modifiers",
 ]);
 
 const OPERATING_PERMISSIONS = new Set<string>([
@@ -12,26 +13,32 @@ const OPERATING_PERMISSIONS = new Set<string>([
   permissions.changeUserCommission,
 ]);
 
-const routes = [
-  ["/dashboard", [permissions.viewDashboard]],
-  ["/empresas", [permissions.viewCompany, permissions.changeCompany]],
-  ["/filiais", [permissions.viewBranch, permissions.addBranch, permissions.changeBranch]],
-  ["/perfis", [permissions.viewAccessProfile]],
-  ["/usuarios", [permissions.viewUser]],
-  ["/usuarios/bloqueios", [permissions.viewPermissionBlock]],
-  ["/categorias", [permissions.viewCategory]],
-  ["/produtos", [permissions.viewProduct]],
-  ["/estoque", [permissions.viewInventory]],
-  ["/estoque/movimentacoes", [permissions.viewInventoryHistory]],
-  ["/caixas", [permissions.viewCashRegister]],
-  ["/pdv", [permissions.createSale, permissions.createConsumption]],
-  ["/vendas", [permissions.viewSale]],
-  ["/consumacoes", [permissions.viewConsumption]],
-  ["/formas-de-pagamento", [permissions.viewPaymentMethod]],
-  ["/promocoes", [permissions.viewPromotion, permissions.changePromotion]],
-  ["/relatorios", reportMenuPermissions],
-  ["/auditoria", [permissions.viewAuditLog]],
-] as const;
+const routes: Array<{
+  href: string;
+  permissions: readonly string[];
+  features?: readonly BranchFeature[];
+  anyFeature?: boolean;
+  alternatives?: readonly FeaturePermissionAlternative[];
+}> = [
+  { href: "/dashboard", permissions: [permissions.viewDashboard] },
+  { href: "/pdv", permissions: [], alternatives: [{ permission: permissions.createSale, features: ["counter", "cash_register"] }, { permission: permissions.createConsumption, features: ["consumption"] }] },
+  { href: "/mesas", permissions: [permissions.viewCommands], features: ["tables"] },
+  { href: "/comandas", permissions: [permissions.viewCommands], features: ["commands"] },
+  { href: "/caixas", permissions: [permissions.viewCashRegister], features: ["cash_register"] },
+  { href: "/produtos", permissions: [permissions.viewProduct] },
+  { href: "/categorias", permissions: [permissions.viewCategory] },
+  { href: "/modificadores", permissions: [permissions.viewModifiers] },
+  { href: "/fornecedores", permissions: [permissions.viewSupplier] },
+  { href: "/formas-de-pagamento", permissions: [permissions.viewPaymentMethod] },
+  { href: "/promocoes", permissions: [permissions.viewPromotion, permissions.changePromotion] },
+  { href: "/compras", permissions: [permissions.viewPurchase] },
+  { href: "/contas-a-pagar", permissions: [permissions.managePurchasePayables] },
+  { href: "/estoque", permissions: [permissions.viewInventory] },
+  { href: "/usuarios", permissions: [permissions.viewUser] },
+  { href: "/perfis", permissions: [permissions.viewAccessProfile] },
+  { href: "/filiais", permissions: [permissions.viewBranch, permissions.addBranch, permissions.changeBranch] },
+  { href: "/relatorios", permissions: reportMenuPermissions },
+];
 
 export function isOperatingPermission(permission: string) {
   return OPERATING_MODULES.has(permission.split(".")[0]) || OPERATING_PERMISSIONS.has(permission);
@@ -42,12 +49,22 @@ export function firstAuthorizedRoute(
   company: UserCompany | null,
   branch: UserBranch | null,
 ) {
-  if (user.is_superuser) return branch ? "/dashboard" : "/sobre-mim";
-  for (const [href, required] of routes) {
-    if (required.some((permission) => {
+  if (company?.is_owner && !company.can_operate) return "/assinatura";
+  if (user.is_superuser) return branch ? "/dashboard" : "/perfil";
+  for (const route of routes) {
+    const permitted = route.permissions.some((permission) => {
       const source = isOperatingPermission(permission) ? branch : company;
       return source?.permissions.includes(permission);
-    })) return href;
+    });
+    const featureAllowed = !route.features || (
+      route.anyFeature
+        ? route.features.some((feature) => branch?.features?.[feature]?.enabled)
+        : route.features.every((feature) => branch?.features?.[feature]?.enabled)
+    );
+    const alternativeAllowed = route.alternatives?.some(({ permission, features }) =>
+      branch?.permissions.includes(permission) && features.every((feature) => branch.features?.[feature]?.enabled)
+    );
+    if (route.alternatives ? alternativeAllowed : permitted && featureAllowed) return route.href;
   }
-  return "/sobre-mim";
+  return company?.is_owner ? "/assinatura" : "/perfil";
 }

@@ -22,6 +22,19 @@ from apps.companies.services import replace_user_accesses
 from .models import User
 
 
+def support_effective_permission_codes(support_session):
+    if support_session.mode == 'READ_WRITE':
+        return set(ALL_PERMISSION_CODES)
+    return {
+        code for code in ALL_PERMISSION_CODES
+        if (
+            code.endswith('.view')
+            or '.view_' in code
+            or code.startswith(('reports.', 'dashboard.', 'audit_logs.'))
+        )
+    }
+
+
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(trim_whitespace=False, write_only=True)
@@ -83,48 +96,103 @@ class UserSerializer(serializers.ModelSerializer):
     def _active_company_accesses(self, user):
         accesses = user.company_accesses.filter(
             is_active=True,
-        ).filter(
-            Q(access_profile__isnull=True) | Q(access_profile__status=Status.ACTIVE)
-        ).select_related('company', 'access_profile').prefetch_related(
-            'access_profile__permissions'
-        )
+            saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
+        ).select_related('company')
         company_ids = self._visible_company_ids(user)
         if company_ids is not None:
             accesses = accesses.filter(company_id__in=company_ids)
         return accesses
 
     def get_companies(self, user):
+        from apps.saas.services import resolve_effective_status
+
+        request = self.context.get('request')
+        support_session = getattr(request, 'support_session', None) if request else None
+        if support_session and not support_session.impersonated_user_id:
+            company = support_session.company
+            effective = resolve_effective_status(company)
+            permissions = support_effective_permission_codes(support_session)
+            return [{
+                'id': company.id,
+                'trade_name': company.trade_name,
+                'status': company.status,
+                'is_owner': False,
+                'effective_status': effective['status'],
+                'can_operate': effective['can_operate'],
+                'access_profile': {'id': None, 'name': 'Suporte da plataforma'},
+                'permissions': sorted(permissions - OPERATING_PERMISSION_CODES),
+                'support_context': True,
+            }]
         if user.is_superuser:
             permissions = sorted(ALL_PERMISSION_CODES)
-            return [
-                {
+            owned_company_ids = set(
+                user.company_accesses.filter(is_owner=True, is_active=True).values_list(
+                    'company_id', flat=True
+                )
+            )
+            companies = []
+            for company in Company.objects.all():
+                effective = resolve_effective_status(company)
+                companies.append({
                     'id': company.id,
                     'trade_name': company.trade_name,
                     'status': company.status,
+                    'is_owner': company.id in owned_company_ids,
+                    'effective_status': effective['status'],
+                    'can_operate': effective['can_operate'],
                     'access_profile': {'id': None, 'name': 'Superusuario'},
                     'permissions': permissions,
-                }
-                for company in Company.objects.all()
-            ]
-        return [
-            {
+                })
+            return companies
+        companies = []
+        for access in self._active_company_accesses(user):
+            effective = resolve_effective_status(access.company)
+            companies.append({
                 'id': access.company_id,
                 'trade_name': access.company.trade_name,
                 'status': access.company.status,
-                'access_profile': {
-                    'id': access.access_profile_id,
-                    'name': access.access_profile.name,
-                } if access.access_profile else None,
+                'is_owner': access.is_owner,
+                'saas_status': access.saas_status,
+                'effective_status': effective['status'],
+                'can_operate': effective['can_operate'],
                 'permissions': sorted(
                     company_permission_codes(user, access.company_id) - OPERATING_PERMISSION_CODES
                 ),
-            }
-            for access in self._active_company_accesses(user)
-        ]
+            })
+        return companies
 
     def get_branches(self, user):
+        from apps.companies.features import branch_feature_states
+
         if not user.can_login or not user.is_active:
             return []
+        request = self.context.get('request')
+        support_session = getattr(request, 'support_session', None) if request else None
+        if support_session and not support_session.impersonated_user_id:
+            permissions = sorted(
+                support_effective_permission_codes(support_session)
+                & OPERATING_PERMISSION_CODES
+            )
+            return [
+                {
+                    'id': branch.id,
+                    'name': branch.name,
+                    'company_id': branch.company_id,
+                    'status': branch.status,
+                    'access_profile': {
+                        'id': None,
+                        'name': 'Suporte da plataforma',
+                    },
+                    'permissions': permissions,
+                    'features': branch_feature_states(branch),
+                    'support_context': True,
+                }
+                for branch in Branch.objects.select_related('company', 'settings').filter(
+                    company_id=support_session.company_id,
+                    company__status=Status.ACTIVE,
+                    status=Status.ACTIVE,
+                ).order_by('name', 'id')
+            ]
         if user.is_superuser:
             permissions = sorted(ALL_PERMISSION_CODES)
             return [
@@ -135,8 +203,9 @@ class UserSerializer(serializers.ModelSerializer):
                     'status': branch.status,
                     'access_profile': None,
                     'permissions': permissions,
+                    'features': branch_feature_states(branch),
                 }
-                for branch in Branch.objects.all()
+                for branch in Branch.objects.select_related('company', 'settings').all()
             ]
         company_ids = self._visible_company_ids(user)
         accesses = user.branch_accesses.filter(
@@ -144,8 +213,10 @@ class UserSerializer(serializers.ModelSerializer):
             access_profile__status=Status.ACTIVE,
             branch__company__user_accesses__user=user,
             branch__company__user_accesses__is_active=True,
-            branch__company__user_accesses__access_profile__status=Status.ACTIVE,
-        ).select_related('branch', 'access_profile').prefetch_related(
+            branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
+        ).select_related(
+            'branch', 'branch__company', 'branch__settings', 'access_profile'
+        ).prefetch_related(
             'access_profile__permissions'
         )
         if company_ids is not None:
@@ -168,6 +239,7 @@ class UserSerializer(serializers.ModelSerializer):
                 'permissions': sorted(
                     branch_permission_codes(user, access.branch_id) & OPERATING_PERMISSION_CODES
                 ),
+                'features': branch_feature_states(access.branch),
             }
             for access in accesses.distinct()
         ]
@@ -271,7 +343,7 @@ class UserManagementSerializer(UserSerializer):
                     'Você não possui permissão em todas as empresas informadas.'
                 )
             profile = None
-            if item['access_profile_id'] is not None:
+            if item.get('access_profile_id') is not None:
                 try:
                     profile = AccessProfile.objects.get(
                         id=item['access_profile_id'],
@@ -284,10 +356,6 @@ class UserManagementSerializer(UserSerializer):
                     ) from error
 
             branch_items = item['branch_accesses']
-            if profile is None and branch_items:
-                raise serializers.ValidationError(
-                    {'company_accesses': 'Um acesso sem perfil nao pode possuir acessos de filial.'}
-                )
             branch_ids = [branch_item['branch_id'] for branch_item in branch_items]
             if len(branch_ids) != len(set(branch_ids)):
                 raise serializers.ValidationError(
@@ -450,32 +518,32 @@ class UserManagementSerializer(UserSerializer):
 
         accesses = attrs.get('company_accesses')
         if not can_login and accesses is not None and any(
-            item['access_profile'] is not None or item['branch_accesses']
+            item['branch_accesses']
             for item in accesses
         ):
             raise serializers.ValidationError({
-                'company_accesses': 'Usuarios sem login nao podem possuir perfis ou acessos de filial.'
+                'company_accesses': 'Usuarios sem login nao podem possuir acessos de filial.'
             })
 
         if can_login:
             if accesses is not None:
                 has_valid_links = any(
-                    item['access_profile'] is not None and item['branch_accesses']
+                    item['branch_accesses']
                     for item in accesses
                 )
             elif self.instance:
-                has_valid_links = self.instance.company_accesses.filter(
+                has_valid_links = self.instance.branch_accesses.filter(
                     is_active=True,
                     access_profile__status=Status.ACTIVE,
-                    company__branches__user_accesses__user=self.instance,
-                    company__branches__user_accesses__is_active=True,
-                    company__branches__user_accesses__access_profile__status=Status.ACTIVE,
+                    branch__company__user_accesses__user=self.instance,
+                    branch__company__user_accesses__is_active=True,
+                    branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
                 ).exists()
             else:
                 has_valid_links = False
             if not has_valid_links:
                 raise serializers.ValidationError(
-                    {'company_accesses': 'Usuarios com login precisam de perfis validos de empresa e filial.'}
+                    {'company_accesses': 'Usuarios com login precisam de ao menos uma filial com perfil.'}
                 )
         return attrs
 

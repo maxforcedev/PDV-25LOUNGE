@@ -40,11 +40,19 @@ class UserViewSet(viewsets.ModelViewSet):
                 raise ValidationError({'company': 'Informe uma empresa válida.'}) from error
         queryset = User.objects.prefetch_related(
             'company_accesses__company',
-            'company_accesses__access_profile__permissions',
             'branch_accesses__branch',
             'branch_accesses__access_profile__permissions',
         )
-        if user.is_superuser:
+        support_session = getattr(self.request, 'support_session', None)
+        if support_session and not support_session.impersonated_user_id:
+            company_ids = {support_session.company_id}
+            queryset = queryset.filter(
+                company_accesses__company_id=support_session.company_id,
+                company_accesses__is_active=True,
+            )
+            if company_id is not None:
+                queryset = queryset.filter(company_accesses__company_id=company_id)
+        elif user.is_superuser:
             if company_id is not None:
                 queryset = queryset.filter(
                     company_accesses__company_id=company_id,
@@ -128,13 +136,14 @@ class UserViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(**filters)
         elif profile_id is not None:
             filters = {
-                'company_accesses__access_profile_id': profile_id,
-                'company_accesses__is_active': True,
+                'branch_accesses__access_profile_id': profile_id,
+                'branch_accesses__is_active': True,
+                'branch_accesses__access_profile__status': 'active',
             }
             if company_id is not None:
-                filters['company_accesses__access_profile__company_id'] = company_id
+                filters['branch_accesses__branch__company_id'] = company_id
             elif not user.is_superuser:
-                filters['company_accesses__access_profile__company_id__in'] = company_ids
+                filters['branch_accesses__branch__company_id__in'] = company_ids
             queryset = queryset.filter(**filters)
 
         return queryset.distinct().order_by('first_name', 'last_name', 'email', 'id')
@@ -224,7 +233,7 @@ class UserViewSet(viewsets.ModelViewSet):
     def access_snapshot(user):
         return {
             'company_accesses': list(user.company_accesses.order_by('company_id').values(
-                'company_id', 'access_profile_id', 'is_active'
+                'company_id', 'access_profile_id', 'is_active', 'is_owner'
             )),
             'branch_accesses': list(user.branch_accesses.order_by('branch_id').values(
                 'branch_id', 'access_profile_id', 'is_active'
@@ -313,3 +322,27 @@ class UserViewSet(viewsets.ModelViewSet):
             after={'is_active': False, **snapshot},
         )
         return Response(self.get_serializer(user).data)
+
+    @action(detail=True, methods=['post'])
+    @transaction.atomic
+    def reset_password(self, request, pk=None):
+        user = self.get_object()
+        if user.is_superuser and not request.user.is_superuser:
+            raise PermissionDenied('Você não pode alterar um superusuário.')
+        new_password = request.data.get('new_password', '')
+        if not new_password:
+            raise ValidationError({'new_password': 'A nova senha é obrigatória.'})
+        from django.contrib.auth.password_validation import validate_password
+        try:
+            validate_password(new_password, user=user)
+        except Exception as error:
+            raise ValidationError({'new_password': list(error.messages)}) from error
+        user.set_password(new_password)
+        user.save(update_fields=['password', 'updated_at'])
+        snapshot = self.access_snapshot(user)
+        self.audit_user(
+            user, 'user.reset_password',
+            before=snapshot, after=snapshot,
+            metadata={'source': 'admin_reset'},
+        )
+        return Response({'detail': 'Senha redefinida com sucesso.'})

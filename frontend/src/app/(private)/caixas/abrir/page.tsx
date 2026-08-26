@@ -75,4 +75,4 @@ function OpenRegister() {
   </>;
 }
 
-export default function OpenRegisterPage() { return <AdminGuard requiredPermissions={[permissions.openCashRegister]}><OpenRegister /></AdminGuard>; }
+export default function OpenRegisterPage() { return <AdminGuard requiredPermissions={[permissions.openCashRegister]} requiredFeatures={["cash_register"]}><OpenRegister /></AdminGuard>; }

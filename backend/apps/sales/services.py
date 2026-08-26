@@ -1,5 +1,5 @@
 from datetime import datetime, time
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal, InvalidOperation
 import hashlib
 import json
 
@@ -11,15 +11,20 @@ from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
 
 from apps.base.audit import audit_log, model_snapshot
+from apps.companies.features import require_branch_feature
 from apps.cash.models import CashSession, CashSessionStatus
 from apps.companies.models import (
     Branch, BranchSettings, Company, Status, UserBranchAccess, UserCommissionOverride,
     UserCompanyAccess,
 )
 from apps.companies.selectors import eligible_branch_users, user_has_branch_permission
-from apps.inventory.models import MovementType, Stock, StockMovement
+from apps.inventory.content import exact_content_equivalent, exact_multiply, exact_sum
+from apps.inventory.models import MovementDomainOrigin, MovementType, Stock, StockMovement
 from apps.inventory.services import apply_locked_stock
-from apps.products.models import BranchProductPrice, InventoryBehavior, Product, ProductComponent, Unit
+from apps.products.models import (
+    BranchProductPrice, FractionableProductConfig, InventoryBehavior, Product,
+    ProductBranchConfig, ProductComponent, ProductFractionComponent, SalesChannel, Unit,
+)
 
 from .models import (
     OperationType, Payment, PaymentMethod, PaymentMethodCode, Promotion,
@@ -85,18 +90,30 @@ def _authorization_identity(authorization):
 def _sale_idempotency_payload(*, actor, operation_type, cash_session, beneficiary_user,
                               seller_user, discount_authorization, items, discount,
                               charged_amount, payments, service_fee_waived,
-                              service_fee_authorization, item_discount_authorization):
+                              service_fee_authorization, item_discount_authorization,
+                              channel):
     def identity(value):
         return value.pk if hasattr(value, 'pk') else value
 
-    canonical_items = [
-        {
+    canonical_items = []
+    for item in (items or []):
+        modifiers = item.get('modifiers') or []
+        canonical_modifiers = sorted(
+            (
+                {
+                    'option': identity(m.get('option')),
+                    'quantity': _idempotency_decimal(m.get('quantity', '1')),
+                }
+                for m in modifiers
+            ),
+            key=lambda entry: (entry.get('option') or 0, entry.get('quantity') or Decimal('0')),
+        )
+        canonical_items.append({
             'product': identity(item.get('product')),
             'quantity': _idempotency_decimal(item.get('quantity')),
             'discount': _idempotency_decimal(item.get('discount', '0')),
-        }
-        for item in (items or [])
-    ]
+            'modifiers': canonical_modifiers,
+        })
     canonical_payments = []
     for payment in payments or []:
         amount = payment.get('amount')
@@ -112,6 +129,7 @@ def _sale_idempotency_payload(*, actor, operation_type, cash_session, beneficiar
     return {
         'actor': identity(actor),
         'operation_type': operation_type,
+        'channel': channel,
         'cash_session': identity(cash_session),
         'beneficiary_user': identity(beneficiary_user),
         'seller_user': identity(seller_user),
@@ -170,7 +188,7 @@ def _commission_rate_for_seller(branch, seller_user, branch_default):
     if seller_user is None:
         return Decimal('0.00')
     override = UserCommissionOverride.objects.filter(
-        branch=branch, user=seller_user,
+        branch=branch, user=seller_user, archived_at__isnull=True,
     ).first()
     if override:
         if not override.receives_commission:
@@ -187,23 +205,47 @@ def _commission_rate_for_seller(branch, seller_user, branch_default):
     return branch_default
 
 
-def _financial_snapshots(branch, net_subtotal, *, seller_user=None, service_fee_waived=False, lock=False):
+def _financial_snapshots(branch, service_fee_base, *, commission_base=None,
+                         seller_user=None, service_fee_waived=False, lock=False):
     queryset = BranchSettings.objects
     if lock:
         queryset = queryset.select_for_update()
     settings = queryset.filter(branch=branch).first()
-    service_fee_rate = settings.service_fee_rate if settings else Decimal('0.00')
+    service_fee_rate = (
+        settings.service_fee_rate
+        if settings and settings.charges_service_fee
+        else Decimal('0.00')
+    )
     branch_commission_rate = settings.commission_rate if settings else Decimal('0.00')
     commission_rate = _commission_rate_for_seller(branch, seller_user, branch_commission_rate)
+    if commission_base is None:
+        commission_base = service_fee_base
     service_fee_amount = (
         Decimal('0.00') if service_fee_waived else _percentage_amount(
-            net_subtotal, service_fee_rate, 'service_fee_amount'
+            service_fee_base, service_fee_rate, 'service_fee_amount'
         )
     )
     commission_amount = _percentage_amount(
-        net_subtotal, commission_rate, 'commission_amount'
+        commission_base, commission_rate, 'commission_amount'
     )
     return service_fee_rate, service_fee_amount, commission_rate, commission_amount
+
+
+def _require_sale_features(branch, operation_type, channel, charged_amount=None):
+    if operation_type == OperationType.CONSUMPTION:
+        require_branch_feature(branch, 'cash_register')
+        require_branch_feature(branch, 'consumption')
+        return
+
+    channel_features = {
+        SalesChannel.COUNTER: 'counter',
+        SalesChannel.TABLE: 'tables',
+        SalesChannel.COMMAND: 'commands',
+    }
+    feature = channel_features.get(channel)
+    if feature:
+        require_branch_feature(branch, feature)
+    require_branch_feature(branch, 'cash_register')
 
 
 def _eligible_sale_user(branch, user, permission_code, field):
@@ -287,13 +329,122 @@ def _branch_price_map(branch, product_ids):
     }
 
 
-def _consolidate_items(raw_items, products, *, price_overrides=None):
+def _branch_cost_map(branch, product_ids):
+    if not branch or not product_ids:
+        return {}
+    return {
+        stock.product_id: (
+            stock.average_unit_cost
+            if stock.average_unit_cost is not None else stock.product.cost
+        )
+        for stock in Stock.objects.select_related('product').filter(
+            branch=branch, product_id__in=product_ids
+        )
+    }
+
+
+def _modifier_signature(modifiers):
+    if not modifiers:
+        return ()
+    return tuple(sorted(
+        (int(m.get('option')), str(m.get('quantity', '1')))
+        for m in modifiers
+    ))
+
+
+def _resolve_modifiers(product, raw_modifiers, company_id):
+    from apps.products.models import (
+        ModifierGroup, ModifierOption, ProductModifierGroup,
+    )
+    if product.company_id != company_id:
+        raise PermissionDenied('Produto fora da empresa atual.')
+    if not isinstance(raw_modifiers, list):
+        raise ValidationError({'modifiers': 'Informe uma lista de modificadores.'})
+
+    links = ProductModifierGroup.objects.filter(
+        product=product, status='active',
+        modifier_group__status='active',
+        modifier_group__company_id=company_id,
+    ).select_related('modifier_group').order_by('sort_order', 'id')
+    group_map = {link.modifier_group_id: link.modifier_group for link in links}
+    if any(not isinstance(modifier, dict) for modifier in raw_modifiers):
+        raise ValidationError({'modifiers': 'Cada modificador deve informar opção e quantidade.'})
+    option_ids = set()
+    for m in raw_modifiers:
+        try:
+            option_ids.add(int(m.get('option')))
+        except (TypeError, ValueError):
+            raise ValidationError({'modifiers': 'Opção de modificador inválida.'})
+
+    options = {
+        opt.pk: opt
+        for opt in ModifierOption.objects.filter(
+            pk__in=option_ids,
+            modifier_group__in=group_map.values(),
+            status='active',
+        ).select_related('modifier_group')
+    }
+    if len(options) != len(option_ids):
+        raise ValidationError({'modifiers': 'Uma ou mais opções estão indisponíveis ou não pertencem a este produto.'})
+
+    selections_by_group = {}
+    for m in raw_modifiers:
+        opt = options[int(m.get('option'))]
+        qty_str = str(m.get('quantity', '1'))
+        try:
+            qty = Decimal(qty_str)
+        except (InvalidOperation, ValueError):
+            raise ValidationError({'modifiers': 'Quantidade de modificador inválida.'})
+        if qty <= 0:
+            raise ValidationError({'modifiers': 'A quantidade da opção deve ser positiva.'})
+        group = opt.modifier_group
+        if group.allow_option_quantity is False and qty != Decimal('1'):
+            raise ValidationError({'modifiers': f'O grupo {group.name} não permite quantidade por opção.'})
+        selections_by_group.setdefault(group.pk, []).append((opt, qty))
+
+    for group in group_map.values():
+        selections = selections_by_group.get(group.pk, [])
+        total_qty = sum(qty for _opt, qty in selections)
+        if group.is_required and total_qty < 1:
+            raise ValidationError({'modifiers': f'O grupo {group.name} é obrigatório.'})
+        if group.min_selections and total_qty < group.min_selections:
+            raise ValidationError({'modifiers': f'O grupo {group.name} exige mínimo de {group.min_selections}.'})
+        if group.max_selections is not None and total_qty > group.max_selections:
+            raise ValidationError({'modifiers': f'O grupo {group.name} permite máximo de {group.max_selections}.'})
+        option_ids_in_group = [opt.pk for opt, _qty in selections]
+        if len(option_ids_in_group) != len(set(option_ids_in_group)):
+            raise ValidationError({'modifiers': f'Não repita opções no grupo {group.name}.'})
+
+    modifier_total = Decimal('0.00')
+    snapshot = []
+    for group in group_map.values():
+        for opt, qty in selections_by_group.get(group.pk, []):
+            contribution = (opt.additional_price * qty).quantize(
+                Decimal('0.01'), rounding=ROUND_HALF_UP
+            )
+            modifier_total += contribution
+            snapshot.append({
+                'group_id': group.pk,
+                'group_name': group.name,
+                'option_id': opt.pk,
+                'option_name': opt.name,
+                'option_type': opt.option_type,
+                'additional_price': str(opt.additional_price),
+                'selected_quantity': str(qty),
+                'contribution': str(contribution),
+                'sort_order': opt.sort_order,
+            })
+    return modifier_total, snapshot
+
+
+def _consolidate_items(raw_items, products, *, price_overrides=None, cost_overrides=None):
     price_overrides = price_overrides or {}
+    cost_overrides = cost_overrides or {}
     if not isinstance(raw_items, list) or not raw_items:
         raise ValidationError({'items': 'Informe ao menos um item.'})
-    quantities = {}
+    line_keys = {}
     discounts = {}
-    ordered_ids = []
+    ordered_keys = []
     for index, raw_item in enumerate(raw_items):
         if not isinstance(raw_item, dict) or raw_item.get('product') in ('', None):
             raise ValidationError({'items': f'Item {index + 1}: informe o produto.'})
@@ -307,11 +458,23 @@ def _consolidate_items(raw_items, products, *, price_overrides=None):
             raise ValidationError({'items': f'Item {index + 1}: a quantidade deve ser positiva.'})
         if product.unit == Unit.UNIT and quantity != quantity.to_integral_value():
             raise ValidationError({'items': f'Item {index + 1}: produto UN exige quantidade inteira.'})
-        if product.pk not in quantities:
-            ordered_ids.append(product.pk)
-            quantities[product.pk] = Decimal('0.000')
-            discounts[product.pk] = Decimal('0.00')
-        quantities[product.pk] += quantity
+        raw_modifiers = raw_item.get('modifiers') or []
+        modifier_total, modifier_snapshot = _resolve_modifiers(
+            product, raw_modifiers, product.company_id
+        )
+        sig = _modifier_signature(raw_modifiers)
+        line_key = (product.pk, sig)
+        if line_key not in line_keys:
+            ordered_keys.append(line_key)
+            line_keys[line_key] = {
+                'quantity': Decimal('0.000'),
+                'discount': Decimal('0.00'),
+                'base_unit_price': price_overrides.get(product.pk, product.sale_price),
+                'modifier_unit_total': modifier_total,
+                'modifier_snapshot': modifier_snapshot,
+            }
+        entry = line_keys[line_key]
+        entry['quantity'] += quantity
         item_discount = strict_decimal(
             raw_item.get('discount', '0'),
             field=f'items.{index}.discount', decimal_places=2, max_digits=14,
@@ -320,18 +483,24 @@ def _consolidate_items(raw_items, products, *, price_overrides=None):
             raise ValidationError(
                 {'items': f'Item {index + 1}: o desconto não pode ser negativo.'}
             )
-        discounts[product.pk] += item_discount
-        ensure_money_fits(discounts[product.pk], 'items')
-        if quantities[product.pk] > Decimal('99999999999.999'):
+        entry['discount'] += item_discount
+        ensure_money_fits(entry['discount'], 'items')
+        if entry['quantity'] > Decimal('99999999999.999'):
             raise ValidationError({'items': 'A quantidade consolidada excede o limite permitido.'})
 
     provisional = []
     subtotal = Decimal('0.00')
     products_by_id = {product.pk: product for product in products.values()}
-    for product_id in ordered_ids:
+    for line_key in ordered_keys:
+        product_id, _sig = line_key
         product = products_by_id[product_id]
-        quantity = quantities[product_id]
-        unit_price = price_overrides.get(product_id, product.sale_price)
+        entry = line_keys[line_key]
+        quantity = entry['quantity']
+        base_unit_price = entry['base_unit_price']
+        modifier_unit_total = entry['modifier_unit_total']
+        unit_price = (base_unit_price + modifier_unit_total).quantize(
+            CENT, rounding=ROUND_HALF_UP
+        )
         item_subtotal = (unit_price * quantity).quantize(
             CENT, rounding=ROUND_HALF_UP
         )
@@ -345,12 +514,75 @@ def _consolidate_items(raw_items, products, *, price_overrides=None):
             'product_name': product.name,
             'internal_code': product.internal_code,
             'unit': product.unit,
-            'unit_cost': product.cost,
+            'unit_cost': cost_overrides.get(product_id, product.cost).quantize(
+                CENT, rounding=ROUND_HALF_UP
+            ),
+            'base_unit_price': base_unit_price,
+            'modifier_unit_total': modifier_unit_total,
+            'modifier_snapshot': entry['modifier_snapshot'],
             'unit_price': unit_price,
             'subtotal': item_subtotal,
-            'manual_discount_requested': discounts[product_id],
+            'manual_discount_requested': entry['discount'],
+            'participates_in_service_fee': product.participates_in_service_fee,
+            'participates_in_commission': product.participates_in_commission,
         })
     return provisional, subtotal
+
+
+def _allocate_money(total, weighted_rows):
+    total = Decimal(total).quantize(CENT, rounding=ROUND_HALF_UP)
+    rows = [(key, max(Decimal(weight), Decimal('0'))) for key, weight in weighted_rows]
+    if not rows:
+        return {}
+    weight_total = sum((weight for _key, weight in rows), Decimal('0'))
+    if not weight_total:
+        result = {key: Decimal('0.00') for key, _weight in rows}
+        result[min(key for key, _weight in rows)] = total
+        return result
+    raw = {key: total * weight / weight_total for key, weight in rows}
+    result = {
+        key: value.quantize(CENT, rounding=ROUND_FLOOR)
+        for key, value in raw.items()
+    }
+    residual = int((total - sum(result.values(), Decimal('0.00'))) / CENT)
+    order = sorted(rows, key=lambda row: (-(raw[row[0]] - result[row[0]]), row[0]))
+    for key, _weight in order[:residual]:
+        result[key] += CENT
+    return result
+
+
+def _eligible_financial_bases(items, account_discount):
+    discounts = _allocate_money(
+        account_discount,
+        [(item['product'], item['net_subtotal']) for item in items],
+    )
+    revenues = {
+        item['product']: item['net_subtotal'] - discounts[item['product']]
+        for item in items
+    }
+    service_base = sum((
+        revenues[item['product']]
+        for item in items if item['participates_in_service_fee']
+    ), Decimal('0.00'))
+    commission_base = sum((
+        revenues[item['product']]
+        for item in items if item['participates_in_commission']
+    ), Decimal('0.00'))
+    return service_base, commission_base
+
+
+def _channel_available(product, branch, channel, configs=None):
+    if channel not in SalesChannel.values:
+        raise ValidationError({'channel': 'Canal de venda invalido.'})
+    config = (
+        configs.get(product.pk) if configs is not None
+        else ProductBranchConfig.objects.filter(product=product, branch=branch).first()
+    )
+    if config and not config.is_available:
+        return False
+    field = f'available_{channel}'
+    override = getattr(config, field) if config else None
+    return getattr(product, field) if override is None else override
 
 
 def _eligible_promotions(company, timestamp, *, branch=None, lock=False):
@@ -457,31 +689,18 @@ def _apply_promotions(operation_type, items, promotions):
     )
 
 
-def calculate_preview(*, company, operation_type, raw_items, discount, charged_amount, beneficiary_user, branch=None, service_fee_waived=False):
-    if operation_type not in OperationType.values:
-        raise ValidationError({'operation_type': 'Tipo de operação inválido.'})
-    if not isinstance(raw_items, list) or not raw_items:
-        raise ValidationError({'items': 'Informe ao menos um item.'})
-    product_ids = [item.get('product') for item in raw_items if isinstance(item, dict)]
-    if len(product_ids) != len(raw_items) or any(value in ('', None) for value in product_ids):
-        raise ValidationError({'items': 'Todos os itens devem informar um produto.'})
-    products = {
-        str(product.pk): product
-        for product in Product.objects.select_related('category').filter(
-            pk__in=product_ids, company=company, status=Status.ACTIVE, is_sellable=True
-        )
-    }
-    price_overrides = _branch_price_map(branch, [pid for pid in product_ids if str(pid).isdigit()])
-    provisional, subtotal = _consolidate_items(raw_items, products, price_overrides=price_overrides)
-    operation_timestamp = timezone.now()
+def _calculate_sale_financials(*, company, branch, operation_type, snapshots, subtotal,
+                               discount, charged_amount, beneficiary_user, seller_user=None,
+                               service_fee_waived=False, lock=False):
+    """Apply the shared financial rules to either live or frozen item snapshots."""
     promotions = (
-        _eligible_promotions(company, operation_timestamp, branch=branch)
+        _eligible_promotions(company, timezone.now(), branch=branch, lock=lock)
         if operation_type == OperationType.SALE else []
     )
     promotion_discount_total, item_discount_total = _apply_promotions(
-        operation_type, provisional, promotions
+        operation_type, snapshots, promotions
     )
-    if operation_type == 'consumption':
+    if operation_type == OperationType.CONSUMPTION:
         if discount not in (None, '', 0, '0', '0.00'):
             raise ValidationError({'discount': 'Consumação não aceita desconto.'})
         if not beneficiary_user or not UserCompanyAccess.objects.filter(
@@ -493,51 +712,106 @@ def calculate_preview(*, company, operation_type, raw_items, discount, charged_a
         )
         if charged < 0 or charged > subtotal:
             raise ValidationError({'charged_amount': 'O valor cobrado deve estar entre zero e o subtotal.'})
-        discount_value = Decimal('0.00')
-        service_fee_rate = Decimal('0.00')
-        service_fee_amount = Decimal('0.00')
-        commission_rate = Decimal('0.00')
-        commission_amount = Decimal('0.00')
-        total = charged
-    else:
-        discount_value = strict_decimal(
-            discount if discount not in (None, '') else '0',
-            field='discount', decimal_places=2, max_digits=14,
-        )
-        remaining = subtotal - promotion_discount_total - item_discount_total
-        if discount_value < 0 or discount_value > remaining:
-            raise ValidationError({'discount': 'O desconto deve estar entre zero e o saldo após promoções.'})
-        charged = None
-        net_subtotal = remaining - discount_value
-        (
-            service_fee_rate,
-            service_fee_amount,
-            commission_rate,
-            commission_amount,
-        ) = _financial_snapshots(
-            branch, net_subtotal, service_fee_waived=bool(service_fee_waived)
-        )
-        total = net_subtotal + service_fee_amount
-        ensure_money_fits(total, 'total')
-    for item in provisional:
-        item.pop('product_object')
-        item.pop('promotion_object')
-        item.pop('manual_discount_requested')
+        return {
+            'promotion_discount_total': Decimal('0.00'),
+            'item_discount_total': Decimal('0.00'),
+            'discount': Decimal('0.00'),
+            'service_fee_rate': Decimal('0.00'),
+            'service_fee_amount': Decimal('0.00'),
+            'commission_rate': Decimal('0.00'),
+            'commission_amount': Decimal('0.00'),
+            'charged_amount': charged,
+            'total': charged,
+        }
+
+    discount_value = strict_decimal(
+        discount if discount not in (None, '') else '0',
+        field='discount', decimal_places=2, max_digits=14,
+    )
+    remaining = subtotal - promotion_discount_total - item_discount_total
+    if discount_value < 0 or discount_value > remaining:
+        raise ValidationError({'discount': 'O desconto deve estar entre zero e o saldo após promoções.'})
+    service_base, commission_base = _eligible_financial_bases(snapshots, discount_value)
+    (
+        service_fee_rate,
+        service_fee_amount,
+        commission_rate,
+        commission_amount,
+    ) = _financial_snapshots(
+        branch, service_base, commission_base=commission_base,
+        seller_user=seller_user, service_fee_waived=bool(service_fee_waived), lock=lock,
+    )
+    total = remaining - discount_value + service_fee_amount
+    ensure_money_fits(total, 'total')
     return {
-        'operation_type': operation_type,
-        'items': provisional,
-        'subtotal': subtotal,
         'promotion_discount_total': promotion_discount_total,
         'item_discount_total': item_discount_total,
         'discount': discount_value,
         'service_fee_rate': service_fee_rate,
         'service_fee_amount': service_fee_amount,
-        'service_fee_waived': bool(service_fee_waived) if operation_type == OperationType.SALE else False,
         'commission_rate': commission_rate,
         'commission_amount': commission_amount,
-        'charged_amount': charged,
-        'reference_total': subtotal,
+        'charged_amount': None,
         'total': total,
+    }
+
+
+def _preview_items(snapshots):
+    excluded = {'product_object', 'promotion_object', 'manual_discount_requested'}
+    return [{key: value for key, value in item.items() if key not in excluded} for item in snapshots]
+
+
+def calculate_preview(*, company, operation_type, raw_items, discount, charged_amount,
+                      beneficiary_user, branch=None, service_fee_waived=False,
+                      channel=SalesChannel.COUNTER):
+    if operation_type not in OperationType.values:
+        raise ValidationError({'operation_type': 'Tipo de operação inválido.'})
+    if branch is not None:
+        _require_sale_features(branch, operation_type, channel, charged_amount)
+    if not isinstance(raw_items, list) or not raw_items:
+        raise ValidationError({'items': 'Informe ao menos um item.'})
+    product_ids = [item.get('product') for item in raw_items if isinstance(item, dict)]
+    if len(product_ids) != len(raw_items) or any(value in ('', None) for value in product_ids):
+        raise ValidationError({'items': 'Todos os itens devem informar um produto.'})
+    products = {
+        str(product.pk): product
+        for product in Product.objects.select_related('category').filter(
+            pk__in=product_ids, company=company, status=Status.ACTIVE, is_sellable=True
+        )
+    }
+    configs = {
+        config.product_id: config
+        for config in ProductBranchConfig.objects.filter(
+            branch=branch, product_id__in=product_ids
+        )
+    } if branch else {}
+    unavailable = [
+        product.name for product in products.values()
+        if branch and not _channel_available(product, branch, channel, configs)
+    ]
+    if unavailable:
+        raise ValidationError({'items': f'Produtos indisponiveis no canal {channel}: {", ".join(unavailable)}.'})
+    price_overrides = _branch_price_map(branch, [pid for pid in product_ids if str(pid).isdigit()])
+    numeric_product_ids = [int(pid) for pid in product_ids if str(pid).isdigit()]
+    cost_overrides = _branch_cost_map(branch, numeric_product_ids)
+    provisional, subtotal = _consolidate_items(
+        raw_items, products, price_overrides=price_overrides,
+        cost_overrides=cost_overrides,
+    )
+    financials = _calculate_sale_financials(
+        company=company, branch=branch, operation_type=operation_type,
+        snapshots=provisional, subtotal=subtotal, discount=discount,
+        charged_amount=charged_amount, beneficiary_user=beneficiary_user,
+        service_fee_waived=service_fee_waived,
+    )
+    return {
+        'operation_type': operation_type,
+        'channel': channel,
+        'items': _preview_items(provisional),
+        'subtotal': subtotal,
+        **financials,
+        'service_fee_waived': bool(service_fee_waived) if operation_type == OperationType.SALE else False,
+        'reference_total': subtotal,
     }
 
 
@@ -689,7 +963,7 @@ def _lock_cash_session(raw_session, branch, *, required):
     return session
 
 
-def _prepare_products(company, raw_items, *, branch=None):
+def _prepare_products(company, raw_items, *, branch=None, channel=SalesChannel.COUNTER):
     if not isinstance(raw_items, list) or not raw_items:
         raise ValidationError({'items': 'Informe ao menos um item.'})
     parent_ids = []
@@ -714,7 +988,13 @@ def _prepare_products(company, raw_items, *, branch=None):
         ProductComponent.objects.filter(parent_product_id__in=parent_ids)
         .order_by('parent_product_id', 'component_product_id')
     )
-    component_ids = sorted({row.component_product_id for row in component_rows})
+    fraction_rows = list(
+        ProductFractionComponent.objects.filter(parent_product_id__in=parent_ids)
+        .order_by('parent_product_id', 'component_product_id')
+    )
+    component_ids = sorted({
+        row.component_product_id for row in component_rows + fraction_rows
+    })
     components = {
         product.pk: product
         for product in Product.objects.select_for_update().filter(
@@ -724,10 +1004,26 @@ def _prepare_products(company, raw_items, *, branch=None):
     rows_by_parent = {}
     for row in component_rows:
         rows_by_parent.setdefault(row.parent_product_id, []).append(row)
+    fraction_rows_by_parent = {}
+    for row in fraction_rows:
+        fraction_rows_by_parent.setdefault(row.parent_product_id, []).append(row)
+
+    branch_configs = {
+        config.product_id: config
+        for config in ProductBranchConfig.objects.select_for_update().filter(
+            branch=branch, product_id__in=parent_ids
+        )
+    } if branch else {}
 
     price_overrides = _branch_price_map(branch, parent_ids)
-    snapshots, subtotal = _consolidate_items(raw_items, parents, price_overrides=price_overrides)
+    all_cost_product_ids = set(parent_ids) | set(component_ids)
+    cost_overrides = _branch_cost_map(branch, all_cost_product_ids)
+    snapshots, subtotal = _consolidate_items(
+        raw_items, parents, price_overrides=price_overrides,
+        cost_overrides=cost_overrides,
+    )
     requirements = {}
+    content_requirements = {}
     for index, snapshot in enumerate(snapshots):
         product = snapshot['product_object']
         quantity = snapshot['quantity']
@@ -736,6 +1032,10 @@ def _prepare_products(company, raw_items, *, branch=None):
             raise PermissionDenied('Produto fora da empresa da filial.')
         if product.status != Status.ACTIVE or not product.is_sellable:
             raise ValidationError({'items': f'Item {index + 1}: produto inativo ou indisponível para venda.'})
+        if branch and not _channel_available(product, branch, channel, branch_configs):
+            raise ValidationError({
+                'items': f'Item {index + 1}: produto indisponivel no canal {channel} nesta filial.'
+            })
 
         if product.inventory_behavior == InventoryBehavior.NONE:
             continue
@@ -743,9 +1043,10 @@ def _prepare_products(company, raw_items, *, branch=None):
             requirements[product.pk] = requirements.get(product.pk, Decimal('0')) + quantity
             continue
         rows = rows_by_parent.get(product.pk, [])
-        if not rows:
+        fractional_rows = fraction_rows_by_parent.get(product.pk, [])
+        if not rows and not fractional_rows:
             raise ValidationError({'items': f'Item {index + 1}: produto composto sem composição.'})
-        compound_unit_cost = Decimal('0.00')
+        compound_cost_contributions = []
         component_cost_snapshot = []
         for row in rows:
             component = components.get(row.component_product_id)
@@ -761,8 +1062,9 @@ def _prepare_products(company, raw_items, *, branch=None):
                 raise ValidationError({'items': f'Item {index + 1}: a composição gera quantidade com mais de três casas.'})
             required = rounded_required
             requirements[component.pk] = requirements.get(component.pk, Decimal('0')) + required
-            cost_contribution = component.cost * row.quantity
-            compound_unit_cost += cost_contribution
+            component_unit_cost = cost_overrides.get(component.pk, component.cost)
+            cost_contribution = component_unit_cost * row.quantity
+            compound_cost_contributions.append(cost_contribution)
             component_cost_snapshot.append({
                 'product': component.pk,
                 'product_name': component.name,
@@ -770,18 +1072,71 @@ def _prepare_products(company, raw_items, *, branch=None):
                 'unit': component.unit,
                 'quantity_per_unit': format(row.quantity, 'f'),
                 'consumed_quantity': format(required, 'f'),
-                'unit_cost': f'{component.cost:.2f}',
+                'unit_cost': f'{component_unit_cost:.12f}',
+                'unit_cost_contribution': (
+                    f'{cost_contribution.quantize(CENT, rounding=ROUND_HALF_UP):.2f}'
+                ),
+                'consumption_mode': 'quantity',
+            })
+        for row in fractional_rows:
+            component = components.get(row.component_product_id)
+            try:
+                fraction_config = component.fraction_config if component else None
+            except FractionableProductConfig.DoesNotExist:
+                fraction_config = None
+            if (
+                not component or component.company_id != company.pk
+                or component.status != Status.ACTIVE
+                or component.inventory_behavior != InventoryBehavior.DIRECT
+                or not fraction_config or not fraction_config.tracking_active
+            ):
+                raise ValidationError({
+                    'items': f'Item {index + 1}: componente fracionado invalido ou sem rastreamento ativo.'
+                })
+            required_content = (quantity * row.content_quantity).quantize(
+                Decimal('0.000000001'), rounding=ROUND_HALF_UP
+            )
+            required = (required_content / fraction_config.package_content).quantize(
+                Decimal('0.000000001'), rounding=ROUND_HALF_UP
+            )
+            requirements[component.pk] = requirements.get(component.pk, Decimal('0')) + required
+            content_requirements[component.pk] = (
+                content_requirements.get(component.pk, Decimal('0.000000000'))
+                + required_content
+            )
+            component_unit_cost = cost_overrides.get(component.pk, component.cost)
+            cost_contribution = exact_multiply(
+                component_unit_cost,
+                exact_content_equivalent(
+                    row.content_quantity, fraction_config.package_content
+                ),
+            )
+            compound_cost_contributions.append(cost_contribution)
+            component_cost_snapshot.append({
+                'product': component.pk,
+                'product_name': component.name,
+                'internal_code': component.internal_code,
+                'unit': component.unit,
+                'consumption_mode': 'content',
+                'content_unit': fraction_config.content_unit,
+                'content_per_unit': format(row.content_quantity, 'f'),
+                'consumed_content': format(required_content, 'f'),
+                'equivalent_quantity': format(required, 'f'),
+                'unit_cost': f'{component_unit_cost:.12f}',
                 'unit_cost_contribution': (
                     f'{cost_contribution.quantize(CENT, rounding=ROUND_HALF_UP):.2f}'
                 ),
             })
-        snapshot['unit_cost'] = compound_unit_cost.quantize(CENT, rounding=ROUND_HALF_UP)
+        snapshot['unit_cost'] = exact_sum(compound_cost_contributions).quantize(
+            CENT, rounding=ROUND_HALF_UP
+        )
         ensure_money_fits(snapshot['unit_cost'], 'unit_cost')
         snapshot['component_cost_snapshot'] = component_cost_snapshot
-    return snapshots, requirements, subtotal
+    return snapshots, requirements, content_requirements, subtotal
 
 
-def _lock_required_stocks(branch, requirements):
+def _lock_required_stocks(branch, requirements, content_requirements=None):
+    content_requirements = content_requirements or {}
     if not requirements:
         return {}
     allow_negative = False
@@ -796,8 +1151,22 @@ def _lock_required_stocks(branch, requirements):
     for product_id in sorted(requirements):
         if product_id not in stocks:
             # Product rows are already locked, serializing this defensive materialization.
-            stocks[product_id] = Stock.objects.create(product_id=product_id, branch=branch)
-        if not allow_negative and stocks[product_id].current_quantity < requirements[product_id]:
+            product = Product.objects.get(pk=product_id)
+            config = FractionableProductConfig.objects.filter(
+                product=product, tracking_active=True
+            ).first()
+            stocks[product_id] = Stock.objects.create(
+                product=product,
+                branch=branch,
+                current_content=Decimal('0.000000000') if config else None,
+            )
+        insufficient = stocks[product_id].current_quantity < requirements[product_id]
+        if product_id in content_requirements:
+            insufficient = (
+                stocks[product_id].current_content is None
+                or stocks[product_id].current_content < content_requirements[product_id]
+            )
+        if not allow_negative and insufficient:
             raise ValidationError({
                 'stock': f'Saldo insuficiente para o produto {stocks[product_id].product.name} '
                          f'({product_id}).',
@@ -885,17 +1254,75 @@ def _prepare_payments(company, raw_payments, total, *, free_consumption):
     return prepared
 
 
+def _frozen_command_snapshots(order_items):
+    snapshots = []
+    subtotal = Decimal('0.00')
+    for item in order_items:
+        item_subtotal = (item.unit_price * item.quantity).quantize(CENT, rounding=ROUND_HALF_UP)
+        subtotal += item_subtotal
+        snapshots.append({
+            'product_object': item.product,
+            'product': item.product_id,
+            'quantity': item.quantity,
+            'product_name': item.product_name,
+            'internal_code': item.internal_code,
+            'unit': item.unit,
+            'unit_cost': item.unit_cost,
+            'base_unit_price': item.base_unit_price,
+            'modifier_unit_total': item.modifier_unit_total,
+            'modifier_snapshot': item.modifier_snapshot or [],
+            'unit_price': item.unit_price,
+            'subtotal': item_subtotal,
+            'manual_discount_requested': Decimal('0.00'),
+            'participates_in_service_fee': item.product.participates_in_service_fee,
+            'participates_in_commission': item.product.participates_in_commission,
+            'component_cost_snapshot': item.component_cost_snapshot or [],
+        })
+    return snapshots, subtotal
+
+
+def calculate_command_preview(*, branch, order_items, discount=Decimal('0.00'),
+                              seller_user=None, service_fee_waived=False):
+    """Calculate a command from its confirmed, immutable item snapshots."""
+    snapshots, subtotal = _frozen_command_snapshots(order_items)
+    financials = _calculate_sale_financials(
+        company=branch.company, branch=branch, operation_type=OperationType.SALE,
+        snapshots=snapshots, subtotal=subtotal, discount=discount,
+        charged_amount=None, beneficiary_user=None, seller_user=seller_user,
+        service_fee_waived=service_fee_waived,
+    )
+    return {
+        'operation_type': OperationType.SALE,
+        'channel': SalesChannel.COMMAND,
+        'items': _preview_items(snapshots),
+        'subtotal': subtotal,
+        **financials,
+        'service_fee_waived': bool(service_fee_waived),
+        'reference_total': subtotal,
+    }
+
+
 @transaction.atomic
 def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiary_user=None,
                   seller_user=None, discount_authorization=None, items=None, discount=None,
                   charged_amount=None, payments=None, service_fee_waived=False,
-                  service_fee_authorization=None, item_discount_authorization=None,
-                  idempotency_key=None):
-    operation_timestamp = timezone.now()
+                   service_fee_authorization=None, item_discount_authorization=None,
+                    idempotency_key=None, channel=SalesChannel.COUNTER,
+                     confirmed_order_items=None, internal_permission_code=None):
     permission = 'sales.create_consumption' if operation_type == OperationType.CONSUMPTION else 'sales.create'
     if operation_type not in OperationType.values:
         raise ValidationError({'operation_type': 'Tipo de operação inválido.'})
+    if internal_permission_code:
+        if not (
+            internal_permission_code == 'commands.finalize'
+            and operation_type == OperationType.SALE
+            and channel == SalesChannel.COMMAND
+            and confirmed_order_items is not None
+        ):
+            raise ValidationError({'operation': 'Bypass interno de venda inválido.'})
+        permission = internal_permission_code
     branch = _active_branch(branch, user, permission)
+    _require_sale_features(branch, operation_type, channel, charged_amount)
     if not idempotency_key:
         raise ValidationError({'idempotency_key': 'Informe a chave de idempotência.'})
     company = Company.objects.select_for_update().get(pk=branch.company_id)
@@ -913,6 +1340,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         service_fee_waived=service_fee_waived,
         service_fee_authorization=service_fee_authorization,
         item_discount_authorization=item_discount_authorization,
+        channel=channel,
     ))
     replay = Sale.objects.filter(
         company=company,
@@ -962,7 +1390,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             raise ValidationError({'beneficiary_user': 'Beneficiário sem acesso ativo à empresa.'})
         beneficiary_user = beneficiary_access.user
         seller_user = None
-        session = _lock_cash_session(cash_session, branch, required=charged > 0)
+        session = _lock_cash_session(cash_session, branch, required=True)
     else:
         if charged_amount not in (None, ''):
             raise ValidationError({'charged_amount': 'Venda normal não aceita valor cobrado.'})
@@ -973,39 +1401,41 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         )
         session = _lock_cash_session(cash_session, branch, required=True)
 
-    snapshots, requirements, subtotal = _prepare_products(company, items, branch=branch)
-    stocks = _lock_required_stocks(branch, requirements)
-    promotions = (
-        _eligible_promotions(company, operation_timestamp, branch=branch, lock=True)
-        if operation_type == OperationType.SALE else []
-    )
-    promotion_discount_total, item_discount_total = _apply_promotions(
-        operation_type, snapshots, promotions
+    if confirmed_order_items is None:
+        snapshots, requirements, content_requirements, subtotal = _prepare_products(
+            company, items, branch=branch, channel=channel
+        )
+        stocks = _lock_required_stocks(branch, requirements, content_requirements)
+    else:
+        snapshots, subtotal = _frozen_command_snapshots(confirmed_order_items)
+        requirements = {}
+        content_requirements = {}
+        stocks = {}
+    financials = _calculate_sale_financials(
+        company=company, branch=branch, operation_type=operation_type,
+        snapshots=snapshots, subtotal=subtotal, discount=discount,
+        charged_amount=charged_amount, beneficiary_user=beneficiary_user,
+        seller_user=seller_user, service_fee_waived=service_fee_waived, lock=True,
     )
 
     if operation_type == OperationType.CONSUMPTION:
-        if charged > subtotal:
-            raise ValidationError({'charged_amount': 'O valor cobrado deve estar entre zero e o subtotal.'})
-        discount_value = Decimal('0.00')
-        promotion_discount_total = Decimal('0.00')
-        item_discount_total = Decimal('0.00')
+        charged = financials['charged_amount']
+        promotion_discount_total = financials['promotion_discount_total']
+        item_discount_total = financials['item_discount_total']
+        discount_value = financials['discount']
         discount_approved_by = None
         item_discount_approved_by = None
         service_fee_waived = False
         service_fee_waived_by = None
-        service_fee_rate = Decimal('0.00')
-        service_fee_amount = Decimal('0.00')
-        commission_rate = Decimal('0.00')
-        commission_amount = Decimal('0.00')
-        total = charged
+        service_fee_rate = financials['service_fee_rate']
+        service_fee_amount = financials['service_fee_amount']
+        commission_rate = financials['commission_rate']
+        commission_amount = financials['commission_amount']
+        total = financials['total']
     else:
-        discount_value = strict_decimal(
-            discount if discount not in (None, '') else '0', field='discount',
-            decimal_places=2, max_digits=14,
-        )
-        remaining = subtotal - promotion_discount_total - item_discount_total
-        if discount_value < 0 or discount_value > remaining:
-            raise ValidationError({'discount': 'O desconto deve estar entre zero e o saldo após promoções.'})
+        promotion_discount_total = financials['promotion_discount_total']
+        item_discount_total = financials['item_discount_total']
+        discount_value = financials['discount']
         discount_approved_by = _discount_approver(
             branch, user, discount_value, discount_authorization,
             permission_code='sales.apply_discount',
@@ -1019,18 +1449,11 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         service_fee_waived_by = _service_fee_waiver(
             branch, user, bool(service_fee_waived), service_fee_authorization
         )
-        net_subtotal = remaining - discount_value
-        (
-            service_fee_rate,
-            service_fee_amount,
-            commission_rate,
-            commission_amount,
-        ) = _financial_snapshots(
-            branch, net_subtotal, seller_user=seller_user,
-            service_fee_waived=bool(service_fee_waived), lock=True,
-        )
-        total = net_subtotal + service_fee_amount
-        ensure_money_fits(total, 'total')
+        service_fee_rate = financials['service_fee_rate']
+        service_fee_amount = financials['service_fee_amount']
+        commission_rate = financials['commission_rate']
+        commission_amount = financials['commission_amount']
+        total = financials['total']
 
     prepared_payments = _prepare_payments(
         company, payments or [], total,
@@ -1039,6 +1462,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
     sale = Sale.objects.create(
         company=company, branch=branch, cash_session=session,
         sale_number=next_sale_number(company), operation_type=operation_type,
+        channel=channel,
         idempotency_key=idempotency_key, idempotency_fingerprint=fingerprint,
         status=SaleStatus.FINALIZED, created_by=user, seller_user=seller_user,
         discount_approved_by=discount_approved_by, beneficiary_user=beneficiary_user,
@@ -1056,6 +1480,9 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             product=snapshot['product_object'],
             quantity=snapshot['quantity'],
             unit_cost=snapshot.get('unit_cost'),
+            base_unit_price=snapshot.get('base_unit_price', snapshot.get('unit_price')),
+            modifier_unit_total=snapshot.get('modifier_unit_total', Decimal('0.00')),
+            modifier_snapshot=snapshot.get('modifier_snapshot', []),
             unit_price=snapshot.get('unit_price'),
             promotion=promotion,
             promotion_name=snapshot['promotion_name'],
@@ -1067,6 +1494,8 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
                 item_discount_approved_by if snapshot['manual_discount'] else None
             ),
             component_cost_snapshot=snapshot['component_cost_snapshot'],
+            participates_in_service_fee=snapshot['participates_in_service_fee'],
+            participates_in_commission=snapshot['participates_in_commission'],
         )
     for method, amount, received in prepared_payments:
         Payment.objects.create(
@@ -1076,10 +1505,23 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         MovementType.CONSUMPTION
         if operation_type == OperationType.CONSUMPTION else MovementType.SALE
     )
+    movement_costs = {}
+    for snapshot in snapshots:
+        product = snapshot['product_object']
+        if product.inventory_behavior == InventoryBehavior.DIRECT:
+            movement_costs[product.pk] = snapshot['unit_cost']
+        else:
+            for component in snapshot['component_cost_snapshot']:
+                movement_costs[int(component['product'])] = Decimal(component['unit_cost'])
     for product_id in sorted(requirements):
         apply_locked_stock(
             stock=stocks[product_id], quantity=-requirements[product_id], user=user,
             movement_type=movement_type, sale=sale,
+            unit_cost_snapshot=movement_costs[product_id],
+            content_quantity=(
+                -content_requirements[product_id]
+                if product_id in content_requirements else None
+            ),
         )
     item_snapshots = [
         {
@@ -1087,6 +1529,9 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             'product_name': snapshot['product_name'],
             'quantity': format(snapshot['quantity'], 'f'),
             'unit_cost': f'{snapshot["unit_cost"]:.2f}',
+            'base_unit_price': f'{snapshot.get("base_unit_price", snapshot["unit_price"]):.2f}',
+            'modifier_unit_total': f'{snapshot.get("modifier_unit_total", Decimal("0.00")):.2f}',
+            'modifier_snapshot': snapshot.get('modifier_snapshot', []),
             'unit_price': f'{snapshot["unit_price"]:.2f}',
             'promotion_discount': f'{snapshot["promotion_benefit"]:.2f}',
             'manual_item_discount': f'{snapshot["manual_discount"]:.2f}',
@@ -1106,7 +1551,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         branch=branch,
         after=model_snapshot(
             sale,
-            ('sale_number', 'operation_type', 'idempotency_key', 'subtotal',
+            ('sale_number', 'operation_type', 'channel', 'idempotency_key', 'subtotal',
              'promotion_discount_total', 'item_discount_total', 'discount',
              'service_fee_rate', 'service_fee_amount', 'service_fee_waived', 'commission_rate',
              'commission_amount', 'total', 'seller_user_id', 'discount_approved_by_id',
@@ -1167,11 +1612,25 @@ def cancel_sale(*, sale, branch, user, reason=''):
         MovementType.CONSUMPTION
         if sale.operation_type == OperationType.CONSUMPTION else MovementType.SALE
     )
-    originals = list(
+    direct_movements = list(
         StockMovement.objects.select_for_update().filter(
-            sale=sale, movement_type=original_type, original_movement__isnull=True,
+            sale=sale,
+            movement_type=original_type,
+            original_movement__isnull=True,
         ).order_by('stock_id', 'pk')
     )
+    command_movement_ids = list(
+        StockMovement.objects.filter(
+            order_item__order__command__sale=sale,
+            movement_type=original_type,
+            original_movement__isnull=True,
+        ).values_list('pk', flat=True).order_by('stock_id', 'pk')
+    )
+    command_movements = list(
+        StockMovement.objects.select_for_update().filter(pk__in=command_movement_ids)
+        .order_by('stock_id', 'pk')
+    ) if command_movement_ids else []
+    originals = direct_movements + command_movements
     stock_ids = sorted({movement.stock_id for movement in originals})
     stocks = {
         stock.pk: stock
@@ -1188,6 +1647,16 @@ def cancel_sale(*, sale, branch, user, reason=''):
             stock=stocks[original.stock_id], quantity=-original.quantity, user=user,
             movement_type=cancellation_type, sale=sale,
             original_movement=original, reason=reason,
+            domain_origin=(
+                MovementDomainOrigin.ORDER_CANCELLATION
+                if original.order_item_id else MovementDomainOrigin.LEGACY
+            ),
+            order_item=original.order_item,
+            unit_cost_snapshot=(
+                original.unit_cost_snapshot
+                if original.unit_cost_snapshot is not None
+                else original.stock.product.cost
+            ),
         )
     sale.status = SaleStatus.CANCELLED
     sale.cancelled_at = timezone.now()
@@ -1206,3 +1675,9 @@ def cancel_sale(*, sale, branch, user, reason=''):
         after=model_snapshot(sale, ('status', 'cancelled_at', 'cancelled_by_id', 'cancellation_reason')),
     )
     return sale
+
+
+resolve_modifiers = _resolve_modifiers
+branch_price_map = _branch_price_map
+branch_cost_map = _branch_cost_map
+prepare_payments = _prepare_payments

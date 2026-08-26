@@ -47,10 +47,12 @@ function SaleStatusBadge({ status }: { status: Sale["status"] }) {
 
 export function SalesList({ operation }: { operation: SaleOperation }) {
   const consumption = operation === "consumption";
-  const { currentCompany, currentBranch, hasPermission } = useAuth();
+  const { currentCompany, currentBranch, hasFeature, hasPermission } = useAuth();
   const canLoadBeneficiaries =
-    hasPermission(permissions.viewConsumption) ||
-    hasPermission(permissions.createConsumption);
+    hasFeature("consumption") && (
+      hasPermission(permissions.viewConsumption) ||
+      hasPermission(permissions.createConsumption)
+    );
   const contextRef = useRef("");
   const requestRef = useRef(0);
   contextRef.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}:${operation}`;

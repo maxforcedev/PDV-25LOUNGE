@@ -129,9 +129,10 @@ function CashFinancialBridge({ summary }: { summary: CashSummary }) {
 
 function SessionDetail() {
   const { id } = useParams<{ id: string }>();
-  const { user, currentCompany, currentBranch, hasPermission } = useAuth();
-  const canEntry = hasPermission(permissions.manualCashEntry);
-  const canWithdraw = hasPermission(permissions.withdrawCash);
+  const { user, currentCompany, currentBranch, hasFeature, hasPermission } = useAuth();
+  const cashEnabled = hasFeature("cash_register");
+  const canEntry = cashEnabled && hasPermission(permissions.manualCashEntry);
+  const canWithdraw = cashEnabled && hasPermission(permissions.withdrawCash);
   const canClose = hasPermission(permissions.closeCashRegister);
   const canAdministerOthers = hasPermission(permissions.administerOtherCash);
   const canViewSales = hasPermission(permissions.viewSale) || hasPermission(permissions.cancelSale);

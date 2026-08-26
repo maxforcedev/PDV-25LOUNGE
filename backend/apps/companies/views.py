@@ -12,12 +12,13 @@ from rest_framework.response import Response
 from apps.accounts.models import User
 from apps.base.audit import audit_log, model_snapshot
 
+from .features import branch_feature_states
 from .models import (
     AccessProfile, Branch, BranchSettings, Company, FunctionalPermission, Status,
     UserBranchAccess, UserCommissionOverride, UserCompanyAccess,
     UserPermissionBlock,
 )
-from .permissions import CanCreateCompany, FunctionalCompanyPermission
+from .permissions import CanCreateCompany, FunctionalCompanyPermission, IsPlatformAdmin
 from .selectors import (
     accessible_branches,
     accessible_companies,
@@ -31,10 +32,16 @@ from .serializers import (
     BranchSettingsSerializer,
     CompanySerializer,
     FunctionalPermissionSerializer,
+    TransferCompanyOwnerSerializer,
     UserCommissionOverrideSerializer,
     UserPermissionBlockSerializer,
 )
-from .services import activate_branch, activate_company, deactivate_company
+from .services import (
+    activate_branch,
+    activate_company,
+    deactivate_company,
+    transfer_company_owner,
+)
 
 
 class CompanyViewSet(viewsets.ModelViewSet):
@@ -51,21 +58,53 @@ class CompanyViewSet(viewsets.ModelViewSet):
     http_method_names = ('get', 'post', 'patch', 'put', 'head', 'options')
 
     def get_queryset(self):
-        permission_code = self.permission_codes.get(self.action, 'companies.view')
-        return accessible_companies(self.request.user, permission_code).prefetch_related(
+        support_session = getattr(self.request, 'support_session', None)
+        if support_session and not support_session.impersonated_user_id:
+            return Company.objects.filter(pk=support_session.company_id).prefetch_related(
+                Prefetch(
+                    'branches',
+                    queryset=Branch.objects.filter(company_id=support_session.company_id).select_related('company', 'settings'),
+                    to_attr='visible_branches',
+                ),
+                Prefetch(
+                    'user_accesses',
+                    queryset=UserCompanyAccess.objects.filter(is_owner=True).select_related('user'),
+                    to_attr='owner_accesses',
+                ),
+            )
+        if self.action == 'transfer_owner':
+            companies = Company.objects.filter(
+                user_accesses__user=self.request.user,
+                user_accesses__is_owner=True,
+                user_accesses__is_active=True,
+            )
+        else:
+            permission_code = self.permission_codes.get(self.action, 'companies.view')
+            companies = accessible_companies(self.request.user, permission_code)
+        return companies.prefetch_related(
             Prefetch(
                 'branches',
                 queryset=accessible_branches(
                     self.request.user, 'branches.view'
                 ).select_related('company', 'settings'),
                 to_attr='visible_branches',
-            )
+            ),
+            Prefetch(
+                'user_accesses',
+                queryset=UserCompanyAccess.objects.filter(is_owner=True).select_related('user'),
+                to_attr='owner_accesses',
+            ),
         )
 
     def get_permissions(self):
-        if self.action == 'create':
-            return [CanCreateCompany()]
-        return super().get_permissions()
+        support_session = getattr(self.request, 'support_session', None)
+        if self.action == 'transfer_owner' or (
+            support_session
+            and not support_session.impersonated_user_id
+            and self.action in {'list', 'retrieve', 'update', 'partial_update'}
+        ):
+            return [FunctionalCompanyPermission()]
+        return [IsPlatformAdmin()]
 
     def perform_create(self, serializer):
         company = serializer.save()
@@ -95,7 +134,9 @@ class CompanyViewSet(viewsets.ModelViewSet):
                     obj=settings, company=company, branch=matrix,
                     after=model_snapshot(settings, (
                         'allow_negative_stock', 'service_fee_rate',
-                        'commission_rate', 'fixed_daily_cost',
+                        'commission_rate', 'fixed_daily_cost', 'uses_tables',
+                        'uses_commands', 'uses_counter', 'uses_consumption',
+                        'uses_cash_register', 'charges_service_fee',
                     )), metadata=operation_metadata,
                 )
         for profile in company.access_profiles.prefetch_related('permissions'):
@@ -124,7 +165,9 @@ class CompanyViewSet(viewsets.ModelViewSet):
             audit_log(
                 actor=self.request.user, action='user_company_access.create',
                 obj=access, company=company,
-                after=model_snapshot(access, ('user_id', 'access_profile_id', 'is_active')),
+                after=model_snapshot(
+                    access, ('user_id', 'access_profile_id', 'is_active', 'is_owner')
+                ),
                 metadata=operation_metadata,
             )
         for access in UserBranchAccess.objects.filter(branch__company=company).select_related('branch'):
@@ -177,6 +220,25 @@ class CompanyViewSet(viewsets.ModelViewSet):
         company = self.get_queryset().get(pk=company.pk)
         return Response(self.get_serializer(company).data)
 
+    @action(detail=True, methods=['post'], url_path='transfer-owner')
+    def transfer_owner(self, request, pk=None):
+        company = self.get_object()
+        serializer = TransferCompanyOwnerSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        transfer_company_owner(
+            company=company,
+            actor=request.user,
+            **serializer.validated_data,
+        )
+        company = Company.objects.prefetch_related(
+            Prefetch(
+                'user_accesses',
+                queryset=UserCompanyAccess.objects.filter(is_owner=True).select_related('user'),
+                to_attr='owner_accesses',
+            )
+        ).get(pk=company.pk)
+        return Response(self.get_serializer(company).data)
+
 
 class BranchViewSet(viewsets.ModelViewSet):
     serializer_class = BranchSerializer
@@ -194,6 +256,11 @@ class BranchViewSet(viewsets.ModelViewSet):
     http_method_names = ('get', 'post', 'patch', 'put', 'head', 'options')
 
     def get_queryset(self):
+        support_session = getattr(self.request, 'support_session', None)
+        if support_session and not support_session.impersonated_user_id:
+            return Branch.objects.filter(company_id=support_session.company_id).select_related(
+                'company', 'settings'
+            )
         permission_code = self.permission_codes.get(self.action, 'branches.view')
         return accessible_branches(
             self.request.user, permission_code
@@ -218,7 +285,9 @@ class BranchViewSet(viewsets.ModelViewSet):
                 obj=settings, company=branch.company, branch=branch,
                 after=model_snapshot(settings, (
                     'allow_negative_stock', 'service_fee_rate',
-                    'commission_rate', 'fixed_daily_cost',
+                    'commission_rate', 'fixed_daily_cost', 'uses_tables',
+                    'uses_commands', 'uses_counter', 'uses_consumption',
+                    'uses_cash_register', 'charges_service_fee',
                 )), metadata=operation_metadata,
             )
         for access in UserBranchAccess.objects.filter(branch=branch):
@@ -267,12 +336,18 @@ class BranchViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get', 'put', 'patch'], url_path='settings')
     def branch_settings(self, request, pk=None):
         branch = self.get_object()
-        instance, _ = BranchSettings.objects.get_or_create(branch=branch)
         if request.method == 'GET':
+            instance = BranchSettings.objects.filter(branch=branch).first() or BranchSettings(branch=branch)
             return Response(BranchSettingsSerializer(instance, context={'request': request}).data)
+        instance, _ = BranchSettings.objects.get_or_create(branch=branch)
         serializer = BranchSettingsSerializer(instance, data=request.data, partial=True, context={'request': request})
         serializer.is_valid(raise_exception=True)
-        before = model_snapshot(instance, ('allow_negative_stock', 'service_fee_rate', 'commission_rate', 'fixed_daily_cost'))
+        fields = (
+            'allow_negative_stock', 'service_fee_rate', 'commission_rate',
+            'fixed_daily_cost', 'uses_tables', 'uses_commands', 'uses_counter',
+            'uses_consumption', 'uses_cash_register', 'charges_service_fee',
+        )
+        before = model_snapshot(instance, fields)
         serializer.save()
         audit_log(
             actor=request.user,
@@ -281,9 +356,14 @@ class BranchViewSet(viewsets.ModelViewSet):
             company=branch.company,
             branch=branch,
             before=before,
-            after=model_snapshot(instance, ('allow_negative_stock', 'service_fee_rate', 'commission_rate', 'fixed_daily_cost')),
+            after=model_snapshot(instance, fields),
         )
         return Response(BranchSettingsSerializer(instance, context={'request': request}).data)
+
+    @action(detail=True, methods=['get'], url_path='features')
+    def branch_features(self, request, pk=None):
+        branch = self.get_object()
+        return Response(branch_feature_states(branch))
 
 
 class CanViewPermissionCatalog(BasePermission):
@@ -428,6 +508,28 @@ class AccessProfileViewSet(viewsets.ModelViewSet):
         profile.save(update_fields=['status', 'updated_at'])
         audit_log(actor=request.user, action='access_profile.deactivate', obj=profile, company=profile.company, before={'name': profile.name, 'status': Status.ACTIVE}, after=model_snapshot(profile, ('name', 'status')))
         return Response(self.get_serializer(profile).data)
+
+    @action(detail=True, methods=['get'])
+    def users(self, request, pk=None):
+        profile = self.get_object()
+        users = User.objects.filter(
+            branch_accesses__access_profile=profile,
+            branch_accesses__is_active=True,
+            is_active=True,
+        ).distinct().order_by('first_name', 'last_name', 'email')
+        data = [
+            {
+                'id': u.id,
+                'email': u.email,
+                'first_name': u.first_name,
+                'last_name': u.last_name,
+                'user_type': u.user_type,
+                'is_active': u.is_active,
+                'can_login': u.can_login,
+            }
+            for u in users
+        ]
+        return Response(data)
 
 
 class UserPermissionBlockPermission(BasePermission):
@@ -593,7 +695,10 @@ class UserPermissionBlockViewSet(viewsets.ModelViewSet):
             is_superuser=False,
             company_accesses__company=company,
             company_accesses__is_active=True,
-            company_accesses__access_profile__status=Status.ACTIVE,
+            company_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
+            branch_accesses__branch__company=company,
+            branch_accesses__is_active=True,
+            branch_accesses__access_profile__status=Status.ACTIVE,
         ).distinct().order_by('first_name', 'last_name', 'email', 'id')
         branches = Branch.objects.filter(
             company=company, status=Status.ACTIVE
@@ -763,7 +868,7 @@ class UserCommissionOverrideViewSet(viewsets.ModelViewSet):
     http_method_names = ('get', 'post', 'patch', 'put', 'delete', 'head', 'options')
 
     def get_queryset(self):
-        queryset = UserCommissionOverride.objects.select_related('branch', 'branch__company', 'user')
+        queryset = UserCommissionOverride.objects.filter(archived_at__isnull=True).select_related('branch', 'branch__company', 'user')
         user = self.request.user
         if not user.is_superuser:
             branch_scope = Branch.objects.none()

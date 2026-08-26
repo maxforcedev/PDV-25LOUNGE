@@ -119,4 +119,4 @@ function Registers() {
   </>;
 }
 
-export default function RegistersPage() { return <AdminGuard requiredPermissions={[permissions.viewCashRegister]}><Registers /></AdminGuard>; }
+export default function RegistersPage() { return <AdminGuard requiredPermissions={[permissions.viewCashRegister]} requiredFeatures={["cash_register"]}><Registers /></AdminGuard>; }

@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import serializers
 
 from apps.accounts.models import User
@@ -7,7 +8,8 @@ from apps.base.constants import MAX_BIGINT
 from apps.cash.models import CashRegister, CashSession, CashSessionStatus, WithdrawalCategory
 from apps.cash.services import redact_operational_summary, session_operational_summary
 from apps.inventory.models import MovementType
-from apps.products.models import Category, Product
+from apps.inventory.content import content_breakdown
+from apps.products.models import Category, Product, SalesChannel
 from apps.sales.models import OperationType, Payment, PaymentMethod, Sale, SaleItem, SaleStatus
 from apps.sales.serializers import readable_user_name
 
@@ -63,6 +65,7 @@ class SalesReportQuerySerializer(BaseReportQuerySerializer):
     status = serializers.ChoiceField(choices=SaleStatus.values, required=False)
     search = serializers.CharField(max_length=200, required=False, allow_blank=False)
     number = serializers.CharField(max_length=20, required=False, allow_blank=False)
+    channel = serializers.ChoiceField(choices=SalesChannel.values, required=False)
 
     def validate(self, attrs):
         attrs = self.validate_scoped_ids(
@@ -92,6 +95,7 @@ class ConsumptionsReportQuerySerializer(BaseReportQuerySerializer):
     product = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
     category = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
     status = serializers.ChoiceField(choices=SaleStatus.values, required=False)
+    channel = serializers.ChoiceField(choices=SalesChannel.values, required=False)
 
     def validate(self, attrs):
         return self.validate_scoped_ids(
@@ -149,6 +153,7 @@ class ReportSaleItemSerializer(serializers.ModelSerializer):
             'subtotal', 'promotion', 'promotion_name', 'promotion_discount_type',
             'promotion_discount_value', 'promotion_benefit', 'manual_discount',
             'net_subtotal',
+            'participates_in_service_fee', 'participates_in_commission',
         )
 
 
@@ -189,7 +194,7 @@ class ReportSaleSerializer(serializers.ModelSerializer):
         model = Sale
         fields = (
             'id', 'event_type', 'event_at', 'event_sign', 'sale_number',
-            'operation_type', 'status', 'operator', 'seller',
+            'operation_type', 'channel', 'status', 'operator', 'seller',
             'discount_approved_by', 'beneficiary', 'subtotal',
             'promotion_discount_total', 'item_discount_total', 'discount', 'service_fee_rate',
             'service_fee_amount', 'commission_rate', 'commission_amount', 'total', 'created_at',
@@ -471,9 +476,25 @@ class InventoryMovementReportSerializer(serializers.Serializer):
     nature = serializers.CharField()
     operation_reference = serializers.UUIDField()
     product = serializers.SerializerMethodField()
-    previous_quantity = serializers.DecimalField(max_digits=20, decimal_places=3)
-    quantity = serializers.DecimalField(max_digits=20, decimal_places=3)
-    final_quantity = serializers.DecimalField(max_digits=20, decimal_places=3)
+    previous_quantity = serializers.DecimalField(max_digits=24, decimal_places=9)
+    quantity = serializers.DecimalField(max_digits=24, decimal_places=9)
+    final_quantity = serializers.DecimalField(max_digits=24, decimal_places=9)
+    previous_content = serializers.DecimalField(
+        max_digits=24, decimal_places=9, allow_null=True
+    )
+    content_quantity = serializers.DecimalField(
+        max_digits=24, decimal_places=9, allow_null=True
+    )
+    final_content = serializers.DecimalField(
+        max_digits=24, decimal_places=9, allow_null=True
+    )
+    equivalent_quantity = serializers.SerializerMethodField()
+    legacy_equivalent_quantity = serializers.SerializerMethodField()
+    exact_content_equivalent_quantity = serializers.SerializerMethodField()
+    package_content = serializers.SerializerMethodField()
+    content_unit = serializers.SerializerMethodField()
+    complete_packages = serializers.SerializerMethodField()
+    residual_content = serializers.SerializerMethodField()
     reason = serializers.CharField()
     user = serializers.SerializerMethodField()
     sale = serializers.SerializerMethodField()
@@ -487,6 +508,46 @@ class InventoryMovementReportSerializer(serializers.Serializer):
             'category': {'id': product.category_id, 'name': product.category.name},
         }
 
+    @staticmethod
+    def _content_details(movement):
+        if movement.content_quantity is None:
+            return None
+        try:
+            config = movement.stock.product.fraction_config
+        except ObjectDoesNotExist:
+            return None
+        complete, residual = content_breakdown(
+            movement.content_quantity, config.package_content
+        )
+        return config, complete, residual
+
+    def get_equivalent_quantity(self, movement):
+        return format(movement.equivalent_quantity(), 'f')
+
+    def get_legacy_equivalent_quantity(self, movement):
+        quantity = movement.legacy_equivalent_quantity()
+        return format(quantity, 'f') if quantity is not None else None
+
+    def get_exact_content_equivalent_quantity(self, movement):
+        quantity = movement.exact_content_equivalent_quantity()
+        return format(quantity, 'f') if quantity is not None else None
+
+    def get_package_content(self, movement):
+        details = self._content_details(movement)
+        return format(details[0].package_content, 'f') if details else None
+
+    def get_content_unit(self, movement):
+        details = self._content_details(movement)
+        return details[0].content_unit if details else None
+
+    def get_complete_packages(self, movement):
+        details = self._content_details(movement)
+        return format(details[1], 'f') if details else None
+
+    def get_residual_content(self, movement):
+        details = self._content_details(movement)
+        return format(details[2], 'f') if details else None
+
     def get_user(self, movement):
         return {'id': movement.user_id, 'name': readable_user_name(movement.user)}
 
@@ -498,9 +559,23 @@ class InventoryMovementReportSerializer(serializers.Serializer):
 
 class StockConsumptionSummarySerializer(serializers.Serializer):
     product = serializers.SerializerMethodField()
-    gross_quantity = serializers.DecimalField(max_digits=20, decimal_places=3)
-    returned_quantity = serializers.DecimalField(max_digits=20, decimal_places=3)
-    net_quantity = serializers.DecimalField(max_digits=20, decimal_places=3)
+    gross_quantity = serializers.CharField()
+    returned_quantity = serializers.CharField()
+    net_quantity = serializers.CharField()
+    legacy_gross_equivalent_quantity = serializers.CharField()
+    legacy_returned_equivalent_quantity = serializers.CharField()
+    legacy_net_equivalent_quantity = serializers.CharField()
+    exact_gross_equivalent_quantity = serializers.CharField()
+    exact_returned_equivalent_quantity = serializers.CharField()
+    exact_net_equivalent_quantity = serializers.CharField()
+    combined_exact_equivalent_total = serializers.CharField(source='net_quantity')
+    gross_content = serializers.SerializerMethodField()
+    returned_content = serializers.SerializerMethodField()
+    net_content = serializers.SerializerMethodField()
+    package_content = serializers.SerializerMethodField()
+    content_unit = serializers.CharField(allow_null=True)
+    complete_packages = serializers.SerializerMethodField()
+    residual_content = serializers.SerializerMethodField()
     estimated_cost = serializers.DecimalField(max_digits=20, decimal_places=2, required=False)
     movement_count = serializers.IntegerField()
 
@@ -513,6 +588,36 @@ class StockConsumptionSummarySerializer(serializers.Serializer):
             'unit': product.unit,
             'category': {'id': product.category_id, 'name': product.category.name},
         }
+
+    @staticmethod
+    def get_gross_content(row):
+        return format(row['gross_content'], 'f') if row['package_content'] else None
+
+    @staticmethod
+    def get_returned_content(row):
+        return format(row['returned_content'], 'f') if row['package_content'] else None
+
+    @staticmethod
+    def get_net_content(row):
+        return format(row['net_content'], 'f') if row['package_content'] else None
+
+    @staticmethod
+    def get_package_content(row):
+        return format(row['package_content'], 'f') if row['package_content'] else None
+
+    @staticmethod
+    def _net_breakdown(row):
+        if not row['package_content']:
+            return None
+        return content_breakdown(row['net_content'], row['package_content'])
+
+    def get_complete_packages(self, row):
+        breakdown = self._net_breakdown(row)
+        return format(breakdown[0], 'f') if breakdown else None
+
+    def get_residual_content(self, row):
+        breakdown = self._net_breakdown(row)
+        return format(breakdown[1], 'f') if breakdown else None
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

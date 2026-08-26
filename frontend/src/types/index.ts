@@ -3,8 +3,29 @@ export interface UserCompany {
   id: number;
   trade_name: string;
   status: Status;
-  access_profile: { id: number | null; name: string | null } | null;
+  is_owner: boolean;
+  saas_status?: "ACTIVE" | "SUSPENDED_BY_PLAN_LIMIT" | string;
+  effective_status: SaaSEffectiveStatus;
+  can_operate: boolean;
+  access_profile?: { id: number | null; name: string | null } | null;
   permissions: string[];
+}
+
+export type BranchFeature =
+  | "tables"
+  | "commands"
+  | "counter"
+  | "consumption"
+  | "cash_register";
+
+export interface BranchFeatureState {
+  enabled: boolean;
+  plan_allowed: boolean;
+}
+
+export interface FeaturePermissionAlternative {
+  permission: string;
+  features: readonly BranchFeature[];
 }
 
 export interface UserBranch {
@@ -14,6 +35,7 @@ export interface UserBranch {
   status: Status;
   access_profile: { id: number | null; name: string | null } | null;
   permissions: string[];
+  features: Record<string, BranchFeatureState>;
 }
 
 export interface User {
@@ -37,8 +59,163 @@ export interface User {
     permission_label: string;
     reason: string;
   }>;
+  support_session?: SupportSessionContext | null;
   created_at: string;
   updated_at: string;
+}
+
+export type SaaSEffectiveStatus =
+  | "PENDING_APPROVAL"
+  | "TRIALING"
+  | "ACTIVE"
+  | "PAST_DUE"
+  | "RESTRICTED"
+  | "SUSPENDED_FINANCIAL"
+  | "SUSPENDED_ADMIN"
+  | "TRIAL_EXPIRED"
+  | "CANCELLED"
+  | "ARCHIVED"
+  | "REJECTED"
+  | "UNMAPPED"
+  | "INVALID_ENTITLEMENTS"
+  | "INVALID_SUBSCRIPTION"
+  | string;
+
+export interface SupportSessionContext {
+  id: number;
+  actor?: number;
+  actor_email?: string;
+  company: number;
+  company_name?: string;
+  impersonated_user?: number | null;
+  impersonated_user_name?: string | null;
+  mode: "READ_ONLY" | "READ_WRITE";
+  reason: string;
+  expires_at: string;
+  ended_at?: string | null;
+  created_at?: string;
+}
+
+export interface PublicBranding {
+  platform_name: string;
+  logo_url: string;
+  compact_logo_url: string;
+  favicon_url: string;
+  primary_color: string;
+  support_email: string;
+  support_phone: string;
+  institutional_links: Record<string, string>;
+}
+
+export interface PublicPlan {
+  id: number;
+  code: string;
+  name: string;
+  description: string;
+  version: number;
+  price: string;
+  currency: string;
+  billing_period_months: number;
+  trial_days: number;
+  limits: {
+    users: { unlimited: boolean; value: number | null };
+    branches: { unlimited: boolean; value: number | null };
+  };
+}
+
+export interface ProvisioningResult {
+  id: number;
+  source: "PUBLIC_SIGNUP";
+  company: number;
+  subscription: number;
+  owner_user_id: number;
+  approval_status: "PENDING" | "APPROVED" | "REJECTED";
+  created_at: string;
+}
+
+export type SubscriptionStatus =
+  | "TRIALING"
+  | "ACTIVE"
+  | "PAST_DUE"
+  | "RESTRICTED"
+  | "SUSPENDED_FINANCIAL"
+  | "TRIAL_EXPIRED"
+  | "CANCELLED"
+  | "SUPERSEDED";
+
+export interface Subscription {
+  id: number;
+  company: number;
+  plan_version: number;
+  plan_name: string;
+  plan_version_number: number;
+  billing_mode: "PAID" | "FREE" | "INTERNAL";
+  status: SubscriptionStatus;
+  is_current: boolean;
+  current_period_start: string;
+  current_period_end: string;
+  trial_started_at: string | null;
+  trial_ends_at: string | null;
+  cancel_at_period_end: boolean;
+  cancellation_reason: string;
+  cancelled_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlanEntitlement {
+  id: number;
+  plan_version: number;
+  capability: number;
+  capability_code: string;
+  enabled: boolean;
+  unlimited: boolean;
+  limit_value: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SubscriptionUsage {
+  capability_code: string;
+  period_start: string;
+  period_end: string;
+  quantity: number;
+}
+
+export interface OwnerSubscriptionContext {
+  subscription: Subscription;
+  effective_status: SaaSEffectiveStatus;
+  entitlements: PlanEntitlement[];
+  usage: SubscriptionUsage[];
+}
+
+export interface BillingRecord {
+  id: number;
+  subscription: number;
+  amount: string;
+  paid_at: string;
+  payment_method: string;
+  note: string;
+  competency_start: string;
+  competency_end: string;
+  actor: number;
+  actor_email: string;
+  proof_reference: string;
+  idempotency_key: string;
+  created_at: string;
+}
+
+export interface SubscriptionChangeRequest {
+  id: number;
+  subscription: number;
+  request_type: "PLAN_CHANGE" | "CANCELLATION";
+  requested_plan_version: number | null;
+  reason: string;
+  status: "PENDING" | "APPROVED" | "REJECTED";
+  requested_by: number;
+  resolved_by: number | null;
+  resolved_at: string | null;
+  created_at: string;
 }
 
 export interface Company {
@@ -91,11 +268,16 @@ export interface BranchSettings {
   service_fee_rate: string;
   commission_rate?: string;
   fixed_daily_cost: string;
+  uses_tables: boolean;
+  uses_commands: boolean;
+  uses_counter: boolean;
+  uses_consumption: boolean;
+  uses_cash_register: boolean;
+  charges_service_fee: boolean;
+  feature_flags?: Record<string, boolean>;
   negative_stock_count: number;
   negative_stock_state:
-    | "clear"
-    | "enabled_with_negatives"
-    | "legacy_inconsistent";
+    "clear" | "enabled_with_negatives" | "legacy_inconsistent";
   created_at: string;
   updated_at: string;
 }
@@ -156,6 +338,7 @@ export interface AccessProfile {
   receives_commission?: boolean;
   commission_rate?: string | null;
   permission_codes: string[];
+  user_count?: number;
   created_at: string;
   updated_at: string;
 }
@@ -174,6 +357,11 @@ export interface Category {
   name: string;
   description: string;
   sort_order: number;
+  available_counter: boolean;
+  available_table: boolean;
+  available_command: boolean;
+  participates_in_service_fee: boolean;
+  participates_in_commission: boolean;
   product_count: number;
   related_products: Array<{
     id: number;
@@ -198,6 +386,144 @@ export interface ProductComponent {
   quantity_display: string;
 }
 
+export type ContentUnit = "ml" | "g";
+export type SalesChannel = "counter" | "table" | "command";
+
+export interface ProductFractionComponent {
+  component_product: number;
+  component_name: string;
+  component_internal_code: string;
+  content_quantity: string;
+  content_unit: ContentUnit;
+}
+
+export interface FractionableProductConfig {
+  id: number;
+  product: number;
+  package_content: string;
+  content_unit: ContentUnit;
+  tracking_active: boolean;
+  activated_at: string | null;
+  activated_by: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProductBranchConfiguration {
+  branch: number;
+  is_available: boolean;
+  channels: Record<SalesChannel, boolean>;
+  sale_price: string;
+}
+
+export interface ProductBranchConfig {
+  id?: number;
+  product: number;
+  product_name: string;
+  branch: number;
+  branch_name: string;
+  is_available: boolean;
+  available_counter: boolean | null;
+  available_table: boolean | null;
+  available_command: boolean | null;
+  effective_channels: Record<SalesChannel, boolean>;
+  effective_sale_price: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ProductBranchStock {
+  applicable: boolean;
+  semantic: "actual" | "components" | "not_applicable";
+  current_quantity?: string;
+  unit?: string;
+  unit_cost?: string;
+  current_content?: string;
+  content_unit?: ContentUnit;
+  package_content?: string;
+}
+
+export interface ProductionDestination {
+  id: number;
+  branch: number;
+  branch_name: string;
+  name: string;
+  code: string;
+  status: Status;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EmbeddedProductSupplierUnit {
+  id: number;
+  unit_code: string;
+  description: string;
+  conversion_factor: string;
+  barcode: string;
+  is_default: boolean;
+  status: Status;
+}
+
+export interface EmbeddedProductSupplier {
+  id: number;
+  supplier: number;
+  supplier_name: string;
+  supplier_code: string;
+  is_preferred: boolean;
+  is_exclusive: boolean;
+  status: Status;
+  units: EmbeddedProductSupplierUnit[];
+}
+
+export interface Supplier {
+  id: number;
+  company: number;
+  company_name: string;
+  legal_name: string;
+  trade_name: string;
+  tax_id: string | null;
+  phone: string;
+  email: string;
+  address: Partial<Address>;
+  contact_name: string;
+  notes: string;
+  status: Status;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProductSupplierUnit {
+  id: number;
+  company: number;
+  company_name: string;
+  product_supplier: number;
+  product_name: string;
+  supplier_name: string;
+  unit_code: string;
+  description: string;
+  conversion_factor: string;
+  barcode: string;
+  is_default: boolean;
+  status: Status;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProductSupplier {
+  id: number;
+  company: number;
+  product: number;
+  product_name: string;
+  supplier: number;
+  supplier_name: string;
+  supplier_code: string;
+  is_preferred: boolean;
+  is_exclusive: boolean;
+  status: Status;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Product {
   id: number;
   company: number;
@@ -208,17 +534,30 @@ export interface Product {
   description: string;
   internal_code: string;
   barcode: string;
+  sku: string | null;
   unit: string;
   cost: string | null;
   sale_price: string;
   is_sellable: boolean;
   is_favorite: boolean;
+  available_counter: boolean;
+  available_table: boolean;
+  available_command: boolean;
+  participates_in_service_fee: boolean;
+  participates_in_commission: boolean;
   inventory_behavior: InventoryBehavior;
   status: Status;
   image: string | null;
   components: ProductComponent[];
+  fraction_components: ProductFractionComponent[];
   suggested_cost: string | null;
   suggested_sale_price: string | null;
+  branch_configuration?: ProductBranchConfiguration | null;
+  branch_stock?: ProductBranchStock | null;
+  fraction_config?: FractionableProductConfig | null;
+  production_destinations?: ProductionDestination[];
+  suppliers?: EmbeddedProductSupplier[];
+  modifier_groups?: ModifierGroup[];
   created_at: string;
   updated_at: string;
 }
@@ -258,12 +597,147 @@ export interface Stock {
   category: number | null;
   category_name: string;
   unit_cost?: string | null;
-  total_cost: string | null;
+  total_cost?: string | null;
+  average_unit_cost?: string | null;
+  last_unit_cost?: string | null;
   product_status: Status;
   inventory_behavior: InventoryBehavior;
   current_quantity: string;
+  current_content: string | null;
+  package_content?: string | null;
+  content_unit?: ContentUnit | null;
+  complete_packages?: string | null;
+  residual_content?: string | null;
   minimum_quantity: string;
   state: "normal" | "below_minimum" | "zero" | "negative";
+  created_at: string;
+  updated_at: string;
+}
+
+export type PurchaseOrderType = "ORDER" | "DIRECT";
+export type PurchaseOrderStatus =
+  | "DRAFT"
+  | "PLACED"
+  | "PARTIALLY_RECEIVED"
+  | "RECEIVED"
+  | "CANCELLED"
+  | "CLOSED_PARTIAL";
+export type PayableInstallmentStatus = "PENDING" | "PAID" | "CANCELLED";
+
+export interface PurchaseOrderItem {
+  id: number;
+  line_number: number;
+  product: number;
+  product_supplier: number;
+  product_supplier_unit: number;
+  ordered_quantity: string;
+  received_quantity: string;
+  pending_quantity: string;
+  product_name: string;
+  product_internal_code: string;
+  product_stock_unit: string;
+  supplier_name: string;
+  supplier_tax_id: string;
+  supplier_product_code: string;
+  presentation_unit_code: string;
+  presentation_description: string;
+  conversion_factor: string;
+  purchase_unit_price?: string;
+  gross_subtotal?: string;
+  allocated_discount?: string;
+  allocated_freight?: string;
+  allocated_other_expenses?: string;
+  effective_total?: string;
+  effective_stock_unit_cost?: string;
+  created_at: string;
+}
+
+export interface PurchaseReceiptItem {
+  id: number;
+  purchase_order_item: number;
+  ordered_quantity_snapshot: string;
+  previously_received_quantity: string;
+  received_quantity: string;
+  accumulated_quantity: string;
+  pending_quantity: string;
+  divergence_quantity: string;
+  divergence_reason: string;
+  conversion_factor_snapshot: string;
+  stock_quantity: string;
+  effective_stock_unit_cost_snapshot?: string;
+  product_name_snapshot: string;
+  supplier_name_snapshot: string;
+  presentation_snapshot: string;
+  created_at: string;
+}
+
+export interface PurchaseReceipt {
+  id: string;
+  purchase_order: number;
+  order_number: string;
+  company: number;
+  branch: number;
+  supplier: number;
+  idempotency_key: string;
+  notes: string;
+  divergence_reason: string;
+  confirmed_by: number;
+  confirmed_at: string;
+  items: PurchaseReceiptItem[];
+  created_at: string;
+}
+
+export interface PayableInstallment {
+  id: number;
+  purchase_order: number;
+  order_number: string;
+  supplier: number;
+  supplier_name: string;
+  installment_number: number;
+  amount: string;
+  due_date: string;
+  status: PayableInstallmentStatus;
+  paid_at: string | null;
+  paid_by: number | null;
+  cancelled_at: string | null;
+  cancelled_by: number | null;
+  cancellation_reason: string;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PurchaseOrder {
+  id: number;
+  company: number;
+  company_name: string;
+  branch: number;
+  branch_name: string;
+  supplier: number;
+  supplier_name: string;
+  order_number: string;
+  order_type: PurchaseOrderType;
+  status: PurchaseOrderStatus;
+  gross_total?: string;
+  global_discount?: string;
+  freight_total?: string;
+  other_expenses_total?: string;
+  payable_total?: string;
+  document_number: string;
+  document_key: string;
+  document_series: string;
+  document_date: string | null;
+  attachment: { name: string; download_url: string } | null;
+  notes: string;
+  created_by: number;
+  placed_by: number | null;
+  placed_at: string | null;
+  closed_by: number | null;
+  closed_at: string | null;
+  closure_reason: string;
+  items: PurchaseOrderItem[];
+  installments?: PayableInstallment[];
+  receipts: PurchaseReceipt[];
   created_at: string;
   updated_at: string;
 }
@@ -290,6 +764,195 @@ export interface StockMovement {
   operation_label: string;
   operation_count: number;
   created_at: string;
+  unit_cost_snapshot?: string;
+  domain_origin?: string;
+  transfer_item?: number | null;
+  transfer_resolution?: string | null;
+  loss_record?: string | null;
+  inventory_count_item?: number | null;
+  previous_content?: string | null;
+  content_quantity?: string | null;
+  final_content?: string | null;
+  package_content?: string | null;
+  content_unit?: ContentUnit | null;
+  previous_complete_packages?: string | null;
+  previous_residual_content?: string | null;
+  movement_complete_packages?: string | null;
+  movement_residual_content?: string | null;
+  final_complete_packages?: string | null;
+  final_residual_content?: string | null;
+}
+
+export type StockTransferStatus = "DRAFT" | "IN_TRANSIT" | "PARTIALLY_RECEIVED" | "RECEIVED" | "RECEIVED_WITH_DIVERGENCE" | "CANCELLED";
+export type TransferDivergenceStatus = "PENDING" | "RESOLVED";
+export type TransferResolutionType = "FOUND_RECEIPT" | "RETURN_TO_ORIGIN" | "LOSS_IN_TRANSIT" | "AUTHORIZED_CORRECTION";
+export type LossReason = "BREAKAGE" | "EXPIRATION" | "DAMAGE" | "INTERNAL_USE" | "MISPLACEMENT" | "OPERATIONAL_ERROR" | "OTHER";
+export type InventoryCountStatus = "OPEN" | "CONFIRMED";
+
+export interface StockTransferItem {
+  id: number; product: number; product_name_snapshot: string; product_internal_code_snapshot: string;
+  product_unit_snapshot: string; requested_quantity: string; dispatched_quantity: string | null;
+  received_quantity: string; pending_quantity: string | null; origin_unit_cost_snapshot?: string;
+  origin_cost_source?: "BRANCH_AVERAGE" | "PRODUCT_FALLBACK"; origin_sale_price_snapshot: string | null;
+  movement_ids: number[]; created_at: string;
+  package_content_snapshot: string | null; content_unit_snapshot: ContentUnit | null;
+}
+export interface StockTransferReceiptItem {
+  id: number; transfer_item: number; dispatched_quantity_snapshot: string; previously_received_quantity: string;
+  received_quantity: string; accumulated_quantity: string; pending_quantity: string; unit_cost_snapshot?: string;
+  movement_ids: number[]; created_at: string;
+  received_content_snapshot: string | null;
+}
+export interface StockTransferReceipt {
+  id: string; transfer: string; company: number; destination_branch: number; idempotency_key: string;
+  finalize: boolean; notes: string; received_by: number; received_at: string;
+  items: StockTransferReceiptItem[]; created_at: string;
+}
+export interface StockTransfer {
+  id: string; company: number; origin_branch: number; origin_branch_name: string; destination_branch: number;
+  destination_branch_name: string; status: StockTransferStatus; notes: string; created_by: number;
+  dispatched_by: number | null; dispatched_at: string | null; cancelled_by: number | null;
+  cancelled_at: string | null; cancellation_reason: string; items: StockTransferItem[];
+  receipts: StockTransferReceipt[]; created_at: string; updated_at: string;
+  dispatch_idempotency_key?: string | null;
+}
+export interface TransferResolution {
+  id: string; divergence: number; idempotency_key: string; resolution_type: TransferResolutionType;
+  quantity: string; observation: string; resolved_by: number; resolved_at: string;
+  movement_ids: number[]; created_at: string;
+}
+export interface TransferDivergence {
+  id: number; transfer: string; transfer_item: number; product: number; product_name: string;
+  dispatched_quantity_snapshot: string; received_quantity_snapshot: string; initial_quantity: string;
+  resolved_quantity: string; pending_quantity: string; status: TransferDivergenceStatus;
+  unit_cost_snapshot?: string; cost_impact?: string; potential_sale_value: string;
+  detected_by: number; detected_at: string; resolutions: TransferResolution[]; created_at: string; updated_at: string;
+}
+export interface LossRecord {
+  id: string; company: number; branch: number; branch_name: string; product: number; product_name: string;
+  idempotency_key: string; quantity: string; reason: LossReason; observation: string;
+  unit_cost_snapshot?: string; sale_price_snapshot: string; cost_impact?: string; potential_sale_value: string;
+  recorded_by: number; recorded_at: string; movement_ids: number[]; created_at: string;
+  content_quantity: string | null; content_unit: ContentUnit | null;
+  package_content_snapshot?: string | null; complete_packages?: string | null; residual_content?: string | null;
+}
+export interface InventoryCountItem {
+  id: number; product: number; product_name: string; theoretical_quantity: string; counted_quantity: string;
+  difference_quantity: string; counted_at: string; unit_cost_snapshot?: string; sale_price_snapshot: string;
+  cost_impact?: string; potential_sale_value: string; counted_by: number; observation: string;
+  movement_ids: number[]; created_at: string;
+  theoretical_content: string | null;
+  counted_complete_packages: string | null;
+  counted_residual_content: string | null;
+  counted_content: string | null;
+  difference_content: string | null;
+  content_unit: ContentUnit | null;
+  package_content_snapshot?: string | null;
+  difference_complete_packages?: string | null;
+  difference_residual_content?: string | null;
+}
+export interface InventoryCount {
+  id: string; company: number; branch: number; branch_name: string; status: InventoryCountStatus;
+  observation: string; created_by: number; confirmed_by: number | null; confirmed_at: string | null;
+  confirmation_idempotency_key: string | null; items: InventoryCountItem[]; created_at: string; updated_at: string;
+}
+export interface InventoryQuantityGroup {
+  unit: string;
+  quantity: string;
+  content_quantity?: string | null;
+  package_content?: string | null;
+  content_unit?: ContentUnit | null;
+  complete_packages?: string | null;
+  residual_content?: string | null;
+}
+export type InventoryQuantityGroups = Record<string, string> | InventoryQuantityGroup[];
+export interface AdvancedInventoryExactQuantity {
+  content_quantity?: string | null;
+  package_content?: string | null;
+  content_unit?: ContentUnit | null;
+  complete_packages?: string | null;
+  residual_content?: string | null;
+}
+export interface AdvancedInventoryProductEventRow extends AdvancedInventoryExactQuantity {
+  event_at: string;
+  product: number;
+  product_name: string;
+  unit: string;
+  quantity: string;
+  movement_ids: number[];
+}
+export interface AdvancedInventoryDispatchRow extends AdvancedInventoryProductEventRow { transfer: string; transfer_item: number; }
+export interface AdvancedInventoryReceiptItemRow extends AdvancedInventoryExactQuantity { transfer_item: number; product: number; product_name: string; unit: string; quantity: string; movement_ids: number[]; }
+export interface AdvancedInventoryReceiptRow { receipt: string; transfer: string; event_at: string; received_by: number; finalize: boolean; items: AdvancedInventoryReceiptItemRow[]; movement_ids: number[]; }
+export interface AdvancedInventoryResolutionRow extends AdvancedInventoryProductEventRow { resolution: string; divergence: number; transfer: string; transfer_item: number; resolution_type: TransferResolutionType; }
+export interface AdvancedInventoryDivergenceRow extends AdvancedInventoryExactQuantity { divergence: number; transfer: string; transfer_item: number; event_at: string; product: number; product_name: string; unit: string; initial_quantity: string; }
+export interface AdvancedInventoryLossRow extends AdvancedInventoryProductEventRow { loss: string; reason: LossReason; }
+export interface AdvancedInventoryCountRow extends AdvancedInventoryExactQuantity { inventory_count: string; inventory_count_item: number; event_at: string; status: InventoryCountStatus; product: number; product_name: string; unit: string; difference_quantity: string; difference_content?: string | null; movement_ids: number[]; }
+export interface AdvancedInventoryTransferStateRow { transfer: string; status: StockTransferStatus; dispatched_at: string; origin_branch: number; destination_branch: number; }
+export interface AdvancedInventoryDivergenceStateRow extends AdvancedInventoryExactQuantity { divergence: number; transfer: string; transfer_item: number; status: TransferDivergenceStatus; product: number; unit: string; pending_quantity: string; pending_content?: string | null; }
+export interface AdvancedInventoryTransitStateRow extends AdvancedInventoryExactQuantity { transfer: string; transfer_item: number; product: number; unit: string; pending_quantity: string; pending_content?: string | null; }
+export interface AdvancedInventoryReport {
+  branch: number;
+  filters: { start_datetime: string | null; end_datetime: string | null; product: number | null; responsible: number | null; transfer_status: string | null; divergence_status: string | null; inventory_status: string | null; loss_reason: string | null; resolution_type: string | null };
+  events: { transfer_dispatches: number; transfer_receipts: number; divergence_resolutions: number; divergences: number; losses: number; inventory_counts: number };
+  transfer_statuses: Record<string, number>;
+  state_basis: { mode: "current_state" | "as_of_period_end"; as_of: string; event_metrics: "event_time" };
+  pending_quantity_basis: "current_state" | "as_of_period_end";
+  pending_quantity_as_of: string;
+  quantities_by_unit: Record<string, Record<string, string>>;
+  financials: { inventory_potential_sale_value: string; loss_potential_sale_value: string; pending_divergence_potential_sale_value: string; in_transit_potential_sale_value: string; inventory_cost_impact?: string; loss_cost_impact?: string; pending_divergence_cost_impact?: string; in_transit_cost_value?: string };
+  drill_down: {
+    inventory_counts: string; divergences: string; losses: string; transfers: string; movements: string;
+    movement_ids: number[];
+    resource_ids: { transfers: string[]; receipts: string[]; resolutions: string[]; divergences: string[]; losses: string[]; inventory_counts: string[]; movements: number[] };
+    links: { transfers: string[]; divergences: string[]; losses: string[]; inventory_counts: string[]; movements: string[] };
+    contract: { event_rows: "filtered_by_each_domain_event_timestamp"; state_rows: "current_state" | "as_of_period_end"; state_as_of: string };
+    event_rows: { dispatches: AdvancedInventoryDispatchRow[]; receipts: AdvancedInventoryReceiptRow[]; resolutions: AdvancedInventoryResolutionRow[]; divergences: AdvancedInventoryDivergenceRow[]; losses: AdvancedInventoryLossRow[]; inventory_counts: AdvancedInventoryCountRow[] };
+    state_rows: { transfers: AdvancedInventoryTransferStateRow[]; divergences: AdvancedInventoryDivergenceStateRow[]; in_transit: AdvancedInventoryTransitStateRow[] };
+  };
+}
+
+export interface InventoryWorkflowStockOption {
+  stock: number;
+  product: number;
+  product_name: string;
+  internal_code: string;
+  unit: string;
+  current_quantity: string;
+  equivalent_quantity: string;
+  current_content?: string | null;
+  package_content?: string | null;
+  content_unit?: ContentUnit | null;
+  complete_packages?: string | null;
+  residual_content?: string | null;
+  fraction_config?: FractionableProductConfig | null;
+  unit_cost?: string;
+}
+export interface InventoryWorkflowBranchOption { id: number; name: string; }
+export interface TransferWorkflowOptions {
+  origin_branch: InventoryWorkflowBranchOption;
+  destination_branches: InventoryWorkflowBranchOption[];
+  stocks: InventoryWorkflowStockOption[];
+}
+export interface TransferReceiveOption {
+  transfer_item: number;
+  product: number;
+  product_name: string;
+  internal_code: string;
+  unit: string;
+  dispatched_quantity: string;
+  received_quantity: string;
+  pending_quantity: string;
+}
+export interface TransferReceiveOptions {
+  transfer: string;
+  origin_branch: number;
+  destination_branch: number;
+  items: TransferReceiveOption[];
+}
+export interface InventoryWorkflowOptions {
+  branch: InventoryWorkflowBranchOption;
+  stocks: InventoryWorkflowStockOption[];
 }
 
 export type CashSessionStatus = "open" | "closed";
@@ -364,12 +1027,7 @@ export interface CashMovement {
 }
 
 export type WithdrawalCategory =
-  | "dj"
-  | "artist"
-  | "advance"
-  | "promoter"
-  | "supplier"
-  | "other";
+  "dj" | "artist" | "advance" | "promoter" | "supplier" | "other";
 
 export interface CashBeneficiary {
   id: number;
@@ -489,6 +1147,55 @@ export interface SaleCategory {
 export type SaleOperation = "sale" | "consumption";
 export type SaleStatus = "finalized" | "cancelled";
 
+export interface ModifierOption {
+  id: number;
+  modifier_group: number;
+  name: string;
+  option_type: "add" | "remove" | "observation";
+  additional_price: string;
+  sort_order: number;
+  status: string;
+}
+
+export interface ModifierGroup {
+  id: number;
+  company: number;
+  name: string;
+  is_required: boolean;
+  min_selections: number;
+  max_selections: number | null;
+  allow_option_quantity: boolean;
+  sort_order: number;
+  status: string;
+  options?: ModifierOption[];
+}
+
+export interface ProductModifierGroup {
+  id: number;
+  product: number;
+  modifier_group: number;
+  modifier_group_name?: string;
+  sort_order: number;
+  status: string;
+}
+
+export interface ModifierSelection {
+  option: number;
+  quantity: string;
+}
+
+export interface ModifierSnapshotEntry {
+  group_id: number;
+  group_name: string;
+  option_id: number;
+  option_name: string;
+  option_type: string;
+  additional_price: string;
+  selected_quantity: string;
+  contribution: string;
+  sort_order: number;
+}
+
 export interface SaleItem {
   id: number;
   product: number;
@@ -497,6 +1204,9 @@ export interface SaleItem {
   internal_code: string;
   unit: string;
   unit_cost?: string | null;
+  base_unit_price?: string;
+  modifier_unit_total?: string;
+  modifier_snapshot?: ModifierSnapshotEntry[];
   unit_price: string;
   subtotal: string;
   promotion: number | null;
@@ -594,6 +1304,7 @@ export interface SalePreviewItem {
   product_name: string;
   internal_code: string;
   unit: string;
+  modifier_snapshot?: ModifierSnapshotEntry[];
   unit_cost: string | null;
   unit_price: string;
   subtotal: string;
@@ -1016,6 +1727,7 @@ export interface ReportUserGroup {
   effective_revenue: string;
   service_fee: string;
   commission?: string;
+  commission_rate?: string;
   commission_sale_count?: number;
   customer_total: string;
   total_received: string;
@@ -1026,7 +1738,10 @@ export interface ReportUserGroup {
   cancellation_count: number;
   cancellation_value: string;
 }
-export interface ReportResponse<T, S = Record<string, unknown>> extends Paginated<T> {
+export interface ReportResponse<
+  T,
+  S = Record<string, unknown>,
+> extends Paginated<T> {
   period: ReportPeriod;
   summary: S;
 }
@@ -1127,6 +1842,69 @@ export interface UserCommissionOverride {
   user_name: string;
   receives_commission: boolean;
   commission_rate: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Table {
+  id: number;
+  branch: number;
+  name: string;
+  seats: number;
+  status: string;
+  operational_status?: "free" | "occupied";
+  open_commands_count?: number;
+  open_commands_total?: string;
+  open_commands?: Array<{
+    id: number;
+    command_number: string;
+    identifier: string;
+    open_items_count: number;
+    confirmed_total: string;
+  }>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Command {
+  id: number;
+  company: number;
+  branch: number;
+  table: number | null;
+  table_name?: string;
+  command_number: string;
+  identifier: string;
+  status: "open" | "closed";
+  opened_by: number;
+  closed_at: string | null;
+  closed_by: number | null;
+  sale: number | null;
+  open_items_count?: number;
+  confirmed_total?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrderItem {
+  id: number;
+  order: number;
+  product: number;
+  quantity: string;
+  product_name: string;
+  internal_code: string;
+  unit: string;
+  unit_price: string;
+  base_unit_price?: string;
+  modifier_unit_total?: string;
+  modifier_snapshot?: ModifierSnapshotEntry[];
+  unit_cost?: string;
+  component_cost_snapshot?: Array<Record<string, unknown>>;
+  status: "pending" | "confirmed" | "cancelled";
+  confirmed_at: string | null;
+  confirmed_by: number | null;
+  cancelled_at: string | null;
+  cancelled_by: number | null;
+  cancellation_reason: string;
   created_at: string;
   updated_at: string;
 }

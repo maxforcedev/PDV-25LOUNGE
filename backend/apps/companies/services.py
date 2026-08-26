@@ -1,6 +1,9 @@
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import models, transaction
 from django.utils import timezone
+
+from apps.accounts.models import User
+from apps.base.audit import audit_log, model_snapshot
 
 from .models import (
     AccessProfile,
@@ -58,17 +61,20 @@ def ensure_default_access_profiles(company):
 
 
 @transaction.atomic
-def create_company_with_matrix(*, creator, **company_data):
+def create_company_with_matrix(*, creator, enforce_saas_limits=True, **company_data):
     company = Company.objects.create(**company_data)
     profiles = ensure_default_access_profiles(company)
-    matrix = Branch.objects.create(
+    matrix = Branch(
         company=company, name='Matriz', is_matrix=True, address_pending=True
     )
-    UserCompanyAccess.objects.create(
+    matrix.save(enforce_saas_limit=enforce_saas_limits)
+    company_access = UserCompanyAccess(
         user=creator,
         company=company,
         access_profile=profiles['Administrador'],
+        is_owner=True,
     )
+    company_access.save(enforce_saas_limit=enforce_saas_limits)
     UserBranchAccess.objects.create(
         user=creator,
         branch=matrix,
@@ -83,6 +89,9 @@ def create_branch_with_access(*, creator, **branch_data):
     company = Company.objects.select_for_update().get(pk=requested_company.pk)
     if company.status != 'active':
         raise ValidationError({'company': 'Não é possível criar filial em empresa inativa.'})
+    from apps.saas.services import assert_resource_limit
+
+    assert_resource_limit(company, 'branches.max')
     branch_data['company'] = company
     branch = Branch.objects.create(**branch_data)
     company_access = UserCompanyAccess.objects.get(
@@ -102,6 +111,9 @@ def create_branch_with_access(*, creator, **branch_data):
 @transaction.atomic
 def activate_company(*, company):
     locked_company = Company.objects.select_for_update().get(pk=company.pk)
+    from apps.saas.services import validate_company_ready_for_enforcement
+
+    validate_company_ready_for_enforcement(locked_company)
     locked_company.status = 'active'
     locked_company.save(update_fields=['status', 'updated_at'])
     return locked_company
@@ -151,14 +163,19 @@ def replace_user_accesses(*, user, company_accesses):
             branch_item['branch'].id: branch_item
             for branch_item in item['branch_accesses']
         }
-        access, _ = UserCompanyAccess.objects.get_or_create(
+        access, created = UserCompanyAccess.objects.get_or_create(
             user=user,
             company=company,
             defaults={'access_profile': profile, 'is_active': True},
         )
+        if user.can_login and (created or not access.is_active or access.saas_status != UserCompanyAccess.SaaSStatus.ACTIVE):
+            from apps.saas.services import assert_resource_limit
+
+            assert_resource_limit(company, 'users.max', delta=0 if created else 1)
         access.access_profile = profile
         access.is_active = True
-        access.save(update_fields=['access_profile', 'is_active', 'updated_at'])
+        access.saas_status = UserCompanyAccess.SaaSStatus.ACTIVE
+        access.save(update_fields=['access_profile', 'is_active', 'saas_status', 'updated_at'])
 
         UserBranchAccess.objects.filter(user=user, branch__company=company).exclude(
             branch_id__in=branch_accesses
@@ -181,3 +198,137 @@ def replace_user_accesses(*, user, company_accesses):
             branch_access.save(
                 update_fields=['access_profile', 'is_active', 'updated_at']
             )
+
+
+def _validate_owner_target(access):
+    errors = {}
+    if not access.is_active:
+        errors['target_user_id'] = 'O acesso do novo proprietário deve estar ativo.'
+    if not access.user.is_active or not access.user.can_login:
+        errors['target_user_id'] = 'O novo proprietário deve estar ativo e habilitado para login.'
+    has_branch_profile = UserBranchAccess.objects.filter(
+        user=access.user,
+        branch__company_id=access.company_id,
+        is_active=True,
+        access_profile__status='active',
+        branch__company__user_accesses__user=access.user,
+        branch__company__user_accesses__is_active=True,
+    ).exists()
+    if not has_branch_profile:
+        errors['target_user_id'] = 'O novo proprietário deve possuir ao menos uma filial com perfil ativo.'
+    if errors:
+        raise ValidationError(errors)
+
+
+@transaction.atomic
+def assign_company_owner(*, company_id, user_id, source='management_command'):
+    company = Company.objects.select_for_update().get(pk=company_id)
+    accesses = UserCompanyAccess.objects.select_for_update().filter(company=company)
+    current = accesses.filter(is_owner=True).select_related('user').first()
+    if current:
+        if current.user_id == user_id:
+            return current, False
+        raise ValidationError(
+            {'company_id': 'A empresa já possui proprietário; substituições exigem transferência.'}
+        )
+    try:
+        target = accesses.get(user_id=user_id)
+    except UserCompanyAccess.DoesNotExist as error:
+        raise ValidationError(
+            {'user_id': 'O usuário não possui acesso a esta empresa.'}
+        ) from error
+    target.user = User.objects.select_for_update().get(pk=target.user_id)
+    if target.access_profile_id:
+        target.access_profile = AccessProfile.objects.select_for_update().get(
+            pk=target.access_profile_id
+        )
+    _validate_owner_target(target)
+    target.is_owner = True
+    target.save(update_fields=('is_owner', 'updated_at'))
+    audit_log(
+        action='company.owner.assign',
+        obj=target,
+        company=company,
+        after=model_snapshot(
+            target, ('company_id', 'user_id', 'access_profile_id', 'is_active', 'is_owner')
+        ),
+        metadata={'source': source},
+    )
+    return target, True
+
+
+@transaction.atomic
+def transfer_company_owner(
+    *, company, actor, target_user_id, current_password, reason,
+    platform_authorized=False,
+):
+    reason = (reason or '').strip()
+    if not reason:
+        raise ValidationError({'reason': 'Informe o motivo da transferência.'})
+
+    locked_company = Company.objects.select_for_update().get(pk=company.pk)
+    accesses = UserCompanyAccess.objects.select_for_update().filter(
+        company=locked_company
+    )
+    current = accesses.filter(is_owner=True).select_related('user').first()
+    if not current:
+        raise ValidationError({'current_password': 'A empresa nao possui proprietário atual.'})
+    if platform_authorized:
+        from apps.saas.services import user_has_platform_permission
+
+        authorized = user_has_platform_permission(actor, 'platform.tenants.manage')
+        password_user = actor
+    else:
+        authorized = current.user_id == actor.pk
+        password_user = current.user
+    if not authorized:
+        raise ValidationError(
+            {'current_password': 'Somente o proprietário atual pode transferir a propriedade.'}
+        )
+    if not password_user.check_password(current_password or ''):
+        raise ValidationError({'current_password': 'Senha atual inválida.'})
+    if target_user_id == current.user_id:
+        raise ValidationError({'target_user_id': 'Selecione outro usuário como proprietário.'})
+    try:
+        target = accesses.get(user_id=target_user_id)
+    except UserCompanyAccess.DoesNotExist as error:
+        raise ValidationError(
+            {'target_user_id': 'O usuário não possui acesso a esta empresa.'}
+        ) from error
+    target.user = User.objects.select_for_update().get(pk=target.user_id)
+    if target.access_profile_id:
+        target.access_profile = AccessProfile.objects.select_for_update().get(
+            pk=target.access_profile_id
+        )
+    _validate_owner_target(target)
+
+    before = {
+        'membership_id': current.pk,
+        'user_id': current.user_id,
+        'is_owner': True,
+    }
+    now = timezone.now()
+    models.QuerySet.update(
+        accesses.filter(pk=current.pk),
+        is_owner=False, updated_at=now
+    )
+    models.QuerySet.update(
+        accesses.filter(pk=target.pk),
+        is_owner=True, updated_at=now
+    )
+    target.is_owner = True
+    target.updated_at = now
+    audit_log(
+        actor=actor,
+        action='company.owner.transfer',
+        obj=target,
+        company=locked_company,
+        before=before,
+        after={
+            'membership_id': target.pk,
+            'user_id': target.user_id,
+            'is_owner': True,
+        },
+        metadata={'reason': reason},
+    )
+    return target

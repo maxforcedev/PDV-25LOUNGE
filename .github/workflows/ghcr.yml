@@ -30,14 +30,24 @@ jobs:
           - component: backend
             context: ./backend
             image: ghcr.io/maxforcedev/core-pdv-backend
+            target: production
             cache_scope: backend
             build_args: ''
           - component: frontend
             context: ./frontend
             image: ghcr.io/maxforcedev/core-pdv-frontend
+            target: production
             cache_scope: frontend
             build_args: |
               NEXT_PUBLIC_API_URL=https://api.corepdv.com/api/v1
+          - component: platform-admin
+            context: ./platform-admin
+            image: ghcr.io/maxforcedev/core-pdv-platform-admin
+            target: runner
+            cache_scope: platform-admin
+            build_args: |
+              NEXT_PUBLIC_API_URL=https://api.corepdv.com/api/v1
+              NEXT_PUBLIC_BACKOFFICE_URL=https://corepdv.com
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -79,7 +89,7 @@ jobs:
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ${{ matrix.context }}
-          target: production
+          target: ${{ matrix.target }}
           platforms: linux/amd64
           push: true
           tags: ${{ steps.metadata.outputs.tags }}

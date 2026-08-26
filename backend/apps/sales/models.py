@@ -9,7 +9,7 @@ from django.db.models.functions import Lower
 from apps.base.models import BaseModel
 from apps.cash.models import CashSession
 from apps.companies.models import Branch, Company, Status, UserCompanyAccess
-from apps.products.models import Product, Unit
+from apps.products.models import Product, SalesChannel, Unit
 
 
 class OperationType(models.TextChoices):
@@ -198,7 +198,15 @@ class PaymentMethod(BaseModel):
         return f'{self.company} - {self.name}'
 
 
+class SaleQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        if 'channel' in kwargs:
+            raise ValidationError('O canal da venda e um snapshot imutavel.')
+        return super().update(**kwargs)
+
+
 class Sale(BaseModel):
+    objects = SaleQuerySet.as_manager()
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='sales')
     branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='sales')
     cash_session = models.ForeignKey(
@@ -209,6 +217,9 @@ class Sale(BaseModel):
     idempotency_fingerprint = models.CharField(max_length=64, blank=True, default='', editable=False)
     operation_type = models.CharField(
         max_length=20, choices=OperationType.choices, default=OperationType.SALE
+    )
+    channel = models.CharField(
+        max_length=10, choices=SalesChannel.choices, default=SalesChannel.COUNTER
     )
     status = models.CharField(
         max_length=10, choices=SaleStatus.choices, default=SaleStatus.FINALIZED
@@ -418,6 +429,12 @@ class Sale(BaseModel):
     def clean(self):
         super().clean()
         errors = {}
+        if self.pk:
+            original_channel = type(self).objects.filter(pk=self.pk).values_list(
+                'channel', flat=True
+            ).first()
+            if original_channel is not None and self.channel != original_channel:
+                errors['channel'] = 'O canal da venda e um snapshot imutavel.'
         if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
             errors['branch'] = 'A filial deve pertencer à empresa da venda.'
         if self.cash_session_id and self.branch_id and self.cash_session.branch_id != self.branch_id:
@@ -498,6 +515,12 @@ class ImmutableHistoricalQuerySet(models.QuerySet):
     def delete(self):
         raise ValueError('Registros históricos não podem ser excluídos.')
 
+    def bulk_create(self, objs, *args, **kwargs):
+        raise ValueError('Registros historicos devem ser criados pelo fluxo de dominio.')
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        raise ValueError('Registros historicos nao podem ser alterados em lote.')
+
 
 class ImmutableHistoricalModel(BaseModel):
     objects = ImmutableHistoricalQuerySet.as_manager()
@@ -517,6 +540,13 @@ class SaleItem(ImmutableHistoricalModel):
     internal_code = models.CharField(max_length=100)
     unit = models.CharField(max_length=5, choices=Unit.choices)
     unit_cost = models.DecimalField(max_digits=14, decimal_places=2)
+    base_unit_price = models.DecimalField(
+        max_digits=14, decimal_places=2, default=Decimal('0.00'), editable=False
+    )
+    modifier_unit_total = models.DecimalField(
+        max_digits=14, decimal_places=2, default=Decimal('0.00'), editable=False
+    )
+    modifier_snapshot = models.JSONField(default=list, blank=True, editable=False)
     unit_price = models.DecimalField(max_digits=14, decimal_places=2)
     subtotal = models.DecimalField(max_digits=14, decimal_places=2)
     promotion = models.ForeignKey(
@@ -550,6 +580,8 @@ class SaleItem(ImmutableHistoricalModel):
     net_subtotal = models.DecimalField(
         max_digits=14, decimal_places=2, default=Decimal('0.00')
     )
+    participates_in_service_fee = models.BooleanField(default=True, editable=False)
+    participates_in_commission = models.BooleanField(default=True, editable=False)
 
     class Meta:
         ordering = ('id',)
@@ -654,8 +686,22 @@ class SaleItem(ImmutableHistoricalModel):
             self.product_name = self.product.name
             self.internal_code = self.product.internal_code
             self.unit = self.product.unit
+            self.participates_in_service_fee = self.product.participates_in_service_fee
+            self.participates_in_commission = self.product.participates_in_commission
             if self.unit_cost is None:
-                self.unit_cost = self.product.cost
+                from apps.inventory.models import Stock
+
+                stock = Stock.objects.filter(
+                    product=self.product, branch_id=self.sale.branch_id
+                ).only('average_unit_cost').first()
+                branch_cost = (
+                    stock.average_unit_cost
+                    if stock and stock.average_unit_cost is not None
+                    else self.product.cost
+                )
+                self.unit_cost = branch_cost.quantize(
+                    Decimal('0.01'), rounding=ROUND_HALF_UP
+                )
             if self.unit_price is None:
                 self.unit_price = self.product.sale_price
             self.subtotal = (self.unit_price * self.quantity).quantize(

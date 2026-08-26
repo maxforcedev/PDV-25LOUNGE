@@ -52,6 +52,9 @@ SECURE_PROXY_SSL_HEADER = (
 SECURE_SSL_REDIRECT = env.bool('SECURE_SSL_REDIRECT', default=not DEBUG)
 SESSION_COOKIE_SECURE = env.bool('SESSION_COOKIE_SECURE', default=not DEBUG)
 CSRF_COOKIE_SECURE = env.bool('CSRF_COOKIE_SECURE', default=not DEBUG)
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SAMESITE = 'Lax'
 SECURE_HSTS_SECONDS = env.int('SECURE_HSTS_SECONDS', default=0)
 SECURE_HSTS_INCLUDE_SUBDOMAINS = env.bool(
     'SECURE_HSTS_INCLUDE_SUBDOMAINS', default=False
@@ -60,6 +63,8 @@ SECURE_HSTS_PRELOAD = env.bool('SECURE_HSTS_PRELOAD', default=False)
 SECURE_CONTENT_TYPE_NOSNIFF = env.bool(
     'SECURE_CONTENT_TYPE_NOSNIFF', default=True
 )
+SECURE_REFERRER_POLICY = 'same-origin'
+X_FRAME_OPTIONS = 'DENY'
 
 
 # Application definition
@@ -77,10 +82,14 @@ INSTALLED_APPS = [
     'apps.accounts',
     'apps.companies',
     'apps.products',
+    'apps.suppliers',
     'apps.inventory',
+    'apps.purchases',
     'apps.cash',
     'apps.sales',
+    'apps.commands',
     'apps.reports',
+    'apps.saas',
 ]
 
 MIDDLEWARE = [
@@ -164,6 +173,9 @@ USE_TZ = True
 
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+PRIVATE_MEDIA_ROOT = Path(
+    env('PRIVATE_MEDIA_ROOT', default=str(BASE_DIR / 'private_media'))
+).resolve()
 STORAGES = {
     'default': {
         'BACKEND': 'django.core.files.storage.FileSystemStorage',
@@ -182,15 +194,18 @@ SILENCED_SYSTEM_CHECKS = ['auth.E003']
 REST_FRAMEWORK = {
     'EXCEPTION_HANDLER': 'apps.base.exceptions.api_exception_handler',
     'DEFAULT_AUTHENTICATION_CLASSES': [
+        'apps.saas.authentication.SupportSessionAuthentication',
         'apps.base.authentication.SessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
+        'apps.saas.permissions.SaaSTenantRuntimePermission',
     ],
     'DEFAULT_PAGINATION_CLASS': 'apps.base.pagination.StandardPagination',
     'PAGE_SIZE': 50,
     'DEFAULT_THROTTLE_RATES': {
         'login': '10/minute',
+        'signup': '5/hour',
     },
 }
 
@@ -200,6 +215,7 @@ CORS_ALLOW_HEADERS = (
     'x-branch-id',
     'x-correlation-id',
     'x-request-id',
+    'x-support-session-id',
 )
 CORS_EXPOSE_HEADERS = ['X-CSRFToken', 'X-Request-ID', 'X-Correlation-ID']
 
