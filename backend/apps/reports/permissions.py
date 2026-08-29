@@ -69,6 +69,6 @@ class ReportsPermission(BasePermission):
             allowed = any(self._has_code(user, branch, code) for code in codes)
         if not allowed:
             return False
-        if request.query_params.get('export') == 'csv':
+        if request.query_params.get('export') in ('csv', 'xlsx', 'pdf'):
             return user.is_superuser or self._has_code(user, branch, 'reports.export')
         return True

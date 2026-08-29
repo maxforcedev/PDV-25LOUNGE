@@ -161,6 +161,8 @@ function SessionDetail() {
   const [beneficiaries, setBeneficiaries] = useState<CashBeneficiary[]>([]);
   const [beneficiariesLoading, setBeneficiariesLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancellationReason, setCancellationReason] = useState("");
   const [period, setPeriod] = useState<PeriodValue>({ start: "", end: "" });
   const movementIdempotencyKey = useRef("");
 
@@ -391,6 +393,25 @@ function SessionDetail() {
     }
   }
 
+  async function cancelSession(event: React.FormEvent) {
+    event.preventDefault();
+    if (!cancellationReason.trim()) {
+      setError("Informe o motivo da anulação.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await http.post(`cash-sessions/${id}/cancel/`, { reason: cancellationReason.trim() });
+      setCancelOpen(false);
+      setSuccess("Sessão anulada. O histórico foi preservado.");
+      await load();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Não foi possível anular a sessão.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const isOpen = session?.status === "open";
   const canOperateSession = !!session && (session.opened_by === user?.id || canAdministerOthers);
   return (
@@ -431,6 +452,11 @@ function SessionDetail() {
                 <LockKeyhole className="size-4" />
                 Fechar caixa
               </Link>
+            )}
+            {isOpen && canOperateSession && canClose && (
+              <Button variant="secondary" onClick={() => { setCancellationReason(""); setCancelOpen(true); }}>
+                Anular sessão
+              </Button>
             )}
           </div>
         }
@@ -814,6 +840,17 @@ function SessionDetail() {
             >
               {action === "entry" ? "Confirmar entrada" : "Confirmar sangria"}
             </Button>
+          </div>
+        </form>
+      </Modal>
+      <Modal open={cancelOpen} title="Anular sessão" description="A sessão deixará a listagem padrão, mas seus movimentos e auditoria serão preservados." onClose={() => !saving && setCancelOpen(false)}>
+        <form onSubmit={cancelSession}>
+          <div className="space-y-4 p-5">
+            <Field label="Motivo"><Textarea required value={cancellationReason} onChange={(event) => setCancellationReason(event.target.value)} disabled={saving} /></Field>
+          </div>
+          <div className="flex justify-end gap-2 border-t border-subtle px-5 py-4">
+            <Button type="button" variant="secondary" onClick={() => setCancelOpen(false)} disabled={saving}>Cancelar</Button>
+            <Button type="submit" variant="danger" loading={saving}>Anular sessão</Button>
           </div>
         </form>
       </Modal>

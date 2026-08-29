@@ -204,6 +204,19 @@ workloads nao confiaveis nessa rede e o Traefik deve substituir/sanitizar
 `X-Forwarded-Proto` e `X-Forwarded-For`. Se a infraestrutura fornecer enderecos
 estaveis do proxy, restringir `GUNICORN_FORWARDED_ALLOW_IPS` por environment.
 
+## Regras operacionais pre-POS
+
+- `CommandPayment` e um ledger imutavel. Enquanto houver pagamento aplicado,
+  transferir itens, dividir ou mesclar comandas e bloqueado antes de alterar
+  pedidos; o operador deve estornar os pagamentos primeiro.
+- Transferir apenas a mesa permanece permitido, pois nao move itens nem altera
+  o total financeiro.
+- Um `OrderItem` confirmado somente pode ser transferido integralmente. A
+  transferencia parcial e bloqueada para preservar os movimentos de estoque,
+  snapshots e estornos vinculados ao item original.
+- Producao e impressao sao controladas por `feature.production`, independente
+  de `feature.commands`, porque vendas diretas tambem podem emitir producao.
+
 ## Pendencias do projeto
 
 - executar os workflows no GitHub apos o push para confirmar permissoes do

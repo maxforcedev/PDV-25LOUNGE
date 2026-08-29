@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -42,6 +42,8 @@ import {
   moneyCents,
   purchaseStatusLabels,
   purchaseTypeLabels,
+  purchaseBaseEquivalent,
+  purchasePresentationLabel,
   readReceiptKeys,
   receiptPayloadFingerprint,
   reconcileReceiptKeys,
@@ -60,7 +62,7 @@ import type {
 type ReasonAction = "cancel" | "close-partial";
 type InstallmentDraft = { amount: string; due_date: string; notes: string };
 const statusTone: Record<PurchaseOrderStatus, string> = {
-  DRAFT: "bg-info-surface text-info-strong",
+  DRAFT: "bg-warning/15 text-warning-strong",
   PLACED: "bg-info-surface text-info-strong",
   PARTIALLY_RECEIVED: "bg-warning/15 text-warning-strong",
   RECEIVED: "bg-success/10 text-success-strong",
@@ -79,7 +81,10 @@ function quantityText(value: bigint) {
 
 function PurchaseDetail() {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const id = pathname.split("/").filter(Boolean).at(-1)!;
+  const returnHref =
+    searchParams.get("origin") === "payables" ? "/contas-a-pagar" : "/compras";
   const { currentBranch, hasPermission, supportSession } = useAuth();
   const branchId = currentBranch?.id;
   const readOnly = supportSession?.mode === "READ_ONLY";
@@ -112,7 +117,7 @@ function PurchaseDetail() {
   const [attachmentInputKey, setAttachmentInputKey] = useState(0);
   const [attachmentError, setAttachmentError] = useState("");
   const [attachmentBusy, setAttachmentBusy] = useState<
-    "upload" | "download" | ""
+    "upload" | "download" | "remove" | ""
   >("");
   const [edit, setEdit] = useState({
     global_discount: "",
@@ -193,7 +198,7 @@ function PurchaseDetail() {
     return {
       items: rows.map((row) => ({
         purchase_order_item: row.item.id,
-        received_quantity: quantityText(decimalToScaled(row.now, 6)),
+        received_stock_quantity: quantityText(decimalToScaled(row.now, 6)),
         divergence_reason:
           row.divergence !== BigInt(0) ? reasonText.trim() : "",
       })),
@@ -204,7 +209,7 @@ function PurchaseDetail() {
   function initializeReceipt(current: PurchaseOrder) {
     if (!current) return;
     const quantities = Object.fromEntries(
-      current.items.map((item) => [item.id, item.pending_quantity]),
+      current.items.map((item) => [item.id, item.pending_stock_quantity]),
     );
     setReceived(quantities);
     setReceiptReason("");
@@ -234,8 +239,8 @@ function PurchaseDetail() {
   function receiptRows(current: PurchaseOrder, quantities = received) {
     return current.items.map((item) => {
       const now = quantities[item.id] || "0";
-      const ordered = decimalToScaled(item.ordered_quantity, 6);
-      const previous = decimalToScaled(item.received_quantity, 6);
+      const ordered = decimalToScaled(item.ordered_stock_quantity, 6);
+      const previous = decimalToScaled(item.received_stock_quantity, 6);
       const currentValue = decimalToScaled(now, 6);
       const accumulated = previous + currentValue;
       return {
@@ -244,8 +249,9 @@ function PurchaseDetail() {
         ordered,
         previous,
         accumulated,
-        pending: ordered - accumulated,
-        divergence: currentValue - (ordered - previous),
+        pending: ordered > accumulated ? ordered - accumulated : BigInt(0),
+        divergence:
+          currentValue - (ordered > previous ? ordered - previous : BigInt(0)),
       };
     });
   }
@@ -274,6 +280,7 @@ function PurchaseDetail() {
     try {
       const next = await http.post<PurchaseOrder>(
         `purchase-orders/${order.id}/place/`,
+        { exclusive_supplier_override: order.exclusive_supplier_override },
       );
       setOrder(next);
       setSuccess("Pedido realizado com sucesso.");
@@ -547,7 +554,7 @@ function PurchaseDetail() {
     body.append("attachment", attachmentFile);
     try {
       const next = await http.postForm<PurchaseOrder>(
-        `purchase-orders/${order.id}/attachment/`,
+        `purchase-orders/${order.id}/attachments/`,
         body,
       );
       setOrder(next);
@@ -565,16 +572,15 @@ function PurchaseDetail() {
     }
   }
 
-  async function downloadAttachment() {
-    if (!order?.attachment) return;
+  async function downloadAttachment(attachment: NonNullable<PurchaseOrder["attachments"]>[number]) {
     setAttachmentBusy("download");
     setAttachmentError("");
     try {
-      const result = await http.download(order.attachment.download_url);
+      const result = await http.download(attachment.download_url);
       const url = URL.createObjectURL(result.blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = result.filename || order.attachment.name;
+      link.download = result.filename || attachment.name;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -584,6 +590,26 @@ function PurchaseDetail() {
         caught instanceof ApiError
           ? caught.message
           : "Não foi possível baixar o anexo.",
+      );
+    } finally {
+      setAttachmentBusy("");
+    }
+  }
+
+  async function removeAttachment(attachmentId: number) {
+    if (!order || !canCreate) return;
+    setAttachmentBusy("remove");
+    setAttachmentError("");
+    try {
+      const next = await http.post<PurchaseOrder>(
+        `purchase-orders/${order.id}/attachments/${attachmentId}/remove/`,
+        {},
+      );
+      setOrder(next);
+      setSuccess("Anexo removido com sucesso.");
+    } catch (caught) {
+      setAttachmentError(
+        caught instanceof ApiError ? caught.message : "Não foi possível remover o anexo.",
       );
     } finally {
       setAttachmentBusy("");
@@ -622,7 +648,7 @@ function PurchaseDetail() {
         description={`${order.branch_name} · ${purchaseTypeLabels[order.order_type]}`}
         action={
           <div className="flex flex-wrap gap-2">
-            <Link href="/compras" className="btn btn-secondary">
+            <Link href={returnHref} className="btn btn-secondary">
               <ArrowLeft className="size-4" />
               Voltar
             </Link>
@@ -752,16 +778,37 @@ function PurchaseDetail() {
                         </small>
                       </td>
                       <td>
-                        {item.presentation_unit_code} ·{" "}
-                        {item.presentation_description}
+                        {purchasePresentationLabel(
+                          item.presentation_unit_code,
+                          item.presentation_description,
+                        )}
                         <small className="block text-muted">
-                          Fator {formatQuantity(item.conversion_factor)}
+                          {purchaseBaseEquivalent(
+                            item.ordered_stock_quantity,
+                            item.conversion_factor,
+                            item.presentation_description,
+                            item.product_stock_unit,
+                          )}
                         </small>
                       </td>
                       <td>{formatQuantity(item.ordered_quantity)}</td>
-                      <td>{formatQuantity(item.received_quantity)}</td>
+                      <td>
+                        {formatQuantity(item.received_quantity)}
+                        <small className="block text-muted">
+                          {formatQuantity(
+                            item.received_stock_quantity,
+                            item.product_stock_unit,
+                          )}
+                        </small>
+                      </td>
                       <td className="font-bold">
                         {formatQuantity(item.pending_quantity)}
+                        <small className="block text-muted">
+                          {formatQuantity(
+                            item.pending_stock_quantity,
+                            item.product_stock_unit,
+                          )}
+                        </small>
                       </td>
                       {canCosts && (
                         <>
@@ -819,21 +866,36 @@ function PurchaseDetail() {
             </p>
           </div>
           <div className="space-y-2 xl:col-span-2">
-            <span className="label">Anexo</span>
-            {order.attachment ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="min-w-0 flex-1 truncate text-xs font-semibold">
-                  {order.attachment.name}
-                </span>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  loading={attachmentBusy === "download"}
-                  disabled={!!attachmentBusy}
-                  onClick={() => void downloadAttachment()}
-                >
-                  <Download className="size-4" /> Baixar
-                </Button>
+            <span className="label">Anexos</span>
+            {order.attachments.length ? (
+              <div className="space-y-2">
+                {order.attachments.map((attachment) => (
+                  <div key={attachment.id} className="flex flex-wrap items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate text-xs font-semibold">
+                      {attachment.name}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      loading={attachmentBusy === "download"}
+                      disabled={!!attachmentBusy}
+                      onClick={() => void downloadAttachment(attachment)}
+                    >
+                      <Download className="size-4" /> Baixar
+                    </Button>
+                    {canCreate && (
+                      <Button
+                        type="button"
+                        variant="danger"
+                        loading={attachmentBusy === "remove"}
+                        disabled={!!attachmentBusy}
+                        onClick={() => void removeAttachment(attachment.id)}
+                      >
+                        Remover
+                      </Button>
+                    )}
+                  </div>
+                ))}
               </div>
             ) : (
               <p className="text-xs text-muted">Nenhum anexo.</p>
@@ -856,7 +918,7 @@ function PurchaseDetail() {
                   onClick={() => void uploadAttachment()}
                 >
                   <FileUp className="size-4" />
-                  {order.attachment ? "Substituir" : "Enviar"}
+                  Enviar
                 </Button>
               </div>
             )}
@@ -969,8 +1031,9 @@ function PurchaseDetail() {
                           <th>Anterior</th>
                           <th>Agora</th>
                           <th>Acumulado</th>
-                          <th>Pendente</th>
-                          <th>Divergência</th>
+                           <th>Pendente</th>
+                           <th>Divergência</th>
+                           {canCosts && <th>Financeiro</th>}
                         </tr>
                       </thead>
                       <tbody>
@@ -979,34 +1042,45 @@ function PurchaseDetail() {
                             <td>
                               <strong>{item.product_name_snapshot}</strong>
                               <small className="block text-muted">
-                                {item.presentation_snapshot}
+                                {item.presentation_snapshot.replace(" - ", " — ")}
                               </small>
                             </td>
                             <td>
-                              {formatQuantity(item.ordered_quantity_snapshot)}
+                              {formatQuantity(item.ordered_stock_quantity)}
                             </td>
                             <td>
-                              {formatQuantity(
-                                item.previously_received_quantity,
-                              )}
+                              {formatQuantity(item.previously_received_stock_quantity)}
                             </td>
-                            <td>{formatQuantity(item.received_quantity)}</td>
-                            <td>{formatQuantity(item.accumulated_quantity)}</td>
-                            <td>{formatQuantity(item.pending_quantity)}</td>
+                            <td>{formatQuantity(item.stock_quantity)}</td>
+                            <td>{formatQuantity(item.accumulated_stock_quantity)}</td>
+                            <td>{formatQuantity(item.pending_stock_quantity)}</td>
                             <td
                               className={
-                                compareDecimal(item.divergence_quantity, "0")
+                                compareDecimal(item.divergence_stock_quantity, "0")
                                   ? "font-bold text-warning-strong"
                                   : ""
                               }
                             >
-                              {formatQuantity(item.divergence_quantity)}
+                              {formatQuantity(item.divergence_stock_quantity)}
                               {item.divergence_reason && (
                                 <small className="block text-muted">
                                   {item.divergence_reason}
                                 </small>
                               )}
                             </td>
+                            {canCosts && (
+                              <td className="text-xs">
+                                <span className="block">
+                                  Pedido: {formatBRL(item.ordered_total)}
+                                </span>
+                                <span className="block">
+                                  Recebido: {formatBRL(item.received_total)}
+                                </span>
+                                <span className="block text-muted">
+                                  Diferença: {formatBRL(item.difference_total)}
+                                </span>
+                              </td>
+                            )}
                           </tr>
                         ))}
                       </tbody>
@@ -1050,9 +1124,9 @@ function PurchaseDetail() {
                 <thead>
                   <tr>
                     <th>Produto</th>
-                    <th>Pedido</th>
+                    <th>Pedido (base)</th>
                     <th>Anterior</th>
-                    <th>Agora</th>
+                    <th>Quantidade recebida</th>
                     <th>Acumulado</th>
                     <th>Pendente</th>
                     <th>Divergência</th>
@@ -1072,11 +1146,24 @@ function PurchaseDetail() {
                         <td>
                           <strong>{item.product_name}</strong>
                           <small className="block text-muted">
-                            {item.presentation_unit_code}
+                            {purchasePresentationLabel(
+                              item.presentation_unit_code,
+                              item.presentation_description,
+                            )}
                           </small>
                         </td>
-                        <td>{formatQuantity(quantityText(ordered))}</td>
-                        <td>{formatQuantity(quantityText(previous))}</td>
+                        <td>
+                          {formatQuantity(
+                            quantityText(ordered),
+                            item.product_stock_unit,
+                          )}
+                        </td>
+                        <td>
+                          {formatQuantity(
+                            quantityText(previous),
+                            item.product_stock_unit,
+                          )}
+                        </td>
                         <td>
                           <Input
                             className="w-28"
@@ -1097,8 +1184,21 @@ function PurchaseDetail() {
                               order.order_type === "DIRECT"
                             }
                           />
+                          <small className="mt-1 block text-muted">
+                            Equivalente: {purchaseBaseEquivalent(
+                              received[item.id] || "0",
+                              item.conversion_factor,
+                              item.presentation_description,
+                              item.product_stock_unit,
+                            )}
+                          </small>
                         </td>
-                        <td>{formatQuantity(quantityText(accumulated))}</td>
+                        <td>
+                          {formatQuantity(
+                            quantityText(accumulated),
+                            item.product_stock_unit,
+                          )}
+                        </td>
                         <td
                           className={
                             pending
@@ -1106,14 +1206,20 @@ function PurchaseDetail() {
                               : "font-bold text-success-strong"
                           }
                         >
-                          {formatQuantity(quantityText(pending))}
+                          {formatQuantity(
+                            quantityText(pending),
+                            item.product_stock_unit,
+                          )}
                         </td>
                         <td
                           className={
                             divergence ? "font-bold text-warning-strong" : ""
                           }
                         >
-                          {formatQuantity(quantityText(divergence))}
+                          {formatQuantity(
+                            quantityText(divergence),
+                            item.product_stock_unit,
+                          )}
                         </td>
                       </tr>
                     ),

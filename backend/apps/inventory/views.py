@@ -5,12 +5,14 @@ import mimetypes
 from django.core.exceptions import ObjectDoesNotExist
 from django.http import FileResponse
 from django.db.models import (
-    CharField, Count, F, IntegerField, OuterRef, Prefetch, Q, Subquery,
+    Case, CharField, Count, DecimalField, ExpressionWrapper, F, IntegerField,
+    OuterRef, Prefetch, Q, Subquery, Value, When,
 )
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.exceptions import NotFound
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
@@ -21,9 +23,12 @@ from apps.base.datetimes import (
     parse_datetime_range,
 )
 from apps.base.exceptions import DomainValidationError
+from apps.base.audit import audit_log
+from apps.base.report_exports import render_report_export, report_key_value_rows
 from apps.companies.models import Branch, BranchSettings, Status
-from apps.companies.selectors import accessible_branches, user_has_branch_permission
+from apps.companies.selectors import accessible_branches, user_has_branch_permission, user_has_company_permission
 from apps.products.models import Category, Product
+from apps.purchases.models import PurchaseReceipt
 
 from .content import content_breakdown, exact_multiply, exact_sum
 from .models import (
@@ -247,7 +252,47 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
             branch__in=branches,
             product__inventory_behavior='direct',
         )
-        return self._filtered_queryset(queryset)
+        queryset = self._filtered_queryset(queryset)
+        ordering = self.request.query_params.get('ordering', 'product')
+        descending = ordering.startswith('-')
+        ordering = ordering.removeprefix('-')
+        fields = {
+            'product': 'product__name',
+            'category': 'product__category__name',
+            'balance': 'current_quantity',
+            'average_unit_cost': 'average_unit_cost',
+            'last_unit_cost': 'last_unit_cost',
+            'total_cost': 'total_cost_sort',
+        }
+        if ordering not in fields:
+            raise ValidationError({
+                'ordering': 'Informe product, category, balance, average_unit_cost, last_unit_cost ou total_cost.'
+            })
+        if ordering == 'total_cost':
+            cost_field = DecimalField(max_digits=28, decimal_places=12)
+            queryset = queryset.annotate(
+                total_cost_sort=Case(
+                    When(
+                        current_quantity__gt=0,
+                        then=ExpressionWrapper(
+                            F('current_quantity') * Coalesce(
+                                F('average_unit_cost'), F('product__cost')
+                            ),
+                            output_field=cost_field,
+                        ),
+                    ),
+                    default=Value(0, output_field=cost_field),
+                    output_field=cost_field,
+                )
+            )
+        order_field = fields[ordering]
+        if ordering in ('average_unit_cost', 'last_unit_cost'):
+            ordering_expression = (
+                F(order_field).desc(nulls_last=True)
+                if descending else F(order_field).asc(nulls_last=True)
+            )
+            return queryset.order_by(ordering_expression, 'pk')
+        return queryset.order_by(f'-{order_field}' if descending else order_field, 'pk')
 
     @action(detail=False, methods=('get',))
     def summary(self, request):
@@ -357,8 +402,24 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
         branches = _scoped_inventory_branches(self.request, code)
         queryset = _with_operation_count(StockMovement.objects.select_related(
             'stock', 'stock__product', 'stock__branch', 'stock__branch__company',
-            'user', 'sale',
+            'user', 'sale', 'order_item__order__command',
+            'transfer_item__transfer',
+            'transfer_resolution__divergence__transfer_item__transfer',
+            'loss_record', 'inventory_count_item__inventory_count',
         ).filter(stock__branch__in=branches))
+        purchase_receipt = PurchaseReceipt.objects.filter(
+            pk=OuterRef('operation_reference')
+        )
+        queryset = queryset.annotate(
+            purchase_order_id=Subquery(
+                purchase_receipt.values('purchase_order_id')[:1],
+                output_field=IntegerField(),
+            ),
+            purchase_order_number=Subquery(
+                purchase_receipt.values('purchase_order__order_number')[:1],
+                output_field=CharField(),
+            ),
+        )
         params = self.request.query_params
         query = StockMovementQuerySerializer(data=params)
         query.is_valid(raise_exception=True)
@@ -1050,6 +1111,12 @@ class AdvancedInventoryReportViewSet(viewsets.ViewSet):
         branch = getattr(request, 'branch_context', None)
         if branch is None:
             raise PermissionDenied('Selecione uma filial para consultar o relatorio.')
+        if request.query_params.get('export') in ('csv', 'xlsx', 'pdf') and not (
+            request.user.is_superuser or user_has_company_permission(
+                request.user, branch.company_id, 'reports.export'
+            )
+        ):
+            raise PermissionDenied('Você não possui permissão para exportar relatórios.')
         start = filters.get('start_datetime')
         end = filters.get('end_datetime')
         product = filters.get('product')
@@ -1701,7 +1768,7 @@ class AdvancedInventoryReportViewSet(viewsets.ViewSet):
             for value in StockTransferStatus.values
         }
         state_basis = 'as_of_period_end' if has_period else 'current_state'
-        return Response({
+        data = {
             'branch': branch.pk,
             'filters': {
                 'start_datetime': start.isoformat() if start else None,
@@ -1804,4 +1871,15 @@ class AdvancedInventoryReportViewSet(viewsets.ViewSet):
                     'in_transit': state_in_transit_rows,
                 },
             },
-        })
+        }
+        if request.query_params.get('export') in ('csv', 'xlsx', 'pdf'):
+            response = render_report_export(
+                request, filename='relatorio-avancado-estoque.csv',
+                title='Relatório avançado de estoque',
+                headers=('indicator', 'value'), rows=report_key_value_rows(data),
+                period=data['filters'],
+            )
+            audit_log(actor=request.user, action='report.export', company=branch.company, branch=branch,
+                      metadata={'report': 'advanced_inventory', 'format': request.query_params['export']})
+            return response
+        return Response(data)

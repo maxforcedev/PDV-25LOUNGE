@@ -19,6 +19,7 @@ class CashRegisterStatus(models.TextChoices):
 class CashSessionStatus(models.TextChoices):
     OPEN = 'open', 'Aberto'
     CLOSED = 'closed', 'Fechado'
+    CANCELLED = 'cancelled', 'Anulado'
 
 
 class CashMovementType(models.TextChoices):
@@ -118,6 +119,12 @@ class CashSession(BaseModel):
     closing_difference = models.DecimalField(
         max_digits=14, decimal_places=2, blank=True, null=True
     )
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='cancelled_cash_sessions', blank=True, null=True,
+    )
+    cancelled_at = models.DateTimeField(blank=True, null=True)
+    cancellation_reason = models.TextField(blank=True)
 
     class Meta:
         ordering = ('-opened_at', '-pk')
@@ -152,6 +159,14 @@ class CashSession(BaseModel):
                     & Q(closing_expected_amount__isnull=False)
                     & Q(closing_amount_informed__isnull=False)
                     & Q(closing_difference__isnull=False)
+                )
+                | (
+                    Q(status=CashSessionStatus.CANCELLED)
+                    & Q(closed_by__isnull=True) & Q(closed_at__isnull=True)
+                    & Q(closing_expected_amount__isnull=True)
+                    & Q(closing_amount_informed__isnull=True)
+                    & Q(closing_difference__isnull=True)
+                    & Q(cancelled_by__isnull=False) & Q(cancelled_at__isnull=False)
                 ),
                 name='cash_session_status_closing_coherent',
             ),
@@ -179,6 +194,10 @@ class CashSession(BaseModel):
             value is None for value in closing_values
         ):
             raise ValidationError({'status': 'O fechamento da sessão está incompleto.'})
+        if self.status == CashSessionStatus.CANCELLED and (
+            not self.cancelled_by_id or not self.cancelled_at or not self.cancellation_reason.strip()
+        ):
+            raise ValidationError({'status': 'A anulação da sessão está incompleta.'})
         if self.opening_amount is not None and self.opening_amount < Decimal('0'):
             raise ValidationError({'opening_amount': 'O valor não pode ser negativo.'})
         if (
@@ -191,7 +210,7 @@ class CashSession(BaseModel):
 
     def save(self, *args, **kwargs):
         if self.pk and CashSession.objects.filter(
-            pk=self.pk, status=CashSessionStatus.CLOSED
+            pk=self.pk, status__in=(CashSessionStatus.CLOSED, CashSessionStatus.CANCELLED)
         ).exists():
             raise ValidationError('Sessões de caixa fechadas são imutáveis.')
         self.full_clean()

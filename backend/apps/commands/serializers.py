@@ -1,10 +1,10 @@
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from rest_framework import serializers
 
 from apps.accounts.models import User
 from .models import (
-    Command, CommandStatus, Order, OrderItem, OrderItemStatus, OrderStatus,
+    Command, CommandPayment, CommandStatus, Order, OrderItem, OrderItemStatus, OrderStatus,
     Table, TableStatus,
 )
 
@@ -25,6 +25,9 @@ class OperationalCommandSerializer(serializers.Serializer):
     identifier = serializers.CharField()
     open_items_count = serializers.IntegerField()
     confirmed_total = serializers.DecimalField(max_digits=14, decimal_places=2)
+    paid_total = serializers.DecimalField(max_digits=14, decimal_places=2)
+    opened_at = serializers.DateTimeField(source='created_at')
+    opened_by_name = serializers.CharField()
 
 
 class OperationalTableSerializer(TableSerializer):
@@ -47,15 +50,16 @@ class OperationalTableSerializer(TableSerializer):
 
 class BatchTableSerializer(serializers.Serializer):
     branch = serializers.IntegerField(min_value=1)
-    prefix = serializers.CharField(max_length=50, required=False)
-    start = serializers.IntegerField(min_value=1, required=False, default=1)
+    prefix = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    start = serializers.IntegerField(min_value=1, required=False)
     end = serializers.IntegerField(min_value=1, required=False)
     seats = serializers.IntegerField(min_value=0, required=False)
 
     def validate(self, attrs):
-        if attrs.get('end') is not None and attrs['end'] < attrs['start']:
+        start = attrs.get('start', 1)
+        if attrs.get('end') is not None and attrs['end'] < start:
             raise serializers.ValidationError({'end': 'O número final deve ser maior ou igual ao inicial.'})
-        if attrs.get('end') is not None and attrs['end'] - attrs['start'] >= 500:
+        if attrs.get('end') is not None and attrs['end'] - start >= 500:
             raise serializers.ValidationError({'end': 'Máximo de 500 mesas por lote.'})
         return attrs
 
@@ -67,12 +71,12 @@ class CommandSerializer(serializers.ModelSerializer):
     class Meta:
         model = Command
         fields = (
-            'id', 'company', 'branch', 'table', 'table_name', 'command_number', 'identifier',
+            'id', 'company', 'branch', 'table', 'table_name', 'customer', 'command_number', 'identifier',
             'status', 'opened_by', 'closed_at', 'closed_by', 'sale',
             'open_items_count', 'created_at', 'updated_at',
         )
         read_only_fields = (
-            'id', 'company', 'branch', 'table', 'command_number', 'identifier', 'status', 'opened_by',
+            'id', 'company', 'branch', 'table', 'customer', 'command_number', 'identifier', 'status', 'opened_by',
             'closed_at', 'closed_by', 'sale', 'open_items_count',
             'created_at', 'updated_at',
         )
@@ -132,7 +136,7 @@ class CancelOrderItemSerializer(serializers.Serializer):
 class FinalizeCommandSerializer(serializers.Serializer):
     idempotency_key = serializers.UUIDField()
     cash_session = serializers.IntegerField(min_value=1)
-    payments = serializers.ListField(child=serializers.DictField(), allow_empty=False)
+    payments = serializers.ListField(child=serializers.DictField(), allow_empty=True, required=False, default=list)
     seller_user = serializers.IntegerField(required=False)
     discount = serializers.DecimalField(
         max_digits=14, decimal_places=2, required=False, default=Decimal('0.00')
@@ -164,9 +168,52 @@ class FinalizeCommandSerializer(serializers.Serializer):
 class OpenCommandSerializer(serializers.Serializer):
     table = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     identifier = serializers.CharField(max_length=100, required=False, allow_blank=True, default='')
+    customer = serializers.IntegerField(min_value=1, required=False, allow_null=True)
 
     def validate_identifier(self, value):
         return ' '.join(value.split())
+
+
+class SetCommandCustomerSerializer(serializers.Serializer):
+    customer = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+
+
+class CommandPaymentSerializer(serializers.ModelSerializer):
+    payment_method_name = serializers.CharField(source='payment_method.name', read_only=True)
+    payment_method_code = serializers.CharField(source='payment_method.code', read_only=True)
+
+    class Meta:
+        model = CommandPayment
+        fields = ('id', 'command', 'payment_method', 'payment_method_name', 'payment_method_code',
+                  'amount', 'received_amount', 'change_amount', 'cash_session', 'operator', 'status',
+                  'idempotency_key', 'reversal_of', 'reversal_reason', 'created_at')
+        read_only_fields = fields
+
+
+class RecordCommandPaymentSerializer(serializers.Serializer):
+    payment_method = serializers.IntegerField(min_value=1)
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0.01'))
+    received_amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0.00'), required=False, allow_null=True)
+    cash_session = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    idempotency_key = serializers.UUIDField()
+    discount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+    discount_authorization = serializers.DictField(required=False)
+    service_fee_waived = serializers.BooleanField(required=False)
+    service_fee_authorization = serializers.DictField(required=False)
+
+    def _authorization(self, value):
+        return FinalizeCommandSerializer()._authorization(value)
+
+    def validate_discount_authorization(self, value):
+        return self._authorization(value)
+
+    def validate_service_fee_authorization(self, value):
+        return self._authorization(value)
+
+
+class ReverseCommandPaymentSerializer(serializers.Serializer):
+    idempotency_key = serializers.UUIDField()
+    reason = serializers.CharField(min_length=3, max_length=500)
 
 
 class CommandCalculationSerializer(serializers.Serializer):
@@ -175,3 +222,47 @@ class CommandCalculationSerializer(serializers.Serializer):
         max_digits=14, decimal_places=2, required=False, default=Decimal('0.00')
     )
     service_fee_waived = serializers.BooleanField(required=False, default=False)
+
+
+class TransferTableSerializer(serializers.Serializer):
+    table = serializers.IntegerField(min_value=1, allow_null=True, required=False)
+    idempotency_key = serializers.UUIDField()
+
+
+class TransferItemsSerializer(serializers.Serializer):
+    command = serializers.IntegerField(min_value=1)
+    items = serializers.ListField(child=serializers.DictField(), allow_empty=False)
+    idempotency_key = serializers.UUIDField()
+
+    def validate_items(self, value):
+        seen = set()
+        for entry in value:
+            if set(entry) != {'item', 'quantity'}:
+                raise serializers.ValidationError('Cada item deve conter apenas item e quantity.')
+            try:
+                item_id = int(entry['item'])
+                quantity = Decimal(str(entry['quantity']))
+            except (KeyError, TypeError, ValueError, InvalidOperation):
+                raise serializers.ValidationError('Item ou quantidade inválidos.')
+            if item_id < 1 or quantity <= 0 or quantity.as_tuple().exponent < -3:
+                raise serializers.ValidationError('Item e quantidade devem ser positivos.')
+            if item_id in seen:
+                raise serializers.ValidationError('Um item só pode ser informado uma vez.')
+            seen.add(item_id)
+            entry['item'] = item_id
+            entry['quantity'] = quantity
+        return value
+
+
+class MergeCommandSerializer(serializers.Serializer):
+    command = serializers.IntegerField(min_value=1)
+    idempotency_key = serializers.UUIDField()
+
+
+class SplitCommandSerializer(TransferItemsSerializer):
+    command = None
+    table = serializers.IntegerField(min_value=1, allow_null=True, required=False)
+    identifier = serializers.CharField(max_length=100, required=False, allow_blank=True, default='')
+
+    def validate_identifier(self, value):
+        return ' '.join(value.split())

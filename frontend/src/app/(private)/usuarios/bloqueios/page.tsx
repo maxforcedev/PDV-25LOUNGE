@@ -76,6 +76,7 @@ function PermissionBlocks() {
   });
   const [data, setData] = useState<Paginated<UserPermissionBlock> | null>(null);
   const [userId, setUserId] = useState("");
+  const [scopedUser, setScopedUser] = useState(false);
   const [branchId, setBranchId] = useState("");
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
   const [selectedBlockIds, setSelectedBlockIds] = useState<Set<number>>(
@@ -94,7 +95,7 @@ function PermissionBlocks() {
     useState<BlockListFilters>(emptyListFilters);
   const canChange = hasPermission(permissions.changePermissionBlock);
 
-  async function loadBlocks(path?: string, selected = appliedFilters) {
+  async function loadBlocks(path?: string, selected = appliedFilters, scopedUser = userId) {
     if (!currentCompany) return;
     const params = new URLSearchParams({ company: String(currentCompany.id) });
     if (selected.search.trim()) params.set("search", selected.search.trim());
@@ -103,6 +104,7 @@ function PermissionBlocks() {
     if (selected.scope) params.set("scope", selected.scope);
     if (selected.branch) params.set("branch", selected.branch);
     if (selected.active) params.set("active", selected.active);
+    if (scopedUser) params.set("user", scopedUser);
     setLoading(true);
     try {
       setData(
@@ -145,7 +147,9 @@ function PermissionBlocks() {
   }
 
   useEffect(() => {
-    setUserId("");
+    const scopedUser = new URLSearchParams(window.location.search).get("user") || "";
+    setScopedUser(!!scopedUser);
+    setUserId(scopedUser);
     setBranchId("");
     setSelectedCodes(new Set());
     setCandidateSearch("");
@@ -160,9 +164,9 @@ function PermissionBlocks() {
     setLoading(true);
     setError("");
     Promise.all([
-      loadBlocks(undefined, cleared),
+       loadBlocks(undefined, cleared, scopedUser),
       loadListOptions(),
-      canChange ? loadOptions("", "") : Promise.resolve(),
+       canChange ? loadOptions(scopedUser, "") : Promise.resolve(),
     ])
       .catch((caught) =>
         setError(
@@ -352,7 +356,7 @@ function PermissionBlocks() {
     <>
       <PageHeader
         title="Bloqueios individuais"
-        description="Retire várias permissões herdadas sem alterar o perfil-base."
+        description={scopedUser ? "Gerencie bloqueios exclusivamente para o usuário selecionado." : "Retire várias permissões herdadas sem alterar o perfil-base."}
         action={
           <Link href="/usuarios" className="btn btn-secondary">
             <ArrowLeft className="size-4" />
@@ -381,7 +385,7 @@ function PermissionBlocks() {
                   required
                   value={userId}
                   onChange={(event) => changeUser(event.target.value)}
-                  disabled={loading || saving}
+                  disabled={loading || saving || scopedUser}
                 >
                   <option value="">Selecione um usuário</option>
                   {options.users.map((item) => (

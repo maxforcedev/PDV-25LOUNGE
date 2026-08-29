@@ -170,7 +170,8 @@ class PromotionViewSet(
     @action(detail=False, methods=('get',), url_path='target-options')
     def target_options(self, request):
         company_id = request.branch_context.company_id
-        products = Product.objects.filter(company_id=company_id).order_by('name', 'id')
+        include_products = request.query_params.get('products', 'true').lower() != 'false'
+        products = Product.objects.filter(company_id=company_id).order_by('name', 'id') if include_products else ()
         categories = Category.objects.filter(company_id=company_id).order_by(
             'sort_order', 'name', 'id'
         )
@@ -272,7 +273,7 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         queryset = Sale.objects.select_related(
             'company', 'branch', 'cash_session', 'created_by', 'seller_user',
-            'discount_approved_by', 'service_fee_waived_by', 'beneficiary_user', 'cancelled_by'
+            'discount_approved_by', 'service_fee_waived_by', 'beneficiary_user', 'customer', 'cancelled_by'
         ).prefetch_related(
             'items__product', 'items__discount_approved_by', 'payments__payment_method'
         )
@@ -322,6 +323,7 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
     def beneficiaries(self, request):
         queryset = User.objects.filter(
             is_active=True,
+            archived_at__isnull=True,
             company_accesses__company_id=request.branch_context.company_id,
             company_accesses__is_active=True,
         ).distinct().order_by('first_name', 'last_name', 'email', 'id')
@@ -366,6 +368,20 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
             'components__component_product',
             Prefetch(
                 'modifier_groups',
+                queryset=ProductModifierGroup.objects.filter(
+                    status=Status.ACTIVE,
+                    modifier_group__status=Status.ACTIVE,
+                ).select_related('modifier_group').prefetch_related(
+                    Prefetch(
+                        'modifier_group__options',
+                        queryset=ModifierOption.objects.filter(status=Status.ACTIVE),
+                        to_attr='operational_options',
+                    )
+                ).order_by('sort_order', 'id'),
+                to_attr='operational_modifier_group_links',
+            ),
+            Prefetch(
+                'components__component_product__modifier_groups',
                 queryset=ProductModifierGroup.objects.filter(
                     status=Status.ACTIVE,
                     modifier_group__status=Status.ACTIVE,
@@ -454,7 +470,7 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
         replayed = bool(getattr(sale, '_idempotency_replayed', False))
         sale = Sale.objects.select_related(
             'company', 'branch', 'cash_session', 'created_by', 'seller_user',
-            'discount_approved_by', 'service_fee_waived_by', 'beneficiary_user', 'cancelled_by'
+            'discount_approved_by', 'service_fee_waived_by', 'beneficiary_user', 'customer', 'cancelled_by'
         ).prefetch_related(
             'items__product', 'items__discount_approved_by', 'payments__payment_method'
         ).get(pk=sale.pk)
@@ -494,6 +510,12 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
             company=request.branch_context.company, is_active=True
         ).exists():
             raise PermissionDenied('Beneficiario fora da empresa da filial.')
+        customer = data.get('customer')
+        if customer and (
+            customer.company_id != request.branch_context.company_id
+            or customer.status != Status.ACTIVE
+        ):
+            raise PermissionDenied('Cliente inativo ou fora da empresa da filial.')
         try:
             result = calculate_preview(
                 company=request.branch_context.company,

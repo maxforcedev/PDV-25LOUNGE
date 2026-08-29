@@ -10,9 +10,11 @@ Covers mandatory test areas 6-12:
   12 TRACEABILITY
 """
 import uuid
+from datetime import timedelta
 from decimal import Decimal
 
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
@@ -32,15 +34,19 @@ from apps.commands.models import (
 )
 from apps.commands.services import (
     create_table, open_command, add_order_item, confirm_order_item,
-    cancel_order_item, finalize_command,
+    cancel_order_item, command_payment_summary, finalize_command, record_command_payment,
+    transfer_command_items, split_command, merge_commands, CommandConflict,
 )
 from apps.inventory.models import (
     MovementType, MovementDomainOrigin, Stock, StockMovement,
 )
+from apps.production.models import Ticket, TicketStatus
 from apps.products.models import (
     Category, Product, SalesChannel, Unit, InventoryBehavior,
 )
-from apps.sales.models import OperationType, Sale, SaleItem, SaleStatus
+from apps.sales.models import (
+    OperationType, Payment, Promotion, PromotionDiscountType, Sale, SaleItem, SaleStatus,
+)
 from apps.sales.services import (
     calculate_preview, calculate_command_preview, finalize_sale, cancel_sale,
     ensure_default_payment_methods,
@@ -143,6 +149,25 @@ class MultipleCommandsPerTableTests(Block6Fixture, TestCase):
         table = create_table(branch=self.branch, name='Mesa 4', user=self.owner)
         self.assertEqual(table.commands.filter(status=CommandStatus.OPEN).count(), 0)
 
+    def test_operational_map_includes_partial_payment_without_per_table_queries(self):
+        table = create_table(branch=self.branch, name='Mesa parcial', user=self.owner)
+        command = open_command(branch=self.branch, user=self.owner, table=table, identifier='João')
+        item = add_order_item(command=command, user=self.owner, product_id=self.product.pk, quantity=Decimal('2'))
+        confirm_order_item(item=item, user=self.owner, idempotency_key=uuid.uuid4())
+        record_command_payment(
+            command=command, user=self.owner, payment_method=self.cash_method.pk,
+            amount='5.00', received_amount='5.00', cash_session=self.open_cash_session().pk,
+            idempotency_key=uuid.uuid4(),
+        )
+        client = APIClient()
+        client.force_authenticate(self.owner)
+        response = client.get('/api/v1/tables/operational/', HTTP_X_BRANCH_ID=str(self.branch.pk))
+        self.assertEqual(response.status_code, 200, response.data)
+        row = next(row for row in response.data if row['id'] == table.pk)
+        self.assertEqual(row['operational_status'], 'occupied')
+        self.assertEqual(row['open_commands'][0]['paid_total'], '5.00')
+        self.assertEqual(row['open_commands'][0]['confirmed_total'], '20.00')
+
 
 class CommandConsumptionLimitTests(Block6Fixture, TestCase):
     def test_command_limit_uses_confirmed_gross_value(self):
@@ -176,6 +201,8 @@ class CommandConsumptionLimitTests(Block6Fixture, TestCase):
     def test_batch_table_api_uses_branch_defaults_when_values_are_omitted(self):
         settings = self.branch.settings
         settings.default_table_quantity = 2
+        settings.table_range_start = 1
+        settings.table_range_end = 2
         settings.default_table_seats = 4
         settings.default_table_prefix = 'Setor '
         settings.save()
@@ -186,6 +213,34 @@ class CommandConsumptionLimitTests(Block6Fixture, TestCase):
         self.assertEqual(response.data['created'], 2)
         self.assertEqual(list(Table.objects.order_by('name').values_list('name', flat=True)), ['Setor 1', 'Setor 2'])
         self.assertEqual(Table.objects.first().seats, 4)
+
+    def test_configured_range_creates_exactly_41_tables_and_is_idempotent(self):
+        client = APIClient()
+        client.force_authenticate(self.owner)
+        payload = {'branch': self.branch.pk, 'prefix': '', 'start': 10, 'end': 50, 'seats': 4}
+        response = client.post('/api/v1/tables/batch/', payload, format='json', HTTP_X_BRANCH_ID=str(self.branch.pk))
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['created'], 41)
+        self.assertEqual(Table.objects.filter(branch=self.branch).count(), 41)
+        response = client.post('/api/v1/tables/batch/', payload, format='json', HTTP_X_BRANCH_ID=str(self.branch.pk))
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['created'], 0)
+        self.branch.settings.refresh_from_db()
+        self.assertEqual((self.branch.settings.table_range_start, self.branch.settings.table_range_end), (10, 50))
+
+    def test_reducing_range_never_removes_historical_table(self):
+        historical = create_table(branch=self.branch, name='Mesa 50', user=self.owner)
+        command = open_command(branch=self.branch, user=self.owner, table=historical, identifier='Histórico')
+        client = APIClient()
+        client.force_authenticate(self.owner)
+        response = client.post(
+            '/api/v1/tables/batch/',
+            {'branch': self.branch.pk, 'prefix': 'Mesa ', 'start': 10, 'end': 20},
+            format='json', HTTP_X_BRANCH_ID=str(self.branch.pk),
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertTrue(Table.objects.filter(pk=historical.pk).exists())
+        self.assertEqual(Command.objects.get(pk=command.pk).table_id, historical.pk)
 
 
 class CommandStabilizationTests(Block6Fixture, TestCase):
@@ -323,6 +378,97 @@ class CommandFinancialEngineTests(Block6Fixture, TestCase):
         self.assertEqual(pdv_preview['total'], cmd_preview['total'])
 
 
+class CommandSettlementFinancialStateTests(Block6Fixture, TestCase):
+    def _confirmed_command(self, quantity='10'):
+        command = open_command(branch=self.branch, user=self.owner, identifier='Settlement')
+        item = add_order_item(command=command, user=self.owner, product_id=self.product.pk, quantity=Decimal(quantity))
+        confirm_order_item(item=item, user=self.owner, idempotency_key=uuid.uuid4())
+        return command
+
+    def test_partial_payment_uses_total_with_service_fee_and_preserves_provenance(self):
+        self.branch.settings.charges_service_fee = True
+        self.branch.settings.service_fee_rate = Decimal('10.00')
+        self.branch.settings.save()
+        command = self._confirmed_command()
+        session = self.open_cash_session()
+        ledger = record_command_payment(
+            command=command, user=self.owner, payment_method=self.cash_method.pk,
+            amount='100.00', received_amount='100.00', cash_session=session.pk,
+            idempotency_key=uuid.uuid4(),
+        )
+        self.assertEqual(command_payment_summary(command=command)['remaining_total'], '10.00')
+        key = uuid.uuid4()
+        finalized = finalize_command(
+            command=command, user=self.owner, idempotency_key=key, cash_session=session.pk,
+            payments=[{'payment_method': self.cash_method.pk, 'amount': 'auto', 'received_amount': '10.00'}],
+        )
+        copied = Payment.objects.get(source_command_payment=ledger)
+        self.assertEqual(copied.occurred_at, ledger.created_at)
+        self.assertEqual(Payment.objects.filter(sale=finalized.sale).count(), 2)
+        self.assertEqual(sum(finalized.sale.payments.values_list('amount', flat=True)), finalized.sale.total)
+        self.assertEqual(finalize_command(
+            command=command, user=self.owner, idempotency_key=key, cash_session=session.pk,
+            payments=[{'payment_method': self.cash_method.pk, 'amount': 'auto', 'received_amount': '10.00'}],
+        ).sale_id, finalized.sale_id)
+        self.assertEqual(Payment.objects.filter(sale=finalized.sale).count(), 2)
+
+    def test_promotion_total_and_manual_discount_bound_are_canonical(self):
+        promotion = Promotion.objects.create(
+            company=self.company, name='Ten percent', discount_type=PromotionDiscountType.PERCENTAGE,
+            discount_value=Decimal('10.00'), starts_at=timezone.now() - timedelta(minutes=1),
+        )
+        promotion.products.add(self.product)
+        command = self._confirmed_command()
+        self.assertEqual(command_payment_summary(command=command)['command_total'], '90.00')
+        session = self.open_cash_session()
+        with self.assertRaises(Exception):
+            record_command_payment(
+                command=command, user=self.owner, payment_method=self.cash_method.pk,
+                amount='1.00', received_amount='1.00', cash_session=session.pk,
+                discount='91.00', idempotency_key=uuid.uuid4(),
+            )
+
+
+class CommandPaidOperationGuardTests(Block6Fixture, TestCase):
+    def _paid_command(self):
+        command = open_command(branch=self.branch, user=self.owner, identifier='Paid guard')
+        item = add_order_item(command=command, user=self.owner, product_id=self.product.pk, quantity=Decimal('2'))
+        confirm_order_item(item=item, user=self.owner, idempotency_key=uuid.uuid4())
+        session = self.open_cash_session()
+        record_command_payment(
+            command=command, user=self.owner, payment_method=self.cash_method.pk,
+            amount='5.00', received_amount='5.00', cash_session=session.pk,
+            idempotency_key=uuid.uuid4(),
+        )
+        return command, item
+
+    def test_transfer_split_and_merge_reject_paid_commands_before_mutating_items(self):
+        source, item = self._paid_command()
+        destination = open_command(branch=self.branch, user=self.owner, identifier='Destination')
+        with self.assertRaises(CommandConflict) as transfer_error:
+            transfer_command_items(
+                command=source, destination_command_id=destination.pk,
+                items=[{'item': item.pk, 'quantity': '1'}], user=self.owner,
+                idempotency_key=uuid.uuid4(),
+            )
+        self.assertEqual(transfer_error.exception.detail['code'], 'command_payments_transfer_unsupported')
+        item.refresh_from_db()
+        self.assertEqual(item.order.command_id, source.pk)
+        self.assertEqual(item.quantity, Decimal('2'))
+        with self.assertRaises(CommandConflict):
+            split_command(
+                command=source, items=[{'item': item.pk, 'quantity': '1'}], table_id=None,
+                identifier='Split', user=self.owner, idempotency_key=uuid.uuid4(),
+            )
+        with self.assertRaises(CommandConflict):
+            merge_commands(
+                command=destination, source_command_id=source.pk, user=self.owner,
+                idempotency_key=uuid.uuid4(),
+            )
+        source.refresh_from_db()
+        self.assertEqual(source.status, CommandStatus.OPEN)
+
+
 class CommandFinalizePermissionTests(Block6Fixture, TestCase):
     def setUp(self):
         super().setUp()
@@ -440,6 +586,28 @@ class CommandCancellationTests(Block6Fixture, TestCase):
 
 
 class TraceabilityTests(Block6Fixture, TestCase):
+    def test_command_close_does_not_create_sale_sourced_ticket(self):
+        self.product.emits_ticket = True
+        self.product.save(update_fields=('emits_ticket', 'updated_at'))
+        command = open_command(branch=self.branch, user=self.owner, identifier='Ticket close')
+        item = add_order_item(command=command, user=self.owner, product_id=self.product.pk, quantity=Decimal('1'))
+        confirm_order_item(item=item, user=self.owner, idempotency_key=uuid.uuid4())
+        finalized = self.finalize_cmd(command)
+        self.assertEqual(Ticket.objects.filter(source_order_item=item).count(), 1)
+        self.assertFalse(Ticket.objects.filter(source_sale_item__sale=finalized.sale).exists())
+
+    def test_confirmed_ticket_is_order_sourced_and_cancelled_with_item(self):
+        self.product.emits_ticket = True
+        self.product.save(update_fields=('emits_ticket', 'updated_at'))
+        command = open_command(branch=self.branch, user=self.owner, identifier='Ticket')
+        item = add_order_item(command=command, user=self.owner, product_id=self.product.pk, quantity=Decimal('1'))
+        confirm_order_item(item=item, user=self.owner, idempotency_key=uuid.uuid4())
+        ticket = Ticket.objects.get(source_order_item=item)
+        self.assertEqual(ticket.status, TicketStatus.ISSUED)
+        cancel_order_item(item=item, user=self.owner, idempotency_key=uuid.uuid4(), reason='Test')
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, TicketStatus.CANCELLED)
+
     def test_full_traceability_chain(self):
         cmd = open_command(branch=self.branch, user=self.owner, identifier='Trace')
         item = add_order_item(command=cmd, user=self.owner, product_id=self.product.pk, quantity=Decimal('2'))

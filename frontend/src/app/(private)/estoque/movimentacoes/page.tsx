@@ -101,6 +101,22 @@ function balance(movement: StockMovement, final = false) {
   });
 }
 
+function originHref(movement: StockMovement) {
+  const origin = movement.origin;
+  if (!origin) return null;
+  const paths: Record<string, string> = {
+    sale: "/vendas",
+    consumption: "/consumacoes",
+    purchase: "/compras",
+    transfer: "/estoque/transferencias",
+    inventory_count: "/estoque/inventarios",
+    command: "/comandas",
+    loss: "/estoque/perdas",
+  };
+  const path = paths[origin.kind];
+  return path ? origin.kind === "loss" ? path : `${path}/${origin.id}` : null;
+}
+
 function Movements() {
   const { currentCompany, currentBranch } = useAuth();
   const [data, setData] = useState<Paginated<StockMovement> | null>(null);
@@ -389,12 +405,7 @@ function Movements() {
                   <tbody>
                     {data.results.map((movement) => {
                       const amount = signed(movement);
-                      const automatic = [
-                        "sale",
-                        "sale_cancellation",
-                        "consumption",
-                        "consumption_cancellation",
-                      ].includes(movement.type);
+                      const target = originHref(movement);
                       return (
                         <tr key={movement.id}>
                           <td className="whitespace-nowrap">
@@ -431,20 +442,20 @@ function Movements() {
                           </td>
                           <td>{movement.user_name}</td>
                           <td className="min-w-52">
-                            {automatic && movement.sale_number ? (
+                            {target ? (
                               <Link
                                 className="font-bold text-primary"
-                                href={`${movement.sale_operation_type === "consumption" ? "/consumacoes" : "/vendas"}/${movement.sale}`}
+                                href={target}
+                              >
+                                {movement.origin?.label}
+                              </Link>
+                            ) : (
+                              <Link
+                                className="font-bold text-primary"
+                                href={`/estoque/movimentacoes/${movement.id}`}
                               >
                                 {movement.operation_label}
                               </Link>
-                            ) : (
-                              <a
-                                className="font-bold text-primary"
-                                href={`/estoque/movimentacoes?operation_reference=${encodeURIComponent(movement.operation_reference)}`}
-                              >
-                                {movement.operation_label}
-                              </a>
                             )}
                             {movement.reason && (
                               <span className="mt-1 block text-slate-500">

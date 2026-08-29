@@ -4,7 +4,7 @@ from rest_framework import serializers
 
 from apps.base.exceptions import DomainValidationError
 from .models import (
-    AccessProfile, Branch, BranchSettings, Company, FunctionalPermission, Status,
+    AccessProfile, Branch, BranchSettings, Company, Customer, FunctionalPermission, Status,
     UserBranchAccess, UserCommissionOverride, UserCompanyAccess, UserPermissionBlock,
 )
 from .rbac import PERMISSION_SCOPE_BRANCH, permission_scope
@@ -17,6 +17,43 @@ from .selectors import (
 )
 from .services import create_branch_with_access, create_company_with_matrix
 from .validators import normalize_cnpj, validate_cnpj
+
+
+class CustomerSerializer(serializers.ModelSerializer):
+    duplicate_warning = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = Customer
+        fields = (
+            'id', 'company', 'name', 'phone', 'document', 'email', 'birth_date', 'notes',
+            'status', 'duplicate_warning', 'created_at', 'updated_at',
+        )
+        read_only_fields = ('id', 'status', 'duplicate_warning', 'created_at', 'updated_at')
+
+    def validate(self, attrs):
+        company = attrs.get('company', getattr(self.instance, 'company', None))
+        request = self.context['request']
+        permission = 'customers.change' if self.instance else 'customers.add'
+        if not company or not user_has_company_permission(request.user, company.pk, permission):
+            raise serializers.ValidationError({'company': 'Empresa fora do contexto autorizado.'})
+        if self.instance and company.pk != self.instance.company_id:
+            raise serializers.ValidationError({'company': 'A empresa do cliente não pode ser alterada.'})
+        return attrs
+
+    def get_duplicate_warning(self, customer):
+        matches = Customer.objects.filter(company_id=customer.company_id).exclude(pk=customer.pk)
+        from django.db.models import Q
+        query = Q()
+        if customer.phone:
+            query |= Q(phone=customer.phone)
+        if customer.email:
+            query |= Q(email=customer.email)
+        if not query:
+            return None
+        duplicate = matches.filter(query).order_by('id').first()
+        if not duplicate:
+            return None
+        return {'customer_id': duplicate.pk, 'name': duplicate.name, 'message': 'Possível cliente duplicado; nenhum merge foi realizado.'}
 
 
 class BranchSerializer(serializers.ModelSerializer):
@@ -36,6 +73,7 @@ class BranchSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Branch
+        validators = []
         fields = (
             'id',
             'company',
@@ -97,6 +135,17 @@ class BranchSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         request = self.context['request']
         company = attrs.get('company', getattr(self.instance, 'company', None))
+        context_company_id = request.query_params.get('company')
+        if not context_company_id:
+            context_branch_id = request.headers.get('X-Branch-ID')
+            if context_branch_id:
+                context_company_id = Branch.objects.filter(pk=context_branch_id).values_list('company_id', flat=True).first()
+        try:
+            context_company_id = int(context_company_id) if context_company_id else None
+        except (TypeError, ValueError) as error:
+            raise serializers.ValidationError({'company': 'Informe uma empresa válida.'}) from error
+        if context_company_id and company and context_company_id != company.pk:
+            raise serializers.ValidationError({'company': 'A filial deve pertencer à empresa selecionada.'})
         if self.instance and 'company' in attrs and attrs['company'] != self.instance.company:
             raise serializers.ValidationError({'company': 'A empresa da filial nao pode ser alterada.'})
         permission = 'branches.change' if self.instance else 'branches.add'
@@ -106,6 +155,15 @@ class BranchSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'company': 'Não é possível criar filial em empresa inativa.'})
         if attrs.get('status') == Status.ACTIVE and company.status != Status.ACTIVE:
             raise serializers.ValidationError({'status': 'Ative a empresa antes de ativar a filial.'})
+        name = attrs.get('name')
+        if name and company:
+            duplicate = Branch.objects.filter(company=company, name=name)
+            if self.instance:
+                duplicate = duplicate.exclude(pk=self.instance.pk)
+            if duplicate.exists():
+                raise serializers.ValidationError({
+                    'name': 'Já existe uma filial com esse nome nesta empresa.'
+                })
         if self.instance and 'address' in attrs and attrs['address'] != self.instance.address:
             initial_matrix_completion = bool(
                 self.instance.is_matrix and self.instance.address_pending
@@ -200,6 +258,8 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
     uses_cash_register = serializers.BooleanField(required=False)
     charges_service_fee = serializers.BooleanField(required=False)
     default_table_quantity = serializers.IntegerField(min_value=1, max_value=500, required=False)
+    table_range_start = serializers.IntegerField(min_value=1, max_value=500, required=False)
+    table_range_end = serializers.IntegerField(min_value=1, max_value=500, required=False)
     default_table_seats = serializers.IntegerField(min_value=0, required=False)
     default_table_prefix = serializers.CharField(max_length=50, required=False, allow_blank=True)
     consumption_limit_enabled = serializers.BooleanField(required=False)
@@ -214,6 +274,7 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
             'uses_tables', 'uses_commands', 'uses_counter',
             'uses_consumption', 'uses_cash_register', 'charges_service_fee',
             'default_table_quantity', 'default_table_seats', 'default_table_prefix',
+            'table_range_start', 'table_range_end',
             'consumption_limit_enabled', 'command_consumption_limit', 'table_consumption_limit',
             'feature_flags',
             'created_at', 'updated_at',
@@ -248,6 +309,16 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
             return set()
 
     def validate(self, attrs):
+        range_start = attrs.get(
+            'table_range_start', self.instance.table_range_start if self.instance else 1,
+        )
+        range_end = attrs.get(
+            'table_range_end', self.instance.table_range_end if self.instance else 20,
+        )
+        if range_end < range_start or range_end - range_start >= 500:
+            raise serializers.ValidationError({
+                'table_range_end': 'Informe um intervalo entre 1 e 500 mesas.'
+            })
         dependent_features = {
             'uses_counter': 'Balcão',
             'uses_consumption': 'Consumação',

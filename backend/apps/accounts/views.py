@@ -1,4 +1,7 @@
+import mimetypes
+
 from django.contrib.auth import authenticate, login, logout
+from django.http import FileResponse, Http404
 from django.middleware.csrf import get_token
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_protect
@@ -16,7 +19,7 @@ from apps.companies.selectors import (
 )
 
 from .models import User
-from .serializers import LoginSerializer, UserSerializer
+from .serializers import LoginSerializer, SelfProfileSerializer, UserSerializer
 
 
 def _audit_scope(request, user):
@@ -209,7 +212,7 @@ class MeView(APIView):
         return Response(data)
 
     def patch(self, request):
-        serializer = UserSerializer(
+        serializer = SelfProfileSerializer(
             request.user,
             data=request.data,
             partial=True,
@@ -231,6 +234,35 @@ class MeView(APIView):
             metadata=metadata,
         )
         return Response(self._response_data(request, user))
+
+
+class ProfilePhotoView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        photo = request.user.profile_photo
+        if not photo:
+            raise Http404
+        content_type = mimetypes.guess_type(photo.name)[0] or 'application/octet-stream'
+        return FileResponse(photo.open('rb'), content_type=content_type)
+
+    def delete(self, request):
+        user = request.user
+        photo = user.profile_photo
+        if not photo:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        name = photo.name
+        user.profile_photo = None
+        user.save(update_fields=['profile_photo', 'updated_at'])
+        photo.storage.delete(name)
+        company, branch, metadata = _audit_scope(request, user)
+        audit_log(
+            actor=user, action='user.profile_photo_remove', obj=user,
+            company=company, branch=branch,
+            before={'profile_photo': name}, after={'profile_photo': None},
+            metadata=metadata,
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 @method_decorator(csrf_protect, name='dispatch')

@@ -1,17 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   GitBranch,
   MapPin,
   Pencil,
   Plus,
+  Printer,
   Power,
   Settings2,
 } from "lucide-react";
 import { AdminGuard } from "@/components/admin-guard";
 import { PageHeader } from "@/components/page-header";
+import { PrinterManagement } from "@/components/printer-management";
 import {
   Alert,
   Button,
@@ -42,9 +44,18 @@ import type {
   Branch,
   BranchPayload,
   BranchSettings,
-  Company,
   Paginated,
 } from "@/types";
+
+type BusinessOverview = {
+  company: { id: number; trade_name: string; status: "active" | "inactive" };
+  counts: {
+    branches: number;
+    products: number;
+    active_users: number;
+    printer_devices: number;
+  };
+};
 
 const emptyAddress: Address = {
   zip_code: "",
@@ -77,13 +88,14 @@ function addressText(address: Branch["address"]) {
 
 function BranchesAdministration() {
   const router = useRouter();
-  const { user, currentCompany, hasPermission, setCurrentBranchId } = useAuth();
+  const { user, currentCompany, hasPermission, setCurrentBranchId, refreshUser } = useAuth();
   const canAdd = hasPermission(permissions.addBranch);
   const canChange = hasPermission(permissions.changeBranch);
   const canSettings = hasPermission(permissions.changeBranchSettings);
+  const canManagePrinters = hasPermission(permissions.managePrinters);
   const canChangeCommission = hasPermission(permissions.changeBranchCommission);
   const [data, setData] = useState<Paginated<Branch> | null>(null);
-  const [companies, setCompanies] = useState<Company[]>([]);
+  const [overview, setOverview] = useState<BusinessOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -98,6 +110,7 @@ function BranchesAdministration() {
   const [zipCodeError, setZipCodeError] = useState("");
   const [zipLookupEnabled, setZipLookupEnabled] = useState(false);
   const [settingsBranch, setSettingsBranch] = useState<Branch | null>(null);
+  const [printersBranch, setPrintersBranch] = useState<Branch | null>(null);
   const [settings, setSettings] = useState<BranchSettings | null>(null);
   const [settingsFields, setSettingsFields] = useState<
     Record<string, string[]>
@@ -109,44 +122,67 @@ function BranchesAdministration() {
     names: string[];
     legacy: boolean;
   } | null>(null);
+  const companyContextRef = useRef<number | null>(null);
+  companyContextRef.current = currentCompany?.id || null;
 
-  async function load(
-    path = currentCompany
-      ? `branches/?company=${currentCompany.id}`
-      : "branches/",
-  ) {
+  async function load(path?: string, companyId = currentCompany?.id) {
+    if (!companyId) {
+      setData(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError("");
     try {
-      setData(await http.get<Paginated<Branch>>(path));
+      const response = await http.get<Paginated<Branch>>(path || `branches/?company=${companyId}`);
+      if (response.results.some((branch) => branch.company !== companyId)) {
+        throw new ApiError("A API retornou filiais fora da empresa selecionada.");
+      }
+      if (companyContextRef.current === companyId) setData(response);
     } catch (caught) {
-      setError(
+      if (companyContextRef.current === companyId) setError(
         caught instanceof ApiError
           ? caught.message
           : "Não foi possível carregar as filiais.",
       );
     } finally {
-      setLoading(false);
+      if (companyContextRef.current === companyId) setLoading(false);
     }
   }
 
-  useEffect(() => {
-    if (!currentCompany) return;
-    void load(`branches/?company=${currentCompany.id}`);
-    http
-      .getAll<Company>("companies/")
-      .then((items) =>
-        setCompanies(
-          items.filter((company) => company.id === currentCompany.id),
-        ),
-      )
-      .catch((caught) =>
-        setError(
-          caught instanceof ApiError
-            ? caught.message
-            : "Não foi possível carregar as empresas.",
-        ),
+  async function loadOverview(companyId = currentCompany?.id) {
+    if (!companyId) {
+      setOverview(null);
+      return;
+    }
+    try {
+      const response = await http.get<BusinessOverview>(
+        `branches/overview/?company=${companyId}`,
       );
+      if (companyContextRef.current === companyId) setOverview(response);
+    } catch {
+      if (companyContextRef.current === companyId) setOverview(null);
+    }
+  }
+
+  const loadForCompany = useEffectEvent((companyId: number) => {
+    void load(undefined, companyId);
+  });
+
+  useEffect(() => {
+    setModalOpen(false);
+    setSettingsBranch(null);
+    setPrintersBranch(null);
+    setConfirming(null);
+    setData(null);
+    setOverview(null);
+    const companyId = currentCompany?.id;
+    if (!companyId) {
+      setLoading(false);
+      return;
+    }
+    loadForCompany(companyId);
+    void loadOverview(companyId);
   }, [currentCompany?.id]);
 
   useEffect(() => {
@@ -217,7 +253,7 @@ function BranchesAdministration() {
     setEditing(null);
     setForm({
       ...emptyForm,
-      company: currentCompany?.id || companies[0]?.id || 0,
+      company: currentCompany?.id || 0,
       address: { ...emptyAddress },
     });
     setFields({});
@@ -228,7 +264,7 @@ function BranchesAdministration() {
   }
 
   function openEdit(branch: Branch) {
-    if (!canChange) return;
+    if (!canChange || branch.company !== currentCompany?.id) return;
     setEditing(branch);
     setForm({
       company: branch.company,
@@ -266,7 +302,7 @@ function BranchesAdministration() {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (editing ? !canChange : !canAdd) return;
+    if (!currentCompany || (editing ? !canChange || editing.company !== currentCompany.id : !canAdd)) return;
     setSaving(true);
     setFields({});
     setError("");
@@ -279,8 +315,8 @@ function BranchesAdministration() {
         cnpj: form.cnpj || null,
       } as Partial<BranchPayload>;
       if (!addressEditable) delete payload.address;
-      if (editing) await http.patch(`branches/${editing.id}/`, payload);
-      else await http.post("branches/", payload);
+      if (editing) await http.patch(`branches/${editing.id}/?company=${currentCompany.id}`, payload);
+      else await http.post(`branches/?company=${currentCompany.id}`, payload);
       setModalOpen(false);
       setSuccess(
         editing
@@ -301,17 +337,18 @@ function BranchesAdministration() {
   }
 
   async function changeStatus() {
-    if (!confirming || !canChange) return;
+    if (!confirming || !canChange || confirming.company !== currentCompany?.id) return;
     setChangingStatus(true);
     setError("");
     setSuccess("");
     const action = confirming.status === "active" ? "deactivate" : "activate";
     try {
-      await http.post(`branches/${confirming.id}/${action}/`);
+      await http.post(`branches/${confirming.id}/${action}/?company=${currentCompany?.id}`);
       setSuccess(
         `Filial ${action === "activate" ? "ativada" : "inativada"} com sucesso.`,
       );
       setConfirming(null);
+      await refreshUser();
       await load();
     } catch (caught) {
       setError(
@@ -326,7 +363,7 @@ function BranchesAdministration() {
   }
 
   async function openSettings(branch: Branch) {
-    if (!canSettings) return;
+    if (!canSettings || branch.company !== currentCompany?.id) return;
     setSettingsBranch(branch);
     setSettings(null);
     setSettingsFields({});
@@ -335,7 +372,7 @@ function BranchesAdministration() {
     setSettingsLoading(true);
     try {
       const nextSettings = await http.get<BranchSettings>(
-        `branches/${branch.id}/settings/`,
+        `branches/${branch.id}/settings/?company=${currentCompany?.id}`,
       );
       setSettings(nextSettings);
       if (nextSettings.negative_stock_state === "legacy_inconsistent") {
@@ -359,14 +396,14 @@ function BranchesAdministration() {
 
   async function saveSettings(event: React.FormEvent) {
     event.preventDefault();
-    if (!settingsBranch || !settings || !canSettings) return;
+    if (!settingsBranch || !settings || !canSettings || settingsBranch.company !== currentCompany?.id) return;
     setSettingsSaving(true);
     setSettingsFields({});
     setError("");
     try {
       setSettings(
         await http.patch<BranchSettings>(
-          `branches/${settingsBranch.id}/settings/`,
+          `branches/${settingsBranch.id}/settings/?company=${currentCompany?.id}`,
           {
             allow_negative_stock: settings.allow_negative_stock,
             service_fee_rate: settings.service_fee_rate,
@@ -415,22 +452,34 @@ function BranchesAdministration() {
   }
 
   function startNegativeRecovery() {
-    if (!settingsBranch) return;
+    if (!settingsBranch || settingsBranch.company !== currentCompany?.id) return;
     setCurrentBranchId(settingsBranch.id);
     router.push(
       `/estoque/regularizar?branch=${settingsBranch.id}${negativeRecovery?.legacy ? "&legacy=true" : ""}`,
     );
   }
 
+  function openPrinters(branch: Branch) {
+    const targetAccess = user?.branches.find((item) => item.id === branch.id);
+    if (
+      branch.company !== currentCompany?.id ||
+      branch.status !== "active" ||
+      !targetAccess ||
+      !targetAccess.permissions.includes(permissions.managePrinters)
+    ) return;
+    setCurrentBranchId(branch.id);
+    setPrintersBranch(branch);
+  }
+
   return (
     <>
       <PageHeader
-        title="Filiais"
-        description="Organize as unidades vinculadas a cada empresa."
+        title="Meu negócio"
+        description={currentCompany ? `Empresa atual: ${currentCompany.trade_name}` : "Selecione uma empresa para consultar suas filiais."}
         action={
           <Button
             onClick={openCreate}
-            disabled={!canAdd || !companies.length}
+            disabled={!canAdd || !currentCompany}
             title={!canAdd ? "Sem permissão para criar filiais" : "Nova filial"}
           >
             <Plus className="size-4" />
@@ -441,13 +490,26 @@ function BranchesAdministration() {
       <div className="space-y-4 p-4 sm:p-6 lg:p-8">
         {error && !modalOpen && <Alert message={error} />}
         {success && <Alert type="success" message={success} />}
-        {!companies.length && !loading && (
-          <Alert message="Cadastre uma empresa antes de criar filiais." />
+        {!currentCompany && !loading && (
+          <Alert message="Selecione uma empresa no topo para consultar e administrar suas filiais." />
+        )}
+        {overview && (
+          <section className="card grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-5">
+            <div className="sm:col-span-2 xl:col-span-1">
+              <span className="label">Empresa</span>
+              <strong className="block text-lg">{overview.company.trade_name}</strong>
+              <StatusBadge active={overview.company.status === "active"} />
+            </div>
+            <div><span className="label">Produtos</span><strong className="block text-2xl">{overview.counts.products}</strong></div>
+            <div><span className="label">Usuários ativos</span><strong className="block text-2xl">{overview.counts.active_users}</strong></div>
+            <div><span className="label">Dispositivos</span><strong className="block text-2xl">{overview.counts.printer_devices}</strong></div>
+            <div><span className="label">Filiais</span><strong className="block text-2xl">{overview.counts.branches}</strong></div>
+          </section>
         )}
         <section className="card overflow-hidden">
           <div className="card-header">
             <div>
-              <h2 className="text-sm font-bold">Filiais cadastradas</h2>
+              <h2 className="text-sm font-bold">{currentCompany ? `Unidades de ${currentCompany.trade_name}` : "Unidades da empresa"}</h2>
               <p className="mt-1 text-[11px] text-slate-500">
                 Unidades e empresas responsáveis
               </p>
@@ -462,7 +524,7 @@ function BranchesAdministration() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>Filial</th>
+                      <th>Unidade</th>
                       <th>Empresa</th>
                       <th>Endereço</th>
                       <th>Status</th>
@@ -500,7 +562,23 @@ function BranchesAdministration() {
                           <div className="flex justify-end gap-1">
                             <button
                               className="icon-button"
-                              disabled={!canSettings}
+                              disabled={
+                                branch.company !== currentCompany?.id ||
+                                branch.status !== "active" ||
+                                !user?.branches.some((item) => item.id === branch.id && item.permissions.includes(permissions.managePrinters))
+                              }
+                              title={
+                                canManagePrinters
+                                  ? "Configurar impressoras desta filial"
+                                  : "Sem permissão para gerenciar impressoras"
+                              }
+                              onClick={() => openPrinters(branch)}
+                            >
+                              <Printer className="size-4" />
+                            </button>
+                            <button
+                              className="icon-button"
+                              disabled={!canSettings || branch.company !== currentCompany?.id}
                               title={
                                 canSettings
                                   ? "Configurações operacionais"
@@ -512,7 +590,7 @@ function BranchesAdministration() {
                             </button>
                             <button
                               className="icon-button"
-                              disabled={!canChange}
+                              disabled={!canChange || branch.company !== currentCompany?.id}
                               title={
                                 canChange
                                   ? "Editar"
@@ -523,7 +601,7 @@ function BranchesAdministration() {
                               <Pencil className="size-4" />
                             </button>
                             <button
-                              disabled={!canChange}
+                              disabled={!canChange || branch.company !== currentCompany?.id}
                               className={`icon-button ${branch.status === "active" ? "hover:bg-danger/10 hover:text-danger" : "hover:bg-success/10 hover:text-success"}`}
                               title={
                                 canChange
@@ -553,7 +631,7 @@ function BranchesAdministration() {
           ) : (
             <EmptyState
               title="Nenhuma filial cadastrada"
-              description="Selecione uma empresa e adicione uma unidade para começar."
+              description={currentCompany ? `Nenhuma filial encontrada para ${currentCompany.trade_name}.` : "Selecione uma empresa para continuar."}
             />
           )}
         </section>
@@ -583,11 +661,7 @@ function BranchesAdministration() {
                 <option value="" disabled>
                   Selecione uma empresa
                 </option>
-                {companies.map((company) => (
-                  <option key={company.id} value={company.id}>
-                    {company.trade_name}
-                  </option>
-                ))}
+                {currentCompany && <option value={currentCompany.id}>{currentCompany.trade_name}</option>}
               </Select>
             </Field>
             <Field label="Nome da filial" error={fieldError(fields, "name")}>
@@ -910,6 +984,18 @@ function BranchesAdministration() {
           </form>
         )}
       </Modal>
+      <Modal
+        open={!!printersBranch}
+        title={`Impressoras · ${printersBranch?.name || "filial"}`}
+        description="Cadastre os setores de impressão desta filial sem precisar selecionar a unidade novamente."
+        onClose={() => setPrintersBranch(null)}
+        size="xxl"
+        tall
+      >
+        <div className="p-5 sm:p-6">
+          <PrinterManagement embedded />
+        </div>
+      </Modal>
       <ConfirmDialog
         open={!!confirming}
         title={`${confirming?.status === "active" ? "Inativar" : "Ativar"} filial`}
@@ -925,6 +1011,13 @@ function BranchesAdministration() {
 }
 
 export default function BranchesPage() {
+  const { currentCompany } = useAuth();
+  if (!currentCompany) {
+    return <>
+      <PageHeader title="Meu negócio" description="Selecione uma empresa para consultar suas unidades." />
+      <div className="p-4 sm:p-6 lg:p-8"><section className="card"><EmptyState title="Nenhuma empresa selecionada" description="Use o seletor no topo para escolher a empresa que deseja administrar." /></section></div>
+    </>;
+  }
   return (
     <AdminGuard
       requiredPermissions={[

@@ -4,6 +4,7 @@ from .views import (
     AccessProfileViewSet,
     BranchViewSet,
     CompanyViewSet,
+    CustomerViewSet,
     FunctionalPermissionViewSet,
     UserCommissionOverrideViewSet,
     UserPermissionBlockViewSet,
@@ -11,6 +12,7 @@ from .views import (
 
 router = SimpleRouter()
 router.register('companies', CompanyViewSet, basename='company')
+router.register('customers', CustomerViewSet, basename='customer')
 router.register('branches', BranchViewSet, basename='branch')
 router.register(
     'functional-permissions',

@@ -13,17 +13,26 @@ class CommandFunctionalPermission(BasePermission):
         'list': 'commands.view',
         'retrieve': 'commands.view',
         'open': 'commands.open',
+        'set_customer': 'commands.open',
         'open_list': 'commands.view',
         'add_item': 'commands.add_items',
         'add_items': 'commands.add_items',
         'confirm': 'commands.add_items',
         'cancel': 'commands.cancel_items',
         'finalize': 'commands.finalize',
+        'transfer': 'commands.transfer',
+        'transfer_items': 'commands.transfer_items',
+        'merge': 'commands.merge',
+        'split': 'commands.split',
         'calculate': 'commands.finalize',
         'checkout_options': 'commands.finalize',
         'sellers': 'commands.finalize',
         'discount_authorizers': 'commands.finalize',
         'service_fee_authorizers': 'commands.finalize',
+        'payments': 'commands.payments.view',
+        'payment_summary': 'commands.payments.view',
+        'record_payment': 'commands.payments.record',
+        'reverse_payment': 'commands.payments.reverse',
         'operational': 'commands.view',
         'create': 'commands.open',
         'update': 'commands.open',
@@ -39,7 +48,8 @@ class CommandFunctionalPermission(BasePermission):
             return 'tables'
         if view.action in (
             'open', 'add_item', 'add_items', 'calculate', 'checkout_options', 'sellers',
-            'discount_authorizers', 'service_fee_authorizers',
+            'discount_authorizers', 'service_fee_authorizers', 'transfer', 'transfer_items',
+            'merge', 'split', 'payments', 'payment_summary', 'record_payment', 'reverse_payment',
         ):
             return 'commands'
         return None

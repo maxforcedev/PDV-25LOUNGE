@@ -284,29 +284,31 @@ export function Modal({
   onClose,
   size = "lg",
   fullPage = false,
+  tall = false,
 }: {
   open: boolean;
   title: string;
   description?: string;
   children: React.ReactNode;
   onClose: () => void;
-  size?: "md" | "lg" | "xl";
+  size?: "md" | "lg" | "xl" | "xxl";
   fullPage?: boolean;
+  tall?: boolean;
 }) {
   if (!open) return null;
-  const sizes = { md: "max-w-md", lg: "max-w-2xl", xl: "max-w-4xl" };
+  const sizes = { md: "max-w-md", lg: "max-w-2xl", xl: "max-w-4xl", xxl: "max-w-6xl" };
   return (
     <div
       className={fullPage ? "min-h-full bg-surface p-4 sm:p-6 lg:p-8" : "modal-backdrop fixed inset-0 z-50 flex items-end justify-center p-0 backdrop-blur-[1px] sm:items-center sm:p-5"}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="modal-title"
+      role={fullPage ? undefined : "dialog"}
+      aria-modal={fullPage ? undefined : true}
+      aria-labelledby={fullPage ? undefined : "modal-title"}
       onMouseDown={(event) => !fullPage && event.target === event.currentTarget && onClose()}
     >
       <div
-        className={`modal-panel animate-enter w-full overflow-y-auto ${fullPage ? "mx-auto max-w-6xl rounded-xl border border-subtle shadow-sm" : `max-h-[92vh] rounded-t-xl shadow-2xl sm:rounded-xl ${sizes[size]}`}`}
+        className={`w-full overflow-y-auto ${fullPage ? "mx-auto max-w-6xl" : `modal-panel animate-enter ${tall ? "h-[78vh] max-h-[84vh]" : "max-h-[92vh]"} rounded-t-xl shadow-2xl sm:rounded-xl ${sizes[size]}`}`}
       >
-        <div className="modal-header sticky top-0 z-10 flex items-start justify-between gap-4 border-b px-5 py-4 sm:px-6">
+        <div className={`flex items-start justify-between gap-4 border-b px-5 py-4 sm:px-6 ${fullPage ? "" : "modal-header sticky top-0 z-10"}`}>
           <div>
             <h2 id="modal-title" className="text-base font-bold text-fg">
               {title}

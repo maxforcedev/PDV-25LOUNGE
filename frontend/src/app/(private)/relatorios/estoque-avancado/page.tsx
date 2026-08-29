@@ -7,6 +7,7 @@ import { AdminGuard } from "@/components/admin-guard";
 import { InventoryNav } from "@/components/inventory-nav";
 import { PageHeader } from "@/components/page-header";
 import { PeriodFilter, type PeriodValue } from "@/components/period-filter";
+import { ReportExportAction } from "@/components/report-export-action";
 import { Alert, Button, EmptyState, Input, Select, Spinner } from "@/components/ui";
 import { formatDate, formatDecimalBRL } from "@/lib/format";
 import { countStatusLabels, divergenceStatusLabels, lossReasonLabels, normalizeQuantityGroups, physicalQuantityDisplay, resolutionTypeLabels, transferStatusLabels } from "@/lib/inventory";
@@ -73,6 +74,7 @@ function ReceiptEventRows({ rows, movements }: { rows: AdvancedInventoryReceiptR
 function AdvancedReport() {
   const { currentBranch } = useAuth();
   const [draft, setDraft] = useState<Filters>(empty);
+  const [applied, setApplied] = useState<Filters>(empty);
   const [report, setReport] = useState<AdvancedInventoryReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -95,7 +97,7 @@ function AdvancedReport() {
 
   async function load(filters: Filters, token = context.current) {
     if (!currentBranch) { setReport(null); setLoading(false); return; }
-    setLoading(true); setError("");
+    setLoading(true); setError(""); setApplied(filters);
     try {
       const response = await http.get<AdvancedInventoryReport>(`advanced-inventory-reports/?${queryFor(filters)}`);
       if (context.current === token) setReport(response);
@@ -109,7 +111,7 @@ function AdvancedReport() {
   useEffect(() => {
     const filters = empty();
     const token = context.current;
-    setDraft(filters); setReport(null);
+    setDraft(filters); setApplied(filters); setReport(null);
     void loadRef.current(filters, token);
   }, [currentBranch]);
 
@@ -131,7 +133,7 @@ function AdvancedReport() {
   const transitStateRows: DetailRow[] = details?.state_rows.in_transit.map((row) => ({ key: `state-transit-${row.transfer_item}`, eventAt: snapshotAt, title: "Em trânsito", resource: `Transferência ${row.transfer} · item ${row.transfer_item}`, detail: `Produto #${row.product}`, quantityDisplay: advancedQuantity(row, "pending_quantity", ["pending_content", "content_quantity"], "pending") })) ?? [];
 
   return <>
-    <PageHeader title="Estoque avançado" description={`${currentBranch?.name || "Selecione uma filial"} · eventos de transferência, divergência, perda e inventário.`} />
+    <PageHeader title="Estoque avançado" description={`${currentBranch?.name || "Selecione uma filial"} · eventos de transferência, divergência, perda e inventário.`} action={<ReportExportAction path="advanced-inventory-reports/" query={queryFor(applied)} />} />
     <InventoryNav />
     <div className="space-y-5 p-4 sm:p-6 lg:p-8">
       {error && <Alert message={error} />}

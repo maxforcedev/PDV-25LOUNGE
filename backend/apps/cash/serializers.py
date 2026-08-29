@@ -100,7 +100,8 @@ class CashSessionSerializer(serializers.ModelSerializer):
             'branch_name', 'company', 'company_name', 'opened_by', 'opened_by_name',
             'opened_at', 'opening_amount', 'status', 'closed_by', 'closed_by_name',
             'closed_at', 'closing_expected_amount', 'closing_amount_informed',
-            'closing_difference', 'expected_amount', 'manual_entries', 'withdrawals',
+            'closing_difference', 'cancelled_by', 'cancelled_at', 'cancellation_reason',
+            'expected_amount', 'manual_entries', 'withdrawals',
             'created_at', 'updated_at',
         )
         read_only_fields = fields
@@ -215,3 +216,7 @@ class CloseSessionSerializer(serializers.Serializer):
     closing_amount_informed = StrictMoneyField(
         max_digits=14, decimal_places=2, min_value=Decimal('0.00')
     )
+
+
+class CancelSessionSerializer(serializers.Serializer):
+    reason = serializers.CharField(min_length=3, max_length=2000, trim_whitespace=True)

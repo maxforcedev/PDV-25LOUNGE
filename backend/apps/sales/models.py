@@ -255,6 +255,10 @@ class Sale(BaseModel):
         blank=True,
         null=True,
     )
+    customer = models.ForeignKey(
+        'companies.Customer', on_delete=models.PROTECT, related_name='sales',
+        blank=True, null=True,
+    )
     subtotal = models.DecimalField(max_digits=14, decimal_places=2)
     promotion_discount_total = models.DecimalField(
         max_digits=14, decimal_places=2, default=Decimal('0.00')
@@ -443,6 +447,11 @@ class Sale(BaseModel):
             user_id=self.beneficiary_user_id, company_id=self.company_id, is_active=True
         ).exists():
             errors['beneficiary_user'] = 'O beneficiário deve possuir acesso ativo à empresa.'
+        if self.customer_id and (
+            self.customer.company_id != self.company_id
+            or self.customer.status != Status.ACTIVE
+        ):
+            errors['customer'] = 'O cliente deve estar ativo e pertencer à empresa da venda.'
         if self.operation_type == OperationType.CONSUMPTION:
             if not self.beneficiary_user_id:
                 errors['beneficiary_user'] = 'Informe o beneficiário da consumação.'
@@ -722,6 +731,12 @@ class Payment(ImmutableHistoricalModel):
     change_amount = models.DecimalField(max_digits=14, decimal_places=2, blank=True, null=True)
     payment_method_name = models.CharField(max_length=100)
     payment_method_code = models.CharField(max_length=50)
+    source_command_payment = models.OneToOneField(
+        'commands.CommandPayment', on_delete=models.PROTECT,
+        related_name='final_payment', blank=True, null=True,
+    )
+    # Command tender is recorded before the sale exists; retain its business timestamp.
+    occurred_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         ordering = ('id',)

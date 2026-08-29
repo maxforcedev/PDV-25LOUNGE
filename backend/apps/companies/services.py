@@ -202,6 +202,29 @@ def replace_user_accesses(*, user, company_accesses):
             )
 
 
+@transaction.atomic
+def replace_user_company_access(*, user, company, access_profile, branch_accesses):
+    access = UserCompanyAccess.objects.select_for_update().get(
+        user=user, company=company,
+    )
+    access.access_profile = access_profile
+    access.save(update_fields=['access_profile', 'updated_at'])
+    requested = {item['branch'].pk: item for item in branch_accesses}
+    UserBranchAccess.objects.filter(user=user, branch__company=company).exclude(
+        branch_id__in=requested
+    ).update(is_active=False, updated_at=timezone.now())
+    for branch_id, item in requested.items():
+        branch_access, _ = UserBranchAccess.objects.get_or_create(
+            user=user,
+            branch=item['branch'],
+            defaults={'access_profile': item['access_profile'], 'is_active': True},
+        )
+        branch_access.access_profile = item['access_profile']
+        branch_access.is_active = True
+        branch_access.save(update_fields=['access_profile', 'is_active', 'updated_at'])
+    return access
+
+
 def _validate_owner_target(access):
     errors = {}
     if not access.is_active:

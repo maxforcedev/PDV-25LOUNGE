@@ -5,7 +5,7 @@ from apps.companies.models import Company, Status
 from apps.products.models import Product
 
 from .models import (
-    PresentationPreset, PresentationType, ProductSupplier, ProductSupplierUnit, Supplier,
+    PresentationPreset, PresentationType, ProductPurchasePresentation, ProductSupplier, ProductSupplierUnit, Supplier,
 )
 
 
@@ -140,6 +140,22 @@ def _save_product_supplier_unit(*, instance=None, **values):
     elif preset_id is None:
         # Explicit null detaches the preset while preserving legacy fields.
         instance.presentation_preset = None
+    if instance.purchase_presentation_id is None:
+        presentation, _created = ProductPurchasePresentation.objects.get_or_create(
+            company=instance.company,
+            product=instance.product_supplier.product,
+            unit_code=instance.unit_code,
+            conversion_factor=instance.conversion_factor,
+            defaults={'description': instance.description},
+        )
+        instance.purchase_presentation = presentation
+        instance.unit_code = presentation.unit_code
+        instance.description = presentation.description
+        instance.conversion_factor = presentation.conversion_factor
+    else:
+        instance.unit_code = instance.purchase_presentation.unit_code
+        instance.description = instance.purchase_presentation.description
+        instance.conversion_factor = instance.purchase_presentation.conversion_factor
     return _save_with_validation(
         instance,
         {'is_default': 'A relação já possui uma apresentação padrão ativa.'},

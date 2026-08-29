@@ -225,6 +225,7 @@ def eligible_branch_users(branch, permission_code):
     ).values_list('user_id', flat=True)
     return User.objects.filter(
         is_active=True,
+        archived_at__isnull=True,
         can_login=True,
         branch_accesses__branch=branch,
         branch_accesses__is_active=True,

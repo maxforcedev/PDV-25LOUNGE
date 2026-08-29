@@ -39,23 +39,30 @@ from apps.saas.tests.test_v2_2_saas import (
     create_tenant,
     create_user,
 )
-from apps.suppliers.models import PresentationPreset, ProductSupplier, ProductSupplierUnit, Supplier
+from apps.suppliers.models import (
+    PresentationPreset, ProductPurchasePresentation, ProductSupplier,
+    ProductSupplierUnit, Supplier,
+)
 from apps.suppliers.services import _save_product_supplier_unit
 
 from ..models import (
     PayableInstallment,
     PayableInstallmentStatus,
     PurchaseOrder,
+    PurchaseAttachment,
     PurchaseOrderStatus,
     PurchaseReceipt,
 )
+from ..serializers import PurchaseReceiptItemSerializer
 from ..services import (
     cancel_installment,
     close_partial_purchase_order,
     create_purchase_order,
+    add_purchase_attachment,
     pay_installment,
     place_purchase_order,
     receive_purchase_order,
+    remove_purchase_attachment,
 )
 
 
@@ -138,6 +145,24 @@ class PurchaseFlowTests(TestCase):
         self.supplier, self.link, self.unit = supplier_unit_fixture(
             self.company, self.product, factor='12'
         )
+
+    def test_purchase_attachments_are_preserved_and_logically_removed(self):
+        order = create_order(self.branch, self.supplier, self.unit, self.user)
+        first = add_purchase_attachment(
+            purchase_order=order,
+            attachment=SimpleUploadedFile('nota.pdf', b'%PDF-1.4\nnota', 'application/pdf'),
+            user=self.user,
+        )
+        second = add_purchase_attachment(
+            purchase_order=order,
+            attachment=SimpleUploadedFile('boleto.pdf', b'%PDF-1.4\nboleto', 'application/pdf'),
+            user=self.user,
+        )
+
+        self.assertEqual(PurchaseAttachment.objects.filter(purchase_order=order, status='active').count(), 2)
+        remove_purchase_attachment(purchase_order=order, attachment_id=first.pk, user=self.user)
+        self.assertEqual(PurchaseAttachment.objects.get(pk=first.pk).status, 'inactive')
+        self.assertEqual(PurchaseAttachment.objects.get(pk=second.pk).status, 'active')
 
     def test_direct_full_receipt_uses_locked_stock_engine_and_branch_cost(self):
         order = create_order(
@@ -318,6 +343,72 @@ class PurchaseFlowTests(TestCase):
             create_order(self.branch, self.supplier, self.unit, self.user)
         self.assertNotEqual(exclusive_supplier, self.supplier)
 
+    def test_purchase_presentation_is_canonical_across_suppliers(self):
+        suppliers = [self.supplier]
+        units = [self.unit]
+        for name in ('Fornecedor B', 'Fornecedor C', 'Fornecedor D'):
+            supplier, _link, unit = supplier_unit_fixture(
+                self.company, self.product, name=name, factor='12',
+            )
+            suppliers.append(supplier)
+            units.append(unit)
+
+        orders = [
+            create_order(self.branch, supplier, unit, self.user)
+            for supplier, unit in zip(suppliers, units)
+        ]
+
+        self.assertEqual(
+            ProductPurchasePresentation.objects.filter(product=self.product).count(), 1,
+        )
+        self.assertEqual(
+            {order.items.get().presentation_description for order in orders},
+            {self.unit.description},
+        )
+
+    def test_confirmed_exclusive_supplier_override_is_persisted_and_required_on_placement(self):
+        exclusive_supplier, _exclusive_link, _exclusive_unit = supplier_unit_fixture(
+            self.company, self.product, name='Exclusivo', factor='1',
+            is_exclusive=True, is_preferred=True,
+        )
+        order = create_order(
+            self.branch, self.supplier, self.unit, self.user,
+            exclusive_supplier_override=True,
+        )
+        self.assertTrue(order.exclusive_supplier_override)
+        with self.assertRaises(ValidationError):
+            place_purchase_order(purchase_order=order, user=self.user)
+
+        placed = place_purchase_order(
+            purchase_order=order, user=self.user,
+            exclusive_supplier_override=True,
+        )
+        self.assertEqual(placed.status, PurchaseOrderStatus.PLACED)
+        audit = AuditLog.objects.filter(action='purchase.place', object_id=order.pk).latest('id')
+        details = audit.metadata['exclusive_supplier_overrides'][0]
+        self.assertEqual(details['product_name'], self.product.name)
+        self.assertEqual(details['exclusive_supplier_name'], exclusive_supplier.trade_name)
+        self.assertEqual(details['selected_supplier_name'], self.supplier.trade_name)
+        self.assertTrue(details['override_confirmed'])
+
+    def test_confirmed_exclusive_supplier_override_allows_direct_receipt(self):
+        supplier_unit_fixture(
+            self.company, self.product, name='Exclusivo', factor='1',
+            is_exclusive=True, is_preferred=True,
+        )
+        order = create_order(
+            self.branch, self.supplier, self.unit, self.user,
+            order_type='DIRECT', exclusive_supplier_override=True,
+        )
+        receipt = receive_purchase_order(
+            purchase_order=order, user=self.user, idempotency_key=uuid.uuid4(),
+            items=[{
+                'purchase_order_item': order.items.get().pk,
+                'received_quantity': '2',
+            }],
+        )
+        self.assertEqual(receipt.purchase_order_id, order.pk)
+
     def test_payables_reconcile_and_manual_transitions_are_audited(self):
         due = date.today() + timedelta(days=10)
         with self.assertRaises(ValidationError):
@@ -399,6 +490,99 @@ class PurchaseFlowTests(TestCase):
             PurchaseOrder.objects.filter(pk=order.pk).delete()
         with self.assertRaises(ValidationError):
             order.delete()
+
+
+class PurchaseBaseReceiptTests(TestCase):
+    def setUp(self):
+        self.company, self.branch, self.category = company_fixture('Recebimento base')
+        self.user = user_fixture(self.company, self.branch, superuser=True)
+        self.product = product_fixture(self.company, self.category)
+        self.supplier, _link, self.unit = supplier_unit_fixture(
+            self.company, self.product, factor='12'
+        )
+
+    def _placed_order(self):
+        order = create_order(
+            self.branch, self.supplier, self.unit, self.user,
+            quantity='2', price='60.00',
+        )
+        place_purchase_order(purchase_order=order, user=self.user)
+        return order, order.items.get()
+
+    def test_receiving_24_base_units_completes_two_packs(self):
+        order, item = self._placed_order()
+        receipt = receive_purchase_order(
+            purchase_order=order, idempotency_key=uuid.uuid4(),
+            items=[{
+                'purchase_order_item': item.pk,
+                'received_stock_quantity': '24',
+            }], user=self.user,
+        )
+        order.refresh_from_db()
+        row = receipt.items.get()
+        self.assertEqual(order.status, PurchaseOrderStatus.RECEIVED)
+        self.assertEqual(row.stock_quantity, Decimal('24.000'))
+        self.assertEqual(row.received_quantity, Decimal('2.000000'))
+        self.assertEqual(row.divergence_quantity, Decimal('0.000000'))
+        self.assertEqual(
+            Stock.objects.get(branch=self.branch, product=self.product).current_quantity,
+            Decimal('24.000'),
+        )
+
+    def test_receiving_30_base_units_records_divergence_without_rewriting_payable(self):
+        order, item = self._placed_order()
+        receipt = receive_purchase_order(
+            purchase_order=order, idempotency_key=uuid.uuid4(),
+            items=[{
+                'purchase_order_item': item.pk,
+                'received_stock_quantity': '30',
+            }], divergence_reason='Fornecedor entregou seis unidades extras', user=self.user,
+        )
+        replay = receive_purchase_order(
+            purchase_order=order, idempotency_key=receipt.idempotency_key,
+            items=[{
+                'purchase_order_item': item.pk,
+                'received_stock_quantity': '30',
+            }], divergence_reason='Fornecedor entregou seis unidades extras', user=self.user,
+        )
+        order.refresh_from_db()
+        row = receipt.items.get()
+        serialized = PurchaseReceiptItemSerializer(
+            row, context={'request': SimpleNamespace(user=self.user)}
+        ).data
+        self.assertEqual(replay.pk, receipt.pk)
+        self.assertEqual(order.status, PurchaseOrderStatus.RECEIVED)
+        self.assertEqual(order.payable_total, Decimal('120.00'))
+        self.assertEqual(row.stock_quantity, Decimal('30.000'))
+        self.assertEqual(serialized['divergence_stock_quantity'], '6.000000')
+        self.assertEqual(serialized['ordered_total'], '120.00')
+        self.assertEqual(serialized['received_total'], '150.00')
+        self.assertEqual(
+            Stock.objects.get(branch=self.branch, product=self.product).current_quantity,
+            Decimal('30.000'),
+        )
+        self.assertEqual(StockMovement.objects.filter(operation_reference=receipt.pk).count(), 1)
+
+    def test_receiving_10_base_units_keeps_order_partial_and_reports_difference(self):
+        order, item = self._placed_order()
+        receipt = receive_purchase_order(
+            purchase_order=order, idempotency_key=uuid.uuid4(),
+            items=[{
+                'purchase_order_item': item.pk,
+                'received_stock_quantity': '10',
+            }], divergence_reason='Entrega parcial', user=self.user,
+        )
+        order.refresh_from_db()
+        row = receipt.items.get()
+        serialized = PurchaseReceiptItemSerializer(
+            row, context={'request': SimpleNamespace(user=self.user)}
+        ).data
+        self.assertEqual(order.status, PurchaseOrderStatus.PARTIALLY_RECEIVED)
+        self.assertEqual(row.stock_quantity, Decimal('10.000'))
+        self.assertEqual(serialized['pending_stock_quantity'], '14.000000')
+        self.assertEqual(serialized['divergence_stock_quantity'], '-14.000000')
+        self.assertEqual(serialized['received_total'], '50.00')
+        self.assertEqual(serialized['difference_total'], '-70.00')
 
 
 class BranchCostAndSaleSnapshotTests(TestCase):

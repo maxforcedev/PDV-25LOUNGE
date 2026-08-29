@@ -40,6 +40,74 @@ export function lineTotalCents(quantity: string, price: string): bigint {
   return (product + BigInt(5_000_000_000)) / BigInt(10_000_000_000);
 }
 
+function scaledText(value: bigint, places: number, decimalSeparator = ".") {
+  const negative = value < BigInt(0);
+  const absolute = negative ? -value : value;
+  const divisor = BigInt(10) ** BigInt(places);
+  const whole = absolute / divisor;
+  const fraction = String(absolute % divisor)
+    .padStart(places, "0")
+    .replace(/0+$/, "");
+  return `${negative ? "-" : ""}${whole}${fraction ? `${decimalSeparator}${fraction}` : ""}`;
+}
+
+export function purchaseBaseUnitPrice(
+  presentationPrice: string,
+  conversionFactor: string,
+) {
+  const factor = decimalToScaled(conversionFactor, 6);
+  if (factor <= BigInt(0)) return "";
+  const numerator = decimalToScaled(presentationPrice, 6) * BigInt(1_000_000);
+  return scaledText((numerator + factor / BigInt(2)) / factor, 6);
+}
+
+export function purchasePresentationPrice(
+  basePrice: string,
+  conversionFactor: string,
+) {
+  return scaledText(
+    (decimalToScaled(basePrice, 6) * decimalToScaled(conversionFactor, 6)) /
+      BigInt(1_000_000),
+    6,
+  );
+}
+
+export function purchasePresentationLabel(code: string, description: string) {
+  const text = description.trim().toLocaleLowerCase("pt-BR");
+  return `${code} — ${text ? `${text[0].toLocaleUpperCase("pt-BR")}${text.slice(1)}` : "Apresentação"}`;
+}
+
+function baseUnitLabel(unit: string, quantity: bigint) {
+  if (unit.toUpperCase() === "UN")
+    return quantity === BigInt(1) ? "unidade" : "unidades";
+  return unit;
+}
+
+export function purchaseBaseEquivalent(
+  quantity: string,
+  conversionFactor: string,
+  presentationDescription: string,
+  stockUnit: string,
+) {
+  const amount = decimalToScaled(quantity, 6);
+  const factor = decimalToScaled(conversionFactor, 6);
+  if (amount < BigInt(0) || factor <= BigInt(0)) return "";
+  const packages = amount / factor;
+  const remainder = amount % factor;
+  const factorText = scaledText(factor, 6, ",");
+  const packageWord = (
+    presentationDescription
+      .trim()
+      .toLocaleLowerCase("pt-BR")
+      .match(/^([^\s]+)(?:\s+com\s+\d+(?:[,.]\d+)?\s+unidades?)?/)?.[1] || "apresentação"
+  );
+  const packageText = `${packages} ${packageWord}${packages === BigInt(1) ? "" : "s"} de ${factorText}`;
+  const remainderText = `${scaledText(remainder, 6, ",")} ${baseUnitLabel(stockUnit, remainder)}`;
+  if (!packages) return remainderText;
+  if (!remainder) return packageText;
+  return `${packageText} + ${remainderText}`;
+}
+
 export function moneyCents(value: string): bigint {
   return decimalToScaled(value, 2);
 }
@@ -76,7 +144,8 @@ function receiptKeyStorageKey(purchaseId: number) {
 export function receiptPayloadFingerprint(payload: {
   items: Array<{
     purchase_order_item: number;
-    received_quantity: string;
+    received_quantity?: string;
+    received_stock_quantity?: string;
     divergence_reason: string;
   }>;
   notes: string;

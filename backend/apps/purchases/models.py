@@ -96,6 +96,7 @@ class PurchaseOrder(ProtectedPurchaseModel):
         blank=True,
     )
     notes = models.TextField(blank=True)
+    exclusive_supplier_override = models.BooleanField(default=False)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -203,6 +204,39 @@ class PurchaseOrder(ProtectedPurchaseModel):
 
     def __str__(self):
         return f'{self.order_number} - {self.supplier.trade_name}'
+
+
+class PurchaseAttachment(ProtectedPurchaseModel):
+    purchase_order = models.ForeignKey(
+        PurchaseOrder, on_delete=models.PROTECT, related_name='attachments'
+    )
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='purchase_attachments'
+    )
+    attachment = models.FileField(
+        upload_to=purchase_attachment_path, storage=PrivatePurchaseStorage(),
+        validators=(validate_purchase_attachment,), max_length=500,
+    )
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='uploaded_purchase_attachments',
+    )
+    status = models.CharField(
+        max_length=10, choices=(('active', 'Ativo'), ('inactive', 'Removido')),
+        default='active',
+    )
+
+    class Meta:
+        ordering = ('created_at', 'id')
+
+    def clean(self):
+        super().clean()
+        if self.purchase_order_id and self.company_id and self.purchase_order.company_id != self.company_id:
+            raise ValidationError({'company': 'A empresa deve corresponder à compra.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
 
 class PurchaseOrderItem(ProtectedPurchaseModel):

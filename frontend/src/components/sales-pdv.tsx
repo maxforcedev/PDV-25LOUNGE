@@ -37,6 +37,7 @@ import {
 } from "@/lib/sales";
 import { useAuth } from "@/providers/auth-provider";
 import { ModifierPicker } from "@/components/modifier-picker";
+import { CustomerQuickPicker } from "@/components/customer-quick-picker";
 import type {
   CheckoutCashSession,
   CheckoutOptions,
@@ -50,9 +51,16 @@ import type {
   SaleOperation,
   SalePreview,
   SaleUserOption,
+  Customer,
 } from "@/types";
 
-type CartItem = Product & { cartLineId: number; quantity: string; item_discount: string; modifiers: ModifierSelection[]; modifierUnitTotal: string };
+type CartItem = Product & {
+  cartLineId: number;
+  quantity: string;
+  item_discount: string;
+  modifiers: ModifierSelection[];
+  modifierUnitTotal: string;
+};
 type PaymentRow = {
   key: number;
   payment_method: string;
@@ -61,7 +69,12 @@ type PaymentRow = {
 };
 type PricingPayload = {
   operation_type: SaleOperation;
-  items: Array<{ product: number; quantity: string; discount: string; modifiers: ModifierSelection[] }>;
+  items: Array<{
+    product: number;
+    quantity: string;
+    discount: string;
+    modifiers: ModifierSelection[];
+  }>;
   beneficiary_user?: number;
   charged_amount?: string;
   discount?: string;
@@ -138,10 +151,15 @@ function validPreviewContract(value: unknown): value is SalePreview {
 }
 
 export function SalesPdv() {
-  const { user, currentCompany, currentBranch, hasFeature, hasPermission } = useAuth();
+  const { user, currentCompany, currentBranch, hasFeature, hasPermission } =
+    useAuth();
   const cashEnabled = hasFeature("cash_register");
-  const canSale = hasPermission(permissions.createSale) && hasFeature("counter") && cashEnabled;
-  const canConsumption = hasPermission(permissions.createConsumption) && hasFeature("consumption");
+  const canSale =
+    hasPermission(permissions.createSale) &&
+    hasFeature("counter") &&
+    cashEnabled;
+  const canConsumption =
+    hasPermission(permissions.createConsumption) && hasFeature("consumption");
   const [operation, setOperation] = useState<SaleOperation>(
     canSale ? "sale" : "consumption",
   );
@@ -151,10 +169,14 @@ export function SalesPdv() {
     !consumption && hasPermission(permissions.applyItemDiscount);
   const canWaiveServiceFee =
     !consumption && hasPermission(permissions.waiveServiceFee);
-  const serviceFeeEnabled = !consumption && Boolean(
-    (currentBranch?.features as Record<string, { enabled: boolean }> | undefined)
-      ?.service_fee?.enabled,
-  );
+  const serviceFeeEnabled =
+    !consumption &&
+    Boolean(
+      (
+        currentBranch?.features as
+          Record<string, { enabled: boolean }> | undefined
+      )?.service_fee?.enabled,
+    );
   const contextRef = useRef("");
   contextRef.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}`;
   const requestRef = useRef(0);
@@ -177,6 +199,7 @@ export function SalesPdv() {
   const [consumptionError, setConsumptionError] = useState("");
   const [beneficiary, setBeneficiary] = useState("");
   const [seller, setSeller] = useState("");
+  const [customer, setCustomer] = useState<Customer | null>(null);
   const [authorizer, setAuthorizer] = useState("");
   const [authorizationPassword, setAuthorizationPassword] = useState("");
   const [itemAuthorizer, setItemAuthorizer] = useState("");
@@ -186,6 +209,9 @@ export function SalesPdv() {
   const [serviceFeeAuthorizer, setServiceFeeAuthorizer] = useState("");
   const [serviceFeePassword, setServiceFeePassword] = useState("");
   const [discount, setDiscount] = useState("0.00");
+  const [discountOpen, setDiscountOpen] = useState(false);
+  const [feeOpen, setFeeOpen] = useState(false);
+  const [splitOpen, setSplitOpen] = useState(false);
   const [charged, setCharged] = useState("0.00");
   const [cashSession, setCashSession] = useState("");
   const [splitPeople, setSplitPeople] = useState("1");
@@ -274,6 +300,7 @@ export function SalesPdv() {
     setSale(null);
     setBeneficiary("");
     setSeller("");
+    setCustomer(null);
     setAuthorizer("");
     setAuthorizationPassword("");
     setItemAuthorizer("");
@@ -318,12 +345,14 @@ export function SalesPdv() {
           setPayments([
             {
               key: paymentKey++,
-              payment_method: activeMethods[0] ? String(activeMethods[0].id) : "",
+              payment_method: activeMethods[0]
+                ? String(activeMethods[0].id)
+                : "",
               amount: "",
               received_amount: "",
             },
           ]);
-          if (options.cash_sessions.length === 1)
+          if (options.cash_sessions.length)
             setCashSession(String(options.cash_sessions[0].id));
         })
         .catch((caught) => {
@@ -471,7 +500,8 @@ export function SalesPdv() {
     invalidatePreview();
     setSale(null);
     setCart((current) =>
-      !modifiers.length && current.some((item) => item.id === product.id && !item.modifiers.length)
+      !modifiers.length &&
+      current.some((item) => item.id === product.id && !item.modifiers.length)
         ? current.map((item) => {
             if (item.id !== product.id || item.modifiers.length) return item;
             const next =
@@ -493,16 +523,27 @@ export function SalesPdv() {
               quantity: product.unit === "un" ? "1" : "1.000",
               item_discount: "0.00",
               modifiers,
-              modifierUnitTotal: modifiers.reduce((total, selection) => {
-                const option = (product.modifier_groups || []).flatMap((group) => group.options || []).find((item) => item.id === selection.option);
-                return total + Number(option?.additional_price || 0) * Number(selection.quantity);
-              }, 0).toFixed(2),
+              modifierUnitTotal: modifiers
+                .reduce((total, selection) => {
+                  const option = (product.modifier_groups || [])
+                    .flatMap((group) => group.options || [])
+                    .find((item) => item.id === selection.option);
+                  return (
+                    total +
+                    Number(option?.additional_price || 0) *
+                      Number(selection.quantity)
+                  );
+                }, 0)
+                .toFixed(2),
             },
           ],
     );
   }
   function requestAdd(product: Product) {
-    if ((product.modifier_groups || []).some((group) => group.status === "active")) setModifierProduct(product);
+    if (
+      (product.modifier_groups || []).some((group) => group.status === "active")
+    )
+      setModifierProduct(product);
     else add(product);
   }
   function quantity(cartLineId: number, value: string) {
@@ -517,13 +558,17 @@ export function SalesPdv() {
     invalidatePreview();
     setCart((current) =>
       current.map((item) =>
-        item.cartLineId === cartLineId ? { ...item, item_discount: value } : item,
+        item.cartLineId === cartLineId
+          ? { ...item, item_discount: value }
+          : item,
       ),
     );
   }
   function remove(cartLineId: number) {
     invalidatePreview();
-    setCart((current) => current.filter((item) => item.cartLineId !== cartLineId));
+    setCart((current) =>
+      current.filter((item) => item.cartLineId !== cartLineId),
+    );
   }
   function updatePayment(
     key: number,
@@ -553,10 +598,19 @@ export function SalesPdv() {
     const base = total / BigInt(people);
     const remainder = total % BigInt(people);
     const method = methods[0] ? String(methods[0].id) : "";
-    setPayments(Array.from({ length: people }, (_, index) => {
-      const amount = centsToDecimal(base + (BigInt(index) < remainder ? BigInt(1) : BigInt(0)));
-      return { key: paymentKey++, payment_method: method, amount, received_amount: "" };
-    }));
+    setPayments(
+      Array.from({ length: people }, (_, index) => {
+        const amount = centsToDecimal(
+          base + (BigInt(index) < remainder ? BigInt(1) : BigInt(0)),
+        );
+        return {
+          key: paymentKey++,
+          payment_method: method,
+          amount,
+          received_amount: "",
+        };
+      }),
+    );
   }
 
   function openConsumption() {
@@ -618,22 +672,39 @@ export function SalesPdv() {
     )
     .map((row) => row.amount);
   const nonCashTotal = sumMoney(nonCashAmounts);
-  const explicitCashTotal = sumMoney(payments.filter((row) => methods.find((item) => String(item.id) === row.payment_method)?.code === "cash" && row.amount).map((row) => row.amount));
-  const hasAutomaticCashRow = payments.some((row) => methods.find((item) => String(item.id) === row.payment_method)?.code === "cash" && !row.amount);
+  const explicitCashTotal = sumMoney(
+    payments
+      .filter(
+        (row) =>
+          methods.find((item) => String(item.id) === row.payment_method)
+            ?.code === "cash" && row.amount,
+      )
+      .map((row) => row.amount),
+  );
+  const hasAutomaticCashRow = payments.some(
+    (row) =>
+      methods.find((item) => String(item.id) === row.payment_method)?.code ===
+        "cash" && !row.amount,
+  );
   const cashRemainingCents =
-    totalCents !== null ? totalCents - (nonCashTotal || BigInt(0)) - (explicitCashTotal || BigInt(0)) : null;
+    totalCents !== null
+      ? totalCents -
+        (nonCashTotal || BigInt(0)) -
+        (explicitCashTotal || BigInt(0))
+      : null;
   const effectivePaymentCents =
     (nonCashTotal || BigInt(0)) +
     (explicitCashTotal || BigInt(0)) +
-    (hasAutomaticCashRow && cashRemainingCents !== null && cashRemainingCents > BigInt(0)
+    (hasAutomaticCashRow &&
+    cashRemainingCents !== null &&
+    cashRemainingCents > BigInt(0)
       ? cashRemainingCents
       : BigInt(0));
   const free = consumption && totalCents === BigInt(0);
   const paymentValid =
-    !!cashSession && (
-      free ||
-      (
-        !!preview &&
+    !!cashSession &&
+    (free ||
+      (!!preview &&
         payments.length > 0 &&
         effectivePaymentCents === totalCents &&
         payments.every((row) => {
@@ -641,28 +712,29 @@ export function SalesPdv() {
             (item) => String(item.id) === row.payment_method,
           );
           if (!method) return false;
-            if (method.code === "cash") {
-              const received = moneyToCents(row.received_amount);
-              const amount = row.amount ? moneyToCents(row.amount) : cashRemainingCents;
-              return (
-                received !== null &&
-                amount !== null && amount > BigInt(0) &&
-                received >= amount
-              );
+          if (method.code === "cash") {
+            const received = moneyToCents(row.received_amount);
+            const amount = row.amount
+              ? moneyToCents(row.amount)
+              : cashRemainingCents;
+            return (
+              received !== null &&
+              amount !== null &&
+              amount > BigInt(0) &&
+              received >= amount
+            );
           }
           const amount = moneyToCents(row.amount);
           return amount !== null && amount > 0 && !row.received_amount;
-        })
-      )
-    );
+        })));
   const discountAuthorizationRequired = Boolean(
     !consumption && !canDiscount && preview && preview.discount !== "0.00",
   );
   const itemDiscountAuthorizationRequired = Boolean(
     !consumption &&
-      !canItemDiscount &&
-      preview &&
-      preview.item_discount_total !== "0.00",
+    !canItemDiscount &&
+    preview &&
+    preview.item_discount_total !== "0.00",
   );
   const serviceFeeAuthorizationRequired = Boolean(
     !consumption && serviceFeeWaived && !canWaiveServiceFee,
@@ -671,12 +743,12 @@ export function SalesPdv() {
     ? true
     : Boolean(
         seller &&
-          (!discountAuthorizationRequired ||
-            (authorizer && authorizationPassword)) &&
-          (!itemDiscountAuthorizationRequired ||
-            (itemAuthorizer && itemAuthorizationPassword)) &&
-          (!serviceFeeAuthorizationRequired ||
-            (serviceFeeAuthorizer && serviceFeePassword)),
+        (!discountAuthorizationRequired ||
+          (authorizer && authorizationPassword)) &&
+        (!itemDiscountAuthorizationRequired ||
+          (itemAuthorizer && itemAuthorizationPassword)) &&
+        (!serviceFeeAuthorizationRequired ||
+          (serviceFeeAuthorizer && serviceFeePassword)),
       );
 
   async function finalize() {
@@ -706,6 +778,7 @@ export function SalesPdv() {
             }
           : {
               seller_user: Number(seller),
+              ...(customer ? { customer: customer.id } : {}),
               discount: canonicalMoney(discount),
               service_fee_waived: serviceFeeWaived,
               ...(discountAuthorizationRequired
@@ -747,7 +820,9 @@ export function SalesPdv() {
                 payment_method: Number(row.payment_method),
                 ...(isCash
                   ? {
-                      amount: row.amount ? canonicalMoney(row.amount) : "remaining",
+                      amount: row.amount
+                        ? canonicalMoney(row.amount)
+                        : "remaining",
                       received_amount: canonicalMoney(row.received_amount),
                     }
                   : { amount: canonicalMoney(row.amount) }),
@@ -762,6 +837,7 @@ export function SalesPdv() {
       setDiscount("0.00");
       setCharged("0.00");
       setBeneficiary("");
+      setCustomer(null);
       setAuthorizationPassword("");
       setAuthorizer("");
       setItemAuthorizationPassword("");
@@ -799,14 +875,77 @@ export function SalesPdv() {
               PDV {consumption ? "· Consumação" : ""}
             </h1>
           </div>
-          <div className="flex flex-wrap items-center gap-2"><div className="flex rounded-lg border border-white/10 p-1 text-xs"><Link href={sessions.length ? "/caixas" : "/caixas/abrir?return=/pdv"} className={`rounded px-2 py-1 font-bold ${sessions.length ? "bg-success/20 text-success" : "bg-danger/20 text-danger"}`}><BadgeDollarSign className="mr-1 inline size-3" />Caixa {sessions.length ? "aberto" : "fechado"}</Link>{!consumption && <button type="button" className="rounded px-2 py-1 hover:bg-white/10" onClick={() => document.getElementById("pdv-discount")?.focus()}><Percent className="mr-1 inline size-3" />Desconto</button>}{serviceFeeEnabled && <button type="button" className="rounded px-2 py-1 hover:bg-white/10" onClick={() => document.getElementById("pdv-fee")?.click()}>Taxa</button>}{canConsumption && <button type="button" className="rounded px-2 py-1 hover:bg-white/10" onClick={openConsumption}>Consumação</button>}{!consumption && <button type="button" className="rounded px-2 py-1 hover:bg-white/10" onClick={splitPaymentByPeople}>Dividir</button>}</div><div className="rounded-lg bg-white/10 px-4 py-2 text-right">
-            <span className="block text-[10px] uppercase tracking-wider text-operational-muted">
-              Filial em operação
-            </span>
-            <strong className="text-sm">
-              {currentBranch?.name || "Sem filial ativa"}
-            </strong>
-          </div></div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex rounded-lg border border-white/10 p-1 text-xs">
+              {sessions.length ? (
+                <select
+                  aria-label="Sessão de caixa ativa"
+                  value={cashSession || String(sessions[0].id)}
+                  onChange={(event) => setCashSession(event.target.value)}
+                  className="rounded bg-success/20 px-2 py-1 font-bold text-success outline-none"
+                >
+                  {sessions.map((session) => (
+                    <option key={session.id} value={session.id} className="text-slate-900">
+                      {session.register_name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <Link
+                  href="/caixas/abrir?return=/pdv"
+                  className="rounded bg-danger/20 px-2 py-1 font-bold text-danger"
+                >
+                  <BadgeDollarSign className="mr-1 inline size-3" />
+                  Caixa fechado
+                </Link>
+              )}
+              {!consumption && (
+                <button
+                  type="button"
+                  className="rounded px-2 py-1 hover:bg-white/10"
+                  onClick={() => setDiscountOpen(true)}
+                >
+                  <Percent className="mr-1 inline size-3" />
+                  Desconto
+                </button>
+              )}
+              {serviceFeeEnabled && (
+                <button
+                  type="button"
+                  className="rounded px-2 py-1 hover:bg-white/10"
+                  onClick={() => setFeeOpen(true)}
+                >
+                  Taxa
+                </button>
+              )}
+              {canConsumption && (
+                <button
+                  type="button"
+                  className="rounded px-2 py-1 hover:bg-white/10"
+                  onClick={openConsumption}
+                >
+                  Consumação
+                </button>
+              )}
+              {!consumption && (
+                <button
+                  type="button"
+                  className="rounded px-2 py-1 hover:bg-white/10"
+                  onClick={() => setSplitOpen(true)}
+                >
+                  Dividir
+                </button>
+              )}
+            </div>
+            <div className="rounded-lg bg-white/10 px-4 py-2 text-right">
+              <span className="block text-[10px] uppercase tracking-wider text-operational-muted">
+                Filial em operação
+              </span>
+              <strong className="text-sm">
+                {currentBranch?.name || "Sem filial ativa"}
+              </strong>
+            </div>
+          </div>
         </div>
         {[loadingError, ...Object.values(resourceErrors)]
           .filter(Boolean)
@@ -977,13 +1116,31 @@ export function SalesPdv() {
                       <div>
                         <strong className="text-xs">{item.name}</strong>
                         <p className="text-[10px] text-slate-400">
-                          {formatBRL((Number(item.sale_price) + Number(item.modifierUnitTotal)).toFixed(2))} /{" "}
-                          {item.unit.toUpperCase()}
+                          {formatBRL(
+                            (
+                              Number(item.sale_price) +
+                              Number(item.modifierUnitTotal)
+                            ).toFixed(2),
+                          )}{" "}
+                          / {item.unit.toUpperCase()}
                         </p>
-                        {item.modifiers.length > 0 && <p className="mt-1 text-[10px] text-muted">{item.modifiers.map((selection) => {
-                          const option = (item.modifier_groups || []).flatMap((group) => group.options || []).find((value) => value.id === selection.option);
-                          return option ? `${option.name}${selection.quantity !== "1" ? ` × ${selection.quantity}` : ""}` : "";
-                        }).filter(Boolean).join(" · ")}</p>}
+                        {item.modifiers.length > 0 && (
+                          <p className="mt-1 text-[10px] text-muted">
+                            {item.modifiers
+                              .map((selection) => {
+                                const option = (item.modifier_groups || [])
+                                  .flatMap((group) => group.options || [])
+                                  .find(
+                                    (value) => value.id === selection.option,
+                                  );
+                                return option
+                                  ? `${option.name}${selection.quantity !== "1" ? ` × ${selection.quantity}` : ""}`
+                                  : "";
+                              })
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </p>
+                        )}
                       </div>
                       <button
                         className="icon-button size-7"
@@ -1012,7 +1169,8 @@ export function SalesPdv() {
                       >
                         <Minus className="size-3" />
                       </button>
-                      <Input id="pdv-discount"
+                      <Input
+                        id="pdv-discount"
                         className="h-8 w-24 text-center"
                         inputMode="decimal"
                         value={item.quantity}
@@ -1030,7 +1188,7 @@ export function SalesPdv() {
                             item.unit === "un" ? BigInt(1000) : BigInt(1);
                           const next = q + step;
                           quantity(
-                              item.cartLineId,
+                            item.cartLineId,
                             item.unit === "un"
                               ? String(next / BigInt(1000))
                               : `${next / BigInt(1000)}.${String(next % BigInt(1000)).padStart(3, "0")}`,
@@ -1042,13 +1200,19 @@ export function SalesPdv() {
                       <span className="ml-auto text-xs font-bold">
                         {formatBRL(
                           provisionalItemTotal(
-                            (Number(item.sale_price) + Number(item.modifierUnitTotal)).toFixed(2),
+                            (
+                              Number(item.sale_price) +
+                              Number(item.modifierUnitTotal)
+                            ).toFixed(2),
                             item.quantity,
                           ) === null
                             ? null
                             : centsToDecimal(
                                 provisionalItemTotal(
-                                  (Number(item.sale_price) + Number(item.modifierUnitTotal)).toFixed(2),
+                                  (
+                                    Number(item.sale_price) +
+                                    Number(item.modifierUnitTotal)
+                                  ).toFixed(2),
                                   item.quantity,
                                 )!,
                               ),
@@ -1086,11 +1250,6 @@ export function SalesPdv() {
             {!!cart.length && (
               <div className="space-y-4 border-t border-subtle p-5">
                 <div className="flex flex-wrap gap-2">
-                  {canConsumption && (!consumption || !beneficiary) && (
-                    <Button variant="secondary" onClick={openConsumption}>
-                      Aplicar consumação
-                    </Button>
-                  )}
                   {consumption && canSale && (
                     <Button variant="secondary" onClick={backToSale}>
                       Remover consumação / voltar para venda
@@ -1116,6 +1275,15 @@ export function SalesPdv() {
                   </div>
                 )}
                 {!consumption && (
+                  <Field label="Cliente" optional>
+                    <CustomerQuickPicker
+                      value={customer}
+                      onChange={setCustomer}
+                      disabled={finalizing}
+                    />
+                  </Field>
+                )}
+                {!consumption && (
                   <Field label="Atendente da venda">
                     <Select
                       required
@@ -1136,19 +1304,10 @@ export function SalesPdv() {
                     </span>
                   </Field>
                 )}
-                {!consumption && (
-                  <Field
-                    label={`Desconto na conta (R$)${canDiscount ? "" : " · exige autorização"}`}
-                  >
-                    <Input
-                      inputMode="decimal"
-                      value={discount}
-                      onChange={(event) => {
-                        invalidatePreview();
-                        setDiscount(event.target.value);
-                      }}
-                    />
-                  </Field>
+                {!consumption && moneyToCents(discount) !== BigInt(0) && (
+                  <p className="text-xs font-semibold text-primary">
+                    Desconto aplicado · {formatBRL(canonicalMoney(discount))}
+                  </p>
                 )}
                 {discountAuthorizationRequired && (
                   <div className="space-y-3 rounded-lg border border-warning/30 bg-warning-surface p-4">
@@ -1220,10 +1379,11 @@ export function SalesPdv() {
                     </Field>
                   </div>
                 )}
-                {!consumption && (
+                {false && !consumption && (
                   <label className="flex items-center gap-3 rounded-lg border border-subtle p-4 text-xs font-semibold">
                     <input
-                      id="pdv-fee" type="checkbox"
+                      id="pdv-fee"
+                      type="checkbox"
                       className="size-4 accent-primary"
                       checked={serviceFeeWaived}
                       onChange={(event) => {
@@ -1366,29 +1526,6 @@ export function SalesPdv() {
                 )}
                 {preview && !free && (
                   <div className="space-y-3">
-                    <Field label="Sessão de caixa">
-                      <Select
-                        value={cashSession}
-                        onChange={(event) => setCashSession(event.target.value)}
-                      >
-                        <option value="">Selecione uma sessão aberta</option>
-                        {sessions.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {item.register_name} · aberta por{" "}
-                            {item.opened_by_name}
-                          </option>
-                        ))}
-                      </Select>
-                      {!sessions.length &&
-                        hasPermission(permissions.openCashRegister) && (
-                          <Link
-                            className="mt-2 inline-block text-xs font-bold text-primary"
-                            href="/caixas/abrir?return=/pdv"
-                          >
-                            Abrir caixa e continuar no PDV
-                          </Link>
-                        )}
-                    </Field>
                     <div className="flex items-center justify-between">
                       <strong className="text-xs">Pagamentos</strong>
                       <button
@@ -1410,40 +1547,50 @@ export function SalesPdv() {
                         + Dividir pagamento
                       </button>
                     </div>
-                    <div className="rounded-lg border border-subtle p-3">
-                      <div className="grid gap-2 sm:grid-cols-[150px_1fr]">
+                    {false && (
+                      <div className="rounded-lg border border-subtle p-3">
+                        <div className="grid gap-2 sm:grid-cols-[150px_1fr]">
                           <Field label="Dividir por pessoas">
-                          <Input
-                            inputMode="numeric"
-                            min={1}
-                            value={splitPeople}
-                            onChange={(event) =>
-                              setSplitPeople(
-                                event.target.value.replace(/\D/g, "") || "1",
-                              )
-                            }
-                          />
-                          </Field>
-                          <Button type="button" variant="secondary" className="self-end" onClick={splitPaymentByPeople}>Gerar linhas</Button>
-                        <div className="self-end pb-2 text-xs text-slate-500">
-                          Valor por pessoa:{" "}
-                          <strong className="text-slate-900">
-                            {preview
-                              ? formatBRL(
-                                  centsToDecimal(
-                                    (moneyToCents(preview.total) || BigInt(0)) /
-                                      BigInt(
-                                        Math.max(1, Number(splitPeople) || 1),
-                                      ),
-                                  ),
+                            <Input
+                              inputMode="numeric"
+                              min={1}
+                              value={splitPeople}
+                              onChange={(event) =>
+                                setSplitPeople(
+                                  event.target.value.replace(/\D/g, "") || "1",
                                 )
-                              : "-"}
-                          </strong>
-                          . Esta calculadora não altera a venda nem os
-                          pagamentos.
+                              }
+                            />
+                          </Field>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            className="self-end"
+                            onClick={splitPaymentByPeople}
+                          >
+                            Gerar linhas
+                          </Button>
+                          <div className="self-end pb-2 text-xs text-slate-500">
+                            Valor por pessoa:{" "}
+                            <strong className="text-slate-900">
+                              {preview
+                                ? formatBRL(
+                                    centsToDecimal(
+                                      (moneyToCents(preview?.total) ||
+                                        BigInt(0)) /
+                                        BigInt(
+                                          Math.max(1, Number(splitPeople) || 1),
+                                        ),
+                                    ),
+                                  )
+                                : "-"}
+                            </strong>
+                            . Esta calculadora não altera a venda nem os
+                            pagamentos.
+                          </div>
                         </div>
                       </div>
-                    </div>
+                    )}
                     {payments.map((row) => {
                       const method = methods.find(
                         (item) => String(item.id) === row.payment_method,
@@ -1454,10 +1601,10 @@ export function SalesPdv() {
                         isCash && row.amount
                           ? moneyToCents(row.amount) || BigInt(0)
                           : isCash &&
-                        cashRemainingCents !== null &&
-                        cashRemainingCents > BigInt(0)
-                          ? cashRemainingCents
-                          : BigInt(0);
+                              cashRemainingCents !== null &&
+                              cashRemainingCents > BigInt(0)
+                            ? cashRemainingCents
+                            : BigInt(0);
                       return (
                         <div
                           key={row.key}
@@ -1482,7 +1629,18 @@ export function SalesPdv() {
                               ))}
                             </Select>
                             {isCash ? (
-                              <Input inputMode="decimal" placeholder="Valor" value={row.amount} onChange={(event) => updatePayment(row.key, "amount", event.target.value)} />
+                              <Input
+                                inputMode="decimal"
+                                placeholder="Valor"
+                                value={row.amount}
+                                onChange={(event) =>
+                                  updatePayment(
+                                    row.key,
+                                    "amount",
+                                    event.target.value,
+                                  )
+                                }
+                              />
                             ) : (
                               <Input
                                 inputMode="decimal"
@@ -1550,8 +1708,8 @@ export function SalesPdv() {
                 )}
                 {preview && free && (
                   <div className="rounded-lg border border-success/20 bg-success-surface p-3 text-xs text-success-strong">
-                    Consumação sem cobrança: dispensa forma de pagamento, mas exige
-                    uma sessão de Caixa aberta.
+                    Consumação sem cobrança: dispensa forma de pagamento, mas
+                    exige uma sessão de Caixa aberta.
                   </div>
                 )}
                 <div className="flex gap-2">
@@ -1639,7 +1797,117 @@ export function SalesPdv() {
             </Button>
           </div>
         </Modal>
-        {modifierProduct && <ModifierPicker product={modifierProduct} onClose={() => setModifierProduct(null)} onConfirm={(selections) => { add(modifierProduct, selections); setModifierProduct(null); }} />}
+        <Modal
+          open={discountOpen}
+          title="Desconto"
+          description="Aplique desconto por valor. Autorizações continuam sendo validadas no fechamento."
+          onClose={() => setDiscountOpen(false)}
+          size="md"
+        >
+          <div className="space-y-4 p-5">
+            <Field label="Valor do desconto (R$)">
+              <Input
+                autoFocus
+                inputMode="decimal"
+                value={discount}
+                onChange={(event) => {
+                  invalidatePreview();
+                  setDiscount(event.target.value);
+                }}
+              />
+            </Field>
+            {discountAuthorizationRequired && (
+              <p className="text-xs text-warning-strong">
+                Informe autorizador e senha na seção de autorização antes de
+                finalizar.
+              </p>
+            )}
+          </div>
+          <div className="flex justify-end border-t border-subtle px-5 py-4">
+            <Button onClick={() => setDiscountOpen(false)}>
+              Aplicar desconto
+            </Button>
+          </div>
+        </Modal>
+        <Modal
+          open={feeOpen}
+          title="Taxa de serviço"
+          description="A taxa configurada é aplicada automaticamente. Você pode retirá-la quando autorizado."
+          onClose={() => setFeeOpen(false)}
+          size="md"
+        >
+          <div className="space-y-4 p-5">
+            <p className="text-sm">Taxa atual: {preview?.service_fee_rate || "0"}%</p>
+            <label className="flex items-center gap-3 text-sm">
+              <input
+                type="checkbox"
+                checked={serviceFeeWaived}
+                onChange={(event) => {
+                  invalidatePreview();
+                  setServiceFeeWaived(event.target.checked);
+                }}
+              />
+              Retirar taxa de serviço
+            </label>
+          </div>
+          <div className="flex justify-end border-t border-subtle px-5 py-4">
+            <Button onClick={() => setFeeOpen(false)}>Aplicar</Button>
+          </div>
+        </Modal>
+        <Modal
+          open={splitOpen}
+          title="Dividir pagamento"
+          description="Gera linhas de pagamento; a venda só muda após finalizar."
+          onClose={() => setSplitOpen(false)}
+          size="md"
+        >
+          <div className="space-y-4 p-5">
+            <Field label="Pessoas">
+              <Input
+                inputMode="numeric"
+                min={1}
+                value={splitPeople}
+                onChange={(event) =>
+                  setSplitPeople(event.target.value.replace(/\D/g, "") || "1")
+                }
+              />
+            </Field>
+            <p className="text-sm">
+              Valor por pessoa:{" "}
+              {preview
+                ? formatBRL(
+                    centsToDecimal(
+                      (moneyToCents(preview.total) || BigInt(0)) /
+                        BigInt(Math.max(1, Number(splitPeople) || 1)),
+                    ),
+                  )
+                : "-"}
+            </p>
+          </div>
+          <div className="flex justify-end gap-2 border-t border-subtle px-5 py-4">
+            <Button variant="secondary" onClick={() => setSplitOpen(false)}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={() => {
+                splitPaymentByPeople();
+                setSplitOpen(false);
+              }}
+            >
+              Gerar linhas
+            </Button>
+          </div>
+        </Modal>
+        {modifierProduct && (
+          <ModifierPicker
+            product={modifierProduct}
+            onClose={() => setModifierProduct(null)}
+            onConfirm={(selections) => {
+              add(modifierProduct, selections);
+              setModifierProduct(null);
+            }}
+          />
+        )}
       </div>
     </div>
   );

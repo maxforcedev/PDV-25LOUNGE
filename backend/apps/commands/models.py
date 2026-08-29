@@ -4,7 +4,7 @@ from decimal import Decimal
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
 
 from apps.base.models import BaseModel
 from apps.companies.models import Branch, Company, Status
@@ -60,6 +60,18 @@ class CommandStatus(models.TextChoices):
     CLOSED = 'closed', 'Fechada'
 
 
+class CommandOperationType(models.TextChoices):
+    TRANSFER = 'transfer'
+    TRANSFER_ITEMS = 'transfer_items'
+    MERGE = 'merge'
+    SPLIT = 'split'
+
+
+class CommandPaymentStatus(models.TextChoices):
+    APPLIED = 'applied', 'Aplicado'
+    REVERSED = 'reversed', 'Estornado'
+
+
 class Command(BaseModel):
     company = models.ForeignKey(
         Company, on_delete=models.PROTECT, related_name='commands'
@@ -69,6 +81,10 @@ class Command(BaseModel):
     )
     table = models.ForeignKey(
         Table, on_delete=models.PROTECT, related_name='commands',
+        blank=True, null=True,
+    )
+    customer = models.ForeignKey(
+        'companies.Customer', on_delete=models.PROTECT, related_name='commands',
         blank=True, null=True,
     )
     command_number = models.CharField(max_length=50)
@@ -89,6 +105,8 @@ class Command(BaseModel):
         'sales.Sale', on_delete=models.PROTECT,
         related_name='command', blank=True, null=True,
     )
+    checkout_discount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
+    checkout_service_fee_waived = models.BooleanField(default=False)
 
     class Meta:
         ordering = ('-created_at', '-id')
@@ -111,6 +129,11 @@ class Command(BaseModel):
             raise ValidationError({'table': 'A mesa deve pertencer à filial da comanda.'})
         if self.branch_id and self.branch.company_id != self.company_id:
             raise ValidationError({'branch': 'A filial deve pertencer à empresa da comanda.'})
+        if self.customer_id and (
+            self.customer.company_id != self.company_id
+            or self.customer.status != Status.ACTIVE
+        ):
+            raise ValidationError({'customer': 'O cliente deve estar ativo e pertencer à empresa da comanda.'})
 
     def save(self, *args, **kwargs):
         self.full_clean()
@@ -118,6 +141,82 @@ class Command(BaseModel):
 
     def __str__(self):
         return f'{self.branch.name} — {self.command_number}'
+
+
+class CommandOperation(BaseModel):
+    """Stores the completed result of an idempotent command operation."""
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='command_operations')
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='command_operations')
+    operation_type = models.CharField(max_length=20, choices=CommandOperationType.choices)
+    idempotency_key = models.UUIDField(editable=False)
+    payload_fingerprint = models.CharField(max_length=64, editable=False)
+    result = models.JSONField(default=dict)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=('branch', 'operation_type', 'idempotency_key'),
+                name='commands_operation_branch_type_idempotency_unique',
+            ),
+        ]
+
+
+class CommandPayment(BaseModel):
+    """Immutable tender ledger for an open command; reversals are new rows."""
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='command_payments')
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='command_payments')
+    command = models.ForeignKey(Command, on_delete=models.PROTECT, related_name='payments')
+    payment_method = models.ForeignKey('sales.PaymentMethod', on_delete=models.PROTECT, related_name='command_payments')
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    received_amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    change_amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    cash_session = models.ForeignKey('cash.CashSession', on_delete=models.PROTECT, related_name='command_payments', null=True, blank=True)
+    operator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='command_payments')
+    status = models.CharField(max_length=10, choices=CommandPaymentStatus.choices, default=CommandPaymentStatus.APPLIED)
+    idempotency_key = models.UUIDField()
+    reversal_of = models.OneToOneField('self', on_delete=models.PROTECT, related_name='reversal', null=True, blank=True)
+    reversal_reason = models.TextField(blank=True, default='')
+
+    class Meta:
+        ordering = ('id',)
+        constraints = [
+            models.UniqueConstraint(fields=('command', 'idempotency_key'), name='commands_payment_idempotency_unique'),
+            models.CheckConstraint(condition=Q(amount__gt=0), name='commands_payment_amount_positive'),
+            models.CheckConstraint(condition=Q(received_amount__isnull=True) | Q(received_amount__gte=F('amount')), name='commands_payment_received_gte_amount'),
+            models.CheckConstraint(condition=Q(change_amount__isnull=True) | Q(change_amount__gte=0), name='commands_payment_change_nonnegative'),
+            models.CheckConstraint(condition=Q(status='applied', reversal_of__isnull=True, reversal_reason='') | Q(status='reversed', reversal_of__isnull=False), name='commands_payment_status_coherent'),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.command_id and (self.command.company_id != self.company_id or self.command.branch_id != self.branch_id):
+            errors['command'] = 'A comanda deve pertencer à mesma empresa e filial.'
+        if self.payment_method_id and self.payment_method.company_id != self.company_id:
+            errors['payment_method'] = 'A forma de pagamento deve pertencer à empresa.'
+        if self.cash_session_id and self.cash_session.branch_id != self.branch_id:
+            errors['cash_session'] = 'A sessão deve pertencer à filial.'
+        if self.payment_method_id and self.payment_method.code == 'cash':
+            if self.received_amount is None or self.received_amount < self.amount:
+                errors['received_amount'] = 'Dinheiro exige valor recebido igual ou maior ao aplicado.'
+            elif self.change_amount != self.received_amount - self.amount:
+                errors['change_amount'] = 'O troco deve ser a diferença entre recebido e aplicado.'
+            if not self.cash_session_id:
+                errors['cash_session'] = 'Dinheiro exige sessão de caixa.'
+        elif self.received_amount is not None or self.change_amount is not None or self.cash_session_id:
+            errors['payment_method'] = 'Somente dinheiro aceita recebido, troco ou sessão de caixa.'
+        if self.status == CommandPaymentStatus.REVERSED and not self.reversal_reason.strip():
+            errors['reversal_reason'] = 'Informe o motivo do estorno.'
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError('Pagamentos de comanda são imutáveis.')
+        if self.payment_method_id and self.payment_method.code == 'cash' and self.received_amount is not None:
+            self.change_amount = self.received_amount - self.amount
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
 
 class OrderStatus(models.TextChoices):

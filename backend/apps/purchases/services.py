@@ -20,7 +20,9 @@ from apps.inventory.services import purchase_receipt_entry
 from apps.products.models import (
     FractionableProductConfig, InventoryBehavior, Product, Unit,
 )
-from apps.suppliers.models import ProductSupplier, ProductSupplierUnit, Supplier
+from apps.suppliers.models import (
+    ProductPurchasePresentation, ProductSupplier, ProductSupplierUnit, Supplier,
+)
 
 from .models import (
     PayableInstallment,
@@ -105,7 +107,7 @@ def _next_order_number(company):
     return f'C{(latest or 0) + 1:06d}'
 
 
-def _validate_product_supplier(unit, *, company, supplier):
+def _validate_product_supplier(unit, *, company, supplier, allow_exclusive=False):
     relation = unit.product_supplier
     product = relation.product
     errors = {}
@@ -128,19 +130,51 @@ def _validate_product_supplier(unit, *, company, supplier):
     exclusive = ProductSupplier.objects.filter(
         product=product, status=Status.ACTIVE, is_exclusive=True
     ).first()
-    if exclusive and exclusive.supplier_id != supplier.pk:
-        errors['supplier'] = (
-            f'O produto {product.name} possui fornecedor exclusivo ativo.'
+    if exclusive and exclusive.supplier_id != supplier.pk and not allow_exclusive:
+        errors['exclusive_supplier_warning'] = _exclusive_supplier_message(
+            product, exclusive.supplier, supplier
         )
     if errors:
         raise ValidationError(errors)
     return relation, product
 
 
-def _validate_purchase_item(item, *, company, supplier):
+def _exclusive_supplier_message(product, exclusive_supplier, selected_supplier):
+    return (
+        f'O produto {product.name} possui o fornecedor '
+        f'{exclusive_supplier.trade_name} configurado como fornecedor exclusivo. '
+        f'Você está realizando esta compra com {selected_supplier.trade_name}.'
+    )
+
+
+def _exclusive_supplier_override_details(items, supplier):
+    details = []
+    seen_products = set()
+    for item in items:
+        product = item.product
+        if product.pk in seen_products:
+            continue
+        seen_products.add(product.pk)
+        exclusive = ProductSupplier.objects.filter(
+            product=product, status=Status.ACTIVE, is_exclusive=True,
+        ).select_related('supplier').first()
+        if exclusive and exclusive.supplier_id != supplier.pk:
+            details.append({
+                'product_id': product.pk,
+                'product_name': product.name,
+                'exclusive_supplier_id': exclusive.supplier_id,
+                'exclusive_supplier_name': exclusive.supplier.trade_name,
+                'selected_supplier_id': supplier.pk,
+                'selected_supplier_name': supplier.trade_name,
+                'override_confirmed': True,
+            })
+    return details
+
+
+def _validate_purchase_item(item, *, company, supplier, allow_exclusive=False):
     if item.product_supplier_unit_id:
         return _validate_product_supplier(
-            item.product_supplier_unit, company=company, supplier=supplier,
+            item.product_supplier_unit, company=company, supplier=supplier, allow_exclusive=allow_exclusive,
         )
     product = item.product
     errors = {}
@@ -153,14 +187,16 @@ def _validate_purchase_item(item, *, company, supplier):
     exclusive = ProductSupplier.objects.filter(
         product=product, status=Status.ACTIVE, is_exclusive=True
     ).first()
-    if exclusive and exclusive.supplier_id != supplier.pk:
-        errors['supplier'] = f'O produto {product.name} possui fornecedor exclusivo ativo.'
+    if exclusive and exclusive.supplier_id != supplier.pk and not allow_exclusive:
+        errors['exclusive_supplier_warning'] = _exclusive_supplier_message(
+            product, exclusive.supplier, supplier
+        )
     if errors:
         raise ValidationError(errors)
     return None, product
 
 
-def _create_items(order, raw_items):
+def _create_items(order, raw_items, *, allow_exclusive=False):
     if not isinstance(raw_items, list) or not raw_items:
         raise ValidationError({'items': 'Informe ao menos um item.'})
     unit_ids = []
@@ -185,8 +221,8 @@ def _create_items(order, raw_items):
 
     units = {
         unit.pk: unit
-        for unit in ProductSupplierUnit.objects.select_for_update().select_related(
-            'product_supplier__product', 'product_supplier__supplier'
+        for unit in ProductSupplierUnit.objects.select_for_update(of=('self',)).select_related(
+            'product_supplier__product', 'product_supplier__supplier', 'purchase_presentation'
         ).filter(pk__in=unit_ids).order_by('pk')
     } if unit_ids else {}
     if len(units) != len(unit_ids):
@@ -207,14 +243,24 @@ def _create_items(order, raw_items):
         if unit_id not in (None, ''):
             unit = units[int(unit_id)]
             relation, product = _validate_product_supplier(
-                unit, company=order.company, supplier=order.supplier
+                unit, company=order.company, supplier=order.supplier, allow_exclusive=allow_exclusive
             )
             supplied_product = raw.get('product')
             if supplied_product not in (None, '') and int(_pk(supplied_product)) != product.pk:
                 raise ValidationError({'items': f'Item {index}: produto e apresentação divergem.'})
-            conversion_factor = unit.conversion_factor
-            presentation_unit_code = unit.unit_code
-            presentation_description = unit.description
+            presentation = unit.purchase_presentation
+            if presentation is None:
+                # Legacy supplier units are normalized before their first purchase snapshot.
+                presentation, _created = ProductPurchasePresentation.objects.get_or_create(
+                    company=order.company,
+                    product=product,
+                    unit_code=unit.unit_code,
+                    conversion_factor=unit.conversion_factor,
+                    defaults={'description': unit.description},
+                )
+            conversion_factor = presentation.conversion_factor
+            presentation_unit_code = presentation.unit_code
+            presentation_description = presentation.description
             supplier_code = relation.supplier_code
             product_supplier = relation
             product_supplier_unit = unit
@@ -223,7 +269,7 @@ def _create_items(order, raw_items):
             temporary = type('PurchaseItemValidation', (), {
                 'product_supplier_unit_id': None, 'product': product,
             })()
-            _validate_purchase_item(temporary, company=order.company, supplier=order.supplier)
+            _validate_purchase_item(temporary, company=order.company, supplier=order.supplier, allow_exclusive=allow_exclusive)
             relation = None
             conversion_factor = Decimal('1')
             presentation_unit_code = product.unit
@@ -475,7 +521,7 @@ def create_purchase_order(*, branch, supplier, order_type, items, user,
                            global_discount='0.00', freight_total='0.00',
                            other_expenses_total='0.00', installments=None,
                            installment_count=None, first_due_date=None,
-                          support_session=None, **document):
+                           support_session=None, exclusive_supplier_override=False, **document):
     if 'attachment_reference' in document:
         raise ValidationError({
             'attachment_reference': 'Envie anexos pelo endpoint protegido da compra.'
@@ -517,9 +563,10 @@ def create_purchase_order(*, branch, supplier, order_type, items, user,
         document_series=(document.get('document_series') or '').strip(),
         document_date=document.get('document_date'),
         notes=(document.get('notes') or '').strip(),
+        exclusive_supplier_override=exclusive_supplier_override,
         created_by=user,
     )
-    created_items = _create_items(order, items)
+    created_items = _create_items(order, items, allow_exclusive=exclusive_supplier_override)
     order.global_discount = requested_discount
     order.freight_total = requested_freight
     order.other_expenses_total = requested_other
@@ -534,7 +581,14 @@ def create_purchase_order(*, branch, supplier, order_type, items, user,
         company=company,
         branch=branch,
         after=_order_snapshot(order),
-        metadata={'summary': f'Compra {order.order_number} criada em rascunho.'},
+        metadata={
+            'summary': f'Compra {order.order_number} criada em rascunho.',
+            'exclusive_supplier_override': exclusive_supplier_override,
+            'exclusive_supplier_overrides': (
+                _exclusive_supplier_override_details(created_items, supplier)
+                if exclusive_supplier_override else []
+            ),
+        },
     )
     return order
 
@@ -645,6 +699,47 @@ def set_purchase_attachment(*, purchase_order, attachment, user, support_session
 
 
 @transaction.atomic
+def add_purchase_attachment(*, purchase_order, attachment, user, support_session=None):
+    from .models import PurchaseAttachment
+
+    order = PurchaseOrder.objects.select_for_update().select_related('company', 'branch').get(
+        pk=_pk(purchase_order)
+    )
+    _authorized_branch(order.branch, user, 'purchases.create', support_session=support_session)
+    item = PurchaseAttachment.objects.create(
+        purchase_order=order, company=order.company, attachment=attachment, uploaded_by=user,
+    )
+    audit_log(
+        actor=user, action='purchase.attachment.upload', obj=item,
+        company=order.company, branch=order.branch,
+        after={'purchase_order_id': order.pk, 'attachment': True},
+        metadata={'summary': f'Anexo adicionado à compra {order.order_number}.'},
+    )
+    return item
+
+
+@transaction.atomic
+def remove_purchase_attachment(*, purchase_order, attachment_id, user, support_session=None):
+    from .models import PurchaseAttachment
+
+    order = PurchaseOrder.objects.select_for_update().select_related('company', 'branch').get(
+        pk=_pk(purchase_order)
+    )
+    _authorized_branch(order.branch, user, 'purchases.create', support_session=support_session)
+    item = PurchaseAttachment.objects.select_for_update().get(
+        pk=attachment_id, purchase_order=order, status='active'
+    )
+    item.status = 'inactive'
+    item.save(update_fields=('status', 'updated_at'))
+    audit_log(
+        actor=user, action='purchase.attachment.remove', obj=item,
+        company=order.company, branch=order.branch,
+        before={'status': 'active'}, after={'status': 'inactive'},
+    )
+    return item
+
+
+@transaction.atomic
 def set_installments(*, purchase_order, installments, user, support_session=None):
     order = PurchaseOrder.objects.select_for_update().select_related(
         'branch', 'company', 'supplier'
@@ -675,7 +770,8 @@ def set_installments(*, purchase_order, installments, user, support_session=None
 
 
 @transaction.atomic
-def place_purchase_order(*, purchase_order, user, support_session=None):
+def place_purchase_order(*, purchase_order, user, support_session=None,
+                         exclusive_supplier_override=False):
     order = PurchaseOrder.objects.select_for_update().select_related(
         'branch', 'company', 'supplier'
     ).get(pk=_pk(purchase_order))
@@ -693,8 +789,14 @@ def place_purchase_order(*, purchase_order, user, support_session=None):
     ).filter(pk__in=item_ids))
     if not items:
         raise ValidationError({'items': 'A compra deve possuir itens.'})
+    allow_exclusive = bool(
+        order.exclusive_supplier_override and exclusive_supplier_override
+    )
     for item in items:
-        _validate_purchase_item(item, company=order.company, supplier=order.supplier)
+        _validate_purchase_item(
+            item, company=order.company, supplier=order.supplier,
+            allow_exclusive=allow_exclusive,
+        )
     _assert_installment_reconciliation(order)
     order.status = PurchaseOrderStatus.PLACED
     order.placed_by = user
@@ -705,7 +807,14 @@ def place_purchase_order(*, purchase_order, user, support_session=None):
         actor=user, action='purchase.place', obj=order, company=order.company,
         branch=order.branch, before={'status': PurchaseOrderStatus.DRAFT},
         after=model_snapshot(order, ('status', 'placed_by_id', 'placed_at')),
-        metadata={'summary': f'Pedido {order.order_number} realizado.'},
+        metadata={
+            'summary': f'Pedido {order.order_number} realizado.',
+            'exclusive_supplier_override': allow_exclusive,
+            'exclusive_supplier_overrides': (
+                _exclusive_supplier_override_details(items, order.supplier)
+                if allow_exclusive else []
+            ),
+        },
     )
     return order
 
@@ -725,19 +834,27 @@ def _canonical_receipt_payload(order, raw_items, notes, divergence_reason):
         if item_id in seen:
             raise ValidationError({'items': 'Nao repita uma linha no mesmo recebimento.'})
         seen.add(item_id)
+        quantity_field = (
+            'received_stock_quantity'
+            if raw.get('received_stock_quantity') is not None
+            else 'received_quantity'
+        )
         quantity = strict_decimal(
-            raw.get('received_quantity', raw.get('quantity')),
-            f'items.{index}.received_quantity',
+            raw.get(quantity_field, raw.get('quantity')),
+            f'items.{index}.{quantity_field}',
             places=6,
             nonnegative=True,
         )
         canonical.append({
             'purchase_order_item': item_id,
-            'received_quantity': format(quantity, 'f'),
+            quantity_field: format(quantity, 'f'),
             'divergence_reason': (raw.get('divergence_reason') or '').strip(),
         })
     canonical.sort(key=lambda item: item['purchase_order_item'])
-    if not any(Decimal(item['received_quantity']) > 0 for item in canonical):
+    if not any(
+        Decimal(item.get('received_stock_quantity', item.get('received_quantity', '0'))) > 0
+        for item in canonical
+    ):
         raise ValidationError({'items': 'Confirme quantidade positiva para ao menos um item.'})
     return {
         'purchase_order': order.pk,
@@ -810,12 +927,21 @@ def receive_purchase_order(*, purchase_order, idempotency_key, items, user,
         )
         for item_id in order_items
     }
+    previous_stock = {
+        item_id: (
+            PurchaseReceiptItem.objects.filter(
+                purchase_order_item_id=item_id
+            ).aggregate(total=Sum('stock_quantity'))['total'] or Decimal('0.000000')
+        )
+        for item_id in order_items
+    }
     if order.order_type == PurchaseOrderType.DIRECT and supplied_ids != set(order_items):
         raise ValidationError({'items': 'Entrada direta deve confirmar todos os itens.'})
     if order.order_type == PurchaseOrderType.DIRECT:
         for order_item in order_items.values():
             _validate_purchase_item(
                 order_item, company=order.company, supplier=order.supplier,
+                allow_exclusive=order.exclusive_supplier_override,
             )
 
     prepared = []
@@ -823,44 +949,58 @@ def receive_purchase_order(*, purchase_order, idempotency_key, items, user,
     any_divergence = False
     by_id = {item['purchase_order_item']: item for item in payload['items']}
     for item_id, order_item in order_items.items():
-        pending_before = order_item.ordered_quantity - previous[item_id]
+        ordered_stock_quantity = order_item.ordered_stock_quantity
+        pending_before = max(ordered_stock_quantity - previous_stock[item_id], Decimal('0'))
         raw = by_id.get(item_id)
-        received_now = Decimal(raw['received_quantity']) if raw else Decimal('0.000000')
-        if received_now > pending_before:
-            raise ValidationError({
-                'items': f'O recebimento excede a quantidade pendente do item {order_item.line_number}.'
-            })
-        converted_stock_quantity = received_now * order_item.conversion_factor
+        received_stock_quantity = Decimal('0.000000')
+        if raw:
+            received_stock_quantity = Decimal(
+                raw.get('received_stock_quantity', '0')
+            ) if 'received_stock_quantity' in raw else (
+                Decimal(raw['received_quantity']) * order_item.conversion_factor
+            )
         if (
             order_item.product.unit == Unit.UNIT
-            and converted_stock_quantity != converted_stock_quantity.to_integral_value()
+            and received_stock_quantity != received_stock_quantity.to_integral_value()
         ):
             raise ValidationError({
                 'items': (
                     f'Item {order_item.line_number}: cada recebimento de produto UN '
-                    'deve resultar em embalagens inteiras.'
+                    'deve informar unidades inteiras.'
                 )
             })
-        if converted_stock_quantity.quantize(Decimal('0.001')) != converted_stock_quantity:
+        if received_stock_quantity.quantize(Decimal('0.001')) != received_stock_quantity:
             raise ValidationError({
                 'items': (
-                    f'Item {order_item.line_number}: a conversao recebida deve possuir '
+                    f'Item {order_item.line_number}: a quantidade em estoque deve possuir '
                     'no maximo tres casas decimais.'
                 )
             })
-        accumulated = previous[item_id] + received_now
-        pending_after = order_item.ordered_quantity - accumulated
-        if pending_after != 0:
+        received_now = (
+            received_stock_quantity / order_item.conversion_factor
+        ).quantize(SIX_PLACES, rounding=ROUND_HALF_UP)
+        accumulated_stock = previous_stock[item_id] + received_stock_quantity
+        accumulated = (
+            accumulated_stock / order_item.conversion_factor
+        ).quantize(SIX_PLACES, rounding=ROUND_HALF_UP)
+        pending_after_stock = max(ordered_stock_quantity - accumulated_stock, Decimal('0'))
+        pending_after = (
+            pending_after_stock / order_item.conversion_factor
+        ).quantize(SIX_PLACES, rounding=ROUND_HALF_UP)
+        if pending_after_stock > 0:
             resulting_complete = False
-        divergence = received_now - pending_before if raw else -pending_before
-        if divergence != 0:
+        divergence_stock = received_stock_quantity - pending_before if raw else -pending_before
+        divergence = (
+            divergence_stock / order_item.conversion_factor
+        ).quantize(SIX_PLACES, rounding=ROUND_HALF_UP)
+        if divergence_stock != 0:
             any_divergence = True
         reason = (
             raw['divergence_reason'] if raw else ''
         ) or payload['divergence_reason']
         prepared.append((
-            order_item, previous[item_id], received_now, accumulated,
-            pending_after, divergence, reason,
+            order_item, previous[item_id], received_now, accumulated, pending_after,
+            divergence, reason, received_stock_quantity,
         ))
     missing_lines = supplied_ids != set(order_items)
     unexplained_lines = any(not row[6] for row in prepared if row[5] != 0)
@@ -888,11 +1028,9 @@ def receive_purchase_order(*, purchase_order, idempotency_key, items, user,
     receipt_items = []
     for (
         order_item, previously_received, received_now, accumulated,
-        pending_after, divergence, reason,
+        pending_after, divergence, reason, stock_quantity,
     ) in prepared:
-        stock_quantity = (received_now * order_item.conversion_factor).quantize(
-            Decimal('0.001')
-        )
+        stock_quantity = stock_quantity.quantize(Decimal('0.001'))
         fraction_config = FractionableProductConfig.objects.filter(
             product=order_item.product, tracking_active=True
         ).first()
@@ -1079,6 +1217,8 @@ def pay_installment(*, installment, user, payment_method='MANUAL', paid_amount=N
     _authorized_branch(
         order.branch, user, 'purchases.manage_payables', support_session=support_session
     )
+    if order.status == PurchaseOrderStatus.DRAFT:
+        raise ValidationError({'purchase_order': 'Não é possível pagar parcelas de uma compra em rascunho.'})
     if item.status != PayableInstallmentStatus.PENDING:
         raise ValidationError({'status': 'Somente parcela pendente pode ser paga.'})
     method = (payment_method or '').strip()

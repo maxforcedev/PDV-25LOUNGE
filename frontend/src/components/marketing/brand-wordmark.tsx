@@ -9,11 +9,13 @@ export function BrandWordmark({
   compact = false,
   dark = false,
   className = "",
+  imageClassName = "h-8 max-w-40",
 }: {
   href?: string;
   compact?: boolean;
   dark?: boolean;
   className?: string;
+  imageClassName?: string;
 }) {
   const branding = useBranding();
   const logo = compact
@@ -26,17 +28,12 @@ export function BrandWordmark({
       aria-label={`${branding.platform_name} - página inicial`}
     >
       {logo ? (
-        <Image src={logo} alt={branding.platform_name} width={160} height={32} unoptimized className="h-8 w-auto max-w-40 object-contain" />
+        <Image src={logo} alt={branding.platform_name} width={192} height={40} unoptimized className={`${imageClassName} w-auto object-contain`} />
       ) : (
         <>
           <span className="text-[15px] font-black tracking-[-0.035em] text-fg sm:text-base">CORE</span>
           <span className="rounded-md bg-primary px-2 py-1 text-[10px] font-black tracking-[0.14em] text-white shadow-sm shadow-primary/20 sm:text-[11px]">PDV</span>
         </>
-      )}
-      {!compact && (
-        <span className="hidden border-l border-subtle pl-2.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted md:inline">
-          Gestão operacional
-        </span>
       )}
     </Link>
   );

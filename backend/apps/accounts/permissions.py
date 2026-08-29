@@ -19,6 +19,7 @@ class UserFunctionalPermission(BasePermission):
         'partial_update': 'users.change',
         'activate': 'users.change_status',
         'deactivate': 'users.change_status',
+        'archive': 'users.change_status',
         'reset_password': 'users.change',
         'management_options': ('users.view', 'users.add', 'users.change'),
     }
@@ -47,24 +48,28 @@ class UserFunctionalPermission(BasePermission):
         if obj.is_superuser:
             return False
         code = self.codes.get(view.action)
-        target_company_ids = set(
-            obj.company_accesses.filter(is_active=True).values_list('company_id', flat=True)
-        )
-        if view.action == 'retrieve':
-            return any(
-                user_has_company_permission(user, company_id, code)
-                for company_id in target_company_ids
+        company_id = request.query_params.get('company')
+        if not company_id:
+            branch = getattr(request, 'branch_context', None)
+            company_id = branch.company_id if branch else None
+        try:
+            company_id = int(company_id)
+        except (TypeError, ValueError):
+            return False
+        if not obj.company_accesses.filter(company_id=company_id).exists():
+            return False
+        if view.action == 'archive':
+            target_company_ids = set(obj.company_accesses.filter(is_active=True).values_list('company_id', flat=True))
+            return bool(target_company_ids) and all(
+                user_has_company_permission(user, target_id, code)
+                for target_id in target_company_ids
             )
-        has_context = bool(target_company_ids) and all(
-            user_has_company_permission(user, company_id, code)
-            for company_id in target_company_ids
-        )
+        has_context = user_has_company_permission(user, company_id, code)
         if not has_context:
             return False
         if view.action in ('update', 'partial_update'):
-            return all(
+            return (
                 company_permission_codes(obj, company_id) - OPERATING_PERMISSION_CODES
                 <= company_permission_codes(user, company_id) - OPERATING_PERMISSION_CODES
-                for company_id in target_company_ids
             )
         return True

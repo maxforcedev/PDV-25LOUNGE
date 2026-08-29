@@ -4,17 +4,27 @@ import { useEffect, useRef, useState } from "react";
 import { GripVertical, Plus, Pencil, Power } from "lucide-react";
 import { AdminGuard } from "@/components/admin-guard";
 import { PageHeader } from "@/components/page-header";
-import { Alert, Button, Field, Input, Modal, Spinner, TableLoading, Select } from "@/components/ui";
+import {
+  Alert,
+  Button,
+  Field,
+  Input,
+  Modal,
+  Spinner,
+  TableLoading,
+  Select,
+} from "@/components/ui";
 import { fieldError, formatBRL } from "@/lib/format";
 import { ApiError, friendlyError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
-import type { ModifierGroup, ModifierOption } from "@/types";
+import type { ModifierGroup, ModifierOption, Product } from "@/types";
 
 interface OptionForm {
   name: string;
-  option_type: "add" | "remove" | "observation";
+  option_type: ModifierOption["option_type"];
   additional_price: string;
+  stock_product: string;
 }
 
 function ModifiersPage() {
@@ -22,6 +32,8 @@ function ModifiersPage() {
   const readOnly = supportSession?.mode === "READ_ONLY";
   const canChange = hasPermission(permissions.changeModifiers) && !readOnly;
   const [groups, setGroups] = useState<ModifierGroup[]>([]);
+  const [showArchived, setShowArchived] = useState(false);
+  const [stockProducts, setStockProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
@@ -34,14 +46,22 @@ function ModifiersPage() {
     min_selections: "0",
     max_selections: "",
     allow_option_quantity: false,
+    substitution_component: "",
   });
   const [options, setOptions] = useState<OptionForm[]>([]);
   const [optionsModalOpen, setOptionsModalOpen] = useState(false);
   const [viewingGroup, setViewingGroup] = useState<ModifierGroup | null>(null);
   const [groupOptions, setGroupOptions] = useState<ModifierOption[]>([]);
   const [loadingOptions, setLoadingOptions] = useState(false);
-  const [optionForm, setOptionForm] = useState<OptionForm>({ name: "", option_type: "add", additional_price: "0" });
-  const [optionEditing, setOptionEditing] = useState<ModifierOption | null>(null);
+  const [optionForm, setOptionForm] = useState<OptionForm>({
+    name: "",
+    option_type: "add",
+    additional_price: "0",
+    stock_product: "",
+  });
+  const [optionEditing, setOptionEditing] = useState<ModifierOption | null>(
+    null,
+  );
   const [reordering, setReordering] = useState(false);
   const [draggedGroupId, setDraggedGroupId] = useState<number | null>(null);
   const [draggedOptionId, setDraggedOptionId] = useState<number | null>(null);
@@ -50,14 +70,25 @@ function ModifiersPage() {
   context.current = String(currentCompany?.id || "");
 
   async function load(token: string) {
-    if (!currentCompany) { setGroups([]); setLoading(false); return; }
+    if (!currentCompany) {
+      setGroups([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError("");
     try {
-      const response = await http.getAll<ModifierGroup>(`modifier-groups/?company=${currentCompany.id}`);
+      const response = await http.getAll<ModifierGroup>(
+        `modifier-groups/?company=${currentCompany.id}&status=${showArchived ? "all" : "active"}`,
+      );
       if (context.current === token) setGroups(response);
     } catch (caught) {
-      if (context.current === token) setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar os modificadores.");
+      if (context.current === token)
+        setError(
+          caught instanceof ApiError
+            ? caught.message
+            : "Não foi possível carregar os modificadores.",
+        );
     } finally {
       if (context.current === token) setLoading(false);
     }
@@ -68,11 +99,31 @@ function ModifiersPage() {
   useEffect(() => {
     setGroups([]);
     void loadRef.current(String(currentCompany?.id || ""));
+  }, [currentCompany?.id, showArchived]);
+
+  useEffect(() => {
+    if (!currentCompany) {
+      setStockProducts([]);
+      return;
+    }
+    void http
+      .getAll<Product>(
+        `products/?company=${currentCompany.id}&lifecycle=active&status=active&inventory_behavior=direct`,
+      )
+      .then(setStockProducts)
+      .catch(() => setStockProducts([]));
   }, [currentCompany?.id]);
 
   function openCreate() {
     setEditing(null);
-    setForm({ name: "", is_required: false, min_selections: "0", max_selections: "", allow_option_quantity: false });
+    setForm({
+      name: "",
+      is_required: false,
+      min_selections: "0",
+      max_selections: "",
+      allow_option_quantity: false,
+      substitution_component: "",
+    });
     setOptions([]);
     setFields({});
     setModalOpen(true);
@@ -84,8 +135,12 @@ function ModifiersPage() {
       name: group.name,
       is_required: group.is_required,
       min_selections: String(group.min_selections),
-      max_selections: group.max_selections != null ? String(group.max_selections) : "",
+      max_selections:
+        group.max_selections != null ? String(group.max_selections) : "",
       allow_option_quantity: group.allow_option_quantity,
+      substitution_component: group.substitution_component
+        ? String(group.substitution_component)
+        : "",
     });
     setFields({});
     setModalOpen(true);
@@ -113,6 +168,9 @@ function ModifiersPage() {
       min_selections: minimum,
       max_selections: maximum,
       allow_option_quantity: form.allow_option_quantity,
+      substitution_component: form.substitution_component
+        ? Number(form.substitution_component)
+        : null,
     };
     try {
       if (editing) {
@@ -141,7 +199,11 @@ function ModifiersPage() {
       await http.post(`modifier-groups/${group.id}/${action}/`, {});
       await load(String(currentCompany.id));
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "Não foi possível alterar o status.");
+      setError(
+        caught instanceof ApiError
+          ? caught.message
+          : "Não foi possível alterar o status.",
+      );
     }
   }
 
@@ -150,7 +212,9 @@ function ModifiersPage() {
     setOptionsModalOpen(true);
     setLoadingOptions(true);
     try {
-      const detail = await http.get<ModifierGroup>(`modifier-groups/${group.id}/`);
+      const detail = await http.get<ModifierGroup>(
+        `modifier-groups/${group.id}/`,
+      );
       setGroupOptions(detail.options || []);
     } catch {
       setGroupOptions([]);
@@ -161,15 +225,21 @@ function ModifiersPage() {
 
   function openCreateOption() {
     setOptionEditing(null);
-    setOptionForm({ name: "", option_type: "add", additional_price: "0" });
+    setOptionForm({
+      name: "",
+      option_type: "add",
+      additional_price: "0",
+      stock_product: "",
+    });
   }
 
   function openEditOption(opt: ModifierOption) {
     setOptionEditing(opt);
     setOptionForm({
       name: opt.name,
-      option_type: opt.option_type,
+      option_type: opt.option_type === "text" ? "add" : opt.option_type,
       additional_price: opt.additional_price,
+      stock_product: opt.stock_product ? String(opt.stock_product) : "",
     });
   }
 
@@ -183,6 +253,9 @@ function ModifiersPage() {
         name: optionForm.name.trim(),
         option_type: optionForm.option_type,
         additional_price: optionForm.additional_price,
+        stock_product: optionForm.stock_product
+          ? Number(optionForm.stock_product)
+          : null,
       };
       if (optionEditing) {
         await http.patch(`modifier-options/${optionEditing.id}/`, payload);
@@ -190,10 +263,19 @@ function ModifiersPage() {
         await http.post("modifier-options/", payload);
       }
       setOptionEditing(null);
-      setOptionForm({ name: "", option_type: "add", additional_price: "0" });
+      setOptionForm({
+        name: "",
+        option_type: "add",
+        additional_price: "0",
+        stock_product: "",
+      });
       await openOptions(viewingGroup);
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "Não foi possível salvar a opção.");
+      setError(
+        caught instanceof ApiError
+          ? caught.message
+          : "Não foi possível salvar a opção.",
+      );
     } finally {
       setSaving(false);
     }
@@ -205,52 +287,115 @@ function ModifiersPage() {
       await http.post(`modifier-options/${opt.id}/deactivate/`, {});
       if (viewingGroup) await openOptions(viewingGroup);
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "Não foi possível remover a opção.");
+      setError(
+        caught instanceof ApiError
+          ? caught.message
+          : "Não foi possível remover a opção.",
+      );
     }
   }
 
   async function toggleOptionStatus(opt: ModifierOption) {
     if (!canChange || !viewingGroup) return;
     try {
-      await http.post(`modifier-options/${opt.id}/${opt.status === "active" ? "deactivate" : "activate"}/`, {});
+      await http.post(
+        `modifier-options/${opt.id}/${opt.status === "active" ? "deactivate" : "activate"}/`,
+        {},
+      );
       await openOptions(viewingGroup);
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "Não foi possível alterar o status da opção.");
+      setError(
+        caught instanceof ApiError
+          ? caught.message
+          : "Não foi possível alterar o status da opção.",
+      );
     }
   }
 
   async function reorderGroups(sourceId: number, targetId: number) {
     if (reordering || sourceId === targetId) return;
     const previous = groups;
-    const next = [...groups]; const source = next.findIndex((item) => item.id === sourceId); const target = next.findIndex((item) => item.id === targetId);
-    next.splice(target, 0, next.splice(source, 1)[0]); setGroups(next); setReordering(true);
-    try { await http.post("modifier-groups/reorder/", { group_ids: next.map((item) => item.id) }); }
-    catch (caught) { setGroups(previous); setError(friendlyError(caught, "Não foi possível ordenar os grupos.").message); }
-    finally { setReordering(false); setDraggedGroupId(null); }
+    const next = [...groups];
+    const source = next.findIndex((item) => item.id === sourceId);
+    const target = next.findIndex((item) => item.id === targetId);
+    next.splice(target, 0, next.splice(source, 1)[0]);
+    setGroups(next);
+    setReordering(true);
+    try {
+      await http.post("modifier-groups/reorder/", {
+        group_ids: next.map((item) => item.id),
+      });
+    } catch (caught) {
+      setGroups(previous);
+      setError(
+        friendlyError(caught, "Não foi possível ordenar os grupos.").message,
+      );
+    } finally {
+      setReordering(false);
+      setDraggedGroupId(null);
+    }
   }
 
   async function reorderOptions(sourceId: number, targetId: number) {
     if (!viewingGroup || reordering || sourceId === targetId) return;
     const previous = groupOptions;
-    const next = [...groupOptions]; const source = next.findIndex((item) => item.id === sourceId); const target = next.findIndex((item) => item.id === targetId);
-    next.splice(target, 0, next.splice(source, 1)[0]); setGroupOptions(next); setReordering(true);
-    try { await http.post("modifier-options/reorder/", { modifier_group: viewingGroup.id, option_ids: next.map((item) => item.id) }); }
-    catch (caught) { setGroupOptions(previous); setError(friendlyError(caught, "Não foi possível ordenar as opções.").message); }
-    finally { setReordering(false); setDraggedOptionId(null); }
+    const next = [...groupOptions];
+    const source = next.findIndex((item) => item.id === sourceId);
+    const target = next.findIndex((item) => item.id === targetId);
+    next.splice(target, 0, next.splice(source, 1)[0]);
+    setGroupOptions(next);
+    setReordering(true);
+    try {
+      await http.post("modifier-options/reorder/", {
+        modifier_group: viewingGroup.id,
+        option_ids: next.map((item) => item.id),
+      });
+    } catch (caught) {
+      setGroupOptions(previous);
+      setError(
+        friendlyError(caught, "Não foi possível ordenar as opções.").message,
+      );
+    } finally {
+      setReordering(false);
+      setDraggedOptionId(null);
+    }
   }
 
-  if (!currentCompany) return <div className="p-6"><Alert message="Selecione uma empresa." /></div>;
+  if (!currentCompany)
+    return (
+      <div className="p-6">
+        <Alert message="Selecione uma empresa." />
+      </div>
+    );
 
   return (
     <>
       <PageHeader
         title="Modificadores"
         description="Grupos de modificadores (adicionais, observações) vinculados a produtos."
-        action={canChange ? <Button onClick={openCreate}><Plus className="size-4" />Novo grupo</Button> : undefined}
+        action={
+          <div className="flex gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => setShowArchived((value) => !value)}
+            >
+              {showArchived ? "Ocultar arquivados" : "Ver arquivados"}
+            </Button>
+            {canChange && (
+              <Button onClick={openCreate}>
+                <Plus className="size-4" />
+                Novo grupo
+              </Button>
+            )}
+          </div>
+        }
       />
       <div className="space-y-4 p-4 sm:p-6 lg:p-8">
         {error && <Alert message={error} />}
-        {loading ? <TableLoading /> : groups.length ? (
+        {loading ? (
+          <TableLoading />
+        ) : groups.length ? (
+          <section className="card overflow-hidden">
           <div className="table-wrap">
             <table className="data-table">
               <thead>
@@ -266,19 +411,65 @@ function ModifiersPage() {
               </thead>
               <tbody>
                 {groups.map((group) => (
-                  <tr key={group.id} draggable={canChange && !reordering} onDragStart={() => setDraggedGroupId(group.id)} onDragOver={(event) => event.preventDefault()} onDrop={() => draggedGroupId && void reorderGroups(draggedGroupId, group.id)} className={draggedGroupId === group.id ? "opacity-40" : ""}>
-                    <td><span className="cursor-grab touch-none active:cursor-grabbing" role="button" aria-label={`Arrastar ${group.name}`} tabIndex={0}><GripVertical className="size-4 text-muted" /></span></td>
-                    <td><strong>{group.name}</strong></td>
+                  <tr
+                    key={group.id}
+                    draggable={canChange && !reordering}
+                    onDragStart={() => setDraggedGroupId(group.id)}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={() =>
+                      draggedGroupId &&
+                      void reorderGroups(draggedGroupId, group.id)
+                    }
+                    className={draggedGroupId === group.id ? "opacity-40" : ""}
+                  >
+                    <td>
+                      <span
+                        className="cursor-grab touch-none active:cursor-grabbing"
+                        role="button"
+                        aria-label={`Arrastar ${group.name}`}
+                        tabIndex={0}
+                      >
+                        <GripVertical className="size-4 text-muted" />
+                      </span>
+                    </td>
+                    <td>
+                      <strong>{group.name}</strong>
+                    </td>
                     <td>{group.is_required ? "Sim" : "Não"}</td>
-                    <td>{group.min_selections}{group.max_selections != null ? ` / ${group.max_selections}` : " / ∞"}</td>
+                    <td>
+                      {group.min_selections}
+                      {group.max_selections != null
+                        ? ` / ${group.max_selections}`
+                        : " / ∞"}
+                    </td>
                     <td>{group.allow_option_quantity ? "Sim" : "Não"}</td>
                     <td>{group.status === "active" ? "Ativo" : "Inativo"}</td>
                     {canChange && (
                       <td>
                         <div className="flex gap-1">
-                           <button className="icon-button" title="Editar" onClick={() => openEdit(group)}><Pencil className="size-4" /></button>
-                          <button className="icon-button" title="Opções" onClick={() => void openOptions(group)}><Plus className="size-4" /></button>
-                          <button className="icon-button" title={group.status === "active" ? "Inativar" : "Ativar"} onClick={() => void toggleStatus(group)}><Power className="size-4" /></button>
+                          <button
+                            className="icon-button"
+                            title="Editar"
+                            onClick={() => openEdit(group)}
+                          >
+                            <Pencil className="size-4" />
+                          </button>
+                          <button
+                            className="icon-button"
+                            title="Opções"
+                            onClick={() => void openOptions(group)}
+                          >
+                            <Plus className="size-4" />
+                          </button>
+                          <button
+                            className="icon-button"
+                            title={
+                              group.status === "active" ? "Inativar" : "Ativar"
+                            }
+                            onClick={() => void toggleStatus(group)}
+                          >
+                            <Power className="size-4" />
+                          </button>
                         </div>
                       </td>
                     )}
@@ -287,7 +478,10 @@ function ModifiersPage() {
               </tbody>
             </table>
           </div>
-        ) : <Alert message="Nenhum grupo de modificador cadastrado." />}
+          </section>
+        ) : (
+          <Alert message="Nenhum grupo de modificador cadastrado." />
+        )}
       </div>
 
       <Modal
@@ -297,30 +491,101 @@ function ModifiersPage() {
       >
         <div className="space-y-4 p-5">
           <Field label="Nome do grupo" error={fieldError(fields, "name")}>
-            <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} disabled={saving} placeholder="Ex.: Adicionais do hambúrguer" />
+            <Input
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              disabled={saving}
+              placeholder="Ex.: Adicionais do hambúrguer"
+            />
           </Field>
           <div className="grid gap-4 sm:grid-cols-3">
-            <Field label="Seleção mínima" error={fieldError(fields, "min_selections")}>
-              <Input type="number" min="0" value={form.min_selections} onChange={(e) => setForm({ ...form, min_selections: e.target.value })} disabled={saving} />
+            <Field
+              label="Seleção mínima"
+              error={fieldError(fields, "min_selections")}
+            >
+              <Input
+                type="number"
+                min="0"
+                value={form.min_selections}
+                onChange={(e) =>
+                  setForm({ ...form, min_selections: e.target.value })
+                }
+                disabled={saving}
+              />
             </Field>
-            <Field label="Seleção máxima (vazio = ilimitado)" error={fieldError(fields, "max_selections")}>
-              <Input type="number" min="0" value={form.max_selections} onChange={(e) => setForm({ ...form, max_selections: e.target.value })} disabled={saving} />
+            <Field
+              label="Seleção máxima (vazio = ilimitado)"
+              error={fieldError(fields, "max_selections")}
+            >
+              <Input
+                type="number"
+                min="0"
+                value={form.max_selections}
+                onChange={(e) =>
+                  setForm({ ...form, max_selections: e.target.value })
+                }
+                disabled={saving}
+              />
             </Field>
           </div>
           <div className="flex flex-wrap gap-4">
             <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" className="size-4 accent-primary" checked={form.is_required} onChange={(e) => setForm({ ...form, is_required: e.target.checked })} disabled={saving} />
+              <input
+                type="checkbox"
+                className="size-4 accent-primary"
+                checked={form.is_required}
+                onChange={(e) =>
+                  setForm({ ...form, is_required: e.target.checked })
+                }
+                disabled={saving}
+              />
               Obrigatório
             </label>
             <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" className="size-4 accent-primary" checked={form.allow_option_quantity} onChange={(e) => setForm({ ...form, allow_option_quantity: e.target.checked })} disabled={saving} />
+              <input
+                type="checkbox"
+                className="size-4 accent-primary"
+                checked={form.allow_option_quantity}
+                onChange={(e) =>
+                  setForm({ ...form, allow_option_quantity: e.target.checked })
+                }
+                disabled={saving}
+              />
               Permitir quantidade por opção
             </label>
           </div>
+          <Field
+            label="Componente substituído"
+            optional
+            error={fieldError(fields, "substitution_component")}
+          >
+            <Select
+              value={form.substitution_component}
+              onChange={(e) =>
+                setForm({ ...form, substitution_component: e.target.value })
+              }
+              disabled={saving}
+            >
+              <option value="">Grupo de texto ou adicional</option>
+              {stockProducts.map((product) => (
+                <option key={product.id} value={product.id}>
+                  {product.name} ({product.unit.toUpperCase()})
+                </option>
+              ))}
+            </Select>
+            <span className="mt-1 block text-[10px] text-muted">
+              Para substituição, a quantidade é herdada automaticamente do
+              produto avulso ou da composição.
+            </span>
+          </Field>
           {error && <Alert message={error} />}
           <div className="flex justify-end gap-2 border-t border-subtle pt-4">
-            <Button variant="secondary" onClick={() => setModalOpen(false)}>Cancelar</Button>
-            <Button loading={saving} onClick={() => void save()}>{editing ? "Salvar" : "Criar"}</Button>
+            <Button variant="secondary" onClick={() => setModalOpen(false)}>
+              Cancelar
+            </Button>
+            <Button loading={saving} onClick={() => void save()}>
+              {editing ? "Salvar" : "Criar"}
+            </Button>
           </div>
         </div>
       </Modal>
@@ -332,24 +597,70 @@ function ModifiersPage() {
         size="xl"
       >
         <div className="space-y-4 p-5">
-          {loadingOptions ? <Spinner /> : (
+          {loadingOptions ? (
+            <Spinner />
+          ) : (
             <>
               {groupOptions.length > 0 && (
                 <div className="divide-y divide-subtle">
                   {groupOptions.map((opt) => (
-                    <div key={opt.id} draggable={canChange && !reordering} onDragStart={() => setDraggedOptionId(opt.id)} onDragOver={(event) => event.preventDefault()} onDrop={() => draggedOptionId && void reorderOptions(draggedOptionId, opt.id)} className={`flex items-center justify-between py-3 ${draggedOptionId === opt.id ? "opacity-40" : ""}`}>
-                      <span className="mr-2 cursor-grab touch-none active:cursor-grabbing" role="button" aria-label={`Arrastar ${opt.name}`} tabIndex={0}><GripVertical className="size-4 text-muted" /></span>
+                    <div
+                      key={opt.id}
+                      draggable={canChange && !reordering}
+                      onDragStart={() => setDraggedOptionId(opt.id)}
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={() =>
+                        draggedOptionId &&
+                        void reorderOptions(draggedOptionId, opt.id)
+                      }
+                      className={`flex items-center justify-between py-3 ${draggedOptionId === opt.id ? "opacity-40" : ""}`}
+                    >
+                      <span
+                        className="mr-2 cursor-grab touch-none active:cursor-grabbing"
+                        role="button"
+                        aria-label={`Arrastar ${opt.name}`}
+                        tabIndex={0}
+                      >
+                        <GripVertical className="size-4 text-muted" />
+                      </span>
                       <div>
                         <strong className="text-sm">{opt.name}</strong>
                         <div className="text-[11px] text-muted">
-                          {opt.option_type === "add" ? "Adicionar" : opt.option_type === "remove" ? "Remover" : "Observação"}
-                          {opt.additional_price !== "0" && ` · ${formatBRL(opt.additional_price)}`}
+                          {opt.option_type === "product_input"
+                            ? "Produto ou insumo"
+                            : opt.option_type === "component_substitution"
+                              ? "Substituição de componente"
+                              : opt.option_type === "text"
+                                ? "Adicionar sem estoque (legado)"
+                                : opt.option_type === "add"
+                                  ? "Adicionar sem estoque"
+                                  : opt.option_type === "remove"
+                                    ? "Remover componente"
+                                    : "Observação"}
+                          {opt.stock_product_name &&
+                            ` · ${opt.stock_product_name}`}
+                          {opt.additional_price !== "0" &&
+                            ` · ${formatBRL(opt.additional_price)}`}
                         </div>
                       </div>
                       {canChange && (
                         <div className="flex gap-1">
-                           <button className="icon-button" title="Editar" onClick={() => openEditOption(opt)}><Pencil className="size-4" /></button>
-                          <button className="icon-button" title={opt.status === "active" ? "Inativar" : "Ativar"} onClick={() => void toggleOptionStatus(opt)}><Power className="size-4" /></button>
+                          <button
+                            className="icon-button"
+                            title="Editar"
+                            onClick={() => openEditOption(opt)}
+                          >
+                            <Pencil className="size-4" />
+                          </button>
+                          <button
+                            className="icon-button"
+                            title={
+                              opt.status === "active" ? "Inativar" : "Ativar"
+                            }
+                            onClick={() => void toggleOptionStatus(opt)}
+                          >
+                            <Power className="size-4" />
+                          </button>
                         </div>
                       )}
                     </div>
@@ -358,21 +669,105 @@ function ModifiersPage() {
               )}
               {canChange && (
                 <fieldset className="rounded-lg border border-slate-200 p-4">
-                  <h3 className="text-xs font-bold">{optionEditing ? "Editar opção" : "Nova opção"}</h3>
+                  <h3 className="text-xs font-bold">
+                    {optionEditing ? "Editar opção" : "Nova opção"}
+                  </h3>
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                    <Field label="Nome"><Input value={optionForm.name} onChange={(e) => setOptionForm({ ...optionForm, name: e.target.value })} disabled={saving} placeholder="Ex.: Bacon extra" /></Field>
+                    <Field label="Nome">
+                      <Input
+                        value={optionForm.name}
+                        onChange={(e) =>
+                          setOptionForm({ ...optionForm, name: e.target.value })
+                        }
+                        disabled={saving}
+                        placeholder="Ex.: Bacon extra"
+                      />
+                    </Field>
                     <Field label="Tipo">
-                      <Select value={optionForm.option_type} onChange={(e) => setOptionForm({ ...optionForm, option_type: e.target.value as "add" | "remove" | "observation" })} disabled={saving}>
-                        <option value="add">Adicionar</option>
-                        <option value="remove">Remover</option>
+                      <Select
+                        value={optionForm.option_type}
+                        onChange={(e) =>
+                          setOptionForm({
+                            ...optionForm,
+                            option_type: e.target
+                              .value as ModifierOption["option_type"],
+                            stock_product: "",
+                          })
+                        }
+                        disabled={saving}
+                      >
+                        <option value="product_input">Produto ou insumo</option>
+                        <option
+                          value="component_substitution"
+                          disabled={!viewingGroup?.substitution_component}
+                        >
+                          Substituição de componente
+                        </option>
+                        <option value="add">Adicionar sem estoque</option>
+                        <option value="remove">Remover componente</option>
                         <option value="observation">Observação</option>
                       </Select>
                     </Field>
-                    <Field label="Preço adicional"><Input inputMode="decimal" min="0" value={optionForm.additional_price} onChange={(e) => setOptionForm({ ...optionForm, additional_price: e.target.value })} disabled={saving || optionForm.option_type !== "add"} /></Field>
+                    <Field label="Preço adicional">
+                      <Input
+                        inputMode="decimal"
+                        min="0"
+                        value={optionForm.additional_price}
+                        onChange={(e) =>
+                          setOptionForm({
+                            ...optionForm,
+                            additional_price: e.target.value,
+                          })
+                        }
+                        disabled={saving}
+                      />
+                    </Field>
+                    {(optionForm.option_type === "product_input" ||
+                      optionForm.option_type === "component_substitution") && (
+                      <Field label="Produto ou insumo real">
+                        <Select
+                          required
+                          value={optionForm.stock_product}
+                          onChange={(e) =>
+                            setOptionForm({
+                              ...optionForm,
+                              stock_product: e.target.value,
+                            })
+                          }
+                          disabled={saving}
+                        >
+                          <option value="">Selecione</option>
+                          {stockProducts
+                            .filter(
+                              (product) =>
+                                optionForm.option_type !==
+                                  "component_substitution" ||
+                                product.id !==
+                                  viewingGroup?.substitution_component,
+                            )
+                            .map((product) => (
+                              <option key={product.id} value={product.id}>
+                                {product.name} ({product.unit.toUpperCase()})
+                              </option>
+                            ))}
+                        </Select>
+                      </Field>
+                    )}
                   </div>
                   <div className="mt-3 flex justify-end gap-2">
-                    {optionEditing && <Button variant="secondary" onClick={() => openCreateOption()}>Cancelar edição</Button>}
-                    <Button loading={saving} onClick={() => void saveOption()} disabled={!optionForm.name.trim()}>
+                    {optionEditing && (
+                      <Button
+                        variant="secondary"
+                        onClick={() => openCreateOption()}
+                      >
+                        Cancelar edição
+                      </Button>
+                    )}
+                    <Button
+                      loading={saving}
+                      onClick={() => void saveOption()}
+                      disabled={!optionForm.name.trim()}
+                    >
                       {optionEditing ? "Salvar opção" : "Adicionar opção"}
                     </Button>
                   </div>

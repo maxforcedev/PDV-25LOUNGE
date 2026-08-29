@@ -5,6 +5,8 @@ CALCULATION_PRECISION = 60
 
 
 def exact_content_equivalent(content, package_content):
+    if content is None or package_content is None:
+        raise ValueError('content and package_content are required')
     content = Decimal(content)
     package_content = Decimal(package_content)
     if package_content <= 0:
@@ -45,6 +47,8 @@ def exact_sum(values):
 
 
 def content_breakdown(content, package_content):
+    if content is None or package_content is None:
+        raise ValueError('content and package_content are required')
     content = Decimal(content)
     package_content = Decimal(package_content)
     if package_content <= 0:

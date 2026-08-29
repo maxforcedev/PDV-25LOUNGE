@@ -5,12 +5,13 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Plus } from "lucide-react";
 import { AdminGuard } from "@/components/admin-guard";
 import { PageHeader } from "@/components/page-header";
-import { Alert, Button, Spinner } from "@/components/ui";
+import { Alert, Button, Field, Spinner } from "@/components/ui";
+import { CustomerQuickPicker } from "@/components/customer-quick-picker";
 import { formatDate } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
-import type { Command, Table } from "@/types";
+import type { Command, Customer, Table } from "@/types";
 
 function CommandsPage() {
   const { currentBranch, hasPermission, hasFeature, supportSession } = useAuth();
@@ -24,6 +25,7 @@ function CommandsPage() {
   const [opening, setOpening] = useState(false);
   const [selectedTable, setSelectedTable] = useState<string>("");
   const [identifier, setIdentifier] = useState("");
+  const [customer, setCustomer] = useState<Customer | null>(null);
   const context = useRef("");
   context.current = String(currentBranch?.id || "");
 
@@ -51,10 +53,10 @@ function CommandsPage() {
     if (!currentBranch) return;
     setOpening(true); setError("");
     try {
-      const payload: Record<string, unknown> = { identifier: identifier.trim() };
+      const payload: Record<string, unknown> = { identifier: identifier.trim(), ...(customer ? { customer: customer.id } : {}) };
       if (selectedTable) payload.table = Number(selectedTable);
       await http.post("commands/open/", payload);
-      setSelectedTable(""); setIdentifier("");
+      setSelectedTable(""); setIdentifier(""); setCustomer(null);
       await load(String(currentBranch.id));
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Não foi possível abrir a comanda.");
@@ -73,6 +75,7 @@ function CommandsPage() {
               {tables.filter((t) => t.status === "active").map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
             </select>
             <input className="input" value={identifier} onChange={(e) => setIdentifier(e.target.value)} disabled={opening} placeholder="Identificação (ex.: Junior)" />
+            <div className="min-w-60"><CustomerQuickPicker value={customer} onChange={setCustomer} disabled={opening} /></div>
             <Button loading={opening} onClick={() => void openCommand()}><Plus className="size-4" />Abrir</Button>
           </div>
         ) : undefined

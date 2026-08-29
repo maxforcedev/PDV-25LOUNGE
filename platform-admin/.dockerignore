@@ -12,3 +12,6 @@ coverage/
 *.p12
 *.pfx
 secrets/
+*.zip
+build/
+dist/

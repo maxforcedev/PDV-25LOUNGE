@@ -18,6 +18,8 @@ class ProductFunctionalPermission(BasePermission):
         if view.action in ('branch_config', 'fraction_config', 'production_destinations'):
             if request.method == 'GET':
                 return 'products.view'
+        if view.action == 'minimum_stock' and request.method == 'GET':
+            return 'products.view'
         return view.permission_codes.get(view.action)
 
     def has_permission(self, request, view):

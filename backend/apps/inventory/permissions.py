@@ -46,7 +46,7 @@ class InventoryFunctionalPermission(BasePermission):
             return support
         if hasattr(obj, 'origin_branch_id'):
             branch_ids = {obj.origin_branch_id, obj.destination_branch_id}
-        elif hasattr(obj, 'transfer_item_id'):
+        elif getattr(obj, 'transfer_item_id', None):
             transfer = obj.transfer_item.transfer
             branch_ids = {transfer.origin_branch_id, transfer.destination_branch_id}
         elif hasattr(obj, 'stock_id'):

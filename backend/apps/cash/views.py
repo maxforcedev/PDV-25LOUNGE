@@ -29,6 +29,7 @@ from .serializers import (
     CashBeneficiarySerializer,
     CashRegisterSerializer,
     CashSessionSerializer,
+    CancelSessionSerializer,
     CloseSessionSerializer,
     ManualEntryRequestSerializer,
     OpenSessionSerializer,
@@ -37,6 +38,7 @@ from .serializers import (
 from .services import (
     calculate_expected_amount,
     close_session,
+    cancel_session,
     movement_totals,
     open_session,
     record_manual_entry,
@@ -133,6 +135,7 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
         'entry': 'cash_registers.manual_entry',
         'withdrawal': 'cash_registers.withdraw',
         'close': 'cash_registers.close',
+        'cancel': 'cash_registers.close',
         'summary': ('cash_registers.view', 'cash_registers.close'),
         'timeline': ('cash_registers.view', 'cash_registers.close'),
     }
@@ -163,6 +166,8 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
         params = self.request.query_params
         if params.get('status'):
             queryset = queryset.filter(status=params['status'])
+        elif self.action == 'list':
+            queryset = queryset.exclude(status=CashSessionStatus.CANCELLED)
         register = params.get('cash_register') or params.get('register')
         if register:
             queryset = queryset.filter(cash_register_id=register)
@@ -237,6 +242,16 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
             **serializer.validated_data,
             user=request.user,
             current_branch=getattr(request, 'branch_context', None),
+        )
+        return self._serialize_session(session)
+
+    @action(detail=True, methods=('post',))
+    def cancel(self, request, pk=None):
+        serializer = CancelSessionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        session = cancel_session(
+            self.get_object(), serializer.validated_data['reason'], request.user,
+            getattr(request, 'branch_context', None),
         )
         return self._serialize_session(session)
 
@@ -316,7 +331,9 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
         )
         cash_code = PaymentMethodCode.CASH
         for sale in sales:
-            cash_amount = sale.payments.filter(payment_method_code=cash_code).aggregate(
+            cash_amount = sale.payments.filter(
+                Q(payment_method_code=cash_code) | Q(payment_method__code=cash_code)
+            ).aggregate(
                 value=Coalesce(Sum('amount'), Decimal('0.00'), output_field=DecimalField(max_digits=20, decimal_places=2))
             )['value']
             has_cash = cash_amount > 0
@@ -364,6 +381,24 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
                     'registered_by_name': cancelled_by,
                     'category_label': None,
                 })
+        from apps.commands.models import CommandPayment, CommandPaymentStatus
+        for payment in CommandPayment.objects.filter(
+            cash_session=session, payment_method__code=cash_code, command__sale__isnull=True,
+        ).select_related('command', 'operator').order_by('created_at', 'pk'):
+            reversed_payment = payment.status == CommandPaymentStatus.REVERSED
+            events.append({
+                'id': f'command-payment-{payment.pk}',
+                'timestamp': payment.created_at.isoformat(),
+                'kind': 'command_cash_reversal' if reversed_payment else 'command_cash_applied',
+                'label': 'Estorno de pagamento de comanda em dinheiro' if reversed_payment else 'Pagamento de comanda em dinheiro',
+                'amount': f'{-payment.amount if reversed_payment else payment.amount:.2f}',
+                'sale': None,
+                'details': f'Comanda {payment.command.command_number}',
+                'reason': payment.reversal_reason or None,
+                'beneficiary_name': None,
+                'registered_by_name': payment.operator.get_full_name().strip() or payment.operator.email,
+                'category_label': None,
+            })
         if session.status == CashSessionStatus.CLOSED and session.closed_at:
             events.append({
                 'id': f'close-{session.pk}',
@@ -424,6 +459,7 @@ class CashBeneficiaryViewSet(
         branch = self.request.branch_context
         return User.objects.filter(
             is_active=True,
+            archived_at__isnull=True,
             company_accesses__company_id=branch.company_id,
             company_accesses__is_active=True,
         ).distinct().order_by('first_name', 'last_name', 'email', 'pk')

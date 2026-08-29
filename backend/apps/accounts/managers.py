@@ -53,13 +53,16 @@ class UserQuerySet(models.QuerySet):
 
     def delete(self):
         if self._supports_company_owner():
+            from django.utils import timezone
+
             with transaction.atomic(using=self.db):
                 list(self.select_for_update().values_list('pk', flat=True))
                 if self.filter(company_accesses__is_owner=True).exists():
                     raise ValidationError(
                         {'is_owner': 'Transfira a propriedade antes de remover este usuário.'}
                     )
-                return super().delete()
+                count = super().update(is_active=False, archived_at=timezone.now())
+                return count, {self.model._meta.label: count}
         return super().delete()
 
 

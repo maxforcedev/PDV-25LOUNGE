@@ -1,8 +1,8 @@
 from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import Count, DecimalField, F, Q, Sum, Value
-from django.db.models.functions import Coalesce
+from django.db.models import CharField, Count, DecimalField, F, OuterRef, Q, Subquery, Sum, Value
+from django.db.models.functions import Coalesce, Concat
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -14,17 +14,22 @@ from apps.companies.selectors import eligible_branch_users, user_has_branch_perm
 from apps.sales.models import PaymentMethod
 from apps.sales.serializers import CalculationOutputSerializer, SaleUserOptionSerializer
 from apps.sales.services import calculate_command_preview
-from .models import Command, CommandStatus, OrderItem, Table, TableStatus
+from .models import Command, CommandPayment, CommandPaymentStatus, CommandStatus, OrderItem, Table, TableStatus
 from .permissions import CommandFunctionalPermission
 from .serializers import (
     BatchTableSerializer, CancelOrderItemSerializer, CommandCalculationSerializer,
     CommandSerializer, ConfirmOrderItemSerializer, CreateOrderItemSerializer,
     FinalizeCommandSerializer, OpenCommandSerializer, OperationalTableSerializer,
-    OrderItemSerializer, TableSerializer,
+    OrderItemSerializer, TableSerializer, TransferItemsSerializer, TransferTableSerializer,
+    MergeCommandSerializer, SplitCommandSerializer, CommandPaymentSerializer,
+    RecordCommandPaymentSerializer, ReverseCommandPaymentSerializer, SetCommandCustomerSerializer,
 )
 from .services import (
     add_order_item, batch_create_tables, cancel_order_item, confirm_order_item,
     create_table, finalize_command, open_command,
+    set_command_customer,
+    merge_commands, split_command, transfer_command_items, transfer_command_table,
+    record_command_payment, reverse_command_payment, command_payment_summary,
 )
 
 
@@ -77,10 +82,10 @@ class TableViewSet(viewsets.ModelViewSet):
             raise PermissionDenied('Selecione uma filial.')
         settings = branch.settings
         prefix = serializer.validated_data.get('prefix', settings.default_table_prefix)
-        start = serializer.validated_data['start']
+        start = serializer.validated_data.get('start', settings.table_range_start)
         end = serializer.validated_data.get('end')
         if end is None:
-            end = start + settings.default_table_quantity - 1
+            end = settings.table_range_end
         seats = serializer.validated_data.get('seats', settings.default_table_seats)
         created = batch_create_tables(
             branch=branch,
@@ -90,6 +95,15 @@ class TableViewSet(viewsets.ModelViewSet):
             seats=seats,
             user=request.user,
         )
+        settings.table_range_start = start
+        settings.table_range_end = end
+        settings.default_table_prefix = prefix
+        settings.default_table_seats = seats
+        settings.default_table_quantity = end - start + 1
+        settings.save(update_fields=(
+            'table_range_start', 'table_range_end', 'default_table_prefix',
+            'default_table_seats', 'default_table_quantity', 'updated_at',
+        ))
         return Response(
             {'created': len(created), 'tables': TableSerializer(created, many=True).data},
             status=status.HTTP_201_CREATED,
@@ -126,9 +140,13 @@ class TableViewSet(viewsets.ModelViewSet):
         tables = list(self.get_queryset())
         table_ids = [table.pk for table in tables]
         money_field = DecimalField(max_digits=14, decimal_places=2)
+        payment_totals = CommandPayment.objects.filter(
+            command_id=OuterRef('pk'), status=CommandPaymentStatus.APPLIED,
+            reversal__isnull=True,
+        ).values('command_id').annotate(total=Sum('amount')).values('total')
         open_commands = Command.objects.filter(
             table_id__in=table_ids, status=CommandStatus.OPEN
-        ).annotate(
+        ).select_related('opened_by').annotate(
             open_items_count=Count(
                 'orders__items', filter=Q(orders__items__status='pending')
             ),
@@ -138,6 +156,14 @@ class TableViewSet(viewsets.ModelViewSet):
                     filter=Q(orders__items__status='confirmed'), output_field=money_field,
                 ),
                 Value(Decimal('0.00'), output_field=money_field),
+            ),
+            paid_total=Coalesce(
+                Subquery(payment_totals, output_field=money_field),
+                Value(Decimal('0.00'), output_field=money_field),
+            ),
+            opened_by_name=Concat(
+                F('opened_by__first_name'), Value(' '), F('opened_by__last_name'),
+                output_field=CharField(),
             ),
         ).order_by('table_id', 'created_at', 'id')
         by_table = {table_id: [] for table_id in table_ids}
@@ -161,7 +187,7 @@ class CommandViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         money_field = DecimalField(max_digits=14, decimal_places=2)
         return Command.objects.filter(branch=self.request.branch_context).select_related(
-            'company', 'branch', 'table', 'opened_by', 'closed_by', 'sale'
+            'company', 'branch', 'table', 'customer', 'opened_by', 'closed_by', 'sale'
         ).annotate(
             open_items_count=Count('orders__items', filter=Q(orders__items__status='pending')),
             confirmed_total=Coalesce(
@@ -189,9 +215,20 @@ class CommandViewSet(viewsets.ReadOnlyModelViewSet):
         command = open_command(
             branch=branch, user=request.user, table=table,
             identifier=serializer.validated_data['identifier'],
+            customer_id=serializer.validated_data.get('customer'),
             support_session=getattr(request, 'support_session', None),
         )
         return Response(self.get_serializer(command).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=('post',), url_path='set-customer')
+    def set_customer(self, request, pk=None):
+        serializer = SetCommandCustomerSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        command = set_command_customer(
+            command=self.get_object(), customer_id=serializer.validated_data.get('customer'),
+            user=request.user, support_session=getattr(request, 'support_session', None),
+        )
+        return Response(self.get_serializer(command).data)
 
     @action(detail=False, methods=('get',), url_path='open-list')
     def open_list(self, request):
@@ -256,6 +293,96 @@ class CommandViewSet(viewsets.ReadOnlyModelViewSet):
             **serializer.validated_data,
         )
         return Response(self.get_serializer(result).data)
+
+    @action(detail=True, methods=('get',), url_path='payments')
+    def payments(self, request, pk=None):
+        command = self.get_object()
+        rows = CommandPayment.objects.filter(command=command).select_related('payment_method', 'cash_session', 'operator', 'reversal_of')
+        return Response(CommandPaymentSerializer(rows, many=True).data)
+
+    @action(detail=True, methods=('get',), url_path='payment-summary')
+    def payment_summary(self, request, pk=None):
+        return Response(command_payment_summary(command=self.get_object()))
+
+    @action(detail=True, methods=('post',), url_path='record-payment')
+    def record_payment(self, request, pk=None):
+        serializer = RecordCommandPaymentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payment = record_command_payment(command=self.get_object(), user=request.user,
+                                         support_session=getattr(request, 'support_session', None),
+                                         **serializer.validated_data)
+        return Response(CommandPaymentSerializer(payment).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=('post',), url_path=r'payments/(?P<payment_id>[^/.]+)/reverse')
+    def reverse_payment(self, request, pk=None, payment_id=None):
+        serializer = ReverseCommandPaymentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payment = reverse_command_payment(command=self.get_object(), payment_id=payment_id,
+                                          user=request.user, support_session=getattr(request, 'support_session', None),
+                                          **serializer.validated_data)
+        return Response(CommandPaymentSerializer(payment).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=('post',))
+    def transfer(self, request, pk=None):
+        command = self.get_object()
+        serializer = TransferTableSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result, replayed = transfer_command_table(
+            command=command, user=request.user,
+            support_session=getattr(request, 'support_session', None),
+            **serializer.validated_data,
+        )
+        request.audit_fallback_suppressed = replayed
+        return Response({**self.get_serializer(result).data, 'idempotency_replayed': replayed})
+
+    @action(detail=True, methods=('post',), url_path='transfer-items')
+    def transfer_items(self, request, pk=None):
+        command = self.get_object()
+        serializer = TransferItemsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        destination, item_ids, replayed = transfer_command_items(
+            command=command, destination_command_id=serializer.validated_data['command'],
+            items=serializer.validated_data['items'], user=request.user,
+            idempotency_key=serializer.validated_data['idempotency_key'],
+            support_session=getattr(request, 'support_session', None),
+        )
+        request.audit_fallback_suppressed = replayed
+        return Response({
+            'command': self.get_serializer(destination).data,
+            'item_ids': item_ids,
+            'idempotency_replayed': replayed,
+        })
+
+    @action(detail=True, methods=('post',))
+    def merge(self, request, pk=None):
+        command = self.get_object()
+        serializer = MergeCommandSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result, replayed = merge_commands(
+            command=command, source_command_id=serializer.validated_data['command'],
+            user=request.user, idempotency_key=serializer.validated_data['idempotency_key'],
+            support_session=getattr(request, 'support_session', None),
+        )
+        request.audit_fallback_suppressed = replayed
+        return Response({**self.get_serializer(result).data, 'idempotency_replayed': replayed})
+
+    @action(detail=True, methods=('post',))
+    def split(self, request, pk=None):
+        command = self.get_object()
+        serializer = SplitCommandSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result, replayed = split_command(
+            command=command, items=serializer.validated_data['items'],
+            table_id=serializer.validated_data.get('table'),
+            identifier=serializer.validated_data['identifier'], user=request.user,
+            idempotency_key=serializer.validated_data['idempotency_key'],
+            support_session=getattr(request, 'support_session', None),
+        )
+        request.audit_fallback_suppressed = replayed
+        return Response(
+            {**self.get_serializer(result).data, 'idempotency_replayed': replayed},
+            status=status.HTTP_201_CREATED if not replayed else status.HTTP_200_OK,
+        )
 
     @action(detail=True, methods=('post',), url_path='calculate')
     def calculate(self, request, pk=None):

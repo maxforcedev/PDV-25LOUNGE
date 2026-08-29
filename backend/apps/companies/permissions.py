@@ -1,6 +1,7 @@
 from rest_framework.permissions import BasePermission
 
 from .selectors import accessible_companies, user_has_company_permission
+from .models import Branch
 from apps.saas.permissions import support_permission_decision
 
 
@@ -63,6 +64,13 @@ class FunctionalCompanyPermission(BasePermission):
             company_id = request.data.get('company')
             return bool(company_id) and user_has_company_permission(user, company_id, code)
 
+        company_id = request.query_params.get('company')
+        if not company_id:
+            branch_id = request.headers.get('X-Branch-ID')
+            if branch_id:
+                company_id = Branch.objects.filter(pk=branch_id).values_list('company_id', flat=True).first()
+        if company_id:
+            return user_has_company_permission(user, company_id, code)
         return accessible_companies(user, code).exists()
 
     def has_object_permission(self, request, view, obj):

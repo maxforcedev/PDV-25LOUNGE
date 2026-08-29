@@ -7,6 +7,7 @@ from django.db.models.functions import Lower
 from apps.base.models import BaseModel
 
 from .managers import UserManager
+from .storage import PrivateProfileStorage, profile_photo_path, validate_profile_photo
 
 
 class User(AbstractUser, BaseModel):
@@ -27,6 +28,22 @@ class User(AbstractUser, BaseModel):
         db_default=UserType.EMPLOYEE,
     )
     archived_at = models.DateTimeField(blank=True, null=True, default=None)
+    profile_photo = models.FileField(
+        upload_to=profile_photo_path,
+        storage=PrivateProfileStorage(),
+        validators=[validate_profile_photo],
+        blank=True,
+        null=True,
+    )
+    birth_date = models.DateField(blank=True, null=True)
+    cpf = models.CharField(max_length=14, blank=True, default='')
+    zip_code = models.CharField(max_length=9, blank=True, default='')
+    street = models.CharField(max_length=160, blank=True, default='')
+    address_number = models.CharField(max_length=20, blank=True, default='')
+    address_complement = models.CharField(max_length=100, blank=True, default='')
+    neighborhood = models.CharField(max_length=100, blank=True, default='')
+    city = models.CharField(max_length=100, blank=True, default='')
+    state = models.CharField(max_length=2, blank=True, default='')
 
     objects = UserManager()
 

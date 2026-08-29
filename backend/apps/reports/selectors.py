@@ -26,7 +26,7 @@ from apps.inventory.content import (
 from apps.inventory.models import Stock, StockMovement
 from apps.inventory.models import MovementType
 from apps.products.models import InventoryBehavior
-from apps.sales.models import OperationType, Payment, PaymentMethod, Sale, SaleItem, SaleStatus
+from apps.sales.models import OperationType, Payment, PaymentMethod, PaymentMethodCode, Sale, SaleItem, SaleStatus
 
 from .financials import FinancialAggregator, allocate_money
 
@@ -630,6 +630,9 @@ def operational_result(*, branch, start, end, sales, cash_session=None, filters=
 
 
 def filtered_cash_sessions(*, branch, start, end, filters):
+    # Import lazily: CommandPayment already depends on cash and sales models.
+    from apps.commands.models import CommandPayment, CommandPaymentStatus
+
     movement_base = CashMovement.objects.filter(cash_session_id=OuterRef('pk'))
     manual = movement_base.filter(
         movement_type=CashMovementType.MANUAL_ENTRY
@@ -637,9 +640,9 @@ def filtered_cash_sessions(*, branch, start, end, filters):
     withdrawals = movement_base.filter(
         movement_type=CashMovementType.WITHDRAWAL
     ).values('cash_session').annotate(value=Sum('amount')).values('value')
-    cash = Payment.objects.filter(
-        sale__cash_session_id=OuterRef('pk'),
-        payment_method_code='cash',
+    cash = Payment.objects.filter(sale__cash_session_id=OuterRef('pk')).filter(
+        Q(payment_method_code=PaymentMethodCode.CASH)
+        | Q(payment_method__code=PaymentMethodCode.CASH)
     )
 
     def cash_sum(queryset):
@@ -653,12 +656,20 @@ def filtered_cash_sessions(*, branch, start, end, filters):
     )
     cash_reversals = cash_sum(cash.filter(sale__status=SaleStatus.CANCELLED))
     cash_cancellations = Sale.objects.filter(
-        cash_session_id=OuterRef('pk'),
-        status=SaleStatus.CANCELLED,
-        payments__payment_method_code='cash',
+        cash_session_id=OuterRef('pk'), status=SaleStatus.CANCELLED,
+    ).filter(
+        Q(payments__payment_method_code=PaymentMethodCode.CASH)
+        | Q(payments__payment_method__code=PaymentMethodCode.CASH)
     ).values('cash_session').annotate(
         value=Count('id', distinct=True)
     ).values('value')
+    command_cash = CommandPayment.objects.filter(
+        cash_session_id=OuterRef('pk'),
+        payment_method__code=PaymentMethodCode.CASH,
+        status=CommandPaymentStatus.APPLIED,
+        reversal__isnull=True,
+        command__sale__isnull=True,
+    ).values('cash_session').annotate(value=Sum('amount')).values('value')
     queryset = CashSession.objects.filter(branch=branch)
     # Intersect the session's [opened_at, closed_at] with the requested period, so
     # sessions opened before the period or still open are included when relevant.
@@ -674,12 +685,13 @@ def filtered_cash_sessions(*, branch, start, end, filters):
         sale_cash=Coalesce(Subquery(sale_cash, output_field=MONEY_FIELD), ZERO_MONEY),
         consumption_cash=Coalesce(Subquery(consumption_cash, output_field=MONEY_FIELD), ZERO_MONEY),
         cash_reversals=Coalesce(Subquery(cash_reversals, output_field=MONEY_FIELD), ZERO_MONEY),
+        command_cash=Coalesce(Subquery(command_cash, output_field=MONEY_FIELD), ZERO_MONEY),
         cash_cancellations=Coalesce(
             Subquery(cash_cancellations, output_field=IntegerField()), 0,
         ),
     ).annotate(
         cash_payments=ExpressionWrapper(
-            F('sale_cash') + F('consumption_cash') - F('cash_reversals'),
+            F('sale_cash') + F('consumption_cash') - F('cash_reversals') + F('command_cash'),
             output_field=MONEY_FIELD,
         ),
     ).annotate(

@@ -11,10 +11,11 @@ from rest_framework.response import Response
 
 from apps.accounts.models import User
 from apps.base.audit import audit_log, model_snapshot
+from apps.base.pagination import StandardPagination
 
 from .features import branch_feature_states
 from .models import (
-    AccessProfile, Branch, BranchSettings, Company, FunctionalPermission, Status,
+    AccessProfile, Branch, BranchSettings, Company, Customer, FunctionalPermission, Status,
     UserBranchAccess, UserCommissionOverride, UserCompanyAccess,
     UserPermissionBlock,
 )
@@ -31,17 +32,100 @@ from .serializers import (
     BranchSerializer,
     BranchSettingsSerializer,
     CompanySerializer,
+    CustomerSerializer,
     FunctionalPermissionSerializer,
     TransferCompanyOwnerSerializer,
     UserCommissionOverrideSerializer,
     UserPermissionBlockSerializer,
 )
+
+
+class CustomerSearchPagination(StandardPagination):
+    page_size = 20
+    page_size_query_param = 'limit'
+    max_page_size = 100
 from .services import (
     activate_branch,
     activate_company,
     deactivate_company,
     transfer_company_owner,
 )
+
+
+class CustomerViewSet(viewsets.ModelViewSet):
+    serializer_class = CustomerSerializer
+    pagination_class = CustomerSearchPagination
+    permission_classes = [FunctionalCompanyPermission]
+    http_method_names = ('get', 'post', 'patch', 'put', 'head', 'options')
+    permission_codes = {
+        'list': 'customers.view', 'retrieve': 'customers.view',
+        'create': 'customers.add', 'update': 'customers.change',
+        'partial_update': 'customers.change', 'activate': 'customers.change',
+        'deactivate': 'customers.deactivate', 'search': 'customers.view',
+    }
+    audit_fields = ('company_id', 'name', 'phone', 'document', 'email', 'birth_date', 'notes', 'status')
+
+    def get_queryset(self):
+        companies = accessible_companies(
+            self.request.user, self.permission_codes.get(self.action, 'customers.view')
+        )
+        queryset = Customer.objects.filter(company__in=companies).select_related('company')
+        company_id = self.request.query_params.get('company')
+        if company_id:
+            queryset = queryset.filter(company_id=company_id)
+        if self.action in ('list', 'search'):
+            status_value = self.request.query_params.get('status')
+            if status_value:
+                queryset = queryset.filter(status=status_value)
+            term = (self.request.query_params.get('q') or self.request.query_params.get('search', '')).strip()
+            if term:
+                queryset = queryset.filter(
+                    Q(name__icontains=term) | Q(phone__icontains=term)
+                    | Q(email__icontains=term) | Q(document__icontains=term)
+                )
+        return queryset
+
+    def perform_create(self, serializer):
+        customer = serializer.save()
+        audit_log(actor=self.request.user, action='customer.create', obj=customer,
+                  company=customer.company, after=model_snapshot(customer, self.audit_fields))
+
+    def perform_update(self, serializer):
+        before = model_snapshot(serializer.instance, self.audit_fields)
+        customer = serializer.save()
+        audit_log(actor=self.request.user, action='customer.update', obj=customer,
+                  company=customer.company, before=before,
+                  after=model_snapshot(customer, self.audit_fields))
+
+    @action(detail=True, methods=('post',))
+    def deactivate(self, request, pk=None):
+        customer = self.get_object()
+        before = model_snapshot(customer, self.audit_fields)
+        customer.status = Status.INACTIVE
+        customer.save(update_fields=('status', 'updated_at'))
+        audit_log(actor=request.user, action='customer.deactivate', obj=customer,
+                  company=customer.company, before=before,
+                  after=model_snapshot(customer, self.audit_fields))
+        return Response(self.get_serializer(customer).data)
+
+    @action(detail=True, methods=('post',))
+    def activate(self, request, pk=None):
+        customer = self.get_object()
+        before = model_snapshot(customer, self.audit_fields)
+        customer.status = Status.ACTIVE
+        customer.save(update_fields=('status', 'updated_at'))
+        audit_log(actor=request.user, action='customer.activate', obj=customer,
+                  company=customer.company, before=before,
+                  after=model_snapshot(customer, self.audit_fields))
+        return Response(self.get_serializer(customer).data)
+
+    @action(detail=False, methods=('get',))
+    def search(self, request):
+        queryset = self.get_queryset()
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            return self.get_paginated_response(self.get_serializer(page, many=True).data)
+        return Response(self.get_serializer(queryset, many=True).data)
 
 
 class CompanyViewSet(viewsets.ModelViewSet):
@@ -59,7 +143,7 @@ class CompanyViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         support_session = getattr(self.request, 'support_session', None)
-        if support_session and not support_session.impersonated_user_id:
+        if support_session:
             return Company.objects.filter(pk=support_session.company_id).prefetch_related(
                 Prefetch(
                     'branches',
@@ -246,6 +330,7 @@ class BranchViewSet(viewsets.ModelViewSet):
     permission_codes = {
         'list': 'branches.view',
         'retrieve': 'branches.view',
+        'overview': 'branches.view',
         'create': 'branches.add',
         'update': 'branches.change',
         'partial_update': 'branches.change',
@@ -257,14 +342,63 @@ class BranchViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         support_session = getattr(self.request, 'support_session', None)
-        if support_session and not support_session.impersonated_user_id:
+        if support_session:
             return Branch.objects.filter(company_id=support_session.company_id).select_related(
                 'company', 'settings'
             )
+        company_id = self.request.query_params.get('company')
+        if not company_id:
+            branch_id = self.request.headers.get('X-Branch-ID')
+            if branch_id:
+                company_id = Branch.objects.filter(pk=branch_id).values_list('company_id', flat=True).first()
+        if not company_id:
+            raise ValidationError({'company': 'Selecione uma empresa para consultar filiais.'})
+        try:
+            company_id = int(company_id)
+        except (TypeError, ValueError) as error:
+            raise ValidationError({'company': 'Informe uma empresa válida.'}) from error
         permission_code = self.permission_codes.get(self.action, 'branches.view')
         return accessible_branches(
             self.request.user, permission_code
-        ).select_related('company', 'settings')
+        ).filter(company_id=company_id).select_related('company', 'settings')
+
+    @action(detail=False, methods=['get'])
+    def overview(self, request):
+        company_id = request.query_params.get('company')
+        if not company_id:
+            raise ValidationError({'company': 'Selecione uma empresa para consultar o negócio.'})
+        try:
+            company_id = int(company_id)
+        except (TypeError, ValueError) as error:
+            raise ValidationError({'company': 'Informe uma empresa válida.'}) from error
+        branches = self.get_queryset().filter(company_id=company_id)
+        company = Company.objects.filter(pk=company_id).first()
+        if not company:
+            raise PermissionDenied('Empresa fora do contexto autorizado.')
+        branch_ids = branches.values_list('pk', flat=True)
+        from apps.production.models import PrinterDevice
+        from apps.products.models import Product
+
+        return Response({
+            'company': {
+                'id': company.pk,
+                'trade_name': company.trade_name,
+                'status': company.status,
+            },
+            'counts': {
+                'branches': branches.count(),
+                'products': Product.objects.filter(company_id=company_id).count(),
+                'active_users': User.objects.filter(
+                    is_active=True,
+                    archived_at__isnull=True,
+                    company_accesses__company_id=company_id,
+                    company_accesses__is_active=True,
+                ).distinct().count(),
+                'printer_devices': PrinterDevice.objects.filter(
+                    branch_id__in=branch_ids
+                ).count(),
+            },
+        })
 
     def perform_create(self, serializer):
         branch = serializer.save()
@@ -442,6 +576,9 @@ class AccessProfileViewSet(viewsets.ModelViewSet):
         queryset = AccessProfile.objects.select_related('company').prefetch_related(
             'permissions'
         )
+        support_session = getattr(self.request, 'support_session', None)
+        if support_session:
+            queryset = queryset.filter(company_id=support_session.company_id)
         user = self.request.user
         if not user.is_superuser:
             permission_code = AccessProfilePermission.codes.get(
@@ -520,6 +657,7 @@ class AccessProfileViewSet(viewsets.ModelViewSet):
             branch_accesses__access_profile=profile,
             branch_accesses__is_active=True,
             is_active=True,
+            archived_at__isnull=True,
         ).distinct().order_by('first_name', 'last_name', 'email')
         data = [
             {
@@ -580,6 +718,9 @@ class UserPermissionBlockViewSet(viewsets.ModelViewSet):
         queryset = UserPermissionBlock.objects.select_related(
             'company', 'branch', 'user', 'permission', 'created_by', 'revoked_by'
         )
+        support_session = getattr(self.request, 'support_session', None)
+        if support_session:
+            queryset = queryset.filter(company_id=support_session.company_id)
         user = self.request.user
         if not user.is_superuser:
             permission_code = UserPermissionBlockPermission.code_for_action(self.action)
@@ -873,6 +1014,9 @@ class UserCommissionOverrideViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = UserCommissionOverride.objects.filter(archived_at__isnull=True).select_related('branch', 'branch__company', 'user')
+        support_session = getattr(self.request, 'support_session', None)
+        if support_session:
+            queryset = queryset.filter(branch__company_id=support_session.company_id)
         user = self.request.user
         if not user.is_superuser:
             branch_scope = Branch.objects.none()

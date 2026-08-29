@@ -9,6 +9,7 @@ FEATURE_CAPABILITIES = {
     'counter': 'feature.counter',
     'consumption': 'feature.consumption',
     'cash_register': 'feature.cash_register',
+    'production': 'feature.production',
 }
 
 FEATURE_LABELS = {
@@ -17,6 +18,7 @@ FEATURE_LABELS = {
     'counter': 'Balcão',
     'consumption': 'Consumação',
     'cash_register': 'Caixa',
+    'production': 'Produção e impressão',
 }
 
 
@@ -27,6 +29,8 @@ def branch_feature_states(branch):
     except BranchSettings.DoesNotExist:
         settings = BranchSettings()
     flags = settings.feature_flags()
+    # Production serves direct sales as well as commands, so it is not coupled to commands.
+    flags['production'] = True
 
     from apps.saas.services import get_entitled_features
 

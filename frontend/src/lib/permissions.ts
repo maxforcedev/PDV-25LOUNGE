@@ -12,6 +12,7 @@ export const permissions = {
   configureProductBranch: "products.configure_branch", configureProductFraction: "products.configure_fraction",
   configureProductDestinations: "products.configure_destinations", duplicateProduct: "products.duplicate",
   viewSupplier: "suppliers.view", changeSupplier: "suppliers.change",
+  viewCustomer: "customers.view", addCustomer: "customers.add", changeCustomer: "customers.change", deactivateCustomer: "customers.deactivate",
   viewModifiers: "modifiers.view", changeModifiers: "modifiers.change",
   viewPurchase: "purchases.view", createPurchase: "purchases.create", placePurchase: "purchases.place",
   receivePurchase: "purchases.receive", closePurchase: "purchases.close", viewPurchaseCosts: "purchases.view_costs",
@@ -31,6 +32,8 @@ export const permissions = {
   createSale: "sales.create", viewSale: "sales.view", cancelSale: "sales.cancel", applyDiscount: "sales.apply_discount", applyItemDiscount: "sales.apply_item_discount", waiveServiceFee: "sales.waive_service_fee",
   createConsumption: "sales.create_consumption", viewConsumption: "sales.view_consumption", cancelConsumption: "sales.cancel_consumption",
   viewCommands: "commands.view", openCommand: "commands.open", addCommandItems: "commands.add_items", cancelCommandItems: "commands.cancel_items", finalizeCommand: "commands.finalize",
+  transferCommand: "commands.transfer", transferCommandItems: "commands.transfer_items", mergeCommands: "commands.merge", splitCommand: "commands.split",
+  viewCommandPayments: "commands.payments.view", recordCommandPayment: "commands.payments.record", reverseCommandPayment: "commands.payments.reverse",
   viewPaymentMethod: "payment_methods.view", changePaymentMethod: "payment_methods.change",
   viewSalesReport: "reports.view_sales", viewConsumptionsReport: "reports.view_consumptions", viewCashReport: "reports.view_cash", viewWithdrawalsReport: "reports.view_withdrawals", viewInventoryReport: "reports.view_inventory", viewOperationalResult: "reports.view_operational_result", viewStockConsumptionReport: "reports.view_stock_consumption", exportReports: "reports.export",
   viewPromotion: "promotions.view", changePromotion: "promotions.change",
@@ -38,6 +41,7 @@ export const permissions = {
   viewProductsReport: "reports.view_products", viewReceiptsReport: "reports.view_receipts", viewTeamReport: "reports.view_team", viewDiscountsReport: "reports.view_discounts", viewCancellationsReport: "reports.view_cancellations", viewPricesReport: "reports.view_prices",
   viewAuditLog: "audit_logs.view",
   viewCommission: "commissions.view", changeBranchCommission: "commissions.change_branch_default", changeProfileCommission: "commissions.change_profile", changeUserCommission: "commissions.change_user_override",
+  viewProduction: "production.view", managePrinters: "printers.manage", viewPrintJobs: "print_jobs.view", retryPrintJobs: "print_jobs.retry", reprintPrintJobs: "print_jobs.reprint",
 } as const;
 
 export const reportMenuPermissions = [

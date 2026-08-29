@@ -17,3 +17,6 @@ staticfiles/
 secrets/
 private_media/
 media/
+*.zip
+build/
+dist/

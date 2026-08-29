@@ -36,6 +36,8 @@ export const movementDomainOriginLabels: Record<string, string> = {
   TRANSFER_CORRECTION: "Correção de transferência",
   LOSS: "Registro de perda",
   INVENTORY_COUNT: "Contagem de inventário",
+  ORDER: "Comanda",
+  ORDER_CANCELLATION: "Cancelamento de comanda",
 };
 
 export function movementDomainOriginLabel(value: string | undefined) {

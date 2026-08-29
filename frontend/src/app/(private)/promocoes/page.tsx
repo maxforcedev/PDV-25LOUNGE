@@ -1,46 +1,706 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { BadgePercent, Pencil, Plus, Power, Search, Trash2 } from "lucide-react";
+import {
+  BadgePercent,
+  Pencil,
+  Plus,
+  Power,
+  Search,
+  Trash2,
+} from "lucide-react";
 import { AdminGuard } from "@/components/admin-guard";
+import { ProductAutocomplete } from "@/components/product-autocomplete";
 import { PageHeader } from "@/components/page-header";
-import { Alert, Button, ConfirmDialog, EmptyState, Field, Input, Modal, MoneyInput, Pagination, Select, StatusBadge, TableLoading } from "@/components/ui";
+import {
+  Alert,
+  Button,
+  ConfirmDialog,
+  EmptyState,
+  Field,
+  Input,
+  Modal,
+  MoneyInput,
+  Pagination,
+  Select,
+  StatusBadge,
+  TableLoading,
+} from "@/components/ui";
 import { formatDate } from "@/lib/format";
 import { ApiError, friendlyError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
-import type { Paginated, Promotion, Status } from "@/types";
+import type { Paginated, Product, Promotion, Status } from "@/types";
 
-type Target = { id: number; name: string; internal_code?: string; status: Status };
+type Target = {
+  id: number;
+  name: string;
+  internal_code?: string;
+  status: Status;
+};
 type Options = { products: Target[]; categories: Target[] };
 type Schedule = { weekday: number; start_time: string; end_time: string };
-type Form = { name: string; branch: number | null; discount_type: "percentage" | "fixed_amount"; discount_value: string; starts_at: string; ends_at: string; schedules: Schedule[]; product_ids: number[]; category_ids: number[] };
-const weekdays: Array<[number, string]> = [[0, "Domingo"], [1, "Segunda"], [2, "Terça"], [3, "Quarta"], [4, "Quinta"], [5, "Sexta"], [6, "Sábado"]];
-const blank = (): Form => ({ name: "", branch: null, discount_type: "percentage", discount_value: "", starts_at: "", ends_at: "", schedules: [], product_ids: [], category_ids: [] });
-function localDatetime(value: string) { const date = new Date(value); if (Number.isNaN(date.getTime())) return ""; const pad = (n: number) => String(n).padStart(2, "0"); return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`; }
+type Form = {
+  name: string;
+  branch: number | null;
+  discount_type: "percentage" | "fixed_amount";
+  discount_value: string;
+  starts_at: string;
+  ends_at: string;
+  schedules: Schedule[];
+  product_ids: number[];
+  category_ids: number[];
+};
+const weekdays: Array<[number, string]> = [
+  [0, "Domingo"],
+  [1, "Segunda"],
+  [2, "Terça"],
+  [3, "Quarta"],
+  [4, "Quinta"],
+  [5, "Sexta"],
+  [6, "Sábado"],
+];
+const blank = (): Form => ({
+  name: "",
+  branch: null,
+  discount_type: "percentage",
+  discount_value: "",
+  starts_at: "",
+  ends_at: "",
+  schedules: [],
+  product_ids: [],
+  category_ids: [],
+});
+function localDatetime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
 
 function Promotions() {
-  const { currentCompany, currentBranch, hasPermission, user } = useAuth(); const canChange = hasPermission(permissions.changePromotion); const context = useRef(""); context.current = String(currentBranch?.id || "");
-  const branches = (currentCompany ? user?.branches.filter((b) => b.company_id === currentCompany.id && b.status === "active") : []) || [];
-  const [data, setData] = useState<Paginated<Promotion> | null>(null); const [options, setOptions] = useState<Options>({ products: [], categories: [] }); const [search, setSearch] = useState(""); const [status, setStatus] = useState("");
-  const [editing, setEditing] = useState<Promotion | null>(null); const [form, setForm] = useState<Form>(blank); const [open, setOpen] = useState(false); const [confirming, setConfirming] = useState<Promotion | null>(null); const [saving, setSaving] = useState(false); const [error, setError] = useState(""); const [success, setSuccess] = useState("");
-  function path() { const params = new URLSearchParams(); if (search) params.set("search", search); if (status) params.set("status", status); return `promotions/?${params}`; }
-  async function load(url = path(), token = context.current) { setData(null); setError(""); try { const result = await http.get<Paginated<Promotion>>(url); if (context.current === token) setData(result); } catch (caught) { if (context.current === token) setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar as promoções."); } }
-  useEffect(() => { setData(null); setOpen(false); setError(""); if (!currentBranch) return; const token = context.current; void load("promotions/", token); void http.get<Options>("promotions/target-options/").then((value) => { if (context.current === token) setOptions(value); }).catch(() => setError("Não foi possível carregar produtos e categorias elegíveis.")); }, [currentBranch?.id]);
-  function show(item?: Promotion) { const next = item ? { name: item.name, branch: item.branch, discount_type: item.discount_type, discount_value: item.discount_value, starts_at: localDatetime(item.starts_at), ends_at: item.ends_at ? localDatetime(item.ends_at) : "", schedules: item.schedules.map((s) => ({ weekday: s.weekday, start_time: s.start_time, end_time: s.end_time })), product_ids: item.product_ids, category_ids: item.category_ids } : blank(); setEditing(item || null); setForm(next); setError(""); setOpen(true); }
-  function toggle(key: "product_ids" | "category_ids", id: number) { setForm((current) => ({ ...current, [key]: current[key].includes(id) ? current[key].filter((value) => value !== id) : [...current[key], id] })); }
-  function addSchedule() { setForm((current) => ({ ...current, schedules: [...current.schedules, { weekday: 1, start_time: "18:00", end_time: "23:59" }] })); }
-  function updateSchedule(index: number, key: keyof Schedule, value: string | number) { setForm((current) => ({ ...current, schedules: current.schedules.map((item, i) => i === index ? { ...item, [key]: value } : item) })); }
-  function removeSchedule(index: number) { setForm((current) => ({ ...current, schedules: current.schedules.filter((_, i) => i !== index) })); }
-  async function submit(event: React.FormEvent) { event.preventDefault(); if (!form.product_ids.length && !form.category_ids.length) { setError("Selecione ao menos um produto ou categoria."); return; } setSaving(true); setError(""); try { const payload = { name: form.name, branch: form.branch, discount_type: form.discount_type, discount_value: form.discount_value, starts_at: form.starts_at, ends_at: form.ends_at || null, schedules: form.schedules, product_ids: form.product_ids, category_ids: form.category_ids }; if (editing) await http.patch(`promotions/${editing.id}/`, payload); else await http.post("promotions/", payload); setOpen(false); setSuccess(editing ? "Promoção atualizada." : "Promoção criada."); await load(); } catch (caught) { setError(friendlyError(caught, "Não foi possível salvar.").message); } finally { setSaving(false); } }
-   async function changeStatus() { if (!confirming) return; setSaving(true); const action = confirming.status === "active" ? "deactivate" : "activate"; try { await http.post(`promotions/${confirming.id}/${action}/`); setConfirming(null); setSuccess(`Promoção ${action === "activate" ? "ativada" : "inativada"}.`); await load(); } catch (caught) { const detail = caught instanceof ApiError ? Object.values(caught.fields).flat().join(" ") : ""; setError(detail || friendlyError(caught, "Não foi possível alterar o status.").message); } finally { setSaving(false); } }
-  return <><PageHeader title="Promoções" description={`Campanhas automáticas da filial ${currentBranch?.name || "atual"}.`} action={canChange ? <Button onClick={() => show()}><Plus className="size-4" />Nova promoção</Button> : undefined} />
-    <div className="space-y-4 p-4 sm:p-6 lg:p-8">{error && !open && <Alert message={error} />}{success && <Alert type="success" message={success} />}<form className="card flex flex-col gap-3 p-4 sm:flex-row" onSubmit={(e) => { e.preventDefault(); void load(); }}><div className="relative flex-1"><Search className="absolute left-3 top-3 size-4 text-slate-400" /><Input className="pl-9" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Nome, produto ou categoria" /></div><Select className="sm:w-44" value={status} onChange={(e) => setStatus(e.target.value)}><option value="">Todos os status</option><option value="active">Ativas</option><option value="inactive">Inativas</option></Select><Button>Filtrar</Button></form>
-      <section className="card overflow-hidden">{!data ? <TableLoading /> : data.results.length ? <><div className="table-wrap"><table className="data-table"><thead><tr><th>Promoção</th><th>Benefício</th><th>Vigência</th><th>Alvos</th><th>Status</th><th className="text-right">Ações</th></tr></thead><tbody>{data.results.map((item) => <tr key={item.id}><td><strong>{item.name}</strong></td><td>{item.discount_type === "percentage" ? `${item.discount_value}%` : `R$ ${item.discount_value}`}</td><td><span className="block text-xs">{formatDate(item.starts_at)}</span><span className="text-[10px] text-slate-400">até {item.ends_at ? formatDate(item.ends_at) : "vigência sem fim"}</span></td><td><span className="block text-xs">{item.product_count} produtos · {item.category_count} categorias</span><span className="text-[10px] text-slate-400">{[...item.product_names, ...item.category_names].slice(0, 3).join(", ")}</span><span className="mt-1 block text-[10px] font-semibold text-primary">{item.broker_all_branches ? "Todas as filiais" : item.branch_name}{item.schedules.length ? ` · ${item.schedules.length} intervalo${item.schedules.length > 1 ? "s" : ""}` : ""}</span></td><td><StatusBadge active={item.status === "active"} /></td><td><div className="flex justify-end gap-1"><button className="icon-button" disabled={!canChange} onClick={() => show(item)}><Pencil className="size-4" /></button><button className="icon-button" disabled={!canChange} onClick={() => setConfirming(item)}><Power className="size-4" /></button></div></td></tr>)}</tbody></table></div><Pagination count={data.count} next={data.next} previous={data.previous} onPage={(url) => void load(url)} /></> : <EmptyState title="Nenhuma promoção" description="Crie uma campanha por produto ou categoria." />}</section>
-    </div>
-    <Modal open={open} title={editing ? "Editar promoção" : "Nova promoção"} description="A promoção será aplicada automaticamente no período e horários informados." onClose={() => !saving && setOpen(false)} size="xl"><form onSubmit={submit}><div className="space-y-5 p-5 sm:p-6">{error && <Alert message={error} />}<div className="grid gap-4 sm:grid-cols-2"><Field label="Nome"><Input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field><Field label="Filial (escopo)"><Select value={form.branch === null ? "" : String(form.branch)} onChange={(e) => setForm({ ...form, branch: e.target.value === "" ? null : Number(e.target.value) })}><option value="">Todas as filiais</option>{branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</Select></Field><Field label="Tipo"><Select value={form.discount_type} onChange={(e) => setForm({ ...form, discount_type: e.target.value as Form["discount_type"] })}><option value="percentage">Percentual</option><option value="fixed_amount">Valor fixo por unidade</option></Select></Field><Field label={form.discount_type === "percentage" ? "Percentual" : "Valor por unidade (R$)"}><MoneyInput required value={form.discount_value} onValueChange={(v) => setForm({ ...form, discount_value: v })} /></Field><Field label="Início"><Input required type="datetime-local" value={form.starts_at} onChange={(e) => setForm({ ...form, starts_at: e.target.value })} /></Field><Field label="Fim (opcional)"><Input type="datetime-local" value={form.ends_at} onChange={(e) => setForm({ ...form, ends_at: e.target.value })} /><span className="mt-1 block text-[10px] text-slate-400">Deixe em branco para vigência sem fim.</span></Field></div><div className="rounded-lg border border-slate-200 p-4"><div className="mb-3 flex items-center justify-between gap-3"><div><h3 className="text-xs font-bold">Agenda semanal (opcional)</h3><p className="mt-1 text-[10px] text-slate-400">Sem agenda, a promoção vale o dia todo dentro da vigência. Intervalo final menor que inicial atravessa meia-noite.</p></div><Button type="button" variant="secondary" onClick={addSchedule}><Plus className="size-4" />Intervalo</Button></div>{form.schedules.length > 0 && <div className="space-y-2">{form.schedules.map((schedule, index) => <div key={index} className="grid grid-cols-2 gap-2 sm:grid-cols-[10rem_8rem_8rem_auto]"><Select value={String(schedule.weekday)} onChange={(e) => updateSchedule(index, "weekday", Number(e.target.value))}>{weekdays.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select><Input type="time" value={schedule.start_time} onChange={(e) => updateSchedule(index, "start_time", e.target.value)} /><Input type="time" value={schedule.end_time} onChange={(e) => updateSchedule(index, "end_time", e.target.value)} /><button type="button" className="icon-button" onClick={() => removeSchedule(index)}><Trash2 className="size-4" /></button></div>)}</div>}</div><div className="grid gap-4 lg:grid-cols-2"><TargetBox title="Produtos" items={options.products} selected={form.product_ids} onToggle={(id) => toggle("product_ids", id)} /><TargetBox title="Categorias" items={options.categories} selected={form.category_ids} onToggle={(id) => toggle("category_ids", id)} /></div></div><div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4"><Button type="button" variant="secondary" onClick={() => setOpen(false)}>Cancelar</Button><Button type="submit" loading={saving}>Salvar</Button></div></form></Modal>
-    <ConfirmDialog open={!!confirming} title={`${confirming?.status === "active" ? "Inativar" : "Ativar"} promoção`} message="A alteração afeta apenas novos cálculos; vendas anteriores preservam seus snapshots." confirmLabel="Confirmar" danger={confirming?.status === "active"} loading={saving} onClose={() => setConfirming(null)} onConfirm={() => void changeStatus()} />
-  </>;
+  const { currentCompany, currentBranch, hasPermission, user } = useAuth();
+  const canChange = hasPermission(permissions.changePromotion);
+  const context = useRef("");
+  context.current = String(currentBranch?.id || "");
+  const branches =
+    (currentCompany
+      ? user?.branches.filter(
+          (b) => b.company_id === currentCompany.id && b.status === "active",
+        )
+      : []) || [];
+  const [data, setData] = useState<Paginated<Promotion> | null>(null);
+  const [options, setOptions] = useState<Options>({
+    products: [],
+    categories: [],
+  });
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState("");
+  const [editing, setEditing] = useState<Promotion | null>(null);
+  const [form, setForm] = useState<Form>(blank);
+  const [open, setOpen] = useState(false);
+  const [confirming, setConfirming] = useState<Promotion | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [selectedProducts, setSelectedProducts] = useState<Product[]>([]);
+  function path() {
+    const params = new URLSearchParams();
+    if (search) params.set("search", search);
+    if (status) params.set("status", status);
+    return `promotions/?${params}`;
+  }
+  async function load(url = path(), token = context.current) {
+    setData(null);
+    setError("");
+    try {
+      const result = await http.get<Paginated<Promotion>>(url);
+      if (context.current === token) setData(result);
+    } catch (caught) {
+      if (context.current === token)
+        setError(
+          caught instanceof ApiError
+            ? caught.message
+            : "Não foi possível carregar as promoções.",
+        );
+    }
+  }
+  useEffect(() => {
+    setData(null);
+    setOpen(false);
+    setError("");
+    if (!currentBranch) return;
+    const token = context.current;
+    void load("promotions/", token);
+    void http
+      .get<Options>("promotions/target-options/?products=false")
+      .then((value) => {
+        if (context.current === token) setOptions(value);
+      })
+      .catch(() =>
+        setError("Não foi possível carregar produtos e categorias elegíveis."),
+      );
+  }, [currentBranch?.id]);
+  function show(item?: Promotion) {
+    const next = item
+      ? {
+          name: item.name,
+          branch: item.branch,
+          discount_type: item.discount_type,
+          discount_value: item.discount_value,
+          starts_at: localDatetime(item.starts_at),
+          ends_at: item.ends_at ? localDatetime(item.ends_at) : "",
+          schedules: item.schedules.map((s) => ({
+            weekday: s.weekday,
+            start_time: s.start_time,
+            end_time: s.end_time,
+          })),
+          product_ids: item.product_ids,
+          category_ids: item.category_ids,
+        }
+      : blank();
+    setEditing(item || null);
+    setSelectedProducts([]);
+    setForm(next);
+    setError("");
+    setOpen(true);
+  }
+  function toggle(key: "product_ids" | "category_ids", id: number) {
+    setForm((current) => ({
+      ...current,
+      [key]: current[key].includes(id)
+        ? current[key].filter((value) => value !== id)
+        : [...current[key], id],
+    }));
+  }
+  function addSchedule() {
+    setForm((current) => ({
+      ...current,
+      schedules: [
+        ...current.schedules,
+        { weekday: 1, start_time: "18:00", end_time: "23:59" },
+      ],
+    }));
+  }
+  function updateSchedule(
+    index: number,
+    key: keyof Schedule,
+    value: string | number,
+  ) {
+    setForm((current) => ({
+      ...current,
+      schedules: current.schedules.map((item, i) =>
+        i === index ? { ...item, [key]: value } : item,
+      ),
+    }));
+  }
+  function removeSchedule(index: number) {
+    setForm((current) => ({
+      ...current,
+      schedules: current.schedules.filter((_, i) => i !== index),
+    }));
+  }
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!form.product_ids.length && !form.category_ids.length) {
+      setError("Selecione ao menos um produto ou categoria.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const payload = {
+        name: form.name,
+        branch: form.branch,
+        discount_type: form.discount_type,
+        discount_value: form.discount_value,
+        starts_at: form.starts_at,
+        ends_at: form.ends_at || null,
+        schedules: form.schedules,
+        product_ids: form.product_ids,
+        category_ids: form.category_ids,
+      };
+      if (editing) await http.patch(`promotions/${editing.id}/`, payload);
+      else await http.post("promotions/", payload);
+      setOpen(false);
+      setSuccess(editing ? "Promoção atualizada." : "Promoção criada.");
+      await load();
+    } catch (caught) {
+      setError(friendlyError(caught, "Não foi possível salvar.").message);
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function changeStatus() {
+    if (!confirming) return;
+    setSaving(true);
+    const action = confirming.status === "active" ? "deactivate" : "activate";
+    try {
+      await http.post(`promotions/${confirming.id}/${action}/`);
+      setConfirming(null);
+      setSuccess(
+        `Promoção ${action === "activate" ? "ativada" : "inativada"}.`,
+      );
+      await load();
+    } catch (caught) {
+      const detail =
+        caught instanceof ApiError
+          ? Object.values(caught.fields).flat().join(" ")
+          : "";
+      setError(
+        detail ||
+          friendlyError(caught, "Não foi possível alterar o status.").message,
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <>
+      <PageHeader
+        title="Promoções"
+        description={`Campanhas automáticas da filial ${currentBranch?.name || "atual"}.`}
+        action={
+          canChange ? (
+            <Button onClick={() => show()}>
+              <Plus className="size-4" />
+              Nova promoção
+            </Button>
+          ) : undefined
+        }
+      />
+      <div className="space-y-4 p-4 sm:p-6 lg:p-8">
+        {error && !open && <Alert message={error} />}
+        {success && <Alert type="success" message={success} />}
+        <form
+          className="card flex flex-col gap-3 p-4 sm:flex-row"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void load();
+          }}
+        >
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-3 size-4 text-slate-400" />
+            <Input
+              className="pl-9"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Nome, produto ou categoria"
+            />
+          </div>
+          <Select
+            className="sm:w-44"
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+          >
+            <option value="">Todos os status</option>
+            <option value="active">Ativas</option>
+            <option value="inactive">Inativas</option>
+          </Select>
+          <Button>Filtrar</Button>
+        </form>
+        <section className="card overflow-hidden">
+          {!data ? (
+            <TableLoading />
+          ) : data.results.length ? (
+            <>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Promoção</th>
+                      <th>Benefício</th>
+                      <th>Vigência</th>
+                      <th>Alvos</th>
+                      <th>Status</th>
+                      <th className="text-right">Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.results.map((item) => (
+                      <tr key={item.id}>
+                        <td>
+                          <strong>{item.name}</strong>
+                        </td>
+                        <td>
+                          {item.discount_type === "percentage"
+                            ? `${item.discount_value}%`
+                            : `R$ ${item.discount_value}`}
+                        </td>
+                        <td>
+                          <span className="block text-xs">
+                            {formatDate(item.starts_at)}
+                          </span>
+                          <span className="text-[10px] text-slate-400">
+                            até{" "}
+                            {item.ends_at
+                              ? formatDate(item.ends_at)
+                              : "vigência sem fim"}
+                          </span>
+                        </td>
+                        <td>
+                          <span className="block text-xs">
+                            {item.product_count} produtos ·{" "}
+                            {item.category_count} categorias
+                          </span>
+                          <span className="text-[10px] text-slate-400">
+                            {[...item.product_names, ...item.category_names]
+                              .slice(0, 3)
+                              .join(", ")}
+                          </span>
+                          <span className="mt-1 block text-[10px] font-semibold text-primary">
+                            {item.broker_all_branches
+                              ? "Todas as filiais"
+                              : item.branch_name}
+                            {item.schedules.length
+                              ? ` · ${item.schedules.length} intervalo${item.schedules.length > 1 ? "s" : ""}`
+                              : ""}
+                          </span>
+                        </td>
+                        <td>
+                          <StatusBadge active={item.status === "active"} />
+                        </td>
+                        <td>
+                          <div className="flex justify-end gap-1">
+                            <button
+                              className="icon-button"
+                              disabled={!canChange}
+                              onClick={() => show(item)}
+                            >
+                              <Pencil className="size-4" />
+                            </button>
+                            <button
+                              className="icon-button"
+                              disabled={!canChange}
+                              onClick={() => setConfirming(item)}
+                            >
+                              <Power className="size-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <Pagination
+                count={data.count}
+                next={data.next}
+                previous={data.previous}
+                onPage={(url) => void load(url)}
+              />
+            </>
+          ) : (
+            <EmptyState
+              title="Nenhuma promoção"
+              description="Crie uma campanha por produto ou categoria."
+            />
+          )}
+        </section>
+      </div>
+      <Modal
+        open={open}
+        title={editing ? "Editar promoção" : "Nova promoção"}
+        description="A promoção será aplicada automaticamente no período e horários informados."
+        onClose={() => !saving && setOpen(false)}
+        size="xl"
+      >
+        <form onSubmit={submit}>
+          <div className="space-y-5 p-5 sm:p-6">
+            {error && <Alert message={error} />}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Nome">
+                <Input
+                  required
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                />
+              </Field>
+              <Field label="Filial (escopo)">
+                <Select
+                  value={form.branch === null ? "" : String(form.branch)}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      branch:
+                        e.target.value === "" ? null : Number(e.target.value),
+                    })
+                  }
+                >
+                  <option value="">Todas as filiais</option>
+                  {branches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Tipo">
+                <Select
+                  value={form.discount_type}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      discount_type: e.target.value as Form["discount_type"],
+                    })
+                  }
+                >
+                  <option value="percentage">Percentual</option>
+                  <option value="fixed_amount">Valor fixo por unidade</option>
+                </Select>
+              </Field>
+              <Field
+                label={
+                  form.discount_type === "percentage"
+                    ? "Percentual"
+                    : "Valor por unidade (R$)"
+                }
+              >
+                <MoneyInput
+                  required
+                  value={form.discount_value}
+                  onValueChange={(v) => setForm({ ...form, discount_value: v })}
+                />
+              </Field>
+              <Field label="Início">
+                <Input
+                  required
+                  type="datetime-local"
+                  value={form.starts_at}
+                  onChange={(e) =>
+                    setForm({ ...form, starts_at: e.target.value })
+                  }
+                />
+              </Field>
+              <Field label="Fim (opcional)">
+                <Input
+                  type="datetime-local"
+                  value={form.ends_at}
+                  onChange={(e) =>
+                    setForm({ ...form, ends_at: e.target.value })
+                  }
+                />
+                <span className="mt-1 block text-[10px] text-slate-400">
+                  Deixe em branco para vigência sem fim.
+                </span>
+              </Field>
+            </div>
+            <div className="rounded-lg border border-slate-200 p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-xs font-bold">
+                    Agenda semanal (opcional)
+                  </h3>
+                  <p className="mt-1 text-[10px] text-slate-400">
+                    Sem agenda, a promoção vale o dia todo dentro da vigência.
+                    Intervalo final menor que inicial atravessa meia-noite.
+                  </p>
+                </div>
+                <Button type="button" variant="secondary" onClick={addSchedule}>
+                  <Plus className="size-4" />
+                  Intervalo
+                </Button>
+              </div>
+              {form.schedules.length > 0 && (
+                <div className="space-y-2">
+                  {form.schedules.map((schedule, index) => (
+                    <div
+                      key={index}
+                      className="grid grid-cols-2 gap-2 sm:grid-cols-[10rem_8rem_8rem_auto]"
+                    >
+                      <Select
+                        value={String(schedule.weekday)}
+                        onChange={(e) =>
+                          updateSchedule(
+                            index,
+                            "weekday",
+                            Number(e.target.value),
+                          )
+                        }
+                      >
+                        {weekdays.map(([value, label]) => (
+                          <option key={value} value={value}>
+                            {label}
+                          </option>
+                        ))}
+                      </Select>
+                      <Input
+                        type="time"
+                        value={schedule.start_time}
+                        onChange={(e) =>
+                          updateSchedule(index, "start_time", e.target.value)
+                        }
+                      />
+                      <Input
+                        type="time"
+                        value={schedule.end_time}
+                        onChange={(e) =>
+                          updateSchedule(index, "end_time", e.target.value)
+                        }
+                      />
+                      <button
+                        type="button"
+                        className="icon-button"
+                        onClick={() => removeSchedule(index)}
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="rounded-lg border border-subtle p-4">
+                <h3 className="text-xs font-bold">
+                  Produtos{" "}
+                  <span className="text-primary">
+                    ({form.product_ids.length})
+                  </span>
+                </h3>
+                <div className="mt-3">
+                  <ProductAutocomplete
+                    companyId={currentCompany?.id}
+                    branchId={currentBranch?.id}
+                    value={null}
+                    disabled={saving}
+                    onError={setError}
+                    onChange={(product) => {
+                      if (!product) return;
+                      setSelectedProducts((current) =>
+                        current.some((item) => item.id === product.id)
+                          ? current
+                          : [...current, product],
+                      );
+                      setForm((current) =>
+                        current.product_ids.includes(product.id)
+                          ? current
+                          : {
+                              ...current,
+                              product_ids: [...current.product_ids, product.id],
+                            },
+                      );
+                    }}
+                  />
+                </div>
+                <div className="mt-3 space-y-1">
+                  {form.product_ids.map((id) => {
+                    const product = selectedProducts.find(
+                      (item) => item.id === id,
+                    );
+                    return (
+                      <div
+                        key={id}
+                        className="flex items-center justify-between rounded bg-surface-muted px-2 py-1 text-xs"
+                      >
+                        <span>{product?.name || `Produto #${id}`}</span>
+                        <button
+                          type="button"
+                          className="text-danger"
+                          onClick={() => {
+                            setForm((current) => ({
+                              ...current,
+                              product_ids: current.product_ids.filter(
+                                (value) => value !== id,
+                              ),
+                            }));
+                            setSelectedProducts((current) =>
+                              current.filter((item) => item.id !== id),
+                            );
+                          }}
+                        >
+                          Remover
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <TargetBox
+                title="Categorias"
+                items={options.categories}
+                selected={form.category_ids}
+                onToggle={(id) => toggle("category_ids", id)}
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setOpen(false)}
+            >
+              Cancelar
+            </Button>
+            <Button type="submit" loading={saving}>
+              Salvar
+            </Button>
+          </div>
+        </form>
+      </Modal>
+      <ConfirmDialog
+        open={!!confirming}
+        title={`${confirming?.status === "active" ? "Inativar" : "Ativar"} promoção`}
+        message="A alteração afeta apenas novos cálculos; vendas anteriores preservam seus snapshots."
+        confirmLabel="Confirmar"
+        danger={confirming?.status === "active"}
+        loading={saving}
+        onClose={() => setConfirming(null)}
+        onConfirm={() => void changeStatus()}
+      />
+    </>
+  );
 }
-function TargetBox({ title, items, selected, onToggle }: { title: string; items: Target[]; selected: number[]; onToggle: (id: number) => void }) { return <div className="rounded-lg border border-slate-200"><div className="border-b border-slate-100 px-4 py-3 text-xs font-bold">{title} <span className="text-primary">({selected.length})</span></div><div className="max-h-52 overflow-y-auto p-2">{items.map((item) => <label key={item.id} className="flex cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-xs hover:bg-slate-50"><input type="checkbox" checked={selected.includes(item.id)} onChange={() => onToggle(item.id)} className="accent-primary" /><span>{item.name}{item.internal_code ? ` · ${item.internal_code}` : ""}</span>{item.status === "inactive" && <small className="ml-auto text-slate-400">inativo</small>}</label>)}</div></div>; }
-export default function PromotionsPage() { return <AdminGuard requiredPermissions={[permissions.viewPromotion, permissions.changePromotion]}><Promotions /></AdminGuard>; }
+function TargetBox({
+  title,
+  items,
+  selected,
+  onToggle,
+}: {
+  title: string;
+  items: Target[];
+  selected: number[];
+  onToggle: (id: number) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-slate-200">
+      <div className="border-b border-slate-100 px-4 py-3 text-xs font-bold">
+        {title} <span className="text-primary">({selected.length})</span>
+      </div>
+      <div className="max-h-52 overflow-y-auto p-2">
+        {items.map((item) => (
+          <label
+            key={item.id}
+            className="flex cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-xs hover:bg-slate-50"
+          >
+            <input
+              type="checkbox"
+              checked={selected.includes(item.id)}
+              onChange={() => onToggle(item.id)}
+              className="accent-primary"
+            />
+            <span>
+              {item.name}
+              {item.internal_code ? ` · ${item.internal_code}` : ""}
+            </span>
+            {item.status === "inactive" && (
+              <small className="ml-auto text-slate-400">inativo</small>
+            )}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+export default function PromotionsPage() {
+  return (
+    <AdminGuard
+      requiredPermissions={[
+        permissions.viewPromotion,
+        permissions.changePromotion,
+      ]}
+    >
+      <Promotions />
+    </AdminGuard>
+  );
+}

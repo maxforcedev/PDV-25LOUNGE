@@ -30,17 +30,18 @@ import {
   Layers,
   LayoutGrid,
   Truck,
+  ContactRound,
   WalletCards,
   UserRound,
   Users,
   X,
 } from "lucide-react";
 import { useAuth } from "@/providers/auth-provider";
-import { initials } from "@/lib/format";
 import { permissions, reportMenuPermissions } from "@/lib/permissions";
 import { Alert, Spinner } from "@/components/ui";
 import { useBranding } from "@/providers/branding-provider";
 import { BrandWordmark } from "@/components/marketing/brand-wordmark";
+import { UserAvatar } from "@/components/user-avatar";
 import type { BranchFeature, FeaturePermissionAlternative } from "@/types";
 
 type NavItem = { href: string; label: string; icon: typeof LayoutDashboard; requiredPermissions: readonly string[]; requiredFeatures?: readonly BranchFeature[]; anyFeature?: boolean; alternatives?: readonly FeaturePermissionAlternative[] };
@@ -61,11 +62,14 @@ const operationNavigation: NavItem[] = [
   { href: "/caixas", label: "Caixa", icon: Banknote, requiredPermissions: [permissions.viewCashRegister], requiredFeatures: ["cash_register"] },
 ];
 
+const productionNavigation: NavItem[] = [];
+
 const cadastrosNavigation: NavItem[] = [
   { href: "/produtos", label: "Produtos", icon: Package, requiredPermissions: [permissions.viewProduct] },
   { href: "/categorias", label: "Categorias", icon: Tags, requiredPermissions: [permissions.viewCategory] },
   { href: "/modificadores", label: "Modificadores", icon: Layers, requiredPermissions: [permissions.viewModifiers] },
   { href: "/fornecedores", label: "Fornecedores", icon: Truck, requiredPermissions: [permissions.viewSupplier] },
+  { href: "/clientes", label: "Clientes", icon: ContactRound, requiredPermissions: [permissions.viewCustomer] },
   { href: "/formas-de-pagamento", label: "Formas de pagamento", icon: CreditCard, requiredPermissions: [permissions.viewPaymentMethod] },
   { href: "/promocoes", label: "Promoções", icon: BadgePercent, requiredPermissions: [permissions.viewPromotion, permissions.changePromotion] },
 ];
@@ -79,7 +83,7 @@ const suprimentosNavigation: NavItem[] = [
 const gestaoNavigation: NavItem[] = [
   { href: "/usuarios", label: "Usuários", icon: Users, requiredPermissions: [permissions.viewUser] },
   { href: "/perfis", label: "Perfis de acesso", icon: ShieldCheck, requiredPermissions: [permissions.viewAccessProfile] },
-  { href: "/filiais", label: "Filiais", icon: GitBranch, requiredPermissions: [permissions.viewBranch, permissions.addBranch, permissions.changeBranch] },
+  { href: "/filiais", label: "Meu negócio", icon: GitBranch, requiredPermissions: [permissions.viewBranch, permissions.addBranch, permissions.changeBranch] },
 ];
 
 const relatoriosNavigation: NavItem[] = [
@@ -90,6 +94,7 @@ type NavSection = { title: string; items: NavItem[] };
 
 const navSections: NavSection[] = [
   { title: "Operação", items: operationNavigation },
+  { title: "Produção", items: productionNavigation },
   { title: "Cadastros", items: cadastrosNavigation },
   { title: "Suprimentos", items: suprimentosNavigation },
   { title: "Gestão", items: gestaoNavigation },
@@ -98,6 +103,7 @@ const navSections: NavSection[] = [
 
 const adminNavigation: NavItem[] = [
   ...operationNavigation,
+  ...productionNavigation,
   ...cadastrosNavigation,
   ...suprimentosNavigation,
   ...gestaoNavigation,
@@ -157,7 +163,7 @@ function Sidebar({
       <div
         className={`flex h-18 items-center gap-3 border-b border-white/8 ${collapsed ? "justify-center px-2" : "px-6"}`}
       >
-        <BrandWordmark href="/dashboard" compact={collapsed} dark className="text-operational-fg" />
+        <BrandWordmark href="/dashboard" compact={collapsed} dark className="text-operational-fg" imageClassName={collapsed ? "h-9 max-w-10" : "h-14 !w-72 max-w-full"} />
       </div>
       <nav
         className="flex-1 overflow-y-auto px-3 py-6"
@@ -489,9 +495,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             className="flex items-center gap-2.5 rounded-md p-1.5 text-left transition hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-focus/20"
             aria-expanded={profileOpen}
           >
-            <span className="flex size-9 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
-              {initials(user?.first_name || "", user?.last_name || "")}
-            </span>
+            <UserAvatar user={user} />
             <span className="hidden max-w-40 sm:block">
               <strong className="block truncate text-xs text-fg">
                 {user?.first_name || "Usuário"} {user?.last_name || ""}

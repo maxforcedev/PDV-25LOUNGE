@@ -40,6 +40,7 @@ CAPABILITY_CATALOG = (
     ('feature.counter', 'Balcao', Capability.ValueType.BOOLEAN),
     ('feature.consumption', 'Consumacao interna', Capability.ValueType.BOOLEAN),
     ('feature.cash_register', 'Caixa', Capability.ValueType.BOOLEAN),
+    ('feature.production', 'Producao e impressao', Capability.ValueType.BOOLEAN),
 )
 FEATURE_CAPABILITY_CODES = frozenset(
     code for code, _, _ in CAPABILITY_CATALOG if code.startswith('feature.')

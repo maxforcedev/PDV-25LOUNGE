@@ -15,6 +15,19 @@ import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import type { Product, StockMovement } from "@/types";
 
+function originHref(movement: StockMovement) {
+  const origin = movement.origin;
+  if (!origin) return null;
+  const paths: Record<string, string> = {
+    sale: "/vendas", consumption: "/consumacoes", purchase: "/compras",
+    transfer: "/estoque/transferencias", inventory_count: "/estoque/inventarios",
+    command: "/comandas", loss: "/estoque/perdas",
+  };
+  return paths[origin.kind]
+    ? origin.kind === "loss" ? paths[origin.kind] : `${paths[origin.kind]}/${origin.id}`
+    : null;
+}
+
 function MovementDetail() {
   const id = String(useParams<{ id: string }>().id);
   const [movement, setMovement] = useState<StockMovement | null>(null);
@@ -38,6 +51,7 @@ function MovementDetail() {
   const previousDisplay = movement ? physicalQuantityDisplay({ quantity: movement.previous_quantity, unit: movement.unit, content: movement.previous_content, packageContent, contentUnit, completePackages: movement.previous_complete_packages, residualContent: movement.previous_residual_content }) : "-";
   const movementDisplay = movement ? physicalQuantityDisplay({ quantity: movement.movement_quantity, unit: movement.unit, content: movement.content_quantity, packageContent, contentUnit, completePackages: movement.movement_complete_packages, residualContent: movement.movement_residual_content }) : "-";
   const finalDisplay = movement ? physicalQuantityDisplay({ quantity: movement.final_quantity, unit: movement.unit, content: movement.final_content, packageContent, contentUnit, completePackages: movement.final_complete_packages, residualContent: movement.final_residual_content }) : "-";
+  const originTarget = movement ? originHref(movement) : null;
 
   return <>
     <PageHeader title={`Movimento #${id}`} description="Registro físico exato associado ao evento de estoque." action={<Link href="/estoque/movimentacoes" className="btn btn-secondary"><ArrowLeft className="size-4" />Movimentações</Link>} />
@@ -59,6 +73,7 @@ function MovementDetail() {
             ["Operação", movement.operation_label || "-"],
           ].map(([label, value]) => <div key={label} className="bg-surface p-5"><dt className="text-[11px] font-semibold text-muted">{label}</dt><dd className="mt-1 break-all text-sm font-bold">{value}</dd></div>)}
         </dl>
+        {originTarget && movement.origin && <div className="border-t border-subtle p-5"><strong className="text-xs">Origem</strong><Link className="mt-1 block text-sm font-bold text-primary" href={originTarget}>{movement.origin.label}</Link></div>}
         {movement.reason && <div className="border-t border-subtle p-5"><strong className="text-xs">Motivo</strong><p className="mt-2 text-sm text-muted">{movement.reason}</p></div>}
       </section> : !error && <Alert message="Movimentação não encontrada." />}
     </div>

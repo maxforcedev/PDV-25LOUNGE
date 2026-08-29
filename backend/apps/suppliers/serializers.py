@@ -4,7 +4,7 @@ from rest_framework import serializers
 
 from apps.companies.models import Status
 
-from .models import PresentationPreset, PresentationType, ProductSupplier, ProductSupplierUnit, Supplier
+from .models import PresentationPreset, PresentationType, ProductPurchasePresentation, ProductSupplier, ProductSupplierUnit, Supplier
 from .services import (
     _save_presentation_preset, _save_product_supplier, _save_product_supplier_unit,
     _save_supplier,
@@ -161,6 +161,9 @@ class ProductSupplierUnitSerializer(ImmutableTenantSerializer):
     presentation_preset = serializers.PrimaryKeyRelatedField(
         queryset=PresentationPreset.objects.all(), required=False, allow_null=True
     )
+    purchase_presentation = serializers.PrimaryKeyRelatedField(
+        queryset=ProductPurchasePresentation.objects.all(), required=False, allow_null=True
+    )
     presentation_type = serializers.ChoiceField(
         choices=PresentationType.choices, required=False, write_only=True
     )
@@ -172,7 +175,7 @@ class ProductSupplierUnitSerializer(ImmutableTenantSerializer):
         model = ProductSupplierUnit
         fields = (
             'id', 'company', 'company_name', 'product_supplier', 'product_name',
-            'supplier_name', 'unit_code', 'description', 'conversion_factor', 'barcode',
+            'supplier_name', 'purchase_presentation', 'unit_code', 'description', 'conversion_factor', 'barcode',
             'is_default', 'status', 'presentation_preset', 'presentation_type', 'custom_code',
             'custom_name', 'save_as_preset', 'created_at', 'updated_at',
         )

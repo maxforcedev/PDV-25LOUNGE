@@ -47,6 +47,27 @@ export interface User {
   last_name: string;
   is_active: boolean;
   is_superuser: boolean;
+  profile_photo_url: string | null;
+  birth_date: string | null;
+  cpf: string;
+  zip_code: string;
+  street: string;
+  address_number: string;
+  address_complement: string;
+  neighborhood: string;
+  city: string;
+  state: string;
+  last_login: string | null;
+  archived_at: string | null;
+  membership?: {
+    id: number;
+    company_id: number;
+    is_active: boolean;
+    is_owner: boolean;
+    saas_status: string;
+    access_profile_id: number | null;
+    branch_accesses: Array<{ branch_id: number; access_profile_id: number }>;
+  } | null;
   companies: UserCompany[];
   branches: UserBranch[];
   permission_scopes: Record<string, "COMPANY" | "BRANCH">;
@@ -280,6 +301,8 @@ export interface BranchSettings {
   uses_cash_register: boolean;
   charges_service_fee: boolean;
   default_table_quantity: number;
+  table_range_start: number;
+  table_range_end: number;
   default_table_seats: number;
   default_table_prefix: string;
   consumption_limit_enabled: boolean;
@@ -320,6 +343,15 @@ export interface BranchPayload {
 export interface UserProfilePayload {
   first_name: string;
   last_name: string;
+  birth_date: string;
+  cpf: string;
+  zip_code: string;
+  street: string;
+  address_number: string;
+  address_complement: string;
+  neighborhood: string;
+  city: string;
+  state: string;
 }
 
 export interface UserPayload {
@@ -329,6 +361,15 @@ export interface UserPayload {
   user_type: UserType;
   first_name: string;
   last_name: string;
+  birth_date: string | null;
+  cpf: string;
+  zip_code: string;
+  street: string;
+  address_number: string;
+  address_complement: string;
+  neighborhood: string;
+  city: string;
+  state: string;
   company_accesses: Array<{
     company_id: number;
     access_profile_id: number | null;
@@ -446,7 +487,9 @@ export interface ProductBranchConfig {
 export interface ProductBranchStock {
   applicable: boolean;
   semantic: "actual" | "components" | "not_applicable";
+  stock_id?: number | null;
   current_quantity?: string;
+  minimum_quantity?: string;
   unit?: string;
   unit_cost?: string;
   current_content?: string;
@@ -461,6 +504,58 @@ export interface ProductionDestination {
   name: string;
   code: string;
   status: Status;
+  created_at: string;
+  updated_at: string;
+}
+
+export type PrintJobStatus = "pending" | "processing" | "printed" | "failed" | "cancelled";
+
+export interface PrinterDevice {
+  id: number;
+  branch: number;
+  name: string;
+  device_type: "manual" | "development";
+  connection_type: "network" | "usb" | "bluetooth";
+  status: Status;
+  destination_ids: number[];
+  technical_configuration: Record<string, unknown>;
+  connection_summary: string;
+  operational_status:
+    | "not_tested"
+    | "online"
+    | "offline"
+    | "bridge_unavailable"
+    | "failed";
+  last_seen_at: string | null;
+  last_test_at: string | null;
+  last_operational_error: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PrintJob {
+  id: number;
+  company: number;
+  branch: number;
+  production_job: number | null;
+  is_test: boolean;
+  production_event: "new" | "cancel";
+  destination: number;
+  printer_device: number;
+  printer_name: string;
+  connection_type: "network" | "usb" | "bluetooth";
+  payload_snapshot: Record<string, unknown>;
+  status: PrintJobStatus;
+  attempts: number;
+  last_error: string;
+  error_summary: string;
+  origin_type: "test" | "command" | "sale" | "system";
+  origin_label: string;
+  idempotency_key: string;
+  processing_at: string | null;
+  printed_at: string | null;
+  reprint_of: number | null;
+  reprint_number: number;
   created_at: string;
   updated_at: string;
 }
@@ -598,6 +693,8 @@ export interface Product {
   participates_in_commission: boolean;
   inventory_behavior: InventoryBehavior;
   status: Status;
+  archived_at: string | null;
+  archived_by: number | null;
   image: string | null;
   components: ProductComponent[];
   fraction_components: ProductFractionComponent[];
@@ -693,6 +790,9 @@ export interface PurchaseOrderItem {
   presentation_unit_code: string;
   presentation_description: string;
   conversion_factor: string;
+  ordered_stock_quantity: string;
+  received_stock_quantity: string;
+  pending_stock_quantity: string;
   purchase_unit_price?: string;
   gross_subtotal?: string;
   allocated_discount?: string;
@@ -715,6 +815,14 @@ export interface PurchaseReceiptItem {
   divergence_reason: string;
   conversion_factor_snapshot: string;
   stock_quantity: string;
+  ordered_stock_quantity: string;
+  previously_received_stock_quantity: string;
+  accumulated_stock_quantity: string;
+  pending_stock_quantity: string;
+  divergence_stock_quantity: string;
+  ordered_total?: string;
+  received_total?: string;
+  difference_total?: string;
   effective_stock_unit_cost_snapshot?: string;
   product_name_snapshot: string;
   supplier_name_snapshot: string;
@@ -781,7 +889,14 @@ export interface PurchaseOrder {
   document_series: string;
   document_date: string | null;
   attachment: { name: string; download_url: string } | null;
+  attachments: Array<{
+    id: number;
+    name: string;
+    download_url: string;
+    status: "active" | "inactive";
+  }>;
   notes: string;
+  exclusive_supplier_override: boolean;
   created_by: number;
   placed_by: number | null;
   placed_at: string | null;
@@ -812,6 +927,7 @@ export interface StockMovement {
   sale: number | null;
   sale_number: string | null;
   sale_operation_type: SaleOperation | null;
+  origin?: { kind: string; id: string; label: string } | null;
   nature: string;
   operation_reference: string;
   operation_label: string;
@@ -1013,7 +1129,7 @@ export interface InventoryWorkflowOptions {
   stocks: InventoryWorkflowStockOption[];
 }
 
-export type CashSessionStatus = "open" | "closed";
+export type CashSessionStatus = "open" | "closed" | "cancelled";
 export type CashMovementType = "manual_entry" | "withdrawal";
 
 export interface OpenSession {
@@ -1054,6 +1170,8 @@ export interface CashSession {
   closed_by: number | null;
   closed_by_name: string | null;
   closed_at: string | null;
+  cancelled_at?: string | null;
+  cancellation_reason?: string;
   closing_expected_amount: string | null;
   closing_amount_informed: string | null;
   closing_difference: string | null;
@@ -1209,8 +1327,10 @@ export interface ModifierOption {
   id: number;
   modifier_group: number;
   name: string;
-  option_type: "add" | "remove" | "observation";
+  option_type: "add" | "remove" | "observation" | "text" | "product_input" | "component_substitution";
   additional_price: string;
+  stock_product: number | null;
+  stock_product_name: string;
   sort_order: number;
   status: string;
 }
@@ -1223,6 +1343,9 @@ export interface ModifierGroup {
   min_selections: number;
   max_selections: number | null;
   allow_option_quantity: boolean;
+  required_quantity?: string | null;
+  substitution_component: number | null;
+  inherit_component_quantity: boolean;
   sort_order: number;
   status: string;
   options?: ModifierOption[];
@@ -1320,6 +1443,8 @@ export interface Sale {
   discount_approved_by_name: string | null;
   beneficiary_user: number | null;
   beneficiary_user_name: string | null;
+  customer: number | null;
+  customer_name: string | null;
   subtotal: string;
   promotion_discount_total: string;
   item_discount_total: string;
@@ -1919,6 +2044,9 @@ export interface Table {
     identifier: string;
     open_items_count: number;
     confirmed_total: string;
+    paid_total: string;
+    opened_at: string;
+    opened_by_name: string;
   }>;
   created_at: string;
   updated_at: string;
@@ -1930,6 +2058,7 @@ export interface Command {
   branch: number;
   table: number | null;
   table_name?: string;
+  customer: number | null;
   command_number: string;
   identifier: string;
   status: "open" | "closed";
@@ -1941,6 +2070,46 @@ export interface Command {
   confirmed_total?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface Customer {
+  id: number;
+  company: number;
+  name: string;
+  phone: string;
+  document: string | null;
+  email: string;
+  birth_date: string | null;
+  notes: string;
+  status: Status;
+  duplicate_warning: { customer_id: number; name: string; message: string } | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CommandPaymentSummary {
+  command_id: number;
+  command_total: string;
+  paid_total: string;
+  remaining_total: string;
+}
+
+export interface CommandPayment {
+  id: number;
+  command: number;
+  payment_method: number;
+  payment_method_name: string;
+  payment_method_code: string;
+  amount: string;
+  received_amount: string | null;
+  change_amount: string | null;
+  cash_session: number | null;
+  operator: number;
+  status: "applied" | "reversed";
+  idempotency_key: string;
+  reversal_of: number | null;
+  reversal_reason: string;
+  created_at: string;
 }
 
 export interface OrderItem {

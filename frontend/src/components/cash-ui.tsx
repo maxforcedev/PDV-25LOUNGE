@@ -1,8 +1,10 @@
 import { formatBRL } from "@/lib/format";
 import { signedMoneyToCents } from "@/lib/cash";
 
-export function CashStatus({ status }: { status: "open" | "closed" }) {
-  return <span className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold ${status === "open" ? "bg-success/10 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{status === "open" ? "Aberta" : "Fechada"}</span>;
+export function CashStatus({ status }: { status: "open" | "closed" | "cancelled" }) {
+  const label = status === "open" ? "Aberta" : status === "cancelled" ? "Anulada" : "Fechada";
+  const tone = status === "open" ? "bg-success/10 text-emerald-700" : status === "cancelled" ? "bg-danger/10 text-danger" : "bg-slate-100 text-slate-500";
+  return <span className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold ${tone}`}>{label}</span>;
 }
 
 export function DifferenceBadge({ value }: { value: string }) {

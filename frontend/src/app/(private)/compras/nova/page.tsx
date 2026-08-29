@@ -9,6 +9,7 @@ import { PageHeader } from "@/components/page-header";
 import {
   Alert,
   Button,
+  ConfirmDialog,
   Field,
   Input,
   MoneyInput,
@@ -22,6 +23,9 @@ import {
   centsText,
   lineTotalCents,
   moneyCents,
+  purchaseBaseUnitPrice,
+  purchasePresentationLabel,
+  purchasePresentationPrice,
   purchaseTypeLabels,
   validatePurchaseAttachmentFile,
 } from "@/lib/purchases";
@@ -35,9 +39,21 @@ import type {
   Supplier,
 } from "@/types";
 
-type Line = { product: string; unit: string; quantity: string; price: string };
+type Line = {
+  product: string;
+  unit: string;
+  quantity: string;
+  price: string;
+  basePrice: string;
+};
 type Installment = { amount: string; due_date: string; notes: string };
-const emptyLine = (): Line => ({ product: "", unit: "", quantity: "1", price: "" });
+const emptyLine = (): Line => ({
+  product: "",
+  unit: "",
+  quantity: "1",
+  price: "",
+  basePrice: "",
+});
 
 function NewPurchase() {
   const router = useRouter();
@@ -71,6 +87,7 @@ function NewPurchase() {
   const [loadingOptions, setLoadingOptions] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [exclusiveWarning, setExclusiveWarning] = useState("");
   const context = useRef("");
   context.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}`;
 
@@ -210,8 +227,8 @@ function NewPurchase() {
     setAttachmentFile(file);
   }
 
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
+  async function submit(event?: React.FormEvent, exclusiveSupplierOverride = false) {
+    event?.preventDefault();
     if (!currentBranch || readOnly) return;
     const selectedProducts = lines.map((line) => Number(line.product));
     if (selectedProducts.some((item) => !item) || new Set(selectedProducts).size !== selectedProducts.length) {
@@ -252,6 +269,7 @@ function NewPurchase() {
         document_series: documentSeries.trim(),
         document_date: documentDate || null,
         notes: notes.trim(),
+        exclusive_supplier_override: exclusiveSupplierOverride,
         ...(installments.length
           ? {
               installments: installments.map((item) => ({
@@ -280,11 +298,15 @@ function NewPurchase() {
       if (attachmentFailed) query.set("attachment", "failed");
       router.push(`/compras/${order.id}${query.size ? `?${query}` : ""}`);
     } catch (caught) {
-      setError(
-        caught instanceof ApiError
-          ? Object.values(caught.fields).flat().join(" ") || caught.message
-          : "Não foi possível criar a compra.",
-      );
+      if (caught instanceof ApiError && caught.fields.exclusive_supplier_warning?.[0]) {
+        setExclusiveWarning(caught.fields.exclusive_supplier_warning[0]);
+      } else {
+        setError(
+          caught instanceof ApiError
+            ? Object.values(caught.fields).flat().join(" ") || caught.message
+            : "Não foi possível criar a compra.",
+        );
+      }
       setSaving(false);
     }
   }
@@ -370,14 +392,18 @@ function NewPurchase() {
               return (
                 <div
                   key={index}
-                  className="grid gap-3 rounded-lg border border-subtle p-3 md:grid-cols-[minmax(14rem,1fr)_minmax(14rem,1fr)_8rem_10rem_auto] md:items-end"
+                  className="grid gap-3 rounded-lg border border-subtle p-3 md:grid-cols-[minmax(14rem,1fr)_minmax(14rem,1fr)_8rem_10rem_10rem_auto] md:items-end"
                 >
                   <Field label={`Produto ${index + 1}`}>
                     <Select
                       required
                       value={line.product}
                       onChange={(event) =>
-                        updateLine(index, { product: event.target.value, unit: "" })
+                        updateLine(index, {
+                          product: event.target.value,
+                          unit: "",
+                          basePrice: line.price,
+                        })
                       }
                       disabled={!supplier || loadingOptions || saving}
                     >
@@ -398,9 +424,25 @@ function NewPurchase() {
                     </Select>
                   </Field>
                   <Field label="Unidade de compra / Apresentação">
-                    <Select value={line.unit} onChange={(event) => updateLine(index, { unit: event.target.value })} disabled={!line.product || saving}>
-                      <option value="">Unidade de estoque (fator 1)</option>
-                      {units.filter((unit) => relationById.get(unit.product_supplier)?.product === Number(line.product)).map((unit) => <option key={unit.id} value={unit.id}>{unit.unit_code} · {unit.description} (fator {unit.conversion_factor})</option>)}
+                    <Select
+                      value={line.unit}
+                      onChange={(event) => {
+                        const next = units.find(
+                          (unit) => unit.id === Number(event.target.value),
+                        );
+                        const factor = next?.conversion_factor || "1";
+                        const basePrice =
+                          line.basePrice || purchaseBaseUnitPrice(line.price, factor);
+                        updateLine(index, {
+                          unit: event.target.value,
+                          basePrice,
+                          price: purchasePresentationPrice(basePrice, factor),
+                        });
+                      }}
+                      disabled={!line.product || saving}
+                    >
+                      <option value="">Unidade de estoque</option>
+                      {units.filter((unit) => relationById.get(unit.product_supplier)?.product === Number(line.product)).map((unit) => <option key={unit.id} value={unit.id}>{purchasePresentationLabel(unit.unit_code, unit.description)}</option>)}
                     </Select>
                   </Field>
                   <Field label="Quantidade">
@@ -417,7 +459,7 @@ function NewPurchase() {
                       disabled={saving}
                     />
                   </Field>
-                  <Field label="Preço de compra">
+                  <Field label="Preço por apresentação">
                     <Input
                       required
                       inputMode="decimal"
@@ -426,8 +468,31 @@ function NewPurchase() {
                       onChange={(event) =>
                         updateLine(index, {
                           price: event.target.value.replace(",", "."),
+                          basePrice: purchaseBaseUnitPrice(
+                            event.target.value.replace(",", "."),
+                            selected?.conversion_factor || "1",
+                          ),
                         })
                       }
+                      disabled={saving}
+                    />
+                  </Field>
+                  <Field label="Preço unitário">
+                    <Input
+                      required
+                      inputMode="decimal"
+                      pattern="\d+([.,]\d{1,6})?"
+                      value={line.basePrice}
+                      onChange={(event) => {
+                        const basePrice = event.target.value.replace(",", ".");
+                        updateLine(index, {
+                          basePrice,
+                          price: purchasePresentationPrice(
+                            basePrice,
+                            selected?.conversion_factor || "1",
+                          ),
+                        });
+                      }}
                       disabled={saving}
                     />
                   </Field>
@@ -454,8 +519,7 @@ function NewPurchase() {
                   </button>
                   {selected && (
                     <p className="text-[10px] text-muted md:col-span-5">
-                      Conversão: {selected.conversion_factor} unidades de
-                      estoque por {selected.unit_code}.
+                      {purchasePresentationLabel(selected.unit_code, selected.description)}.
                     </p>
                   )}
                 </div>
@@ -682,6 +746,18 @@ function NewPurchase() {
           </Button>
         </div>
       </form>
+      <ConfirmDialog
+        open={!!exclusiveWarning}
+        title="Fornecedor exclusivo"
+        message={`${exclusiveWarning} Deseja continuar mesmo assim?`}
+        confirmLabel="Continuar mesmo assim"
+        loading={saving}
+        onClose={() => setExclusiveWarning("")}
+        onConfirm={() => {
+          setExclusiveWarning("");
+          void submit(undefined, true);
+        }}
+      />
     </>
   );
 }

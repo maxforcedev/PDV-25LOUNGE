@@ -20,6 +20,7 @@ import {
 import { AdminGuard } from "@/components/admin-guard";
 import { PageHeader } from "@/components/page-header";
 import { InventoryNav } from "@/components/inventory-nav";
+import { ProductAutocomplete } from "@/components/product-autocomplete";
 import { StockOperationDetails } from "@/components/stock-operation-details";
 import {
   Alert,
@@ -35,10 +36,10 @@ import {
 } from "@/components/ui";
 import { fieldError, formatBRL, formatDecimalBRL, formatQuantity } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
-import { contentUnitLabel, enrichFractionStockOptions, isExactContentValid, isUnitQuantityValid, lossReasonLabels, packageContentDisplay, quantityInputMode } from "@/lib/inventory";
+import { contentUnitLabel, isExactContentValid, isUnitQuantityValid, lossReasonLabels, packageContentDisplay, quantityInputMode } from "@/lib/inventory";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
-import type { Category, FractionableProductConfig, InventoryWorkflowOptions, LossReason, LossRecord, Paginated, Product, Stock, StockMovement } from "@/types";
+import type { Category, FractionableProductConfig, LossReason, LossRecord, Paginated, Product, Stock, StockMovement } from "@/types";
 
 type Action = "entry" | "exit" | "adjustment" | "minimum";
 type Summary = {
@@ -55,6 +56,7 @@ type StockFilters = {
   status: string;
   behavior: string;
 };
+type StockOrdering = "product" | "category" | "balance" | "average_unit_cost" | "last_unit_cost" | "total_cost";
 type OperationSuccess = {
   label: string;
   description?: string;
@@ -100,10 +102,8 @@ function Inventory() {
   const [data, setData] = useState<Paginated<Stock> | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
   const [fractionConfigs, setFractionConfigs] = useState<Record<number, FractionableProductConfig>>({});
   const [loading, setLoading] = useState(true);
-  const [productsLoading, setProductsLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState<OperationSuccess | null>(null);
   const [search, setSearch] = useState("");
@@ -111,19 +111,19 @@ function Inventory() {
   const [category, setCategory] = useState("");
   const [status, setStatus] = useState("");
   const [behavior, setBehavior] = useState("");
+  const [ordering, setOrdering] = useState<string>("product");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [draft, setDraft] = useState<StockFilters>(emptyFilters);
   const [chooser, setChooser] = useState(false);
   const [action, setAction] = useState<Action | null>(null);
   const [selected, setSelected] = useState<Stock | null>(null);
-  const [productId, setProductId] = useState("");
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [quantity, setQuantity] = useState("");
   const [nature, setNature] = useState("normal");
   const [reason, setReason] = useState("");
   const [lossReason, setLossReason] = useState<LossReason>("BREAKAGE");
   const [lossQuantityMode, setLossQuantityMode] = useState<"packages" | "content">("packages");
   const [lossAttachment, setLossAttachment] = useState<File | null>(null);
-  const [lossOptions, setLossOptions] = useState<InventoryWorkflowOptions | null>(null);
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
   const movementIdempotencyKey = useRef<string | null>(null);
@@ -132,14 +132,14 @@ function Inventory() {
   const contextRef = useRef("");
   contextRef.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}`;
   const isLoss = action === "exit" && nature === "loss";
-  const selectedLossOption = lossOptions?.stocks.find((item) => String(item.product) === productId);
   const lossFractionConfig = selected
     ? fractionConfigs[selected.product]
-    : selectedLossOption?.fraction_config;
-  const activeUnit = selected?.unit || (isLoss ? selectedLossOption?.unit : products.find((product) => String(product.id) === productId)?.unit);
+    : selectedProduct?.fraction_config || null;
+  const activeUnit = selected?.unit || selectedProduct?.unit;
   function params(
     filters: StockFilters = { state, category, status, behavior },
     searchValue = search,
+    orderingValue = ordering,
   ) {
     const value = new URLSearchParams({
       company: String(currentCompany?.id || ""),
@@ -150,6 +150,7 @@ function Inventory() {
     if (filters.category) value.set("category", filters.category);
     if (filters.status) value.set("status", filters.status);
     if (filters.behavior) value.set("inventory_behavior", filters.behavior);
+    if (orderingValue) value.set("ordering", orderingValue);
     return value;
   }
   function stockRequest(
@@ -222,9 +223,9 @@ function Inventory() {
     setCategory("");
     setStatus("");
     setBehavior("");
+    setOrdering("product");
     setData(null);
     setFractionConfigs({});
-    setLossOptions(null);
     setSummary(null);
     setAction(null);
     setSuccess(null);
@@ -235,7 +236,7 @@ function Inventory() {
       return;
     }
     setDraft(initialFilters);
-    void load(undefined, params(initialFilters, ""), context);
+    void load(undefined, params(initialFilters, "", "product"), context);
     let active = true;
     http
       .getAll<Category>(
@@ -253,8 +254,8 @@ function Inventory() {
   function resetAction(next: Action, stock: Stock | null) {
     setChooser(false);
     setSelected(stock);
+    setSelectedProduct(null);
     setAction(next);
-    setProductId(stock ? String(stock.product) : "");
     setQuantity(
       next === "minimum" && stock
         ? stock.minimum_quantity
@@ -272,49 +273,16 @@ function Inventory() {
     setSuccess(null);
     movementIdempotencyKey.current = null;
   }
-  async function choose(next: Exclude<Action, "minimum">) {
+  function choose(next: Exclude<Action, "minimum">) {
     resetAction(next, null);
-    setProducts([]);
-    if (!canViewProducts || !currentCompany || !currentBranch) return;
-    const context = contextRef.current;
-    setProductsLoading(true);
-    try {
-      const items = await http.getAll<Product>(
-        `products/?company=${currentCompany.id}&branch=${currentBranch.id}&inventory_behavior=direct&status=active`,
-      );
-      if (contextRef.current === context && items.length) {
-        setProducts(items);
-        setProductId(String(items[0].id));
-      }
-    } catch (caught) {
-      if (contextRef.current === context)
-        setError(
-          caught instanceof ApiError
-            ? caught.message
-            : "Não foi possível carregar os produtos.",
-        );
-    } finally {
-      if (contextRef.current === context) setProductsLoading(false);
-    }
   }
-  async function selectNature(next: string) {
+  function selectNature(next: string) {
     setNature(next);
     movementIdempotencyKey.current = null;
-    if (next !== "loss" || lossOptions || !currentBranch) return;
-    try {
-      const options = await http.get<InventoryWorkflowOptions>("loss-records/options/");
-      const stocks = await enrichFractionStockOptions(options.stocks);
-      setLossOptions({ ...options, stocks });
-      if (!selected && !stocks.some((item) => String(item.product) === productId)) {
-        setProductId(stocks[0] ? String(stocks[0].product) : "");
-      }
-    } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar as opções de perda.");
-    }
   }
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!action || !currentBranch) return;
+    if (!action || !currentBranch || (!selected && !selectedProduct)) return;
     const validQuantity = isLoss && lossQuantityMode === "content"
       ? isExactContentValid(quantity)
       : isUnitQuantityValid(quantity, activeUnit, action === "adjustment" || action === "minimum");
@@ -345,7 +313,7 @@ function Inventory() {
         const payload = {
           idempotency_key: movementIdempotencyKey.current,
           branch: currentBranch.id,
-          product: selected?.product || Number(productId),
+          product: selected?.product || selectedProduct?.id,
           ...(lossQuantityMode === "content" ? { content_quantity: quantity.replace(",", ".") } : { quantity: quantity.replace(",", ".") }),
           reason: lossReason,
           observation: reason,
@@ -362,7 +330,7 @@ function Inventory() {
           `stock-movements/${action}/?branch=${currentBranch.id}`,
           {
             idempotency_key: movementIdempotencyKey.current,
-            product: selected?.product || Number(productId),
+            product: selected?.product || selectedProduct?.id,
             branch: currentBranch.id,
             ...(action === "adjustment"
               ? { final_quantity: quantity }
@@ -426,6 +394,16 @@ function Inventory() {
     setBehavior("");
     setFiltersOpen(false);
     void load(undefined, appliedParams);
+  }
+  function sortBy(field: StockOrdering) {
+    const nextOrdering = ordering === field ? `-${field}` : ordering === `-${field}` ? field : field;
+    setOrdering(nextOrdering);
+    void load(undefined, params(undefined, undefined, nextOrdering));
+  }
+  function sortLabel(field: StockOrdering) {
+    if (ordering === field) return "↑";
+    if (ordering === `-${field}`) return "↓";
+    return "↕";
   }
   return (
     <>
@@ -686,14 +664,14 @@ function Inventory() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>Produto</th>
-                      <th>Categoria</th>
-                      <th>Saldo / Mínimo</th>
+                      <th><button type="button" className="inline-flex items-center gap-1 font-semibold hover:text-primary" onClick={() => sortBy("product")}>Produto <span aria-hidden>{sortLabel("product")}</span></button></th>
+                      <th><button type="button" className="inline-flex items-center gap-1 font-semibold hover:text-primary" onClick={() => sortBy("category")}>Categoria <span aria-hidden>{sortLabel("category")}</span></button></th>
+                      <th><button type="button" className="inline-flex items-center gap-1 font-semibold hover:text-primary" onClick={() => sortBy("balance")}>Saldo / Mínimo <span aria-hidden>{sortLabel("balance")}</span></button></th>
                       {canViewCosts && (
                         <>
-                          <th>Custo médio da filial</th>
-                          <th>Último custo da filial</th>
-                          <th>Custo total</th>
+                          <th><button type="button" className="inline-flex items-center gap-1 font-semibold hover:text-primary" onClick={() => sortBy("average_unit_cost")}>Custo médio da filial <span aria-hidden>{sortLabel("average_unit_cost")}</span></button></th>
+                          <th><button type="button" className="inline-flex items-center gap-1 font-semibold hover:text-primary" onClick={() => sortBy("last_unit_cost")}>Último custo da filial <span aria-hidden>{sortLabel("last_unit_cost")}</span></button></th>
+                          <th><button type="button" className="inline-flex items-center gap-1 font-semibold hover:text-primary" onClick={() => sortBy("total_cost")}>Custo total <span aria-hidden>{sortLabel("total_cost")}</span></button></th>
                         </>
                       )}
                       <th>Estado</th>
@@ -797,19 +775,15 @@ function Inventory() {
         description="Escolha o tipo de movimentação de estoque."
         onClose={() => setChooser(false)}
       >
-        <div className="grid gap-3 p-5 sm:grid-cols-3">
-          {canEntry && <Link
-            className="rounded-lg border border-slate-200 p-5 text-left hover:border-success hover:bg-success/5"
-            href="/estoque/entrada-em-grupo"
-            onClick={() => setChooser(false)}
-          >
+        <div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-3">
+          {canEntry && <Link className="rounded-lg border border-slate-200 p-5 text-left hover:border-success hover:bg-success/5" href="/estoque/entrada-em-grupo" onClick={() => setChooser(false)}>
             <ArrowDown className="mb-3 size-5 text-success" />
             <strong className="block text-sm">Entrada</strong>
-            <span className="text-[10px] text-slate-500">Adicionar produtos ao estoque</span>
+            <span className="text-[10px] text-slate-500">Adicionar vários produtos em uma operação</span>
           </Link>}
-          {canExit && <button
+            {canExit && <button
             className="rounded-lg border border-slate-200 p-5 text-left hover:border-danger hover:bg-danger/5"
-            onClick={() => void choose("exit")}
+             onClick={() => choose("exit")}
           >
             <ArrowUp className="mb-3 size-5 text-danger" />
             <strong className="block text-sm">Saída</strong>
@@ -817,7 +791,7 @@ function Inventory() {
           </button>}
           {canAdjust && <button
             className="rounded-lg border border-slate-200 p-5 text-left hover:border-primary hover:bg-primary/5"
-            onClick={() => void choose("adjustment")}
+             onClick={() => choose("adjustment")}
           >
             <Settings2 className="mb-3 size-5 text-primary" />
             <strong className="block text-sm">Ajuste</strong>
@@ -834,6 +808,7 @@ function Inventory() {
             : `Primeira operação em ${currentBranch?.name || "filial atual"}`
         }
         onClose={() => !saving && setAction(null)}
+        size="lg"
       >
         <form onSubmit={submit}>
           <div className="space-y-5 p-5">
@@ -841,21 +816,18 @@ function Inventory() {
             {!selected && action !== "minimum" && (
               <>
                 <Field label="Produto" error={fieldError(fields, "product")}>
-                  <Select
-                    required
-                    value={productId}
-                    onChange={(event) => { setProductId(event.target.value); movementIdempotencyKey.current = null; }}
-                    disabled={isLoss ? !lossOptions : productsLoading || !canViewProducts}
-                  >
-                    <option value="">
-                      {productsLoading ? "Carregando..." : "Selecione"}
-                    </option>
-                    {(isLoss ? lossOptions?.stocks || [] : products).map((product) => (
-                      <option key={"product_name" in product ? product.product : product.id} value={"product_name" in product ? product.product : product.id}>
-                        {"product_name" in product ? product.product_name : product.name} ({product.internal_code})
-                      </option>
-                    ))}
-                  </Select>
+                  <ProductAutocomplete
+                    companyId={currentCompany?.id}
+                    branchId={currentBranch?.id}
+                    value={selectedProduct}
+                    disabled={!canViewProducts}
+                    onError={setError}
+                    onChange={(product) => {
+                      setSelectedProduct(product);
+                      setQuantity("");
+                      movementIdempotencyKey.current = null;
+                    }}
+                  />
                 </Field>
                 <Field label="Filial">
                   <Input
@@ -899,7 +871,7 @@ function Inventory() {
              </Field>
             {action !== "minimum" && (
               <Field label="Natureza" error={fieldError(fields, "nature")}>
-                <Select value={nature} onChange={(event) => void selectNature(event.target.value)}>
+                <Select value={nature} onChange={(event) => selectNature(event.target.value)}>
                   {action === "entry" ? <><option value="normal">Entrada normal</option><option value="bonus">Bonificada</option><option value="return">Devolução</option><option value="opening_balance">Saldo inicial</option><option value="correction">Correção</option><option value="other">Outros</option></> : action === "exit" ? <><option value="damage">Saída / ajuste</option>{canLoss && <option value="loss">Perda</option>}<option value="internal_use">Uso interno</option><option value="correction">Correção</option><option value="other">Outros</option></> : <><option value="balance_correction">Correção de saldo</option><option value="correction">Correção</option><option value="other">Outros</option></>}
                 </Select>
                 {isLoss && <p className="mt-1 text-[10px] text-muted">A perda é registrada com baixa única, motivo e rastreabilidade auditada.</p>}
@@ -923,7 +895,7 @@ function Inventory() {
             )}
             {isLoss && <Field label="Foto" optional error={fieldError(fields, "attachment")}><Input type="file" accept="image/png,image/jpeg" onChange={(event) => { setLossAttachment(event.target.files?.[0] || null); movementIdempotencyKey.current = null; }} /><span className="mt-1 block text-[10px] text-muted">PNG ou JPG de até 10 MB. O arquivo fica privado e exige autorização para download.</span></Field>}
           </div>
-          <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4">
+          <div className="sticky bottom-0 z-10 flex justify-end gap-2 border-t border-subtle bg-surface px-5 py-4">
             <Button
               type="button"
               variant="secondary"
@@ -932,12 +904,12 @@ function Inventory() {
             >
               Cancelar
             </Button>
-            <Button
-              type="submit"
-              loading={saving}
-              disabled={
-                !selected && (isLoss ? !lossOptions || !productId : !canViewProducts || productsLoading || !productId)
-              }
+              <Button
+                type="submit"
+                loading={saving}
+                disabled={
+                 !selected && (!canViewProducts || !selectedProduct)
+                }
             >
               Confirmar
             </Button>

@@ -9,15 +9,21 @@ Covers mandatory test areas:
 """
 import uuid
 from decimal import Decimal
+from types import SimpleNamespace
 
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
+from apps.base.models import AuditLog
 from apps.cash.models import CashRegister, CashSession, CashSessionStatus
 from apps.cash.services import (
-    open_session, record_manual_entry, record_withdrawal, close_session,
+    calculate_expected_amount, close_session, open_session, record_manual_entry,
+    record_withdrawal,
 )
+from apps.commands.models import CommandStatus, Order, OrderItem, OrderItemStatus
+from apps.commands.services import open_command, record_command_payment, reverse_command_payment
 from apps.companies.models import (
     AccessProfile, BranchSettings, FunctionalPermission, Status,
     UserBranchAccess, UserCompanyAccess,
@@ -26,14 +32,21 @@ from apps.companies.services import (
     create_company_with_matrix, ensure_permission_catalog,
 )
 from apps.inventory.models import Stock, MovementType
+from apps.production.models import (
+    PrintJob, PrinterDevice, ProductionJob, Ticket, TicketStatus,
+)
+from apps.production.services import reprint_print_job
+from apps.production.views import PrinterDeviceViewSet
 from apps.products.models import (
-    Category, Product, SalesChannel, Unit, InventoryBehavior,
+    Category, Product, ProductProductionDestination, ProductionDestination,
+    SalesChannel, Unit, InventoryBehavior,
 )
 from apps.sales.models import OperationType, Sale, SaleStatus, Payment
 from apps.sales.services import (
     calculate_preview, finalize_sale, cancel_sale,
     ensure_default_payment_methods,
 )
+from apps.reports.selectors import filtered_cash_sessions
 
 PASSWORD = 'Block6-sales-password-123!'
 
@@ -212,6 +225,41 @@ class SalesFinalizeIdempotencyTests(SalesFixture, TestCase):
         with self.assertRaises(Exception):
             cancel_sale(sale=sale, branch=self.branch, user=self.owner, reason='Second')
 
+    def test_direct_ticket_is_issued_once_and_cancelled_with_sale(self):
+        self.product.emits_ticket = True
+        self.product.save(update_fields=('emits_ticket', 'updated_at'))
+        sale = self.finalize_sale_via_service()
+        ticket = Ticket.objects.get(source_sale_item__sale=sale)
+        self.assertEqual(ticket.status, TicketStatus.ISSUED)
+        self.assertEqual(ticket.identification_snapshot['product_name'], 'Burger')
+        cancel_sale(sale=sale, branch=self.branch, user=self.owner, reason='Test')
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, TicketStatus.CANCELLED)
+
+    def test_direct_sale_creates_production_and_reprints_are_numbered(self):
+        destination = ProductionDestination.objects.create(
+            branch=self.branch, name='Cozinha', code='kitchen',
+        )
+        ProductProductionDestination.objects.create(
+            product=self.product, destination=destination,
+        )
+        printer = PrinterDevice.objects.create(branch=self.branch, name='Cozinha 1')
+        printer.destinations.add(destination)
+        sale = self.finalize_sale_via_service()
+        production = ProductionJob.objects.get(sale_item__sale=sale, destination=destination)
+        job = PrintJob.objects.get(production_job=production, printer_device=printer)
+        first = reprint_print_job(job=job, user=self.owner)
+        second = reprint_print_job(job=job, user=self.owner)
+        self.assertEqual((first.reprint_number, second.reprint_number), (1, 2))
+
+    def test_printer_destroy_preserves_history_by_deactivating(self):
+        printer = PrinterDevice.objects.create(branch=self.branch, name='Histórico')
+        view = PrinterDeviceViewSet()
+        view.request = SimpleNamespace(user=self.owner)
+        view.perform_destroy(printer)
+        printer.refresh_from_db()
+        self.assertEqual(printer.status, Status.INACTIVE)
+
 
 class PaymentTests(SalesFixture, TestCase):
     def test_single_cash_payment(self):
@@ -304,6 +352,100 @@ class CashSessionTests(SalesFixture, TestCase):
         self.assertEqual(
             CashMovement.objects.filter(cash_session=session, operation_reference=str(key)).count(), 1
         )
+
+
+class CommandCashSessionTests(SalesFixture, TestCase):
+    def setUp(self):
+        super().setUp()
+        self.branch.settings.uses_commands = True
+        self.branch.settings.save()
+
+    def command_with_confirmed_item(self):
+        command = open_command(branch=self.branch, user=self.owner, identifier='partial')
+        order = Order.objects.create(command=command, created_by=self.owner, status='confirmed')
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=Decimal('1.000'),
+            product_name=self.product.name, internal_code=self.product.internal_code,
+            unit=self.product.unit, unit_price=Decimal('20.00'),
+            base_unit_price=Decimal('20.00'), unit_cost=Decimal('10.00'),
+            status=OrderItemStatus.CONFIRMED, confirmed_at=timezone.now(), confirmed_by=self.owner,
+        )
+        return command
+
+    def record_cash(self, command, session, key=None):
+        return record_command_payment(
+            command=command, user=self.owner, payment_method=self.cash_method.pk,
+            amount='10.00', received_amount='10.00', cash_session=session.pk,
+            idempotency_key=key or uuid.uuid4(),
+        )
+
+    def test_expected_includes_partial_command_cash(self):
+        session = self.open_session()
+        self.record_cash(self.command_with_confirmed_item(), session)
+        self.assertEqual(calculate_expected_amount(session), Decimal('110.00'))
+
+    def test_report_and_close_use_same_command_cash_expected(self):
+        session = self.open_session()
+        command = self.command_with_confirmed_item()
+        self.record_cash(command, session)
+        command.status = CommandStatus.CLOSED
+        command.closed_at = timezone.now()
+        command.closed_by = self.owner
+        command.save(update_fields=('status', 'closed_at', 'closed_by', 'updated_at'))
+        closed = close_session(session, Decimal('110.00'), self.owner, self.branch)
+        report_session = filtered_cash_sessions(
+            branch=self.branch, start=None, end=None, filters={},
+        ).get(pk=session.pk)
+        self.assertEqual(closed.closing_expected_amount, Decimal('110.00'))
+        self.assertEqual(report_session.expected, closed.closing_expected_amount)
+
+    def test_close_is_blocked_by_open_command_partial_cash_payment(self):
+        session = self.open_session()
+        self.record_cash(self.command_with_confirmed_item(), session)
+        with self.assertRaisesMessage(Exception, 'pagamento parcial de comanda aberta'):
+            close_session(session, Decimal('110.00'), self.owner, self.branch)
+        session.refresh_from_db()
+        self.assertEqual(session.status, CashSessionStatus.OPEN)
+        self.assertTrue(AuditLog.objects.filter(action='cash_session.close_blocked').exists())
+
+    def test_reverse_partial_cash_payment_while_session_open(self):
+        session = self.open_session()
+        command = self.command_with_confirmed_item()
+        payment = self.record_cash(command, session)
+        reversal = reverse_command_payment(
+            command=command, payment_id=payment.pk, user=self.owner, reason='Erro',
+            idempotency_key=uuid.uuid4(),
+        )
+        self.assertEqual(reversal.reversal_of_id, payment.pk)
+        self.assertEqual(calculate_expected_amount(session), Decimal('100.00'))
+
+    def test_reverse_partial_cash_payment_is_blocked_after_session_closed(self):
+        session = self.open_session()
+        command = self.command_with_confirmed_item()
+        payment = self.record_cash(command, session)
+        command.status = CommandStatus.CLOSED
+        command.closed_at = timezone.now()
+        command.closed_by = self.owner
+        command.save(update_fields=('status', 'closed_at', 'closed_by', 'updated_at'))
+        close_session(session, Decimal('110.00'), self.owner, self.branch)
+        command.status = CommandStatus.OPEN
+        command.closed_at = None
+        command.closed_by = None
+        command.save(update_fields=('status', 'closed_at', 'closed_by', 'updated_at'))
+        with self.assertRaisesMessage(Exception, 'sessão fechada'):
+            reverse_command_payment(
+                command=command, payment_id=payment.pk, user=self.owner, reason='Erro',
+                idempotency_key=uuid.uuid4(),
+            )
+
+    def test_record_partial_cash_payment_retry_has_no_duplicate_impact(self):
+        session = self.open_session()
+        command = self.command_with_confirmed_item()
+        key = uuid.uuid4()
+        first = self.record_cash(command, session, key)
+        second = self.record_cash(command, session, key)
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(calculate_expected_amount(session), Decimal('110.00'))
 
 
 # ---------------------------------------------------------------------------

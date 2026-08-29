@@ -19,7 +19,7 @@ from apps.companies.selectors import (
     company_permission_codes,
     user_has_company_permission,
 )
-from apps.companies.services import replace_user_accesses
+from apps.companies.services import replace_user_accesses, replace_user_company_access
 
 from .models import User
 
@@ -48,6 +48,7 @@ class UserSerializer(serializers.ModelSerializer):
     branches = serializers.SerializerMethodField()
     permission_blocks = serializers.SerializerMethodField()
     permission_scopes = serializers.SerializerMethodField()
+    profile_photo_url = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -60,10 +61,22 @@ class UserSerializer(serializers.ModelSerializer):
             'last_name',
             'is_active',
             'is_superuser',
+            'profile_photo_url',
+            'birth_date',
+            'cpf',
+            'zip_code',
+            'street',
+            'address_number',
+            'address_complement',
+            'neighborhood',
+            'city',
+            'state',
             'companies',
             'branches',
             'permission_blocks',
             'permission_scopes',
+            'last_login',
+            'archived_at',
             'created_at',
             'updated_at',
         )
@@ -76,16 +89,34 @@ class UserSerializer(serializers.ModelSerializer):
             'branches',
             'permission_blocks',
             'permission_scopes',
+            'profile_photo_url',
+            'last_login',
+            'archived_at',
             'created_at',
             'updated_at',
         )
+
+    def get_profile_photo_url(self, user):
+        request = self.context.get('request')
+        return '/api/v1/auth/me/photo/' if request and request.user.pk == user.pk and user.profile_photo else None
 
     def get_permission_scopes(self, user):
         return PERMISSION_SCOPE_BY_CODE
 
     def _visible_company_ids(self, user):
         request = self.context.get('request')
-        if not request or request.user.is_superuser or request.user.pk == user.pk:
+        if not request:
+            return None
+        context_company = request.query_params.get('company')
+        if context_company:
+            try:
+                return {int(context_company)}
+            except (TypeError, ValueError):
+                return set()
+        support_session = getattr(request, 'support_session', None)
+        if support_session:
+            return {support_session.company_id}
+        if request.user.is_superuser or request.user.pk == user.pk:
             return None
         parser_context = getattr(request, 'parser_context', None) or {}
         action = getattr(parser_context.get('view'), 'action', None)
@@ -116,7 +147,7 @@ class UserSerializer(serializers.ModelSerializer):
 
         request = self.context.get('request')
         support_session = getattr(request, 'support_session', None) if request else None
-        if support_session and not support_session.impersonated_user_id:
+        if support_session:
             company = support_session.company
             effective = resolve_effective_status(company)
             permissions = support_effective_permission_codes(support_session)
@@ -176,7 +207,7 @@ class UserSerializer(serializers.ModelSerializer):
             return []
         request = self.context.get('request')
         support_session = getattr(request, 'support_session', None) if request else None
-        if support_session and not support_session.impersonated_user_id:
+        if support_session:
             permissions = sorted(
                 support_effective_permission_codes(support_session)
                 & OPERATING_PERMISSION_CODES
@@ -275,6 +306,50 @@ class UserSerializer(serializers.ModelSerializer):
         ]
 
 
+class SelfProfileSerializer(serializers.ModelSerializer):
+    profile_photo = serializers.FileField(required=False, allow_null=True, write_only=True)
+
+    class Meta:
+        model = User
+        fields = (
+            'first_name', 'last_name', 'profile_photo', 'birth_date', 'cpf',
+            'zip_code', 'street', 'address_number', 'address_complement',
+            'neighborhood', 'city', 'state',
+        )
+
+    def validate_cpf(self, value):
+        digits = ''.join(character for character in value if character.isdigit())
+        if value and len(digits) != 11:
+            raise serializers.ValidationError('Informe um CPF com 11 dígitos.')
+        return digits
+
+    def validate_zip_code(self, value):
+        digits = ''.join(character for character in value if character.isdigit())
+        if value and len(digits) != 8:
+            raise serializers.ValidationError('Informe um CEP com 8 dígitos.')
+        return digits
+
+    def validate_state(self, value):
+        value = value.strip().upper()
+        if value and len(value) != 2:
+            raise serializers.ValidationError('Informe a UF com 2 letras.')
+        return value
+
+    def update(self, instance, validated_data):
+        photo_supplied = 'profile_photo' in validated_data
+        photo = validated_data.pop('profile_photo', None)
+        old_photo = instance.profile_photo if photo_supplied and instance.profile_photo else None
+        for attribute, value in validated_data.items():
+            setattr(instance, attribute, value)
+        if photo_supplied:
+            instance.profile_photo = photo
+        instance.full_clean()
+        instance.save()
+        if old_photo and old_photo.name != getattr(instance.profile_photo, 'name', None):
+            old_photo.storage.delete(old_photo.name)
+        return instance
+
+
 class BranchAccessWriteSerializer(serializers.Serializer):
     branch_id = serializers.IntegerField(min_value=1)
     access_profile_id = serializers.IntegerField(min_value=1)
@@ -292,6 +367,7 @@ class CompanyAccessWriteSerializer(serializers.Serializer):
 
 
 class UserManagementSerializer(UserSerializer):
+    membership = serializers.SerializerMethodField()
     email = serializers.EmailField(
         required=False, allow_blank=True, allow_null=True
     )
@@ -307,7 +383,7 @@ class UserManagementSerializer(UserSerializer):
     )
 
     class Meta(UserSerializer.Meta):
-        fields = UserSerializer.Meta.fields + ('password', 'company_accesses')
+        fields = UserSerializer.Meta.fields + ('password', 'company_accesses', 'membership')
         read_only_fields = (
             'id',
             'is_active',
@@ -316,7 +392,35 @@ class UserManagementSerializer(UserSerializer):
             'branches',
             'created_at',
             'updated_at',
+            'membership',
         )
+
+    def _context_company_id(self):
+        request = self.context['request']
+        value = request.query_params.get('company')
+        if value:
+            return int(value)
+        branch = getattr(request, 'branch_context', None)
+        return branch.company_id if branch else None
+
+    def get_membership(self, user):
+        company_id = self._context_company_id()
+        if not company_id:
+            return None
+        access = user.company_accesses.filter(company_id=company_id).first()
+        if not access:
+            return None
+        return {
+            'id': access.pk,
+            'company_id': access.company_id,
+            'is_active': access.is_active,
+            'is_owner': access.is_owner,
+            'saas_status': access.saas_status,
+            'access_profile_id': access.access_profile_id,
+            'branch_accesses': list(user.branch_accesses.filter(
+                branch__company_id=company_id, is_active=True,
+            ).values('branch_id', 'access_profile_id')),
+        }
 
     def validate_email(self, value):
         if not value:
@@ -481,11 +585,15 @@ class UserManagementSerializer(UserSerializer):
         permission_code = 'users.change' if self.instance else 'users.add'
         current_company_ids = set()
         if self.instance:
-            current_company_ids = set(
-                self.instance.company_accesses.filter(is_active=True).values_list(
-                    'company_id', flat=True
+            context_company_id = self._context_company_id()
+            if not context_company_id and request.user.is_superuser:
+                current_company_ids = set(
+                    self.instance.company_accesses.filter(is_active=True).values_list('company_id', flat=True)
                 )
-            )
+            elif not context_company_id or not self.instance.company_accesses.filter(company_id=context_company_id).exists():
+                raise PermissionDenied('O usuário não pertence à empresa informada.')
+            else:
+                current_company_ids = {context_company_id}
             if self.instance.is_superuser and not request.user.is_superuser:
                 raise PermissionDenied('Você não pode alterar um superusuário.')
             if any(
@@ -501,9 +609,11 @@ class UserManagementSerializer(UserSerializer):
                 raise serializers.ValidationError(
                     {'company_accesses': 'Você não pode alterar os próprios acessos.'}
                 )
-            changed_company_ids = current_company_ids | {
+            changed_company_ids = {
                 item['company_id'] for item in attrs['company_accesses']
             }
+            if self.instance and changed_company_ids != current_company_ids:
+                raise PermissionDenied('Altere somente o vínculo da empresa atual.')
             if self.instance and not request.user.is_superuser:
                 visible_branch_ids = set(
                     accessible_branches(request.user)
@@ -542,6 +652,7 @@ class UserManagementSerializer(UserSerializer):
             elif self.instance:
                 has_valid_links = self.instance.branch_accesses.filter(
                     is_active=True,
+                    branch__company_id__in=current_company_ids,
                     access_profile__status=Status.ACTIVE,
                     branch__company__user_accesses__user=self.instance,
                     branch__company__user_accesses__is_active=True,
@@ -567,19 +678,22 @@ class UserManagementSerializer(UserSerializer):
     @transaction.atomic
     def update(self, instance, validated_data):
         company_accesses = validated_data.pop('company_accesses', None)
-        password = validated_data.pop('password', None)
+        validated_data.pop('password', None)
+        context_company_id = self._context_company_id()
+        if context_company_id or not self.context['request'].user.is_superuser:
+            validated_data.pop('can_login', None)
         for attribute, value in validated_data.items():
             setattr(instance, attribute, value)
-        if password:
-            instance.set_password(password)
-        if not instance.can_login:
-            instance.set_unusable_password()
         instance.save()
         if company_accesses is not None:
-            replace_user_accesses(user=instance, company_accesses=company_accesses)
-        if not instance.can_login:
-            UserCompanyAccess.objects.filter(user=instance).update(access_profile=None)
-            UserBranchAccess.objects.filter(user=instance, is_active=True).update(
-                is_active=False
-            )
+            if context_company_id:
+                item = company_accesses[0]
+                replace_user_company_access(
+                    user=instance,
+                    company=item['company'],
+                    access_profile=item['access_profile'],
+                    branch_accesses=item['branch_accesses'],
+                )
+            else:
+                replace_user_accesses(user=instance, company_accesses=company_accesses)
         return instance

@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  ArrowLeft,
+  ArrowRight,
   KeyRound,
   Pencil,
   Plus,
@@ -9,12 +11,14 @@ import {
   Search,
   ShieldX,
   SlidersHorizontal,
+  Trash2,
   Users,
 } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { AdminGuard } from "@/components/admin-guard";
 import { UserCommissionSection } from "@/components/user-commission-section";
+import { UserAvatar } from "@/components/user-avatar";
 import { PageHeader } from "@/components/page-header";
 import {
   Alert,
@@ -29,12 +33,13 @@ import {
   StatusBadge,
   TableLoading,
 } from "@/components/ui";
-import { fieldError, formatDate, initials } from "@/lib/format";
+import { fieldError, formatDate } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
 import type {
   Paginated,
+  AuditLog,
   User,
   UserPayload,
   UserType,
@@ -69,10 +74,27 @@ const blank = (): UserPayload => ({
   user_type: "employee",
   first_name: "",
   last_name: "",
+  birth_date: null,
+  cpf: "",
+  zip_code: "",
+  street: "",
+  address_number: "",
+  address_complement: "",
+  neighborhood: "",
+  city: "",
+  state: "",
   company_accesses: [],
 });
 const typeLabel = (value: UserType) =>
   userTypes.find(([key]) => key === value)?.[1] || value;
+const editorTabs = [
+  ["personal", "Dados pessoais"],
+  ["access", "Acesso e permissões"],
+  ["commission", "Comissão"],
+  ["security", "Segurança"],
+  ["history", "Histórico"],
+] as const;
+type EditorTab = (typeof editorTabs)[number][0];
 interface UserFilters {
   search: string;
   status: string;
@@ -83,12 +105,18 @@ interface UserFilters {
 }
 const emptyFilters = (): UserFilters => ({
   search: "",
-  status: "",
+  status: "active",
   canLogin: "",
   userType: "",
   accessProfile: "",
   branch: "",
 });
+
+function UserEditorFrame({ open, page, title, description, onClose, children }: { open: boolean; page: boolean; title: string; description: string; onClose: () => void; children: React.ReactNode }) {
+  if (!open) return null;
+  if (!page) return <Modal open title={title} description={description} onClose={onClose} size="xl">{children}</Modal>;
+  return <><PageHeader title={title} description={description} /><main className="space-y-4 p-4 sm:p-6 lg:p-8"><section className="card overflow-hidden">{children}</section></main></>;
+}
 
 function UsersAdministration() {
   const { user: actor, currentCompany, hasPermission } = useAuth();
@@ -96,7 +124,6 @@ function UsersAdministration() {
   const { id } = useParams<{ id?: string }>();
   const isDetail = Boolean(id);
   const isNew = id === "novo";
-  const companies = actor?.companies || [];
   const canAdd = hasPermission(permissions.addUser);
   const canChange = hasPermission(permissions.changeUser);
   const canStatus = hasPermission(permissions.changeUserStatus);
@@ -118,6 +145,10 @@ function UsersAdministration() {
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState<User | null>(null);
+  const [archiving, setArchiving] = useState<User | null>(null);
+  const [editorTab, setEditorTab] = useState<EditorTab>("personal");
+  const [history, setHistory] = useState<AuditLog[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [resetTarget, setResetTarget] = useState<User | null>(null);
   const [resetPassword, setResetPassword] = useState("");
   const [resetFields, setResetFields] = useState<Record<string, string[]>>({});
@@ -125,6 +156,11 @@ function UsersAdministration() {
   const [draftFilters, setDraftFilters] = useState<UserFilters>(emptyFilters);
   const [appliedFilters, setAppliedFilters] =
     useState<UserFilters>(emptyFilters);
+
+  useEffect(() => {
+    const saved = new URLSearchParams(window.location.search).get("saved");
+    if (saved) setSuccess(saved === "created" ? "Usuário criado com sucesso." : saved === "archived" ? "Usuário arquivado. O histórico foi preservado." : "Usuário atualizado com sucesso.");
+  }, []);
 
   function listPath(companyId: number, selected: UserFilters) {
     const params = new URLSearchParams({ company: String(companyId) });
@@ -190,7 +226,7 @@ function UsersAdministration() {
           company_assignable: boolean;
           assignable_branch_ids: number[];
         }>;
-      }>("users/management-options/")
+      }>(`users/management-options/?company=${currentCompany.id}`)
       .then((options) => {
         if (active && contextRef.current === companyId) {
           setBranches(
@@ -239,11 +275,27 @@ function UsersAdministration() {
       setError("Usuário inválido.");
       return;
     }
-    http.get<User>(`users/${userId}/`).then((target) => {
-      if (!target.companies.some((company) => company.id === currentCompany.id)) throw new ApiError("Usuário não encontrado.", 404);
+    const companyId = currentCompany.id;
+    let active = true;
+    http.get<User>(`users/${userId}/?company=${companyId}`).then((target) => {
+      if (!active || contextRef.current !== companyId) return;
+      if (target.membership?.company_id !== companyId) throw new ApiError("Usuário não encontrado.", 404);
       show(target);
-    }).catch((caught) => setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar o usuário."));
+    }).catch((caught) => {
+      if (active && contextRef.current === companyId)
+        setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar o usuário.");
+    });
+    return () => { active = false; };
   }, [id, isDetail, isNew, currentCompany?.id]);
+
+  useEffect(() => {
+    if (editorTab !== "history" || !editing || !currentCompany) return;
+    setHistoryLoading(true);
+    http.get<Paginated<AuditLog>>(`audit-logs/?company=${currentCompany.id}&object_type=User&search=${editing.id}`)
+      .then((result) => setHistory(result.results.filter((log) => log.object_id === String(editing.id))))
+      .catch(() => setHistory([]))
+      .finally(() => setHistoryLoading(false));
+  }, [editorTab, editing?.id, currentCompany?.id]);
 
   function applyFilters(event: React.FormEvent) {
     event.preventDefault();
@@ -260,21 +312,13 @@ function UsersAdministration() {
 
   function show(target?: User) {
     if (!target && !canAdd) return;
-    const accesses =
-      target?.companies.map((company) => ({
-        company_id: company.id,
-        access_profile_id: null,
-        branch_accesses: target.branches
-          .filter(
-            (branch) =>
-              branch.company_id === company.id && branch.access_profile?.id,
-          )
-          .map((branch) => ({
-            branch_id: branch.id,
-            access_profile_id: branch.access_profile!.id!,
-          })),
-      })) || [];
+    const accesses = target?.membership ? [{
+      company_id: target.membership.company_id,
+      access_profile_id: target.membership.access_profile_id,
+      branch_accesses: target.membership.branch_accesses,
+    }] : [];
     setEditing(target || null);
+    setEditorTab("personal");
     setAccessesDirty(false);
     setForm(
       target
@@ -283,8 +327,17 @@ function UsersAdministration() {
             password: null,
             can_login: target.can_login,
             user_type: target.user_type,
-            first_name: target.first_name,
-            last_name: target.last_name,
+             first_name: target.first_name,
+             last_name: target.last_name,
+             birth_date: target.birth_date,
+             cpf: target.cpf,
+             zip_code: target.zip_code,
+             street: target.street,
+             address_number: target.address_number,
+             address_complement: target.address_complement,
+             neighborhood: target.neighborhood,
+             city: target.city,
+             state: target.state,
             company_accesses: accesses,
           }
         : {
@@ -317,26 +370,6 @@ function UsersAdministration() {
       company_accesses: current.company_accesses.map((item) =>
         item.company_id === companyId ? { ...item, ...value } : item,
       ),
-    }));
-  }
-  function toggleCompany(companyId: number) {
-    setAccessesDirty(true);
-    setForm((current) => ({
-      ...current,
-      company_accesses: current.company_accesses.some(
-        (item) => item.company_id === companyId,
-      )
-        ? current.company_accesses.filter(
-            (item) => item.company_id !== companyId,
-          )
-        : [
-            ...current.company_accesses,
-            {
-              company_id: companyId,
-              access_profile_id: null,
-              branch_accesses: [],
-            },
-          ],
     }));
   }
   function toggleBranch(companyId: number, branchId: number) {
@@ -426,20 +459,14 @@ function UsersAdministration() {
       };
       const payload = { ...normalizedPayload } as Partial<UserPayload>;
       if (editing && !accessesDirty) delete payload.company_accesses;
-      if (editing) await http.patch(`users/${editing.id}/`, payload);
-      else {
-        const created = await http.post<User>("users/", payload);
-        if (isDetail) {
-          router.replace(`/usuarios/${created.id}`);
-          return;
-        }
+      if (editing) await http.patch(`users/${editing.id}/?company=${currentCompany?.id}`, payload);
+      else await http.post<User>(`users/?company=${currentCompany?.id}`, payload);
+      if (isDetail) {
+        router.push(`/usuarios?saved=${editing ? "updated" : "created"}`);
+        return;
       }
       setOpen(false);
-      setSuccess(
-        editing
-          ? "Usuário atualizado com sucesso."
-          : "Usuário criado com sucesso.",
-      );
+      setSuccess(editing ? "Usuário atualizado com sucesso." : "Usuário criado com sucesso.");
       await load();
     } catch (caught) {
       if (caught instanceof ApiError) {
@@ -453,12 +480,13 @@ function UsersAdministration() {
   async function changeStatus() {
     if (!confirming) return;
     setSaving(true);
-    const action = confirming.is_active ? "deactivate" : "activate";
+    const action = confirming.membership?.is_active ? "deactivate" : "activate";
     try {
-      await http.post(`users/${confirming.id}/${action}/`);
+      const updated = await http.post<User>(`users/${confirming.id}/${action}/?company=${currentCompany?.id}`);
       setConfirming(null);
       setSuccess(`Usuário ${action === "activate" ? "ativado" : "inativado"}.`);
-      await load();
+      if (isDetail) setEditing(updated);
+      else await load();
     } catch (caught) {
       setError(
         caught instanceof ApiError
@@ -470,13 +498,27 @@ function UsersAdministration() {
     }
   }
 
+  async function archiveUser() {
+    if (!archiving) return;
+    setSaving(true); setError("");
+    try {
+       await http.post(`users/${archiving.id}/archive/?company=${currentCompany?.id}`);
+      setArchiving(null);
+      if (isDetail) { router.push("/usuarios?saved=archived"); return; }
+      setSuccess("Usuário arquivado. O histórico foi preservado.");
+      await load();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Não foi possível arquivar o usuário.");
+    } finally { setSaving(false); }
+  }
+
   async function doResetPassword() {
     if (!resetTarget || !resetPassword.trim()) return;
     setResetSaving(true);
     setResetFields({});
     setError("");
     try {
-      await http.post(`users/${resetTarget.id}/reset-password/`, {
+      await http.post(`users/${resetTarget.id}/reset-password/?company=${currentCompany?.id}`, {
         new_password: resetPassword,
       });
       setResetTarget(null);
@@ -501,7 +543,7 @@ function UsersAdministration() {
         description="Cadastre pessoas com ou sem acesso ao sistema."
         action={
           <Button
-            onClick={() => router.push("/usuarios/novo")}
+            onClick={() => show()}
             disabled={!canAdd || dependenciesLoading}
           >
             <Plus className="size-4" />
@@ -538,9 +580,9 @@ function UsersAdministration() {
                 }))
               }
             >
-              <option value="">Todos os status</option>
-              <option value="active">Ativos</option>
-              <option value="inactive">Inativos</option>
+                <option value="active">Ativos</option>
+                <option value="inactive">Inativos</option>
+                <option value="all">Todos</option>
             </Select>
             <Select
               aria-label="Acesso ao sistema"
@@ -652,25 +694,19 @@ function UsersAdministration() {
                   <thead>
                     <tr>
                       <th>Usuário</th>
-                      <th>Tipo</th>
+                       <th>Cargo</th>
                       <th>Login</th>
                       <th>Status</th>
-                      <th>Cadastro</th>
+                       <th>Último acesso</th>
                       <th className="text-right">Ações</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {data.results.map((item) => {
-                      const company = item.companies.find(
-                        (value) => value.id === currentCompany?.id,
-                      );
-                      return (
+                    {data.results.map((item) => (
                         <tr key={item.id}>
                           <td>
                             <div className="flex items-center gap-3">
-                              <span className="flex size-9 items-center justify-center rounded-full bg-primary/10 text-[11px] font-bold text-primary">
-                                {initials(item.first_name, item.last_name)}
-                              </span>
+                              <UserAvatar user={item} textClassName="text-[11px]" />
                               <div>
                                 <strong className="block">
                                   {item.first_name} {item.last_name}
@@ -694,19 +730,13 @@ function UsersAdministration() {
                             </span>
                           </td>
                           <td>
-                            <StatusBadge active={item.is_active} />
-                          </td>
-                          <td>{formatDate(item.created_at)}</td>
+                              <StatusBadge active={!!item.membership?.is_active && item.is_active} />
+                           </td>
+                           <td>{item.last_login ? formatDate(item.last_login) : "Nunca acessou"}</td>
                           <td>
                             <div className="flex justify-end gap-1">
-                              <Link
-                                className="icon-button"
-                                aria-label="Ver usuário"
-                                href={`/usuarios/${item.id}`}
-                              >
-                                <Pencil className="size-4" />
-                              </Link>
-                              <button
+                                <Link className="icon-button" aria-label="Ver usuário" href={`/usuarios/${item.id}`}><Pencil className="size-4" /></Link>
+                               <button
                                 className="icon-button"
                                 aria-label="Redefinir senha"
                                 disabled={!canChange || !!item.is_superuser}
@@ -727,13 +757,20 @@ function UsersAdministration() {
                                 disabled={!canStatus || item.id === actor?.id}
                                 onClick={() => setConfirming(item)}
                               >
-                                <Power className="size-4" />
-                              </button>
+                                 <Power className="size-4" />
+                               </button>
+                               <button
+                                 className="icon-button hover:bg-danger/10 hover:text-danger"
+                                 aria-label="Arquivar usuário"
+                                  disabled={!canStatus || item.id === actor?.id}
+                                 onClick={() => setArchiving(item)}
+                               >
+                                 <Trash2 className="size-4" />
+                               </button>
                             </div>
                           </td>
                         </tr>
-                      );
-                    })}
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -760,257 +797,65 @@ function UsersAdministration() {
           )}
         </section>
       </div>}
-      <Modal
+      <UserEditorFrame
         open={open}
-        title={editing ? "Editar usuário" : "Novo usuário"}
-        description="O tipo é informativo e nunca concede permissões."
+        page={isDetail}
+        title={editing ? `${editing.first_name} ${editing.last_name}` : "Novo usuário"}
+        description={editing ? `${typeLabel(editing.user_type)} · ${editing.membership?.is_active ? "Ativo" : "Inativo"}` : "Cadastre os dados principais da pessoa."}
         onClose={() => !saving && (isDetail ? router.push("/usuarios") : setOpen(false))}
-        size="xl"
-        fullPage={isDetail}
       >
-        <form onSubmit={submit}>
-          <fieldset disabled={!!editing && !canChange} className="grid gap-5 p-5 disabled:opacity-75 sm:grid-cols-2 sm:p-6">
-            {error && (
-              <div className="sm:col-span-2">
-                <Alert message={error} />
-              </div>
-            )}
-            <Field label="Nome" error={fieldError(fields, "first_name")}>
-              <Input
-                required
-                value={form.first_name}
-                onChange={(event) => update("first_name", event.target.value)}
-              />
-            </Field>
-            <Field label="Sobrenome" error={fieldError(fields, "last_name")}>
-              <Input
-                required
-                value={form.last_name}
-                onChange={(event) => update("last_name", event.target.value)}
-              />
-            </Field>
-            <Field label="Tipo de usuário">
-              <Select
-                value={form.user_type}
-                onChange={(event) =>
-                  update("user_type", event.target.value as UserType)
-                }
-              >
-                {userTypes.map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-            <label className="flex items-center gap-3 rounded-lg border border-slate-200 p-4 text-xs font-semibold">
-              <input
-                type="checkbox"
-                className="size-4 accent-primary"
-                checked={form.can_login}
-                onChange={(event) => setCanLogin(event.target.checked)}
-              />
-              <span>
-                <strong className="block">Pode acessar o sistema</strong>
-                <small className="font-normal text-slate-400">
-                  Exige credenciais e acessos completos
-                </small>
-              </span>
-            </label>
-            <Field
-              label="E-mail"
-              optional={!form.can_login}
-              error={fieldError(fields, "email")}
-            >
-              <Input
-                type="email"
-                required={form.can_login}
-                value={form.email || ""}
-                onChange={(event) =>
-                  update("email", event.target.value || null)
-                }
-                disabled={!form.can_login}
-              />
-            </Field>
-            <Field
-              label={
-                editing && editing.can_login === form.can_login
-                  ? "Nova senha"
-                  : "Senha"
-              }
-              optional={!!editing && editing.can_login && form.can_login}
-              error={fieldError(fields, "password")}
-            >
-              <Input
-                type="password"
-                minLength={8}
-                required={form.can_login && (!editing || !editing.can_login)}
-                value={form.password || ""}
-                onChange={(event) =>
-                  update("password", event.target.value || null)
-                }
-                disabled={!form.can_login}
-                placeholder={
-                  editing && editing.can_login
-                    ? "Deixe em branco para manter"
-                    : "Mínimo de 8 caracteres"
-                }
-              />
-            </Field>
-            <div className="sm:col-span-2 space-y-3 border-t border-slate-100 pt-4">
-              <div className="flex items-center gap-2">
-                <KeyRound className="size-4 text-primary" />
-                <h3 className="text-xs font-bold">Acessos por empresa</h3>
-              </div>
-              {companies.map((company) => {
-                const access = form.company_accesses.find(
-                  (item) => item.company_id === company.id,
-                );
-                const companyBranches = branches.filter(
-                  (branch) => branch.company === company.id,
-                );
-                return (
-                  <section
-                    key={company.id}
-                    className={`rounded-lg border p-4 ${access ? "border-primary/30 bg-primary/3" : "border-slate-200"}`}
-                  >
-                    <label className="flex items-center gap-3 text-xs font-bold">
-                      <input
-                        type="checkbox"
-                        className="size-4 accent-primary"
-                        checked={!!access}
-                        onChange={() => toggleCompany(company.id)}
-                      />
-                      {company.trade_name}
-                    </label>
-                    {access && (
-                      <div className="mt-4 space-y-3">
-                        {form.can_login && (
-                          <div>
-                            <p className="label">
-                              Filiais e perfis operacionais
-                            </p>
-                            <div className="space-y-2">
-                              {companyBranches.map((branch) => {
-                                const branchAccess =
-                                  access.branch_accesses.find(
-                                    (item) => item.branch_id === branch.id,
-                                  );
-                                return (
-                                  <div
-                                    key={branch.id}
-                                    className="grid gap-2 rounded-md border border-slate-200 p-3 sm:grid-cols-[1fr_14rem]"
-                                  >
-                                    <label className="flex items-center gap-2 text-xs">
-                                      <input
-                                        type="checkbox"
-                                        className="size-4 accent-primary"
-                                        checked={!!branchAccess}
-                                        onChange={() =>
-                                          toggleBranch(company.id, branch.id)
-                                        }
-                                      />
-                                      {branch.name}
-                                    </label>
-                                    {branchAccess && (
-                                      <Select
-                                        required
-                                        value={
-                                          branchAccess.access_profile_id || ""
-                                        }
-                                        onChange={(event) =>
-                                          updateBranchProfile(
-                                            company.id,
-                                            branch.id,
-                                            Number(event.target.value),
-                                          )
-                                        }
-                                      >
-                                        <option value="">
-                                          Selecione o perfil
-                                        </option>
-                                        {!profiles[company.id]?.some(
-                                          (profile) =>
-                                            profile.id ===
-                                              branchAccess.access_profile_id &&
-                                            profile.assignable_branch_ids.includes(
-                                              branch.id,
-                                            ),
-                                        ) && (
-                                          <option
-                                            value={
-                                              branchAccess.access_profile_id
-                                            }
-                                            disabled
-                                          >
-                                            {profiles[company.id]?.find(
-                                              (profile) =>
-                                                profile.id ===
-                                                branchAccess.access_profile_id,
-                                            )?.name || "Perfil atual"}{" "}
-                                            (mantido sem permissão para
-                                            reatribuir)
-                                          </option>
-                                        )}
-                                        {profiles[company.id]
-                                          ?.filter((profile) =>
-                                            profile.assignable_branch_ids.includes(
-                                              branch.id,
-                                            ),
-                                          )
-                                          .map((profile) => (
-                                            <option
-                                              key={profile.id}
-                                              value={profile.id}
-                                            >
-                                              {profile.name}
-                                            </option>
-                                          ))}
-                                      </Select>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </section>
-                );
-              })}
-              {fieldError(fields, "company_accesses") && (
-                <p className="field-error">
-                  {fieldError(fields, "company_accesses")}
-                </p>
-              )}
-            </div>
-          </fieldset>
-          <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => isDetail ? router.push("/usuarios") : setOpen(false)}
-              disabled={saving}
-            >
-              Cancelar
-            </Button>
-            {editing && canStatus && editing.id !== actor?.id && <Button type="button" variant="secondary" onClick={() => setConfirming(editing)} disabled={saving}>{editing.is_active ? "Inativar" : "Ativar"}</Button>}
-            {(!editing || canChange) && <Button type="submit" loading={saving}>
-              Salvar usuário
-            </Button>}
+        {isDetail && editing && <>
+          <div className="flex flex-wrap gap-2 border-b border-subtle p-4 sm:px-6">
+            <Button type="button" variant="secondary" onClick={() => router.push("/usuarios")}><ArrowLeft className="size-4" />Voltar</Button>
+            {canChange && <Button type="submit" form="user-editor-form" loading={saving}>Salvar usuário</Button>}
+            {canStatus && editing.id !== actor?.id && <Button type="button" variant="secondary" onClick={() => setConfirming(editing)}>{editing.membership?.is_active ? "Inativar" : "Ativar"}</Button>}
           </div>
+          <div role="tablist" aria-label="Seções do usuário" className="flex overflow-x-auto border-b border-subtle px-4 sm:px-6">
+            {editorTabs.map(([value, label]) => <button key={value} type="button" role="tab" aria-selected={editorTab === value} onClick={() => setEditorTab(value)} className={`shrink-0 border-b-2 px-4 py-3 text-xs font-semibold transition ${editorTab === value ? "border-primary text-primary" : "border-transparent text-muted hover:text-fg"}`}>{label}</button>)}
+          </div>
+        </>}
+        <form id="user-editor-form" onSubmit={submit}>
+          <fieldset disabled={!!editing && !canChange} className="p-5 disabled:opacity-75 sm:p-6">
+            {error && <div className="mb-5"><Alert message={error} /></div>}
+            {!editing ? <div className="grid gap-5 sm:grid-cols-2">
+              <Field label="Nome" error={fieldError(fields, "first_name")}><Input required value={form.first_name} onChange={(event) => update("first_name", event.target.value)} /></Field>
+              <Field label="Sobrenome" error={fieldError(fields, "last_name")}><Input required value={form.last_name} onChange={(event) => update("last_name", event.target.value)} /></Field>
+              <Field label="Tipo/Cargo"><Select value={form.user_type} onChange={(event) => update("user_type", event.target.value as UserType)}>{userTypes.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select></Field>
+              <label className="flex items-center gap-3 rounded-lg border border-subtle p-4 text-xs font-semibold"><input type="checkbox" className="size-4 accent-primary" checked={form.can_login} onChange={(event) => setCanLogin(event.target.checked)} /><span><strong className="block">Pode acessar o sistema?</strong><small className="font-normal text-muted">Ative para configurar credenciais e filiais.</small></span></label>
+              {form.can_login && <><Field label="E-mail" error={fieldError(fields, "email")}><Input type="email" required value={form.email || ""} onChange={(event) => update("email", event.target.value || null)} /></Field><Field label="Senha inicial" error={fieldError(fields, "password")}><Input type="password" minLength={8} required value={form.password || ""} onChange={(event) => update("password", event.target.value || null)} /></Field>
+                <div className="space-y-3 sm:col-span-2"><h3 className="text-sm font-bold">Perfil e filiais autorizadas</h3>{branches.filter((branch) => branch.company === currentCompany?.id).map((branch) => { const access = form.company_accesses[0]; const branchAccess = access?.branch_accesses.find((item) => item.branch_id === branch.id); return <div key={branch.id} className="grid gap-2 rounded-lg border border-subtle p-3 sm:grid-cols-[1fr_14rem]"><label className="flex items-center gap-2"><input type="checkbox" className="size-4 accent-primary" checked={!!branchAccess} onChange={() => currentCompany && toggleBranch(currentCompany.id, branch.id)} /><span><strong className="block text-sm">{branch.name}</strong><small className="block text-[11px] font-normal text-muted">{currentCompany?.trade_name}</small></span></label>{branchAccess && <Select required value={branchAccess.access_profile_id || ""} onChange={(event) => currentCompany && updateBranchProfile(currentCompany.id, branch.id, Number(event.target.value))}><option value="">Selecione o perfil</option>{(profiles[currentCompany?.id || 0] || []).filter((profile) => profile.assignable_branch_ids.includes(branch.id)).map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</Select>}</div>; })}{fieldError(fields, "company_accesses") && <p className="field-error">{fieldError(fields, "company_accesses")}</p>}</div>
+              </>}
+            </div> : <>
+              {editorTab === "personal" && <div className="grid gap-5 sm:grid-cols-2"><div className="flex items-center gap-4 sm:col-span-2"><UserAvatar user={editing} className="size-16" textClassName="text-lg" /><div><h2 className="text-sm font-bold">Dados pessoais</h2><p className="text-xs text-muted">Identificação e endereço global do usuário.</p></div></div><Field label="Nome"><Input required value={form.first_name} onChange={(event) => update("first_name", event.target.value)} /></Field><Field label="Sobrenome"><Input required value={form.last_name} onChange={(event) => update("last_name", event.target.value)} /></Field><Field label="CPF" optional><Input value={form.cpf} onChange={(event) => update("cpf", event.target.value)} /></Field><Field label="Aniversário" optional><Input type="date" value={form.birth_date || ""} onChange={(event) => update("birth_date", event.target.value || null)} /></Field><Field label="CEP" optional><Input value={form.zip_code} onChange={(event) => update("zip_code", event.target.value)} /></Field><Field label="Logradouro" optional><Input value={form.street} onChange={(event) => update("street", event.target.value)} /></Field><Field label="Número" optional><Input value={form.address_number} onChange={(event) => update("address_number", event.target.value)} /></Field><Field label="Complemento" optional><Input value={form.address_complement} onChange={(event) => update("address_complement", event.target.value)} /></Field><Field label="Bairro" optional><Input value={form.neighborhood} onChange={(event) => update("neighborhood", event.target.value)} /></Field><Field label="Cidade" optional><Input value={form.city} onChange={(event) => update("city", event.target.value)} /></Field><Field label="Estado" optional><Input maxLength={2} value={form.state} onChange={(event) => update("state", event.target.value.toUpperCase())} /></Field></div>}
+              {editorTab === "access" && <div className="space-y-5"><div className="grid gap-5 sm:grid-cols-2"><Field label="Cargo/Função"><Select value={form.user_type} onChange={(event) => update("user_type", event.target.value as UserType)}>{userTypes.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select></Field><Field label="E-mail"><Input type="email" value={form.email || ""} onChange={(event) => update("email", event.target.value || null)} /></Field></div><div className="flex items-center justify-between rounded-lg border border-subtle p-4"><div><strong className="text-xs">Estado do acesso nesta empresa</strong><p className="mt-1 text-xs text-muted">A credencial global permanece preservada em outras empresas.</p></div><StatusBadge active={!!editing.membership?.is_active} /></div><div><h2 className="text-sm font-bold">Filiais e perfis autorizados</h2><div className="mt-3 space-y-2">{branches.filter((branch) => branch.company === currentCompany?.id).map((branch) => { const access = form.company_accesses[0]; const branchAccess = access?.branch_accesses.find((item) => item.branch_id === branch.id); return <div key={branch.id} className="grid gap-2 rounded-lg border border-subtle p-3 sm:grid-cols-[1fr_14rem]"><label className="flex items-center gap-2"><input type="checkbox" className="size-4 accent-primary" checked={!!branchAccess} onChange={() => currentCompany && toggleBranch(currentCompany.id, branch.id)} /><span><strong className="block text-sm">{branch.name}</strong><small className="block text-[11px] font-normal text-muted">{currentCompany?.trade_name}</small></span></label>{branchAccess && <Select value={branchAccess.access_profile_id} onChange={(event) => currentCompany && updateBranchProfile(currentCompany.id, branch.id, Number(event.target.value))}>{(profiles[currentCompany?.id || 0] || []).filter((profile) => profile.assignable_branch_ids.includes(branch.id) || profile.id === branchAccess.access_profile_id).map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</Select>}</div>; })}</div></div></div>}
+              {editorTab === "security" && <div className="space-y-4"><h2 className="text-sm font-bold">Segurança</h2>{success && <Alert type="success" message={success} />}<div className="flex flex-wrap gap-2">{canChange && <Button type="button" variant="secondary" onClick={() => { setResetTarget(editing); setResetPassword(""); setResetFields({}); }}><KeyRound className="size-4" />Redefinir senha</Button>}<Link className="btn btn-secondary" href={`/usuarios/bloqueios?user=${editing.id}`}><ShieldX className="size-4" />Bloqueios de acesso</Link></div></div>}
+              {editorTab === "history" && <div><h2 className="text-sm font-bold">Histórico</h2><p className="mt-1 text-xs text-muted">Eventos auditáveis deste usuário na empresa atual.</p>{historyLoading ? <TableLoading columns={3} /> : history.length ? <div className="mt-4 divide-y divide-subtle rounded-lg border border-subtle">{history.map((log) => <article key={log.id} className="flex flex-col gap-1 p-3 text-xs sm:flex-row sm:items-center sm:justify-between"><div><strong>{log.action_label}</strong><span className="block text-muted">{log.actor_name || "Sistema"}</span></div><span className="text-muted">{formatDate(log.created_at)}</span></article>)}</div> : <EmptyState title="Sem histórico disponível" description="Nenhum evento específico foi encontrado neste contexto." />}</div>}
+            </>}
+          </fieldset>
+          {!editing && <div className="flex justify-end gap-2 border-t border-subtle px-5 py-4"><Button type="button" variant="secondary" onClick={() => setOpen(false)}>Cancelar</Button><Button type="submit" loading={saving}>Criar usuário</Button></div>}
         </form>
-      </Modal>
+        {editing && editorTab === "commission" && <UserCommissionSection userId={editing.id} />}
+        {editing && <div className="flex items-center justify-between border-t border-subtle p-4 sm:px-6"><Button type="button" variant="secondary" disabled={editorTab === editorTabs[0][0]} onClick={() => { const index = editorTabs.findIndex(([value]) => value === editorTab); if (index > 0) setEditorTab(editorTabs[index - 1][0]); }}><ArrowLeft className="size-4" />Anterior</Button><Button type="button" variant="secondary" disabled={editorTab === editorTabs[editorTabs.length - 1][0]} onClick={() => { const index = editorTabs.findIndex(([value]) => value === editorTab); if (index < editorTabs.length - 1) setEditorTab(editorTabs[index + 1][0]); }}>Próximo<ArrowRight className="size-4" /></Button></div>}
+       </UserEditorFrame>
       <ConfirmDialog
         open={!!confirming}
-        title={`${confirming?.is_active ? "Inativar" : "Ativar"} usuário`}
+        title={`${confirming?.membership?.is_active ? "Inativar" : "Ativar"} usuário`}
         message={`Confirma a alteração de status de “${confirming?.first_name || ""} ${confirming?.last_name || ""}”?`}
-        confirmLabel={confirming?.is_active ? "Inativar" : "Ativar"}
-        danger={confirming?.is_active}
+        confirmLabel={confirming?.membership?.is_active ? "Inativar" : "Ativar"}
+        danger={confirming?.membership?.is_active}
         loading={saving}
         onClose={() => setConfirming(null)}
         onConfirm={changeStatus}
+      />
+      <ConfirmDialog
+        open={!!archiving}
+        title="Arquivar usuário"
+        message={`Arquivar “${archiving?.first_name || ""} ${archiving?.last_name || ""}”? O acesso será removido da operação, mas vendas, caixa, estoque, auditoria e comissões permanecerão preservados.`}
+        confirmLabel="Arquivar"
+        danger
+        loading={saving}
+        onClose={() => setArchiving(null)}
+        onConfirm={archiveUser}
       />
       <Modal open={!!resetTarget} title="Redefinir senha" onClose={() => setResetTarget(null)}>
         <div className="space-y-4 p-5">
@@ -1025,7 +870,6 @@ function UsersAdministration() {
           </div>
         </div>
       </Modal>
-      {isDetail && editing && <UserCommissionSection userId={editing.id} />}
     </>
   );
 }

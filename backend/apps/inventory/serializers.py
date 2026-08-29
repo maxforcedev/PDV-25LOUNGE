@@ -191,6 +191,7 @@ class StockMovementSerializer(serializers.ModelSerializer):
     )
     sale_number = serializers.SerializerMethodField()
     sale_operation_type = serializers.SerializerMethodField()
+    origin = serializers.SerializerMethodField()
     operation_label = serializers.SerializerMethodField()
     operation_count = serializers.IntegerField(read_only=True)
     operation_kind = serializers.CharField(read_only=True)
@@ -209,6 +210,7 @@ class StockMovementSerializer(serializers.ModelSerializer):
             'branch_name', 'company', 'company_name', 'unit', 'movement_type', 'type',
              'previous_quantity', 'quantity', 'movement_quantity', 'final_quantity',
              'user', 'user_name', 'reason', 'sale', 'sale_number', 'sale_operation_type',
+             'origin',
               'original_movement', 'nature', 'operation_reference', 'created_at',
               'operation_label', 'operation_count', 'operation_kind',
                'unit_cost_snapshot', 'domain_origin', 'transfer_item',
@@ -274,10 +276,43 @@ class StockMovementSerializer(serializers.ModelSerializer):
     def get_sale_operation_type(self, obj):
         return obj.sale.operation_type if obj.sale_id else None
 
+    def get_origin(self, obj):
+        if obj.sale_id:
+            kind = 'consumption' if obj.sale.operation_type == 'consumption' else 'sale'
+            label = 'Consumação' if kind == 'consumption' else 'Venda'
+            return {'kind': kind, 'id': str(obj.sale_id), 'label': f'{label} #{obj.sale.sale_number}'}
+        if obj.order_item_id:
+            command = obj.order_item.order.command
+            return {
+                'kind': 'command',
+                'id': str(command.pk),
+                'label': f'Comanda #{command.command_number}',
+            }
+        transfer = (
+            obj.transfer_item.transfer if obj.transfer_item_id else
+            obj.transfer_resolution.divergence.transfer_item.transfer
+            if obj.transfer_resolution_id else None
+        )
+        if transfer:
+            return {'kind': 'transfer', 'id': str(transfer.pk), 'label': 'Transferência'}
+        if obj.inventory_count_item_id:
+            count = obj.inventory_count_item.inventory_count
+            return {'kind': 'inventory_count', 'id': str(count.pk), 'label': 'Inventário'}
+        if obj.loss_record_id:
+            return {'kind': 'loss', 'id': str(obj.loss_record_id), 'label': 'Perda'}
+        purchase_order_id = getattr(obj, 'purchase_order_id', None)
+        if obj.domain_origin == MovementDomainOrigin.PURCHASE and purchase_order_id:
+            return {
+                'kind': 'purchase',
+                'id': str(purchase_order_id),
+                'label': f'Compra #{getattr(obj, "purchase_order_number", "")}',
+            }
+        return None
+
     def get_operation_label(self, obj):
         if obj.sale_id:
             operation = 'Consumação' if obj.sale.operation_type == 'consumption' else 'Venda'
-            return f'{operation} {obj.sale.sale_number}'
+            return f'{operation} #{obj.sale.sale_number}'
         domain_label = {
             MovementDomainOrigin.PURCHASE: 'Recebimento de compra',
             MovementDomainOrigin.TRANSFER_DISPATCH: 'Transferencia - despacho',

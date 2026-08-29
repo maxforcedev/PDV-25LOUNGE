@@ -6,6 +6,7 @@ Covers mandatory test areas:
   5  MODIFIERS
 """
 from decimal import Decimal
+from types import SimpleNamespace
 
 from django.test import TestCase
 from rest_framework.test import APIClient
@@ -22,9 +23,11 @@ from apps.base.models import AuditLog
 from apps.inventory.models import Stock
 from apps.products.models import (
     Category, ModifierGroup, ModifierOption, ModifierOptionType,
-    Product, ProductModifierGroup, BranchProductPrice,
-    SalesChannel, Unit, InventoryBehavior,
+    Product, ProductBranchConfig, ProductModifierGroup, BranchProductPrice,
+    FractionableProductConfig, SalesChannel, Unit, InventoryBehavior,
 )
+from apps.products.serializers import FractionableProductConfigSerializer, ProductSerializer
+from apps.inventory.content import content_breakdown
 from apps.sales.services import ensure_default_payment_methods
 
 PASSWORD = 'Block6-prod-password-123!'
@@ -468,3 +471,177 @@ class ModifierTests(ProductRbacFixture, TestCase):
 
         sale_item.refresh_from_db()
         self.assertEqual(sale_item.modifier_snapshot, original_snapshot)
+
+
+class ProductMissionM5Tests(ProductRbacFixture, TestCase):
+    def test_product_list_and_retrieve_allow_direct_product_without_fraction_config(self):
+        client = self.api_client(self.owner_a, self.branch_a.pk)
+
+        direct = client.get(
+            f'/api/v1/products/?company={self.company_a.pk}&status=active&lifecycle=active&inventory_behavior=direct'
+        )
+        all_active = client.get(
+            f'/api/v1/products/?company={self.company_a.pk}&lifecycle=active'
+        )
+        retrieve = client.get(f'/api/v1/products/{self.product_a.pk}/')
+
+        self.assertEqual(direct.status_code, 200, direct.data)
+        self.assertEqual(all_active.status_code, 200, all_active.data)
+        self.assertEqual(retrieve.status_code, 200, retrieve.data)
+        self.assertNotIn('package_content', retrieve.data['branch_stock'])
+
+    def test_branch_stock_skips_invalid_legacy_fraction_content(self):
+        config = FractionableProductConfig.objects.create(
+            product=self.product_a, package_content='12', content_unit='ml'
+        )
+        config.tracking_active = True
+        config.package_content = None
+        self.product_a._state.fields_cache['fraction_config'] = config
+        serializer = ProductSerializer(context={
+            'request': SimpleNamespace(branch_context=self.branch_a, user=self.owner_a),
+        })
+
+        branch_stock = serializer.get_branch_stock(self.product_a)
+
+        self.assertEqual(branch_stock['semantic'], 'actual')
+        self.assertNotIn('package_content', branch_stock)
+        self.assertNotIn('complete_packages', branch_stock)
+
+    def test_branch_stock_breaks_down_product_with_package_content(self):
+        stock = set_stock(self.branch_a, self.product_a, '2', '1.00')
+        config = FractionableProductConfig.objects.create(
+            product=self.product_a, package_content='12', content_unit='ml'
+        )
+        config.tracking_active = True
+        config.save(update_fields=('tracking_active', 'updated_at'))
+        Stock.objects.filter(pk=stock.pk).update(
+            current_content=Decimal('25'), current_quantity=Decimal('2.083333333')
+        )
+        self.product_a._state.fields_cache['fraction_config'] = config
+        serializer = ProductSerializer(context={
+            'request': SimpleNamespace(branch_context=self.branch_a, user=self.owner_a),
+        })
+
+        branch_stock = serializer.get_branch_stock(self.product_a)
+
+        self.assertEqual(branch_stock['package_content'], '12')
+        self.assertEqual(branch_stock['complete_packages'], '2')
+        self.assertEqual(branch_stock['residual_content'], '1.000000000')
+
+    def test_fraction_config_requires_package_content_and_content_breakdown_is_controlled(self):
+        serializer = FractionableProductConfigSerializer(data={
+            'product': self.product_a.pk,
+            'package_content': None,
+            'content_unit': 'ml',
+        })
+
+        self.assertFalse(serializer.is_valid())
+        self.assertEqual(
+            serializer.errors['package_content'][0],
+            'Informe o conteúdo da embalagem para este produto.',
+        )
+        with self.assertRaisesRegex(ValueError, 'package_content are required'):
+            content_breakdown(Decimal('1'), None)
+
+    def test_archive_preserves_product_and_filters_lifecycle(self):
+        client = self.api_client(self.owner_a, self.branch_a.pk)
+
+        response = client.post(f'/api/v1/products/{self.product_a.pk}/archive/')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.product_a.refresh_from_db()
+        self.assertIsNotNone(self.product_a.archived_at)
+        self.assertTrue(Product.objects.filter(pk=self.product_a.pk).exists())
+        active = client.get('/api/v1/products/?lifecycle=active')
+        self.assertEqual(active.status_code, 200, active.data)
+        self.assertEqual(active.data['count'], 0)
+        self.assertEqual(active.data['results'], [])
+        self.assertEqual(
+            client.get('/api/v1/products/?lifecycle=archived').data['count'], 1,
+        )
+        self.assertTrue(AuditLog.objects.filter(
+            action='product.archive', object_id=str(self.product_a.pk),
+        ).exists())
+
+    def test_branch_stock_and_minimum_are_scoped_to_active_branch(self):
+        set_stock(self.branch_a, self.product_a, '7.000', '2.50')
+        client = self.api_client(self.owner_a, self.branch_a.pk)
+
+        response = client.get(f'/api/v1/products/{self.product_a.pk}/')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['branch_stock']['current_quantity'], '7.000000000')
+        minimum = client.put(
+            f'/api/v1/products/{self.product_a.pk}/minimum-stock/',
+            {'minimum_quantity': '3.000'}, format='json',
+        )
+        self.assertEqual(minimum.status_code, 200, minimum.data)
+        self.assertEqual(minimum.data['minimum_quantity'], '3.000')
+        self.assertEqual(
+            client.get(f'/api/v1/products/{self.product_a.pk}/').data[
+                'branch_stock'
+            ]['minimum_quantity'],
+            '3.000',
+        )
+
+    def test_branch_channel_inheritance_uses_null_as_global_default(self):
+        self.product_a.available_counter = False
+        self.product_a.save()
+        config = ProductBranchConfig.objects.create(
+            product=self.product_a, branch=self.branch_a,
+            available_counter=None, available_table=True, available_command=False,
+        )
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).get(
+            f'/api/v1/products/{self.product_a.pk}/branch-config/'
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIsNone(response.data['available_counter'])
+        self.assertFalse(response.data['effective_channels']['counter'])
+        self.assertTrue(response.data['effective_channels']['table'])
+        self.assertFalse(response.data['effective_channels']['command'])
+
+    def test_copy_branch_configuration_copies_only_operational_settings(self):
+        from apps.companies.services import create_branch_with_access
+
+        target = create_branch_with_access(
+            creator=self.owner_a, company=self.company_a, name='Filial M5',
+        )
+        ProductBranchConfig.objects.create(
+            product=self.product_a, branch=self.branch_a, is_available=False,
+            available_counter=False, available_table=True, available_command=None,
+        )
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).post(
+            f'/api/v1/products/{self.product_a.pk}/copy-branch-config/',
+            {'source_branch': self.branch_a.pk, 'target_branches': [target.pk]},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        copied = ProductBranchConfig.objects.get(product=self.product_a, branch=target)
+        self.assertFalse(copied.is_available)
+        self.assertFalse(copied.available_counter)
+        self.assertTrue(copied.available_table)
+        self.assertIsNone(copied.available_command)
+
+    def test_view_permission_does_not_grant_archive_or_minimum_stock_change(self):
+        viewer = create_user('m5-viewer@prod.com')
+        profile = make_profile(self.company_a, 'M5 product viewer', ['products.view'])
+        UserCompanyAccess.objects.create(
+            user=viewer, company=self.company_a, access_profile=profile, is_active=True,
+        )
+        UserBranchAccess.objects.create(
+            user=viewer, branch=self.branch_a, access_profile=profile,
+        )
+        client = self.api_client(viewer, self.branch_a.pk)
+
+        archive = client.post(f'/api/v1/products/{self.product_a.pk}/archive/')
+        minimum = client.put(
+            f'/api/v1/products/{self.product_a.pk}/minimum-stock/',
+            {'minimum_quantity': '1.000'}, format='json',
+        )
+
+        self.assertEqual(archive.status_code, 403)
+        self.assertEqual(minimum.status_code, 403)

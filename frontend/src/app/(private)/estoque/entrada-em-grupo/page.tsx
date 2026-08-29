@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Plus, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
+import { ProductAutocomplete } from "@/components/product-autocomplete";
 import { StockOperationDetails } from "@/components/stock-operation-details";
 import { Alert, Button, EmptyState, Field, Input, Modal, Select, Spinner, Textarea } from "@/components/ui";
 import { formatQuantity } from "@/lib/format";
@@ -11,6 +12,7 @@ import { ApiError, http } from "@/lib/http";
 import { contentUnitLabel, isExactContentValid, isUnitQuantityValid, physicalQuantityDisplay, quantityInputMode } from "@/lib/inventory";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
+import type { Product } from "@/types";
 
 type EntryCategory = { id: number; name: string };
 type EntryProduct = {
@@ -29,7 +31,6 @@ function decimal(value: string) {
 export default function EntryPage() {
   const { currentCompany, currentBranch, hasPermission } = useAuth();
   const [categories, setCategories] = useState<EntryCategory[]>([]);
-  const [pickerProducts, setPickerProducts] = useState<EntryProduct[]>([]);
   const [products, setProducts] = useState<EntryProduct[]>([]);
   const [rows, setRows] = useState<Record<number, EntryRow>>({});
   const [nature, setNature] = useState("normal");
@@ -37,7 +38,6 @@ export default function EntryPage() {
   const [productModal, setProductModal] = useState(false);
   const [categoryModal, setCategoryModal] = useState(false);
   const [category, setCategory] = useState("");
-  const [pickerSearch, setPickerSearch] = useState("");
   const [draftSearch, setDraftSearch] = useState("");
   const [draftCategory, setDraftCategory] = useState("");
   const [loadingProducts, setLoadingProducts] = useState(false);
@@ -45,7 +45,6 @@ export default function EntryPage() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState<OperationSuccess | null>(null);
   const idempotencyKey = useRef("");
-  const pickerRequest = useRef(0);
 
   function rotateIdempotencyKey() {
     idempotencyKey.current = crypto.randomUUID();
@@ -66,34 +65,34 @@ export default function EntryPage() {
     rotateIdempotencyKey();
   }
 
+  function fromProduct(product: Product): EntryProduct {
+    return {
+      id: product.id,
+      name: product.name,
+      internal_code: product.internal_code,
+      barcode: product.barcode,
+      sku: product.sku,
+      unit: product.unit,
+      category_id: product.category,
+      category_name: product.category_name,
+      current_quantity: product.branch_stock?.current_quantity || "0",
+      fraction_config: product.fraction_config
+        ? {
+            tracking_active: product.fraction_config.tracking_active,
+            package_content: product.fraction_config.package_content,
+            content_unit: product.fraction_config.content_unit,
+          }
+        : null,
+    };
+  }
+
   useEffect(() => {
     if (!currentCompany || !currentBranch) return;
-    setCategories([]); setPickerProducts([]); setProducts([]); setRows({}); setDraftSearch(""); setDraftCategory(""); setError(""); setSuccess(null); rotateIdempotencyKey();
+    setCategories([]); setProducts([]); setRows({}); setDraftSearch(""); setDraftCategory(""); setError(""); setSuccess(null); rotateIdempotencyKey();
     void http.get<EntryOptions>("stock-movements/entry-options/")
       .then((options) => setCategories(options.categories))
       .catch((caught) => setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar as opções de entrada."));
   }, [currentCompany?.id, currentBranch?.id]);
-
-  async function openProductPicker() {
-    setError(""); setPickerSearch(""); setPickerProducts([]); setProductModal(true);
-  }
-
-  async function searchProducts(value: string) {
-    setPickerSearch(value);
-    const query = value.trim();
-    if (!query) {
-      setPickerProducts([]);
-      return;
-    }
-    const request = ++pickerRequest.current;
-    setLoadingProducts(true);
-    try {
-      const options = await http.get<EntryOptions>(`stock-movements/entry-options/?search=${encodeURIComponent(query)}`);
-      if (request === pickerRequest.current) setPickerProducts(options.products);
-    } catch (caught) {
-      if (request === pickerRequest.current) setError(caught instanceof ApiError ? caught.message : "Não foi possível pesquisar os produtos elegíveis.");
-    } finally { setLoadingProducts(false); }
-  }
 
   async function addAllProducts() {
     setLoadingProducts(true); setError("");
@@ -185,14 +184,14 @@ export default function EntryPage() {
         <Field label="Motivo" optional><Textarea rows={1} value={reason} onChange={(event) => { setReason(event.target.value); rotateIdempotencyKey(); }} /></Field>
       </section>
       <section className="card overflow-hidden">
-        <div className="card-header"><div><h2 className="text-sm font-bold">Produtos da entrada</h2><p className="mt-1 text-[11px] text-muted">Adicione somente os produtos desta operação. Itens vazios ou zero não são enviados.</p></div><div className="flex flex-wrap gap-2"><Button type="button" variant="secondary" onClick={() => void openProductPicker()}><Plus className="size-4" />Adicionar produto</Button><Button type="button" variant="secondary" onClick={() => { setCategory(""); setCategoryModal(true); }}><Plus className="size-4" />Adicionar por categoria</Button><Button type="button" variant="secondary" onClick={() => void addAllProducts()} disabled={loadingProducts}><Plus className="size-4" />Adicionar todos os produtos</Button></div></div>
-        <div className="grid gap-3 border-t border-subtle p-4 sm:grid-cols-2"><Input aria-label="Buscar produto" value={draftSearch} onChange={(event) => setDraftSearch(event.target.value)} placeholder="Buscar produto" /><Select aria-label="Filtrar por categoria" value={draftCategory} onChange={(event) => setDraftCategory(event.target.value)}><option value="">Todas as categorias</option>{categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></div>
+        <div className="card-header"><div><h2 className="text-sm font-bold">Produtos da entrada</h2><p className="mt-1 text-[11px] text-muted">Adicione somente os produtos desta operação. Itens vazios ou zero não são enviados.</p></div><div className="flex flex-wrap gap-2"><Button type="button" onClick={() => { setError(""); setProductModal(true); }}><Plus className="size-4" />Adicionar produto</Button>{products.length > 0 && <><Button type="button" variant="secondary" onClick={() => { setCategory(""); setCategoryModal(true); }}><Plus className="size-4" />Adicionar por categoria</Button><Button type="button" variant="secondary" onClick={() => void addAllProducts()} disabled={loadingProducts}><Plus className="size-4" />Adicionar todos os produtos</Button></>}</div></div>
+        {products.length > 0 && <div className="grid gap-3 border-t border-subtle p-4 sm:grid-cols-2"><Input aria-label="Buscar produto" value={draftSearch} onChange={(event) => setDraftSearch(event.target.value)} placeholder="Filtrar itens adicionados" /><Select aria-label="Filtrar por categoria" value={draftCategory} onChange={(event) => setDraftCategory(event.target.value)}><option value="">Todas as categorias</option>{categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></div>}
         {loadingProducts && <div className="flex justify-center p-5"><Spinner /></div>}
         {products.length ? visibleProducts.length ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Produto</th><th>Saldo atual</th><th>Unidade</th><th>Entrada</th><th></th></tr></thead><tbody>{visibleProducts.map((product) => { const row = rows[product.id]; const tracked = !!product.fraction_config?.tracking_active; return <tr key={product.id}><td><strong className="block">{product.name}</strong><small className="text-muted">{product.internal_code}{product.sku ? ` · ${product.sku}` : ""}{product.barcode ? ` · ${product.barcode}` : ""}</small></td><td>{physicalQuantityDisplay({ quantity: product.current_quantity, unit: product.unit })}</td><td>{product.unit.toUpperCase()}</td><td className="min-w-60">{tracked && <div className="mb-2 flex gap-3 text-xs"><label><input className="mr-1" type="radio" checked={row.mode === "packages"} onChange={() => updateRow(product, { mode: "packages", value: "" })} />Embalagens</label><label><input className="mr-1" type="radio" checked={row.mode === "content"} onChange={() => updateRow(product, { mode: "content", value: "" })} />Conteúdo exato</label></div>}<Input inputMode={row.mode === "content" ? "decimal" : quantityInputMode(tracked ? "un" : product.unit)} step={row.mode === "content" ? "0.000000001" : tracked || product.unit.toLowerCase() === "un" ? "1" : "0.001"} min="0" placeholder="0" value={row.value} onChange={(event) => updateRow(product, { value: tracked && row.mode === "packages" ? event.target.value.replace(/\D/g, "") : event.target.value })} />{tracked && <span className="mt-1 block text-[10px] text-muted">{row.mode === "content" ? `Conteúdo em ${contentUnitLabel(product.fraction_config!.content_unit)}` : `Embalagens de ${formatQuantity(product.fraction_config!.package_content)} ${contentUnitLabel(product.fraction_config!.content_unit)}`}</span>}</td><td><button type="button" className="icon-button" title="Remover produto" onClick={() => removeProduct(product.id)}><Trash2 className="size-4" /></button></td></tr>; })}</tbody></table></div> : <EmptyState title="Nenhum produto encontrado" description="Limpe ou altere os filtros para ver os itens do draft." /> : !loadingProducts && <EmptyState title="Nenhum produto adicionado" description="Adicione produtos individualmente, por categoria ou todos os produtos." />}
         <div className="flex justify-end border-t border-subtle p-4"><Button type="submit" loading={saving} disabled={!products.some(isPositive)}>Confirmar entrada</Button></div>
       </section>
     </form>
-    <Modal open={productModal} title="Adicionar produto" description="Pesquise um produto elegível para a filial atual." onClose={() => setProductModal(false)}><div className="space-y-4 p-5"><Input value={pickerSearch} onChange={(event) => void searchProducts(event.target.value)} placeholder="Buscar por nome, código, SKU ou código de barras" />{loadingProducts ? <div className="flex justify-center py-4"><Spinner /></div> : <div className="max-h-80 divide-y overflow-y-auto">{pickerProducts.map((product) => <button key={product.id} type="button" className="w-full p-3 text-left hover:bg-surface-muted" onClick={() => { addProducts([product]); setPickerSearch(""); setPickerProducts([]); }}><strong className="block text-sm">{product.name}</strong><small className="text-muted">{product.internal_code} · {product.unit.toUpperCase()}</small></button>)}{pickerSearch && !pickerProducts.length && <EmptyState title="Nenhum produto encontrado" description="Tente outro termo de busca." />}{!pickerSearch && <p className="text-sm text-muted">Digite para pesquisar produtos sem carregar o catálogo completo.</p>}</div>}</div></Modal>
+    <Modal open={productModal} title="Adicionar produto" description="Pesquise um produto elegível para a filial atual." onClose={() => setProductModal(false)} size="xxl" tall><div className="p-5"><ProductAutocomplete companyId={currentCompany?.id} branchId={currentBranch?.id} value={null} onError={setError} onChange={(product) => { if (product) { addProducts([fromProduct(product)]); setProductModal(false); } }} /></div></Modal>
     <Modal open={categoryModal} title="Adicionar por categoria" description="Todos os produtos elegíveis da categoria serão adicionados à mesma entrada." onClose={() => setCategoryModal(false)}><div className="space-y-4 p-5"><Field label="Categoria"><Select value={category} onChange={(event) => setCategory(event.target.value)}><option value="">Selecione</option>{categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field><div className="flex justify-end"><Button type="button" onClick={() => void addCategory()} disabled={!category || loadingProducts}>Adicionar produtos</Button></div></div></Modal>
   </>;
 }

@@ -11,7 +11,7 @@ from rest_framework.response import Response
 from apps.companies.models import Branch
 from apps.companies.selectors import accessible_branches
 
-from .models import PayableInstallment, PurchaseOrder, PurchaseReceipt
+from .models import PayableInstallment, PurchaseAttachment, PurchaseOrder, PurchaseReceipt
 from .permissions import PurchaseFunctionalPermission
 from .serializers import (
     PayableInstallmentSerializer,
@@ -20,6 +20,7 @@ from .serializers import (
     PurchaseOrderCreateSerializer,
     PurchaseOrderSerializer,
     PurchaseOrderUpdateSerializer,
+    PlacePurchaseOrderSerializer,
     PurchaseReceiptCreateSerializer,
     PurchaseReceiptSerializer,
     ReasonSerializer,
@@ -28,12 +29,14 @@ from .serializers import (
 from .services import (
     cancel_installment,
     cancel_purchase_order,
+    add_purchase_attachment,
     close_partial_purchase_order,
     create_purchase_order,
     pay_installment,
     place_purchase_order,
     receive_purchase_order,
     set_purchase_attachment,
+    remove_purchase_attachment,
     set_installments,
     update_purchase_order,
 )
@@ -68,6 +71,9 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
         'cancel': 'purchases.close',
         'set_installments': 'purchases.manage_payables',
         'attachment': 'purchases.view',
+        'attachments': 'purchases.create',
+        'download_attachment': 'purchases.view',
+        'remove_attachment': 'purchases.create',
     }
 
     def get_queryset(self):
@@ -76,7 +82,7 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             'company', 'branch', 'supplier', 'created_by', 'placed_by', 'closed_by'
         ).prefetch_related(
             'items__receipt_items', 'installments__supplier',
-            'receipts__items', 'receipts__purchase_order',
+            'receipts__items', 'receipts__purchase_order', 'attachments',
         ).filter(branch__in=_scoped_branches(self.request, code))
         params = self.request.query_params
         for parameter, field in (
@@ -133,9 +139,12 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=('post',))
     def place(self, request, pk=None):
+        serializer = PlacePurchaseOrderSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
         order = place_purchase_order(
             purchase_order=self.get_object(), user=request.user,
             support_session=getattr(request, 'support_session', None),
+            **serializer.validated_data,
         )
         return Response(PurchaseOrderSerializer(order, context={'request': request}).data)
 
@@ -220,6 +229,51 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             filename=filename,
             content_type=content_type,
         )
+
+    @action(
+        detail=True, methods=('post',), url_path='attachments',
+        parser_classes=(MultiPartParser, FormParser),
+    )
+    def attachments(self, request, pk=None):
+        serializer = PurchaseAttachmentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        add_purchase_attachment(
+            purchase_order=self.get_object(),
+            attachment=serializer.validated_data['attachment'],
+            user=request.user,
+            support_session=getattr(request, 'support_session', None),
+        )
+        return Response(PurchaseOrderSerializer(self.get_object(), context={'request': request}).data)
+
+    @action(
+        detail=True, methods=('get',),
+        url_path=r'attachments/(?P<attachment_id>[^/.]+)/download',
+    )
+    def download_attachment(self, request, pk=None, attachment_id=None):
+        order = self.get_object()
+        attachment = PurchaseAttachment.objects.filter(
+            pk=attachment_id, purchase_order=order, status='active'
+        ).first()
+        if not attachment or not attachment.attachment.storage.exists(attachment.attachment.name):
+            raise NotFound('Anexo nao encontrado.')
+        filename = purchase_attachment_download_name(attachment.attachment)
+        content_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+        return FileResponse(
+            attachment.attachment.open('rb'), as_attachment=True, filename=filename,
+            content_type=content_type,
+        )
+
+    @action(
+        detail=True, methods=('post',),
+        url_path=r'attachments/(?P<attachment_id>[^/.]+)/remove',
+    )
+    def remove_attachment(self, request, pk=None, attachment_id=None):
+        remove_purchase_attachment(
+            purchase_order=self.get_object(), attachment_id=attachment_id,
+            user=request.user,
+            support_session=getattr(request, 'support_session', None),
+        )
+        return Response(PurchaseOrderSerializer(self.get_object(), context={'request': request}).data)
 
 
 class PurchaseReceiptViewSet(viewsets.ReadOnlyModelViewSet):

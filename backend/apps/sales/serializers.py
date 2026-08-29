@@ -284,7 +284,8 @@ class PaymentSerializer(serializers.ModelSerializer):
         model = Payment
         fields = (
             'id', 'payment_method', 'payment_method_name', 'payment_method_code',
-            'amount', 'received_amount', 'change_amount', 'created_at',
+            'amount', 'received_amount', 'change_amount', 'source_command_payment',
+            'occurred_at', 'created_at',
         )
 
 
@@ -299,6 +300,7 @@ class SaleSerializer(serializers.ModelSerializer):
     discount_approved_by_name = serializers.SerializerMethodField()
     service_fee_waived_by_name = serializers.SerializerMethodField()
     beneficiary_user_name = serializers.SerializerMethodField()
+    customer_name = serializers.CharField(source='customer.name', read_only=True, default=None)
     cancelled_by_name = serializers.SerializerMethodField()
     subtotal = serializers.DecimalField(
         max_digits=14, decimal_places=2, read_only=True, coerce_to_string=True
@@ -355,6 +357,7 @@ class SaleSerializer(serializers.ModelSerializer):
             'discount_approved_by', 'discount_approved_by_name',
             'service_fee_waived', 'service_fee_waived_by', 'service_fee_waived_by_name',
             'beneficiary_user', 'beneficiary_user_name',
+            'customer', 'customer_name',
             'subtotal', 'promotion_discount_total', 'item_discount_total', 'discount',
             'service_fee_rate', 'service_fee_amount',
             'commission_rate', 'commission_amount',
@@ -459,16 +462,18 @@ class SaleCatalogProductSerializer(ProductSerializer):
         return f'{price:.2f}'
 
     def get_modifier_groups(self, product):
-        return [
-            {
+        def payload(link, required_quantity=None):
+            group = link.modifier_group
+            return {
                 'id': link.modifier_group_id,
-                'name': link.modifier_group.name,
-                'is_required': link.modifier_group.is_required,
-                'min_selections': link.modifier_group.min_selections,
-                'max_selections': link.modifier_group.max_selections,
-                'allow_option_quantity': link.modifier_group.allow_option_quantity,
+                'name': group.name,
+                'is_required': group.is_required,
+                'min_selections': group.min_selections,
+                'max_selections': group.max_selections,
+                'allow_option_quantity': group.allow_option_quantity,
+                'required_quantity': required_quantity,
                 'sort_order': link.sort_order,
-                'status': link.modifier_group.status,
+                'status': group.status,
                 'options': [
                     {
                         'id': option.pk,
@@ -479,11 +484,25 @@ class SaleCatalogProductSerializer(ProductSerializer):
                         'sort_order': option.sort_order,
                         'status': option.status,
                     }
-                    for option in getattr(link.modifier_group, 'operational_options', ())
+                    for option in getattr(group, 'operational_options', ())
                 ],
             }
+
+        groups = [
+            payload(link)
             for link in getattr(product, 'operational_modifier_group_links', ())
         ]
+        group_ids = {group['id'] for group in groups}
+        for component in getattr(product, 'components', ()).all():
+            child = component.component_product
+            for link in getattr(child, 'operational_modifier_group_links', ()):
+                if (
+                    link.modifier_group_id not in group_ids
+                    and link.modifier_group.substitution_component_id == child.pk
+                ):
+                    groups.append(payload(link, str(component.quantity)))
+                    group_ids.add(link.modifier_group_id)
+        return groups
 
 
 class StrictDecimalField(serializers.DecimalField):
@@ -531,6 +550,11 @@ class CalculationSerializer(serializers.Serializer):
         pk_field=serializers.IntegerField(min_value=1, max_value=MAX_BIGINT),
         required=False,
         allow_null=True,
+    )
+    customer = serializers.PrimaryKeyRelatedField(
+        queryset=Sale._meta.get_field('customer').remote_field.model.objects.all(),
+        pk_field=serializers.IntegerField(min_value=1, max_value=MAX_BIGINT),
+        required=False, allow_null=True,
     )
     service_fee_waived = serializers.BooleanField(required=False, default=False)
 

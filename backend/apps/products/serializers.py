@@ -143,6 +143,11 @@ class ProductFractionComponentSerializer(serializers.ModelSerializer):
 
 
 class FractionableProductConfigSerializer(serializers.ModelSerializer):
+    package_content = serializers.DecimalField(
+        max_digits=24, decimal_places=9, min_value=Decimal('0.000000001'),
+        required=True, allow_null=True,
+    )
+
     class Meta:
         model = FractionableProductConfig
         fields = (
@@ -155,6 +160,10 @@ class FractionableProductConfigSerializer(serializers.ModelSerializer):
         )
 
     def validate(self, attrs):
+        if attrs.get('package_content') is None:
+            raise serializers.ValidationError({
+                'package_content': 'Informe o conteúdo da embalagem para este produto.'
+            })
         product = attrs.get('product', getattr(self.instance, 'product', None))
         if product and (
             product.inventory_behavior != InventoryBehavior.DIRECT
@@ -255,8 +264,10 @@ class ProductSerializer(CompanyBoundSerializer):
             'description', 'internal_code', 'barcode', 'unit', 'cost', 'sale_price',
             'sku',
             'image', 'is_sellable', 'is_favorite', 'inventory_behavior', 'status',
+            'archived_at', 'archived_by',
             'available_counter', 'available_table', 'available_command',
             'participates_in_service_fee', 'participates_in_commission',
+            'emits_ticket',
             'components', 'fraction_components', 'suggested_cost', 'suggested_sale_price',
             'branch_configuration', 'branch_stock', 'fraction_config',
             'production_destinations', 'suppliers',
@@ -280,7 +291,7 @@ class ProductSerializer(CompanyBoundSerializer):
             fields.pop('suggested_cost', None)
         if getattr(self.context.get('view'), 'action', None) != 'retrieve':
             for field in (
-                'branch_configuration', 'branch_stock', 'fraction_config',
+                'branch_configuration', 'fraction_config',
                 'production_destinations', 'suppliers',
             ):
                 fields.pop(field, None)
@@ -533,18 +544,15 @@ class ProductSerializer(CompanyBoundSerializer):
             exact_multiply(item.component_product.cost, item.quantity)
             for item in obj.components.all()
         ]
-        contributions.extend(
-            exact_multiply(
-                item.component_product.cost,
-                exact_content_equivalent(
-                    item.content_quantity,
-                    item.component_product.fraction_config.package_content,
-                ),
-            )
-            for item in obj.fraction_components.select_related(
-                'component_product__fraction_config'
-            )
-        )
+        for item in obj.fraction_components.select_related(
+            'component_product__fraction_config'
+        ):
+            config = self._valid_fraction_config(item.component_product)
+            if config:
+                contributions.append(exact_multiply(
+                    item.component_product.cost,
+                    exact_content_equivalent(item.content_quantity, config.package_content),
+                ))
         value = exact_sum(contributions)
         value = value.quantize(Decimal('0.01'))
         return f'{value:.2f}'
@@ -560,18 +568,15 @@ class ProductSerializer(CompanyBoundSerializer):
             exact_multiply(item.component_product.sale_price, item.quantity)
             for item in obj.components.all()
         ]
-        contributions.extend(
-            exact_multiply(
-                item.component_product.sale_price,
-                exact_content_equivalent(
-                    item.content_quantity,
-                    item.component_product.fraction_config.package_content,
-                ),
-            )
-            for item in obj.fraction_components.select_related(
-                'component_product__fraction_config'
-            )
-        )
+        for item in obj.fraction_components.select_related(
+            'component_product__fraction_config'
+        ):
+            config = self._valid_fraction_config(item.component_product)
+            if config:
+                contributions.append(exact_multiply(
+                    item.component_product.sale_price,
+                    exact_content_equivalent(item.content_quantity, config.package_content),
+                ))
         value = exact_sum(contributions)
         value = value.quantize(Decimal('0.01'))
         return f'{value:.2f}'
@@ -600,6 +605,16 @@ class ProductSerializer(CompanyBoundSerializer):
             'sale_price': f'{(product.sale_price if branch_price is None else branch_price):.2f}',
         }
 
+    @staticmethod
+    def _valid_fraction_config(product):
+        try:
+            config = product.fraction_config
+        except FractionableProductConfig.DoesNotExist:
+            return None
+        if config.package_content is None or config.package_content <= 0:
+            return None
+        return config
+
     def get_branch_stock(self, product):
         from apps.inventory.content import (
             content_breakdown, exact_content_equivalent, exact_multiply,
@@ -617,13 +632,12 @@ class ProductSerializer(CompanyBoundSerializer):
             result = {
                 'applicable': True,
                 'semantic': 'actual',
+                'stock_id': stock.pk if stock else None,
                 'current_quantity': format(stock.current_quantity if stock else Decimal('0'), 'f'),
+                'minimum_quantity': format(stock.minimum_quantity if stock else Decimal('0'), 'f'),
                 'unit': product.unit,
             }
-            try:
-                config = product.fraction_config
-            except FractionableProductConfig.DoesNotExist:
-                config = None
+            config = self._valid_fraction_config(product)
             if config and config.tracking_active:
                 complete, residual = content_breakdown(
                     stock.current_content if stock else Decimal('0'),
@@ -668,13 +682,15 @@ class ProductSerializer(CompanyBoundSerializer):
         for component in product.fraction_components.select_related(
             'component_product__fraction_config'
         ):
+            config = self._valid_fraction_config(component.component_product)
+            if not config:
+                continue
             stock = Stock.objects.filter(
                 product=component.component_product, branch=branch
             ).first()
             available = stock.current_content if stock and stock.current_content else Decimal('0')
             capacities.append(available / component.content_quantity)
             if self._can_view_costs(branch):
-                config = component.component_product.fraction_config
                 unit_cost = (
                     stock.average_unit_cost
                     if stock and stock.average_unit_cost is not None
@@ -928,11 +944,24 @@ class ProductDestinationsSerializer(serializers.Serializer):
     )
 
 
+class ProductPrintersSerializer(serializers.Serializer):
+    printers = serializers.ListField(
+        child=serializers.IntegerField(min_value=1), allow_empty=True,
+    )
+
+    def validate_printers(self, value):
+        if len(value) != len(set(value)):
+            raise serializers.ValidationError('Não repita impressoras.')
+        return value
+
+
 class ModifierOptionSerializer(serializers.ModelSerializer):
+    stock_product_name = serializers.CharField(source='stock_product.name', read_only=True)
     class Meta:
         model = ModifierOption
         fields = (
             'id', 'modifier_group', 'name', 'option_type', 'additional_price',
+            'stock_product', 'stock_product_name',
             'sort_order', 'status', 'created_at', 'updated_at',
         )
         read_only_fields = ('id', 'created_at', 'updated_at')
@@ -941,6 +970,10 @@ class ModifierOptionSerializer(serializers.ModelSerializer):
         return ' '.join((value or '').split())
 
     def validate(self, attrs):
+        if not self.instance and attrs.get('option_type') == ModifierOptionType.TEXT:
+            raise serializers.ValidationError({
+                'option_type': 'Use Adicionar sem estoque para novas opções sem produto.'
+            })
         request = self.context.get('request')
         group = attrs.get('modifier_group', getattr(self.instance, 'modifier_group', None))
         if request and group and not request.user.is_superuser:
@@ -959,7 +992,8 @@ class ModifierGroupSerializer(serializers.ModelSerializer):
         model = ModifierGroup
         fields = (
             'id', 'company', 'name', 'is_required', 'min_selections',
-            'max_selections', 'allow_option_quantity', 'sort_order',
+            'max_selections', 'allow_option_quantity', 'substitution_component',
+            'inherit_component_quantity', 'sort_order',
             'status', 'options', 'created_at', 'updated_at',
         )
         read_only_fields = ('id', 'created_at', 'updated_at')

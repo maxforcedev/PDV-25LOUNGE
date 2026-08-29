@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { Download, Filter } from "lucide-react";
+import { Filter } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { PeriodFilter, type PeriodValue } from "@/components/period-filter";
+import { ReportExportAction } from "@/components/report-export-action";
 import {
   Alert,
   Button,
@@ -556,7 +557,7 @@ function SalesTable({
               row.operation_type === "consumption" || kind === "consumptions";
             const canOpen = isConsumption ? canViewConsumptions : canViewSales;
             return (
-              <tr key={String(row.id)}>
+              <tr key={String(row.operation_key)}>
                 <td>
                   <strong>{String(row.sale_number)}</strong>
                 </td>
@@ -698,13 +699,13 @@ function RankingTable({
           </tr>
         </thead>
         <tbody>
-          {list.map((row, index) => {
-            const user = row.user as { name?: string } | undefined;
+          {list.map((row) => {
+            const user = row.user as { id?: number; name?: string } | undefined;
             const label = row.product_name || row.name || user?.name || "-";
             const amount = row.revenue || row.sales_revenue || "0";
             return (
               <tr
-                key={String(row.product_id || row.code || user?.name || index)}
+                key={String(row.product_id ? `product:${row.product_id}` : row.code ? `payment:${row.code}` : `user:${user?.id}`)}
               >
                 <td>
                   <strong>{String(label)}</strong>
@@ -795,8 +796,8 @@ function CategoryRanking({ summary }: { summary: Record<string, unknown> }) {
               </tr>
             </thead>
             <tbody>
-              {categories.map((row, index) => (
-                <tr key={String(row.category_id || index)}>
+              {categories.map((row) => (
+                <tr key={`category:${String(row.category_id || "unassigned")}`}>
                   <td>
                     <strong>
                       {String(row.category_name || "Sem categoria")}
@@ -844,8 +845,8 @@ function SalesSections({ summary }: { summary: Record<string, unknown> }) {
                 </tr>
               </thead>
               <tbody>
-                {products.map((row, index) => (
-                  <tr key={String(row.product_id || index)}>
+                {products.map((row) => (
+                  <tr key={`product:${String(row.product_id)}`}>
                     <td>
                       <strong>{String(row.product_name)}</strong>
                       <small className="block text-slate-500">
@@ -881,8 +882,8 @@ function SalesSections({ summary }: { summary: Record<string, unknown> }) {
                 </tr>
               </thead>
               <tbody>
-                {categories.map((row, index) => (
-                  <tr key={String(row.category_id || index)}>
+                {categories.map((row) => (
+                  <tr key={`category:${String(row.category_id || "unassigned")}`}>
                     <td>
                       <strong>{String(row.category_name)}</strong>
                     </td>
@@ -906,9 +907,9 @@ function SalesSections({ summary }: { summary: Record<string, unknown> }) {
         </div>
         {payments.length ? (
           <div className="divide-y divide-slate-100">
-            {payments.map((row, index) => (
+            {payments.map((row) => (
               <div
-                key={String(row.code || index)}
+                key={`payment:${String(row.code)}`}
                 className="flex items-center justify-between px-5 py-3 text-sm"
               >
                 <span>{String(row.name)}</span>
@@ -1208,8 +1209,8 @@ function ConsumptionFinancials({
               </tr>
             </thead>
             <tbody>
-              {payments.map((row, index) => (
-                <tr key={String(row.code || index)}>
+              {payments.map((row) => (
+                <tr key={`payment:${String(row.code)}`}>
                   <td>
                     <strong>{String(row.name || row.code)}</strong>
                   </td>
@@ -1298,8 +1299,8 @@ function ConsumptionGroups({ summary }: { summary: Record<string, unknown> }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {list.map((row, index) => (
-                    <tr key={`${title}-${index}`}>
+                  {list.map((row) => (
+                    <tr key={`${title}:${String((row.beneficiary as { id?: number } | undefined)?.id || row.user_type || "unassigned")}`}>
                       <td>
                         <strong>{label(row)}</strong>
                       </td>
@@ -1346,8 +1347,8 @@ function WithdrawalCategories({
             </tr>
           </thead>
           <tbody>
-            {categories.map((row, index) => (
-              <tr key={String(row.category || index)}>
+            {categories.map((row) => (
+              <tr key={`withdrawal-category:${String(row.category)}`}>
                 <td>
                   <strong>{String(row.category_label || row.category)}</strong>
                 </td>
@@ -1492,8 +1493,8 @@ function CashSummarySections({
                 </tr>
               </thead>
               <tbody>
-                {payments.map((row, index) => (
-                  <tr key={String(row.code || index)}>
+                {payments.map((row) => (
+                  <tr key={`payment:${String(row.code)}`}>
                     <td>
                       <strong>{String(row.name)}</strong>
                     </td>
@@ -1572,7 +1573,7 @@ function CashTable({
               unknown
             >;
             return (
-              <tr key={String(row.id)}>
+              <tr key={`cash-session:${String(row.id)}`}>
                 <td>
                   {canViewCash ? (
                     <Link
@@ -1674,13 +1675,14 @@ function StockConsumption({
                 </tr>
               </thead>
               <tbody>
-                {products.map((row, index) => {
+                {products.map((row) => {
                   const product = row.product as {
+                    id?: number;
                     name?: string;
                     unit?: string;
                   };
                   return (
-                    <tr key={index}>
+                    <tr key={`product:${String(product.id)}`}>
                       <td>
                         <strong>{product.name}</strong>
                       </td>
@@ -1722,10 +1724,10 @@ function StockConsumption({
                 </tr>
               </thead>
               <tbody>
-                {data.results.map((row, index) => {
+                {data.results.map((row) => {
                   const product = row.product as { name?: string };
                   return (
-                    <tr key={index}>
+                    <tr key={`stock-movement:${String(row.id)}`}>
                       <td>{formatDate(String(row.created_at))}</td>
                       <td>{product.name}</td>
                       <td>{domainLabel(row.origin)}</td>
@@ -1934,7 +1936,7 @@ function ReportBody({
                     } | null;
                     const operator = row.operator as { name?: string };
                     return (
-                      <tr key={String(row.id)}>
+                      <tr key={`withdrawal:${String(row.id)}`}>
                         <td>{formatDate(String(row.created_at))}</td>
                         <td>{String(row.category_label)}</td>
                         <td>{beneficiary?.name || "-"}</td>
@@ -2015,7 +2017,6 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
   const [prices, setPrices] = useState<ProductPriceComparison | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-  const [downloading, setDownloading] = useState(false);
   const allowed = hasPermission(config.permission);
 
   function params(nextPeriod = appliedPeriod, nextFilters = appliedFilters) {
@@ -2151,37 +2152,6 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
       });
   }, [currentBranch?.id, kind, allowed]);
 
-  async function download() {
-    if (!currentBranch || !data || kind === "prices") return;
-    setDownloading(true);
-    try {
-      const base = (
-        process.env.NEXT_PUBLIC_API_URL || "http://localhost:18000/api/v1"
-      ).replace(/\/$/, "");
-      const query = params();
-      query.set("export", "csv");
-      const response = await fetch(
-        `${base}/reports/${config.endpoint}/?${query}`,
-        {
-          credentials: "include",
-          headers: { "X-Branch-ID": String(currentBranch.id) },
-        },
-      );
-      if (!response.ok) throw new Error();
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `${kind}.csv`;
-      link.click();
-      URL.revokeObjectURL(url);
-    } catch {
-      setError("Não foi possível exportar este relatório.");
-    } finally {
-      setDownloading(false);
-    }
-  }
-
   function clearReportFilters() {
     const resetPeriod = initialPeriod();
     setPeriod(resetPeriod);
@@ -2218,16 +2188,20 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
             <Link className="btn btn-secondary" href="/relatorios">
               Central
             </Link>
-            {kind !== "prices" && hasPermission(permissions.exportReports) && (
-              <Button
-                variant="secondary"
-                loading={downloading}
-                onClick={() => void download()}
-              >
-                <Download className="size-4" />
-                Exportar
-              </Button>
-            )}
+            <ReportExportAction
+              path={
+                kind === "prices"
+                  ? "products/price-comparison/"
+                  : `reports/${config.endpoint}/`
+              }
+              query={
+                kind === "prices"
+                  ? new URLSearchParams(
+                      Object.entries(appliedFilters).filter(([, value]) => value),
+                    )
+                  : params()
+              }
+            />
           </div>
         }
       />

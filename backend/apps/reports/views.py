@@ -13,6 +13,8 @@ from rest_framework.views import APIView
 from apps.accounts.models import User
 from apps.base.datetimes import canonical_datetime_range, parse_datetime_range
 from apps.base.export_labels import export_label, export_value
+from apps.base.audit import audit_log
+from apps.base.report_exports import render_report_export, report_key_value_rows
 from apps.base.pagination import StandardPagination
 from apps.cash.models import (
     CashMovement, CashMovementType, CashRegister, CashSession, WithdrawalCategory,
@@ -215,6 +217,7 @@ class ReportsOptionsView(APIView):
         )
         users = User.objects.filter(
             is_active=True,
+            archived_at__isnull=True,
             company_accesses__company_id=branch.company_id,
             company_accesses__is_active=True,
         ).distinct().order_by('first_name', 'last_name', 'id') if (
@@ -222,6 +225,7 @@ class ReportsOptionsView(APIView):
         ) else User.objects.none()
         operators = User.objects.filter(
             is_active=True,
+            archived_at__isnull=True,
             branch_accesses__branch=branch,
             branch_accesses__is_active=True,
         ).distinct().order_by('first_name', 'last_name', 'id') if can_view_team else User.objects.none()
@@ -340,7 +344,7 @@ class BaseReportView(APIView):
         return self.row_serializer_class(rows, many=True, context={'request': request}).data
 
     def respond(self, request, *, rows, period, summary):
-        if request.query_params.get('export') == 'csv':
+        if request.query_params.get('export') in ('csv', 'xlsx', 'pdf'):
             data = self.serialize_rows(rows, request)
             headers = self.csv_headers
             if not user_has_code(request, 'commissions.view'):
@@ -348,7 +352,13 @@ class BaseReportView(APIView):
                     header for header in headers
                     if header not in ('commission', 'commission_amount')
                 )
-            return csv_response(self.csv_filename, headers, data)
+                summary = {
+                    key: value for key, value in (summary or {}).items()
+                    if key not in ('commission', 'commission_amount')
+                }
+            return self.export_response(
+                request, headers=headers, rows=data, period=period, summary=summary,
+            )
         paginator = StandardPagination()
         page = paginator.paginate_queryset(rows, request, view=self)
         data = self.serialize_rows(page, request)
@@ -360,6 +370,19 @@ class BaseReportView(APIView):
             'previous': paginator.get_previous_link(),
             'results': data,
         })
+
+    def export_response(self, request, *, headers, rows, period=None, summary=None, filename=None, title=None):
+        response = render_report_export(
+            request, filename=filename or self.csv_filename,
+            title=title or self.csv_filename.rsplit('.', 1)[0].replace('-', ' ').title(),
+            headers=headers, rows=rows, period=period, summary=summary,
+        )
+        audit_log(
+            actor=request.user, action='report.export', company=request.branch_context.company,
+            branch=request.branch_context,
+            metadata={'report': self.__class__.__name__, 'format': request.query_params['export']},
+        )
+        return response
 
 
 class DashboardView(APIView):
@@ -374,6 +397,8 @@ class DashboardView(APIView):
     )
 
     def get(self, request):
+        if request.query_params.get('export') in ('csv', 'xlsx', 'pdf') and not user_has_code(request, 'reports.export'):
+            raise PermissionDenied('Você não possui permissão para exportar relatórios.')
         start, end = parse_datetime_range(request.query_params, default_today=True)
         branch = request.branch_context
         response = {'period': canonical_datetime_range(start, end)}
@@ -683,6 +708,15 @@ class DashboardView(APIView):
                     'operating_expenses', 'fixed_cost',
                 ):
                     response['operational_result'].pop(key, None)
+        if request.query_params.get('export') in ('csv', 'xlsx', 'pdf'):
+            export = render_report_export(
+                request, filename='dashboard.csv', title='Dashboard',
+                headers=('indicator', 'value'), rows=report_key_value_rows(response),
+                period=response['period'], summary=None,
+            )
+            audit_log(actor=request.user, action='report.export', company=branch.company, branch=branch,
+                      metadata={'report': 'DashboardView', 'format': request.query_params['export']})
+            return export
         return Response(response)
 
 
@@ -702,7 +736,7 @@ class SalesReportView(BaseReportView):
     row_serializer_class = ReportSaleSerializer
     csv_filename = 'relatorio-vendas.csv'
     csv_headers = (
-        'id', 'event_type', 'event_at', 'event_sign', 'sale_number', 'channel', 'status',
+        'operation_id', 'operation_type', 'operation_key', 'event_type', 'event_at', 'event_sign', 'sale_number', 'channel', 'status',
         'operator', 'seller', 'subtotal',
         'promotion_discount_total', 'item_discount_total', 'discount',
         'sales_revenue', 'consumption_charged', 'effective_revenue', 'service_fee',
@@ -957,7 +991,7 @@ class SalesReportView(BaseReportView):
         }.get(scope)
         if summary_keys is not None:
             result = {key: value for key, value in result.items() if key in summary_keys}
-        if request.query_params.get('export') == 'csv':
+        if request.query_params.get('export') in ('csv', 'xlsx', 'pdf'):
             if scope == 'products':
                 ranking_rows = [
                     {
@@ -978,10 +1012,10 @@ class SalesReportView(BaseReportView):
                     }
                     for row in result.get('category_ranking', [])
                 ]
-                return csv_response(
-                    'relatorio-produtos.csv',
-                    ('ranking_type', 'name', 'internal_code', 'quantity', 'sales_revenue'),
-                    ranking_rows,
+                return self.export_response(
+                    request, filename='relatorio-produtos.csv', title='Relatório de produtos',
+                    headers=('ranking_type', 'name', 'internal_code', 'quantity', 'sales_revenue'),
+                    rows=ranking_rows, period=canonical_datetime_range(start, end), summary=result,
                 )
             if scope == 'receipts':
                 filtered_method = result.get('filtered_payment_method') or {}
@@ -1009,9 +1043,9 @@ class SalesReportView(BaseReportView):
                     }
                     for row in result.get('payment_totals', [])
                 ]
-                return csv_response(
-                    'relatorio-recebimentos.csv',
-                    (
+                return self.export_response(
+                    request, filename='relatorio-recebimentos.csv', title='Relatório de recebimentos',
+                    headers=(
                         'row_type', 'code', 'name', 'sales_revenue',
                         'consumption_charged', 'effective_revenue', 'service_fee',
                         'total_received', 'reconciliation_delta',
@@ -1020,7 +1054,7 @@ class SalesReportView(BaseReportView):
                         'reversal_payment_total', 'payment_total', 'is_filtered_method',
                         'filtered_subtotal_is_integral_revenue',
                     ),
-                    export_rows,
+                    rows=export_rows, period=canonical_datetime_range(start, end), summary=result,
                 )
             if scope in ('operators', 'sellers', 'commissions'):
                 key = 'operator_groups' if scope == 'operators' else 'seller_groups'
@@ -1037,7 +1071,10 @@ class SalesReportView(BaseReportView):
                 )
                 if scope == 'commissions':
                     headers += ('commission',)
-                return csv_response(f'relatorio-{scope}.csv', headers, group_rows)
+                return self.export_response(
+                    request, filename=f'relatorio-{scope}.csv', title=f'Relatório {scope}',
+                    headers=headers, rows=group_rows, period=canonical_datetime_range(start, end), summary=result,
+                )
         if scope == 'discounts':
             detail_rows = event_rows(discounted_graph, discounted_reversals)
         else:
@@ -1207,7 +1244,7 @@ class OperationalResultReportView(BaseReportView):
             'Entradas pela criação e reversões pela data do cancelamento. '
             'Estimativa operacional; não constitui DRE contábil.'
         )
-        if request.query_params.get('export') == 'csv':
+        if request.query_params.get('export') in ('csv', 'xlsx', 'pdf'):
             labels = {
                 'sales_inflow_count': 'Vendas - entradas',
                 'sales_reversal_count': 'Vendas - reversões',
@@ -1252,8 +1289,9 @@ class OperationalResultReportView(BaseReportView):
                 for key, label in labels.items() if key in data
             ]
             rows.append({'statement': 'Observação', 'value': data['notice']})
-            return csv_response(
-                self.csv_filename, ('statement', 'value'), rows,
+            return self.export_response(
+                request, headers=('statement', 'value'), rows=rows,
+                period=canonical_datetime_range(start, end), summary=data,
             )
         return self.respond(
             request,
@@ -1482,7 +1520,7 @@ class CashReportView(BaseReportView):
                     reversal_sales=clipped_reversals
                 )['commission']
             )
-        if request.query_params.get('export') == 'csv':
+        if request.query_params.get('export') in ('csv', 'xlsx', 'pdf'):
             export_rows = [{
                 'scope': 'requested_period',
                 'period_start': start,
@@ -1561,7 +1599,10 @@ class CashReportView(BaseReportView):
             )
             if user_has_code(request, 'commissions.view'):
                 headers += ('period_commission', 'complete_session_commission')
-            return csv_response(self.csv_filename, headers, export_rows)
+            return self.export_response(
+                request, headers=headers, rows=export_rows,
+                period=canonical_datetime_range(start, end), summary=summary,
+            )
         return self.respond(
             request,
             rows=sessions,
@@ -1751,7 +1792,7 @@ class StockConsumptionReportView(BaseReportView):
         }
         if include_cost:
             summary['estimated_cost'] = decimal_string(sum((row['estimated_cost'] for row in summary_rows), Decimal('0.00')))
-        if request.query_params.get('export') == 'csv':
+        if request.query_params.get('export') in ('csv', 'xlsx', 'pdf'):
             product_rows = StockConsumptionSummarySerializer(
                 summary_rows, many=True, context={'include_cost': include_cost}
             ).data
@@ -1803,7 +1844,10 @@ class StockConsumptionReportView(BaseReportView):
             )
             if include_cost:
                 headers += ('estimated_cost',)
-            return csv_response(self.csv_filename, headers, export_rows)
+            return self.export_response(
+                request, headers=headers, rows=export_rows,
+                period=canonical_datetime_range(start, end), summary=summary,
+            )
         return self.respond(
             request, rows=rows, period=canonical_datetime_range(start, end), summary=summary,
         )

@@ -4,12 +4,14 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import BooleanField, Count, Max, OuterRef, Q, Subquery, Value
 from django.db.models.functions import Coalesce
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from apps.base.audit import audit_log, model_snapshot
+from apps.base.report_exports import render_report_export
 from apps.companies.models import Branch, Company, Status
 from apps.companies.selectors import (
     accessible_companies, user_has_branch_permission, user_has_company_permission,
@@ -299,14 +301,19 @@ class ProductViewSet(CatalogViewSet):
         'fraction_config': 'products.configure_fraction',
         'activate_fraction_config': 'products.configure_fraction',
         'production_destinations': 'products.configure_destinations',
+        'production_printers': 'products.configure_destinations',
         'duplicate': 'products.duplicate',
         'copy_branch_config': 'products.configure_branch',
         'copy_category_config': 'products.configure_branch',
+        'archive': 'products.change_status',
+        'restore': 'products.change_status',
+        'minimum_stock': 'inventory.change_minimum',
     }
 
     audit_fields = (
         'category_id', 'name', 'description', 'internal_code', 'sku', 'barcode', 'unit',
         'cost', 'sale_price', 'image', 'status', 'inventory_behavior',
+        'archived_at', 'archived_by_id',
         'is_sellable', 'is_favorite', 'available_counter', 'available_table',
         'available_command', 'participates_in_service_fee',
         'participates_in_commission',
@@ -368,6 +375,14 @@ class ProductViewSet(CatalogViewSet):
         sellable = params.get('is_sellable')
         favorite = params.get('is_favorite')
         search = params.get('search')
+        lifecycle = params.get('lifecycle')
+        if lifecycle:
+            if lifecycle not in ('active', 'archived', 'all'):
+                raise ValidationError({'lifecycle': 'Informe active, archived ou all.'})
+            if lifecycle == 'active':
+                queryset = queryset.filter(archived_at__isnull=True)
+            elif lifecycle == 'archived':
+                queryset = queryset.filter(archived_at__isnull=False)
         if category:
             queryset = queryset.filter(category_id=category)
         if behavior:
@@ -410,10 +425,46 @@ class ProductViewSet(CatalogViewSet):
                     effective_branch_available=True,
                     effective_branch_channel=True,
                 )
-            return queryset.filter(status=Status.ACTIVE, is_sellable=True).order_by(
+            return queryset.filter(
+                status=Status.ACTIVE, is_sellable=True, archived_at__isnull=True,
+            ).order_by(
                 '-is_favorite', 'category__sort_order', 'name', 'id'
             )
         return queryset.order_by('-is_favorite', 'name', 'id')
+
+    @action(detail=True, methods=('post',))
+    @transaction.atomic
+    def archive(self, request, pk=None):
+        product = self.get_object()
+        if product.archived_at:
+            return Response(self.get_serializer(product).data)
+        before = model_snapshot(product, ('archived_at', 'archived_by_id'))
+        product.archived_at = timezone.now()
+        product.archived_by = request.user
+        product.save(update_fields=('archived_at', 'archived_by', 'updated_at'))
+        audit_log(
+            actor=request.user, action='product.archive', obj=product,
+            company=product.company, before=before,
+            after=model_snapshot(product, ('archived_at', 'archived_by_id')),
+        )
+        return Response(self.get_serializer(product).data)
+
+    @action(detail=True, methods=('post',))
+    @transaction.atomic
+    def restore(self, request, pk=None):
+        product = self.get_object()
+        if not product.archived_at:
+            return Response(self.get_serializer(product).data)
+        before = model_snapshot(product, ('archived_at', 'archived_by_id'))
+        product.archived_at = None
+        product.archived_by = None
+        product.save(update_fields=('archived_at', 'archived_by', 'updated_at'))
+        audit_log(
+            actor=request.user, action='product.restore', obj=product,
+            company=product.company, before=before,
+            after=model_snapshot(product, ('archived_at', 'archived_by_id')),
+        )
+        return Response(self.get_serializer(product).data)
 
     @transaction.atomic
     def perform_create(self, serializer):
@@ -585,6 +636,29 @@ class ProductViewSet(CatalogViewSet):
         )
         return Response(serializer.data)
 
+    @action(detail=True, methods=('get', 'put'), url_path='minimum-stock')
+    @transaction.atomic
+    def minimum_stock(self, request, pk=None):
+        product = self.get_object()
+        branch = request.branch_context
+        if product.inventory_behavior != InventoryBehavior.DIRECT:
+            return Response({'applicable': False, 'semantic': 'not_applicable'})
+        from apps.inventory.models import Stock
+        from apps.inventory.serializers import MinimumQuantitySerializer, StockSerializer
+
+        stock, _created = Stock.objects.get_or_create(product=product, branch=branch)
+        if request.method == 'PUT':
+            serializer = MinimumQuantitySerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            from apps.inventory.services import set_minimum
+
+            stock = set_minimum(
+                stock=stock,
+                minimum_quantity=serializer.validated_data['minimum_quantity'],
+                user=request.user,
+            )
+        return Response(StockSerializer(stock, context={'request': request}).data)
+
     @action(detail=True, methods=('get', 'put'), url_path='fraction-config')
     @transaction.atomic
     def fraction_config(self, request, pk=None):
@@ -657,6 +731,54 @@ class ProductViewSet(CatalogViewSet):
             after={'destinations': [item.pk for item in destinations]},
         )
         return Response(ProductionDestinationSerializer(destinations, many=True).data)
+
+    @action(detail=True, methods=('get', 'put'), url_path='production-printers')
+    @transaction.atomic
+    def production_printers(self, request, pk=None):
+        from apps.production.models import PrinterDevice
+        from apps.production.serializers import PrinterDeviceSerializer
+        from .serializers import ProductPrintersSerializer
+
+        product = self.get_object()
+        branch = request.branch_context
+        printers = PrinterDevice.objects.filter(
+            branch=branch,
+            destinations__product_links__product=product,
+        ).distinct().prefetch_related('destinations').order_by('name', 'id')
+        if request.method == 'GET':
+            if request.query_params.get('available') == 'true':
+                printers = PrinterDevice.objects.filter(
+                    branch=branch, status=Status.ACTIVE,
+                ).prefetch_related('destinations').order_by('name', 'id')
+            return Response(PrinterDeviceSerializer(printers, many=True).data)
+
+        serializer = ProductPrintersSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        selected = list(PrinterDevice.objects.filter(
+            branch=branch, status=Status.ACTIVE,
+            pk__in=serializer.validated_data['printers'],
+        ).prefetch_related('destinations'))
+        if len(selected) != len(serializer.validated_data['printers']):
+            raise ValidationError({'printers': 'Uma impressora não pertence à filial ou está inativa.'})
+        destinations = [device.destinations.order_by('id').first() for device in selected]
+        if any(destination is None for destination in destinations):
+            raise ValidationError({'printers': 'Uma impressora não possui destino operacional.'})
+        before = list(printers.values_list('pk', flat=True))
+        for link in ProductProductionDestination.objects.filter(
+            product=product, destination__branch=branch,
+        ):
+            link.delete()
+        for destination in destinations:
+            ProductProductionDestination.objects.create(
+                product=product, destination=destination,
+            )
+        audit_log(
+            actor=request.user, action='product.production_printers.update',
+            obj=product, company=product.company, branch=branch,
+            before={'printers': before},
+            after={'printers': [device.pk for device in selected]},
+        )
+        return Response(PrinterDeviceSerializer(selected, many=True).data)
 
     @action(detail=True, methods=('post',))
     @transaction.atomic
@@ -761,6 +883,12 @@ class ProductViewSet(CatalogViewSet):
 
     @action(detail=False, methods=['get'], url_path='price-comparison')
     def price_comparison(self, request):
+        if request.query_params.get('export') in ('csv', 'xlsx', 'pdf') and not (
+            request.user.is_superuser or user_has_company_permission(
+                request.user, request.branch_context.company_id, 'reports.export'
+            )
+        ):
+            raise PermissionDenied('Você não possui permissão para exportar relatórios.')
         filters = {}
         for parameter in ('product', 'category'):
             if request.query_params.get(parameter):
@@ -776,9 +904,27 @@ class ProductViewSet(CatalogViewSet):
             if product_status not in Status.values:
                 raise ValidationError({'status': 'Informe um status válido.'})
             filters['status'] = product_status
-        return Response(branch_price_comparison(
-            request.branch_context.company_id, **filters,
-        ))
+        data = branch_price_comparison(request.branch_context.company_id, **filters)
+        if request.query_params.get('export') in ('csv', 'xlsx', 'pdf'):
+            branch_columns = {
+                branch['id']: f'Preço - {branch["name"]}' for branch in data['branches']
+            }
+            headers = ('product_name', 'internal_code', 'default_price') + tuple(
+                branch_columns.values()
+            )
+            rows = [{
+                'product_name': product['name'], 'internal_code': product['internal_code'],
+                'default_price': product['default_price'],
+                **{branch_columns[branch['id']]: product['prices'].get(str(branch['id'])) for branch in data['branches']},
+            } for product in data['products']]
+            response = render_report_export(
+                request, filename='comparativo-precos.csv', title='Comparativo de preços',
+                headers=headers, rows=rows,
+            )
+            audit_log(actor=request.user, action='report.export', company=request.branch_context.company,
+                      branch=request.branch_context, metadata={'report': 'price_comparison', 'format': request.query_params['export']})
+            return response
+        return Response(data)
 
 
 class BranchProductPriceViewSet(viewsets.ModelViewSet):
@@ -1106,6 +1252,11 @@ class ModifierGroupViewSet(viewsets.ModelViewSet):
         company = self.request.query_params.get('company')
         if company:
             queryset = queryset.filter(company_id=company)
+        item_status = self.request.query_params.get('status')
+        if item_status and item_status != 'all':
+            queryset = queryset.filter(status=item_status)
+        elif self.action == 'list':
+            queryset = queryset.filter(status=Status.ACTIVE)
         return queryset
 
     def get_permissions(self):
@@ -1136,13 +1287,15 @@ class ModifierGroupViewSet(viewsets.ModelViewSet):
             obj=group, company=group.company,
             after=model_snapshot(group, (
                 'company_id', 'name', 'is_required', 'min_selections',
-                'max_selections', 'allow_option_quantity', 'sort_order', 'status',
+                'max_selections', 'allow_option_quantity', 'substitution_component_id',
+                'inherit_component_quantity', 'sort_order', 'status',
             )),
         )
 
     def perform_update(self, serializer):
         fields = ('company_id', 'name', 'is_required', 'min_selections',
-                   'max_selections', 'allow_option_quantity', 'sort_order', 'status')
+                   'max_selections', 'allow_option_quantity', 'substitution_component_id',
+                   'inherit_component_quantity', 'sort_order', 'status')
         before = model_snapshot(serializer.instance, fields)
         group = serializer.save()
         audit_log(
@@ -1315,6 +1468,11 @@ class ModifierOptionViewSet(CatalogViewSet):
         group_id = self.request.query_params.get('modifier_group')
         if group_id:
             queryset = queryset.filter(modifier_group_id=group_id)
+        item_status = self.request.query_params.get('status')
+        if item_status and item_status != 'all':
+            queryset = queryset.filter(status=item_status)
+        elif self.action == 'list':
+            queryset = queryset.filter(status=Status.ACTIVE)
         return queryset
 
     @transaction.atomic
@@ -1326,12 +1484,14 @@ class ModifierOptionViewSet(CatalogViewSet):
         audit_log(
             actor=self.request.user, action='modifier_option.create',
             obj=option, company=option.modifier_group.company,
-            after=model_snapshot(option, ('name', 'option_type', 'additional_price', 'sort_order', 'status')),
+            after=model_snapshot(option, (
+                'name', 'option_type', 'additional_price', 'stock_product_id', 'sort_order', 'status',
+            )),
         )
 
     @transaction.atomic
     def perform_update(self, serializer):
-        fields = ('name', 'option_type', 'additional_price', 'sort_order', 'status')
+        fields = ('name', 'option_type', 'additional_price', 'stock_product_id', 'sort_order', 'status')
         before = model_snapshot(serializer.instance, fields)
         option = serializer.save()
         audit_log(

@@ -51,6 +51,10 @@ def _routed_object(request, view):
     queryset = getattr(view, 'queryset', None)
     model = getattr(queryset, 'model', None)
     if model is None:
+        serializer_class = getattr(view, 'serializer_class', None)
+        if serializer_class is not None:
+            model = getattr(getattr(serializer_class, 'Meta', None), 'model', None)
+    if model is None:
         basename = getattr(view, 'basename', None)
         if basename in ('company', 'branch', 'user', 'cash-beneficiary'):
             from apps.accounts.models import User
@@ -140,9 +144,9 @@ def _request_company_ids(request, view, user):
         if not branch:
             raise PermissionDenied('Filial de contexto invalida.')
         supplied_ids.add(branch.company_id)
-    company_id = request.query_params.get('company')
+    query_company_id = request.query_params.get('company')
     data = request.data if isinstance(request.data, dict) else {}
-    company_id = company_id or data.get('company')
+    payload_company_id = data.get('company')
     payload_branch_id = data.get('branch')
     if payload_branch_id:
         payload_branch = Branch.objects.filter(pk=payload_branch_id).only('company_id').first()
@@ -156,11 +160,24 @@ def _request_company_ids(request, view, user):
             if not payload_branch:
                 raise PermissionDenied('Filial informada invalida.')
             supplied_ids.add(payload_branch.company_id)
-    if company_id:
-        try:
-            supplied_ids.add(int(company_id))
-        except (TypeError, ValueError) as error:
-            raise PermissionDenied('Empresa de contexto invalida.') from error
+    for company_id in (query_company_id, payload_company_id):
+        if company_id:
+            try:
+                supplied_ids.add(int(company_id))
+            except (TypeError, ValueError) as error:
+                raise PermissionDenied('Empresa de contexto invalida.') from error
+    if len(supplied_ids) > 1:
+        raise PermissionDenied('Os dados informados pertencem a empresas diferentes.')
+    if (
+        getattr(view, 'basename', None) == 'user'
+        and obj is not None
+        and supplied_ids
+    ):
+        if len(supplied_ids) != 1 or not UserCompanyAccess.objects.filter(
+            user=obj, company_id=next(iter(supplied_ids))
+        ).exists():
+            raise PermissionDenied('O usuario nao pertence a empresa informada.')
+        object_ids = supplied_ids
     if object_ids and supplied_ids and object_ids != supplied_ids:
         raise PermissionDenied('O contexto informado nao corresponde ao objeto solicitado.')
     if object_ids:
@@ -264,6 +281,9 @@ class IsCompanyOwner(BasePermission):
             return False
         company_id = request.query_params.get('company') or request.data.get('company')
         if not company_id:
+            return False
+        support_session = getattr(request, 'support_session', None)
+        if support_session and str(support_session.company_id) != str(company_id):
             return False
         return UserCompanyAccess.objects.filter(
             company_id=company_id,

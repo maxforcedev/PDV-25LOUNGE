@@ -50,9 +50,11 @@ function PurchaseBadge({ status }: { status: PurchaseOrderStatus }) {
   const tone =
     status === "RECEIVED"
       ? "bg-success/10 text-success-strong"
-      : status === "CANCELLED"
-        ? "bg-danger/10 text-danger-strong"
-        : status === "PARTIALLY_RECEIVED"
+    : status === "CANCELLED"
+      ? "bg-danger/10 text-danger-strong"
+      : status === "DRAFT"
+        ? "bg-warning/15 text-warning-strong"
+      : status === "PARTIALLY_RECEIVED"
           ? "bg-warning/15 text-warning-strong"
           : "bg-info-surface text-info-strong";
   return (

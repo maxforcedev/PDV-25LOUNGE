@@ -107,12 +107,22 @@ class Product(BaseModel):
     available_command = models.BooleanField(default=True)
     participates_in_service_fee = models.BooleanField(default=True)
     participates_in_commission = models.BooleanField(default=True)
+    emits_ticket = models.BooleanField(default=False)
     inventory_behavior = models.CharField(
         max_length=20,
         choices=InventoryBehavior.choices,
         default=InventoryBehavior.DIRECT,
     )
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
+    archived_at = models.DateTimeField(blank=True, null=True, editable=False)
+    archived_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='archived_products',
+        blank=True,
+        null=True,
+        editable=False,
+    )
 
     class Meta:
         ordering = ('company__trade_name', 'name')
@@ -389,6 +399,10 @@ class FractionableProductConfig(BaseModel):
 
     def clean(self):
         super().clean()
+        if self.package_content is None:
+            raise ValidationError({
+                'package_content': 'Informe o conteúdo da embalagem para este produto.'
+            })
         if self.product_id and (
             self.product.inventory_behavior != InventoryBehavior.DIRECT
             or self.product.unit != Unit.UNIT
@@ -600,6 +614,9 @@ class ModifierOptionType(models.TextChoices):
     ADD = 'add', 'Adicionar'
     REMOVE = 'remove', 'Remover'
     OBSERVATION = 'observation', 'Observação'
+    TEXT = 'text', 'Texto'
+    PRODUCT_INPUT = 'product_input', 'Produto ou insumo'
+    COMPONENT_SUBSTITUTION = 'component_substitution', 'Substituição de componente'
 
 
 class ModifierGroup(BaseModel):
@@ -611,6 +628,14 @@ class ModifierGroup(BaseModel):
     min_selections = models.PositiveIntegerField(default=0)
     max_selections = models.PositiveIntegerField(blank=True, null=True)
     allow_option_quantity = models.BooleanField(default=False)
+    substitution_component = models.ForeignKey(
+        Product,
+        on_delete=models.PROTECT,
+        related_name='substitution_modifier_groups',
+        blank=True,
+        null=True,
+    )
+    inherit_component_quantity = models.BooleanField(default=True)
     sort_order = models.IntegerField(default=0)
     status = models.CharField(
         max_length=10, choices=Status.choices, default=Status.ACTIVE
@@ -637,6 +662,16 @@ class ModifierGroup(BaseModel):
             raise ValidationError({'min_selections': 'Grupo obrigatório exige mínimo de 1.'})
         if self.max_selections == 1 and self.allow_option_quantity:
             raise ValidationError({'allow_option_quantity': 'Seleção única não permite quantidade por opção.'})
+        if self.substitution_component_id:
+            component = self.substitution_component
+            if component.company_id != self.company_id:
+                raise ValidationError({
+                    'substitution_component': 'O componente deve pertencer à mesma empresa.'
+                })
+            if component.inventory_behavior != InventoryBehavior.DIRECT:
+                raise ValidationError({
+                    'substitution_component': 'O componente substituído deve controlar estoque próprio.'
+                })
 
     def save(self, *args, **kwargs):
         self.full_clean()
@@ -652,10 +687,17 @@ class ModifierOption(BaseModel):
     )
     name = models.CharField(max_length=100)
     option_type = models.CharField(
-        max_length=12, choices=ModifierOptionType.choices, default=ModifierOptionType.ADD
+        max_length=24, choices=ModifierOptionType.choices, default=ModifierOptionType.ADD
     )
     additional_price = models.DecimalField(
         max_digits=14, decimal_places=2, default=Decimal('0.00')
+    )
+    stock_product = models.ForeignKey(
+        Product,
+        on_delete=models.PROTECT,
+        related_name='modifier_stock_options',
+        blank=True,
+        null=True,
     )
     sort_order = models.IntegerField(default=0)
     status = models.CharField(
@@ -680,6 +722,28 @@ class ModifierOption(BaseModel):
         self.name = ' '.join((self.name or '').split())
         if not self.name:
             raise ValidationError({'name': 'O nome da opção é obrigatório.'})
+        requires_product = self.option_type in (
+            ModifierOptionType.PRODUCT_INPUT,
+            ModifierOptionType.COMPONENT_SUBSTITUTION,
+        )
+        if requires_product and not self.stock_product_id:
+            raise ValidationError({'stock_product': 'Informe o produto ou insumo da opção.'})
+        if not self.stock_product_id:
+            return
+        product = self.stock_product
+        group = self.modifier_group
+        errors = {}
+        if product.company_id != group.company_id:
+            errors['stock_product'] = 'O produto deve pertencer à mesma empresa do grupo.'
+        if product.inventory_behavior != InventoryBehavior.DIRECT:
+            errors['stock_product'] = 'A opção deve apontar para produto com estoque próprio.'
+        if self.option_type == ModifierOptionType.COMPONENT_SUBSTITUTION:
+            if not group.substitution_component_id:
+                errors['modifier_group'] = 'Configure o componente substituído no grupo.'
+            elif product.unit != group.substitution_component.unit:
+                errors['stock_product'] = 'A unidade deve ser compatível com o componente substituído.'
+        if errors:
+            raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
         self.full_clean()

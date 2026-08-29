@@ -164,6 +164,8 @@ class ReportPaymentSerializer(serializers.ModelSerializer):
 
 
 class ReportSaleSerializer(serializers.ModelSerializer):
+    operation_id = serializers.IntegerField(source='id', read_only=True)
+    operation_key = serializers.SerializerMethodField()
     event_type = serializers.SerializerMethodField()
     event_at = serializers.SerializerMethodField()
     event_sign = serializers.SerializerMethodField()
@@ -193,7 +195,7 @@ class ReportSaleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Sale
         fields = (
-            'id', 'event_type', 'event_at', 'event_sign', 'sale_number',
+            'id', 'operation_id', 'operation_key', 'event_type', 'event_at', 'event_sign', 'sale_number',
             'operation_type', 'channel', 'status', 'operator', 'seller',
             'discount_approved_by', 'beneficiary', 'subtotal',
             'promotion_discount_total', 'item_discount_total', 'discount', 'service_fee_rate',
@@ -206,6 +208,11 @@ class ReportSaleSerializer(serializers.ModelSerializer):
 
     def get_event_type(self, sale):
         return getattr(sale, '_report_event_type', 'record')
+
+    def get_operation_key(self, sale):
+        # A sale can be represented by more than one report event (for example,
+        # its original record and its reversal), so the event is part of the UI key.
+        return f'{sale.operation_type}:{sale.pk}:{self.get_event_type(sale)}'
 
     def get_event_at(self, sale):
         value = getattr(sale, '_report_event_at', sale.created_at)

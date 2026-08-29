@@ -283,12 +283,45 @@ class PresentationPreset(ProtectedSupplierModel):
         return f'{self.company} - {self.code}'
 
 
+class ProductPurchasePresentation(ProtectedSupplierModel):
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='product_purchase_presentations')
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name='purchase_presentations')
+    unit_code = models.CharField(max_length=20)
+    description = models.CharField(max_length=200)
+    conversion_factor = models.DecimalField(max_digits=18, decimal_places=6)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
+
+    class Meta:
+        ordering = ('product_id', 'unit_code', 'id')
+        constraints = [
+            models.CheckConstraint(condition=Q(conversion_factor__gt=0), name='suppliers_product_presentation_factor_positive'),
+            models.UniqueConstraint(fields=('product', 'unit_code', 'conversion_factor'), name='suppliers_product_presentation_unique'),
+        ]
+
+    def clean(self):
+        super().clean()
+        self.unit_code = self.unit_code.strip().upper()
+        self.description = ' '.join(self.description.split())
+        if self.product_id and self.company_id and self.product.company_id != self.company_id:
+            raise ValidationError({'product': 'O produto deve pertencer à empresa da apresentação.'})
+        if self.conversion_factor is None or self.conversion_factor <= 0:
+            raise ValidationError({'conversion_factor': 'O fator de conversão deve ser maior que zero.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+
 class ProductSupplierUnit(ProtectedSupplierModel):
     company = models.ForeignKey(
         Company, on_delete=models.PROTECT, related_name='product_supplier_units'
     )
     product_supplier = models.ForeignKey(
         ProductSupplier, on_delete=models.PROTECT, related_name='units'
+    )
+    purchase_presentation = models.ForeignKey(
+        ProductPurchasePresentation, on_delete=models.PROTECT, related_name='supplier_links',
+        blank=True, null=True,
     )
     presentation_preset = models.ForeignKey(
         PresentationPreset, on_delete=models.SET_NULL, null=True, blank=True,
@@ -333,6 +366,11 @@ class ProductSupplierUnit(ProtectedSupplierModel):
             and self.product_supplier.company_id != self.company_id
         ):
             errors['product_supplier'] = 'A relação deve pertencer à empresa da apresentação.'
+        if self.purchase_presentation_id and (
+            self.purchase_presentation.company_id != self.company_id
+            or self.purchase_presentation.product_id != self.product_supplier.product_id
+        ):
+            errors['purchase_presentation'] = 'A apresentação deve pertencer ao produto deste fornecedor.'
         if (
             self.presentation_preset_id and self.company_id
             and self.presentation_preset.company_id != self.company_id

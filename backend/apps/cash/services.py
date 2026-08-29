@@ -272,6 +272,7 @@ def calculate_expected_amount(session):
         + cash['sale_cash']
         + cash['consumption_cash']
         - cash['cash_reversals']
+        + cash['command_cash']
     ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
 
@@ -280,6 +281,9 @@ def cash_payment_components(session):
     from apps.sales.models import (
         OperationType, Payment, PaymentMethodCode, SaleStatus,
     )
+    # Command payments are a temporary tender ledger until finalization creates
+    # the corresponding Sale Payment rows.
+    from apps.commands.models import CommandPayment, CommandPaymentStatus
 
     money = DecimalField(max_digits=20, decimal_places=2)
     payments = Payment.objects.filter(sale__cash_session_id=_pk(session)).filter(
@@ -303,8 +307,20 @@ def cash_payment_components(session):
             'sale_id', filter=Q(sale__status=SaleStatus.CANCELLED), distinct=True,
         ),
     )
+    values['command_cash'] = CommandPayment.objects.filter(
+        cash_session_id=_pk(session),
+        payment_method__code=PaymentMethodCode.CASH,
+        status=CommandPaymentStatus.APPLIED,
+        reversal__isnull=True,
+        command__sale__isnull=True,
+    ).aggregate(
+        total=Coalesce(Sum('amount'), Decimal('0.00'), output_field=money)
+    )['total']
     values['cash_payments'] = (
-        values['sale_cash'] + values['consumption_cash'] - values['cash_reversals']
+        values['sale_cash']
+        + values['consumption_cash']
+        - values['cash_reversals']
+        + values['command_cash']
     )
     return values
 
@@ -380,8 +396,14 @@ def build_session_operational_summary(session, session_sales):
             )
         ),
     }
+    cash['command_cash'] = getattr(session, 'command_cash', None)
+    if cash['command_cash'] is None:
+        cash['command_cash'] = cash_payment_components(session)['command_cash']
     cash['cash_payments'] = (
-        cash['sale_cash'] + cash['consumption_cash'] - cash['cash_reversals']
+        cash['sale_cash']
+        + cash['consumption_cash']
+        - cash['cash_reversals']
+        + cash['command_cash']
     )
     return {
         'status': session.status,
@@ -427,6 +449,7 @@ def close_session(cash_session, closing_amount_informed, user, current_branch):
     informed = parse_money(
         closing_amount_informed, 'closing_amount_informed', nonnegative=True
     )
+    blocked_payment_ids = []
     with transaction.atomic():
         try:
             session = CashSession.objects.select_for_update().select_related(
@@ -450,27 +473,72 @@ def close_session(cash_session, closing_amount_informed, user, current_branch):
             .filter(cash_session=session)
             .values_list('pk', flat=True)
         )
-        expected = calculate_expected_amount(session)
-        session.status = CashSessionStatus.CLOSED
-        session.closed_by = user
-        session.closed_at = timezone.now()
-        session.closing_expected_amount = expected
-        session.closing_amount_informed = informed
-        session.closing_difference = informed - expected
-        before = {'status': CashSessionStatus.OPEN}
-        session.save(
-            update_fields=(
-                'status',
-                'closed_by',
-                'closed_at',
-                'closing_expected_amount',
-                'closing_amount_informed',
-                'closing_difference',
-                'updated_at',
+        # Command-payment writers acquire this session lock before command locks.
+        from apps.commands.models import CommandPayment, CommandPaymentStatus, CommandStatus
+        blocked_payment_ids = list(CommandPayment.objects.select_for_update(of=('self',)).filter(
+            cash_session=session,
+            payment_method__code='cash',
+            status=CommandPaymentStatus.APPLIED,
+            reversal__isnull=True,
+            command__status=CommandStatus.OPEN,
+        ).values_list('pk', flat=True))
+        if not blocked_payment_ids:
+            expected = calculate_expected_amount(session)
+            session.status = CashSessionStatus.CLOSED
+            session.closed_by = user
+            session.closed_at = timezone.now()
+            session.closing_expected_amount = expected
+            session.closing_amount_informed = informed
+            session.closing_difference = informed - expected
+            before = {'status': CashSessionStatus.OPEN}
+            session.save(
+                update_fields=(
+                    'status',
+                    'closed_by',
+                    'closed_at',
+                    'closing_expected_amount',
+                    'closing_amount_informed',
+                    'closing_difference',
+                    'updated_at',
+                )
             )
+            audit_log(actor=user, action='cash_session.close', obj=session, company=session.branch.company, branch=session.branch, before=before, after=model_snapshot(session, ('status', 'closing_expected_amount', 'closing_amount_informed', 'closing_difference')))
+            return session
+    audit_log(actor=user, action='cash_session.close_blocked', obj=session,
+               company=session.branch.company, branch=session.branch,
+               metadata={
+                   'reason': 'open_command_partial_payments',
+                   'command_payment_count': len(blocked_payment_ids),
+                   'command_payment_ids': blocked_payment_ids,
+               })
+    raise ValidationError({
+        'cash_session': (
+            'Não é possível fechar a sessão: há pagamento parcial de comanda aberta '
+            f'({len(blocked_payment_ids)} pendência(s)).'
         )
-        audit_log(actor=user, action='cash_session.close', obj=session, company=session.branch.company, branch=session.branch, before=before, after=model_snapshot(session, ('status', 'closing_expected_amount', 'closing_amount_informed', 'closing_difference')))
-        return session
+    })
+
+
+@transaction.atomic
+def cancel_session(cash_session, reason, user, current_branch):
+    session = CashSession.objects.select_for_update().select_related(
+        'cash_register', 'branch', 'branch__company'
+    ).get(pk=_pk(cash_session))
+    _validate_current_branch(current_branch, session.branch, user, 'cash_registers.close')
+    if session.status != CashSessionStatus.OPEN:
+        raise ValidationError({'cash_session': 'Somente sessões abertas podem ser anuladas.'})
+    before = {'status': CashSessionStatus.OPEN}
+    session.status = CashSessionStatus.CANCELLED
+    session.cancelled_by = user
+    session.cancelled_at = timezone.now()
+    session.cancellation_reason = reason.strip()
+    session.save(update_fields=(
+        'status', 'cancelled_by', 'cancelled_at', 'cancellation_reason', 'updated_at',
+    ))
+    audit_log(actor=user, action='cash_session.cancel', obj=session,
+              company=session.branch.company, branch=session.branch, before=before,
+              after=model_snapshot(session, ('status', 'cancelled_by_id', 'cancelled_at', 'cancellation_reason')))
+    return session
 
 
 @transaction.atomic

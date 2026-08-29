@@ -1,4 +1,5 @@
 from decimal import Decimal
+import re
 
 from django.db import models, transaction
 from django.db.models import Q
@@ -164,6 +165,43 @@ class Company(BaseModel):
         return self.trade_name
 
 
+class Customer(BaseModel):
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='customers')
+    name = models.CharField(max_length=150)
+    phone = models.CharField(max_length=20, blank=True)
+    document = models.CharField(max_length=20, blank=True, null=True)
+    email = models.EmailField(blank=True)
+    birth_date = models.DateField(blank=True, null=True)
+    notes = models.TextField(blank=True)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
+
+    class Meta:
+        ordering = ('name', 'id')
+        constraints = [
+            models.UniqueConstraint(
+                fields=('company', 'document'), condition=Q(document__isnull=False),
+                name='companies_customer_company_document_unique',
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        self.name = ' '.join((self.name or '').split())
+        self.phone = re.sub(r'\D', '', self.phone or '')
+        self.document = re.sub(r'\D', '', self.document or '') or None
+        self.email = (self.email or '').strip().lower()
+        self.notes = (self.notes or '').strip()
+        if not self.name:
+            raise ValidationError({'name': 'Informe o nome do cliente.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.name
+
+
 class Branch(BaseModel):
     objects = BranchQuerySet.as_manager()
 
@@ -255,8 +293,10 @@ class BranchSettings(BaseModel):
     uses_cash_register = models.BooleanField(default=True)
     charges_service_fee = models.BooleanField(default=False)
     default_table_quantity = models.PositiveIntegerField(default=20)
+    table_range_start = models.PositiveIntegerField(default=1)
+    table_range_end = models.PositiveIntegerField(default=20)
     default_table_seats = models.PositiveIntegerField(default=0)
-    default_table_prefix = models.CharField(max_length=50, default='Mesa ')
+    default_table_prefix = models.CharField(max_length=50, default='Mesa ', blank=True)
     consumption_limit_enabled = models.BooleanField(default=False)
     command_consumption_limit = models.DecimalField(
         max_digits=14, decimal_places=2, null=True, blank=True
@@ -292,6 +332,10 @@ class BranchSettings(BaseModel):
             errors['fixed_daily_cost'] = 'O custo fixo não pode ser negativo.'
         if self.default_table_quantity > 500:
             errors['default_table_quantity'] = 'O padrão de mesas não pode exceder 500.'
+        if self.table_range_start < 1 or self.table_range_end < self.table_range_start:
+            errors['table_range_end'] = 'O intervalo de mesas deve ter início e fim válidos.'
+        elif self.table_range_end - self.table_range_start >= 500:
+            errors['table_range_end'] = 'O intervalo de mesas não pode exceder 500 mesas.'
         if self.consumption_limit_enabled:
             if self.command_consumption_limit is not None and self.command_consumption_limit <= 0:
                 errors['command_consumption_limit'] = 'O limite da comanda deve ser maior que zero.'
