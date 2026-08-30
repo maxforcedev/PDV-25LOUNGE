@@ -1704,6 +1704,7 @@ function Products() {
               changeModifiers: hasPermission(permissions.changeModifiers),
               viewSuppliers: canViewSuppliers,
               changeSuppliers: canChangeSuppliers,
+              changeProduct: canChange,
             }}
             onReload={async () => {
               const refreshed = await http.get<Product>(

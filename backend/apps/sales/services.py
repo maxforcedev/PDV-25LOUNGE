@@ -19,6 +19,7 @@ from apps.companies.models import (
 )
 from apps.companies.selectors import eligible_branch_users, user_has_branch_permission
 from apps.inventory.content import exact_content_equivalent, exact_multiply, exact_sum
+from apps.inventory.materialization import materialize_stock
 from apps.inventory.models import MovementDomainOrigin, MovementType, Stock, StockMovement
 from apps.inventory.services import apply_locked_stock
 from apps.products.models import (
@@ -381,6 +382,7 @@ def _resolve_modifiers(product, raw_modifiers, company_id, *, branch=None,
         ),
         status='active',
         modifier_group__status='active',
+        modifier_group__deleted_at__isnull=True,
         modifier_group__company_id=company_id,
     ).select_related('modifier_group__substitution_component').order_by('sort_order', 'id')
     group_map = {link.modifier_group_id: link.modifier_group for link in links}
@@ -427,16 +429,12 @@ def _resolve_modifiers(product, raw_modifiers, company_id, *, branch=None,
         selections = selections_by_group.get(group.pk, [])
         total_qty = sum(qty for _opt, qty in selections)
         selection_count = len(selections)
-        if group.is_required and not selection_count:
-            raise ValidationError({'modifiers': f'O grupo {group.name} é obrigatório.'})
-        if group.min_selections and selection_count < group.min_selections:
-            raise ValidationError({'modifiers': f'O grupo {group.name} exige mínimo de {group.min_selections}.'})
-        if group.max_selections is not None and selection_count > group.max_selections:
-            raise ValidationError({'modifiers': f'O grupo {group.name} permite máximo de {group.max_selections}.'})
         option_ids_in_group = [opt.pk for opt, _qty in selections]
         if len(option_ids_in_group) != len(set(option_ids_in_group)):
             raise ValidationError({'modifiers': f'Não repita opções no grupo {group.name}.'})
-        if group.substitution_component_id and selections:
+        if group.is_required and not selection_count:
+            raise ValidationError({'modifiers': f'O grupo {group.name} é obrigatório.'})
+        if group.substitution_component_id:
             base = group.substitution_component
             if product.pk == base.pk:
                 expected_quantity = item_quantity
@@ -458,6 +456,11 @@ def _resolve_modifiers(product, raw_modifiers, company_id, *, branch=None,
                         f'recebido {_format_quantity(total_qty)}.'
                     )
                 })
+        else:
+            if group.min_selections and selection_count < group.min_selections:
+                raise ValidationError({'modifiers': f'O grupo {group.name} exige mínimo de {group.min_selections}.'})
+            if group.max_selections is not None and selection_count > group.max_selections:
+                raise ValidationError({'modifiers': f'O grupo {group.name} permite máximo de {group.max_selections}.'})
 
     modifier_total = Decimal('0.00')
     snapshot = []
@@ -1087,7 +1090,7 @@ def _prepare_products(company, raw_items, *, branch=None, channel=SalesChannel.C
     locked_parents = {
         product.pk: product
         for product in Product.objects.select_for_update()
-        .filter(pk__in=parent_ids).order_by('pk')
+        .filter(pk__in=parent_ids, company=company).order_by('pk')
     }
     parents = {str(pk): locked_parents[pk] for pk in parent_ids if pk in locked_parents}
     if len(parents) != len(parent_ids):
@@ -1273,13 +1276,8 @@ def _lock_required_stocks(branch, requirements, content_requirements=None):
         if product_id not in stocks:
             # Product rows are already locked, serializing this defensive materialization.
             product = Product.objects.get(pk=product_id)
-            config = FractionableProductConfig.objects.filter(
-                product=product, tracking_active=True
-            ).first()
-            stocks[product_id] = Stock.objects.create(
-                product=product,
-                branch=branch,
-                current_content=Decimal('0.000000000') if config else None,
+            stocks[product_id] = materialize_stock(
+                product=product, branch=branch,
             )
         insufficient = stocks[product_id].current_quantity < requirements[product_id]
         if product_id in content_requirements:
@@ -1448,10 +1446,11 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             raise ValidationError({'operation': 'Bypass interno de venda inválido.'})
         permission = internal_permission_code
     branch = _active_branch(branch, user, permission)
+    company = Company.objects.select_for_update().get(pk=branch.company_id)
+    branch = Branch.objects.select_for_update().select_related('company').get(pk=branch.pk)
     _require_sale_features(branch, operation_type, channel, charged_amount)
     if not idempotency_key:
         raise ValidationError({'idempotency_key': 'Informe a chave de idempotência.'})
-    company = Company.objects.select_for_update().get(pk=branch.company_id)
     fingerprint = _sale_idempotency_fingerprint(_sale_idempotency_payload(
         actor=user,
         operation_type=operation_type,

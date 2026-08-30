@@ -10,8 +10,12 @@ from apps.companies.models import Status
 from apps.companies.permissions import FunctionalCompanyPermission
 from apps.companies.selectors import accessible_companies
 
-from .models import PresentationPreset, ProductSupplier, ProductSupplierUnit, Supplier
+from .models import (
+    PresentationPreset, ProductPurchasePresentation, ProductSupplier,
+    ProductSupplierUnit, Supplier,
+)
 from .serializers import (
+    ProductPurchasePresentationSerializer,
     ProductSupplierSerializer,
     ProductSupplierUnitSerializer,
     PresentationPresetSerializer,
@@ -19,6 +23,7 @@ from .serializers import (
 )
 from .services import (
     _lock_instance,
+    _set_product_purchase_presentation_status,
     _set_product_supplier_status,
     _set_product_supplier_unit_status,
     _set_presentation_preset_status,
@@ -181,19 +186,63 @@ class ProductSupplierViewSet(SupplierDomainViewSet):
         )
 
 
+class ProductPurchasePresentationViewSet(SupplierDomainViewSet):
+    queryset = ProductPurchasePresentation.objects.all()
+    serializer_class = ProductPurchasePresentationSerializer
+    permission_codes = {
+        'list': 'products.view',
+        'retrieve': 'products.view',
+        'create': 'products.change',
+        'update': 'products.change',
+        'partial_update': 'products.change',
+        'destroy': 'products.change',
+        'activate': 'products.change',
+        'deactivate': 'products.change',
+    }
+    audit_name = 'product_purchase_presentation'
+    audit_fields = (
+        'company_id', 'product_id', 'unit_code', 'description', 'conversion_factor',
+        'status',
+    )
+    status_service = staticmethod(_set_product_purchase_presentation_status)
+
+    def get_queryset(self):
+        queryset = self.scope_company(ProductPurchasePresentation.objects.select_related(
+            'company', 'product'
+        ))
+        params = self.request.query_params
+        if params.get('product'):
+            queryset = queryset.filter(product_id=params['product'])
+        presentation_status = params.get('status')
+        if presentation_status:
+            if presentation_status not in Status.values:
+                raise ValidationError({'status': 'Informe um status válido.'})
+            queryset = queryset.filter(status=presentation_status)
+        search = params.get('search', '').strip()
+        if search:
+            queryset = queryset.filter(
+                Q(unit_code__icontains=search)
+                | Q(description__icontains=search)
+                | Q(product__name__icontains=search)
+            )
+        return queryset.order_by('product__name', 'unit_code', 'id')
+
+
 class ProductSupplierUnitViewSet(SupplierDomainViewSet):
     queryset = ProductSupplierUnit.objects.all()
     serializer_class = ProductSupplierUnitSerializer
     audit_name = 'product_supplier_unit'
     audit_fields = (
-        'company_id', 'product_supplier_id', 'unit_code', 'description',
+        'company_id', 'product_supplier_id', 'purchase_presentation_id',
+        'unit_code', 'description',
         'conversion_factor', 'presentation_preset_id', 'barcode', 'is_default', 'status',
     )
     status_service = staticmethod(_set_product_supplier_unit_status)
 
     def get_queryset(self):
         queryset = self.scope_company(ProductSupplierUnit.objects.select_related(
-            'company', 'product_supplier__product', 'product_supplier__supplier'
+            'company', 'product_supplier__product', 'product_supplier__supplier',
+            'purchase_presentation',
         ))
         params = self.request.query_params
         for parameter, lookup in (

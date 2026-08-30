@@ -67,6 +67,8 @@ def audit_log(*, actor=None, action, obj=None, company=None, branch=None, before
         object_id = str(getattr(obj, 'pk', '') or '')
         company = company or getattr(obj, 'company', None) or getattr(getattr(obj, 'branch', None), 'company', None)
         branch = branch or getattr(obj, 'branch', None)
+        if branch is None and getattr(getattr(obj, '_meta', None), 'label_lower', '') == 'companies.branch':
+            branch = obj
     else:
         object_type = (metadata or {}).get('object_type', '')
         object_id = str((metadata or {}).get('object_id', '') or '')

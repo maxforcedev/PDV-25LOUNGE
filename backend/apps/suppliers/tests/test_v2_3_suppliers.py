@@ -484,7 +484,7 @@ class SupplierApiTests(TestCase):
         response = self.client.get(
             reverse('presentation-preset-list'), {'company': self.other_company.pk}
         )
-        self.assertEqual(response.data['count'], 0)
+        self.assertEqual(response.status_code, 403, response.data)
 
 
     def test_update_audit_uses_locked_current_snapshot(self):

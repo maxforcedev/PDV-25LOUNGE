@@ -8,6 +8,7 @@ Covers mandatory test areas:
 from decimal import Decimal
 from types import SimpleNamespace
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.test import TestCase
 from rest_framework.test import APIClient
 
@@ -323,18 +324,44 @@ class ModifierTests(ProductRbacFixture, TestCase):
             product=self.product_a, modifier_group=self.group_a, sort_order=0,
         )
 
-    def test_activate_deactivate_reactivate_modifier_group(self):
+    def test_soft_delete_group_cascades_and_cannot_be_restored(self):
         client = self.api_client(self.owner_a, self.branch_a.pk)
-        resp = client.post(f'/api/v1/modifier-groups/{self.group_a.pk}/deactivate/')
-        self.assertEqual(resp.status_code, 200, resp.data)
-        self.group_a.refresh_from_db()
-        self.assertEqual(self.group_a.status, 'inactive')
-        resp = client.post(f'/api/v1/modifier-groups/{self.group_a.pk}/activate/')
-        self.assertEqual(resp.status_code, 200)
-        self.group_a.refresh_from_db()
-        self.assertEqual(self.group_a.status, 'active')
+        response = client.delete(f'/api/v1/modifier-groups/{self.group_a.pk}/')
 
-    def test_modifier_option_activate_deactivate(self):
+        self.assertEqual(response.status_code, 204, response.data)
+        self.assertFalse(ModifierGroup.objects.filter(pk=self.group_a.pk).exists())
+        deleted = ModifierGroup.all_objects.get(pk=self.group_a.pk)
+        self.assertIsNotNone(deleted.deleted_at)
+        self.assertEqual(deleted.deleted_by, self.owner_a)
+        self.assertEqual(deleted.status, Status.INACTIVE)
+        self.assertFalse(ModifierOption.objects.filter(modifier_group_id=deleted.pk).exists())
+        self.assertFalse(ProductModifierGroup.objects.filter(modifier_group_id=deleted.pk).exists())
+        deleted_options = ModifierOption.all_objects.filter(modifier_group_id=deleted.pk)
+        deleted_links = ProductModifierGroup.all_objects.filter(modifier_group_id=deleted.pk)
+        self.assertEqual(deleted_options.count(), 2)
+        self.assertEqual(deleted_links.count(), 1)
+        self.assertFalse(deleted_options.filter(deleted_at__isnull=True).exists())
+        self.assertFalse(deleted_links.filter(deleted_at__isnull=True).exists())
+        listed_ids = {
+            item['id'] for item in client.get('/api/v1/modifier-groups/').data['results']
+        }
+        self.assertNotIn(deleted.pk, listed_ids)
+        self.assertEqual(
+            client.post(f'/api/v1/modifier-groups/{deleted.pk}/activate/').status_code,
+            404,
+        )
+        self.assertEqual(client.post('/api/v1/modifier-options/', {
+            'modifier_group': deleted.pk, 'name': 'Orphan option',
+            'option_type': ModifierOptionType.ADD, 'additional_price': '0.00',
+        }, format='json').status_code, 400)
+        self.assertEqual(client.post('/api/v1/product-modifier-groups/', {
+            'product': self.product_a.pk, 'modifier_group': deleted.pk,
+        }, format='json').status_code, 400)
+        self.assertTrue(AuditLog.objects.filter(
+            action='modifier_group.delete', object_id=str(deleted.pk),
+        ).exists())
+
+    def test_modifier_option_soft_delete_is_hidden_and_preserved(self):
         admin_profile = AccessProfile.objects.get(
             company=self.company_a, name='Administrador', is_system=True,
         )
@@ -345,10 +372,123 @@ class ModifierTests(ProductRbacFixture, TestCase):
         )
         admin_profile.permissions.add(perm)
         client = self.api_client(self.owner_a, self.branch_a.pk)
-        resp = client.post(f'/api/v1/modifier-options/{self.option_a1.pk}/deactivate/')
-        self.assertEqual(resp.status_code, 200, resp.data)
-        self.option_a1.refresh_from_db()
-        self.assertEqual(self.option_a1.status, 'inactive')
+        response = client.delete(f'/api/v1/modifier-options/{self.option_a1.pk}/')
+
+        self.assertEqual(response.status_code, 204, response.data)
+        self.assertFalse(ModifierOption.objects.filter(pk=self.option_a1.pk).exists())
+        deleted = ModifierOption.all_objects.get(pk=self.option_a1.pk)
+        self.assertIsNotNone(deleted.deleted_at)
+        self.assertEqual(deleted.deleted_by, self.owner_a)
+        self.assertEqual(
+            client.get(f'/api/v1/modifier-options/{deleted.pk}/').status_code,
+            404,
+        )
+
+    def test_deleted_names_can_be_recreated_but_existing_names_remain_ci_unique(self):
+        client = self.api_client(self.owner_a, self.branch_a.pk)
+        duplicate_group = client.post('/api/v1/modifier-groups/', {
+            'company': self.company_a.pk, 'name': 'eXtRaS',
+        }, format='json')
+        duplicate_option = client.post('/api/v1/modifier-options/', {
+            'modifier_group': self.group_a.pk, 'name': 'bAcOn',
+            'option_type': ModifierOptionType.ADD, 'additional_price': '0.00',
+        }, format='json')
+
+        self.assertEqual(duplicate_group.status_code, 400, duplicate_group.data)
+        self.assertEqual(duplicate_option.status_code, 400, duplicate_option.data)
+        self.assertEqual(
+            client.delete(f'/api/v1/modifier-groups/{self.group_a.pk}/').status_code,
+            204,
+        )
+        recreated = client.post('/api/v1/modifier-groups/', {
+            'company': self.company_a.pk, 'name': 'EXTRAS',
+        }, format='json')
+
+        self.assertEqual(recreated.status_code, 201, recreated.data)
+        self.assertNotEqual(recreated.data['id'], self.group_a.pk)
+
+    def test_deleted_option_name_can_be_recreated(self):
+        client = self.api_client(self.owner_a, self.branch_a.pk)
+        self.assertEqual(
+            client.delete(f'/api/v1/modifier-options/{self.option_a1.pk}/').status_code,
+            204,
+        )
+
+        recreated = client.post('/api/v1/modifier-options/', {
+            'modifier_group': self.group_a.pk, 'name': 'BACON',
+            'option_type': ModifierOptionType.ADD, 'additional_price': '2.00',
+        }, format='json')
+
+        self.assertEqual(recreated.status_code, 201, recreated.data)
+        self.assertNotEqual(recreated.data['id'], self.option_a1.pk)
+
+    def test_direct_option_api_rejects_client_controlled_id(self):
+        client = self.api_client(self.owner_a, self.branch_a.pk)
+        payload = {
+            'id': 999999,
+            'modifier_group': self.group_a.pk,
+            'name': 'Client controlled ID',
+            'option_type': ModifierOptionType.ADD,
+            'additional_price': '0.00',
+        }
+
+        response = client.post('/api/v1/modifier-options/', payload, format='json')
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertFalse(ModifierOption.all_objects.filter(pk=999999).exists())
+
+    def test_product_modifier_link_can_be_removed_and_recreated(self):
+        client = self.api_client(self.owner_a, self.branch_a.pk)
+        self.assertEqual(
+            client.delete(f'/api/v1/product-modifier-groups/{self.link_a.pk}/').status_code,
+            204,
+        )
+        self.assertFalse(ProductModifierGroup.objects.filter(pk=self.link_a.pk).exists())
+
+        recreated = client.post('/api/v1/product-modifier-groups/', {
+            'product': self.product_a.pk, 'modifier_group': self.group_a.pk,
+        }, format='json')
+
+        self.assertEqual(recreated.status_code, 201, recreated.data)
+        self.assertTrue(ProductModifierGroup.all_objects.filter(pk=self.link_a.pk).exists())
+
+    def test_deleted_modifier_is_unavailable_but_existing_snapshot_is_preserved(self):
+        from apps.commands.services import add_order_item, open_command
+        from apps.sales.services import resolve_modifiers
+
+        self.branch_a.settings.uses_commands = True
+        self.branch_a.settings.save()
+        command = open_command(branch=self.branch_a, user=self.owner_a, identifier='Soft delete')
+        item = add_order_item(
+            command=command, user=self.owner_a, product_id=self.product_a.pk,
+            quantity=Decimal('1'),
+            modifiers=[{'option': self.option_a1.pk, 'quantity': '1'}],
+        )
+        snapshot = list(item.modifier_snapshot)
+
+        client = self.api_client(self.owner_a, self.branch_a.pk)
+        self.assertEqual(
+            client.delete(f'/api/v1/modifier-groups/{self.group_a.pk}/').status_code,
+            204,
+        )
+        item.refresh_from_db()
+
+        self.assertEqual(item.modifier_snapshot, snapshot)
+        with self.assertRaises(DjangoValidationError):
+            resolve_modifiers(
+                self.product_a,
+                [{'option': self.option_a1.pk, 'quantity': '1'}],
+                self.company_a.pk,
+            )
+
+    def test_cross_tenant_modifier_delete_returns_not_found(self):
+        foreign = ModifierGroup.objects.create(company=self.company_b, name='Foreign delete')
+        response = self.api_client(self.owner_a, self.branch_a.pk).delete(
+            f'/api/v1/modifier-groups/{foreign.pk}/'
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(ModifierGroup.objects.filter(pk=foreign.pk).exists())
 
     def test_required_group_blocks_without_selection(self):
         req_group = ModifierGroup.objects.create(
@@ -474,6 +614,72 @@ class ModifierTests(ProductRbacFixture, TestCase):
 
 
 class ProductMissionM5Tests(ProductRbacFixture, TestCase):
+    def test_product_list_is_resilient_when_new_branch_has_no_materialized_stock(self):
+        from apps.companies.services import create_branch_with_access
+
+        branch = create_branch_with_access(
+            creator=self.owner_a, company=self.company_a, name='Filial sem saldo',
+        )
+        Stock.objects.filter(product=self.product_a, branch=branch).delete()
+        response = self.api_client(self.owner_a, branch.pk).get('/api/v1/products/')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        item = next(item for item in response.data['results'] if item['id'] == self.product_a.pk)
+        self.assertEqual(item['branch_stock']['current_quantity'], '0')
+        self.assertIsNone(item['branch_stock']['stock_id'])
+        self.assertNotIn(self.product_b.pk, [item['id'] for item in response.data['results']])
+
+    def test_fractional_product_without_stock_returns_zero_content(self):
+        config = FractionableProductConfig.objects.create(
+            product=self.product_a, package_content='1000', content_unit='ml',
+        )
+        from apps.inventory.services import activate_fraction_tracking
+
+        activate_fraction_tracking(config=config, user=self.owner_a)
+        Stock.objects.filter(product=self.product_a, branch=self.branch_a).delete()
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).get(
+            f'/api/v1/products/{self.product_a.pk}/'
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['branch_stock']['current_content'], '0.000000000')
+        self.assertEqual(response.data['branch_stock']['equivalent_quantity'], '0')
+
+    def test_fractional_legacy_null_content_is_derived_without_500(self):
+        config = FractionableProductConfig.objects.create(
+            product=self.product_a, package_content='12', content_unit='ml',
+        )
+        from apps.inventory.services import activate_fraction_tracking
+
+        activate_fraction_tracking(config=config, user=self.owner_a)
+        Stock.objects.filter(product=self.product_a, branch=self.branch_a).update(
+            current_quantity=Decimal('2'), current_content=None,
+        )
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).get(
+            f'/api/v1/products/{self.product_a.pk}/'
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['branch_stock']['current_content'], '24.000000000')
+        self.assertEqual(response.data['branch_stock']['complete_packages'], '2')
+
+    def test_fractional_materialization_initializes_content_as_zero(self):
+        config = FractionableProductConfig.objects.create(
+            product=self.product_a, package_content='12', content_unit='ml',
+        )
+        from apps.inventory.materialization import materialize_stock
+        from apps.inventory.services import activate_fraction_tracking
+
+        activate_fraction_tracking(config=config, user=self.owner_a)
+        Stock.objects.filter(product=self.product_a, branch=self.branch_a).delete()
+
+        stock = materialize_stock(product=self.product_a, branch=self.branch_a)
+
+        self.assertEqual(stock.current_quantity, Decimal('0'))
+        self.assertEqual(stock.current_content, Decimal('0'))
+
     def test_product_list_and_retrieve_allow_direct_product_without_fraction_config(self):
         client = self.api_client(self.owner_a, self.branch_a.pk)
 

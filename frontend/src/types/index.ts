@@ -150,13 +150,8 @@ export interface PublicPlan {
 }
 
 export interface ProvisioningResult {
-  id: number;
-  source: "PUBLIC_SIGNUP";
-  company: number;
-  subscription: number;
-  owner_user_id: number;
-  approval_status: "PENDING" | "APPROVED" | "REJECTED";
-  created_at: string;
+  id: string;
+  detail: string;
 }
 
 export type SubscriptionStatus =
@@ -590,6 +585,7 @@ export interface PresentationPreset {
 
 export interface EmbeddedProductSupplierUnit {
   id: number;
+  purchase_presentation: number | null;
   unit_code: string;
   description: string;
   conversion_factor: string;
@@ -639,6 +635,7 @@ export interface ProductSupplierUnit {
   product_supplier: number;
   product_name: string;
   supplier_name: string;
+  purchase_presentation: number | null;
   unit_code: string;
   description: string;
   conversion_factor: string;
@@ -651,6 +648,20 @@ export interface ProductSupplierUnit {
   presentation_type?: PresentationType;
   custom_code?: string;
   custom_name?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProductPurchasePresentation {
+  id: number;
+  company: number;
+  company_name?: string;
+  product: number;
+  product_name?: string;
+  unit_code: string;
+  description: string;
+  conversion_factor: string;
+  status: Status;
   created_at: string;
   updated_at: string;
 }
@@ -704,6 +715,7 @@ export interface Product {
   branch_stock?: ProductBranchStock | null;
   fraction_config?: FractionableProductConfig | null;
   production_destinations?: ProductionDestination[];
+  purchase_presentations?: ProductPurchasePresentation[];
   suppliers?: EmbeddedProductSupplier[];
   modifier_groups?: ModifierGroup[];
   created_at: string;

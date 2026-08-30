@@ -139,6 +139,14 @@ jobs:
       - platform-admin
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Prepare release metadata
+        id: release_metadata
+        shell: bash
+        run: |
+          version="$(tr -d '\r\n' < VERSION)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'VERSION must contain a semantic version.' >&2; exit 1; }
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >>"$GITHUB_OUTPUT"
       - name: Validate Docker definitions
         env:
           RELEASE_TAG: ${{ github.sha }}
@@ -154,6 +162,11 @@ jobs:
           load: true
           push: false
           tags: core-pdv-backend:ci
+          build-args: |
+            APP_VERSION=${{ steps.release_metadata.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+            BUILD_DATE=${{ steps.release_metadata.outputs.build_date }}
+            ENVIRONMENT=ci
           cache-from: type=gha,scope=backend
           cache-to: type=gha,mode=max,scope=backend
       - name: Build frontend image
@@ -166,6 +179,10 @@ jobs:
           tags: core-pdv-frontend:ci
           build-args: |
             NEXT_PUBLIC_API_URL=https://api.corepdv.com/api/v1
+            APP_VERSION=${{ steps.release_metadata.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+            BUILD_DATE=${{ steps.release_metadata.outputs.build_date }}
+            ENVIRONMENT=ci
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
       - name: Build Platform Admin image
@@ -179,6 +196,10 @@ jobs:
           build-args: |
             NEXT_PUBLIC_API_URL=https://api.corepdv.com/api/v1
             NEXT_PUBLIC_BACKOFFICE_URL=https://corepdv.com
+            APP_VERSION=${{ steps.release_metadata.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+            BUILD_DATE=${{ steps.release_metadata.outputs.build_date }}
+            ENVIRONMENT=ci
           cache-from: type=gha,scope=platform-admin
           cache-to: type=gha,mode=max,scope=platform-admin
       - name: Verify production images
@@ -204,12 +225,18 @@ jobs:
           [[ "$platform_admin_cmd" == *server.js* ]]
 
           docker run --rm --entrypoint /bin/sh core-pdv-backend:ci -c \
-            'test ! -e /app/.env && test ! -d /app/.venv && test -f /app/staticfiles/admin/css/base.css'
+            'test ! -e /app/.env && test ! -d /app/.venv && test -f /app/staticfiles/admin/css/base.css &&
+             test "$APP_VERSION" = "${{ steps.release_metadata.outputs.version }}" &&
+             test "$GIT_SHA" = "${{ github.sha }}" && test "$ENVIRONMENT" = "ci"'
           docker run --rm --entrypoint /bin/sh core-pdv-frontend:ci -c \
-            'test ! -e /app/.env && test ! -d /app/src && test -f /app/server.js'
+            'test ! -e /app/.env && test ! -d /app/src && test -f /app/server.js &&
+             grep -R -F -q "${{ steps.release_metadata.outputs.version }}" /app/.next &&
+             grep -R -F -q "${{ github.sha }}" /app/.next'
           docker run --rm --entrypoint /bin/sh core-pdv-platform-admin:ci -c \
             'test ! -e /app/.env && test ! -d /app/src && test -f /app/server.js &&
              grep -R -F -q "https://api.corepdv.com/api/v1" /app/.next &&
              grep -R -F -q "https://corepdv.com" /app/.next &&
+             grep -R -F -q "${{ steps.release_metadata.outputs.version }}" /app/.next &&
+             grep -R -F -q "${{ github.sha }}" /app/.next &&
              ! grep -R -F -q "http://localhost" /app/.next &&
              ! grep -R -F -q "http://127.0.0.1" /app/.next'

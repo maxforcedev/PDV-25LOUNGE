@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { CheckCircle2, Clock3, Eye, EyeOff, ShieldCheck } from "lucide-react";
+import { CheckCircle2, Eye, EyeOff, ShieldCheck } from "lucide-react";
 import { Alert, Button, Field, Input, Select, Spinner } from "@/components/ui";
 import { ApiError, http } from "@/lib/http";
 import { fieldError } from "@/lib/format";
@@ -99,18 +99,17 @@ export function SignupForm() {
   if (loadingPlans) return <div className="flex min-h-96 items-center justify-center text-primary"><Spinner className="size-7" /><span className="sr-only">Preparando cadastro</span></div>;
 
   if (result) {
-    const pending = result.approval_status === "PENDING";
     return (
       <div className="card mx-auto max-w-xl overflow-hidden text-center">
-        <div className={`px-6 py-10 ${pending ? "bg-warning-surface text-warning-strong" : "bg-success-surface text-success-strong"}`}>
-          <span className="mx-auto flex size-16 items-center justify-center rounded-full bg-surface shadow-sm">{pending ? <Clock3 className="size-8" /> : <CheckCircle2 className="size-8" />}</span>
-          <h1 className="mt-5 text-2xl font-black tracking-tight">{pending ? "Cadastro recebido para aprovação" : "Sua conta foi criada"}</h1>
+        <div className="bg-success-surface px-6 py-10 text-success-strong">
+          <span className="mx-auto flex size-16 items-center justify-center rounded-full bg-surface shadow-sm"><CheckCircle2 className="size-8" /></span>
+          <h1 className="mt-5 text-2xl font-black tracking-tight">Cadastro recebido</h1>
         </div>
         <div className="p-6 sm:p-8">
-          <p className="text-sm leading-7 text-muted">{pending ? "A equipe responsável analisará o cadastro. O acesso operacional será liberado após a aprovação." : "A empresa, a matriz e sua assinatura foram preparadas. Use o e-mail e a senha informados para acessar."}</p>
+          <p className="text-sm leading-7 text-muted">{result.detail}</p>
           <p className="mt-4 text-xs text-muted">Referência do cadastro: #{result.id}</p>
           <div className="mt-7 flex flex-col justify-center gap-3 sm:flex-row">
-            {!pending && <Link href="/login" className="btn btn-primary h-11">Acessar minha conta</Link>}
+            <Link href="/login" className="btn btn-primary h-11">Acessar minha conta</Link>
             <Link href="/ajuda" className="btn btn-secondary h-11">Central de Ajuda</Link>
           </div>
         </div>

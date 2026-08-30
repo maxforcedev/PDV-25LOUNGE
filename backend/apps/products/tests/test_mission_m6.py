@@ -188,9 +188,10 @@ class IntelligentModifierMissionTests(TestCase):
         self.assertEqual(Stock.objects.get(product=self.watermelon, branch=self.branch).current_quantity, Decimal('9'))
         self.assertEqual(Stock.objects.get(product=self.bacon, branch=self.branch).current_quantity, Decimal('9'))
 
-    def test_inactive_or_cross_tenant_option_is_blocked(self):
-        self.melancia.status = 'inactive'
-        self.melancia.save()
+    def test_deleted_or_cross_tenant_option_is_blocked(self):
+        from apps.products.services import soft_delete_modifier_option
+
+        soft_delete_modifier_option(option=self.melancia, user=self.owner)
         with self.assertRaises(ValidationError):
             resolve_modifiers(
                 self.red_bull, [{'option': self.melancia.pk, 'quantity': '1'}],

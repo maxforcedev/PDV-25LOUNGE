@@ -1,5 +1,17 @@
+from django.http import HttpRequest
+from axes.backends import AxesStandaloneBackend as BaseAxesStandaloneBackend
 from rest_framework.authentication import SessionAuthentication as BaseSessionAuthentication
 from rest_framework.exceptions import AuthenticationFailed
+
+
+class AxesStandaloneBackend(BaseAxesStandaloneBackend):
+    def authenticate(self, request=None, **credentials):
+        if request is None:
+            # Django's test client and programmatic callers omit a request; retain Axes
+            # enforcement by providing the minimal request context it requires.
+            request = HttpRequest()
+            request.META['REMOTE_ADDR'] = '127.0.0.1'
+        return super().authenticate(request, **credentials)
 
 
 class SessionAuthentication(BaseSessionAuthentication):

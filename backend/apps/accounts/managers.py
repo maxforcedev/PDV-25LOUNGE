@@ -69,6 +69,9 @@ class UserQuerySet(models.QuerySet):
 class UserManager(BaseUserManager.from_queryset(UserQuerySet)):
     use_in_migrations = True
 
+    def get_by_natural_key(self, email):
+        return self.get(email__iexact=email)
+
     def _create_user(self, email, password, **extra_fields):
         can_login = extra_fields.get('can_login', True)
         email = (email or '').strip()

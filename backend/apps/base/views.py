@@ -1,5 +1,5 @@
 from django.db import DatabaseError, connection
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 from django.http import JsonResponse
 from django.views.decorators.http import require_GET
 from rest_framework import viewsets
@@ -8,6 +8,7 @@ from rest_framework.permissions import AllowAny, BasePermission
 from rest_framework.response import Response
 
 from apps.companies.selectors import accessible_branches, user_has_branch_permission
+from apps.companies.models import Branch, Company
 
 from .datetimes import filter_datetime_range, parse_datetime_range
 from .labels import (
@@ -16,6 +17,7 @@ from .labels import (
     audit_module_key,
 )
 from .models import AuditLog
+from .release import release_metadata
 from .serializers import AuditLogSerializer
 
 
@@ -25,15 +27,22 @@ def health(request):
         with connection.cursor() as cursor:
             cursor.execute('SELECT 1')
     except DatabaseError:
-        return JsonResponse({'status': 'unavailable'}, status=503)
+        return JsonResponse(
+            {'status': 'unavailable', 'release': release_metadata()},
+            status=503,
+        )
 
-    return JsonResponse({'status': 'ok'})
+    return JsonResponse({'status': 'ok', 'release': release_metadata()})
 
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def api_root(request):
-    return Response({'name': 'CORE PDV API', 'version': 'v1'})
+    return Response({
+        'name': 'CORE PDV API',
+        'version': 'v1',
+        'release': release_metadata(),
+    })
 
 
 class AuditLogPermission(BasePermission):
@@ -74,7 +83,15 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
         elif not user.is_superuser:
             branches = accessible_branches(user, 'audit_logs.view')
             branch_ids = branches.values_list('id', flat=True)
-            company_ids = branches.values_list('company_id', flat=True)
+            company_ids = Company.objects.filter(
+                id__in=branches.values_list('company_id', flat=True)
+            ).annotate(
+                has_hidden_branch=Exists(
+                    Branch.objects.filter(company_id=OuterRef('pk')).exclude(
+                        id__in=branch_ids
+                    )
+                )
+            ).filter(has_hidden_branch=False).values_list('id', flat=True)
             queryset = queryset.filter(
                 Q(branch_id__in=branch_ids)
                 | Q(branch__isnull=True, company_id__in=company_ids)

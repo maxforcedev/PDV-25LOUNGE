@@ -7,7 +7,7 @@ from rest_framework import serializers
 from apps.accounts.models import User
 from apps.base.constants import MAX_BIGINT
 from apps.companies.models import Branch
-from apps.companies.selectors import user_has_branch_permission
+from apps.companies.selectors import eligible_branch_users, user_has_branch_permission
 from apps.products.models import Category, Product, SalesChannel
 from apps.products.serializers import ProductSerializer
 
@@ -114,6 +114,22 @@ class PromotionSerializer(serializers.ModelSerializer):
             'product_names', 'category_names', 'product_count', 'category_count',
             'created_at', 'updated_at',
         )
+
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if branch:
+            fields['product_ids'].child_relation.queryset = Product.objects.filter(
+                company_id=branch.company_id
+            )
+            fields['category_ids'].child_relation.queryset = Category.objects.filter(
+                company_id=branch.company_id
+            )
+            fields['branch'].queryset = Branch.objects.filter(
+                company_id=branch.company_id
+            )
+        return fields
 
     def get_broker_all_branches(self, promotion):
         return promotion.branch_id is None
@@ -558,6 +574,21 @@ class CalculationSerializer(serializers.Serializer):
     )
     service_fee_waived = serializers.BooleanField(required=False, default=False)
 
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if branch:
+            fields['beneficiary_user'].queryset = User.objects.filter(
+                company_accesses__company_id=branch.company_id,
+                company_accesses__is_active=True,
+            ).distinct()
+            fields['customer'].queryset = fields['customer'].queryset.filter(
+                company_id=branch.company_id,
+                status='active',
+            )
+        return fields
+
 
 class CalculationItemOutputSerializer(serializers.Serializer):
     product = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
@@ -658,6 +689,19 @@ class FinalizeSaleSerializer(CalculationSerializer):
     item_discount_authorization = serializers.DictField(required=False, write_only=True)
     service_fee_authorization = serializers.DictField(required=False, write_only=True)
 
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if branch:
+            fields['seller_user'].queryset = eligible_branch_users(
+                branch, 'sales.create'
+            )
+            fields['cash_session'].queryset = fields['cash_session'].queryset.filter(
+                branch=branch
+            )
+        return fields
+
     def validate_discount_authorization(self, value):
         allowed = {'user', 'method', 'credential'}
         if set(value) - allowed:
@@ -671,11 +715,7 @@ class FinalizeSaleSerializer(CalculationSerializer):
         credential = value.get('credential')
         if not isinstance(credential, str) or not credential:
             raise serializers.ValidationError('Informe a credencial do autorizador.')
-        try:
-            user = User.objects.get(pk=user_id)
-        except User.DoesNotExist:
-            raise serializers.ValidationError('Autorizacao de desconto invalida.')
-        return {'user': user, 'method': 'password', 'credential': credential}
+        return {'user': user_id, 'method': 'password', 'credential': credential}
 
     def validate_service_fee_authorization(self, value):
         return self.validate_discount_authorization(value)

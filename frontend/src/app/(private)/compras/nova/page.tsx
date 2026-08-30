@@ -371,7 +371,7 @@ function NewPurchase() {
             <div>
               <h2 className="text-sm font-bold">Itens</h2>
               <p className="mt-1 text-[11px] text-muted">
-                Escolha qualquer produto comprável. Apresentações do fornecedor são opcionais.
+                Escolha qualquer produto comprável. Use uma apresentação do produto vinculada ao fornecedor ou a unidade de estoque.
               </p>
             </div>
             <Button

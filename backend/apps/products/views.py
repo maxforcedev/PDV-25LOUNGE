@@ -6,7 +6,7 @@ from django.db.models.functions import Coalesce
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework import status, viewsets
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -44,6 +44,8 @@ from .serializers import (
 from .services import (
     copy_branch_configuration, duplicate_product, reorder_categories,
     reorder_modifier_groups, reorder_modifier_options, reorder_product_modifier_groups,
+    soft_delete_modifier_group, soft_delete_modifier_option,
+    soft_delete_product_modifier_group,
 )
 
 
@@ -363,7 +365,9 @@ class ProductViewSet(CatalogViewSet):
             'fraction_components__component_product__fraction_config',
             'branch_configs', 'branch_prices',
             'production_destination_links__destination',
-            'product_suppliers__supplier', 'product_suppliers__units__presentation_preset',
+            'purchase_presentations', 'product_suppliers__supplier',
+            'product_suppliers__units__presentation_preset',
+            'product_suppliers__units__purchase_presentation',
         )
         branch = getattr(self.request, 'branch_context', None)
         if branch:
@@ -643,10 +647,10 @@ class ProductViewSet(CatalogViewSet):
         branch = request.branch_context
         if product.inventory_behavior != InventoryBehavior.DIRECT:
             return Response({'applicable': False, 'semantic': 'not_applicable'})
-        from apps.inventory.models import Stock
+        from apps.inventory.materialization import materialize_stock
         from apps.inventory.serializers import MinimumQuantitySerializer, StockSerializer
 
-        stock, _created = Stock.objects.get_or_create(product=product, branch=branch)
+        stock = materialize_stock(product=product, branch=branch)
         if request.method == 'PUT':
             serializer = MinimumQuantitySerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
@@ -710,7 +714,9 @@ class ProductViewSet(CatalogViewSet):
         ).order_by('name', 'id')
         if request.method == 'GET':
             return Response(ProductionDestinationSerializer(queryset, many=True).data)
-        serializer = ProductDestinationsSerializer(data=request.data)
+        serializer = ProductDestinationsSerializer(
+            data=request.data, context={'request': request}
+        )
         serializer.is_valid(raise_exception=True)
         destinations = serializer.validated_data['destinations']
         if any(destination.branch_id != branch.pk for destination in destinations):
@@ -1237,7 +1243,7 @@ class ProductionDestinationViewSet(viewsets.ModelViewSet):
 
 class ModifierGroupViewSet(viewsets.ModelViewSet):
     serializer_class = ModifierGroupSerializer
-    http_method_names = ('get', 'post', 'patch', 'put', 'head', 'options')
+    http_method_names = ('get', 'post', 'patch', 'put', 'delete', 'head', 'options')
 
     def get_queryset(self):
         from apps.companies.selectors import accessible_companies
@@ -1252,11 +1258,6 @@ class ModifierGroupViewSet(viewsets.ModelViewSet):
         company = self.request.query_params.get('company')
         if company:
             queryset = queryset.filter(company_id=company)
-        item_status = self.request.query_params.get('status')
-        if item_status and item_status != 'all':
-            queryset = queryset.filter(status=item_status)
-        elif self.action == 'list':
-            queryset = queryset.filter(status=Status.ACTIVE)
         return queryset
 
     def get_permissions(self):
@@ -1272,8 +1273,7 @@ class ModifierGroupViewSet(viewsets.ModelViewSet):
             'create': 'modifiers.change',
             'update': 'modifiers.change',
             'partial_update': 'modifiers.change',
-            'activate': 'modifiers.change',
-            'deactivate': 'modifiers.change',
+            'destroy': 'modifiers.change',
             'reorder': 'modifiers.change',
         }
 
@@ -1292,7 +1292,14 @@ class ModifierGroupViewSet(viewsets.ModelViewSet):
             )),
         )
 
+    @transaction.atomic
     def perform_update(self, serializer):
+        group = ModifierGroup.all_objects.select_for_update().get(
+            pk=serializer.instance.pk
+        )
+        if group.deleted_at is not None:
+            raise NotFound('Grupo de modificador não encontrado.')
+        serializer.instance = group
         fields = ('company_id', 'name', 'is_required', 'min_selections',
                    'max_selections', 'allow_option_quantity', 'substitution_component_id',
                    'inherit_component_quantity', 'sort_order', 'status')
@@ -1304,18 +1311,15 @@ class ModifierGroupViewSet(viewsets.ModelViewSet):
             after=model_snapshot(group, fields),
         )
 
-    def _status(self, request, value):
-        group = self.get_object()
-        before = model_snapshot(group, ('status',))
-        group.status = value
-        group.save(update_fields=('status', 'updated_at'))
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        before = model_snapshot(instance, ('name', 'deleted_at', 'deleted_by_id'))
+        group = soft_delete_modifier_group(group=instance, user=self.request.user)
         audit_log(
-            actor=request.user,
-            action=f'modifier_group.{"activate" if value == Status.ACTIVE else "deactivate"}',
+            actor=self.request.user, action='modifier_group.delete',
             obj=group, company=group.company, before=before,
-            after=model_snapshot(group, ('status',)),
+            after=model_snapshot(group, ('name', 'deleted_at', 'deleted_by_id')),
         )
-        return Response(self.get_serializer(group).data)
 
     @action(detail=False, methods=('post',), url_path='reorder')
     @transaction.atomic
@@ -1332,27 +1336,16 @@ class ModifierGroupViewSet(viewsets.ModelViewSet):
                       metadata={'operation_reference': reference})
         return Response(self.get_serializer(groups, many=True).data)
 
-    @action(detail=True, methods=('post',))
-    @transaction.atomic
-    def activate(self, request, pk=None):
-        return self._status(request, Status.ACTIVE)
-
-    @action(detail=True, methods=('post',))
-    @transaction.atomic
-    def deactivate(self, request, pk=None):
-        return self._status(request, Status.INACTIVE)
-
-
 class ProductModifierGroupViewSet(viewsets.ModelViewSet):
     serializer_class = ProductModifierGroupSerializer
     permission_classes = (ProductFunctionalPermission,)
-    http_method_names = ('get', 'post', 'patch', 'put', 'head', 'options')
+    http_method_names = ('get', 'post', 'patch', 'put', 'delete', 'head', 'options')
 
     def get_queryset(self):
         from apps.companies.selectors import accessible_companies
         queryset = ProductModifierGroup.objects.select_related(
             'product', 'modifier_group'
-        )
+        ).filter(modifier_group__deleted_at__isnull=True)
         branch = getattr(self.request, 'branch_context', None)
         if branch:
             queryset = queryset.filter(product__company_id=branch.company_id)
@@ -1375,23 +1368,45 @@ class ProductModifierGroupViewSet(viewsets.ModelViewSet):
             'create': 'modifiers.change',
             'update': 'modifiers.change',
             'partial_update': 'modifiers.change',
-            'activate': 'modifiers.change',
-            'deactivate': 'modifiers.change',
+            'destroy': 'modifiers.change',
             'reorder': 'modifiers.change',
         }
 
+    @transaction.atomic
     def perform_create(self, serializer):
+        group = ModifierGroup.all_objects.select_for_update().get(
+            pk=serializer.validated_data['modifier_group'].pk
+        )
+        if group.deleted_at is not None:
+            raise ValidationError({'modifier_group': 'O grupo foi excluído.'})
         last_order = ProductModifierGroup.objects.filter(
             product=serializer.validated_data['product']
         ).aggregate(value=Max('sort_order'))['value']
-        link = serializer.save(sort_order=(last_order if last_order is not None else -1) + 1)
+        link = serializer.save(
+            modifier_group=group,
+            sort_order=(last_order if last_order is not None else -1) + 1,
+        )
         audit_log(
             actor=self.request.user, action='product_modifier_link.create',
             obj=link, company=link.product.company,
             after=model_snapshot(link, ('product_id', 'modifier_group_id', 'sort_order', 'status')),
         )
 
+    @transaction.atomic
     def perform_update(self, serializer):
+        group = serializer.validated_data.get(
+            'modifier_group', serializer.instance.modifier_group
+        )
+        group = ModifierGroup.all_objects.select_for_update().get(pk=group.pk)
+        if group.deleted_at is not None:
+            raise ValidationError({'modifier_group': 'O grupo foi excluído.'})
+        link = ProductModifierGroup.all_objects.select_for_update().get(
+            pk=serializer.instance.pk
+        )
+        if link.deleted_at is not None:
+            raise NotFound('Vínculo de modificador não encontrado.')
+        serializer.instance = link
+        serializer.validated_data['modifier_group'] = group
         fields = ('product_id', 'modifier_group_id', 'sort_order', 'status')
         before = model_snapshot(serializer.instance, fields)
         link = serializer.save()
@@ -1401,18 +1416,15 @@ class ProductModifierGroupViewSet(viewsets.ModelViewSet):
             after=model_snapshot(link, fields),
         )
 
-    def _status(self, request, value):
-        link = self.get_object()
-        before = model_snapshot(link, ('status',))
-        link.status = value
-        link.save(update_fields=('status', 'updated_at'))
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        before = model_snapshot(instance, ('product_id', 'modifier_group_id', 'deleted_at'))
+        link = soft_delete_product_modifier_group(link=instance, user=self.request.user)
         audit_log(
-            actor=request.user,
-            action=f'product_modifier_link.{"activate" if value == Status.ACTIVE else "deactivate"}',
+            actor=self.request.user, action='product_modifier_link.delete',
             obj=link, company=link.product.company, before=before,
-            after=model_snapshot(link, ('status',)),
+            after=model_snapshot(link, ('product_id', 'modifier_group_id', 'deleted_at')),
         )
-        return Response(self.get_serializer(link).data)
 
     @action(detail=False, methods=('post',), url_path='reorder')
     @transaction.atomic
@@ -1434,30 +1446,20 @@ class ProductModifierGroupViewSet(viewsets.ModelViewSet):
                       metadata={'operation_reference': reference})
         return Response(self.get_serializer(links, many=True).data)
 
-    @action(detail=True, methods=('post',))
-    @transaction.atomic
-    def activate(self, request, pk=None):
-        return self._status(request, Status.ACTIVE)
-
-    @action(detail=True, methods=('post',))
-    @transaction.atomic
-    def deactivate(self, request, pk=None):
-        return self._status(request, Status.INACTIVE)
-
-
 class ModifierOptionViewSet(CatalogViewSet):
     serializer_class = ModifierOptionSerializer
-    http_method_names = ('get', 'post', 'patch', 'head', 'options')
+    http_method_names = ('get', 'post', 'patch', 'delete', 'head', 'options')
     permission_codes = {
         'list': 'modifiers.view', 'retrieve': 'modifiers.view',
         'create': 'modifiers.change', 'update': 'modifiers.change',
         'partial_update': 'modifiers.change',
-        'activate': 'modifiers.change', 'deactivate': 'modifiers.change',
+        'destroy': 'modifiers.change',
         'reorder': 'modifiers.change',
     }
 
     def get_queryset(self):
         queryset = ModifierOption.objects.select_related('modifier_group__company')
+        queryset = queryset.filter(modifier_group__deleted_at__isnull=True)
         branch = getattr(self.request, 'branch_context', None)
         if branch:
             queryset = queryset.filter(modifier_group__company_id=branch.company_id)
@@ -1468,19 +1470,22 @@ class ModifierOptionViewSet(CatalogViewSet):
         group_id = self.request.query_params.get('modifier_group')
         if group_id:
             queryset = queryset.filter(modifier_group_id=group_id)
-        item_status = self.request.query_params.get('status')
-        if item_status and item_status != 'all':
-            queryset = queryset.filter(status=item_status)
-        elif self.action == 'list':
-            queryset = queryset.filter(status=Status.ACTIVE)
         return queryset
 
     @transaction.atomic
     def perform_create(self, serializer):
+        group = ModifierGroup.all_objects.select_for_update().get(
+            pk=serializer.validated_data['modifier_group'].pk
+        )
+        if group.deleted_at is not None:
+            raise ValidationError({'modifier_group': 'O grupo foi excluído.'})
         last_order = ModifierOption.objects.filter(
-            modifier_group=serializer.validated_data['modifier_group']
+            modifier_group=group
         ).aggregate(value=Max('sort_order'))['value']
-        option = serializer.save(sort_order=(last_order if last_order is not None else -1) + 1)
+        option = serializer.save(
+            modifier_group=group,
+            sort_order=(last_order if last_order is not None else -1) + 1,
+        )
         audit_log(
             actor=self.request.user, action='modifier_option.create',
             obj=option, company=option.modifier_group.company,
@@ -1491,6 +1496,19 @@ class ModifierOptionViewSet(CatalogViewSet):
 
     @transaction.atomic
     def perform_update(self, serializer):
+        group = serializer.validated_data.get(
+            'modifier_group', serializer.instance.modifier_group
+        )
+        group = ModifierGroup.all_objects.select_for_update().get(pk=group.pk)
+        if group.deleted_at is not None:
+            raise ValidationError({'modifier_group': 'O grupo foi excluído.'})
+        option = ModifierOption.all_objects.select_for_update().get(
+            pk=serializer.instance.pk
+        )
+        if option.deleted_at is not None:
+            raise NotFound('Opção de modificador não encontrada.')
+        serializer.instance = option
+        serializer.validated_data['modifier_group'] = group
         fields = ('name', 'option_type', 'additional_price', 'stock_product_id', 'sort_order', 'status')
         before = model_snapshot(serializer.instance, fields)
         option = serializer.save()
@@ -1520,20 +1538,12 @@ class ModifierOptionViewSet(CatalogViewSet):
                       metadata={'operation_reference': reference})
         return Response(self.get_serializer(options, many=True).data)
 
-    @action(detail=True, methods=('post',))
     @transaction.atomic
-    def activate(self, request, pk=None):
-        option = self.get_object()
-        option.status = Status.ACTIVE
-        option.save(update_fields=('status', 'updated_at'))
-        audit_log(actor=request.user, action='modifier_option.activate', obj=option, company=option.modifier_group.company)
-        return Response(self.get_serializer(option).data)
-
-    @action(detail=True, methods=('post',))
-    @transaction.atomic
-    def deactivate(self, request, pk=None):
-        option = self.get_object()
-        option.status = Status.INACTIVE
-        option.save(update_fields=('status', 'updated_at'))
-        audit_log(actor=request.user, action='modifier_option.deactivate', obj=option, company=option.modifier_group.company)
-        return Response(self.get_serializer(option).data)
+    def perform_destroy(self, instance):
+        before = model_snapshot(instance, ('name', 'deleted_at', 'deleted_by_id'))
+        option = soft_delete_modifier_option(option=instance, user=self.request.user)
+        audit_log(
+            actor=self.request.user, action='modifier_option.delete', obj=option,
+            company=option.modifier_group.company, before=before,
+            after=model_snapshot(option, ('name', 'deleted_at', 'deleted_by_id')),
+        )

@@ -14,10 +14,23 @@ from .models import (
     ProductModifierGroup, ProductProductionDestination, ProductionDestination,
     SalesChannel, Unit, normalize_product_name,
 )
-from .services import create_product, replace_composition, replace_fraction_composition
+from .services import (
+    create_product, replace_composition, replace_fraction_composition,
+    soft_delete_modifier_option,
+)
 
 
 class CompanyBoundSerializer(serializers.ModelSerializer):
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if branch and 'company' in fields:
+            fields['company'].queryset = branch.company.__class__.objects.filter(
+                pk=branch.company_id
+            )
+        return fields
+
     def validate(self, attrs):
         company = attrs.get('company', getattr(self.instance, 'company', None))
         if self.instance and 'company' in attrs and company != self.instance.company:
@@ -92,6 +105,16 @@ class ProductComponentSerializer(serializers.ModelSerializer):
             'component_unit', 'quantity', 'quantity_display',
         )
 
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if branch:
+            fields['component_product'].queryset = Product.objects.filter(
+                company_id=branch.company_id
+            )
+        return fields
+
     def validate(self, attrs):
         attrs = super().validate(attrs)
         component = attrs.get('component_product')
@@ -141,6 +164,16 @@ class ProductFractionComponentSerializer(serializers.ModelSerializer):
             'source_package_content', 'source_tracking_active',
         )
 
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if branch:
+            fields['component_product'].queryset = Product.objects.filter(
+                company_id=branch.company_id
+            )
+        return fields
+
 
 class FractionableProductConfigSerializer(serializers.ModelSerializer):
     package_content = serializers.DecimalField(
@@ -158,6 +191,16 @@ class FractionableProductConfigSerializer(serializers.ModelSerializer):
             'id', 'tracking_active', 'activated_at', 'activated_by',
             'created_at', 'updated_at',
         )
+
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if branch:
+            fields['product'].queryset = Product.objects.filter(
+                company_id=branch.company_id
+            )
+        return fields
 
     def validate(self, attrs):
         if attrs.get('package_content') is None:
@@ -193,6 +236,17 @@ class ProductBranchConfigSerializer(serializers.ModelSerializer):
             'effective_sale_price', 'created_at', 'updated_at',
         )
 
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if branch:
+            fields['product'].queryset = Product.objects.filter(
+                company_id=branch.company_id
+            )
+            fields['branch'].queryset = fields['branch'].queryset.filter(pk=branch.pk)
+        return fields
+
     def get_effective_channels(self, config):
         return {
             channel: config.effective_channel(channel)
@@ -227,6 +281,14 @@ class ProductionDestinationSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ('id', 'branch_name', 'status', 'created_at', 'updated_at')
 
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if branch:
+            fields['branch'].queryset = fields['branch'].queryset.filter(pk=branch.pk)
+        return fields
+
     def validate(self, attrs):
         branch = attrs.get('branch', getattr(self.instance, 'branch', None))
         context_branch = getattr(self.context.get('request'), 'branch_context', None)
@@ -249,6 +311,7 @@ class ProductSerializer(CompanyBoundSerializer):
     branch_stock = serializers.SerializerMethodField()
     fraction_config = serializers.SerializerMethodField()
     production_destinations = serializers.SerializerMethodField()
+    purchase_presentations = serializers.SerializerMethodField()
     suppliers = serializers.SerializerMethodField()
     cost = serializers.DecimalField(
         max_digits=12, decimal_places=2, min_value=Decimal('0.00')
@@ -270,7 +333,7 @@ class ProductSerializer(CompanyBoundSerializer):
             'emits_ticket',
             'components', 'fraction_components', 'suggested_cost', 'suggested_sale_price',
             'branch_configuration', 'branch_stock', 'fraction_config',
-            'production_destinations', 'suppliers',
+            'production_destinations', 'purchase_presentations', 'suppliers',
             'created_at', 'updated_at',
         )
 
@@ -278,6 +341,10 @@ class ProductSerializer(CompanyBoundSerializer):
         fields = super().get_fields()
         request = self.context.get('request')
         branch = getattr(request, 'branch_context', None) if request else None
+        if branch and 'category' in fields:
+            fields['category'].queryset = Category.objects.filter(
+                company_id=branch.company_id
+            )
         can_view_costs = bool(
             request and (
                 request.user.is_superuser
@@ -619,6 +686,7 @@ class ProductSerializer(CompanyBoundSerializer):
         from apps.inventory.content import (
             content_breakdown, exact_content_equivalent, exact_multiply,
         )
+        from apps.inventory.materialization import expected_fractional_content
 
         branch = getattr(self.context.get('request'), 'branch_context', None)
         if not branch or branch.status != Status.ACTIVE:
@@ -639,18 +707,23 @@ class ProductSerializer(CompanyBoundSerializer):
             }
             config = self._valid_fraction_config(product)
             if config and config.tracking_active:
+                current_content = (
+                    stock.current_content
+                    if stock and stock.current_content is not None
+                    else expected_fractional_content(
+                        product, stock.current_quantity if stock else Decimal('0')
+                    )
+                )
                 complete, residual = content_breakdown(
-                    stock.current_content if stock else Decimal('0'),
+                    current_content,
                     config.package_content,
                 )
                 result.update({
-                    'current_content': format(
-                        stock.current_content if stock else Decimal('0'), 'f'
-                    ),
+                    'current_content': format(current_content, 'f'),
                     'content_unit': config.content_unit,
                     'package_content': format(config.package_content, 'f'),
                     'equivalent_quantity': format(
-                        stock.equivalent_quantity() if stock else Decimal('0'), 'f'
+                        exact_content_equivalent(current_content, config.package_content), 'f'
                     ),
                     'complete_packages': format(complete, 'f'),
                     'residual_content': format(residual, 'f'),
@@ -736,6 +809,22 @@ class ProductSerializer(CompanyBoundSerializer):
         ).order_by('name', 'id')
         return ProductionDestinationSerializer(destinations, many=True).data
 
+    def get_purchase_presentations(self, product):
+        return [
+            {
+                'id': presentation.pk,
+                'company': presentation.company_id,
+                'product': presentation.product_id,
+                'unit_code': presentation.unit_code,
+                'description': presentation.description,
+                'conversion_factor': format(presentation.conversion_factor, 'f'),
+                'status': presentation.status,
+                'created_at': presentation.created_at,
+                'updated_at': presentation.updated_at,
+            }
+            for presentation in product.purchase_presentations.all()
+        ]
+
     def get_suppliers(self, product):
         return [
             {
@@ -749,6 +838,7 @@ class ProductSerializer(CompanyBoundSerializer):
                 'units': [
                     {
                         'id': unit.pk,
+                        'purchase_presentation': unit.purchase_presentation_id,
                         'unit_code': unit.unit_code,
                         'description': unit.description,
                         'conversion_factor': format(unit.conversion_factor, 'f'),
@@ -889,6 +979,19 @@ class BranchProductPriceSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ('id', 'product_name', 'internal_code', 'branch_name', 'default_price', 'created_at', 'updated_at')
 
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if branch:
+            fields['product'].queryset = Product.objects.filter(
+                company_id=branch.company_id
+            )
+            fields['branch'].queryset = fields['branch'].queryset.filter(
+                company_id=branch.company_id
+            )
+        return fields
+
     def validate(self, attrs):
         product = attrs.get('product', getattr(self.instance, 'product', None))
         branch = attrs.get('branch', getattr(self.instance, 'branch', None))
@@ -943,6 +1046,16 @@ class ProductDestinationsSerializer(serializers.Serializer):
         queryset=ProductionDestination.objects.all(), many=True
     )
 
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if branch:
+            fields['destinations'].child_relation.queryset = (
+                ProductionDestination.objects.filter(branch=branch)
+            )
+        return fields
+
 
 class ProductPrintersSerializer(serializers.Serializer):
     printers = serializers.ListField(
@@ -956,6 +1069,7 @@ class ProductPrintersSerializer(serializers.Serializer):
 
 
 class ModifierOptionSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(required=False, min_value=1)
     stock_product_name = serializers.CharField(source='stock_product.name', read_only=True)
     class Meta:
         model = ModifierOption
@@ -964,12 +1078,27 @@ class ModifierOptionSerializer(serializers.ModelSerializer):
             'stock_product', 'stock_product_name',
             'sort_order', 'status', 'created_at', 'updated_at',
         )
-        read_only_fields = ('id', 'created_at', 'updated_at')
+        read_only_fields = ('status', 'created_at', 'updated_at')
+
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if branch:
+            fields['modifier_group'].queryset = ModifierGroup.objects.filter(
+                company_id=branch.company_id
+            )
+            fields['stock_product'].queryset = Product.objects.filter(
+                company_id=branch.company_id
+            )
+        return fields
 
     def validate_name(self, value):
         return ' '.join((value or '').split())
 
     def validate(self, attrs):
+        if 'id' in attrs and not isinstance(self.parent, serializers.ListSerializer):
+            raise serializers.ValidationError({'id': 'ID aceito apenas na edição do grupo.'})
         if not self.instance and attrs.get('option_type') == ModifierOptionType.TEXT:
             raise serializers.ValidationError({
                 'option_type': 'Use Adicionar sem estoque para novas opções sem produto.'
@@ -996,7 +1125,20 @@ class ModifierGroupSerializer(serializers.ModelSerializer):
             'inherit_component_quantity', 'sort_order',
             'status', 'options', 'created_at', 'updated_at',
         )
-        read_only_fields = ('id', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'status', 'created_at', 'updated_at')
+
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if branch:
+            fields['company'].queryset = branch.company.__class__.objects.filter(
+                pk=branch.company_id
+            )
+            fields['substitution_component'].queryset = Product.objects.filter(
+                company_id=branch.company_id
+            )
+        return fields
 
     def validate_name(self, value):
         return ' '.join((value or '').split())
@@ -1041,18 +1183,33 @@ class ModifierGroupSerializer(serializers.ModelSerializer):
             setattr(instance, key, value)
         instance.save()
         if options is not None:
-            current_ids = set()
+            requested_ids = {
+                option_data['id'] for option_data in options if option_data.get('id')
+            }
+            existing_options = {
+                option.pk: option for option in instance.options.select_for_update()
+            }
+            if not requested_ids.issubset(existing_options):
+                raise serializers.ValidationError({
+                    'options': 'Uma opção não pertence a este grupo ou foi excluída.'
+                })
+            request = self.context.get('request')
+            user = request.user if request else None
+            for option_id in set(existing_options) - requested_ids:
+                soft_delete_modifier_option(
+                    option=existing_options[option_id], user=user,
+                )
             for option_data in options:
-                option_id = option_data.get('id')
+                option_id = option_data.pop('id', None)
                 if option_id:
-                    current_ids.add(option_id)
-                    ModifierOption.objects.filter(pk=option_id, modifier_group=instance).update(**{
-                        k: v for k, v in option_data.items() if k != 'id'
-                    })
+                    option = existing_options[option_id]
+                    for key, value in option_data.items():
+                        if key != 'modifier_group':
+                            setattr(option, key, value)
+                    option.save()
                 else:
-                    new_option = ModifierOption.objects.create(modifier_group=instance, **option_data)
-                    current_ids.add(new_option.pk)
-            instance.options.exclude(pk__in=current_ids).update(status=Status.INACTIVE)
+                    option_data.pop('modifier_group', None)
+                    ModifierOption.objects.create(modifier_group=instance, **option_data)
         return instance
 
 
@@ -1065,7 +1222,20 @@ class ProductModifierGroupSerializer(serializers.ModelSerializer):
             'id', 'product', 'modifier_group', 'modifier_group_name',
             'sort_order', 'status', 'created_at', 'updated_at',
         )
-        read_only_fields = ('id', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'status', 'created_at', 'updated_at')
+
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if branch:
+            fields['product'].queryset = Product.objects.filter(
+                company_id=branch.company_id
+            )
+            fields['modifier_group'].queryset = ModifierGroup.objects.filter(
+                company_id=branch.company_id
+            )
+        return fields
 
     def validate(self, attrs):
         request = self.context.get('request')

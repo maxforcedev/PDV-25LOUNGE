@@ -13,12 +13,12 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.base.audit import audit_log, model_snapshot
+from apps.base.login_security import INVALID_LOGIN_MESSAGE, axes_lockout_message
 from apps.companies.selectors import (
     active_operational_branches,
     active_operational_companies,
 )
 
-from .models import User
 from .serializers import LoginSerializer, SelfProfileSerializer, UserSerializer
 
 
@@ -65,76 +65,41 @@ class LoginView(APIView):
         email = serializer.validated_data['email'].lower()
         password = serializer.validated_data['password']
 
-        try:
-            account = User.objects.get(email__iexact=email)
-        except User.DoesNotExist:
-            return Response(
-                {'detail': 'E-mail ou senha invalidos.'},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
-
-        if not account.can_login:
-            return Response(
-                {'detail': 'E-mail ou senha invalidos.'},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
-
-        if not account.is_active:
-            return Response(
-                {'detail': 'Seu usuário está inativo. Procure um administrador.'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        if not account.check_password(password):
-            return Response(
-                {'detail': 'E-mail ou senha invalidos.'},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
-
         user = authenticate(
             request=request,
             email=email,
             password=password,
         )
         if user is None:
+            if getattr(request, 'axes_locked_out', False):
+                return Response(
+                    {'detail': axes_lockout_message()},
+                    status=status.HTTP_429_TOO_MANY_REQUESTS,
+                )
             return Response(
-                {'detail': 'Não foi possível autenticar esta conta.'},
+                {'detail': INVALID_LOGIN_MESSAGE},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        if not user.can_login:
+            return Response(
+                {'detail': INVALID_LOGIN_MESSAGE},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
         if not user.is_superuser:
             active_companies = active_operational_companies(user)
             if not active_companies.exists():
-                has_inactive_company = user.company_accesses.filter(
-                    is_active=True,
-                    company__status='inactive',
-                ).exists()
-                message = (
-                    'A empresa vinculada ao seu usuário está inativa.'
-                    if has_inactive_company
-                    else 'Seu usuário não possui acesso a uma empresa ativa.'
+                return Response(
+                    {'detail': INVALID_LOGIN_MESSAGE},
+                    status=status.HTTP_403_FORBIDDEN,
                 )
-                return Response({'detail': message}, status=status.HTTP_403_FORBIDDEN)
 
             if not active_operational_branches(user).exists():
-                has_inactive_branch_profile = user.branch_accesses.filter(
-                    is_active=True,
-                    branch__company__in=active_companies,
-                    access_profile__status='inactive',
-                ).exists()
-                has_inactive_branch = user.branch_accesses.filter(
-                    is_active=True,
-                    branch__company__in=active_companies,
-                    branch__status='inactive',
-                ).exists()
-                message = (
-                    'O perfil de acesso da filial vinculado ao seu usuário está inativo.'
-                    if has_inactive_branch_profile
-                    else 'A filial vinculada ao seu usuário está inativa.'
-                    if has_inactive_branch
-                    else 'Seu usuário não possui acesso a uma filial ativa.'
+                return Response(
+                    {'detail': INVALID_LOGIN_MESSAGE},
+                    status=status.HTTP_403_FORBIDDEN,
                 )
-                return Response({'detail': message}, status=status.HTTP_403_FORBIDDEN)
 
         login(request, user)
         company, branch, metadata = _audit_scope(request, user)

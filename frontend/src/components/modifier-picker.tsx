@@ -55,22 +55,22 @@ export function ModifierPicker({ product, onClose, onConfirm }: Props) {
         setError(`${group.name} é obrigatório.`);
         return;
       }
-      if (group.min_selections && count < group.min_selections) {
-        setError(`${group.name} exige no mínimo ${group.min_selections} opção(ões).`);
-        return;
-      }
-      if (group.max_selections !== null && count > group.max_selections) {
-        setError(`${group.name} permite no máximo ${group.max_selections} opção(ões).`);
-        return;
-      }
-      if (
-        group.required_quantity &&
-        total !== quantityValue(group.required_quantity)
-      ) {
-        setError(
-          `${group.name} exige ${formatQuantity(group.required_quantity)} unidade(s); recebido ${formatQuantity(String(total))}.`,
-        );
-        return;
+      if (group.required_quantity != null) {
+        if (total !== quantityValue(group.required_quantity)) {
+          setError(
+            `${group.name} exige ${formatQuantity(group.required_quantity)} unidade(s); recebido ${formatQuantity(String(total))}.`,
+          );
+          return;
+        }
+      } else {
+        if (group.min_selections && count < group.min_selections) {
+          setError(`${group.name} exige no mínimo ${group.min_selections} opção(ões).`);
+          return;
+        }
+        if (group.max_selections !== null && count > group.max_selections) {
+          setError(`${group.name} permite no máximo ${group.max_selections} opção(ões).`);
+          return;
+        }
       }
     }
     onConfirm(

@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 from pathlib import Path
 
 from corsheaders.defaults import default_headers
@@ -54,6 +55,11 @@ SESSION_COOKIE_SECURE = env.bool('SESSION_COOKIE_SECURE', default=not DEBUG)
 CSRF_COOKIE_SECURE = env.bool('CSRF_COOKIE_SECURE', default=not DEBUG)
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Lax'
+SESSION_COOKIE_AGE = env.int('SESSION_COOKIE_AGE', default=28800)
+if SESSION_COOKIE_AGE <= 0:
+    raise ImproperlyConfigured('SESSION_COOKIE_AGE must be greater than zero.')
+SESSION_SAVE_EVERY_REQUEST = env.bool('SESSION_SAVE_EVERY_REQUEST', default=True)
+SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 CSRF_COOKIE_SAMESITE = 'Lax'
 SECURE_HSTS_SECONDS = env.int('SECURE_HSTS_SECONDS', default=0)
 SECURE_HSTS_INCLUDE_SUBDOMAINS = env.bool(
@@ -66,6 +72,14 @@ SECURE_CONTENT_TYPE_NOSNIFF = env.bool(
 SECURE_REFERRER_POLICY = 'same-origin'
 X_FRAME_OPTIONS = 'DENY'
 
+APP_VERSION = env('APP_VERSION', default='development')
+GIT_SHA = env('GIT_SHA', default='unknown')
+BUILD_DATE = env('BUILD_DATE', default='unknown')
+ENVIRONMENT = env(
+    'ENVIRONMENT',
+    default='development' if DEBUG else 'production',
+)
+
 
 # Application definition
 
@@ -76,6 +90,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'axes',
     'corsheaders',
     'rest_framework',
     'apps.base',
@@ -105,6 +120,7 @@ MIDDLEWARE = [
     'apps.accounts.middleware.CanLoginMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'axes.middleware.AxesMiddleware',
 ]
 
 ROOT_URLCONF = 'core.urls'
@@ -189,8 +205,27 @@ STORAGES = {
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 AUTH_USER_MODEL = 'accounts.User'
+AUTHENTICATION_BACKENDS = [
+    'apps.base.authentication.AxesStandaloneBackend',
+    'django.contrib.auth.backends.ModelBackend',
+]
 # USERNAME_FIELD is protected by a conditional case-insensitive database constraint.
-SILENCED_SYSTEM_CHECKS = ['auth.E003']
+SILENCED_SYSTEM_CHECKS = ['auth.E003', 'auth.W004']
+
+AXES_FAILURE_LIMIT = env.int('AXES_FAILURE_LIMIT', default=5)
+AXES_COOLOFF_MINUTES = env.int('AXES_COOLOFF_MINUTES', default=15)
+if AXES_FAILURE_LIMIT <= 0:
+    raise ImproperlyConfigured('AXES_FAILURE_LIMIT must be greater than zero.')
+if AXES_COOLOFF_MINUTES <= 0:
+    raise ImproperlyConfigured('AXES_COOLOFF_MINUTES must be greater than zero.')
+AXES_COOLOFF_TIME = timedelta(minutes=AXES_COOLOFF_MINUTES)
+AXES_USE_ATTEMPT_EXPIRATION = True
+AXES_LOCKOUT_PARAMETERS = [['username', 'ip_address']]
+AXES_RESET_ON_SUCCESS = True
+AXES_HTTP_RESPONSE_CODE = 429
+AXES_USERNAME_CALLABLE = 'apps.base.login_security.axes_username'
+AXES_CLIENT_IP_CALLABLE = 'apps.base.login_security.axes_client_ip'
+AXES_LOCKOUT_CALLABLE = 'apps.base.login_security.axes_lockout_response'
 
 REST_FRAMEWORK = {
     'EXCEPTION_HANDLER': 'apps.base.exceptions.api_exception_handler',

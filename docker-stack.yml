@@ -52,6 +52,10 @@ services:
       TRUST_PROXY_HEADERS: 'True'
       SECURE_SSL_REDIRECT: 'True'
       SESSION_COOKIE_SECURE: 'True'
+      SESSION_COOKIE_AGE: ${SESSION_COOKIE_AGE:-28800}
+      SESSION_SAVE_EVERY_REQUEST: ${SESSION_SAVE_EVERY_REQUEST:-True}
+      AXES_FAILURE_LIMIT: ${AXES_FAILURE_LIMIT:-5}
+      AXES_COOLOFF_MINUTES: ${AXES_COOLOFF_MINUTES:-15}
       CSRF_COOKIE_SECURE: 'True'
       SECURE_CONTENT_TYPE_NOSNIFF: 'True'
       SECURE_HSTS_SECONDS: ${SECURE_HSTS_SECONDS:-0}
@@ -65,6 +69,7 @@ services:
       GUNICORN_FORWARDED_ALLOW_IPS: ${GUNICORN_FORWARDED_ALLOW_IPS:-*}
       EMAIL_BACKEND: ${EMAIL_BACKEND:-django.core.mail.backends.smtp.EmailBackend}
       PRIVATE_MEDIA_ROOT: /app/private_media
+      ENVIRONMENT: ${ENVIRONMENT:-production}
     secrets:
       - django_secret_key
       - postgres_password

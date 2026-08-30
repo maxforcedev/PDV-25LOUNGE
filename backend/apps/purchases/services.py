@@ -258,6 +258,12 @@ def _create_items(order, raw_items, *, allow_exclusive=False):
                     conversion_factor=unit.conversion_factor,
                     defaults={'description': unit.description},
                 )
+                unit.purchase_presentation = presentation
+                unit.save(update_fields=('purchase_presentation', 'updated_at'))
+            if presentation.status != Status.ACTIVE:
+                raise ValidationError({
+                    'items': f'Item {index}: a apresentação do produto está inativa.'
+                })
             conversion_factor = presentation.conversion_factor
             presentation_unit_code = presentation.unit_code
             presentation_description = presentation.description

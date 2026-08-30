@@ -118,6 +118,36 @@ def reorder_product_modifier_groups(*, product, link_ids):
 
 
 @transaction.atomic
+def soft_delete_modifier_group(*, group, user):
+    group = ModifierGroup.all_objects.select_for_update().get(pk=group.pk)
+    if group.deleted_at is not None:
+        return group
+    options = list(ModifierOption.all_objects.select_for_update().filter(
+        modifier_group=group, deleted_at__isnull=True,
+    ).order_by('pk'))
+    links = list(ProductModifierGroup.all_objects.select_for_update().filter(
+        modifier_group=group, deleted_at__isnull=True,
+    ).order_by('pk'))
+    for option in options:
+        option.soft_delete(user=user)
+    for link in links:
+        link.soft_delete(user=user)
+    return group.soft_delete(user=user)
+
+
+@transaction.atomic
+def soft_delete_modifier_option(*, option, user):
+    option = ModifierOption.all_objects.select_for_update().get(pk=option.pk)
+    return option.soft_delete(user=user)
+
+
+@transaction.atomic
+def soft_delete_product_modifier_group(*, link, user):
+    link = ProductModifierGroup.all_objects.select_for_update().get(pk=link.pk)
+    return link.soft_delete(user=user)
+
+
+@transaction.atomic
 def replace_composition(*, product, components):
     company_id = product.company_id
     Company.objects.select_for_update().get(pk=company_id)
@@ -439,9 +469,24 @@ def duplicate_product(*, product, options):
                 product=duplicate, destination=link.destination
             )
     if options.get('suppliers'):
-        from apps.suppliers.models import ProductSupplier, ProductSupplierUnit
+        from apps.suppliers.models import (
+            ProductPurchasePresentation, ProductSupplier, ProductSupplierUnit,
+        )
 
-        for relation in source.product_suppliers.select_related('supplier').prefetch_related('units'):
+        presentations = {}
+        for presentation in source.purchase_presentations.all():
+            presentations[presentation.pk] = ProductPurchasePresentation.objects.create(
+                company=source.company,
+                product=duplicate,
+                unit_code=presentation.unit_code,
+                description=presentation.description,
+                conversion_factor=presentation.conversion_factor,
+                status=presentation.status,
+            )
+
+        for relation in source.product_suppliers.select_related('supplier').prefetch_related(
+            'units__purchase_presentation'
+        ):
             new_relation = ProductSupplier.objects.create(
                 company=source.company,
                 product=duplicate,
@@ -452,9 +497,23 @@ def duplicate_product(*, product, options):
                 status=relation.status,
             )
             for unit in relation.units.all():
+                presentation = presentations.get(unit.purchase_presentation_id)
+                if presentation is None:
+                    presentation, _created = ProductPurchasePresentation.objects.get_or_create(
+                        company=source.company,
+                        product=duplicate,
+                        unit_code=unit.unit_code,
+                        conversion_factor=unit.conversion_factor,
+                        defaults={
+                            'description': unit.description,
+                            'status': unit.status,
+                        },
+                    )
                 ProductSupplierUnit.objects.create(
                     company=source.company,
                     product_supplier=new_relation,
+                    purchase_presentation=presentation,
+                    presentation_preset=unit.presentation_preset,
                     unit_code=unit.unit_code,
                     description=unit.description,
                     conversion_factor=unit.conversion_factor,

@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { GripVertical, Plus, Pencil, Power } from "lucide-react";
+import { GripVertical, Plus, Pencil, Trash2 } from "lucide-react";
 import { AdminGuard } from "@/components/admin-guard";
 import { PageHeader } from "@/components/page-header";
 import {
   Alert,
   Button,
+  ConfirmDialog,
   Field,
   Input,
   Modal,
@@ -32,7 +33,6 @@ function ModifiersPage() {
   const readOnly = supportSession?.mode === "READ_ONLY";
   const canChange = hasPermission(permissions.changeModifiers) && !readOnly;
   const [groups, setGroups] = useState<ModifierGroup[]>([]);
-  const [showArchived, setShowArchived] = useState(false);
   const [stockProducts, setStockProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -62,6 +62,8 @@ function ModifiersPage() {
   const [optionEditing, setOptionEditing] = useState<ModifierOption | null>(
     null,
   );
+  const [deletingGroup, setDeletingGroup] = useState<ModifierGroup | null>(null);
+  const [deletingOption, setDeletingOption] = useState<ModifierOption | null>(null);
   const [reordering, setReordering] = useState(false);
   const [draggedGroupId, setDraggedGroupId] = useState<number | null>(null);
   const [draggedOptionId, setDraggedOptionId] = useState<number | null>(null);
@@ -79,7 +81,7 @@ function ModifiersPage() {
     setError("");
     try {
       const response = await http.getAll<ModifierGroup>(
-        `modifier-groups/?company=${currentCompany.id}&status=${showArchived ? "all" : "active"}`,
+        `modifier-groups/?company=${currentCompany.id}`,
       );
       if (context.current === token) setGroups(response);
     } catch (caught) {
@@ -99,7 +101,7 @@ function ModifiersPage() {
   useEffect(() => {
     setGroups([]);
     void loadRef.current(String(currentCompany?.id || ""));
-  }, [currentCompany?.id, showArchived]);
+  }, [currentCompany?.id]);
 
   useEffect(() => {
     if (!currentCompany) {
@@ -192,18 +194,25 @@ function ModifiersPage() {
     }
   }
 
-  async function toggleStatus(group: ModifierGroup) {
-    if (!canChange || !currentCompany) return;
-    const action = group.status === "active" ? "deactivate" : "activate";
+  async function deleteGroup() {
+    if (!canChange || !currentCompany || !deletingGroup) return;
+    setSaving(true);
     try {
-      await http.post(`modifier-groups/${group.id}/${action}/`, {});
+      await http.delete(`modifier-groups/${deletingGroup.id}/`);
+      if (viewingGroup?.id === deletingGroup.id) {
+        setOptionsModalOpen(false);
+        setViewingGroup(null);
+      }
+      setDeletingGroup(null);
       await load(String(currentCompany.id));
     } catch (caught) {
       setError(
         caught instanceof ApiError
           ? caught.message
-          : "Não foi possível alterar o status.",
+          : "Não foi possível excluir o grupo.",
       );
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -281,10 +290,13 @@ function ModifiersPage() {
     }
   }
 
-  async function deleteOption(opt: ModifierOption) {
-    if (!canChange) return;
+  async function deleteOption() {
+    if (!canChange || !deletingOption) return;
+    setSaving(true);
     try {
-      await http.post(`modifier-options/${opt.id}/deactivate/`, {});
+      await http.delete(`modifier-options/${deletingOption.id}/`);
+      if (optionEditing?.id === deletingOption.id) openCreateOption();
+      setDeletingOption(null);
       if (viewingGroup) await openOptions(viewingGroup);
     } catch (caught) {
       setError(
@@ -292,23 +304,8 @@ function ModifiersPage() {
           ? caught.message
           : "Não foi possível remover a opção.",
       );
-    }
-  }
-
-  async function toggleOptionStatus(opt: ModifierOption) {
-    if (!canChange || !viewingGroup) return;
-    try {
-      await http.post(
-        `modifier-options/${opt.id}/${opt.status === "active" ? "deactivate" : "activate"}/`,
-        {},
-      );
-      await openOptions(viewingGroup);
-    } catch (caught) {
-      setError(
-        caught instanceof ApiError
-          ? caught.message
-          : "Não foi possível alterar o status da opção.",
-      );
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -374,20 +371,12 @@ function ModifiersPage() {
         title="Modificadores"
         description="Grupos de modificadores (adicionais, observações) vinculados a produtos."
         action={
-          <div className="flex gap-2">
-            <Button
-              variant="secondary"
-              onClick={() => setShowArchived((value) => !value)}
-            >
-              {showArchived ? "Ocultar arquivados" : "Ver arquivados"}
+          canChange ? (
+            <Button onClick={openCreate}>
+              <Plus className="size-4" />
+              Novo grupo
             </Button>
-            {canChange && (
-              <Button onClick={openCreate}>
-                <Plus className="size-4" />
-                Novo grupo
-              </Button>
-            )}
-          </div>
+          ) : undefined
         }
       />
       <div className="space-y-4 p-4 sm:p-6 lg:p-8">
@@ -405,7 +394,6 @@ function ModifiersPage() {
                   <th>Obrigatório</th>
                   <th>Min/Max</th>
                   <th>Qtd. opção</th>
-                  <th>Status</th>
                   {canChange && <th>Ações</th>}
                 </tr>
               </thead>
@@ -443,7 +431,6 @@ function ModifiersPage() {
                         : " / ∞"}
                     </td>
                     <td>{group.allow_option_quantity ? "Sim" : "Não"}</td>
-                    <td>{group.status === "active" ? "Ativo" : "Inativo"}</td>
                     {canChange && (
                       <td>
                         <div className="flex gap-1">
@@ -462,13 +449,11 @@ function ModifiersPage() {
                             <Plus className="size-4" />
                           </button>
                           <button
-                            className="icon-button"
-                            title={
-                              group.status === "active" ? "Inativar" : "Ativar"
-                            }
-                            onClick={() => void toggleStatus(group)}
+                            className="icon-button text-danger"
+                            title="Excluir"
+                            onClick={() => setDeletingGroup(group)}
                           >
-                            <Power className="size-4" />
+                            <Trash2 className="size-4" />
                           </button>
                         </div>
                       </td>
@@ -653,13 +638,11 @@ function ModifiersPage() {
                             <Pencil className="size-4" />
                           </button>
                           <button
-                            className="icon-button"
-                            title={
-                              opt.status === "active" ? "Inativar" : "Ativar"
-                            }
-                            onClick={() => void toggleOptionStatus(opt)}
+                            className="icon-button text-danger"
+                            title="Excluir"
+                            onClick={() => setDeletingOption(opt)}
                           >
-                            <Power className="size-4" />
+                            <Trash2 className="size-4" />
                           </button>
                         </div>
                       )}
@@ -777,6 +760,26 @@ function ModifiersPage() {
           )}
         </div>
       </Modal>
+      <ConfirmDialog
+        open={Boolean(deletingGroup)}
+        title="Excluir grupo de modificador"
+        message={`Excluir “${deletingGroup?.name || ""}”? O histórico de vendas e comandas será preservado.`}
+        confirmLabel="Excluir grupo"
+        danger
+        loading={saving}
+        onClose={() => setDeletingGroup(null)}
+        onConfirm={() => void deleteGroup()}
+      />
+      <ConfirmDialog
+        open={Boolean(deletingOption)}
+        title="Excluir opção de modificador"
+        message={`Excluir “${deletingOption?.name || ""}”? O histórico continuará preservado.`}
+        confirmLabel="Excluir opção"
+        danger
+        loading={saving}
+        onClose={() => setDeletingOption(null)}
+        onConfirm={() => void deleteOption()}
+      />
     </>
   );
 }

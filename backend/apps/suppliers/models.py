@@ -302,14 +302,28 @@ class ProductPurchasePresentation(ProtectedSupplierModel):
         super().clean()
         self.unit_code = self.unit_code.strip().upper()
         self.description = ' '.join(self.description.split())
+        errors = {}
         if self.product_id and self.company_id and self.product.company_id != self.company_id:
-            raise ValidationError({'product': 'O produto deve pertencer à empresa da apresentação.'})
+            errors['product'] = 'O produto deve pertencer à empresa da apresentação.'
         if self.conversion_factor is None or self.conversion_factor <= 0:
-            raise ValidationError({'conversion_factor': 'O fator de conversão deve ser maior que zero.'})
+            errors['conversion_factor'] = 'O fator de conversão deve ser maior que zero.'
+        if self.pk:
+            original = type(self).objects.filter(pk=self.pk).values(
+                'company_id', 'product_id'
+            ).first()
+            if original:
+                for field in ('company', 'product'):
+                    if getattr(self, f'{field}_id') != original[f'{field}_id']:
+                        errors[field] = 'A identidade da apresentação não pode ser alterada.'
+        if errors:
+            raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
         self.full_clean()
         return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f'{self.product} - {self.unit_code}'
 
 
 class ProductSupplierUnit(ProtectedSupplierModel):
@@ -371,6 +385,12 @@ class ProductSupplierUnit(ProtectedSupplierModel):
             or self.purchase_presentation.product_id != self.product_supplier.product_id
         ):
             errors['purchase_presentation'] = 'A apresentação deve pertencer ao produto deste fornecedor.'
+        elif (
+            self.purchase_presentation_id
+            and self.status == Status.ACTIVE
+            and self.purchase_presentation.status != Status.ACTIVE
+        ):
+            errors['purchase_presentation'] = 'A apresentação do produto deve estar ativa.'
         if (
             self.presentation_preset_id and self.company_id
             and self.presentation_preset.company_id != self.company_id
@@ -378,12 +398,17 @@ class ProductSupplierUnit(ProtectedSupplierModel):
             errors['presentation_preset'] = 'O padrão deve pertencer à empresa da apresentação.'
         if self.pk:
             original = type(self).objects.filter(pk=self.pk).values(
-                'company_id', 'product_supplier_id'
+                'company_id', 'product_supplier_id', 'purchase_presentation_id'
             ).first()
             if original:
                 for field in ('company', 'product_supplier'):
                     if getattr(self, f'{field}_id') != original[f'{field}_id']:
                         errors[field] = 'A identidade da relação não pode ser alterada.'
+                if (
+                    original['purchase_presentation_id']
+                    and self.purchase_presentation_id != original['purchase_presentation_id']
+                ):
+                    errors['purchase_presentation'] = 'A apresentação vinculada não pode ser alterada.'
         if errors:
             raise ValidationError(errors)
 
@@ -399,7 +424,6 @@ class ProductSupplierUnit(ProtectedSupplierModel):
                 raise ValidationError({
                     'is_default': 'A relação já possui uma apresentação padrão ativa.'
                 })
-
     def save(self, *args, **kwargs):
         self.full_clean()
         return super().save(*args, **kwargs)

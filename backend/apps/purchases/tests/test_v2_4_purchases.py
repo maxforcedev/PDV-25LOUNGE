@@ -423,6 +423,7 @@ class PurchaseFlowTests(TestCase):
                 {'amount': '10.00', 'due_date': due + timedelta(days=30)},
             ],
         )
+        place_purchase_order(purchase_order=order, user=self.user)
         first, second = list(order.installments.all())
         pay_installment(installment=first, user=self.user, notes='PIX manual')
         cancel_installment(

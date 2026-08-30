@@ -371,6 +371,7 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
                 queryset=ProductModifierGroup.objects.filter(
                     status=Status.ACTIVE,
                     modifier_group__status=Status.ACTIVE,
+                    modifier_group__deleted_at__isnull=True,
                 ).select_related('modifier_group').prefetch_related(
                     Prefetch(
                         'modifier_group__options',
@@ -385,6 +386,7 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
                 queryset=ProductModifierGroup.objects.filter(
                     status=Status.ACTIVE,
                     modifier_group__status=Status.ACTIVE,
+                    modifier_group__deleted_at__isnull=True,
                 ).select_related('modifier_group').prefetch_related(
                     Prefetch(
                         'modifier_group__options',
@@ -462,7 +464,9 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=('post',), url_path='finalize')
     def finalize(self, request):
-        serializer = FinalizeSaleSerializer(data=request.data)
+        serializer = FinalizeSaleSerializer(
+            data=request.data, context={'request': request}
+        )
         serializer.is_valid(raise_exception=True)
         sale = finalize_sale(
             branch=request.branch_context, user=request.user, **serializer.validated_data,
@@ -497,14 +501,11 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=('post',))
     def calculate(self, request):
-        serializer = CalculationSerializer(data=request.data)
+        serializer = CalculationSerializer(
+            data=request.data, context={'request': request}
+        )
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        product_ids = [item.get('product') for item in data['items']]
-        if Product.objects.filter(pk__in=product_ids).exclude(
-            company=request.branch_context.company
-        ).exists():
-            raise PermissionDenied('Produto fora da empresa da filial.')
         beneficiary = data.get('beneficiary_user')
         if beneficiary and not beneficiary.company_accesses.filter(
             company=request.branch_context.company, is_active=True

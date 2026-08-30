@@ -39,6 +39,15 @@ export function formatQuantity(value: unknown, unit?: string) {
   return `${formatted} ${u}`;
 }
 
+export function formatEditableDecimal(value: unknown) {
+  if (typeof value !== "string") return "";
+  const normalized = value.trim().replace(",", ".");
+  if (!/^-?\d+(\.\d+)?$/.test(normalized)) return "";
+  const [integer, decimal = ""] = normalized.split(".");
+  const trimmed = decimal.replace(/0+$/, "");
+  return trimmed ? `${integer}.${trimmed}` : integer;
+}
+
 export function formatBRL(value: unknown) {
   if (typeof value !== "string") return "-";
   const negative = value.startsWith("-");

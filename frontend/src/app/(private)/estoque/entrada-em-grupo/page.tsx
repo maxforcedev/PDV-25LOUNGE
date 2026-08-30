@@ -191,7 +191,7 @@ export default function EntryPage() {
         <div className="flex justify-end border-t border-subtle p-4"><Button type="submit" loading={saving} disabled={!products.some(isPositive)}>Confirmar entrada</Button></div>
       </section>
     </form>
-    <Modal open={productModal} title="Adicionar produto" description="Pesquise um produto elegível para a filial atual." onClose={() => setProductModal(false)} size="xxl" tall><div className="p-5"><ProductAutocomplete companyId={currentCompany?.id} branchId={currentBranch?.id} value={null} onError={setError} onChange={(product) => { if (product) { addProducts([fromProduct(product)]); setProductModal(false); } }} /></div></Modal>
+    <Modal open={productModal} title="Adicionar produto" description="Pesquise um produto elegível para a filial atual." onClose={() => setProductModal(false)} size="xl" tall><div className="p-5"><ProductAutocomplete companyId={currentCompany?.id} branchId={currentBranch?.id} value={null} onError={setError} onChange={(product) => { if (product) { addProducts([fromProduct(product)]); setProductModal(false); } }} /></div></Modal>
     <Modal open={categoryModal} title="Adicionar por categoria" description="Todos os produtos elegíveis da categoria serão adicionados à mesma entrada." onClose={() => setCategoryModal(false)}><div className="space-y-4 p-5"><Field label="Categoria"><Select value={category} onChange={(event) => setCategory(event.target.value)}><option value="">Selecione</option>{categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field><div className="flex justify-end"><Button type="button" onClick={() => void addCategory()} disabled={!category || loadingProducts}>Adicionar produtos</Button></div></div></Modal>
   </>;
 }

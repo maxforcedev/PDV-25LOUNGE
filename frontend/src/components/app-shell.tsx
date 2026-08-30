@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/providers/auth-provider";
 import { permissions, reportMenuPermissions } from "@/lib/permissions";
+import { release } from "@/lib/release";
 import { Alert, Spinner } from "@/components/ui";
 import { useBranding } from "@/providers/branding-provider";
 import { BrandWordmark } from "@/components/marketing/brand-wordmark";
@@ -226,7 +227,11 @@ function Sidebar({
       </nav>
       {!collapsed && (
         <div className="border-t border-white/8 px-6 py-4 text-[10px] text-operational-muted">
-          Ambiente administrativo
+          <p className="font-semibold text-operational-fg">CORE PDV v{release.version}</p>
+          <p className="mt-1" title={`Commit ${release.commit}`}>
+            build {release.shortCommit} · {release.environment}
+          </p>
+          <p className="mt-0.5 truncate" title={release.buildDate}>{release.buildDate}</p>
         </div>
       )}
     </div>

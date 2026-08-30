@@ -13,11 +13,12 @@ from rest_framework.exceptions import APIException, ValidationError
 
 from apps.base.audit import audit_log, model_snapshot
 from apps.companies.features import require_branch_feature
-from apps.companies.models import Branch, Customer, Status
+from apps.companies.models import Branch, Company, Customer, Status
 from apps.companies.selectors import eligible_branch_users
 from apps.inventory.models import (
     MovementType, MovementNature, MovementDomainOrigin, Stock, StockMovement,
 )
+from apps.inventory.materialization import materialize_stock
 from apps.inventory.services import apply_locked_stock
 from apps.products.models import (
     FractionableProductConfig, Product, ProductBranchConfig, ProductComponent, ProductFractionComponent,
@@ -625,19 +626,7 @@ def _validate_branch_active(branch):
 
 
 def _get_locked_stock(product_id, branch):
-    stock = Stock.objects.select_for_update().filter(
-        product_id=product_id, branch=branch
-    ).first()
-    if stock is None:
-        fraction_tracking = FractionableProductConfig.objects.filter(
-            product_id=product_id, tracking_active=True
-        ).exists()
-        stock = Stock.objects.create(
-            product_id=product_id, branch=branch,
-            current_quantity=Decimal('0'), average_unit_cost=None,
-            **({'current_content': Decimal('0.000000000')} if fraction_tracking else {}),
-        )
-    return stock
+    return materialize_stock(product=product_id, branch=branch)
 
 
 @transaction.atomic
@@ -804,10 +793,15 @@ def add_order_item(*, command, user, product_id, quantity, modifiers=None,
 
 @transaction.atomic
 def confirm_order_item(*, item, user, idempotency_key, support_session=None):
-    item = OrderItem.objects.select_for_update().select_related(
+    item = OrderItem.objects.select_for_update(of=('self',)).select_related(
         'order__command', 'product'
     ).get(pk=item.pk)
     command = item.order.command
+    command.company = Company.objects.select_for_update().get(pk=command.company_id)
+    command.branch = Branch.objects.select_for_update(of=('self',)).get(
+        pk=command.branch_id, company=command.company,
+    )
+    command.branch.company = command.company
     require_branch_feature(command.branch, 'commands')
     if command.status != CommandStatus.OPEN:
         raise ValidationError({'command': 'A comanda deve estar aberta.'})
@@ -818,7 +812,8 @@ def confirm_order_item(*, item, user, idempotency_key, support_session=None):
 
     _assert_consumption_limit(command, item)
 
-    product = item.product
+    product = Product.objects.select_for_update().get(pk=item.product_id)
+    item.product = product
     requirements, content_requirements, component_snapshots = (
         _resolve_stock_requirements_for_product(
             product, item.quantity, command.branch, item.modifier_snapshot,
@@ -826,7 +821,8 @@ def confirm_order_item(*, item, user, idempotency_key, support_session=None):
     )
 
     operation_ref = str(idempotency_key)
-    for product_id, qty in requirements.items():
+    for product_id in sorted(requirements):
+        qty = requirements[product_id]
         stock = _get_locked_stock(product_id, command.branch)
         allow_negative = _branch_allows_negative(command.branch)
         new_quantity = stock.current_quantity - qty

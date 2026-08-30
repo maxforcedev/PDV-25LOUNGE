@@ -45,6 +45,12 @@ CAPABILITY_CATALOG = (
 FEATURE_CAPABILITY_CODES = frozenset(
     code for code, _, _ in CAPABILITY_CATALOG if code.startswith('feature.')
 )
+
+
+class OwnerEmailAlreadyExists(ValidationError):
+    pass
+
+
 REQUIRED_CAPABILITY_CODES = frozenset(
     code for code, _, _ in CAPABILITY_CATALOG
     if not code.startswith('feature.')
@@ -574,8 +580,12 @@ def provision_saas_tenant(
 
     if owner_user is None:
         normalized_email = User.objects.normalize_email(owner_email or '').lower()
+        _advisory_transaction_lock('provisioning-owner-email', normalized_email)
         if User.objects.filter(email__iexact=normalized_email).exists():
-            raise ValidationError({'owner_email': 'Este e-mail ja possui uma conta.'})
+            User(email=normalized_email).set_password(owner_password or '')
+            raise OwnerEmailAlreadyExists(
+                {'owner_email': 'Este e-mail ja possui uma conta.'}
+            )
         candidate = User(email=normalized_email)
         validate_password(owner_password or '', user=candidate)
         owner_user = User.objects.create_user(email=normalized_email, password=owner_password)

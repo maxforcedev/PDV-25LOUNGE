@@ -1,3 +1,4 @@
+import hashlib
 from decimal import Decimal
 
 from django.contrib.auth import authenticate, login, logout
@@ -16,6 +17,7 @@ from rest_framework.views import APIView
 
 from apps.accounts.models import User
 from apps.base.audit import audit_log
+from apps.base.login_security import INVALID_LOGIN_MESSAGE, axes_lockout_message
 from apps.companies.models import Company
 from apps.companies.services import transfer_company_owner
 
@@ -65,6 +67,7 @@ from .services import (
     extend_subscription_trial,
     get_global_settings,
     map_existing_company,
+    OwnerEmailAlreadyExists,
     process_subscription_lifecycle,
     request_cancellation,
     request_plan_change,
@@ -145,17 +148,33 @@ class PlatformLoginView(APIView):
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data['email'].lower()
         password = serializer.validated_data['password']
-        user = User.objects.filter(email__iexact=email, is_active=True, can_login=True).first()
-        if not user or not user.check_password(password):
-            return Response({'detail': 'E-mail ou senha invalidos.'}, status=status.HTTP_401_UNAUTHORIZED)
-        if not hasattr(user, 'platform_access') or not user.platform_access.is_active:
-            return Response({'detail': 'Acesso ao Platform Admin nao concedido.'}, status=status.HTTP_403_FORBIDDEN)
         authenticated = authenticate(request=request, email=email, password=password)
         if authenticated is None:
-            return Response({'detail': 'Nao foi possivel autenticar esta conta.'}, status=status.HTTP_401_UNAUTHORIZED)
+            if getattr(request, 'axes_locked_out', False):
+                return Response(
+                    {'detail': axes_lockout_message()},
+                    status=status.HTTP_429_TOO_MANY_REQUESTS,
+                )
+            return Response(
+                {'detail': INVALID_LOGIN_MESSAGE},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        if (
+            not authenticated.can_login
+            or not hasattr(authenticated, 'platform_access')
+            or not authenticated.platform_access.is_active
+        ):
+            return Response(
+                {'detail': INVALID_LOGIN_MESSAGE},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         login(request, authenticated)
-        audit_log(actor=user, action='platform.auth.login', obj=user)
-        response = Response(PlatformUserSerializer(user).data)
+        audit_log(
+            actor=authenticated,
+            action='platform.auth.login',
+            obj=authenticated,
+        )
+        response = Response(PlatformUserSerializer(authenticated).data)
         response['X-CSRFToken'] = get_token(request)
         return response
 
@@ -192,8 +211,20 @@ class PublicSignupView(APIView):
             context={'source': ProvisioningOperation.Source.PUBLIC_SIGNUP},
         )
         serializer.is_valid(raise_exception=True)
-        operation = serializer.save()
-        return Response(ProvisioningResultSerializer(operation).data, status=status.HTTP_201_CREATED)
+        try:
+            serializer.save()
+        except OwnerEmailAlreadyExists:
+            pass
+        reference = hashlib.sha256(
+            f"public-signup:{serializer.validated_data['idempotency_key']}".encode()
+        ).hexdigest()[:12]
+        return Response(
+            {
+                'id': reference,
+                'detail': 'Cadastro recebido. Use suas credenciais para acessar quando disponível.',
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class PlatformDashboardView(APIView):

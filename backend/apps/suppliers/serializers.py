@@ -6,14 +6,42 @@ from apps.companies.models import Status
 
 from .models import PresentationPreset, PresentationType, ProductPurchasePresentation, ProductSupplier, ProductSupplierUnit, Supplier
 from .services import (
-    _save_presentation_preset, _save_product_supplier, _save_product_supplier_unit,
-    _save_supplier,
+    _save_presentation_preset, _save_product_purchase_presentation,
+    _save_product_supplier, _save_product_supplier_unit, _save_supplier,
 )
 from .validators import normalize_tax_id, validate_tax_id
 
 
 class ImmutableTenantSerializer(serializers.ModelSerializer):
     identity_fields = ('company',)
+
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get('request')
+        support_session = getattr(request, 'support_session', None) if request else None
+        company_id = (
+            support_session.company_id
+            if support_session
+            else request.query_params.get('company') if request else None
+        ) or getattr(self.instance, 'company_id', None)
+        if company_id is None and isinstance(getattr(self, 'initial_data', None), dict):
+            company_id = self.initial_data.get('company')
+        if not company_id:
+            return fields
+
+        scoped_fields = {
+            'company': 'pk',
+            'product': 'company_id',
+            'supplier': 'company_id',
+            'product_supplier': 'company_id',
+            'presentation_preset': 'company_id',
+            'purchase_presentation': 'company_id',
+        }
+        for name, lookup in scoped_fields.items():
+            field = fields.get(name)
+            if field is not None and getattr(field, 'queryset', None) is not None:
+                field.queryset = field.queryset.filter(**{lookup: company_id})
+        return fields
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
@@ -144,6 +172,67 @@ class ProductSupplierSerializer(ImmutableTenantSerializer):
         return _save_product_supplier(instance=instance, **validated_data)
 
 
+class ProductPurchasePresentationSerializer(ImmutableTenantSerializer):
+    identity_fields = ('company', 'product')
+    company_name = serializers.CharField(source='company.trade_name', read_only=True)
+    product_name = serializers.CharField(source='product.name', read_only=True)
+    conversion_factor = serializers.DecimalField(
+        max_digits=18, decimal_places=6, min_value=Decimal('0.000001')
+    )
+
+    class Meta:
+        model = ProductPurchasePresentation
+        fields = (
+            'id', 'company', 'company_name', 'product', 'product_name', 'unit_code',
+            'description', 'conversion_factor', 'status', 'created_at', 'updated_at',
+        )
+        read_only_fields = (
+            'id', 'company_name', 'product_name', 'status', 'created_at', 'updated_at',
+        )
+        validators = []
+
+    def validate_unit_code(self, value):
+        value = value.strip().upper()
+        if not value:
+            raise serializers.ValidationError('Informe o código da apresentação.')
+        return value
+
+    def validate_description(self, value):
+        value = ' '.join(value.split())
+        if not value:
+            raise serializers.ValidationError('Informe a descrição da apresentação.')
+        return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        company = attrs.get('company', getattr(self.instance, 'company', None))
+        product = attrs.get('product', getattr(self.instance, 'product', None))
+        unit_code = attrs.get('unit_code', getattr(self.instance, 'unit_code', ''))
+        factor = attrs.get(
+            'conversion_factor', getattr(self.instance, 'conversion_factor', None)
+        )
+        errors = {}
+        if company and product and company.pk != product.company_id:
+            errors['product'] = 'O produto deve pertencer à empresa da apresentação.'
+        if product and unit_code and factor is not None:
+            duplicate = ProductPurchasePresentation.objects.filter(
+                product=product, unit_code__iexact=unit_code, conversion_factor=factor
+            )
+            if self.instance:
+                duplicate = duplicate.exclude(pk=self.instance.pk)
+            if duplicate.exists():
+                errors['non_field_errors'] = 'Esta apresentação já existe para o produto.'
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
+
+    def create(self, validated_data):
+        return _save_product_purchase_presentation(**validated_data)
+
+    def update(self, instance, validated_data):
+        return _save_product_purchase_presentation(instance=instance, **validated_data)
+
+
 class ProductSupplierUnitSerializer(ImmutableTenantSerializer):
     identity_fields = ('company', 'product_supplier')
     company_name = serializers.CharField(source='company.trade_name', read_only=True)
@@ -206,6 +295,9 @@ class ProductSupplierUnitSerializer(ImmutableTenantSerializer):
         status = getattr(self.instance, 'status', Status.ACTIVE)
         is_default = attrs.get('is_default', getattr(self.instance, 'is_default', False))
         preset = attrs.get('presentation_preset')
+        presentation = attrs.get(
+            'purchase_presentation', getattr(self.instance, 'purchase_presentation', None)
+        )
         presentation_type = attrs.get('presentation_type')
         errors = {}
         if company and relation and company.pk != relation.company_id:
@@ -220,7 +312,21 @@ class ProductSupplierUnitSerializer(ImmutableTenantSerializer):
                 errors['is_default'] = 'A relação já possui uma apresentação padrão ativa.'
         if preset and presentation_type:
             errors['presentation_preset'] = 'Escolha um padrão existente ou informe um novo tipo.'
-        if not self.instance and not preset and not presentation_type:
+        if presentation and relation and (
+            presentation.company_id != relation.company_id
+            or presentation.product_id != relation.product_id
+        ):
+            errors['purchase_presentation'] = 'A apresentação deve pertencer ao produto deste fornecedor.'
+        elif presentation and presentation.status != Status.ACTIVE:
+            errors['purchase_presentation'] = 'A apresentação do produto deve estar ativa.'
+        if (
+            self.instance
+            and self.instance.purchase_presentation_id
+            and presentation
+            and presentation.pk != self.instance.purchase_presentation_id
+        ):
+            errors['purchase_presentation'] = 'A apresentação vinculada não pode ser alterada.'
+        if not self.instance and not presentation and not preset and not presentation_type:
             legacy_fields = ('unit_code', 'description', 'conversion_factor')
             missing_legacy = [field for field in legacy_fields if attrs.get(field) in (None, '')]
             if missing_legacy and len(missing_legacy) < len(legacy_fields):

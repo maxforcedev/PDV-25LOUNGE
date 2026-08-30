@@ -6,7 +6,7 @@ frontend/node_modules/
 
 .next/
 frontend/.next/
-
+prds/
 out/
 dist/
 orthers.txt

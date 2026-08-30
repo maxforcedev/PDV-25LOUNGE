@@ -1,14 +1,18 @@
 from rest_framework.routers import SimpleRouter
 
 from .views import (
-    PresentationPresetViewSet, ProductSupplierUnitViewSet, ProductSupplierViewSet,
-    SupplierViewSet,
+    PresentationPresetViewSet, ProductPurchasePresentationViewSet,
+    ProductSupplierUnitViewSet, ProductSupplierViewSet, SupplierViewSet,
 )
 
 
 router = SimpleRouter()
 router.register('suppliers', SupplierViewSet, basename='supplier')
 router.register('product-suppliers', ProductSupplierViewSet, basename='product-supplier')
+router.register(
+    'product-purchase-presentations', ProductPurchasePresentationViewSet,
+    basename='product-purchase-presentation',
+)
 router.register(
     'product-supplier-units', ProductSupplierUnitViewSet, basename='product-supplier-unit'
 )

@@ -21,6 +21,7 @@ from apps.products.models import (
 from .content import (
     exact_content_equivalent, exact_multiply_quantized, exact_weighted_average,
 )
+from .materialization import materialize_stock
 
 from .models import (
     InventoryCount,
@@ -124,16 +125,7 @@ def _branch_sale_price(product, branch):
 
 
 def _locked_stock(product, branch):
-    stock = Stock.objects.select_for_update().filter(product=product, branch=branch).first()
-    if stock is None:
-        defaults = {}
-        config = FractionableProductConfig.objects.filter(
-            product=product, tracking_active=True
-        ).first()
-        if config:
-            defaults['current_content'] = Decimal('0.000000000')
-        stock = Stock.objects.create(product=product, branch=branch, **defaults)
-    return stock
+    return materialize_stock(product=product, branch=branch)
 
 
 def _active_fraction_config(product):
@@ -175,7 +167,7 @@ def _validate_operational_stock(product, branch):
 
 def _lock_active_company_branch(branch):
     company = Company.objects.select_for_update().get(pk=branch.company_id)
-    branch = Branch.objects.select_for_update().select_related('company').get(
+    branch = Branch.objects.select_for_update(of=('self',)).get(
         pk=branch.pk, company=company
     )
     branch.company = company
@@ -225,7 +217,7 @@ def _move(*, product, branch, user, reason, movement_type, nature,
     reason = (reason or '').strip()
     with transaction.atomic():
         branch = _authorized_branch(branch, user, permission_code)
-        branch = Branch.objects.select_for_update().select_related('company').get(pk=branch.pk)
+        branch = _lock_active_company_branch(branch)
         product_id = _pk(product)
         if idempotency_key:
             kind = {
@@ -268,9 +260,9 @@ def _move(*, product, branch, user, reason, movement_type, nature,
         _validate_operational_stock(product, branch)
 
         # Locking the product serializes both first-stock creation and later movements.
-        stock = Stock.objects.select_for_update().filter(
+        stock = Stock.objects.select_for_update(of=('self',)).filter(
             product=product, branch=branch
-        ).first()
+        ).order_by('pk').first()
         if stock is None:
             stock = _locked_stock(product, branch)
         config = _active_fraction_config(product)
@@ -508,12 +500,16 @@ def apply_locked_stock(*, stock, quantity, user, movement_type, reason='', sale=
 
 @transaction.atomic
 def activate_fraction_tracking(*, config, user):
+    config_id = _pk(config)
+    product_id = FractionableProductConfig.objects.values_list(
+        'product_id', flat=True
+    ).get(pk=config_id)
+    product = Product.objects.select_for_update().get(pk=product_id)
     config = FractionableProductConfig.objects.select_for_update().select_related(
         'product__company'
-    ).get(pk=_pk(config))
+    ).get(pk=config_id)
     if config.tracking_active:
         return config
-    product = Product.objects.select_for_update().get(pk=config.product_id)
     if InventoryCountItem.objects.select_for_update().filter(
         product=product, is_open=True
     ).exists():
@@ -532,7 +528,9 @@ def activate_fraction_tracking(*, config, user):
             'tracking_active': 'Conclua ou cancele as transferencias abertas antes da ativacao.'
         })
     stocks = list(
-        Stock.objects.select_for_update().filter(product=product).order_by('branch_id')
+        Stock.objects.select_for_update(of=('self',)).filter(
+            product=product
+        ).order_by('branch_id')
     )
     before = model_snapshot(config, ('tracking_active', 'activated_at', 'activated_by_id'))
     config.tracking_active = True
@@ -573,16 +571,18 @@ def purchase_receipt_entry(*, product, branch, quantity, effective_unit_cost, us
                            operation_reference, reason=''):
     """Apply a confirmed purchase through the same locked stock engine."""
     quantity = _decimal(quantity, 'quantity', positive=True)
-    branch = Branch.objects.select_for_update().select_related('company').get(pk=_pk(branch))
+    branch = _lock_active_company_branch(
+        Branch.objects.only('pk', 'company_id').get(pk=_pk(branch))
+    )
     try:
         product = Product.objects.select_for_update().get(pk=_pk(product))
     except Product.DoesNotExist as error:
         raise ValidationError({'product': 'Produto invalido.'}) from error
     _validate_operational_stock(product, branch)
     _validate_whole_unit_quantity(product, quantity, 'quantity')
-    stock = Stock.objects.select_for_update().filter(
+    stock = Stock.objects.select_for_update(of=('self',)).filter(
         product=product, branch=branch
-    ).first()
+    ).order_by('pk').first()
     if stock is None:
         stock = _locked_stock(product, branch)
     return apply_locked_stock(
@@ -670,7 +670,7 @@ def adjustment(product, branch, user, final_quantity=None, final_content=None, r
 def group_entry(*, branch, category=None, items, user, operation_reference,
                 nature=MovementNature.NORMAL, reason=''):
     branch = _authorized_branch(branch, user, 'inventory.entry')
-    branch = Branch.objects.select_for_update().select_related('company').get(pk=branch.pk)
+    branch = _lock_active_company_branch(branch)
     reference = operation_reference
     requested = []
     for item in items:
@@ -767,19 +767,45 @@ def group_entry(*, branch, category=None, items, user, operation_reference,
 def regularize_negatives(*, branch, items, user, reason=''):
     reference = uuid.uuid4()
     branch = _authorized_branch(branch, user, 'inventory.regularize')
-    branch = Branch.objects.select_for_update().select_related('company').get(pk=branch.pk)
+    branch = _lock_active_company_branch(branch)
+    try:
+        prepared_items = [(item, int(item['stock'])) for item in items]
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValidationError({'items': 'Informe saldos validos para regularizacao.'}) from error
+    stock_ids = [stock_id for _item, stock_id in prepared_items]
+    if len(stock_ids) != len(set(stock_ids)):
+        raise ValidationError({'items': 'Nao repita saldos na mesma regularizacao.'})
+    stock_refs = {
+        stock.pk: stock
+        for stock in Stock.objects.filter(
+            pk__in=stock_ids, branch=branch
+        ).only('pk', 'product_id')
+    }
+    if len(stock_refs) != len(set(stock_ids)):
+        missing_id = next((stock_id for stock_id in stock_ids if stock_id not in stock_refs), None)
+        raise DomainValidationError(
+            code='regularization_stock_not_found',
+            message='Um saldo informado nao pertence a filial atual.',
+            details={'stock_id': missing_id},
+        )
+    products = {
+        product.pk: product
+        for product in Product.objects.select_for_update().filter(
+            pk__in=sorted({stock.product_id for stock in stock_refs.values()})
+        ).order_by('pk')
+    }
+    stocks = {
+        stock.pk: stock
+        for stock in Stock.objects.select_for_update(of=('self',)).filter(
+            pk__in=stock_ids, branch=branch
+        ).order_by('product_id', 'pk')
+    }
+    for stock in stocks.values():
+        stock.product = products[stock.product_id]
+        stock.branch = branch
     movements = []
-    for item in items:
-        try:
-            stock = Stock.objects.select_for_update().select_related(
-                'product', 'branch', 'branch__company'
-            ).get(pk=item['stock'], branch=branch)
-        except Stock.DoesNotExist as error:
-            raise DomainValidationError(
-                code='regularization_stock_not_found',
-                message='Um saldo informado nao pertence a filial atual.',
-                details={'stock_id': item['stock']},
-            ) from error
+    for item, stock_id in prepared_items:
+        stock = stocks[stock_id]
         config = _active_fraction_config(stock.product)
         is_negative = (
             stock.current_content < 0 if config else stock.current_quantity < 0
@@ -805,11 +831,19 @@ def regularize_negatives(*, branch, items, user, reason=''):
 
 @transaction.atomic
 def set_minimum(*, stock, minimum_quantity, user):
-    stock = Stock.objects.select_for_update().select_related(
-        'product', 'branch', 'branch__company'
-    ).get(pk=_pk(stock))
-    branch = _authorized_branch(stock.branch, user, 'inventory.change_minimum')
-    _validate_operational_stock(stock.product, branch)
+    stock_id = _pk(stock)
+    stock_ref = Stock.objects.values(
+        'branch_id', 'branch__company_id', 'product_id'
+    ).get(pk=stock_id)
+    branch = _lock_active_company_branch(Branch(
+        pk=stock_ref['branch_id'], company_id=stock_ref['branch__company_id']
+    ))
+    _authorized_branch(branch, user, 'inventory.change_minimum')
+    product = Product.objects.select_for_update().get(pk=stock_ref['product_id'])
+    stock = Stock.objects.select_for_update(of=('self',)).get(pk=stock_id, branch=branch)
+    stock.branch = branch
+    stock.product = product
+    _validate_operational_stock(product, branch)
     before = model_snapshot(stock, ('minimum_quantity',))
     stock.minimum_quantity = minimum_quantity
     stock.save(update_fields=('minimum_quantity', 'updated_at'))
@@ -827,17 +861,28 @@ def create_stock_transfer(*, origin_branch, destination_branch, items, user,
     origin = _authorized_branch(
         origin_branch, user, 'inventory.transfer.create', support_session=support_session
     )
-    origin = Branch.objects.select_for_update().select_related('company').get(pk=origin.pk)
     try:
-        destination = Branch.objects.select_for_update().select_related('company').get(
-            pk=_pk(destination_branch)
-        )
-    except (Branch.DoesNotExist, TypeError, ValueError) as error:
+        destination_id = int(_pk(destination_branch))
+    except (TypeError, ValueError) as error:
         raise ValidationError({'destination_branch': 'Filial de destino invalida.'}) from error
-    if origin.pk == destination.pk:
+    if origin.pk == destination_id:
         raise ValidationError({'destination_branch': 'A filial de destino deve ser diferente da origem.'})
+    company = Company.objects.select_for_update().get(pk=origin.company_id)
+    branches = {
+        branch.pk: branch
+        for branch in Branch.objects.select_for_update(of=('self',)).filter(
+            pk__in=(origin.pk, destination_id)
+        ).order_by('pk')
+    }
+    try:
+        origin = branches[origin.pk]
+        destination = branches[destination_id]
+    except KeyError as error:
+        raise ValidationError({'destination_branch': 'Filial de destino invalida.'}) from error
+    origin.company = company
     if origin.company_id != destination.company_id:
         raise ValidationError({'destination_branch': 'Origem e destino devem pertencer a mesma empresa.'})
+    destination.company = company
     if origin.status != Status.ACTIVE or destination.status != Status.ACTIVE:
         raise ValidationError({'destination_branch': 'As duas filiais devem estar ativas.'})
     if origin.company.status != Status.ACTIVE:
@@ -915,20 +960,48 @@ def create_stock_transfer(*, origin_branch, destination_branch, items, user,
     return transfer
 
 
+def _lock_transfer_context(transfer):
+    company = Company.objects.select_for_update().get(pk=transfer.company_id)
+    branches = {
+        branch.pk: branch
+        for branch in Branch.objects.select_for_update(of=('self',)).filter(
+            pk__in=(transfer.origin_branch_id, transfer.destination_branch_id)
+        ).order_by('pk')
+    }
+    try:
+        transfer.origin_branch = branches[transfer.origin_branch_id]
+        transfer.destination_branch = branches[transfer.destination_branch_id]
+    except KeyError as error:
+        raise ValidationError({'transfer': 'A transferencia possui filial invalida.'}) from error
+    if (
+        transfer.origin_branch.company_id != company.pk
+        or transfer.destination_branch.company_id != company.pk
+    ):
+        raise ValidationError({'transfer': 'A transferencia possui contexto de empresa invalido.'})
+    transfer.company = company
+    transfer.origin_branch.company = company
+    transfer.destination_branch.company = company
+    return transfer
+
+
 @transaction.atomic
 def dispatch_stock_transfer(*, transfer, idempotency_key, user, support_session=None):
-    transfer = StockTransfer.objects.select_for_update().select_related(
+    transfer = StockTransfer.objects.select_for_update(of=('self',)).select_related(
         'company', 'origin_branch', 'destination_branch'
     ).get(pk=_pk(transfer))
-    origin = _authorized_branch(
+    transfer = _lock_transfer_context(transfer)
+    _authorized_branch(
         transfer.origin_branch, user, 'inventory.transfer.dispatch',
         support_session=support_session,
     )
+    origin = transfer.origin_branch
     try:
         key = uuid.UUID(str(idempotency_key))
     except (TypeError, ValueError, AttributeError) as error:
         raise ValidationError({'idempotency_key': 'Informe um UUID valido.'}) from error
-    items = list(transfer.items.select_for_update().select_related('product').order_by('product_id'))
+    items = list(transfer.items.select_for_update(of=('self',)).select_related(
+        'product'
+    ).order_by('product_id'))
     payload = {
         'transfer': str(transfer.pk),
         'origin_branch': transfer.origin_branch_id,
@@ -1069,13 +1142,15 @@ def dispatch_stock_transfer(*, transfer, idempotency_key, user, support_session=
 
 @transaction.atomic
 def cancel_stock_transfer(*, transfer, user, reason, support_session=None):
-    transfer = StockTransfer.objects.select_for_update().select_related(
+    transfer = StockTransfer.objects.select_for_update(of=('self',)).select_related(
         'company', 'origin_branch'
     ).get(pk=_pk(transfer))
-    origin = _authorized_branch(
+    transfer = _lock_transfer_context(transfer)
+    _authorized_branch(
         transfer.origin_branch, user, 'inventory.transfer.create',
         support_session=support_session,
     )
+    origin = transfer.origin_branch
     reason = (reason or '').strip()
     if transfer.status != StockTransferStatus.DRAFT or transfer.dispatched_at:
         raise ValidationError({'status': 'Somente transferencia ainda nao despachada pode ser cancelada.'})
@@ -1133,13 +1208,15 @@ def _canonical_transfer_receipt(transfer, items, finalize, notes):
 @transaction.atomic
 def receive_stock_transfer(*, transfer, idempotency_key, items, user,
                            finalize=False, notes='', support_session=None):
-    transfer = StockTransfer.objects.select_for_update().select_related(
+    transfer = StockTransfer.objects.select_for_update(of=('self',)).select_related(
         'company', 'origin_branch', 'destination_branch'
     ).get(pk=_pk(transfer))
-    destination = _authorized_branch(
+    transfer = _lock_transfer_context(transfer)
+    _authorized_branch(
         transfer.destination_branch, user, 'inventory.transfer.receive',
         support_session=support_session,
     )
+    destination = transfer.destination_branch
     try:
         key = uuid.UUID(str(idempotency_key))
     except (TypeError, ValueError, AttributeError) as error:
@@ -1164,7 +1241,9 @@ def receive_stock_transfer(*, transfer, idempotency_key, items, user,
         raise ValidationError({'status': 'A transferencia nao esta disponivel para recebimento.'})
     transfer_items = {
         item.pk: item
-        for item in transfer.items.select_for_update().select_related('product').order_by('product_id')
+        for item in transfer.items.select_for_update(of=('self',)).select_related(
+            'product'
+        ).order_by('product_id')
     }
     supplied_ids = {item['transfer_item'] for item in payload['items']}
     if not supplied_ids.issubset(transfer_items):
@@ -1296,21 +1375,34 @@ def receive_stock_transfer(*, transfer, idempotency_key, items, user,
 @transaction.atomic
 def resolve_transfer_divergence(*, divergence, idempotency_key, resolution_type,
                                 quantity, observation, user, support_session=None):
-    divergence = TransferDivergence.objects.select_for_update().select_related(
+    divergence = TransferDivergence.objects.select_for_update(of=('self',)).select_related(
         'transfer_item__product', 'transfer_item__transfer__company',
         'transfer_item__transfer__origin_branch',
         'transfer_item__transfer__destination_branch',
     ).get(pk=_pk(divergence))
-    transfer = divergence.transfer_item.transfer
+    transfer = StockTransfer.objects.select_for_update(of=('self',)).get(
+        pk=divergence.transfer_item.transfer_id
+    )
+    transfer = _lock_transfer_context(transfer)
+    divergence.transfer_item.transfer = transfer
     target_branch = (
         transfer.destination_branch
         if resolution_type == TransferResolutionType.FOUND_RECEIPT
         else transfer.origin_branch
     )
-    target_branch = _authorized_branch(
+    _authorized_branch(
         target_branch, user, 'inventory.transfer.resolve',
         support_session=support_session,
     )
+    target_branch = (
+        transfer.destination_branch
+        if resolution_type == TransferResolutionType.FOUND_RECEIPT
+        else transfer.origin_branch
+    )
+    product = Product.objects.select_for_update().get(
+        pk=divergence.transfer_item.product_id
+    )
+    divergence.transfer_item.product = product
     try:
         key = uuid.UUID(str(idempotency_key))
     except (TypeError, ValueError, AttributeError) as error:
@@ -1321,7 +1413,7 @@ def resolve_transfer_divergence(*, divergence, idempotency_key, resolution_type,
         raise ValidationError({'observation': 'Informe a observacao da resolucao.'})
     if resolution_type not in TransferResolutionType.values:
         raise ValidationError({'resolution_type': 'Tipo de resolucao invalido.'})
-    _validate_whole_unit_quantity(divergence.transfer_item.product, quantity, 'quantity')
+    _validate_whole_unit_quantity(product, quantity, 'quantity')
     payload = {
         'divergence': divergence.pk,
         'resolution_type': resolution_type,
@@ -1359,7 +1451,6 @@ def resolve_transfer_divergence(*, divergence, idempotency_key, resolution_type,
     movement = None
     item = divergence.transfer_item
     if resolution_type != TransferResolutionType.LOSS_IN_TRANSIT:
-        product = Product.objects.select_for_update().get(pk=item.product_id)
         _validate_operational_stock(product, target_branch)
         stock = _locked_stock(product, target_branch)
         domain_origin = {
@@ -1425,7 +1516,7 @@ def record_loss(*, branch, product, idempotency_key, quantity=None, reason,
     branch = _authorized_branch(
         branch, user, 'inventory.loss.record', support_session=support_session
     )
-    branch = Branch.objects.select_for_update().select_related('company').get(pk=branch.pk)
+    branch = _lock_active_company_branch(branch)
     try:
         key = uuid.UUID(str(idempotency_key))
     except (TypeError, ValueError, AttributeError) as error:

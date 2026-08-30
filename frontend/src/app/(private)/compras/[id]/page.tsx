@@ -30,6 +30,7 @@ import {
   formatBRL,
   formatDate,
   formatDecimalBRL,
+  formatEditableDecimal,
   formatQuantity,
 } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
@@ -209,7 +210,10 @@ function PurchaseDetail() {
   function initializeReceipt(current: PurchaseOrder) {
     if (!current) return;
     const quantities = Object.fromEntries(
-      current.items.map((item) => [item.id, item.pending_stock_quantity]),
+      current.items.map((item) => [
+        item.id,
+        formatEditableDecimal(item.pending_stock_quantity),
+      ]),
     );
     setReceived(quantities);
     setReceiptReason("");

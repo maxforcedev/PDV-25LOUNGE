@@ -6,6 +6,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
 from django.db.models.functions import Lower
+from django.utils import timezone
 
 from apps.base.models import BaseModel
 from apps.companies.models import Company, Status
@@ -18,6 +19,66 @@ def normalize_product_name(value):
         character for character in decomposed if not unicodedata.combining(character)
     ).casefold()
     return display_name, normalized_name
+
+
+class ExistingModifierQuerySet(models.QuerySet):
+    def delete(self):
+        raise ValidationError('Use o fluxo de exclusao segura de modificadores.')
+
+
+class ExistingModifierManager(models.Manager.from_queryset(ExistingModifierQuerySet)):
+    def get_queryset(self):
+        return super().get_queryset().filter(deleted_at__isnull=True)
+
+
+class AllModifierManager(models.Manager.from_queryset(ExistingModifierQuerySet)):
+    pass
+
+
+class SoftDeletedModifierModel(BaseModel):
+    deleted_at = models.DateTimeField(blank=True, null=True, editable=False)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        editable=False,
+        related_name='deleted_%(app_label)s_%(class)ss',
+    )
+
+    objects = ExistingModifierManager()
+    all_objects = AllModifierManager()
+
+    class Meta:
+        abstract = True
+        default_manager_name = 'objects'
+        base_manager_name = 'all_objects'
+
+    def clean(self):
+        super().clean()
+        if self.deleted_at is None and self.status != Status.ACTIVE:
+            raise ValidationError({'status': 'Registros existentes devem permanecer ativos.'})
+        if self.deleted_at is None and self.deleted_by_id is not None:
+            raise ValidationError({'deleted_by': 'Exclusao exige data de exclusao.'})
+
+    def soft_delete(self, *, user):
+        if self.deleted_at is not None:
+            return self
+        deleted_at = timezone.now()
+        type(self).all_objects.filter(pk=self.pk, deleted_at__isnull=True).update(
+            deleted_at=deleted_at,
+            deleted_by=user,
+            status=Status.INACTIVE,
+            updated_at=deleted_at,
+        )
+        self.deleted_at = deleted_at
+        self.deleted_by = user
+        self.status = Status.INACTIVE
+        self.updated_at = deleted_at
+        return self
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError('Use o fluxo de exclusao segura de modificadores.')
 
 
 class Category(BaseModel):
@@ -619,7 +680,7 @@ class ModifierOptionType(models.TextChoices):
     COMPONENT_SUBSTITUTION = 'component_substitution', 'Substituição de componente'
 
 
-class ModifierGroup(BaseModel):
+class ModifierGroup(SoftDeletedModifierModel):
     company = models.ForeignKey(
         Company, on_delete=models.PROTECT, related_name='modifier_groups'
     )
@@ -645,9 +706,20 @@ class ModifierGroup(BaseModel):
         ordering = ('sort_order', 'id')
         constraints = [
             models.UniqueConstraint(
-                Lower('name'),
-                condition=Q(company_id__isnull=False),
+                'company', Lower('name'),
+                condition=Q(deleted_at__isnull=True),
                 name='products_modifier_group_company_name_ci_unique',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(deleted_at__isnull=True, status=Status.ACTIVE)
+                    | Q(deleted_at__isnull=False, status=Status.INACTIVE)
+                ),
+                name='products_modifier_group_lifecycle_consistent',
+            ),
+            models.CheckConstraint(
+                condition=Q(deleted_at__isnull=False) | Q(deleted_by__isnull=True),
+                name='products_modifier_group_deleter_consistent',
             ),
         ]
 
@@ -681,7 +753,7 @@ class ModifierGroup(BaseModel):
         return f'{self.company} — {self.name}'
 
 
-class ModifierOption(BaseModel):
+class ModifierOption(SoftDeletedModifierModel):
     modifier_group = models.ForeignKey(
         ModifierGroup, on_delete=models.PROTECT, related_name='options'
     )
@@ -712,8 +784,20 @@ class ModifierOption(BaseModel):
                 name='products_modifier_option_price_nonnegative',
             ),
             models.UniqueConstraint(
-                fields=('modifier_group', 'name'),
+                'modifier_group', Lower('name'),
+                condition=Q(deleted_at__isnull=True),
                 name='products_modifier_option_group_name_unique',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(deleted_at__isnull=True, status=Status.ACTIVE)
+                    | Q(deleted_at__isnull=False, status=Status.INACTIVE)
+                ),
+                name='products_modifier_option_lifecycle_consistent',
+            ),
+            models.CheckConstraint(
+                condition=Q(deleted_at__isnull=False) | Q(deleted_by__isnull=True),
+                name='products_modifier_option_deleter_consistent',
             ),
         ]
 
@@ -728,10 +812,12 @@ class ModifierOption(BaseModel):
         )
         if requires_product and not self.stock_product_id:
             raise ValidationError({'stock_product': 'Informe o produto ou insumo da opção.'})
+        group = self.modifier_group
+        if group.deleted_at is not None:
+            raise ValidationError({'modifier_group': 'O grupo de modificador foi excluido.'})
         if not self.stock_product_id:
             return
         product = self.stock_product
-        group = self.modifier_group
         errors = {}
         if product.company_id != group.company_id:
             errors['stock_product'] = 'O produto deve pertencer à mesma empresa do grupo.'
@@ -753,7 +839,7 @@ class ModifierOption(BaseModel):
         return f'{self.modifier_group.name} — {self.name}'
 
 
-class ProductModifierGroup(BaseModel):
+class ProductModifierGroup(SoftDeletedModifierModel):
     product = models.ForeignKey(
         Product, on_delete=models.PROTECT, related_name='modifier_groups'
     )
@@ -770,14 +856,29 @@ class ProductModifierGroup(BaseModel):
         constraints = [
             models.UniqueConstraint(
                 fields=('product', 'modifier_group'),
+                condition=Q(deleted_at__isnull=True),
                 name='products_modifier_link_unique',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(deleted_at__isnull=True, status=Status.ACTIVE)
+                    | Q(deleted_at__isnull=False, status=Status.INACTIVE)
+                ),
+                name='products_modifier_link_lifecycle_consistent',
+            ),
+            models.CheckConstraint(
+                condition=Q(deleted_at__isnull=False) | Q(deleted_by__isnull=True),
+                name='products_modifier_link_deleter_consistent',
             ),
         ]
 
     def clean(self):
         super().clean()
-        if self.product_id and self.modifier_group_id and self.product.company_id != self.modifier_group.company_id:
-            raise ValidationError({'modifier_group': 'O grupo deve pertencer à mesma empresa do produto.'})
+        if self.product_id and self.modifier_group_id:
+            if self.modifier_group.deleted_at is not None:
+                raise ValidationError({'modifier_group': 'O grupo de modificador foi excluido.'})
+            if self.product.company_id != self.modifier_group.company_id:
+                raise ValidationError({'modifier_group': 'O grupo deve pertencer à mesma empresa do produto.'})
 
     def save(self, *args, **kwargs):
         self.full_clean()

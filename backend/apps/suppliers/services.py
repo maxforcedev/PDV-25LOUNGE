@@ -31,6 +31,9 @@ def _lock_instance(instance):
             pk=instance.product_supplier_id
         )
         return ProductSupplierUnit.objects.select_for_update().get(pk=instance.pk)
+    if isinstance(instance, ProductPurchasePresentation):
+        Product.objects.select_for_update().get(pk=instance.product_id)
+        return ProductPurchasePresentation.objects.select_for_update().get(pk=instance.pk)
     if isinstance(instance, PresentationPreset):
         Company.objects.select_for_update().get(pk=instance.company_id)
         return PresentationPreset.objects.select_for_update().get(pk=instance.pk)
@@ -78,6 +81,42 @@ def _save_product_supplier(*, instance=None, **values):
 
 
 @transaction.atomic
+def _save_product_purchase_presentation(*, instance=None, **values):
+    synchronize_links = instance is not None and any(
+        field in values for field in ('unit_code', 'description', 'conversion_factor')
+    )
+    if instance is not None:
+        instance = _lock_instance(instance)
+        for field, value in values.items():
+            setattr(instance, field, value)
+    else:
+        product = Product.objects.select_for_update().select_related('company').get(
+            pk=values['product'].pk
+        )
+        instance = ProductPurchasePresentation(**values)
+        instance.product = product
+    instance = _save_with_validation(
+        instance,
+        {'non_field_errors': 'Esta apresentação já existe para o produto.'},
+    )
+    if synchronize_links:
+        for link in instance.supplier_links.select_for_update().all():
+            link.unit_code = instance.unit_code
+            link.description = instance.description
+            link.conversion_factor = instance.conversion_factor
+            link.save(update_fields=(
+                'unit_code', 'description', 'conversion_factor', 'updated_at',
+            ))
+    if instance.status == Status.INACTIVE:
+        for link in instance.supplier_links.select_for_update().filter(
+            status=Status.ACTIVE
+        ):
+            link.status = Status.INACTIVE
+            link.save(update_fields=('status', 'updated_at'))
+    return instance
+
+
+@transaction.atomic
 def _save_product_supplier_unit(*, instance=None, **values):
     missing = object()
     preset_id = values.pop('presentation_preset', missing)
@@ -95,6 +134,20 @@ def _save_product_supplier_unit(*, instance=None, **values):
         )
         instance = ProductSupplierUnit(**values)
         instance.product_supplier = relation
+    if instance.purchase_presentation_id:
+        presentation_queryset = ProductPurchasePresentation.objects.select_for_update().filter(
+            pk=instance.purchase_presentation_id,
+            company_id=instance.company_id,
+            product_id=instance.product_supplier.product_id,
+        )
+        if instance.status == Status.ACTIVE:
+            presentation_queryset = presentation_queryset.filter(status=Status.ACTIVE)
+        try:
+            instance.purchase_presentation = presentation_queryset.get()
+        except ProductPurchasePresentation.DoesNotExist as error:
+            raise ValidationError({
+                'purchase_presentation': 'Apresentação ativa inválida para este produto.'
+            }) from error
     if preset_id is not missing and preset_id is not None:
         try:
             preset = PresentationPreset.objects.select_for_update().get(
@@ -187,6 +240,10 @@ def _set_product_supplier_status(*, instance, status):
 
 def _set_product_supplier_unit_status(*, instance, status):
     return _save_product_supplier_unit(instance=instance, status=status)
+
+
+def _set_product_purchase_presentation_status(*, instance, status):
+    return _save_product_purchase_presentation(instance=instance, status=status)
 
 
 def _set_presentation_preset_status(*, instance, status):
