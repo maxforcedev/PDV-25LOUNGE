@@ -29,8 +29,9 @@ import {
   TableLoading,
   Textarea,
 } from "@/components/ui";
-import { fieldError } from "@/lib/format";
+import { fieldError, formatDate } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
+import { archivedRecordConflict } from "@/lib/archived-errors";
 import { permissions } from "@/lib/permissions";
 import {
   formatZipCode,
@@ -138,6 +139,11 @@ function Suppliers() {
   const [zipCodeLoading, setZipCodeLoading] = useState(false);
   const [zipCodeError, setZipCodeError] = useState("");
   const [zipLookupEnabled, setZipLookupEnabled] = useState(false);
+  const [restoreConflict, setRestoreConflict] = useState<{
+    id: number;
+    name: string;
+    archivedAt: string;
+  } | null>(null);
 
   const [confirming, setConfirming] = useState<Supplier | null>(null);
   const [changingStatus, setChangingStatus] = useState(false);
@@ -202,6 +208,7 @@ function Suppliers() {
     setOpen(false);
     setEditing(null);
     setConfirming(null);
+    setRestoreConflict(null);
     setSaving(false);
     setChangingStatus(false);
     if (companyId) void loadRef.current(undefined, companyId, cleared);
@@ -306,6 +313,7 @@ function Suppliers() {
     setFormError("");
     setZipCodeError("");
     setZipLookupEnabled(false);
+    setRestoreConflict(null);
     setOpen(true);
   }
 
@@ -408,9 +416,42 @@ function Suppliers() {
     } catch (caught) {
       if (companyIdRef.current !== requestedCompanyId) return;
       if (caught instanceof ApiError) {
+        const conflict = archivedRecordConflict(
+          caught,
+          "archived_supplier_exists",
+          "supplier_id",
+        );
+        if (!editing && conflict) {
+          setRestoreConflict(conflict);
+          return;
+        }
         setFormError(caught.message);
         setFields(caught.fields);
       } else setFormError("Não foi possível salvar o fornecedor.");
+    } finally {
+      if (companyIdRef.current === requestedCompanyId) setSaving(false);
+    }
+  }
+
+  async function restoreSupplier() {
+    if (!restoreConflict || !currentCompany) return;
+    const requestedCompanyId = currentCompany.id;
+    setSaving(true);
+    setFormError("");
+    try {
+      await http.post(`suppliers/${restoreConflict.id}/restore/`);
+      if (companyIdRef.current !== requestedCompanyId) return;
+      setRestoreConflict(null);
+      setOpen(false);
+      setSuccess("Fornecedor restaurado com sucesso.");
+      await load(undefined, requestedCompanyId, appliedFilters);
+    } catch (caught) {
+      if (companyIdRef.current === requestedCompanyId)
+        setFormError(
+          caught instanceof ApiError
+            ? caught.message
+            : "Não foi possível restaurar o fornecedor.",
+        );
     } finally {
       if (companyIdRef.current === requestedCompanyId) setSaving(false);
     }
@@ -967,6 +1008,29 @@ function Suppliers() {
         onClose={() => !changingStatus && setConfirming(null)}
         onConfirm={changeStatus}
       />
+      <Modal
+        open={!!restoreConflict}
+        title="Restaurar fornecedor"
+        description="Este CPF/CNPJ já pertenceu a um fornecedor desta filial."
+        onClose={() => !saving && setRestoreConflict(null)}
+      >
+        <div className="space-y-4 p-5">
+          {formError && <Alert message={formError} />}
+          <div className="rounded-lg border border-subtle p-4 text-sm">
+            <strong className="block">{restoreConflict?.name}</strong>
+            <span className="mt-1 block text-muted">
+              Excluído em: {restoreConflict ? formatDate(restoreConflict.archivedAt) : ""}
+            </span>
+          </div>
+          <p className="text-sm text-muted">
+            A restauração preserva o mesmo ID e todo o histórico do fornecedor.
+          </p>
+          <div className="flex justify-end gap-2 border-t border-subtle pt-4">
+            <Button variant="secondary" disabled={saving} onClick={() => setRestoreConflict(null)}>Cancelar</Button>
+            <Button loading={saving} onClick={() => void restoreSupplier()}>Restaurar fornecedor</Button>
+          </div>
+        </div>
+      </Modal>
     </>
   );
 }

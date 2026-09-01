@@ -35,6 +35,7 @@ import {
 } from "@/components/ui";
 import { fieldError, formatDate } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
+import { archivedRecordConflict } from "@/lib/archived-errors";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
 import type {
@@ -103,13 +104,19 @@ interface UserFilters {
   accessProfile: string;
   branch: string;
 }
-const emptyFilters = (): UserFilters => ({
+interface ArchivedUserConflict {
+  userId: number;
+  name: string;
+  email: string | null;
+  archivedAt: string;
+}
+const emptyFilters = (branchId?: number): UserFilters => ({
   search: "",
   status: "active",
   canLogin: "",
   userType: "",
   accessProfile: "",
-  branch: "",
+  branch: branchId ? String(branchId) : "",
 });
 
 function UserEditorFrame({ open, page, title, description, onClose, children }: { open: boolean; page: boolean; title: string; description: string; onClose: () => void; children: React.ReactNode }) {
@@ -119,7 +126,7 @@ function UserEditorFrame({ open, page, title, description, onClose, children }: 
 }
 
 function UsersAdministration() {
-  const { user: actor, currentCompany, hasPermission } = useAuth();
+  const { user: actor, currentCompany, currentBranch, hasPermission } = useAuth();
   const router = useRouter();
   const { id } = useParams<{ id?: string }>();
   const isDetail = Boolean(id);
@@ -127,8 +134,8 @@ function UsersAdministration() {
   const canAdd = hasPermission(permissions.addUser);
   const canChange = hasPermission(permissions.changeUser);
   const canStatus = hasPermission(permissions.changeUserStatus);
-  const contextRef = useRef(currentCompany?.id);
-  contextRef.current = currentCompany?.id;
+  const contextRef = useRef(`${currentCompany?.id || ""}:${currentBranch?.id || ""}`);
+  contextRef.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}`;
   const [data, setData] = useState<Paginated<User> | null>(null);
   const [branches, setBranches] = useState<UserManagementBranch[]>([]);
   const [profiles, setProfiles] = useState<
@@ -153,13 +160,15 @@ function UsersAdministration() {
   const [resetPassword, setResetPassword] = useState("");
   const [resetFields, setResetFields] = useState<Record<string, string[]>>({});
   const [resetSaving, setResetSaving] = useState(false);
+  const [restoreConflict, setRestoreConflict] =
+    useState<ArchivedUserConflict | null>(null);
   const [draftFilters, setDraftFilters] = useState<UserFilters>(emptyFilters);
   const [appliedFilters, setAppliedFilters] =
     useState<UserFilters>(emptyFilters);
 
   useEffect(() => {
     const saved = new URLSearchParams(window.location.search).get("saved");
-    if (saved) setSuccess(saved === "created" ? "Usuário criado com sucesso." : saved === "archived" ? "Usuário arquivado. O histórico foi preservado." : "Usuário atualizado com sucesso.");
+    if (saved) setSuccess(saved === "created" ? "Usuário criado com sucesso." : saved === "archived" ? "Usuário arquivado. O histórico foi preservado." : saved === "restored" ? "Usuário restaurado com sucesso." : "Usuário atualizado com sucesso.");
   }, []);
 
   function listPath(companyId: number, selected: UserFilters) {
@@ -189,23 +198,25 @@ function UsersAdministration() {
       const response = await http.get<Paginated<User>>(
         path || listPath(companyId, selected),
       );
-      if (contextRef.current === companyId) setData(response);
+      if (contextRef.current === `${companyId}:${currentBranch?.id || ""}`)
+        setData(response);
     } catch (caught) {
-      if (contextRef.current === companyId)
+      if (contextRef.current === `${companyId}:${currentBranch?.id || ""}`)
         setError(
           caught instanceof ApiError
             ? caught.message
             : "Não foi possível carregar os usuários.",
         );
     } finally {
-      if (contextRef.current === companyId) setLoading(false);
+      if (contextRef.current === `${companyId}:${currentBranch?.id || ""}`)
+        setLoading(false);
     }
   }
   useEffect(() => {
     const companyId = currentCompany?.id;
     if (!companyId) return;
     let active = true;
-    const cleared = emptyFilters();
+    const cleared = emptyFilters(currentBranch?.id);
     setDraftFilters(cleared);
     setAppliedFilters(cleared);
     setData(null);
@@ -228,7 +239,10 @@ function UsersAdministration() {
         }>;
       }>(`users/management-options/?company=${currentCompany.id}`)
       .then((options) => {
-        if (active && contextRef.current === companyId) {
+        if (
+          active &&
+          contextRef.current === `${companyId}:${currentBranch?.id || ""}`
+        ) {
           setBranches(
             options.branches.map(({ company_id, ...branch }) => ({
               ...branch,
@@ -262,7 +276,7 @@ function UsersAdministration() {
     return () => {
       active = false;
     };
-  }, [currentCompany?.id]);
+  }, [currentCompany?.id, currentBranch?.id]);
 
   useEffect(() => {
     if (!isDetail || !currentCompany) return;
@@ -276,17 +290,18 @@ function UsersAdministration() {
       return;
     }
     const companyId = currentCompany.id;
+    const contextKey = `${companyId}:${currentBranch?.id || ""}`;
     let active = true;
     http.get<User>(`users/${userId}/?company=${companyId}`).then((target) => {
-      if (!active || contextRef.current !== companyId) return;
+      if (!active || contextRef.current !== contextKey) return;
       if (target.membership?.company_id !== companyId) throw new ApiError("Usuário não encontrado.", 404);
       show(target);
     }).catch((caught) => {
-      if (active && contextRef.current === companyId)
+      if (active && contextRef.current === contextKey)
         setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar o usuário.");
     });
     return () => { active = false; };
-  }, [id, isDetail, isNew, currentCompany?.id]);
+  }, [id, isDetail, isNew, currentCompany?.id, currentBranch?.id]);
 
   useEffect(() => {
     if (editorTab !== "history" || !editing || !currentCompany) return;
@@ -304,7 +319,7 @@ function UsersAdministration() {
   }
 
   function clearFilters() {
-    const cleared = emptyFilters();
+    const cleared = emptyFilters(currentBranch?.id);
     setDraftFilters(cleared);
     setAppliedFilters(cleared);
     void load(undefined, currentCompany?.id, cleared);
@@ -325,7 +340,7 @@ function UsersAdministration() {
         ? {
             email: target.email,
             password: null,
-            can_login: target.can_login,
+            can_login: Boolean(target.can_login && target.membership?.is_active),
             user_type: target.user_type,
              first_name: target.first_name,
              last_name: target.last_name,
@@ -355,6 +370,7 @@ function UsersAdministration() {
     );
     setFields({});
     setError("");
+    setRestoreConflict(null);
     setOpen(true);
   }
   function update<K extends keyof UserPayload>(key: K, value: UserPayload[K]) {
@@ -421,7 +437,7 @@ function UsersAdministration() {
     setForm((current) => ({
       ...current,
       can_login: value,
-      email: value ? current.email : null,
+      email: current.email,
       password: value ? current.password : null,
       company_accesses: value
         ? current.company_accesses
@@ -470,9 +486,61 @@ function UsersAdministration() {
       await load();
     } catch (caught) {
       if (caught instanceof ApiError) {
+        const conflict = archivedRecordConflict(
+          caught,
+          "archived_user_exists",
+          "user_id",
+        );
+        if (!editing && conflict) {
+          setRestoreConflict({
+            userId: conflict.id,
+            name: conflict.name,
+            email:
+              typeof caught.details.email === "string"
+                ? caught.details.email
+                : null,
+            archivedAt: conflict.archivedAt,
+          });
+          return;
+        }
         setError(caught.message);
         setFields(caught.fields);
       } else setError("Não foi possível salvar o usuário.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function restoreUser() {
+    if (!restoreConflict || !currentCompany) return;
+    setSaving(true);
+    setError("");
+    setFields({});
+    try {
+      const payload = {
+        ...form,
+        email: form.email?.trim() || null,
+        password: form.password?.trim() || undefined,
+      };
+      await http.post<User>(
+        `users/${restoreConflict.userId}/restore/?company=${currentCompany.id}`,
+        payload,
+      );
+      setRestoreConflict(null);
+      if (isDetail) {
+        router.push("/usuarios?saved=restored");
+        return;
+      }
+      setOpen(false);
+      setSuccess("Usuário restaurado com sucesso.");
+      await load();
+    } catch (caught) {
+      if (caught instanceof ApiError) {
+        setError(caught.message);
+        setFields(caught.fields);
+      } else {
+        setError("Não foi possível restaurar o usuário.");
+      }
     } finally {
       setSaving(false);
     }
@@ -827,7 +895,7 @@ function UsersAdministration() {
               </>}
             </div> : <>
               {editorTab === "personal" && <div className="grid gap-5 sm:grid-cols-2"><div className="flex items-center gap-4 sm:col-span-2"><UserAvatar user={editing} className="size-16" textClassName="text-lg" /><div><h2 className="text-sm font-bold">Dados pessoais</h2><p className="text-xs text-muted">Identificação e endereço global do usuário.</p></div></div><Field label="Nome"><Input required value={form.first_name} onChange={(event) => update("first_name", event.target.value)} /></Field><Field label="Sobrenome"><Input required value={form.last_name} onChange={(event) => update("last_name", event.target.value)} /></Field><Field label="CPF" optional><Input value={form.cpf} onChange={(event) => update("cpf", event.target.value)} /></Field><Field label="Aniversário" optional><Input type="date" value={form.birth_date || ""} onChange={(event) => update("birth_date", event.target.value || null)} /></Field><Field label="CEP" optional><Input value={form.zip_code} onChange={(event) => update("zip_code", event.target.value)} /></Field><Field label="Logradouro" optional><Input value={form.street} onChange={(event) => update("street", event.target.value)} /></Field><Field label="Número" optional><Input value={form.address_number} onChange={(event) => update("address_number", event.target.value)} /></Field><Field label="Complemento" optional><Input value={form.address_complement} onChange={(event) => update("address_complement", event.target.value)} /></Field><Field label="Bairro" optional><Input value={form.neighborhood} onChange={(event) => update("neighborhood", event.target.value)} /></Field><Field label="Cidade" optional><Input value={form.city} onChange={(event) => update("city", event.target.value)} /></Field><Field label="Estado" optional><Input maxLength={2} value={form.state} onChange={(event) => update("state", event.target.value.toUpperCase())} /></Field></div>}
-              {editorTab === "access" && <div className="space-y-5"><div className="grid gap-5 sm:grid-cols-2"><Field label="Cargo/Função"><Select value={form.user_type} onChange={(event) => update("user_type", event.target.value as UserType)}>{userTypes.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select></Field><Field label="E-mail"><Input type="email" value={form.email || ""} onChange={(event) => update("email", event.target.value || null)} /></Field></div><div className="flex items-center justify-between rounded-lg border border-subtle p-4"><div><strong className="text-xs">Estado do acesso nesta empresa</strong><p className="mt-1 text-xs text-muted">A credencial global permanece preservada em outras empresas.</p></div><StatusBadge active={!!editing.membership?.is_active} /></div><div><h2 className="text-sm font-bold">Filiais e perfis autorizados</h2><div className="mt-3 space-y-2">{branches.filter((branch) => branch.company === currentCompany?.id).map((branch) => { const access = form.company_accesses[0]; const branchAccess = access?.branch_accesses.find((item) => item.branch_id === branch.id); return <div key={branch.id} className="grid gap-2 rounded-lg border border-subtle p-3 sm:grid-cols-[1fr_14rem]"><label className="flex items-center gap-2"><input type="checkbox" className="size-4 accent-primary" checked={!!branchAccess} onChange={() => currentCompany && toggleBranch(currentCompany.id, branch.id)} /><span><strong className="block text-sm">{branch.name}</strong><small className="block text-[11px] font-normal text-muted">{currentCompany?.trade_name}</small></span></label>{branchAccess && <Select value={branchAccess.access_profile_id} onChange={(event) => currentCompany && updateBranchProfile(currentCompany.id, branch.id, Number(event.target.value))}>{(profiles[currentCompany?.id || 0] || []).filter((profile) => profile.assignable_branch_ids.includes(branch.id) || profile.id === branchAccess.access_profile_id).map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</Select>}</div>; })}</div></div></div>}
+              {editorTab === "access" && <div className="space-y-5"><label className="flex items-center gap-3 rounded-lg border border-subtle p-4 text-xs font-semibold"><input type="checkbox" className="size-4 accent-primary" checked={form.can_login} onChange={(event) => setCanLogin(event.target.checked)} /><span><strong className="block">Pode acessar o sistema?</strong><small className="font-normal text-muted">Desativar remove somente o acesso desta empresa.</small></span></label><div className="grid gap-5 sm:grid-cols-2"><Field label="Cargo/Função"><Select value={form.user_type} onChange={(event) => update("user_type", event.target.value as UserType)}>{userTypes.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select></Field><Field label="E-mail" error={fieldError(fields, "email")}><Input type="email" required={form.can_login} value={form.email || ""} onChange={(event) => update("email", event.target.value || null)} /></Field>{form.can_login && !editing.can_login && <Field label="Senha inicial" error={fieldError(fields, "password")}><Input type="password" minLength={8} required value={form.password || ""} onChange={(event) => update("password", event.target.value || null)} /></Field>}</div><div className="flex items-center justify-between rounded-lg border border-subtle p-4"><div><strong className="text-xs">Estado do acesso nesta empresa</strong><p className="mt-1 text-xs text-muted">A credencial global permanece preservada em outras empresas.</p></div><StatusBadge active={form.can_login} /></div>{form.can_login && <div><h2 className="text-sm font-bold">Filiais e perfis autorizados</h2><div className="mt-3 space-y-2">{branches.filter((branch) => branch.company === currentCompany?.id).map((branch) => { const access = form.company_accesses[0]; const branchAccess = access?.branch_accesses.find((item) => item.branch_id === branch.id); return <div key={branch.id} className="grid gap-2 rounded-lg border border-subtle p-3 sm:grid-cols-[1fr_14rem]"><label className="flex items-center gap-2"><input type="checkbox" className="size-4 accent-primary" checked={!!branchAccess} onChange={() => currentCompany && toggleBranch(currentCompany.id, branch.id)} /><span><strong className="block text-sm">{branch.name}</strong><small className="block text-[11px] font-normal text-muted">{currentCompany?.trade_name}</small></span></label>{branchAccess && <Select value={branchAccess.access_profile_id} onChange={(event) => currentCompany && updateBranchProfile(currentCompany.id, branch.id, Number(event.target.value))}>{(profiles[currentCompany?.id || 0] || []).filter((profile) => profile.assignable_branch_ids.includes(branch.id) || profile.id === branchAccess.access_profile_id).map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</Select>}</div>; })}</div></div>}</div>}
               {editorTab === "security" && <div className="space-y-4"><h2 className="text-sm font-bold">Segurança</h2>{success && <Alert type="success" message={success} />}<div className="flex flex-wrap gap-2">{canChange && <Button type="button" variant="secondary" onClick={() => { setResetTarget(editing); setResetPassword(""); setResetFields({}); }}><KeyRound className="size-4" />Redefinir senha</Button>}<Link className="btn btn-secondary" href={`/usuarios/bloqueios?user=${editing.id}`}><ShieldX className="size-4" />Bloqueios de acesso</Link></div></div>}
               {editorTab === "history" && <div><h2 className="text-sm font-bold">Histórico</h2><p className="mt-1 text-xs text-muted">Eventos auditáveis deste usuário na empresa atual.</p>{historyLoading ? <TableLoading columns={3} /> : history.length ? <div className="mt-4 divide-y divide-subtle rounded-lg border border-subtle">{history.map((log) => <article key={log.id} className="flex flex-col gap-1 p-3 text-xs sm:flex-row sm:items-center sm:justify-between"><div><strong>{log.action_label}</strong><span className="block text-muted">{log.actor_name || "Sistema"}</span></div><span className="text-muted">{formatDate(log.created_at)}</span></article>)}</div> : <EmptyState title="Sem histórico disponível" description="Nenhum evento específico foi encontrado neste contexto." />}</div>}
             </>}
@@ -867,6 +935,42 @@ function UsersAdministration() {
           <div className="flex justify-end gap-2 border-t border-subtle pt-4">
             <Button variant="secondary" onClick={() => setResetTarget(null)}>Cancelar</Button>
             <Button loading={resetSaving} onClick={() => void doResetPassword()}>Redefinir senha</Button>
+          </div>
+        </div>
+      </Modal>
+      <Modal
+        open={!!restoreConflict}
+        title="Restaurar usuário"
+        description="Esta identidade já existiu na empresa atual."
+        onClose={() => !saving && setRestoreConflict(null)}
+      >
+        <div className="space-y-4 p-5">
+          <div className="rounded-lg border border-subtle bg-surface-soft p-4 text-sm">
+            <strong className="block text-fg">{restoreConflict?.name}</strong>
+            <span className="mt-1 block text-muted">
+              E-mail: {restoreConflict?.email || "Não informado"}
+            </span>
+            <span className="block text-muted">
+              Excluído em: {restoreConflict ? formatDate(restoreConflict.archivedAt) : ""}
+            </span>
+          </div>
+          <p className="text-sm text-muted">
+            O mesmo ID e o histórico serão preservados. Somente o vínculo desta
+            empresa será restaurado com a configuração de Backoffice selecionada
+            no formulário.
+          </p>
+          <div className="flex justify-end gap-2 border-t border-subtle pt-4">
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={saving}
+              onClick={() => setRestoreConflict(null)}
+            >
+              Cancelar
+            </Button>
+            <Button type="button" loading={saving} onClick={() => void restoreUser()}>
+              Restaurar usuário
+            </Button>
           </div>
         </div>
       </Modal>

@@ -1,5 +1,6 @@
 from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -89,6 +90,12 @@ class UserViewSet(viewsets.ModelViewSet):
                 company_access_filters['company_accesses__company_id'] = company_id
             queryset = queryset.filter(**company_access_filters)
 
+        if company_id is not None and self.action != 'restore':
+            queryset = queryset.filter(
+                company_accesses__company_id=company_id,
+                company_accesses__archived_at__isnull=True,
+            )
+
         search = params.get('search', '').strip()
         for term in search.split():
             queryset = queryset.filter(
@@ -105,7 +112,14 @@ class UserViewSet(viewsets.ModelViewSet):
             if company_id is not None:
                 queryset = queryset.filter(company_accesses__company_id=company_id, company_accesses__is_active=True)
         elif user_status == 'inactive':
-            queryset = queryset.filter(is_active=False, archived_at__isnull=True) if company_id is None else queryset.filter(company_accesses__company_id=company_id, company_accesses__is_active=False)
+            queryset = queryset.filter(archived_at__isnull=True)
+            if company_id is None:
+                queryset = queryset.filter(is_active=False)
+            else:
+                queryset = queryset.filter(
+                    company_accesses__company_id=company_id,
+                    company_accesses__is_active=False,
+                )
         elif user_status == 'all':
             queryset = queryset.filter(archived_at__isnull=True)
         elif self.action != 'activate':
@@ -138,6 +152,17 @@ class UserViewSet(viewsets.ModelViewSet):
 
         profile_id = relation_filters.get('access_profile')
         branch_id = relation_filters.get('branch')
+        if branch_id is None and self.action == 'list':
+            header_branch_id = self.request.headers.get('X-Branch-ID')
+            if header_branch_id:
+                try:
+                    branch_id = int(header_branch_id)
+                    if branch_id < 1:
+                        raise ValueError
+                except (TypeError, ValueError) as error:
+                    raise ValidationError({
+                        'branch': 'Informe um identificador válido.'
+                    }) from error
         if branch_id is not None:
             filters = {
                 'branch_accesses__branch_id': branch_id,
@@ -392,13 +417,72 @@ class UserViewSet(viewsets.ModelViewSet):
         user = self.get_object()
         if user.pk == request.user.pk:
             raise ValidationError({'detail': 'Você não pode arquivar o próprio usuário.'})
-        self._check_status_context(user)
-        snapshot = self.access_snapshot(user)
+        company_id = self._check_status_context(user)
+        if company_id is None:
+            raise ValidationError({'company': 'Informe a empresa do vínculo a arquivar.'})
+        snapshot = self.access_snapshot(user, company_id)
         before = {'is_active': user.is_active, 'archived_at': user.archived_at.isoformat() if user.archived_at else None, **snapshot}
-        user.delete()
+        membership = UserCompanyAccess.objects.select_for_update().get(
+            user=user, company_id=company_id,
+        )
+        if membership.is_owner:
+            raise ValidationError({'detail': 'Transfira a propriedade antes de arquivar este usuário.'})
+        now = timezone.now()
+        membership.is_active = False
+        membership.archived_at = now
+        membership.save(update_fields=('is_active', 'archived_at', 'updated_at'))
+        user.branch_accesses.filter(branch__company_id=company_id).update(
+            is_active=False, updated_at=now,
+        )
+        if not user.company_accesses.filter(
+            is_active=True, archived_at__isnull=True,
+        ).exclude(company_id=company_id).exists():
+            user.archived_at = now
+            user.is_active = False
+            user.save(update_fields=('archived_at', 'is_active', 'updated_at'))
         user.refresh_from_db()
+        after_snapshot = self.access_snapshot(user, company_id)
         self.audit_user(
             user, 'user.archive', before=before,
-            after={'is_active': False, 'archived_at': user.archived_at.isoformat(), **snapshot},
+            after={
+                'is_active': user.is_active,
+                'archived_at': user.archived_at.isoformat() if user.archived_at else None,
+                **after_snapshot,
+            },
+        )
+        return Response(self.get_serializer(user).data)
+
+    @action(detail=True, methods=['post'])
+    @transaction.atomic
+    def restore(self, request, pk=None):
+        company_id = self.context_company_id()
+        if not company_id or not user_has_company_permission(request.user, company_id, 'users.add'):
+            raise PermissionDenied('Empresa fora do contexto autorizado.')
+        try:
+            user = User.objects.select_for_update().get(
+                pk=pk,
+                company_accesses__company_id=company_id,
+                company_accesses__archived_at__isnull=False,
+            )
+        except User.DoesNotExist as error:
+            raise ValidationError({'detail': 'Usuário arquivado não encontrado nesta empresa.'}) from error
+        before = model_snapshot(user, self.audit_fields)
+        before.update(self.access_snapshot(user, company_id))
+        serializer = self.get_serializer(
+            user,
+            data=request.data,
+            partial=True,
+            context={**self.get_serializer_context(), 'restoring_membership': True},
+        )
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        after = model_snapshot(user, self.audit_fields)
+        after.update(self.access_snapshot(user, company_id))
+        self.audit_user(
+            user,
+            'user.restore',
+            before=before,
+            after=after,
+            metadata={'restored_company_id': company_id},
         )
         return Response(self.get_serializer(user).data)

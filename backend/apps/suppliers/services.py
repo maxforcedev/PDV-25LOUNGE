@@ -70,6 +70,26 @@ def soft_delete_supplier(*, supplier, user):
 
 
 @transaction.atomic
+def restore_supplier(*, supplier):
+    supplier = _lock_instance(supplier)
+    if supplier.deleted_at is None:
+        return supplier
+    if supplier.tax_id and Supplier.objects.filter(
+        branch_id=supplier.branch_id,
+        tax_id=supplier.tax_id,
+        deleted_at__isnull=True,
+    ).exclude(pk=supplier.pk).exists():
+        raise ValidationError({
+            'tax_id': 'Outro fornecedor ativo desta filial utiliza este CPF/CNPJ.'
+        })
+    supplier.deleted_at = None
+    supplier.deleted_by = None
+    supplier.status = Status.ACTIVE
+    supplier.save(update_fields=('deleted_at', 'deleted_by', 'status', 'updated_at'))
+    return supplier
+
+
+@transaction.atomic
 def _save_product_supplier(*, instance=None, **values):
     if instance is not None:
         instance = _lock_instance(instance)

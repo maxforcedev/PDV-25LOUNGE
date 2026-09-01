@@ -20,6 +20,7 @@ class UserFunctionalPermission(BasePermission):
         'activate': 'users.change_status',
         'deactivate': 'users.change_status',
         'archive': 'users.change_status',
+        'restore': 'users.add',
         'reset_password': 'users.change',
         'management_options': ('users.view', 'users.add', 'users.change'),
     }
@@ -58,12 +59,6 @@ class UserFunctionalPermission(BasePermission):
             return False
         if not obj.company_accesses.filter(company_id=company_id).exists():
             return False
-        if view.action == 'archive':
-            target_company_ids = set(obj.company_accesses.filter(is_active=True).values_list('company_id', flat=True))
-            return bool(target_company_ids) and all(
-                user_has_company_permission(user, target_id, code)
-                for target_id in target_company_ids
-            )
         has_context = user_has_company_permission(user, company_id, code)
         if not has_context:
             return False

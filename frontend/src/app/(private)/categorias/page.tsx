@@ -29,8 +29,9 @@ import {
   TableLoading,
   Textarea,
 } from "@/components/ui";
-import { fieldError, formatDecimalBRL as formatBRL } from "@/lib/format";
+import { fieldError, formatDate, formatDecimalBRL as formatBRL } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
+import { archivedRecordConflict } from "@/lib/archived-errors";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
 import type { Category } from "@/types";
@@ -69,6 +70,11 @@ function Categories() {
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState<Category | null>(null);
   const [deleting, setDeleting] = useState<Category | null>(null);
+  const [restoreConflict, setRestoreConflict] = useState<{
+    id: number;
+    name: string;
+    archivedAt: string;
+  } | null>(null);
   const [draftFilters, setDraftFilters] =
     useState<CategoryFilters>(emptyFilters);
   const [appliedFilters, setAppliedFilters] =
@@ -112,6 +118,7 @@ function Categories() {
   useEffect(() => {
     setItems([]);
     setOpen(false);
+    setRestoreConflict(null);
     setOrderState("");
     dragged.current = null;
     const cleared = emptyFilters();
@@ -142,6 +149,7 @@ function Categories() {
     setFields({});
     setError("");
     if (!category) {
+      setRestoreConflict(null);
       setEditing(null);
       setForm({
         company: currentCompany?.id || 0, name: "", description: "",
@@ -195,9 +203,39 @@ function Categories() {
       await load();
     } catch (caught) {
       if (caught instanceof ApiError) {
+        const conflict = archivedRecordConflict(
+          caught,
+          "archived_category_exists",
+          "category_id",
+        );
+        if (!editing && conflict) {
+          setRestoreConflict(conflict);
+          return;
+        }
         setError(caught.message);
         setFields(caught.fields);
       } else setError("Não foi possível salvar a categoria.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function restoreCategory() {
+    if (!restoreConflict) return;
+    setSaving(true);
+    setError("");
+    try {
+      await http.post(`categories/${restoreConflict.id}/restore/`);
+      setRestoreConflict(null);
+      setOpen(false);
+      setSuccess("Categoria restaurada com sucesso.");
+      await load();
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError
+          ? caught.message
+          : "Não foi possível restaurar a categoria.",
+      );
     } finally {
       setSaving(false);
     }
@@ -241,9 +279,9 @@ function Categories() {
     setSaving(true);
     setError("");
     try {
-      const result = await http.post<{ affected_count: number; total_products: number }>(`categories/${applyingConfig.id}/apply-config/`, {});
+      const result = await http.post<{ updated_products: number; total_products: number }>(`categories/${applyingConfig.id}/apply-config/`, {});
       setApplyingConfig(null);
-      setSuccess(`${result.affected_count} de ${result.total_products} produto(s) atualizado(s).`);
+      setSuccess(`${result.updated_products} de ${result.total_products} produto(s) atualizado(s).`);
     } catch (caught) {
       setApplyingConfig(null);
       setError(caught instanceof ApiError ? caught.message : "Não foi possível aplicar a configuração.");
@@ -679,6 +717,26 @@ function Categories() {
         onClose={() => setDeleting(null)}
         onConfirm={deleteCategory}
       />
+      <Modal
+        open={!!restoreConflict}
+        title="Restaurar categoria"
+        description={`Já existiu uma categoria chamada “${restoreConflict?.name || ""}” nesta filial.`}
+        onClose={() => !saving && setRestoreConflict(null)}
+      >
+        <div className="space-y-4 p-5">
+          {error && <Alert message={error} />}
+          <p className="text-sm text-muted">
+            Excluída em: {restoreConflict ? formatDate(restoreConflict.archivedAt) : ""}
+          </p>
+          <p className="text-sm text-muted">
+            A restauração preserva o mesmo ID e o histórico da categoria.
+          </p>
+          <div className="flex justify-end gap-2 border-t border-subtle pt-4">
+            <Button variant="secondary" disabled={saving} onClick={() => setRestoreConflict(null)}>Cancelar</Button>
+            <Button loading={saving} onClick={() => void restoreCategory()}>Restaurar categoria</Button>
+          </div>
+        </div>
+      </Modal>
     </>
   );
 }

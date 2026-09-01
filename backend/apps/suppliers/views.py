@@ -1,8 +1,9 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q
 from rest_framework import viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from apps.base.audit import audit_log, model_snapshot
@@ -29,6 +30,7 @@ from .services import (
     _set_presentation_preset_status,
     _set_supplier_status,
     soft_delete_supplier,
+    restore_supplier,
 )
 
 
@@ -44,6 +46,7 @@ class SupplierDomainViewSet(viewsets.ModelViewSet):
         'destroy': 'suppliers.change',
         'activate': 'suppliers.change',
         'deactivate': 'suppliers.change',
+        'restore': 'suppliers.change',
     }
     audit_name = None
     audit_fields = ()
@@ -202,6 +205,31 @@ class SupplierViewSet(SupplierDomainViewSet):
             company=supplier.company, branch=supplier.branch, before=before,
             after=model_snapshot(supplier, ('status', 'deleted_at', 'deleted_by_id')),
         )
+
+    @action(detail=True, methods=('post',))
+    @transaction.atomic
+    def restore(self, request, pk=None):
+        branch = self._branch_context()
+        supplier = self.scope_company(Supplier.objects.select_related(
+            'company', 'branch'
+        )).filter(
+            pk=pk, branch=branch, deleted_at__isnull=False,
+        ).first()
+        if supplier is None:
+            raise NotFound('Fornecedor excluído não encontrado nesta filial.')
+        before = model_snapshot(supplier, ('status', 'deleted_at', 'deleted_by_id'))
+        try:
+            supplier = restore_supplier(supplier=supplier)
+        except DjangoValidationError as error:
+            raise ValidationError(
+                getattr(error, 'message_dict', {'supplier': error.messages})
+            ) from error
+        audit_log(
+            actor=request.user, action='supplier.restore', obj=supplier,
+            company=supplier.company, branch=supplier.branch, before=before,
+            after=model_snapshot(supplier, ('status', 'deleted_at', 'deleted_by_id')),
+        )
+        return Response(self.get_serializer(supplier).data)
 
 
 class ProductSupplierViewSet(SupplierDomainViewSet):

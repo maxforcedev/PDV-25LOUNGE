@@ -5,7 +5,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import F, Q
 from django.utils import timezone
 
-from apps.companies.models import Branch, Company
+from apps.companies.models import Branch, Company, Status
 
 from .models import (
     BranchProductPrice, Category, FractionableProductConfig, InventoryBehavior,
@@ -93,6 +93,26 @@ def soft_delete_category(*, category, user):
 
 
 @transaction.atomic
+def restore_category(*, category):
+    category = Category.objects.select_for_update().get(pk=category.pk)
+    if category.deleted_at is None:
+        return category
+    if Category.objects.filter(
+        branch_id=category.branch_id,
+        name__iexact=category.name,
+        deleted_at__isnull=True,
+    ).exclude(pk=category.pk).exists():
+        raise ValidationError({
+            'name': 'Outra categoria ativa desta filial utiliza este nome.'
+        })
+    category.deleted_at = None
+    category.deleted_by = None
+    category.status = Status.ACTIVE
+    category.save(update_fields=('deleted_at', 'deleted_by', 'status', 'updated_at'))
+    return category
+
+
+@transaction.atomic
 def restore_product(*, product, user):
     product = Product.objects.select_for_update().select_related('company').get(pk=product.pk)
     Company.objects.select_for_update().get(pk=product.company_id)
@@ -122,6 +142,41 @@ def restore_product(*, product, user):
         raise ValidationError(conflicts)
     product.archived_at = None
     product.archived_by = None
+    product.save(update_fields=('archived_at', 'archived_by', 'updated_at'))
+    return product
+
+
+@transaction.atomic
+def archive_product(*, product, user):
+    product = Product.objects.select_for_update().get(pk=product.pk)
+    if product.archived_at is not None:
+        return product
+    parent_ids = set(ProductComponent.objects.filter(
+        component_product=product,
+        parent_product__archived_at__isnull=True,
+    ).values_list('parent_product_id', flat=True))
+    parent_ids.update(ProductFractionComponent.objects.filter(
+        component_product=product,
+        parent_product__archived_at__isnull=True,
+    ).values_list('parent_product_id', flat=True))
+    parents = list(Product.objects.select_for_update().filter(
+        pk__in=parent_ids
+    ).order_by('name', 'id'))
+    if parents:
+        if len(parents) == 1:
+            message = (
+                f'Este produto é utilizado na composição de “{parents[0].name}”. '
+                'Remova-o da composição antes de excluir.'
+            )
+        else:
+            names = ', '.join(f'“{parent.name}”' for parent in parents)
+            message = (
+                f'Este produto é utilizado em {len(parents)} composições: {names}. '
+                'Remova-o das composições antes de excluir.'
+            )
+        raise ValidationError({'product': message})
+    product.archived_at = timezone.now()
+    product.archived_by = user
     product.save(update_fields=('archived_at', 'archived_by', 'updated_at'))
     return product
 

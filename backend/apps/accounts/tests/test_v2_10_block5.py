@@ -111,7 +111,9 @@ class LifecycleTests(TestCase):
         self.branch.settings.uses_counter = True
         self.branch.settings.uses_cash_register = True
         self.branch.settings.save()
-        self.category = Category.objects.create(company=self.company, name='Cat')
+        self.category = Category.objects.create(
+            company=self.company, branch=self.branch, name='Cat'
+        )
         self.product = Product.objects.create(
             company=self.company, category=self.category, name='P1',
             internal_code='P1', unit=Unit.UNIT, cost=Decimal('1.00'),
@@ -135,7 +137,9 @@ class LifecycleTests(TestCase):
         self.assertEqual(dest.status, 'active')
 
     def test_modifier_group_lifecycle(self):
-        group = ModifierGroup.objects.create(company=self.company, name='Extras')
+        group = ModifierGroup.objects.create(
+            company=self.company, branch=self.branch, name='Extras'
+        )
         ModifierOption.objects.create(modifier_group=group, name='Bacon')
         client = APIClient()
         client.force_authenticate(user=self.owner)

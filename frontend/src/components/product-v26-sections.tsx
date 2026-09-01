@@ -372,6 +372,10 @@ export function ProductV26Sections({
               available_counter: branchConfig.available_counter,
               available_table: branchConfig.available_table,
               available_command: branchConfig.available_command,
+              participates_in_service_fee:
+                branchConfig.participates_in_service_fee,
+              participates_in_commission:
+                branchConfig.participates_in_commission,
             },
           ),
         ),

@@ -16,7 +16,7 @@ import {
   Select,
   Textarea,
 } from "@/components/ui";
-import { formatBRL } from "@/lib/format";
+import { formatBRL, formatDecimalBRL } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import {
@@ -437,7 +437,7 @@ function NewPurchase() {
                   </Field>
                   <Field label="Preço unitário">
                     <div className="flex h-10 items-center rounded-md bg-surface-muted px-3 text-sm font-semibold">
-                      {line.basePrice ? formatBRL(line.basePrice) : "R$ 0,00"}
+                      {line.basePrice ? formatDecimalBRL(line.basePrice) : "R$ 0,00"}
                     </div>
                   </Field>
                   <div>

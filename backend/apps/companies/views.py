@@ -838,6 +838,7 @@ class UserPermissionBlockViewSet(viewsets.ModelViewSet):
 
         users = User.objects.filter(
             is_active=True,
+            archived_at__isnull=True,
             can_login=True,
             is_superuser=False,
             company_accesses__company=company,

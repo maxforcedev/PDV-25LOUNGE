@@ -235,7 +235,7 @@ class CategoryConfigurationTests(ProductRbacFixture, TestCase):
         )
 
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(response.data['affected_count'], 1)
+        self.assertEqual(response.data['updated_products'], 1)
         self.product_a.refresh_from_db()
         self.assertTrue(self.product_a.available_command)
         config = ProductBranchConfig.objects.get(
@@ -875,7 +875,7 @@ class ProductMissionM5Tests(ProductRbacFixture, TestCase):
             action='product.archive', object_id=str(self.product_a.pk),
         ).exists())
 
-    def test_archived_product_identifiers_can_be_reused(self):
+    def test_archived_product_identifiers_require_restoration(self):
         category = Category.objects.create(
             company=self.company_a, branch=self.branch_a, name='Produtos arquiváveis',
         )
@@ -897,14 +897,18 @@ class ProductMissionM5Tests(ProductRbacFixture, TestCase):
         archived = client.post(f"/api/v1/products/{first.data['id']}/archive/")
         self.assertEqual(archived.status_code, 200, archived.data)
 
-        replacement = client.post(
-            '/api/v1/products/', {**payload, 'create_new': True}, format='json'
-        )
+        replacement = client.post('/api/v1/products/', payload, format='json')
 
-        self.assertEqual(replacement.status_code, 201, replacement.data)
+        self.assertEqual(replacement.status_code, 400, replacement.data)
+        self.assertEqual(replacement.data['code'], 'archived_product_exists')
+        restored = client.post(
+            f"/api/v1/products/{first.data['id']}/restore/", format='json'
+        )
+        self.assertEqual(restored.status_code, 200, restored.data)
+        self.assertEqual(restored.data['id'], first.data['id'])
         self.assertEqual(
             Product.objects.filter(company=self.company_a, internal_code='ARQ-001').count(),
-            2,
+            1,
         )
 
     def test_branch_stock_and_minimum_are_scoped_to_active_branch(self):

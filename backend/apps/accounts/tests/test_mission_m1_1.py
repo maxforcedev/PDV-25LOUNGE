@@ -3,7 +3,7 @@ from rest_framework.test import APIClient
 
 from apps.accounts.models import User
 from apps.base.models import AuditLog
-from apps.companies.models import AccessProfile, UserBranchAccess, UserCompanyAccess
+from apps.companies.models import AccessProfile, Branch, UserBranchAccess, UserCompanyAccess
 from apps.companies.services import create_company_with_matrix, ensure_permission_catalog
 
 
@@ -157,3 +157,248 @@ class MultiCompanyUserTests(TestCase):
         self.access_b.refresh_from_db()
         self.assertTrue(self.access_a.is_active)
         self.assertTrue(self.access_b.is_active)
+
+    def test_list_defaults_to_active_global_branch(self):
+        branch_b = Branch.objects.create(company=self.company_a, name='Filial B')
+        branch_c = Branch.objects.create(company=self.company_a, name='Filial C')
+        UserBranchAccess.objects.create(
+            user=self.owner_a, branch=branch_b, access_profile=self.profile_a
+        )
+        UserBranchAccess.objects.create(
+            user=self.owner_a, branch=branch_c, access_profile=self.profile_a
+        )
+        rayara = User.objects.create_user(
+            email='rayara.m11@example.com', password=PASSWORD, first_name='Rayara'
+        )
+        UserCompanyAccess.objects.create(
+            user=rayara, company=self.company_a, is_active=True
+        )
+        UserBranchAccess.objects.create(
+            user=rayara,
+            branch=self.branch_a,
+            access_profile=self.profile_a,
+            is_active=True,
+        )
+
+        def listed(branch):
+            response = self.client.get(
+                f'/api/v1/users/?company={self.company_a.pk}',
+                HTTP_X_BRANCH_ID=str(branch.pk),
+            )
+            self.assertEqual(response.status_code, 200, response.data)
+            return {item['id'] for item in response.data['results']}
+
+        self.assertIn(rayara.pk, listed(self.branch_a))
+        self.assertNotIn(rayara.pk, listed(branch_b))
+        self.assertNotIn(rayara.pk, listed(branch_c))
+
+    def test_disabling_login_only_deactivates_current_company(self):
+        response = self.client.patch(self.url(), {
+            'can_login': False,
+            'company_accesses': [{
+                'company_id': self.company_a.pk,
+                'access_profile_id': None,
+                'branch_accesses': [],
+            }],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.david.refresh_from_db()
+        self.access_a.refresh_from_db()
+        self.access_b.refresh_from_db()
+        self.branch_access_a.refresh_from_db()
+        self.branch_access_b.refresh_from_db()
+        self.assertTrue(self.david.can_login)
+        self.assertTrue(self.david.check_password(PASSWORD))
+        self.assertFalse(self.access_a.is_active)
+        self.assertFalse(self.branch_access_a.is_active)
+        self.assertTrue(self.access_b.is_active)
+        self.assertTrue(self.branch_access_b.is_active)
+
+    def test_enabling_login_requires_credentials_and_enables_current_company(self):
+        employee = User.objects.create_user(
+            email=None, password=None, can_login=False, first_name='Sem login'
+        )
+        access = UserCompanyAccess.objects.create(
+            user=employee, company=self.company_a, is_active=False
+        )
+        payload = {
+            'can_login': True,
+            'email': 'enabled.m11@example.com',
+            'password': 'Enabled-M11-Secure-456!',
+            'company_accesses': [{
+                'company_id': self.company_a.pk,
+                'access_profile_id': None,
+                'branch_accesses': [{
+                    'branch_id': self.branch_a.pk,
+                    'access_profile_id': self.profile_a.pk,
+                }],
+            }],
+        }
+
+        missing_password = self.client.patch(
+            f'/api/v1/users/{employee.pk}/?company={self.company_a.pk}',
+            {**payload, 'password': ''},
+            format='json',
+        )
+        self.assertEqual(missing_password.status_code, 400)
+        response = self.client.patch(
+            f'/api/v1/users/{employee.pk}/?company={self.company_a.pk}',
+            payload,
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        employee.refresh_from_db()
+        access.refresh_from_db()
+        self.assertTrue(employee.can_login)
+        self.assertTrue(employee.check_password(payload['password']))
+        self.assertTrue(access.is_active)
+        self.assertTrue(employee.branch_accesses.filter(
+            branch=self.branch_a, is_active=True, access_profile=self.profile_a
+        ).exists())
+        login = APIClient().login(
+            email=payload['email'], password=payload['password']
+        )
+        self.assertTrue(login)
+
+    def test_disabling_last_company_disables_global_credential(self):
+        employee = User.objects.create_user(
+            email='single.m11@example.com', password=PASSWORD, first_name='Único'
+        )
+        access = UserCompanyAccess.objects.create(
+            user=employee, company=self.company_a, is_active=True
+        )
+        branch_access = UserBranchAccess.objects.create(
+            user=employee, branch=self.branch_a, access_profile=self.profile_a
+        )
+
+        response = self.client.patch(
+            f'/api/v1/users/{employee.pk}/?company={self.company_a.pk}',
+            {
+                'can_login': False,
+                'company_accesses': [{
+                    'company_id': self.company_a.pk,
+                    'access_profile_id': None,
+                    'branch_accesses': [],
+                }],
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        employee.refresh_from_db()
+        access.refresh_from_db()
+        branch_access.refresh_from_db()
+        self.assertFalse(employee.can_login)
+        self.assertFalse(employee.has_usable_password())
+        self.assertFalse(access.is_active)
+        self.assertFalse(branch_access.is_active)
+
+    def test_archived_membership_conflict_and_restore_are_company_scoped(self):
+        self.david.cpf = '12345678901'
+        self.david.save(update_fields=('cpf', 'updated_at'))
+        password_before = self.david.password
+        access_b_updated_at = self.access_b.updated_at
+        branch_b_updated_at = self.branch_access_b.updated_at
+
+        archived = self.client.post(self.url('archive/'))
+        self.assertEqual(archived.status_code, 200, archived.data)
+        self.david.refresh_from_db()
+        self.access_a.refresh_from_db()
+        self.access_b.refresh_from_db()
+        self.branch_access_a.refresh_from_db()
+        self.assertTrue(self.david.is_active)
+        self.assertIsNone(self.david.archived_at)
+        self.assertFalse(self.access_a.is_active)
+        self.assertIsNotNone(self.access_a.archived_at)
+        self.assertFalse(self.branch_access_a.is_active)
+        self.assertTrue(self.access_b.is_active)
+
+        payload = {
+            'email': self.david.email,
+            'password': 'Attempted-New-M11-Secure-789!',
+            'can_login': True,
+            'cpf': '123.456.789-01',
+            'first_name': 'Nome que nao deve sobrescrever',
+            'last_name': 'Outro',
+            'user_type': 'employee',
+            'company_accesses': [{
+                'company_id': self.company_a.pk,
+                'access_profile_id': None,
+                'branch_accesses': [{
+                    'branch_id': self.branch_a.pk,
+                    'access_profile_id': self.profile_a.pk,
+                }],
+            }],
+        }
+        conflict = self.client.post(
+            f'/api/v1/users/?company={self.company_a.pk}', payload, format='json'
+        )
+        self.assertEqual(conflict.status_code, 400, conflict.data)
+        self.assertEqual(conflict.data['code'], 'archived_user_exists')
+        self.assertEqual(conflict.data['details']['user_id'], self.david.pk)
+        self.assertNotIn('companies', conflict.data['details'])
+        self.assertNotIn('branches', conflict.data['details'])
+
+        restored = self.client.post(
+            f'/api/v1/users/{self.david.pk}/restore/?company={self.company_a.pk}',
+            payload,
+            format='json',
+        )
+        self.assertEqual(restored.status_code, 200, restored.data)
+        self.david.refresh_from_db()
+        self.access_a.refresh_from_db()
+        self.access_b.refresh_from_db()
+        self.branch_access_a.refresh_from_db()
+        self.branch_access_b.refresh_from_db()
+        self.assertEqual(restored.data['id'], self.david.pk)
+        self.assertEqual(self.david.first_name, 'David')
+        self.assertEqual(self.david.password, password_before)
+        self.assertTrue(self.access_a.is_active)
+        self.assertIsNone(self.access_a.archived_at)
+        self.assertTrue(self.branch_access_a.is_active)
+        self.assertTrue(self.access_b.is_active)
+        self.assertTrue(self.branch_access_b.is_active)
+        self.assertEqual(self.access_b.updated_at, access_b_updated_at)
+        self.assertEqual(self.branch_access_b.updated_at, branch_b_updated_at)
+        audit = AuditLog.objects.get(
+            action='user.restore', company=self.company_a, object_id=str(self.david.pk)
+        )
+        self.assertEqual(audit.metadata['restored_company_id'], self.company_a.pk)
+
+    def test_different_email_and_cpf_identities_require_regularization(self):
+        other = User.objects.create_user(
+            email='cpf-owner.m11@example.com',
+            password=PASSWORD,
+            cpf='98765432100',
+        )
+        UserCompanyAccess.objects.create(
+            user=other,
+            company=self.company_a,
+            is_active=False,
+            archived_at=self.access_a.created_at,
+        )
+        response = self.client.post(
+            f'/api/v1/users/?company={self.company_a.pk}',
+            {
+                'email': self.david.email,
+                'password': 'Conflict-M11-Secure-789!',
+                'can_login': True,
+                'cpf': other.cpf,
+                'first_name': 'Conflito',
+                'last_name': 'Identidade',
+                'company_accesses': [{
+                    'company_id': self.company_a.pk,
+                    'access_profile_id': None,
+                    'branch_accesses': [{
+                        'branch_id': self.branch_a.pk,
+                        'access_profile_id': self.profile_a.pk,
+                    }],
+                }],
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertNotEqual(response.data.get('code'), 'archived_user_exists')
+        self.assertIn('non_field_errors', response.data)

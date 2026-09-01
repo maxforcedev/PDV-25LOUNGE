@@ -92,6 +92,20 @@ class CategorySerializer(CompanyBoundSerializer):
             queryset = queryset.exclude(pk=self.instance.pk)
         if company_id and queryset.exists():
             raise serializers.ValidationError('Já existe uma categoria com este nome nesta empresa.')
+        if not self.instance and branch:
+            archived = Category.objects.filter(
+                branch=branch, name__iexact=value, deleted_at__isnull=False,
+            ).order_by('-deleted_at', '-id').first()
+            if archived:
+                raise DomainValidationError(
+                    code='archived_category_exists',
+                    message='Já existiu uma categoria com este nome nesta filial.',
+                    details={
+                        'category_id': archived.pk,
+                        'name': archived.name,
+                        'archived_at': archived.deleted_at.isoformat(),
+                    },
+                )
         return value
 
 
@@ -346,8 +360,6 @@ class ProductSerializer(CompanyBoundSerializer):
     sale_price = serializers.DecimalField(
         max_digits=12, decimal_places=2, min_value=Decimal('0.00')
     )
-    create_new = serializers.BooleanField(write_only=True, required=False, default=False)
-
     class Meta:
         model = Product
         fields = (
@@ -362,7 +374,7 @@ class ProductSerializer(CompanyBoundSerializer):
             'components', 'fraction_components', 'suggested_cost', 'suggested_sale_price',
             'branch_configuration', 'branch_stock', 'fraction_config',
             'production_destinations', 'purchase_presentations', 'suppliers',
-            'create_new', 'created_at', 'updated_at',
+            'created_at', 'updated_at',
         )
 
     def get_fields(self):
@@ -410,6 +422,13 @@ class ProductSerializer(CompanyBoundSerializer):
             if config and config.category_id:
                 data['category'] = config.category_id
                 data['category_name'] = config.category.name
+            if config:
+                for channel in SalesChannel.values:
+                    data[f'available_{channel}'] = config.effective_channel(channel)
+                for field in (
+                    'participates_in_service_fee', 'participates_in_commission',
+                ):
+                    data[field] = config.effective_participation(field)
         return data
 
     def validate(self, attrs):
@@ -437,7 +456,7 @@ class ProductSerializer(CompanyBoundSerializer):
             raise serializers.ValidationError(
                 {'name': 'Já existe um produto com este nome nesta empresa.'}
             )
-        if not self.instance and not attrs.get('create_new', False):
+        if not self.instance:
             archived = Product.objects.filter(
                 company=company,
                 normalized_name=normalized_name,
@@ -450,6 +469,7 @@ class ProductSerializer(CompanyBoundSerializer):
                     details={
                         'product_id': archived.pk,
                         'name': archived.name,
+                        'archived_at': archived.archived_at.isoformat(),
                     },
                 )
         code = attrs.get('internal_code', getattr(self.instance, 'internal_code', '')).strip()
@@ -626,7 +646,6 @@ class ProductSerializer(CompanyBoundSerializer):
         return value
 
     def create(self, validated_data):
-        validated_data.pop('create_new', None)
         components = validated_data.pop('components', None)
         fraction_components = validated_data.pop('fraction_components', None)
         try:
@@ -646,6 +665,17 @@ class ProductSerializer(CompanyBoundSerializer):
         components = validated_data.pop('components', None)
         fraction_components = validated_data.pop('fraction_components', None)
         category = validated_data.pop('category', None)
+        branch_fields = (
+            'available_counter', 'available_table', 'available_command',
+            'participates_in_service_fee', 'participates_in_commission',
+        )
+        branch = getattr(self.context.get('request'), 'branch_context', None)
+        branch_values = {}
+        if branch:
+            branch_values = {
+                field: validated_data.pop(field)
+                for field in branch_fields if field in validated_data
+            }
         if not validated_data.get('internal_code', instance.internal_code):
             validated_data.pop('internal_code', None)
         desired_sellable = validated_data.get('is_sellable', instance.is_sellable)
@@ -653,13 +683,17 @@ class ProductSerializer(CompanyBoundSerializer):
             validated_data['is_sellable'] = False
         try:
             instance = super().update(instance, validated_data)
-            if category is not None:
-                branch = getattr(self.context.get('request'), 'branch_context', None)
+            if category is not None or branch_values:
                 config = ProductBranchConfig.objects.select_for_update().get(
                     product=instance, branch=branch
                 )
-                config.category = category
-                config.save(update_fields=('category', 'updated_at'))
+                update_fields = list(branch_values)
+                for field, value in branch_values.items():
+                    setattr(config, field, value)
+                if category is not None:
+                    config.category = category
+                    update_fields.append('category')
+                config.save(update_fields=(*update_fields, 'updated_at'))
             if components is not None and fraction_components is not None:
                 for row in ProductFractionComponent.objects.filter(parent_product=instance):
                     row.delete()
@@ -748,6 +782,15 @@ class ProductSerializer(CompanyBoundSerializer):
                 for channel in SalesChannel.values
             },
             'sale_price': f'{(product.sale_price if branch_price is None else branch_price):.2f}',
+            'participation': {
+                field: (
+                    config.effective_participation(field) if config
+                    else getattr(product, field)
+                )
+                for field in (
+                    'participates_in_service_fee', 'participates_in_commission',
+                )
+            },
         }
 
     @staticmethod

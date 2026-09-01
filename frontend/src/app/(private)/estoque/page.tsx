@@ -701,12 +701,12 @@ function Inventory() {
                   </thead>
                   <tbody>
                     {data.results.map((stock) => (
-                      <tr key={stock.id} className={stock.product_deleted ? "bg-slate-50 text-slate-500" : undefined}>
+                      <tr key={stock.id} className={stock.product_deleted ? "bg-danger-surface text-muted" : undefined}>
                         <td>
                           <strong className="block">
                             {stock.product_name}
                           </strong>
-                          {stock.product_deleted && <span className="mt-1 inline-flex rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-bold text-slate-700">Excluído</span>}
+                          {stock.product_deleted && <span className="mt-1 inline-flex rounded-full border border-danger/30 bg-danger-surface px-2 py-0.5 text-[10px] font-bold text-danger-strong">Excluído</span>}
                           <span className="text-[11px] text-slate-400">
                             {stock.internal_code}
                           </span>

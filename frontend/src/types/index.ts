@@ -462,6 +462,10 @@ export interface ProductBranchConfiguration {
   is_available: boolean;
   channels: Record<SalesChannel, boolean>;
   sale_price: string;
+  participation: {
+    participates_in_service_fee: boolean;
+    participates_in_commission: boolean;
+  };
 }
 
 export interface ProductBranchConfig {
@@ -474,6 +478,12 @@ export interface ProductBranchConfig {
   available_counter: boolean | null;
   available_table: boolean | null;
   available_command: boolean | null;
+  participates_in_service_fee: boolean | null;
+  participates_in_commission: boolean | null;
+  effective_participation: {
+    participates_in_service_fee: boolean;
+    participates_in_commission: boolean;
+  };
   effective_channels: Record<SalesChannel, boolean>;
   effective_sale_price: string;
   created_at?: string;

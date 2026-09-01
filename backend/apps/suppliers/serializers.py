@@ -3,6 +3,7 @@ from decimal import Decimal
 from rest_framework import serializers
 
 from apps.companies.models import Status
+from apps.base.exceptions import DomainValidationError
 
 from .models import (
     PresentationPreset, PresentationType, ProductPurchasePresentation, ProductSupplier,
@@ -115,6 +116,21 @@ class SupplierSerializer(ImmutableTenantSerializer):
                 raise serializers.ValidationError({
                     'tax_id': 'Outro fornecedor desta filial já utiliza este CPF/CNPJ.'
                 })
+            if not self.instance:
+                archived = Supplier.objects.filter(
+                    branch=branch, tax_id=tax_id, deleted_at__isnull=False,
+                ).order_by('-deleted_at', '-id').first()
+                if archived:
+                    raise DomainValidationError(
+                        code='archived_supplier_exists',
+                        message='Já existiu um fornecedor com este CPF/CNPJ nesta filial.',
+                        details={
+                            'supplier_id': archived.pk,
+                            'name': archived.trade_name,
+                            'tax_id': archived.tax_id,
+                            'archived_at': archived.deleted_at.isoformat(),
+                        },
+                    )
         return attrs
 
     def create(self, validated_data):

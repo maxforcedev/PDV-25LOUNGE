@@ -40,9 +40,13 @@ import {
   TableLoading,
   Textarea,
 } from "@/components/ui";
-import { fieldError, formatDecimalBRL, formatEditableDecimal, formatQuantity } from "@/lib/format";
+import { fieldError, formatDate, formatDecimalBRL, formatEditableDecimal, formatQuantity } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
+import {
+  archivedProductConflict,
+  uniqueProductErrorMessage,
+} from "@/lib/product-errors";
 import { useAuth } from "@/providers/auth-provider";
 import type {
   Category,
@@ -251,7 +255,11 @@ function Products() {
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState<Product | null>(null);
   const [archiving, setArchiving] = useState<Product | null>(null);
-  const [archivedConflict, setArchivedConflict] = useState<{ productId: number; name: string } | null>(null);
+  const [archivedConflict, setArchivedConflict] = useState<{
+    productId: number;
+    name: string;
+    archivedAt: string | null;
+  } | null>(null);
   const [detailTab, setDetailTab] = useState<ProductV26Tab>("data");
   const [detailRetry, setDetailRetry] = useState(0);
   const touched = useRef({ cost: false, sale_price: false });
@@ -636,19 +644,12 @@ function Products() {
       await load();
     } catch (caught) {
       if (caught instanceof ApiError) {
-        if (caught.code === "archived_product_exists") {
-          const productId = Number(caught.details.product_id);
-          if (Number.isSafeInteger(productId) && productId > 0) {
-            setArchivedConflict({
-              productId,
-              name: String(caught.details.name || form.name),
-            });
-            return;
-          }
+        const conflict = archivedProductConflict(caught, form.name);
+        if (conflict) {
+          setArchivedConflict(conflict);
+          return;
         }
-        setError(
-          `${caught.message} ${Object.values(caught.fields).flat().join(" ")}`.trim(),
-        );
+        setError(uniqueProductErrorMessage(caught));
         setFields(caught.fields);
       } else setError("Não foi possível salvar o produto.");
     } finally {
@@ -656,31 +657,13 @@ function Products() {
     }
   }
 
-  async function resolveArchivedProduct(restore: boolean) {
+  async function resolveArchivedProduct() {
     if (!archivedConflict) return;
     setSaving(true);
     setError("");
     try {
-      if (restore) {
-        await http.post(`products/${archivedConflict.productId}/restore/`);
-        setSuccess(`Produto “${archivedConflict.name}” restaurado com sucesso.`);
-      } else {
-        await http.post<Product>("products/", {
-          ...form,
-          image: form.image || null,
-          create_new: true,
-          ...(form.inventory_behavior === "components"
-            ? {
-                components: components.map(({ component_product, quantity }) => ({ component_product, quantity })),
-                fraction_components: fractionComponents.map(({ component_product, content_quantity }) => ({
-                  component_product,
-                  content_quantity: content_quantity.replace(",", "."),
-                })),
-              }
-            : {}),
-        });
-        setSuccess("Novo produto criado com sucesso.");
-      }
+      await http.post(`products/${archivedConflict.productId}/restore/`);
+      setSuccess(`Produto “${archivedConflict.name}” restaurado com sucesso.`);
       setArchivedConflict(null);
       if (!isDetail) setOpen(false);
       await load();
@@ -1817,16 +1800,17 @@ function Products() {
       <Modal
         open={!!archivedConflict}
         title="Produto excluído encontrado"
-        description={`Já existiu um produto chamado “${archivedConflict?.name || ""}”. Escolha restaurar o cadastro histórico ou criar um novo produto.`}
+        description={`Já existiu um produto chamado “${archivedConflict?.name || ""}”.`}
         onClose={() => !saving && setArchivedConflict(null)}
         size="md"
       >
         <div className="space-y-4 p-5 sm:p-6">
           {error && <Alert message={error} />}
-          <p className="text-sm text-muted">Restaurar preserva o histórico e as configurações existentes. Criar novo mantém o registro anterior excluído.</p>
+          {archivedConflict?.archivedAt && <p className="text-sm text-muted">Excluído em: {formatDate(archivedConflict.archivedAt)}</p>}
+          <p className="text-sm text-muted">Restaurar preserva o mesmo ID, o histórico e as configurações existentes.</p>
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-            <Button variant="secondary" disabled={saving} onClick={() => void resolveArchivedProduct(false)}>Criar novo</Button>
-            <Button loading={saving} onClick={() => void resolveArchivedProduct(true)}>Restaurar</Button>
+            <Button variant="secondary" disabled={saving} onClick={() => setArchivedConflict(null)}>Cancelar</Button>
+            <Button loading={saving} onClick={() => void resolveArchivedProduct()}>Restaurar</Button>
           </div>
         </div>
       </Modal>

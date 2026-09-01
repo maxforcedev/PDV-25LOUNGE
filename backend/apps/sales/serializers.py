@@ -587,6 +587,8 @@ class CalculationSerializer(serializers.Serializer):
         branch = getattr(request, 'branch_context', None) if request else None
         if branch:
             fields['beneficiary_user'].queryset = User.objects.filter(
+                is_active=True,
+                archived_at__isnull=True,
                 company_accesses__company_id=branch.company_id,
                 company_accesses__is_active=True,
             ).distinct()

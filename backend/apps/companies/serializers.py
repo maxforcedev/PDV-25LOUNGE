@@ -562,6 +562,7 @@ class AccessProfileSerializer(serializers.ModelSerializer):
                 access_profile=obj,
                 is_active=True,
                 user__is_active=True,
+                user__archived_at__isnull=True,
             )
             .values('user_id').distinct().count()
         )

@@ -71,7 +71,9 @@ from ..services import (
 def company_fixture(name='V24'):
     company = Company.objects.create(trade_name=name, legal_name=f'{name} Ltda')
     branch = Branch.objects.create(company=company, name='Matriz', is_matrix=True)
-    category = Category.objects.create(company=company, branch=branch, name='Compras')
+    category = Category.objects.create(
+        company=company, branch=branch, name=f'Compras {uuid.uuid4()}'
+    )
     return company, branch, category
 
 
@@ -205,6 +207,29 @@ class PurchaseFlowTests(TestCase):
         )
         self.product.refresh_from_db()
         self.assertEqual(self.product.cost, Decimal('2.00'))
+
+    def test_package_price_preserves_exact_base_unit_cost_and_subtotal(self):
+        unit = supplier_unit_fixture(
+            self.company,
+            self.product,
+            name='Fornecedor pacote',
+            factor='10',
+        )[2]
+        order = create_order(
+            self.branch,
+            unit.product_supplier.supplier,
+            unit,
+            self.user,
+            quantity='2',
+            price='30.00',
+        )
+        item = order.items.get()
+
+        self.assertEqual(item.purchase_unit_price, Decimal('30.000000'))
+        self.assertEqual(item.conversion_factor, Decimal('10.000000'))
+        self.assertEqual(item.effective_stock_unit_cost, Decimal('3.000000000000'))
+        self.assertEqual(item.gross_subtotal, Decimal('60.00'))
+        self.assertEqual(order.payable_total, Decimal('60.00'))
 
     def test_purchase_uses_cx24_preset_without_changing_historical_snapshots(self):
         preset = PresentationPreset.objects.create(
@@ -994,8 +1019,15 @@ class ConcurrentReceiptTests(TransactionTestCase):
     reset_sequences = True
 
     def setUp(self):
-        self.company, self.branch, self.category = company_fixture('Concorrencia')
-        self.user = user_fixture(self.company, self.branch, superuser=True)
+        self.company, self.branch, self.category = company_fixture(
+            f'Concorrencia {uuid.uuid4()}'
+        )
+        self.user = user_fixture(
+            self.company,
+            self.branch,
+            email=f'concorrencia-{uuid.uuid4()}@example.com',
+            superuser=True,
+        )
         self.product = product_fixture(self.company, self.category)
         self.supplier, _link, self.unit = supplier_unit_fixture(
             self.company, self.product

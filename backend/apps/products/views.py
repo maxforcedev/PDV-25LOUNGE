@@ -23,7 +23,7 @@ from .models import (
     ProductProductionDestination, ProductionDestination,
 )
 from .permissions import ProductFunctionalPermission
-from .selectors import priceable_products
+from .selectors import operational_product_configs, priceable_products
 from .serializers import (
     BranchProductPriceSerializer,
     CategorySerializer,
@@ -43,10 +43,11 @@ from .serializers import (
     ProductionDestinationSerializer,
 )
 from .services import (
-    copy_branch_configuration, duplicate_product, reorder_categories,
+    archive_product, copy_branch_configuration, duplicate_product, reorder_categories,
     reorder_modifier_groups, reorder_modifier_options, reorder_product_modifier_groups,
     soft_delete_modifier_group, soft_delete_modifier_option,
-    soft_delete_product_modifier_group, soft_delete_category, restore_product,
+    soft_delete_product_modifier_group, soft_delete_category, restore_category,
+    restore_product,
 )
 
 
@@ -169,6 +170,7 @@ class CategoryViewSet(CatalogViewSet):
         'reorder': 'categories.change',
         'apply_config_to_products': 'categories.change',
         'destroy': 'categories.change',
+        'restore': 'categories.add',
     }
 
     def get_queryset(self):
@@ -248,6 +250,29 @@ class CategoryViewSet(CatalogViewSet):
             after=model_snapshot(category, ('status', 'deleted_at', 'deleted_by_id')),
         )
 
+    @action(detail=True, methods=['post'])
+    @transaction.atomic
+    def restore(self, request, pk=None):
+        branch = getattr(request, 'branch_context', None)
+        category = Category.objects.filter(
+            pk=pk, branch=branch, deleted_at__isnull=False,
+        ).first()
+        if category is None:
+            raise NotFound('Categoria excluída não encontrada nesta filial.')
+        before = model_snapshot(category, ('status', 'deleted_at', 'deleted_by_id'))
+        try:
+            category = restore_category(category=category)
+        except DjangoValidationError as error:
+            raise ValidationError(
+                getattr(error, 'message_dict', {'category': error.messages})
+            ) from error
+        audit_log(
+            actor=request.user, action='category.restore', obj=category,
+            company=category.company, branch=category.branch, before=before,
+            after=model_snapshot(category, ('status', 'deleted_at', 'deleted_by_id')),
+        )
+        return Response(self.get_serializer(category).data)
+
     @action(detail=False, methods=['post'])
     @transaction.atomic
     def reorder(self, request):
@@ -292,7 +317,7 @@ class CategoryViewSet(CatalogViewSet):
             'participates_in_service_fee', 'participates_in_commission',
         )
         configs = list(
-            ProductBranchConfig.objects.select_related('product').filter(category=category)
+            operational_product_configs(category.branch).filter(category=category)
         )
         affected = 0
         reference = uuid.uuid4()
@@ -322,8 +347,8 @@ class CategoryViewSet(CatalogViewSet):
                 )
         return Response({
             'category': category.name,
-            'affected_count': affected,
             'total_products': len(configs),
+            'updated_products': affected,
         })
 
 
@@ -467,9 +492,12 @@ class ProductViewSet(CatalogViewSet):
         if product.archived_at:
             return Response(self.get_serializer(product).data)
         before = model_snapshot(product, ('archived_at', 'archived_by_id'))
-        product.archived_at = timezone.now()
-        product.archived_by = request.user
-        product.save(update_fields=('archived_at', 'archived_by', 'updated_at'))
+        try:
+            product = archive_product(product=product, user=request.user)
+        except DjangoValidationError as error:
+            raise ValidationError(
+                getattr(error, 'message_dict', {'product': error.messages})
+            )
         audit_log(
             actor=request.user, action='product.archive', obj=product,
             company=product.company, before=before,
@@ -514,6 +542,16 @@ class ProductViewSet(CatalogViewSet):
 
     @transaction.atomic
     def perform_update(self, serializer):
+        branch = getattr(self.request, 'branch_context', None)
+        branch_fields = (
+            'category_id', 'is_available', 'available_counter', 'available_table',
+            'available_command', 'participates_in_service_fee',
+            'participates_in_commission',
+        )
+        config = ProductBranchConfig.objects.filter(
+            product=serializer.instance, branch=branch
+        ).first() if branch else None
+        branch_before = model_snapshot(config, branch_fields) if config else None
         before = model_snapshot(serializer.instance, self.audit_fields)
         before['composition'] = self.composition_snapshot(serializer.instance)
         product = serializer.save()
@@ -524,6 +562,19 @@ class ProductViewSet(CatalogViewSet):
             company=product.company, before=before,
             after=after,
         )
+        if config:
+            config.refresh_from_db()
+            branch_after = model_snapshot(config, branch_fields)
+            if branch_before != branch_after:
+                audit_log(
+                    actor=self.request.user,
+                    action='product.branch_config.update',
+                    obj=config,
+                    company=product.company,
+                    branch=branch,
+                    before=branch_before,
+                    after=branch_after,
+                )
 
     @action(detail=False, methods=('post',), url_path='bulk-create')
     @transaction.atomic
@@ -654,7 +705,8 @@ class ProductViewSet(CatalogViewSet):
             ).data)
         before = model_snapshot(config, (
             'is_available', 'available_counter', 'available_table',
-            'available_command',
+            'available_command', 'participates_in_service_fee',
+            'participates_in_commission',
         )) if config else {}
         payload = {**request.data, 'product': product.pk, 'branch': branch.pk}
         serializer = ProductBranchConfigSerializer(
@@ -667,7 +719,8 @@ class ProductViewSet(CatalogViewSet):
             company=product.company, branch=branch, before=before,
             after=model_snapshot(config, (
                 'is_available', 'available_counter', 'available_table',
-                'available_command',
+                'available_command', 'participates_in_service_fee',
+                'participates_in_commission',
             )),
         )
         return Response(serializer.data)

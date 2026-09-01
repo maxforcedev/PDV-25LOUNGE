@@ -442,6 +442,48 @@ class SupplierApiTests(TestCase):
         self.assertEqual(response.status_code, 400, response.data)
         self.assertIn('address', response.data)
 
+    def test_archived_supplier_document_restores_same_branch_identity(self):
+        created = self.client.post(
+            reverse('supplier-list'), self.supplier_payload(), format='json'
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        supplier_id = created.data['id']
+        deleted = self.client.delete(reverse('supplier-detail', args=[supplier_id]))
+        self.assertEqual(deleted.status_code, 204, deleted.data)
+
+        conflict = self.client.post(
+            reverse('supplier-list'),
+            self.supplier_payload(trade_name='Outro nome não identifica'),
+            format='json',
+        )
+        self.assertEqual(conflict.status_code, 400, conflict.data)
+        self.assertEqual(conflict.data['code'], 'archived_supplier_exists')
+        self.assertEqual(conflict.data['details']['supplier_id'], supplier_id)
+
+        restored = self.client.post(reverse('supplier-restore', args=[supplier_id]))
+        self.assertEqual(restored.status_code, 200, restored.data)
+        self.assertEqual(restored.data['id'], supplier_id)
+        supplier = Supplier.objects.get(pk=supplier_id)
+        self.assertIsNone(supplier.deleted_at)
+        self.assertEqual(supplier.status, 'active')
+        self.assertTrue(AuditLog.objects.filter(
+            action='supplier.restore', object_id=str(supplier_id), company=self.company,
+        ).exists())
+
+    def test_supplier_name_without_document_does_not_block_new_record(self):
+        first = self.supplier_payload(tax_id='', trade_name='Nome repetido')
+        second = self.supplier_payload(
+            tax_id='', trade_name='Nome repetido', legal_name='Outra razão social',
+        )
+        self.assertEqual(
+            self.client.post(reverse('supplier-list'), first, format='json').status_code,
+            201,
+        )
+        self.assertEqual(
+            self.client.post(reverse('supplier-list'), second, format='json').status_code,
+            201,
+        )
+
     def test_suppliers_are_branch_owned_and_soft_deleted_tax_id_can_be_reused(self):
         created = self.client.post(
             reverse('supplier-list'), self.supplier_payload(), format='json'

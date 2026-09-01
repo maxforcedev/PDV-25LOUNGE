@@ -2,6 +2,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
@@ -20,6 +21,7 @@ from apps.companies.selectors import (
     user_has_company_permission,
 )
 from apps.companies.services import replace_user_accesses, replace_user_company_access
+from apps.base.exceptions import DomainValidationError
 
 from .models import User
 
@@ -425,13 +427,53 @@ class UserManagementSerializer(UserSerializer):
     def validate_email(self, value):
         if not value:
             return None
-        email = User.objects.normalize_email(value).lower()
-        queryset = User.objects.filter(email__iexact=email)
+        return User.objects.normalize_email(value).lower()
+
+    def validate_cpf(self, value):
+        digits = ''.join(character for character in value if character.isdigit())
+        if value and len(digits) != 11:
+            raise serializers.ValidationError('Informe um CPF com 11 dígitos.')
+        return digits
+
+    def _validate_identity_conflict(self, attrs):
         if self.instance:
-            queryset = queryset.exclude(pk=self.instance.pk)
-        if queryset.exists():
-            raise serializers.ValidationError('Este e-mail ja esta em uso.')
-        return email
+            return
+        email = attrs.get('email')
+        cpf = attrs.get('cpf', '')
+        email_user = User.objects.filter(email__iexact=email).first() if email else None
+        cpf_users = list(User.objects.filter(cpf=cpf).order_by('id')[:2]) if cpf else []
+        cpf_user = cpf_users[0] if len(cpf_users) == 1 else None
+        if len(cpf_users) > 1 or email_user and cpf_user and email_user.pk != cpf_user.pk:
+            raise serializers.ValidationError({
+                'non_field_errors': [
+                    'E-mail e CPF correspondem a identidades diferentes. Regularize os dados antes de continuar.'
+                ]
+            })
+        user = email_user or cpf_user
+        if not user:
+            return
+        company_id = self._context_company_id()
+        membership = user.company_accesses.filter(
+            company_id=company_id,
+            archived_at__isnull=False,
+        ).first()
+        if membership:
+            raise DomainValidationError(
+                code='archived_user_exists',
+                message='Já existiu um usuário com estes dados.',
+                details={
+                    'user_id': user.pk,
+                    'name': user.get_full_name().strip() or 'Usuário sem nome',
+                    'email': user.email,
+                    'archived_at': membership.archived_at.isoformat(),
+                },
+            )
+        errors = {}
+        if email_user:
+            errors['email'] = ['Este e-mail já está em uso.']
+        if cpf_users:
+            errors['cpf'] = ['Este CPF já está em uso.']
+        raise serializers.ValidationError(errors)
 
     def _validate_company_accesses(self, items, permission_code):
         request = self.context['request']
@@ -553,6 +595,7 @@ class UserManagementSerializer(UserSerializer):
 
     def validate(self, attrs):
         request = self.context['request']
+        restoring_membership = self.context.get('restoring_membership', False)
         can_login = attrs.get(
             'can_login', getattr(self.instance, 'can_login', True)
         )
@@ -566,23 +609,26 @@ class UserManagementSerializer(UserSerializer):
             raise serializers.ValidationError(
                 {'email': 'O e-mail é obrigatório para usuários com login.'}
             )
-        if not self.instance and not attrs.get('company_accesses'):
+        if (not self.instance or restoring_membership) and not attrs.get('company_accesses'):
             raise serializers.ValidationError(
                 {'company_accesses': 'Informe ao menos um acesso de empresa.'}
             )
 
         password = attrs.get('password')
         if password:
-            candidate = self.instance or User()
+            candidate = User()
             for attribute in ('email', 'first_name', 'last_name'):
-                if attribute in attrs:
-                    setattr(candidate, attribute, attrs[attribute])
+                setattr(
+                    candidate,
+                    attribute,
+                    attrs.get(attribute, getattr(self.instance, attribute, None)),
+                )
             try:
                 validate_password(password, user=candidate)
             except DjangoValidationError as error:
                 raise serializers.ValidationError({'password': list(error.messages)}) from error
 
-        permission_code = 'users.change' if self.instance else 'users.add'
+        permission_code = 'users.change' if self.instance and not restoring_membership else 'users.add'
         current_company_ids = set()
         if self.instance:
             context_company_id = self._context_company_id()
@@ -634,6 +680,8 @@ class UserManagementSerializer(UserSerializer):
                 attrs['company_accesses'], permission_code
             )
 
+        self._validate_identity_conflict(attrs)
+
         accesses = attrs.get('company_accesses')
         if not can_login and accesses is not None and any(
             item['branch_accesses']
@@ -677,13 +725,73 @@ class UserManagementSerializer(UserSerializer):
 
     @transaction.atomic
     def update(self, instance, validated_data):
+        restoring_membership = self.context.get('restoring_membership', False)
         company_accesses = validated_data.pop('company_accesses', None)
-        validated_data.pop('password', None)
+        password = validated_data.pop('password', None)
+        requested_login = validated_data.pop('can_login', instance.can_login)
         context_company_id = self._context_company_id()
-        if context_company_id or not self.context['request'].user.is_superuser:
-            validated_data.pop('can_login', None)
-        for attribute, value in validated_data.items():
-            setattr(instance, attribute, value)
+        context_access = None
+        if context_company_id:
+            context_access = instance.company_accesses.select_for_update().get(
+                company_id=context_company_id
+            )
+            if not requested_login and context_access.is_owner:
+                raise serializers.ValidationError({
+                    'can_login': 'Transfira a propriedade antes de remover este acesso.'
+                })
+
+            if not requested_login and not restoring_membership:
+                context_access.is_active = False
+                context_access.save(update_fields=('is_active', 'updated_at'))
+                instance.branch_accesses.filter(
+                    branch__company_id=context_company_id
+                ).update(is_active=False, updated_at=timezone.now())
+                company_accesses = None
+                other_company_ids = instance.company_accesses.filter(
+                    is_active=True,
+                    saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
+                ).exclude(company_id=context_company_id).values_list(
+                    'company_id', flat=True
+                )
+                has_other_access = instance.branch_accesses.filter(
+                    is_active=True,
+                    access_profile__status=Status.ACTIVE,
+                    branch__status=Status.ACTIVE,
+                    branch__company_id__in=other_company_ids,
+                ).exists()
+                instance.can_login = has_other_access
+            else:
+                context_access.is_active = True
+                context_access.archived_at = None
+                context_access.save(update_fields=('is_active', 'archived_at', 'updated_at'))
+                if requested_login:
+                    instance.can_login = True
+                else:
+                    instance.branch_accesses.filter(
+                        branch__company_id=context_company_id
+                    ).update(is_active=False, updated_at=timezone.now())
+                    other_company_ids = instance.company_accesses.filter(
+                        is_active=True,
+                        archived_at__isnull=True,
+                        saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
+                    ).exclude(company_id=context_company_id).values_list('company_id', flat=True)
+                    instance.can_login = instance.branch_accesses.filter(
+                        is_active=True,
+                        access_profile__status=Status.ACTIVE,
+                        branch__status=Status.ACTIVE,
+                        branch__company_id__in=other_company_ids,
+                    ).exists()
+        else:
+            instance.can_login = requested_login
+
+        if password and (not restoring_membership or not instance.has_usable_password()):
+            instance.set_password(password)
+        if restoring_membership:
+            instance.archived_at = None
+            instance.is_active = True
+        else:
+            for attribute, value in validated_data.items():
+                setattr(instance, attribute, value)
         instance.save()
         if company_accesses is not None:
             if context_company_id:

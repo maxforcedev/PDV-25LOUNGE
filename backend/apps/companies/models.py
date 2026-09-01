@@ -467,6 +467,7 @@ class UserCompanyAccess(BaseModel):
         null=True,
     )
     is_active = models.BooleanField(default=True)
+    archived_at = models.DateTimeField(blank=True, null=True, default=None)
     is_owner = models.BooleanField(default=False)
     saas_status = models.CharField(
         max_length=30,

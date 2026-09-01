@@ -111,8 +111,10 @@ class MissionM1Tests(TestCase):
         self.assertFalse(self.target.is_active)
         self.assertIsNotNone(self.target.archived_at)
         active_ids = {item['id'] for item in self.client.get(f'/api/v1/users/?company={self.company.pk}&status=active').data['results']}
+        inactive_ids = {item['id'] for item in self.client.get(f'/api/v1/users/?company={self.company.pk}&status=inactive').data['results']}
         all_ids = {item['id'] for item in self.client.get(f'/api/v1/users/?company={self.company.pk}&status=all').data['results']}
         self.assertNotIn(self.target.pk, active_ids)
+        self.assertNotIn(self.target.pk, inactive_ids)
         self.assertNotIn(self.target.pk, all_ids)
 
     def test_queryset_delete_also_preserves_user_history(self):
