@@ -168,7 +168,11 @@ def replace_user_accesses(*, user, company_accesses):
         access, created = UserCompanyAccess.objects.get_or_create(
             user=user,
             company=company,
-            defaults={'access_profile': profile, 'is_active': True},
+            defaults={
+                'access_profile': profile,
+                'is_active': True,
+                'can_login': user.can_login,
+            },
         )
         if user.can_login and (created or not access.is_active or access.saas_status != UserCompanyAccess.SaaSStatus.ACTIVE):
             from apps.saas.services import assert_resource_limit
@@ -229,6 +233,8 @@ def _validate_owner_target(access):
     errors = {}
     if not access.is_active:
         errors['target_user_id'] = 'O acesso do novo proprietário deve estar ativo.'
+    if not access.can_login:
+        errors['target_user_id'] = 'O novo proprietário deve possuir acesso ao Backoffice.'
     if not access.user.is_active or not access.user.can_login:
         errors['target_user_id'] = 'O novo proprietário deve estar ativo e habilitado para login.'
     has_branch_profile = UserBranchAccess.objects.filter(

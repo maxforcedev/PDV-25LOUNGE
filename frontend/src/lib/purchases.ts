@@ -55,6 +55,7 @@ export function purchaseBaseUnitPrice(
   presentationPrice: string,
   conversionFactor: string,
 ) {
+  if (!presentationPrice.trim()) return "";
   const factor = decimalToScaled(conversionFactor, 6);
   if (factor <= BigInt(0)) return "";
   const numerator = decimalToScaled(presentationPrice, 6) * BigInt(1_000_000);
@@ -65,6 +66,7 @@ export function purchasePresentationPrice(
   basePrice: string,
   conversionFactor: string,
 ) {
+  if (!basePrice.trim()) return "";
   return scaledText(
     (decimalToScaled(basePrice, 6) * decimalToScaled(conversionFactor, 6)) /
       BigInt(1_000_000),

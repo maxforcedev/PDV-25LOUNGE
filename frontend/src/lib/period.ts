@@ -74,6 +74,26 @@ export function businessPeriodPreset(
   return businessPeriod(0, 0, now);
 }
 
+export function dashboardPeriods(now = new Date()) {
+  return [
+    ["Hoje", businessPeriod(0, 0, now)],
+    ["7 dias", businessPeriod(6, 0, now)],
+    ["30 dias", businessPeriod(29, 0, now)],
+  ] as const;
+}
+
+export function validDashboardPeriod(period: PeriodValue) {
+  return Boolean(period.start && period.end && period.start <= period.end);
+}
+
+export function dashboardQuery(period: PeriodValue) {
+  return new URLSearchParams({
+    start_datetime: period.start,
+    end_datetime: period.end,
+    latest_sales_page: "1",
+  });
+}
+
 export function businessMonthToDate(now = new Date()): PeriodValue {
   const endDate = businessDate(now);
   return {

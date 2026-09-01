@@ -28,3 +28,7 @@ export function uniqueProductErrorMessage(error: ProductApiError) {
     .filter(Boolean);
   return [...new Set(messages)].join(" ");
 }
+
+export function productRestoreRedirect() {
+  return "/produtos";
+}

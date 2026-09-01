@@ -283,7 +283,9 @@ def payment_totals(queryset, filters=None):
     return FinancialAggregator(_financial_sales(queryset), filters).payment_totals()
 
 
-def sale_rankings(queryset, *, limit=None, filters=None, reversals=()):
+def sale_rankings(
+    queryset, *, limit=None, filters=None, reversals=(), product_order='quantity',
+):
     by_product = {}
     by_category = {}
     for sales, sign in ((queryset, 1), (reversals, -1)):
@@ -309,7 +311,14 @@ def sale_rankings(queryset, *, limit=None, filters=None, reversals=()):
                 })
                 category_entry['quantity'] += sign * item.quantity
                 category_entry['sales_revenue'] += sign * row['sales_revenue']
-    products = sorted(by_product.values(), key=lambda row: (-row['quantity'], -row['sales_revenue'], row['product_name']))
+    if product_order not in ('quantity', 'revenue'):
+        raise ValueError('Ordenação de produtos inválida.')
+    product_key = (
+        (lambda row: (-row['sales_revenue'], -row['quantity'], row['product_name']))
+        if product_order == 'revenue'
+        else (lambda row: (-row['quantity'], -row['sales_revenue'], row['product_name']))
+    )
+    products = sorted(by_product.values(), key=product_key)
     categories = sorted(by_category.values(), key=lambda row: (-row['quantity'], -row['sales_revenue'], row['category_name']))
     for row in products + categories:
         row['revenue'] = row['sales_revenue']
@@ -495,9 +504,9 @@ def receipt_summary(
 
 
 def dashboard_time_analysis(
-    queryset, *, branch, start, end, category=None, reversals=(),
+    queryset, *, branch, start, end, filters=None, reversals=(),
 ):
-    filters = {'category': category} if category else {}
+    filters = filters or {}
     heatmap = {}
     for sales, sign, timestamp_field in (
         (queryset, 1, 'created_at'), (reversals, -1, 'cancelled_at'),

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   archivedProductConflict,
+  productRestoreRedirect,
   uniqueProductErrorMessage,
 } from "../src/lib/product-errors.ts";
 
@@ -19,6 +20,10 @@ test("opens the archived product decision for a structured conflict", () => {
     ),
     { productId: 42, name: "Coca", archivedAt: "2026-08-28T10:00:00Z" },
   );
+});
+
+test("redirects a restored product to the product list", () => {
+  assert.equal(productRestoreRedirect(), "/produtos");
 });
 
 test("does not repeat the same API and field message", () => {

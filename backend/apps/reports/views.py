@@ -447,7 +447,7 @@ class DashboardView(APIView):
             )
             products, categories = sale_rankings(
                 sales_graph, limit=10, filters=item_filters,
-                reversals=sales_reversals,
+                reversals=sales_reversals, product_order='revenue',
             )
             can_view_team = user_has_code(request, 'reports.view_team')
             operator_groups = (
@@ -467,7 +467,7 @@ class DashboardView(APIView):
             )
             discount_count = summary['manual_discount_count']
             heatmap, current_comparison, previous_comparison = dashboard_time_analysis(
-                sales_graph, branch=branch, start=start, end=end, category=category,
+                sales_graph, branch=branch, start=start, end=end, filters=item_filters,
                 reversals=sales_reversals,
             )
             if can_view_consumptions:
@@ -878,6 +878,42 @@ class SalesReportView(BaseReportView):
             'operator_groups': [_group_json(row) for row in operator_groups],
             'seller_groups': [_group_json(row) for row in seller_groups],
         }
+        if scope == 'overview':
+            heatmap, current_comparison, previous_comparison = dashboard_time_analysis(
+                sales_graph,
+                branch=request.branch_context,
+                start=start,
+                end=end,
+                filters=filters,
+                reversals=sales_reversals,
+            )
+            result['heatmap'] = [
+                {
+                    **row,
+                    'sales_revenue': decimal_string(row['sales_revenue']),
+                    'revenue': decimal_string(row['sales_revenue']),
+                    'average': decimal_string(row['average']),
+                }
+                for row in heatmap
+            ]
+            result['weekly_comparison'] = {
+                'current': [
+                    {
+                        **row,
+                        'sales_revenue': decimal_string(row['sales_revenue']),
+                        'revenue': decimal_string(row['sales_revenue']),
+                    }
+                    for row in current_comparison
+                ],
+                'previous': [
+                    {
+                        **row,
+                        'sales_revenue': decimal_string(row['sales_revenue']),
+                        'revenue': decimal_string(row['sales_revenue']),
+                    }
+                    for row in previous_comparison
+                ],
+            }
         if scope == 'discounts':
             item_filters = {
                 key: filters[key] for key in ('category', 'product') if filters.get(key)

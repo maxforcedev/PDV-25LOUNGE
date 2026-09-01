@@ -16,7 +16,7 @@ import {
   Select,
   Textarea,
 } from "@/components/ui";
-import { formatBRL, formatDecimalBRL } from "@/lib/format";
+import { formatBRL } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import {
@@ -44,6 +44,7 @@ type Line = {
   quantity: string;
   price: string;
   basePrice: string;
+  lastEditedPriceField: "presentation" | "base";
 };
 type Installment = { amount: string; due_date: string; notes: string };
 type PurchaseCreationOptions = { suppliers: Supplier[]; products: Product[] };
@@ -53,6 +54,7 @@ const emptyLine = (): Line => ({
   quantity: "1",
   price: "",
   basePrice: "",
+  lastEditedPriceField: "presentation",
 });
 
 function NewPurchase() {
@@ -155,17 +157,33 @@ function NewPurchase() {
   }
   function generateInstallments() {
     const count = Number(installmentCount);
-    if (!Number.isInteger(count) || count < 1 || !firstDueDate || payableCents <= BigInt(0)) {
-      setError("Informe o número de parcelas, o primeiro vencimento e um total positivo.");
+    if (
+      !Number.isInteger(count) ||
+      count < 1 ||
+      !firstDueDate ||
+      payableCents <= BigInt(0)
+    ) {
+      setError(
+        "Informe o número de parcelas, o primeiro vencimento e um total positivo.",
+      );
       return;
     }
     const base = payableCents / BigInt(count);
     const remainder = payableCents % BigInt(count);
     const first = new Date(`${firstDueDate}T12:00:00`);
-    setInstallments(Array.from({ length: count }, (_, index) => {
-      const date = new Date(first); date.setMonth(first.getMonth() + index);
-      return { amount: centsText(base + (BigInt(index) < remainder ? BigInt(1) : BigInt(0))), due_date: date.toISOString().slice(0, 10), notes: "" };
-    }));
+    setInstallments(
+      Array.from({ length: count }, (_, index) => {
+        const date = new Date(first);
+        date.setMonth(first.getMonth() + index);
+        return {
+          amount: centsText(
+            base + (BigInt(index) < remainder ? BigInt(1) : BigInt(0)),
+          ),
+          due_date: date.toISOString().slice(0, 10),
+          notes: "",
+        };
+      }),
+    );
   }
   async function chooseAttachment(file: File | null) {
     setAttachmentFile(null);
@@ -179,11 +197,17 @@ function NewPurchase() {
     setAttachmentFile(file);
   }
 
-  async function submit(event?: React.FormEvent, exclusiveSupplierOverride = false) {
+  async function submit(
+    event?: React.FormEvent,
+    exclusiveSupplierOverride = false,
+  ) {
     event?.preventDefault();
     if (!currentBranch || readOnly) return;
     const selectedProducts = lines.map((line) => Number(line.product));
-    if (selectedProducts.some((item) => !item) || new Set(selectedProducts).size !== selectedProducts.length) {
+    if (
+      selectedProducts.some((item) => !item) ||
+      new Set(selectedProducts).size !== selectedProducts.length
+    ) {
       setError("Informe produtos sem repeti-los na compra.");
       return;
     }
@@ -207,7 +231,9 @@ function NewPurchase() {
         items: lines.map((line) => {
           const presentation = products
             .find((item) => item.id === Number(line.product))
-            ?.purchase_presentations?.find((item) => item.id === Number(line.presentation));
+            ?.purchase_presentations?.find(
+              (item) => item.id === Number(line.presentation),
+            );
           return {
             product: Number(line.product),
             ...(presentation ? { purchase_presentation: presentation.id } : {}),
@@ -252,7 +278,10 @@ function NewPurchase() {
       if (attachmentFailed) query.set("attachment", "failed");
       router.push(`/compras/${order.id}${query.size ? `?${query}` : ""}`);
     } catch (caught) {
-      if (caught instanceof ApiError && caught.fields.exclusive_supplier_warning?.[0]) {
+      if (
+        caught instanceof ApiError &&
+        caught.fields.exclusive_supplier_warning?.[0]
+      ) {
         setExclusiveWarning(caught.fields.exclusive_supplier_warning[0]);
       } else {
         setError(
@@ -325,7 +354,8 @@ function NewPurchase() {
             <div>
               <h2 className="text-sm font-bold">Itens</h2>
               <p className="mt-1 text-[11px] text-muted">
-                As apresentações pertencem ao produto e não dependem do fornecedor selecionado.
+                As apresentações pertencem ao produto e não dependem do
+                fornecedor selecionado.
               </p>
             </div>
             <Button
@@ -340,10 +370,12 @@ function NewPurchase() {
           </div>
           <div className="space-y-3 p-4">
             {lines.map((line, index) => {
-              const product = products.find((item) => item.id === Number(line.product));
-              const presentations = (product?.purchase_presentations || []).filter(
-                (item) => item.status === "active",
+              const product = products.find(
+                (item) => item.id === Number(line.product),
               );
+              const presentations = (
+                product?.purchase_presentations || []
+              ).filter((item) => item.status === "active");
               const selected = presentations.find(
                 (item) => item.id === Number(line.presentation),
               );
@@ -361,6 +393,7 @@ function NewPurchase() {
                           product: event.target.value,
                           presentation: "",
                           basePrice: line.price,
+                          lastEditedPriceField: "presentation",
                         })
                       }
                       disabled={!supplier || loadingOptions || saving}
@@ -386,21 +419,40 @@ function NewPurchase() {
                       value={line.presentation}
                       onChange={(event) => {
                         const next = presentations.find(
-                          (presentation) => presentation.id === Number(event.target.value),
+                          (presentation) =>
+                            presentation.id === Number(event.target.value),
                         );
                         const factor = next?.conversion_factor || "1";
-                        const basePrice =
-                          line.basePrice || purchaseBaseUnitPrice(line.price, factor);
-                        updateLine(index, {
-                          presentation: event.target.value,
-                          basePrice,
-                          price: purchasePresentationPrice(basePrice, factor),
-                        });
+                        updateLine(
+                          index,
+                          line.lastEditedPriceField === "base"
+                            ? {
+                                presentation: event.target.value,
+                                price: purchasePresentationPrice(
+                                  line.basePrice,
+                                  factor,
+                                ),
+                              }
+                            : {
+                                presentation: event.target.value,
+                                basePrice: purchaseBaseUnitPrice(
+                                  line.price,
+                                  factor,
+                                ),
+                              },
+                        );
                       }}
                       disabled={!line.product || saving}
                     >
                       <option value="">Unidade de estoque</option>
-                      {presentations.map((presentation) => <option key={presentation.id} value={presentation.id}>{purchasePresentationLabel(presentation.unit_code, presentation.description)}</option>)}
+                      {presentations.map((presentation) => (
+                        <option key={presentation.id} value={presentation.id}>
+                          {purchasePresentationLabel(
+                            presentation.unit_code,
+                            presentation.description,
+                          )}
+                        </option>
+                      ))}
                     </Select>
                   </Field>
                   <Field label="Quantidade">
@@ -417,7 +469,11 @@ function NewPurchase() {
                       disabled={saving}
                     />
                   </Field>
-                  <Field label={purchasePresentationPriceLabel(selected?.description)}>
+                  <Field
+                    label={purchasePresentationPriceLabel(
+                      selected?.description,
+                    )}
+                  >
                     <Input
                       required
                       inputMode="decimal"
@@ -430,15 +486,31 @@ function NewPurchase() {
                             event.target.value.replace(",", "."),
                             selected?.conversion_factor || "1",
                           ),
+                          lastEditedPriceField: "presentation",
                         })
                       }
                       disabled={saving}
                     />
                   </Field>
                   <Field label="Preço unitário">
-                    <div className="flex h-10 items-center rounded-md bg-surface-muted px-3 text-sm font-semibold">
-                      {line.basePrice ? formatDecimalBRL(line.basePrice) : "R$ 0,00"}
-                    </div>
+                    <Input
+                      required
+                      inputMode="decimal"
+                      pattern="\d+([.,]\d{1,6})?"
+                      value={line.basePrice}
+                      onChange={(event) => {
+                        const basePrice = event.target.value.replace(",", ".");
+                        updateLine(index, {
+                          basePrice,
+                          price: purchasePresentationPrice(
+                            basePrice,
+                            selected?.conversion_factor || "1",
+                          ),
+                          lastEditedPriceField: "base",
+                        });
+                      }}
+                      disabled={saving}
+                    />
                   </Field>
                   <div>
                     <span className="label">Subtotal</span>
@@ -463,7 +535,11 @@ function NewPurchase() {
                   </button>
                   {selected && (
                     <p className="text-[10px] text-muted md:col-span-5">
-                      {purchasePresentationLabel(selected.unit_code, selected.description)}.
+                      {purchasePresentationLabel(
+                        selected.unit_code,
+                        selected.description,
+                      )}
+                      .
                     </p>
                   )}
                 </div>
@@ -590,7 +666,36 @@ function NewPurchase() {
                 Parcela
               </Button>
             </div>
-            <div className="grid gap-3 border-t border-subtle p-4 sm:grid-cols-[10rem_12rem_auto]"><Field label="Número de parcelas"><Input inputMode="numeric" min="1" step="1" value={installmentCount} onChange={(event) => setInstallmentCount(event.target.value.replace(/\D/g, ""))} /></Field><Field label="Primeiro vencimento"><Input type="date" value={firstDueDate} onChange={(event) => setFirstDueDate(event.target.value)} /></Field><div className="flex items-end"><Button type="button" variant="secondary" onClick={generateInstallments} disabled={saving}>Gerar automaticamente</Button></div></div>
+            <div className="grid gap-3 border-t border-subtle p-4 sm:grid-cols-[10rem_12rem_auto]">
+              <Field label="Número de parcelas">
+                <Input
+                  inputMode="numeric"
+                  min="1"
+                  step="1"
+                  value={installmentCount}
+                  onChange={(event) =>
+                    setInstallmentCount(event.target.value.replace(/\D/g, ""))
+                  }
+                />
+              </Field>
+              <Field label="Primeiro vencimento">
+                <Input
+                  type="date"
+                  value={firstDueDate}
+                  onChange={(event) => setFirstDueDate(event.target.value)}
+                />
+              </Field>
+              <div className="flex items-end">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={generateInstallments}
+                  disabled={saving}
+                >
+                  Gerar automaticamente
+                </Button>
+              </div>
+            </div>
             <div className="space-y-3 p-4">
               {installments.length ? (
                 installments.map((item, index) => (
@@ -681,7 +786,9 @@ function NewPurchase() {
             disabled={
               !currentBranch ||
               !supplier ||
-               !lines.every((line) => line.product && line.quantity && line.price) ||
+              !lines.every(
+                (line) => line.product && line.quantity && line.price,
+              ) ||
               payableCents < BigInt(0) ||
               readOnly
             }

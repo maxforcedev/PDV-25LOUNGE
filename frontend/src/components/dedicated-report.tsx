@@ -16,8 +16,21 @@ import {
   TableLoading,
 } from "@/components/ui";
 import { domainLabel } from "@/lib/domain-labels";
-import { decimalIsZero, formatDate, formatDecimalBRL as formatBRL, formatPercent, formatQuantity } from "@/lib/format";
-import { contentUnitLabel, divideInventoryDecimals, inventoryDecimalSign, physicalQuantityDisplay, subtractInventoryDecimals, sumInventoryDecimals } from "@/lib/inventory";
+import {
+  decimalIsZero,
+  formatDate,
+  formatDecimalBRL as formatBRL,
+  formatPercent,
+  formatQuantity,
+} from "@/lib/format";
+import {
+  contentUnitLabel,
+  divideInventoryDecimals,
+  inventoryDecimalSign,
+  physicalQuantityDisplay,
+  subtractInventoryDecimals,
+  sumInventoryDecimals,
+} from "@/lib/inventory";
 import { ApiError, http } from "@/lib/http";
 import { businessMonthToDate } from "@/lib/period";
 import { permissions } from "@/lib/permissions";
@@ -164,10 +177,15 @@ function sumReportMoney(values: unknown[]) {
   return total === null ? "0.00" : centsToDecimal(total);
 }
 
-function averageReportMoney(rows: Array<Record<string, unknown>>, amountKey: string) {
+function averageReportMoney(
+  rows: Array<Record<string, unknown>>,
+  amountKey: string,
+) {
   const count = rows.reduce((total, row) => total + numberValue(row.count), 0);
   if (!count) return "0.00";
-  const total = signedMoneyToCents(sumReportMoney(rows.map((row) => row[amountKey])));
+  const total = signedMoneyToCents(
+    sumReportMoney(rows.map((row) => row[amountKey])),
+  );
   return total === null ? "0.00" : centsToDecimal(total / BigInt(count));
 }
 
@@ -177,43 +195,99 @@ function firstValue(summary: Record<string, unknown>, ...keys: string[]) {
 }
 
 function reportValue(record: Record<string, unknown>, ...keys: string[]) {
-  const key = keys.find((candidate) => record[candidate] !== undefined && record[candidate] !== null);
-  return key ? record[key] as string | number : undefined;
+  const key = keys.find(
+    (candidate) =>
+      record[candidate] !== undefined && record[candidate] !== null,
+  );
+  return key ? (record[key] as string | number) : undefined;
 }
 
-function reportPhysicalQuantity(row: Record<string, unknown>, quantityKey: string, prefix?: string) {
+function reportPhysicalQuantity(
+  row: Record<string, unknown>,
+  quantityKey: string,
+  prefix?: string,
+) {
   const product = (row.product || {}) as Record<string, unknown>;
   const fraction = (product.fraction_config || {}) as Record<string, unknown>;
-  const contentKeys = prefix ? [`${prefix}_content`, `${prefix}_content_quantity`] : ["content_quantity"];
-  const completeKeys = prefix ? [`${prefix}_complete_packages`] : ["complete_packages", "movement_complete_packages"];
-  const residualKeys = prefix ? [`${prefix}_residual_content`] : ["residual_content", "movement_residual_content"];
+  const contentKeys = prefix
+    ? [`${prefix}_content`, `${prefix}_content_quantity`]
+    : ["content_quantity"];
+  const completeKeys = prefix
+    ? [`${prefix}_complete_packages`]
+    : ["complete_packages", "movement_complete_packages"];
+  const residualKeys = prefix
+    ? [`${prefix}_residual_content`]
+    : ["residual_content", "movement_residual_content"];
   return physicalQuantityDisplay({
     quantity: reportValue(row, quantityKey),
     unit: String(product.unit || row.unit || ""),
     content: reportValue(row, ...contentKeys),
-    packageContent: reportValue(row, "package_content") ?? reportValue(product, "package_content") ?? reportValue(fraction, "package_content"),
-    contentUnit: String(reportValue(row, "content_unit") ?? reportValue(product, "content_unit") ?? reportValue(fraction, "content_unit") ?? ""),
+    packageContent:
+      reportValue(row, "package_content") ??
+      reportValue(product, "package_content") ??
+      reportValue(fraction, "package_content"),
+    contentUnit: String(
+      reportValue(row, "content_unit") ??
+        reportValue(product, "content_unit") ??
+        reportValue(fraction, "content_unit") ??
+        "",
+    ),
     completePackages: reportValue(row, ...completeKeys),
     residualContent: reportValue(row, ...residualKeys),
   });
 }
 
-function ConsumptionQuantity({ row, quantityKey, prefix }: { row: Record<string, unknown>; quantityKey: string; prefix?: string }) {
+function ConsumptionQuantity({
+  row,
+  quantityKey,
+  prefix,
+}: {
+  row: Record<string, unknown>;
+  quantityKey: string;
+  prefix?: string;
+}) {
   const product = (row.product || {}) as Record<string, unknown>;
-  const content = reportValue(row, ...(prefix ? [`${prefix}_content`, `${prefix}_content_quantity`] : ["content_quantity"]));
+  const content = reportValue(
+    row,
+    ...(prefix
+      ? [`${prefix}_content`, `${prefix}_content_quantity`]
+      : ["content_quantity"]),
+  );
   const packageContent = reportValue(row, "package_content");
   const combined = reportValue(row, quantityKey) ?? 0;
   const unit = String(product.unit || "equiv.").toUpperCase();
-  if (content == null || packageContent == null || inventoryDecimalSign(packageContent) !== 1) {
-    return <span><strong>{formatQuantity(String(combined))} {unit}</strong><small className="block text-muted">Equivalente legado</small></span>;
+  if (
+    content == null ||
+    packageContent == null ||
+    inventoryDecimalSign(packageContent) !== 1
+  ) {
+    return (
+      <span>
+        <strong>
+          {formatQuantity(String(combined))} {unit}
+        </strong>
+        <small className="block text-muted">Equivalente legado</small>
+      </span>
+    );
   }
   const packageEquivalent = divideInventoryDecimals(content, packageContent);
-  const legacy = packageEquivalent === null ? null : subtractInventoryDecimals(combined, packageEquivalent);
-  return <span>
-    <strong className="block">{reportPhysicalQuantity(row, quantityKey, prefix)}</strong>
-    <small className="block text-muted">Equivalente legado: {formatQuantity(legacy ?? combined)} {unit}</small>
-    <small className="block text-muted">Total combinado equivalente: {formatQuantity(String(combined))} {unit}</small>
-  </span>;
+  const legacy =
+    packageEquivalent === null
+      ? null
+      : subtractInventoryDecimals(combined, packageEquivalent);
+  return (
+    <span>
+      <strong className="block">
+        {reportPhysicalQuantity(row, quantityKey, prefix)}
+      </strong>
+      <small className="block text-muted">
+        Equivalente legado: {formatQuantity(legacy ?? combined)} {unit}
+      </small>
+      <small className="block text-muted">
+        Total combinado equivalente: {formatQuantity(String(combined))} {unit}
+      </small>
+    </span>
+  );
 }
 
 function hasDelta(value: unknown) {
@@ -596,17 +670,13 @@ function SalesTable({
                     </td>
                     <td>{formatBRL(String(row.sales_revenue || "0"))}</td>
                     <td>{formatBRL(String(row.service_fee_amount || "0"))}</td>
-                    <td>
-                      {formatBRL(String(row.total_received || "0"))}
-                    </td>
+                    <td>{formatBRL(String(row.total_received || "0"))}</td>
                   </>
                 ) : kind === "cancellations" ? (
                   <>
                     <td>{formatBRL(String(row.sales_revenue || "0"))}</td>
                     <td>{formatBRL(String(row.service_fee_amount || "0"))}</td>
-                    <td>
-                      {formatBRL(String(row.total_received || "0"))}
-                    </td>
+                    <td>{formatBRL(String(row.total_received || "0"))}</td>
                   </>
                 ) : (
                   <td>{formatBRL(String(row.total || "0"))}</td>
@@ -705,7 +775,13 @@ function RankingTable({
             const amount = row.revenue || row.sales_revenue || "0";
             return (
               <tr
-                key={String(row.product_id ? `product:${row.product_id}` : row.code ? `payment:${row.code}` : `user:${user?.id}`)}
+                key={String(
+                  row.product_id
+                    ? `product:${row.product_id}`
+                    : row.code
+                      ? `payment:${row.code}`
+                      : `user:${user?.id}`,
+                )}
               >
                 <td>
                   <strong>{String(label)}</strong>
@@ -883,7 +959,9 @@ function SalesSections({ summary }: { summary: Record<string, unknown> }) {
               </thead>
               <tbody>
                 {categories.map((row) => (
-                  <tr key={`category:${String(row.category_id || "unassigned")}`}>
+                  <tr
+                    key={`category:${String(row.category_id || "unassigned")}`}
+                  >
                     <td>
                       <strong>{String(row.category_name)}</strong>
                     </td>
@@ -1300,7 +1378,9 @@ function ConsumptionGroups({ summary }: { summary: Record<string, unknown> }) {
                 </thead>
                 <tbody>
                   {list.map((row) => (
-                    <tr key={`${title}:${String((row.beneficiary as { id?: number } | undefined)?.id || row.user_type || "unassigned")}`}>
+                    <tr
+                      key={`${title}:${String((row.beneficiary as { id?: number } | undefined)?.id || row.user_type || "unassigned")}`}
+                    >
                       <td>
                         <strong>{label(row)}</strong>
                       </td>
@@ -1385,9 +1465,7 @@ function CashSummarySections({
             </p>
             <p className="flex justify-between">
               <span>Faturamento de vendas</span>
-              <strong>
-                {formatBRL(String(summary.sales_revenue || "0"))}
-              </strong>
+              <strong>{formatBRL(String(summary.sales_revenue || "0"))}</strong>
             </p>
             <p className="flex justify-between">
               <span>Taxa de serviço</span>
@@ -1398,7 +1476,10 @@ function CashSummarySections({
               <strong>
                 {formatBRL(
                   String(
-                    sumReportMoney([summary.sales_revenue, summary.service_fee]),
+                    sumReportMoney([
+                      summary.sales_revenue,
+                      summary.service_fee,
+                    ]),
                   ),
                 )}
               </strong>
@@ -1435,8 +1516,12 @@ function CashSummarySections({
                 {formatBRL(
                   String(
                     summary.payment_totals
-                        ? sumReportMoney(rows(summary.payment_totals).map((row) => row.gross_received))
-                        : "0.00",
+                      ? sumReportMoney(
+                          rows(summary.payment_totals).map(
+                            (row) => row.gross_received,
+                          ),
+                        )
+                      : "0.00",
                   ),
                 )}
               </strong>
@@ -1447,9 +1532,7 @@ function CashSummarySections({
             </p>
             <p className="flex justify-between border-t border-slate-100 pt-2">
               <span>Total dos pagamentos</span>
-              <strong>
-                {formatBRL(String(summary.payment_total || "0"))}
-              </strong>
+              <strong>{formatBRL(String(summary.payment_total || "0"))}</strong>
             </p>
             <p className="flex justify-between">
               <span>Entradas manuais</span>
@@ -1641,20 +1724,47 @@ function StockConsumption({
 }) {
   const products = rows(data.summary.products);
   const showCost = products.some((row) => row.estimated_cost !== undefined);
-  const contentByUnit = Object.entries((data.summary.content_by_unit || {}) as Record<string, Record<string, unknown>>);
+  const contentByUnit = Object.entries(
+    (data.summary.content_by_unit || {}) as Record<
+      string,
+      Record<string, unknown>
+    >,
+  );
   return (
     <div className="space-y-5">
-      {contentByUnit.length > 0 && <section className="card p-5">
-        <h2 className="text-sm font-bold">Conteúdo exato rastreado</h2>
-        <p className="mt-1 text-[11px] text-muted">Parcela canônica rastreada dentro dos totais equivalentes combinados do relatório.</p>
-        <div className="mt-4 grid gap-3 sm:grid-cols-3">
-          {contentByUnit.flatMap(([unit, values]) => ([
-            ["Consumo bruto", values.gross_content],
-            ["Devoluções", values.returned_content],
-            ["Consumo líquido", values.net_content],
-          ] as Array<[string, unknown]>).map(([label, value]) => <div key={`${unit}-${label}`} className="rounded-lg bg-surface-muted p-3"><small className="block text-[10px] font-semibold text-muted">{label} rastreado</small><strong className="mt-1 block text-sm">{formatQuantity(String(value || "0"))} {contentUnitLabel(unit)}</strong></div>))}
-        </div>
-      </section>}
+      {contentByUnit.length > 0 && (
+        <section className="card p-5">
+          <h2 className="text-sm font-bold">Conteúdo exato rastreado</h2>
+          <p className="mt-1 text-[11px] text-muted">
+            Parcela canônica rastreada dentro dos totais equivalentes combinados
+            do relatório.
+          </p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            {contentByUnit.flatMap(([unit, values]) =>
+              (
+                [
+                  ["Consumo bruto", values.gross_content],
+                  ["Devoluções", values.returned_content],
+                  ["Consumo líquido", values.net_content],
+                ] as Array<[string, unknown]>
+              ).map(([label, value]) => (
+                <div
+                  key={`${unit}-${label}`}
+                  className="rounded-lg bg-surface-muted p-3"
+                >
+                  <small className="block text-[10px] font-semibold text-muted">
+                    {label} rastreado
+                  </small>
+                  <strong className="mt-1 block text-sm">
+                    {formatQuantity(String(value || "0"))}{" "}
+                    {contentUnitLabel(unit)}
+                  </strong>
+                </div>
+              )),
+            )}
+          </div>
+        </section>
+      )}
       <section className="card overflow-hidden">
         <div className="card-header">
           <h2 className="text-sm font-bold">Resumo por produto físico</h2>
@@ -1684,10 +1794,26 @@ function StockConsumption({
                         <strong>{product.name}</strong>
                       </td>
                       <td>
-                        <ConsumptionQuantity row={row} quantityKey="gross_quantity" prefix="gross" />
+                        <ConsumptionQuantity
+                          row={row}
+                          quantityKey="gross_quantity"
+                          prefix="gross"
+                        />
                       </td>
-                      <td><ConsumptionQuantity row={row} quantityKey="returned_quantity" prefix="returned" /></td>
-                      <td><ConsumptionQuantity row={row} quantityKey="net_quantity" prefix="net" /></td>
+                      <td>
+                        <ConsumptionQuantity
+                          row={row}
+                          quantityKey="returned_quantity"
+                          prefix="returned"
+                        />
+                      </td>
+                      <td>
+                        <ConsumptionQuantity
+                          row={row}
+                          quantityKey="net_quantity"
+                          prefix="net"
+                        />
+                      </td>
                       {showCost && (
                         <td>{formatBRL(String(row.estimated_cost || "0"))}</td>
                       )}
@@ -1729,7 +1855,12 @@ function StockConsumption({
                       <td>{product.name}</td>
                       <td>{domainLabel(row.origin)}</td>
                       <td>{domainLabel(row.nature)}</td>
-                      <td><ConsumptionQuantity row={row} quantityKey="equivalent_quantity" /></td>
+                      <td>
+                        <ConsumptionQuantity
+                          row={row}
+                          quantityKey="equivalent_quantity"
+                        />
+                      </td>
                     </tr>
                   );
                 })}
@@ -1793,7 +1924,9 @@ function ResultStatement({ summary }: { summary: Record<string, unknown> }) {
         )}
         {visibleCostDetails.length > 0 && (
           <div className="mt-5 rounded-lg border border-subtle p-4">
-            <h3 className="text-xs font-bold">Composição autorizada de custos e despesas</h3>
+            <h3 className="text-xs font-bold">
+              Composição autorizada de custos e despesas
+            </h3>
             <div className="mt-3 space-y-2">
               {visibleCostDetails.map(([label, key]) => (
                 <div key={key} className="flex justify-between gap-4 text-sm">
@@ -1817,6 +1950,189 @@ function ResultStatement({ summary }: { summary: Record<string, unknown> }) {
           )}
         </p>
       </div>
+    </div>
+  );
+}
+
+type TimeAnalysisRow = {
+  date: string;
+  count: number;
+  sales_revenue: string;
+};
+
+type HeatmapRow = {
+  weekday: number;
+  hour: number;
+  count: number;
+  sales_revenue: string;
+  average: string;
+};
+
+function positiveMoney(value: unknown) {
+  const cents = signedMoneyToCents(value);
+  return cents !== null && cents > BigInt(0) ? cents : BigInt(0);
+}
+
+function chartPercent(value: bigint, total: bigint, minimum = 0) {
+  if (value <= BigInt(0) || total <= BigInt(0)) return minimum;
+  return Math.max(minimum, Number((value * BigInt(10_000)) / total) / 100);
+}
+
+function OverviewAnalytics({ summary }: { summary: Record<string, unknown> }) {
+  const comparison = (summary.weekly_comparison || {
+    current: [],
+    previous: [],
+  }) as { current: TimeAnalysisRow[]; previous: TimeAnalysisRow[] };
+  const heatmap = (summary.heatmap || []) as HeatmapRow[];
+  const points = Array.from(
+    { length: Math.max(comparison.current.length, comparison.previous.length) },
+    (_, index) => ({
+      current: comparison.current[index],
+      previous: comparison.previous[index],
+    }),
+  );
+  const comparisonMax = points.reduce((largest, point) => {
+    const current = positiveMoney(point.current?.sales_revenue);
+    const previous = positiveMoney(point.previous?.sales_revenue);
+    return current > largest
+      ? current
+      : previous > largest
+        ? previous
+        : largest;
+  }, BigInt(0));
+  const heatMax = heatmap.reduce((largest, row) => {
+    const value = positiveMoney(row.sales_revenue);
+    return value > largest ? value : largest;
+  }, BigInt(0));
+  const weekdays = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
+
+  return (
+    <div className="grid gap-5 xl:grid-cols-2">
+      <section className="card overflow-hidden">
+        <div className="card-header">
+          <div>
+            <h2 className="text-sm font-bold">Comparativo do período</h2>
+            <p className="mt-1 text-[11px] text-muted">
+              Faturamento atual e período anterior equivalente
+            </p>
+          </div>
+        </div>
+        {comparisonMax > BigInt(0) ? (
+          <div className="overflow-x-auto p-5">
+            <div className="mb-4 flex gap-4 text-[10px] font-semibold text-muted">
+              <span className="flex items-center gap-1.5">
+                <i className="size-2.5 rounded-sm bg-chart-1" /> Atual
+              </span>
+              <span className="flex items-center gap-1.5">
+                <i className="size-2.5 rounded-sm bg-chart-previous" /> Anterior
+              </span>
+            </div>
+            <div className="flex h-52 min-w-full items-end gap-2">
+              {points.map((point, index) => (
+                <div
+                  key={point.current?.date || point.previous?.date || index}
+                  className="flex h-full min-w-12 flex-1 flex-col justify-end"
+                >
+                  <div className="flex h-42 items-end justify-center gap-1">
+                    {[
+                      ["Atual", point.current, "bg-chart-1"],
+                      ["Anterior", point.previous, "bg-chart-previous"],
+                    ].map(([label, row, tone]) => {
+                      const item = row as TimeAnalysisRow | undefined;
+                      return item ? (
+                        <span
+                          key={String(label)}
+                          className={`w-3 rounded-t ${tone}`}
+                          style={{
+                            height: `${chartPercent(
+                              positiveMoney(item.sales_revenue),
+                              comparisonMax,
+                              2,
+                            )}%`,
+                          }}
+                          title={`${label}: ${formatBRL(item.sales_revenue)}`}
+                        />
+                      ) : (
+                        <span key={String(label)} className="w-3" />
+                      );
+                    })}
+                  </div>
+                  <span className="mt-2 text-center text-[9px] text-muted">
+                    {(point.current || point.previous)?.date.slice(8, 10)}/
+                    {(point.current || point.previous)?.date.slice(5, 7)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <EmptyState
+            title="Sem comparação"
+            description="Os períodos não possuem faturamento."
+          />
+        )}
+      </section>
+
+      <section className="card overflow-hidden">
+        <div className="card-header">
+          <div>
+            <h2 className="text-sm font-bold">Mapa de calor · dia × hora</h2>
+            <p className="mt-1 text-[11px] text-muted">
+              Concentração do faturamento comercial
+            </p>
+          </div>
+        </div>
+        {heatmap.length ? (
+          <div className="overflow-x-auto p-5">
+            <div className="grid min-w-240 grid-cols-[42px_repeat(24,minmax(28px,1fr))] gap-1">
+              <span />
+              {Array.from({ length: 24 }, (_, hour) => (
+                <span key={hour} className="text-center text-[9px] text-muted">
+                  {hour}
+                </span>
+              ))}
+              {weekdays.map((day, weekday) => (
+                <div key={day} className="contents">
+                  <span className="self-center text-[10px] font-bold">
+                    {day}
+                  </span>
+                  {Array.from({ length: 24 }, (_, hour) => {
+                    const cell = heatmap.find(
+                      (row) => row.weekday === weekday && row.hour === hour,
+                    );
+                    const strength = cell
+                      ? chartPercent(
+                          positiveMoney(cell.sales_revenue),
+                          heatMax,
+                          3,
+                        )
+                      : 3;
+                    const title = cell
+                      ? `${formatBRL(cell.sales_revenue)} · ${cell.count} vendas · ticket ${formatBRL(cell.average)}`
+                      : "Sem vendas";
+                    return (
+                      <span
+                        key={hour}
+                        className="aspect-square rounded-sm border border-chart-1/20"
+                        style={{
+                          backgroundColor: `color-mix(in srgb, var(--chart-1) ${strength}%, transparent)`,
+                        }}
+                        title={title}
+                        aria-label={`${day}, ${hour} horas: ${title}`}
+                      />
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <EmptyState
+            title="Sem mapa de calor"
+            description="Nenhuma venda no período selecionado."
+          />
+        )}
+      </section>
     </div>
   );
 }
@@ -1968,7 +2284,16 @@ function ReportBody({
       />
     </section>
   );
-  if (["sales", "overview"].includes(kind))
+  if (kind === "overview")
+    return (
+      <div className="space-y-5">
+        <OverviewAnalytics summary={data.summary} />
+        <SalesSections summary={data.summary} />
+        <SalesPaymentTotal summary={data.summary} />
+        {operations}
+      </div>
+    );
+  if (kind === "sales")
     return (
       <div className="space-y-5">
         <SalesSections summary={data.summary} />
@@ -2194,7 +2519,9 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
               query={
                 kind === "prices"
                   ? new URLSearchParams(
-                      Object.entries(appliedFilters).filter(([, value]) => value),
+                      Object.entries(appliedFilters).filter(
+                        ([, value]) => value,
+                      ),
                     )
                   : params()
               }

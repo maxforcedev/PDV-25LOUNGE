@@ -140,6 +140,9 @@ class UserSerializer(serializers.ModelSerializer):
             saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
         ).select_related('company')
         company_ids = self._visible_company_ids(user)
+        request = self.context.get('request')
+        if request and request.user.pk == user.pk:
+            accesses = accesses.filter(can_login=True)
         if company_ids is not None:
             accesses = accesses.filter(company_id__in=company_ids)
         return accesses
@@ -260,6 +263,8 @@ class UserSerializer(serializers.ModelSerializer):
         ).prefetch_related(
             'access_profile__permissions'
         )
+        if request and request.user.pk == user.pk:
+            accesses = accesses.filter(branch__company__user_accesses__can_login=True)
         if company_ids is not None:
             accesses = accesses.filter(branch__company_id__in=company_ids)
             accesses = accesses.filter(
@@ -370,6 +375,7 @@ class CompanyAccessWriteSerializer(serializers.Serializer):
 
 class UserManagementSerializer(UserSerializer):
     membership = serializers.SerializerMethodField()
+    login_credential_available = serializers.SerializerMethodField()
     email = serializers.EmailField(
         required=False, allow_blank=True, allow_null=True
     )
@@ -385,7 +391,9 @@ class UserManagementSerializer(UserSerializer):
     )
 
     class Meta(UserSerializer.Meta):
-        fields = UserSerializer.Meta.fields + ('password', 'company_accesses', 'membership')
+        fields = UserSerializer.Meta.fields + (
+            'password', 'company_accesses', 'membership', 'login_credential_available',
+        )
         read_only_fields = (
             'id',
             'is_active',
@@ -416,6 +424,7 @@ class UserManagementSerializer(UserSerializer):
             'id': access.pk,
             'company_id': access.company_id,
             'is_active': access.is_active,
+            'can_login': access.can_login,
             'is_owner': access.is_owner,
             'saas_status': access.saas_status,
             'access_profile_id': access.access_profile_id,
@@ -423,6 +432,15 @@ class UserManagementSerializer(UserSerializer):
                 branch__company_id=company_id, is_active=True,
             ).values('branch_id', 'access_profile_id')),
         }
+
+    def get_login_credential_available(self, user):
+        return user.can_login and user.has_usable_password()
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if data.get('membership') is not None:
+            data['can_login'] = data['membership']['can_login']
+        return data
 
     def validate_email(self, value):
         if not value:
@@ -469,10 +487,19 @@ class UserManagementSerializer(UserSerializer):
                 },
             )
         errors = {}
+        current_membership = user.company_accesses.filter(
+            company_id=company_id, archived_at__isnull=True,
+        ).exists()
         if email_user:
-            errors['email'] = ['Este e-mail já está em uso.']
+            errors['email'] = [
+                'Já existe um usuário com este e-mail nesta empresa.'
+                if current_membership else 'Este e-mail já está em uso.'
+            ]
         if cpf_users:
-            errors['cpf'] = ['Este CPF já está em uso.']
+            errors['cpf'] = [
+                'Já existe um usuário com este CPF nesta empresa.'
+                if current_membership else 'Este CPF já está em uso.'
+            ]
         raise serializers.ValidationError(errors)
 
     def _validate_company_accesses(self, items, permission_code):
@@ -596,8 +623,14 @@ class UserManagementSerializer(UserSerializer):
     def validate(self, attrs):
         request = self.context['request']
         restoring_membership = self.context.get('restoring_membership', False)
+        context_company_id = self._context_company_id()
+        context_access = (
+            self.instance.company_accesses.filter(company_id=context_company_id).first()
+            if self.instance and context_company_id else None
+        )
         can_login = attrs.get(
-            'can_login', getattr(self.instance, 'can_login', True)
+            'can_login',
+            context_access.can_login if context_access else getattr(self.instance, 'can_login', True),
         )
         enabling_login = bool(
             self.instance and not self.instance.can_login and can_login
@@ -631,7 +664,6 @@ class UserManagementSerializer(UserSerializer):
         permission_code = 'users.change' if self.instance and not restoring_membership else 'users.add'
         current_company_ids = set()
         if self.instance:
-            context_company_id = self._context_company_id()
             if not context_company_id and request.user.is_superuser:
                 current_company_ids = set(
                     self.instance.company_accesses.filter(is_active=True).values_list('company_id', flat=True)
@@ -683,14 +715,6 @@ class UserManagementSerializer(UserSerializer):
         self._validate_identity_conflict(attrs)
 
         accesses = attrs.get('company_accesses')
-        if not can_login and accesses is not None and any(
-            item['branch_accesses']
-            for item in accesses
-        ):
-            raise serializers.ValidationError({
-                'company_accesses': 'Usuarios sem login nao podem possuir acessos de filial.'
-            })
-
         if can_login:
             if accesses is not None:
                 has_valid_links = any(
@@ -721,6 +745,12 @@ class UserManagementSerializer(UserSerializer):
         validated_data.setdefault('email', None)
         user = User.objects.create_user(password=password, **validated_data)
         replace_user_accesses(user=user, company_accesses=company_accesses)
+        for access in user.company_accesses.filter(
+            company_id__in=[item['company'].pk for item in company_accesses]
+        ):
+            if access.can_login != user.can_login:
+                access.can_login = user.can_login
+                access.save(update_fields=('can_login', 'updated_at'))
         return user
 
     @transaction.atomic
@@ -728,61 +758,32 @@ class UserManagementSerializer(UserSerializer):
         restoring_membership = self.context.get('restoring_membership', False)
         company_accesses = validated_data.pop('company_accesses', None)
         password = validated_data.pop('password', None)
-        requested_login = validated_data.pop('can_login', instance.can_login)
+        requested_login = validated_data.pop('can_login', None)
         context_company_id = self._context_company_id()
         context_access = None
         if context_company_id:
             context_access = instance.company_accesses.select_for_update().get(
                 company_id=context_company_id
             )
+            if requested_login is None:
+                requested_login = context_access.can_login
             if not requested_login and context_access.is_owner:
                 raise serializers.ValidationError({
                     'can_login': 'Transfira a propriedade antes de remover este acesso.'
                 })
 
-            if not requested_login and not restoring_membership:
-                context_access.is_active = False
-                context_access.save(update_fields=('is_active', 'updated_at'))
-                instance.branch_accesses.filter(
-                    branch__company_id=context_company_id
-                ).update(is_active=False, updated_at=timezone.now())
-                company_accesses = None
-                other_company_ids = instance.company_accesses.filter(
-                    is_active=True,
-                    saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
-                ).exclude(company_id=context_company_id).values_list(
-                    'company_id', flat=True
-                )
-                has_other_access = instance.branch_accesses.filter(
-                    is_active=True,
-                    access_profile__status=Status.ACTIVE,
-                    branch__status=Status.ACTIVE,
-                    branch__company_id__in=other_company_ids,
-                ).exists()
-                instance.can_login = has_other_access
-            else:
+            context_access.can_login = requested_login
+            access_update_fields = ['can_login', 'updated_at']
+            if restoring_membership:
                 context_access.is_active = True
                 context_access.archived_at = None
-                context_access.save(update_fields=('is_active', 'archived_at', 'updated_at'))
-                if requested_login:
-                    instance.can_login = True
-                else:
-                    instance.branch_accesses.filter(
-                        branch__company_id=context_company_id
-                    ).update(is_active=False, updated_at=timezone.now())
-                    other_company_ids = instance.company_accesses.filter(
-                        is_active=True,
-                        archived_at__isnull=True,
-                        saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
-                    ).exclude(company_id=context_company_id).values_list('company_id', flat=True)
-                    instance.can_login = instance.branch_accesses.filter(
-                        is_active=True,
-                        access_profile__status=Status.ACTIVE,
-                        branch__status=Status.ACTIVE,
-                        branch__company_id__in=other_company_ids,
-                    ).exists()
+                access_update_fields.extend(('is_active', 'archived_at'))
+            context_access.save(update_fields=access_update_fields)
+            if requested_login:
+                instance.can_login = True
         else:
-            instance.can_login = requested_login
+            if requested_login is not None:
+                instance.can_login = requested_login
 
         if password and (not restoring_membership or not instance.has_usable_password()):
             instance.set_password(password)

@@ -35,6 +35,7 @@ class UserCompanyAccessQuerySet(models.QuerySet):
         'company',
         'company_id',
         'is_active',
+        'can_login',
         'is_owner',
         'saas_status',
         'user',
@@ -83,7 +84,7 @@ class UserCompanyAccessQuerySet(models.QuerySet):
     def bulk_create(self, objs, *args, **kwargs):
         seats_by_company = {}
         for item in objs:
-            if item.is_active and item.saas_status == item.SaaSStatus.ACTIVE and item.user.can_login and item.user.is_active:
+            if item.is_active and item.can_login and item.saas_status == item.SaaSStatus.ACTIVE and item.user.can_login and item.user.is_active:
                 seats_by_company[item.company_id] = seats_by_company.get(item.company_id, 0) + 1
         with transaction.atomic(using=self.db):
             from apps.saas.services import assert_resource_limit
@@ -467,6 +468,7 @@ class UserCompanyAccess(BaseModel):
         null=True,
     )
     is_active = models.BooleanField(default=True)
+    can_login = models.BooleanField(default=True)
     archived_at = models.DateTimeField(blank=True, null=True, default=None)
     is_owner = models.BooleanField(default=False)
     saas_status = models.CharField(
@@ -512,6 +514,8 @@ class UserCompanyAccess(BaseModel):
             errors = {}
             if not self.is_active:
                 errors['is_active'] = 'O acesso do proprietário deve permanecer ativo.'
+            if not self.can_login:
+                errors['can_login'] = 'O proprietário deve permanecer habilitado para login.'
             if self.saas_status != self.SaaSStatus.ACTIVE:
                 errors['saas_status'] = 'O proprietário não pode ser suspenso por limite do plano.'
             if self.user_id and (not self.user.is_active or not self.user.can_login):
@@ -522,7 +526,7 @@ class UserCompanyAccess(BaseModel):
         if self.pk:
             previous = type(self).objects.filter(pk=self.pk).values(
                 'company_id', 'user_id', 'is_active', 'is_owner',
-                'saas_status',
+                'saas_status', 'can_login',
             ).first()
             if previous and previous['is_owner']:
                 errors = {}
@@ -534,6 +538,8 @@ class UserCompanyAccess(BaseModel):
                     errors['user'] = 'O usuário proprietário não pode ser alterado.'
                 if not self.is_active:
                     errors['is_active'] = 'O acesso do proprietário não pode ser inativado.'
+                if not self.can_login:
+                    errors['can_login'] = 'O proprietário não pode perder acesso ao Backoffice.'
                 if self.saas_status != self.SaaSStatus.ACTIVE:
                     errors['saas_status'] = 'O proprietário não pode ser suspenso pelo plano.'
                 if errors:
@@ -545,16 +551,17 @@ class UserCompanyAccess(BaseModel):
             previous = None
             if self.pk:
                 previous = type(self).objects.select_for_update().filter(pk=self.pk).values(
-                    'is_active', 'saas_status', 'company_id', 'user_id'
+                    'is_active', 'can_login', 'saas_status', 'company_id', 'user_id'
                 ).first()
             consuming_before = bool(
                 previous and previous['is_active']
+                and previous['can_login']
                 and previous['saas_status'] == self.SaaSStatus.ACTIVE
                 and previous['company_id'] == self.company_id
                 and previous['user_id'] == self.user_id
             )
             consuming_after = bool(
-                self.is_active and self.saas_status == self.SaaSStatus.ACTIVE
+                self.is_active and self.can_login and self.saas_status == self.SaaSStatus.ACTIVE
                 and self.user.is_active and self.user.can_login
             )
             if enforce_saas_limit and consuming_after and not consuming_before and self.company_id:

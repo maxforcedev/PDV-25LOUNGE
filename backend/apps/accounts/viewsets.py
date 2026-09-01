@@ -129,7 +129,13 @@ class UserViewSet(viewsets.ModelViewSet):
         if can_login:
             if can_login not in ('true', 'false'):
                 raise ValidationError({'can_login': 'Informe true ou false.'})
-            queryset = queryset.filter(can_login=can_login == 'true')
+            if company_id is not None:
+                queryset = queryset.filter(
+                    company_accesses__company_id=company_id,
+                    company_accesses__can_login=can_login == 'true',
+                )
+            else:
+                queryset = queryset.filter(can_login=can_login == 'true')
 
         user_type = params.get('user_type')
         if user_type:
@@ -283,7 +289,7 @@ class UserViewSet(viewsets.ModelViewSet):
         branch_filter = {'branch__company_id': company_id} if company_id else {}
         return {
             'company_accesses': list(user.company_accesses.filter(**company_filter).order_by('company_id').values(
-                'company_id', 'access_profile_id', 'is_active', 'is_owner'
+                'company_id', 'access_profile_id', 'is_active', 'can_login', 'is_owner'
             )),
             'branch_accesses': list(user.branch_accesses.filter(**branch_filter).order_by('branch_id').values(
                 'branch_id', 'access_profile_id', 'is_active'

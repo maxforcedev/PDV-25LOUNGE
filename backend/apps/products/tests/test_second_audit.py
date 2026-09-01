@@ -114,6 +114,14 @@ class SecondAuditProductTests(TestCase):
             Product.objects.filter(pk=archived.pk).update(
                 archived_at=timezone.now(), archived_by=self.user
             )
+        inactive = Product.objects.create(
+            company=self.company, category=self.category, name='Inativo Audit',
+            internal_code='INACTIVE-AUDIT', cost='1.00', sale_price='2.00',
+            status='inactive',
+        )
+        inactive_config = ProductBranchConfig.objects.create(
+            product=inactive, branch=self.branch, category=self.category,
+        )
         unavailable = Product.objects.create(
             company=self.company, category=self.category, name='Indisponível Audit',
             internal_code='UNAV-AUDIT', cost='1.00', sale_price='2.00',
@@ -138,6 +146,7 @@ class SecondAuditProductTests(TestCase):
         self.other_config.refresh_from_db()
         for config in archived_configs:
             config.refresh_from_db()
+        inactive_config.refresh_from_db()
         unavailable_config.refresh_from_db()
         for config in active_configs:
             self.assertFalse(config.available_counter)
@@ -147,7 +156,37 @@ class SecondAuditProductTests(TestCase):
         self.assertIsNone(self.other_config.participates_in_commission)
         for config in archived_configs:
             self.assertIsNone(config.participates_in_service_fee)
+        self.assertIsNone(inactive_config.participates_in_service_fee)
         self.assertIsNone(unavailable_config.participates_in_service_fee)
+
+    def test_category_reorder_ignores_soft_deleted_categories(self):
+        branch = Branch.objects.create(company=self.company, name='Filial Reorder')
+        category_a = Category.objects.create(
+            company=self.company, branch=branch, name='A'
+        )
+        category_b = Category.objects.create(
+            company=self.company, branch=branch, name='B'
+        )
+        category_c = Category.objects.create(
+            company=self.company, branch=branch, name='C'
+        )
+        deleted = self.client.delete(
+            f'/api/v1/categories/{category_b.pk}/',
+            HTTP_X_BRANCH_ID=str(branch.pk),
+        )
+        self.assertEqual(deleted.status_code, 204, deleted.data)
+
+        reordered = self.client.post(
+            '/api/v1/categories/reorder/',
+            {'category_ids': [category_c.pk, category_a.pk]},
+            format='json',
+            HTTP_X_BRANCH_ID=str(branch.pk),
+        )
+        self.assertEqual(reordered.status_code, 200, reordered.data)
+        self.assertEqual(
+            [item['id'] for item in reordered.data],
+            [category_c.pk, category_a.pk],
+        )
 
     def test_archived_name_requires_restoring_the_same_product(self):
         archived = self.client.post(

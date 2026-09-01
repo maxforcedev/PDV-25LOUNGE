@@ -5,6 +5,7 @@ from apps.accounts.models import User
 from apps.base.models import AuditLog
 from apps.companies.models import AccessProfile, Branch, UserBranchAccess, UserCompanyAccess
 from apps.companies.services import create_company_with_matrix, ensure_permission_catalog
+from apps.companies.selectors import user_has_company_permission
 
 
 PASSWORD = 'Mission-M1.1-Secure-123!'
@@ -192,14 +193,9 @@ class MultiCompanyUserTests(TestCase):
         self.assertNotIn(rayara.pk, listed(branch_b))
         self.assertNotIn(rayara.pk, listed(branch_c))
 
-    def test_disabling_login_only_deactivates_current_company(self):
+    def test_disabling_backoffice_preserves_current_company_membership_and_profile(self):
         response = self.client.patch(self.url(), {
             'can_login': False,
-            'company_accesses': [{
-                'company_id': self.company_a.pk,
-                'access_profile_id': None,
-                'branch_accesses': [],
-            }],
         }, format='json')
 
         self.assertEqual(response.status_code, 200, response.data)
@@ -210,10 +206,29 @@ class MultiCompanyUserTests(TestCase):
         self.branch_access_b.refresh_from_db()
         self.assertTrue(self.david.can_login)
         self.assertTrue(self.david.check_password(PASSWORD))
-        self.assertFalse(self.access_a.is_active)
-        self.assertFalse(self.branch_access_a.is_active)
+        self.assertTrue(self.access_a.is_active)
+        self.assertFalse(self.access_a.can_login)
+        self.assertTrue(self.branch_access_a.is_active)
+        self.assertEqual(self.branch_access_a.access_profile_id, self.profile_a.pk)
         self.assertTrue(self.access_b.is_active)
+        self.assertTrue(self.access_b.can_login)
         self.assertTrue(self.branch_access_b.is_active)
+
+        self.assertFalse(user_has_company_permission(
+            self.david, self.company_a.pk, 'users.view'
+        ))
+        self.assertTrue(user_has_company_permission(
+            self.david, self.company_b.pk, 'users.view'
+        ))
+
+        enabled = self.client.patch(self.url(), {'can_login': True}, format='json')
+        self.assertEqual(enabled.status_code, 200, enabled.data)
+        self.access_a.refresh_from_db()
+        self.branch_access_a.refresh_from_db()
+        self.assertTrue(self.access_a.can_login)
+        self.assertTrue(self.access_a.is_active)
+        self.assertTrue(self.branch_access_a.is_active)
+        self.assertEqual(self.branch_access_a.access_profile_id, self.profile_a.pk)
 
     def test_enabling_login_requires_credentials_and_enables_current_company(self):
         employee = User.objects.create_user(
@@ -262,7 +277,7 @@ class MultiCompanyUserTests(TestCase):
         )
         self.assertTrue(login)
 
-    def test_disabling_last_company_disables_global_credential(self):
+    def test_disabling_last_company_blocks_backoffice_without_removing_operation(self):
         employee = User.objects.create_user(
             email='single.m11@example.com', password=PASSWORD, first_name='Único'
         )
@@ -275,14 +290,7 @@ class MultiCompanyUserTests(TestCase):
 
         response = self.client.patch(
             f'/api/v1/users/{employee.pk}/?company={self.company_a.pk}',
-            {
-                'can_login': False,
-                'company_accesses': [{
-                    'company_id': self.company_a.pk,
-                    'access_profile_id': None,
-                    'branch_accesses': [],
-                }],
-            },
+            {'can_login': False},
             format='json',
         )
 
@@ -290,10 +298,42 @@ class MultiCompanyUserTests(TestCase):
         employee.refresh_from_db()
         access.refresh_from_db()
         branch_access.refresh_from_db()
-        self.assertFalse(employee.can_login)
-        self.assertFalse(employee.has_usable_password())
-        self.assertFalse(access.is_active)
-        self.assertFalse(branch_access.is_active)
+        self.assertTrue(employee.can_login)
+        self.assertTrue(employee.has_usable_password())
+        self.assertTrue(access.is_active)
+        self.assertFalse(access.can_login)
+        self.assertTrue(branch_access.is_active)
+        login = APIClient().post('/api/v1/auth/login/', {
+            'email': employee.email, 'password': PASSWORD,
+        }, format='json')
+        self.assertEqual(login.status_code, 403, login.data)
+
+    def test_active_user_duplicate_is_not_offered_for_restoration(self):
+        self.david.cpf = '12345678901'
+        self.david.save(update_fields=('cpf', 'updated_at'))
+        response = self.client.post(
+            f'/api/v1/users/?company={self.company_a.pk}',
+            {
+                'email': self.david.email,
+                'password': 'Duplicate-M11-Secure-789!',
+                'can_login': True,
+                'cpf': self.david.cpf,
+                'first_name': 'Duplicado',
+                'last_name': 'Ativo',
+                'company_accesses': [{
+                    'company_id': self.company_a.pk,
+                    'access_profile_id': None,
+                    'branch_accesses': [{
+                        'branch_id': self.branch_a.pk,
+                        'access_profile_id': self.profile_a.pk,
+                    }],
+                }],
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertNotEqual(response.data.get('code'), 'archived_user_exists')
+        self.assertIn('nesta empresa', str(response.data))
 
     def test_archived_membership_conflict_and_restore_are_company_scoped(self):
         self.david.cpf = '12345678901'

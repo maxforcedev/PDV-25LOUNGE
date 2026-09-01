@@ -40,6 +40,7 @@ def _company_membership_filters(user):
     return {
         'user_accesses__user': user,
         'user_accesses__is_active': True,
+        'user_accesses__can_login': True,
         'user_accesses__saas_status': UserCompanyAccess.SaaSStatus.ACTIVE,
     }
 
@@ -83,6 +84,7 @@ def accessible_branches(user, permission_code=None):
         'user_accesses__access_profile__status': 'active',
         'company__user_accesses__user': user,
         'company__user_accesses__is_active': True,
+        'company__user_accesses__can_login': True,
         'company__user_accesses__saas_status': UserCompanyAccess.SaaSStatus.ACTIVE,
     }
     if permission_code:
@@ -104,6 +106,7 @@ def accessible_branches(user, permission_code=None):
                     access_profile__permissions__code=permission_code,
                     branch__company__user_accesses__user=user,
                     branch__company__user_accesses__is_active=True,
+                    branch__company__user_accesses__can_login=True,
                     branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
                 ).values_list('branch__company_id', flat=True).distinct()
             )
@@ -130,6 +133,7 @@ def active_operational_companies(user):
         status='active',
         user_accesses__user=user,
         user_accesses__is_active=True,
+        user_accesses__can_login=True,
         user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
     ).distinct()
 
@@ -145,6 +149,7 @@ def active_operational_branches(user):
         user_accesses__access_profile__status='active',
         company__user_accesses__user=user,
         company__user_accesses__is_active=True,
+        company__user_accesses__can_login=True,
         company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
     ).distinct()
 
@@ -165,6 +170,7 @@ def company_permission_codes(user, company_id):
             access_profile__permissions__status='active',
             branch__company__user_accesses__user=user,
             branch__company__user_accesses__is_active=True,
+            branch__company__user_accesses__can_login=True,
             branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
         ).values_list('access_profile__permissions__code', flat=True)
     )
@@ -187,6 +193,7 @@ def user_has_company_permission(user, company_id, code):
         access_profile__permissions__code=code,
         branch__company__user_accesses__user=user,
         branch__company__user_accesses__is_active=True,
+        branch__company__user_accesses__can_login=True,
         branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
     ).exists()
 
@@ -207,6 +214,7 @@ def user_has_branch_permission(user, branch_id, code):
         access_profile__permissions__code=code,
         branch__company__user_accesses__user=user,
         branch__company__user_accesses__is_active=True,
+        branch__company__user_accesses__can_login=True,
         branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
     ).exists()
 
@@ -234,6 +242,7 @@ def eligible_branch_users(branch, permission_code):
         branch_accesses__access_profile__permissions__code=permission_code,
         company_accesses__company_id=branch.company_id,
         company_accesses__is_active=True,
+        company_accesses__can_login=True,
         company_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
     ).exclude(id__in=blocked_users).exclude(id__in=company_blocked_users).distinct().order_by('first_name', 'last_name', 'email', 'id')
 
@@ -254,6 +263,7 @@ def branch_permission_codes(user, branch_id):
             access_profile__permissions__status='active',
             branch__company__user_accesses__user=user,
             branch__company__user_accesses__is_active=True,
+            branch__company__user_accesses__can_login=True,
             branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
         ).values_list('access_profile__permissions__code', flat=True)
     )
@@ -279,6 +289,7 @@ def inherited_permission_codes(user, company_id, branch_id=None):
                 access_profile__permissions__status='active',
                 branch__company__user_accesses__user=user,
                 branch__company__user_accesses__is_active=True,
+                branch__company__user_accesses__can_login=True,
                 branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
             ).values_list('access_profile__permissions__code', flat=True)
         )
@@ -292,6 +303,7 @@ def inherited_permission_codes(user, company_id, branch_id=None):
             access_profile__permissions__status='active',
             branch__company__user_accesses__user=user,
             branch__company__user_accesses__is_active=True,
+            branch__company__user_accesses__can_login=True,
             branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
         ).values_list('access_profile__permissions__code', flat=True)
     )

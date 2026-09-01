@@ -185,7 +185,9 @@ def archive_product(*, product, user):
 def reorder_categories(*, branch, category_ids):
     Branch.objects.select_for_update().get(pk=branch.pk)
     categories = list(
-        Category.objects.select_for_update().filter(branch=branch)
+        Category.objects.select_for_update().filter(
+            branch=branch, deleted_at__isnull=True,
+        )
     )
     if len(category_ids) != len(set(category_ids)) or set(category_ids) != {
         category.pk for category in categories

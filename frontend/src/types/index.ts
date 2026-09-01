@@ -42,6 +42,7 @@ export interface User {
   id: number;
   email: string | null;
   can_login: boolean;
+  login_credential_available?: boolean;
   user_type: UserType;
   first_name: string;
   last_name: string;
@@ -63,6 +64,7 @@ export interface User {
     id: number;
     company_id: number;
     is_active: boolean;
+    can_login: boolean;
     is_owner: boolean;
     saas_status: string;
     access_profile_id: number | null;

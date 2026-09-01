@@ -45,6 +45,7 @@ import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import {
   archivedProductConflict,
+  productRestoreRedirect,
   uniqueProductErrorMessage,
 } from "@/lib/product-errors";
 import { useAuth } from "@/providers/auth-provider";
@@ -315,6 +316,11 @@ function Products() {
   }
 
   useEffect(() => {
+    const restored = window.sessionStorage.getItem("pdv.product_restore_success");
+    if (restored) {
+      window.sessionStorage.removeItem("pdv.product_restore_success");
+      setSuccess(restored);
+    }
     if (!isDetail && new URLSearchParams(window.location.search).get("saved") === "1") {
       setSuccess("Produto salvo com sucesso.");
       window.history.replaceState(null, "", "/produtos");
@@ -663,10 +669,15 @@ function Products() {
     setError("");
     try {
       await http.post(`products/${archivedConflict.productId}/restore/`);
-      setSuccess(`Produto “${archivedConflict.name}” restaurado com sucesso.`);
+      const message = `Produto “${archivedConflict.name}” restaurado com sucesso.`;
+      setSuccess(message);
+      if (isDetail) {
+        window.sessionStorage.setItem("pdv.product_restore_success", message);
+      }
       setArchivedConflict(null);
-      if (!isDetail) setOpen(false);
+      setOpen(false);
       await load();
+      router.replace(productRestoreRedirect());
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Não foi possível concluir a escolha.");
     } finally {

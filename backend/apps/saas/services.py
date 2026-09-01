@@ -134,6 +134,7 @@ def _has_valid_owner(company):
         company=company,
         is_owner=True,
         is_active=True,
+        can_login=True,
         saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
         user__is_active=True,
         user__can_login=True,
@@ -214,6 +215,7 @@ def resource_usage(company, code):
         return UserCompanyAccess.objects.filter(
             company=company,
             is_active=True,
+            can_login=True,
             saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
             user__is_active=True,
             user__can_login=True,
@@ -331,6 +333,7 @@ def apply_user_limit_states(company, actor=None):
     accesses = list(UserCompanyAccess.objects.select_for_update(of=('self',)).filter(
         company=company,
         is_active=True,
+        can_login=True,
         user__is_active=True,
         user__can_login=True,
     ).select_related('access_profile').order_by('created_at', 'pk'))
@@ -391,6 +394,7 @@ def validate_user_login_activation(user):
     company_ids = list(UserCompanyAccess.objects.filter(
         user=user,
         is_active=True,
+        can_login=True,
         saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
     ).values_list('company_id', flat=True))
     for company in Company.objects.select_for_update().filter(pk__in=company_ids).order_by('pk'):
@@ -1070,6 +1074,7 @@ def create_support_session(*, actor, company, mode, reason, current_password='',
         raise ValidationError({'current_password': 'Senha atual invalida.'})
     if impersonated_user and not UserCompanyAccess.objects.filter(
         company=company, user=impersonated_user, is_active=True,
+        can_login=True,
         saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
         user__is_active=True, user__can_login=True,
     ).exists():
