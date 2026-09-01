@@ -22,6 +22,7 @@ from apps.cash.models import (
 from apps.cash.services import build_session_operational_summary
 from apps.companies.rbac import OPERATING_PERMISSION_CODES
 from apps.companies.selectors import branch_permission_codes, eligible_branch_users, user_has_company_permission
+from apps.commands.models import Command, CommandStatus
 from apps.inventory.content import exact_sum
 from apps.inventory.models import MovementType
 from apps.products.models import Category, Product
@@ -394,6 +395,7 @@ class DashboardView(APIView):
         'cash_registers.view',
         'cash_registers.withdraw',
         'inventory.view',
+        'commands.view',
     )
 
     def get(self, request):
@@ -664,6 +666,15 @@ class DashboardView(APIView):
                     branch=branch, start=start, end=end, filters={}
                 )),
                 include_groups=False,
+            )
+
+        if user_has_code(request, 'commands.view'):
+            response['commands'] = Command.objects.filter(
+                branch=branch,
+                status=CommandStatus.OPEN,
+            ).aggregate(
+                open_count=Count('id'),
+                open_table_count=Count('table_id', distinct=True),
             )
 
         if user_has_code(request, 'cash_registers.view'):

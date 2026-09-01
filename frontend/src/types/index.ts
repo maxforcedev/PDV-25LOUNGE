@@ -1906,6 +1906,10 @@ export interface DashboardData {
     reconciliation_delta: string;
   };
   withdrawals?: { count: number; amount: string };
+  commands?: {
+    open_count: number;
+    open_table_count: number;
+  };
   current_cash?: CashReportRow[];
   inventory?: {
     zero_count: number;

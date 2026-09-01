@@ -26,6 +26,7 @@ from apps.inventory.content import (
 from apps.inventory.models import Stock, StockMovement
 from apps.inventory.models import MovementType
 from apps.products.models import InventoryBehavior
+from apps.products.selectors import operational_product_configs
 from apps.sales.models import OperationType, Payment, PaymentMethod, PaymentMethodCode, Sale, SaleItem, SaleStatus
 
 from .financials import FinancialAggregator, allocate_money
@@ -914,16 +915,16 @@ def stock_consumption_report(*, branch, start, end, filters):
 
 
 def inventory_kpis(branch, *, include_value=False, category=None):
+    configs = operational_product_configs(branch)
+    if category:
+        configs = configs.filter(category_id=category)
     stocks = Stock.objects.select_related(
         'product', 'product__fraction_config'
     ).filter(
-        branch=branch, product__inventory_behavior=InventoryBehavior.DIRECT,
+        branch=branch,
+        product__inventory_behavior=InventoryBehavior.DIRECT,
+        product_id__in=configs.values('product_id'),
     )
-    if category:
-        stocks = stocks.filter(
-            product__branch_configs__branch=branch,
-            product__branch_configs__category_id=category,
-        )
     stocks = list(stocks)
     quantities = [stock.equivalent_quantity() for stock in stocks]
     result = {

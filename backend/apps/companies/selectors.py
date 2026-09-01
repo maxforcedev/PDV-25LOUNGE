@@ -234,7 +234,6 @@ def eligible_branch_users(branch, permission_code):
     return User.objects.filter(
         is_active=True,
         archived_at__isnull=True,
-        can_login=True,
         branch_accesses__branch=branch,
         branch_accesses__is_active=True,
         branch_accesses__access_profile__status='active',
@@ -242,7 +241,7 @@ def eligible_branch_users(branch, permission_code):
         branch_accesses__access_profile__permissions__code=permission_code,
         company_accesses__company_id=branch.company_id,
         company_accesses__is_active=True,
-        company_accesses__can_login=True,
+        company_accesses__archived_at__isnull=True,
         company_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
     ).exclude(id__in=blocked_users).exclude(id__in=company_blocked_users).distinct().order_by('first_name', 'last_name', 'email', 'id')
 

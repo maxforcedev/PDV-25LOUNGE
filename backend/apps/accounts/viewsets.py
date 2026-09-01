@@ -287,10 +287,17 @@ class UserViewSet(viewsets.ModelViewSet):
     def access_snapshot(user, company_id=None):
         company_filter = {'company_id': company_id} if company_id else {}
         branch_filter = {'branch__company_id': company_id} if company_id else {}
+        company_accesses = list(user.company_accesses.filter(
+            **company_filter
+        ).order_by('company_id').values(
+            'company_id', 'access_profile_id', 'is_active', 'can_login',
+            'is_owner', 'archived_at',
+        ))
+        for access in company_accesses:
+            if access['archived_at']:
+                access['archived_at'] = access['archived_at'].isoformat()
         return {
-            'company_accesses': list(user.company_accesses.filter(**company_filter).order_by('company_id').values(
-                'company_id', 'access_profile_id', 'is_active', 'can_login', 'is_owner'
-            )),
+            'company_accesses': company_accesses,
             'branch_accesses': list(user.branch_accesses.filter(**branch_filter).order_by('branch_id').values(
                 'branch_id', 'access_profile_id', 'is_active'
             )),

@@ -203,7 +203,7 @@ function DailyRevenueChart({
 }
 
 function DashboardPage() {
-  const { currentBranch, hasAnyPermission, hasPermission } = useAuth();
+  const { currentBranch, hasAnyPermission, hasFeature, hasPermission } = useAuth();
   const context = useRef(currentBranch?.id || 0);
   context.current = currentBranch?.id || 0;
   const [period, setPeriod] = useState<PeriodValue>(() => businessPeriod());
@@ -310,6 +310,7 @@ function DashboardPage() {
   const canViewResultReport = hasPermission(permissions.viewOperationalResult);
   const canViewInventory = hasPermission(permissions.viewInventory);
   const canViewCash = hasPermission(permissions.viewCashRegister);
+  const canViewCommands = hasPermission(permissions.viewCommands);
   const canViewSaleDetail = hasAnyPermission([
     permissions.viewSale,
     permissions.cancelSale,
@@ -324,19 +325,8 @@ function DashboardPage() {
     title: string;
     detail: string;
     href?: string;
-    tone: "danger" | "warning";
+    tone: "danger" | "warning" | "info";
   }> = [];
-  if (data?.current_cash?.length) {
-    operationalAlerts.push({
-      key: "open-cash",
-      title: `${data.current_cash.length} caixa(s) aberto(s)`,
-      detail: "Há sessão de caixa em andamento.",
-      href: canViewCash
-        ? `/caixas/sessoes/${data.current_cash[0].id}`
-        : undefined,
-      tone: "warning",
-    });
-  }
   if (data?.inventory?.negative_count) {
     operationalAlerts.push({
       key: "negative-stock",
@@ -344,6 +334,24 @@ function DashboardPage() {
       detail: "Revise as movimentações e faça o ajuste necessário.",
       href: canViewInventory ? "/estoque?state=negative" : undefined,
       tone: "danger",
+    });
+  }
+  if (sales && !decimalIsZero(sales.reconciliation_delta)) {
+    operationalAlerts.push({
+      key: "reconciliation",
+      title: `${formatBRL(sales.reconciliation_delta.replace(/^-/, ""))} de divergência de pagamentos`,
+      detail: "Revise a reconciliação do período.",
+      href: canViewReceiptsReport ? report("recebimentos") : undefined,
+      tone: "danger",
+    });
+  }
+  if (data?.inventory?.zero_count) {
+    operationalAlerts.push({
+      key: "zero-stock",
+      title: `${data.inventory.zero_count} produto(s) com estoque zerado`,
+      detail: "Avalie a necessidade de reposição.",
+      href: canViewInventory ? "/estoque?state=zero" : undefined,
+      tone: "warning",
     });
   }
   if (data?.inventory?.below_minimum_count) {
@@ -355,13 +363,36 @@ function DashboardPage() {
       tone: "warning",
     });
   }
-  if (sales && !decimalIsZero(sales.reconciliation_delta)) {
+  if (
+    data?.commands?.open_table_count &&
+    hasFeature("tables")
+  ) {
     operationalAlerts.push({
-      key: "reconciliation",
-      title: "Pagamentos com divergência",
-      detail: `Delta de ${formatBRL(sales.reconciliation_delta)} no período.`,
-      href: canViewReceiptsReport ? report("recebimentos") : undefined,
-      tone: "danger",
+      key: "open-tables",
+      title: `${data.commands.open_table_count} mesa(s) aberta(s)`,
+      detail: "Mesas com comandas em andamento.",
+      href: canViewCommands ? "/mesas" : undefined,
+      tone: "info",
+    });
+  }
+  if (data?.commands?.open_count && hasFeature("commands")) {
+    operationalAlerts.push({
+      key: "open-commands",
+      title: `${data.commands.open_count} comanda(s) aberta(s)`,
+      detail: "Comandas em andamento na filial.",
+      href: canViewCommands ? "/comandas" : undefined,
+      tone: "info",
+    });
+  }
+  if (data?.current_cash?.length && hasFeature("cash_register")) {
+    operationalAlerts.push({
+      key: "open-cash",
+      title: `${data.current_cash.length} caixa(s) aberto(s)`,
+      detail: "Sessões de caixa em andamento.",
+      href: canViewCash
+        ? `/caixas/sessoes/${data.current_cash[0].id}`
+        : undefined,
+      tone: "info",
     });
   }
 
@@ -521,7 +552,9 @@ function DashboardPage() {
                     const className = `flex gap-3 rounded-lg border p-4 ${
                       item.tone === "danger"
                         ? "border-danger/30 bg-danger/10 text-danger-strong"
-                        : "border-warning/30 bg-warning/10 text-warning-strong"
+                        : item.tone === "warning"
+                          ? "border-warning/30 bg-warning/10 text-warning-strong"
+                          : "border-primary/25 bg-primary/5 text-primary"
                     }`;
                     return item.href ? (
                       <Link
