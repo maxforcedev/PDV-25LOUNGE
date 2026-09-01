@@ -9,7 +9,7 @@ import { DifferenceBadge, MoneyKpi } from "@/components/cash-ui";
 import { PageHeader } from "@/components/page-header";
 import { Alert, Button, ConfirmDialog, EmptyState, Field, Input, Spinner } from "@/components/ui";
 import { canonicalMoney, moneyToCents, normalizeMoney, subtractMoney } from "@/lib/cash";
-import { formatBRL, formatDate } from "@/lib/format";
+import { formatDate, formatDecimalBRL as formatBRL } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";

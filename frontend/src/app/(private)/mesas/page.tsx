@@ -7,7 +7,8 @@ import { AdminGuard } from "@/components/admin-guard";
 import { CustomerQuickPicker } from "@/components/customer-quick-picker";
 import { PageHeader } from "@/components/page-header";
 import { Alert, Button, Field, Input, Modal, Spinner, TableLoading } from "@/components/ui";
-import { fieldError, formatBRL } from "@/lib/format";
+import { moneyToCents } from "@/lib/cash";
+import { fieldError, formatDecimalBRL as formatBRL } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
@@ -16,6 +17,19 @@ import type { BranchSettings, Customer, Table } from "@/types";
 function openedFor(value: string) {
   const minutes = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 60000));
   return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+}
+
+type OpenTableCommand = NonNullable<Table["open_commands"]>[number];
+
+function hasPartialPayment(command: OpenTableCommand) {
+  const paid = moneyToCents(command.paid_total);
+  const confirmed = moneyToCents(command.confirmed_total);
+  return paid !== null && confirmed !== null && paid > BigInt(0) && paid < confirmed;
+}
+
+function hasPositivePayment(command: OpenTableCommand) {
+  const paid = moneyToCents(command.paid_total);
+  return paid !== null && paid > BigInt(0);
 }
 
 function TablesPage() {
@@ -128,7 +142,7 @@ function TablesPage() {
   if (!currentBranch) return <div className="p-6"><Alert message="Selecione uma filial." /></div>;
   const visibleTables = tables.filter((table) => {
     const commands = table.open_commands || [];
-    const partial = commands.some((command) => Number(command.paid_total) > 0 && Number(command.paid_total) < Number(command.confirmed_total));
+    const partial = commands.some(hasPartialPayment);
     if (filter === "free" && table.operational_status !== "free") return false;
     if (filter === "occupied" && table.operational_status !== "occupied") return false;
     if (filter === "partial" && !partial) return false;
@@ -154,11 +168,11 @@ function TablesPage() {
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             {visibleTables.map((table) => {
               const occupied = table.operational_status === "occupied";
-              const partial = table.open_commands?.some((command) => Number(command.paid_total) > 0 && Number(command.paid_total) < Number(command.confirmed_total));
+              const partial = table.open_commands?.some(hasPartialPayment);
               return <section key={table.id} className={`card min-h-60 p-5 ${occupied ? "border-primary/40 bg-primary/5" : "border-success/30"}`}>
                 <div className="flex items-start justify-between gap-3"><div><h2 className="text-2xl font-black tracking-tight">{table.name}</h2><p className={`mt-1 text-xs font-bold ${occupied ? "text-primary" : "text-success"}`}>{occupied ? "OCUPADA" : "LIVRE"}{partial ? " · PAGAMENTO PARCIAL" : ""}</p></div><div className="flex gap-1">{canChange && <><button className="icon-button" title="Editar mesa" onClick={() => openEdit(table)}><Pencil className="size-4" /></button><button className="icon-button" title={table.status === "active" ? "Inativar" : "Ativar"} onClick={() => void toggleStatus(table)}><Power className="size-4" /></button></>}</div></div>
                 <div className="mt-6 flex items-end justify-between"><div><span className="block text-xs text-muted">Total atual</span><strong className="text-xl">{occupied ? formatBRL(table.open_commands_total || "0") : formatBRL("0")}</strong></div><span className="inline-flex items-center gap-1 text-xs text-muted"><Users className="size-3" />{table.seats ? `${table.seats} lugares` : "Sem capacidade"}</span></div>
-                {table.open_commands?.length ? <div className="mt-4 space-y-2 border-t border-subtle pt-3">{table.open_commands.map((command) => <Link key={command.id} href={`/comandas/${command.id}`} className="block rounded-md bg-surface-muted p-2 text-sm hover:bg-primary/10"><div className="flex justify-between gap-2 font-bold"><span>{command.identifier || command.command_number}</span><span>{formatBRL(command.confirmed_total)}</span></div><div className="mt-1 flex justify-between text-[11px] text-muted"><span>{command.opened_by_name || "Atendente não informado"}</span><span className="inline-flex items-center gap-1"><Clock3 className="size-3" />{openedFor(command.opened_at)}</span></div>{Number(command.paid_total) > 0 && <div className="mt-1 flex items-center gap-1 text-[11px] text-warning-strong"><CreditCard className="size-3" />Pago {formatBRL(command.paid_total)}</div>}</Link>)}</div> : null}
+                {table.open_commands?.length ? <div className="mt-4 space-y-2 border-t border-subtle pt-3">{table.open_commands.map((command) => <Link key={command.id} href={`/comandas/${command.id}`} className="block rounded-md bg-surface-muted p-2 text-sm hover:bg-primary/10"><div className="flex justify-between gap-2 font-bold"><span>{command.identifier || command.command_number}</span><span>{formatBRL(command.confirmed_total)}</span></div><div className="mt-1 flex justify-between text-[11px] text-muted"><span>{command.opened_by_name || "Atendente não informado"}</span><span className="inline-flex items-center gap-1"><Clock3 className="size-3" />{openedFor(command.opened_at)}</span></div>{hasPositivePayment(command) && <div className="mt-1 flex items-center gap-1 text-[11px] text-warning-strong"><CreditCard className="size-3" />Pago {formatBRL(command.paid_total)}</div>}</Link>)}</div> : null}
                 {canChange && table.status === "active" ? <Button className="mt-4 w-full min-h-11" variant={occupied ? "secondary" : "primary"} onClick={() => { setCommandTable(table); setCommandIdentifier(""); setCommandCustomer(null); setFields({}); }}><Users className="size-4" />{occupied ? "Adicionar comanda" : "Abrir mesa"}</Button> : null}
               </section>;
             })}

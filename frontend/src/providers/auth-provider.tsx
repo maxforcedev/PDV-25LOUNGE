@@ -14,6 +14,12 @@ import {
   firstAuthorizedRoute,
   isOperatingPermission,
 } from "@/lib/authorized-routes";
+import {
+  parseBranchMemory,
+  selectActiveBranch,
+  serializeBranchMemory,
+  withRememberedBranch,
+} from "@/lib/branch-memory";
 import { permissions } from "@/lib/permissions";
 import type {
   SupportSessionContext,
@@ -26,6 +32,7 @@ import type {
 
 const COMPANY_KEY = "pdv.current_company_id";
 const BRANCH_KEY = "pdv.current_branch_id";
+const BRANCH_MEMORY_KEY = "pdv.last_branch_by_company";
 const PUBLIC_PATHS = ["/", "/ajuda", "/planos", "/cadastro"];
 const SUPPORT_FRAGMENT = /^#support-session=(\d+)$/;
 
@@ -35,6 +42,28 @@ function isPublicPath(pathname: string) {
       pathname === path || (path !== "/" && pathname.startsWith(`${path}/`)),
   );
 }
+
+function readBranchMemory() {
+  try {
+    return parseBranchMemory(localStorage.getItem(BRANCH_MEMORY_KEY));
+  } catch {
+    return {};
+  }
+}
+
+function rememberBranch(companyId: number, branchId: number) {
+  try {
+    const memory = withRememberedBranch(
+      readBranchMemory(),
+      companyId,
+      branchId,
+    );
+    localStorage.setItem(BRANCH_MEMORY_KEY, serializeBranchMemory(memory));
+  } catch {
+    // Storage may be unavailable without preventing branch selection.
+  }
+}
+
 interface AuthContextValue {
   user: User | null;
   loading: boolean;
@@ -152,24 +181,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (selectedCompanyId)
       sessionStorage.setItem(COMPANY_KEY, String(selectedCompanyId));
     const storedBranch = Number(sessionStorage.getItem(BRANCH_KEY));
-    const selectedBranch =
-      (selected?.status ?? "active") === "active" && selectedCompanyId
-        ? (current.branches.find(
-            (branch) =>
-              branch.id === storedBranch &&
-              branch.company_id === selectedCompanyId &&
-              branch.status === "active",
-          ) ??
-          current.branches.find(
-            (branch) =>
-              branch.company_id === selectedCompanyId &&
-              branch.status === "active",
-          ))
-        : undefined;
+    const branchMemory = readBranchMemory();
+    const selectedBranch = selectActiveBranch(
+      current.branches,
+      selectedCompanyId,
+      (selected?.status ?? "active") === "active",
+      selectedCompanyId ? branchMemory[String(selectedCompanyId)] : undefined,
+      storedBranch,
+    );
     setBranchId(selectedBranch?.id ?? null);
-    if (selectedBranch)
+    if (selectedBranch) {
       sessionStorage.setItem(BRANCH_KEY, String(selectedBranch.id));
-    else sessionStorage.removeItem(BRANCH_KEY);
+      rememberBranch(selectedBranch.company_id, selectedBranch.id);
+    } else sessionStorage.removeItem(BRANCH_KEY);
   }
 
   async function refreshUser() {
@@ -293,22 +317,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           const selectedCompany = availableCompanies.find(
             (company) => company.id === id,
           );
-          const nextBranch =
-            selectedCompany?.status === "active"
-              ? user?.branches.find(
-                  (branch) =>
-                    branch.company_id === id && branch.status === "active",
-                )
-              : undefined;
+          const storedBranch = Number(sessionStorage.getItem(BRANCH_KEY));
+          const nextBranch = selectActiveBranch(
+            user?.branches ?? [],
+            id,
+            selectedCompany?.status === "active",
+            readBranchMemory()[String(id)],
+            storedBranch,
+          );
           setBranchId(nextBranch?.id ?? null);
-          if (nextBranch)
+          if (nextBranch) {
             sessionStorage.setItem(BRANCH_KEY, String(nextBranch.id));
-          else sessionStorage.removeItem(BRANCH_KEY);
+            rememberBranch(id, nextBranch.id);
+          } else sessionStorage.removeItem(BRANCH_KEY);
         },
         setCurrentBranchId: (id) => {
           if (!activeCompanyBranches.some((branch) => branch.id === id)) return;
           setBranchId(id);
           sessionStorage.setItem(BRANCH_KEY, String(id));
+          if (currentCompany) rememberBranch(currentCompany.id, id);
         },
         hasPermission: (permission) => {
           if (!user) return false;

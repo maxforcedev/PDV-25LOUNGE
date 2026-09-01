@@ -20,6 +20,7 @@ from apps.products.models import (
     BranchProductPrice, Category, ModifierOption, Product, ProductBranchConfig,
     ProductModifierGroup,
 )
+from apps.products.selectors import operational_products
 
 from .models import PaymentMethod, Promotion, Sale
 from .permissions import SalesFunctionalPermission
@@ -169,10 +170,12 @@ class PromotionViewSet(
 
     @action(detail=False, methods=('get',), url_path='target-options')
     def target_options(self, request):
-        company_id = request.branch_context.company_id
+        branch = request.branch_context
         include_products = request.query_params.get('products', 'true').lower() != 'false'
-        products = Product.objects.filter(company_id=company_id).order_by('name', 'id') if include_products else ()
-        categories = Category.objects.filter(company_id=company_id).order_by(
+        products = operational_products(branch).order_by('name', 'id') if include_products else ()
+        categories = Category.objects.filter(
+            branch=branch, status=Status.ACTIVE, deleted_at__isnull=True,
+        ).order_by(
             'sort_order', 'name', 'id'
         )
         return Response({
@@ -372,6 +375,7 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
                     status=Status.ACTIVE,
                     modifier_group__status=Status.ACTIVE,
                     modifier_group__deleted_at__isnull=True,
+                    modifier_group__branch=request.branch_context,
                 ).select_related('modifier_group').prefetch_related(
                     Prefetch(
                         'modifier_group__options',
@@ -387,6 +391,7 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
                     status=Status.ACTIVE,
                     modifier_group__status=Status.ACTIVE,
                     modifier_group__deleted_at__isnull=True,
+                    modifier_group__branch=request.branch_context,
                 ).select_related('modifier_group').prefetch_related(
                     Prefetch(
                         'modifier_group__options',
@@ -400,9 +405,8 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
             effective_sale_price=Coalesce(
                 Subquery(branch_price), 'sale_price', output_field=DecimalField()
             ),
-            branch_available=Coalesce(
-                Subquery(branch_config.values('is_available')[:1]),
-                Value(True),
+            branch_available=Subquery(
+                branch_config.values('is_available')[:1],
             ),
             branch_channel=Coalesce(
                 Subquery(branch_config.values(channel_field)[:1]),
@@ -411,12 +415,16 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
         ).filter(
             company_id=request.branch_context.company_id,
             status=Status.ACTIVE,
+            archived_at__isnull=True,
             is_sellable=True,
             branch_available=True,
             branch_channel=True,
         )
         if query.validated_data.get('category'):
-            queryset = queryset.filter(category_id=query.validated_data['category'])
+            queryset = queryset.filter(
+                branch_configs__branch=request.branch_context,
+                branch_configs__category_id=query.validated_data['category'],
+            )
         if request.query_params.get('favorites') == 'true':
             queryset = queryset.filter(is_favorite=True)
         if request.query_params.get('search'):
@@ -426,7 +434,7 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
                 | Q(internal_code__icontains=search)
                 | Q(barcode__icontains=search)
             )
-        queryset = queryset.order_by('-is_favorite', 'category__sort_order', 'name', 'id')
+        queryset = queryset.order_by('-is_favorite', 'name', 'id')
         return self._paginated_response(queryset, SaleCatalogProductSerializer)
 
     @action(detail=False, methods=('get',), url_path='checkout-options')
@@ -458,7 +466,7 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
         query = SalesQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         rows = Category.objects.filter(
-            company_id=request.branch_context.company_id, status=Status.ACTIVE
+            branch=request.branch_context, status=Status.ACTIVE
         ).order_by('sort_order', 'name', 'id').values('id', 'name')
         return Response(list(rows))
 

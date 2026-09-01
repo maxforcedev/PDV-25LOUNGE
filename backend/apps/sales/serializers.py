@@ -9,6 +9,7 @@ from apps.base.constants import MAX_BIGINT
 from apps.companies.models import Branch
 from apps.companies.selectors import eligible_branch_users, user_has_branch_permission
 from apps.products.models import Category, Product, SalesChannel
+from apps.products.selectors import operational_products
 from apps.products.serializers import ProductSerializer
 
 from .models import (
@@ -121,10 +122,10 @@ class PromotionSerializer(serializers.ModelSerializer):
         branch = getattr(request, 'branch_context', None) if request else None
         if branch:
             fields['product_ids'].child_relation.queryset = Product.objects.filter(
-                company_id=branch.company_id
+                pk__in=operational_products(branch),
             )
             fields['category_ids'].child_relation.queryset = Category.objects.filter(
-                company_id=branch.company_id
+                branch=branch, status='active', deleted_at__isnull=True,
             )
             fields['branch'].queryset = Branch.objects.filter(
                 company_id=branch.company_id
@@ -286,6 +287,7 @@ class SaleItemSerializer(serializers.ModelSerializer):
         model = SaleItem
         fields = (
             'id', 'product', 'quantity', 'product_name', 'internal_code', 'unit',
+            'category_id_snapshot', 'category_name_snapshot',
             'unit_cost', 'base_unit_price', 'modifier_unit_total', 'modifier_snapshot',
             'unit_price', 'subtotal', 'promotion', 'promotion_name',
             'promotion_discount_type', 'promotion_discount_value', 'promotion_benefit',
@@ -487,6 +489,11 @@ class SaleCatalogProductSerializer(ProductSerializer):
                 'min_selections': group.min_selections,
                 'max_selections': group.max_selections,
                 'allow_option_quantity': group.allow_option_quantity,
+                'min_total_quantity': str(group.min_total_quantity),
+                'max_total_quantity': (
+                    str(group.max_total_quantity)
+                    if group.max_total_quantity is not None else None
+                ),
                 'required_quantity': required_quantity,
                 'sort_order': link.sort_order,
                 'status': group.status,

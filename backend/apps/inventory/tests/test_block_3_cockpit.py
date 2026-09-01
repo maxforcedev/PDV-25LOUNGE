@@ -7,7 +7,9 @@ from django.test import TestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
 
-from apps.products.models import ContentUnit, FractionableProductConfig, Product
+from apps.products.models import (
+    ContentUnit, FractionableProductConfig, Product, ProductBranchConfig,
+)
 from apps.companies.models import Branch, Company
 from apps.products.models import Category
 
@@ -22,12 +24,18 @@ class Block3InventoryTests(TestCase):
         self.company, self.branch, self.other_branch, self.product, self.user = fixture('B3')
         set_stock(self.branch, self.product, '5', '2')
 
+    def enable(self, product):
+        ProductBranchConfig.objects.create(
+            product=product, branch=self.branch, category=product.category
+        )
+
     def test_full_count_includes_zero_stock_and_partial_is_limited(self):
         zero_product = Product.objects.create(
             company=self.company, category=self.product.category,
             name='Produto sem saldo', internal_code='ZERO-B3', unit='kg',
             cost='2', sale_price='4',
         )
+        self.enable(zero_product)
         full = create_inventory_count(
             branch=self.branch,
             mode=InventoryCountMode.FULL,
@@ -59,11 +67,12 @@ class Block3InventoryTests(TestCase):
         self.assertEqual(partial.items.count(), 1)
 
     def test_full_count_rejects_omitted_controlled_product(self):
-        Product.objects.create(
+        omitted = Product.objects.create(
             company=self.company, category=self.product.category,
             name='Produto omitido', internal_code='OMIT-B3', unit='kg',
             cost='2', sale_price='4',
         )
+        self.enable(omitted)
         with self.assertRaises(ValidationError):
             create_inventory_count(
                 branch=self.branch,
@@ -88,11 +97,14 @@ class Block3InventoryTests(TestCase):
         self.assertEqual(LossRecord.objects.count(), 0)
 
     def test_entry_accepts_multiple_categories_and_ignores_zero_items(self):
-        other_category = Category.objects.create(company=self.company, name='Bebidas B3')
+        other_category = Category.objects.create(
+            company=self.company, branch=self.branch, name='Bebidas B3'
+        )
         other_product = Product.objects.create(
             company=self.company, category=other_category, name='Produto B3 dois',
             internal_code='B3-SECOND', unit='kg', cost='2', sale_price='4',
         )
+        self.enable(other_product)
         movements = group_entry(
             branch=self.branch,
             items=[
@@ -133,6 +145,7 @@ class Block3InventoryTests(TestCase):
         config = FractionableProductConfig.objects.create(
             product=product, package_content='1000', content_unit=ContentUnit.MILLILITER,
         )
+        self.enable(product)
         activate_fraction_tracking(config=config, user=self.user)
         group_entry(
             branch=self.branch,
@@ -144,10 +157,11 @@ class Block3InventoryTests(TestCase):
         self.assertEqual(stock.current_quantity, Decimal('0.250500000'))
 
     def test_entry_options_only_loads_products_on_explicit_query(self):
-        Product.objects.create(
+        product = Product.objects.create(
             company=self.company, category=self.product.category, name='Produto codigo barras B3',
             internal_code='B3-BAR', barcode='7890000000001', unit='kg', cost='2', sale_price='4',
         )
+        self.enable(product)
         client = APIClient()
         client.force_authenticate(self.user)
         url = reverse('stock-movement-entry-options')

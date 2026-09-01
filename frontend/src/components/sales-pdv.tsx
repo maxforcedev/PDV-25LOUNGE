@@ -25,7 +25,7 @@ import {
   Spinner,
 } from "@/components/ui";
 import { canonicalMoney } from "@/lib/cash";
-import { formatBRL } from "@/lib/format";
+import { decimalIsOne, decimalIsZero, formatDecimalBRL as formatBRL, formatPercent, formatQuantity } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import {
@@ -148,6 +148,23 @@ function validPreviewContract(value: unknown): value is SalePreview {
         money(row.unit_cost))
     );
   });
+}
+
+function modifierUnitTotal(product: Product, selections: ModifierSelection[]) {
+  const total = selections.reduce((sum, selection) => {
+    const option = (product.modifier_groups || [])
+      .flatMap((group) => group.options || [])
+      .find((item) => item.id === selection.option);
+    const itemTotal = provisionalItemTotal(option?.additional_price, selection.quantity);
+    return sum + (itemTotal || BigInt(0));
+  }, BigInt(0));
+  return centsToDecimal(total);
+}
+
+function cartUnitPrice(item: Pick<CartItem, "sale_price" | "modifierUnitTotal">) {
+  const salePrice = moneyToCents(item.sale_price);
+  const modifiers = moneyToCents(item.modifierUnitTotal);
+  return salePrice === null || modifiers === null ? null : centsToDecimal(salePrice + modifiers);
 }
 
 export function SalesPdv() {
@@ -523,18 +540,7 @@ export function SalesPdv() {
               quantity: product.unit === "un" ? "1" : "1.000",
               item_discount: "0.00",
               modifiers,
-              modifierUnitTotal: modifiers
-                .reduce((total, selection) => {
-                  const option = (product.modifier_groups || [])
-                    .flatMap((group) => group.options || [])
-                    .find((item) => item.id === selection.option);
-                  return (
-                    total +
-                    Number(option?.additional_price || 0) *
-                      Number(selection.quantity)
-                  );
-                }, 0)
-                .toFixed(2),
+              modifierUnitTotal: modifierUnitTotal(product, modifiers),
             },
           ],
     );
@@ -655,10 +661,8 @@ export function SalesPdv() {
 
   const provisionalCents = cart.reduce<bigint | null>((total, item) => {
     if (total === null) return null;
-    const itemTotal = provisionalItemTotal(
-      (Number(item.sale_price) + Number(item.modifierUnitTotal)).toFixed(2),
-      item.quantity,
-    );
+    const unitPrice = cartUnitPrice(item);
+    const itemTotal = provisionalItemTotal(unitPrice, item.quantity);
     return itemTotal === null ? null : total + itemTotal;
   }, BigInt(0));
   const provisional =
@@ -728,13 +732,13 @@ export function SalesPdv() {
           return amount !== null && amount > 0 && !row.received_amount;
         })));
   const discountAuthorizationRequired = Boolean(
-    !consumption && !canDiscount && preview && preview.discount !== "0.00",
+    !consumption && !canDiscount && preview && !decimalIsZero(preview.discount),
   );
   const itemDiscountAuthorizationRequired = Boolean(
     !consumption &&
     !canItemDiscount &&
     preview &&
-    preview.item_discount_total !== "0.00",
+    !decimalIsZero(preview.item_discount_total),
   );
   const serviceFeeAuthorizationRequired = Boolean(
     !consumption && serviceFeeWaived && !canWaiveServiceFee,
@@ -1116,12 +1120,7 @@ export function SalesPdv() {
                       <div>
                         <strong className="text-xs">{item.name}</strong>
                         <p className="text-[10px] text-slate-400">
-                          {formatBRL(
-                            (
-                              Number(item.sale_price) +
-                              Number(item.modifierUnitTotal)
-                            ).toFixed(2),
-                          )}{" "}
+                          {formatBRL(cartUnitPrice(item))}{" "}
                           / {item.unit.toUpperCase()}
                         </p>
                         {item.modifiers.length > 0 && (
@@ -1134,7 +1133,7 @@ export function SalesPdv() {
                                     (value) => value.id === selection.option,
                                   );
                                 return option
-                                  ? `${option.name}${selection.quantity !== "1" ? ` × ${selection.quantity}` : ""}`
+                                  ? `${option.name}${!decimalIsOne(selection.quantity) ? ` × ${formatQuantity(selection.quantity)}` : ""}`
                                   : "";
                               })
                               .filter(Boolean)
@@ -1199,22 +1198,10 @@ export function SalesPdv() {
                       </button>
                       <span className="ml-auto text-xs font-bold">
                         {formatBRL(
-                          provisionalItemTotal(
-                            (
-                              Number(item.sale_price) +
-                              Number(item.modifierUnitTotal)
-                            ).toFixed(2),
-                            item.quantity,
-                          ) === null
+                          provisionalItemTotal(cartUnitPrice(item), item.quantity) === null
                             ? null
                             : centsToDecimal(
-                                provisionalItemTotal(
-                                  (
-                                    Number(item.sale_price) +
-                                    Number(item.modifierUnitTotal)
-                                  ).toFixed(2),
-                                  item.quantity,
-                                )!,
+                                provisionalItemTotal(cartUnitPrice(item), item.quantity)!,
                               ),
                         )}
                       </span>
@@ -1304,7 +1291,7 @@ export function SalesPdv() {
                     </span>
                   </Field>
                 )}
-                {!consumption && moneyToCents(discount) !== BigInt(0) && (
+                {!consumption && !decimalIsZero(discount) && (
                   <p className="text-xs font-semibold text-primary">
                     Desconto aplicado · {formatBRL(canonicalMoney(discount))}
                   </p>
@@ -1455,7 +1442,7 @@ export function SalesPdv() {
                       <span>{formatBRL(preview.subtotal)}</span>
                     </div>
                     {!consumption &&
-                      preview.promotion_discount_total !== "0.00" && (
+                      !decimalIsZero(preview.promotion_discount_total) && (
                         <div className="mt-2 flex justify-between text-xs text-operational-success">
                           <span>Benefício promocional</span>
                           <span>
@@ -1469,16 +1456,16 @@ export function SalesPdv() {
                         <span>- {formatBRL(preview.discount)}</span>
                       </div>
                     )}
-                    {!consumption && preview.item_discount_total !== "0.00" && (
+                    {!consumption && !decimalIsZero(preview.item_discount_total) && (
                       <div className="mt-2 flex justify-between text-xs text-operational-warning">
                         <span>Descontos por item</span>
                         <span>- {formatBRL(preview.item_discount_total)}</span>
                       </div>
                     )}
-                    {!consumption && preview.service_fee_amount !== "0.00" && (
+                    {!consumption && !decimalIsZero(preview.service_fee_amount) && (
                       <div className="mt-2 flex justify-between text-xs text-operational-info">
                         <span>
-                          Taxa de serviço ({preview.service_fee_rate}%)
+                          Taxa de serviço ({formatPercent(preview.service_fee_rate)})
                         </span>
                         <span>+ {formatBRL(preview.service_fee_amount)}</span>
                       </div>
@@ -1486,7 +1473,7 @@ export function SalesPdv() {
                     {!consumption && preview.service_fee_waived && (
                       <div className="mt-2 flex justify-between text-xs text-operational-warning">
                         <span>Taxa de serviço retirada</span>
-                        <span>{preview.service_fee_rate}%</span>
+                        <span>{formatPercent(preview.service_fee_rate)}</span>
                       </div>
                     )}
                     {consumption && (
@@ -1837,7 +1824,7 @@ export function SalesPdv() {
           size="md"
         >
           <div className="space-y-4 p-5">
-            <p className="text-sm">Taxa atual: {preview?.service_fee_rate || "0"}%</p>
+            <p className="text-sm">Taxa atual: {formatPercent(preview?.service_fee_rate || "0")}</p>
             <label className="flex items-center gap-3 text-sm">
               <input
                 type="checkbox"

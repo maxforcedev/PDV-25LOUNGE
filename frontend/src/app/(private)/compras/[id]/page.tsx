@@ -27,7 +27,7 @@ import {
   Textarea,
 } from "@/components/ui";
 import {
-  formatBRL,
+  formatDecimalBRL as formatBRL,
   formatDate,
   formatDecimalBRL,
   formatEditableDecimal,
@@ -441,9 +441,9 @@ function PurchaseDetail() {
   function openEdit() {
     if (!order) return;
     setEdit({
-      global_discount: order.global_discount || "0.00",
-      freight_total: order.freight_total || "0.00",
-      other_expenses_total: order.other_expenses_total || "0.00",
+       global_discount: formatEditableDecimal(order.global_discount || "0"),
+       freight_total: formatEditableDecimal(order.freight_total || "0"),
+       other_expenses_total: formatEditableDecimal(order.other_expenses_total || "0"),
       document_number: order.document_number,
       document_key: order.document_key,
       document_series: order.document_series,
@@ -494,7 +494,7 @@ function PurchaseDetail() {
   function openInstallments() {
     if (!order) return;
     setInstallments([
-      { amount: order.payable_total || "", due_date: "", notes: "" },
+       { amount: formatEditableDecimal(order.payable_total || ""), due_date: "", notes: "" },
     ]);
     setInstallmentOpen(true);
   }
@@ -507,7 +507,7 @@ function PurchaseDetail() {
     );
     if (total !== moneyCents(order.payable_total || "0")) {
       setError(
-        `A soma das parcelas deve ser ${formatBRL(order.payable_total)}.`,
+         `A soma das parcelas deve ser ${formatDecimalBRL(order.payable_total)}.`,
       );
       return;
     }

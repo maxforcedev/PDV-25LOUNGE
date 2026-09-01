@@ -20,7 +20,7 @@ from apps.companies.models import (
     UserBranchAccess,
     UserCompanyAccess,
 )
-from apps.products.models import Category, Product
+from apps.products.models import Category, Product, ProductBranchConfig
 
 from ..models import (
     InventoryCountStatus,
@@ -56,7 +56,12 @@ def fixture(name='V25'):
     company = Company.objects.create(trade_name=name, legal_name=f'{name} Ltda')
     origin = Branch.objects.create(company=company, name='Matriz', is_matrix=True)
     destination = Branch.objects.create(company=company, name='Destino')
-    category = Category.objects.create(company=company, name='Estoque avancado')
+    category = Category.objects.create(
+        company=company, branch=origin, name='Estoque avancado'
+    )
+    destination_category = Category.objects.create(
+        company=company, branch=destination, name='Estoque avancado'
+    )
     product = Product.objects.create(
         company=company,
         category=category,
@@ -66,6 +71,12 @@ def fixture(name='V25'):
         sale_price='15.00',
         unit='kg',
     )
+    ProductBranchConfig.objects.create(
+        product=product, branch=origin, category=category
+    )
+    ProductBranchConfig.objects.create(
+        product=product, branch=destination, category=destination_category
+    )
     user = User.objects.create_user(email=f'{name.lower()}@example.com', password='password-123')
     user.is_superuser = True
     user.is_staff = True
@@ -74,6 +85,16 @@ def fixture(name='V25'):
 
 
 def set_stock(branch, product, quantity, average_cost):
+    category = product.category
+    if category.branch_id != branch.pk:
+        category, _ = Category.objects.get_or_create(
+            company=branch.company,
+            branch=branch,
+            name=f'Estoque {branch.pk}',
+        )
+    ProductBranchConfig.objects.get_or_create(
+        branch=branch, product=product, defaults={'category': category}
+    )
     stock = Stock.objects.get(branch=branch, product=product)
     stock.current_quantity = Decimal(quantity)
     stock.average_unit_cost = Decimal(average_cost)
@@ -290,6 +311,7 @@ class TransferFlowTests(TestCase):
             sale_price='5',
         )
         set_stock(self.origin, unit_product, '10', '2')
+        set_stock(self.destination, unit_product, '0', '2')
         with self.assertRaises(ValidationError):
             transfer_fixture(
                 self.origin, self.destination, unit_product, self.user, quantity='0.5'

@@ -85,6 +85,10 @@ class Category(BaseModel):
     company = models.ForeignKey(
         Company, on_delete=models.PROTECT, related_name='product_categories'
     )
+    branch = models.ForeignKey(
+        'companies.Branch', on_delete=models.PROTECT, related_name='product_categories',
+        blank=True, null=True,
+    )
     name = models.CharField(max_length=150)
     description = models.TextField(blank=True)
     sort_order = models.PositiveIntegerField(default=0)
@@ -94,22 +98,33 @@ class Category(BaseModel):
     participates_in_service_fee = models.BooleanField(default=True)
     participates_in_commission = models.BooleanField(default=True)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
+    deleted_at = models.DateTimeField(blank=True, null=True, editable=False)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='deleted_product_categories', blank=True, null=True, editable=False,
+    )
 
     class Meta:
         ordering = ('sort_order', 'name', 'id')
         constraints = [
             models.UniqueConstraint(
-                'company', Lower('name'), name='products_category_company_name_ci_unique'
+                'branch', Lower('name'), condition=Q(deleted_at__isnull=True),
+                name='products_category_active_branch_name_ci_unique'
             ),
         ]
 
     def clean(self):
         super().clean()
         self.name = ' '.join(self.name.split())
+        if self.branch_id and self.branch.company_id != self.company_id:
+            raise ValidationError({'branch': 'A filial deve pertencer a empresa da categoria.'})
 
     def save(self, *args, **kwargs):
         self.full_clean()
         return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError('Use o fluxo de exclusao segura de categorias.')
 
     def __str__(self):
         return f'{self.company} - {self.name}'
@@ -191,23 +206,25 @@ class Product(BaseModel):
             models.UniqueConstraint(
                 'company',
                 Lower('normalized_name'),
+                condition=Q(archived_at__isnull=True),
                 name='products_product_company_normalized_name_unique',
             ),
             models.UniqueConstraint(
                 'company',
                 Lower('internal_code'),
+                condition=Q(archived_at__isnull=True),
                 name='products_product_company_internal_code_ci_unique',
             ),
             models.UniqueConstraint(
                 'company',
                 Lower('barcode'),
-                condition=~Q(barcode=''),
+                condition=Q(archived_at__isnull=True) & ~Q(barcode=''),
                 name='products_product_company_barcode_ci_unique',
             ),
             models.UniqueConstraint(
                 'company',
                 Lower('sku'),
-                condition=Q(sku__isnull=False) & ~Q(sku=''),
+                condition=Q(archived_at__isnull=True) & Q(sku__isnull=False) & ~Q(sku=''),
                 name='products_product_company_sku_ci_unique',
             ),
             models.CheckConstraint(
@@ -226,7 +243,9 @@ class Product(BaseModel):
             raise ValidationError({'name': 'Informe o nome do produto.'})
         if self.company_id and self.normalized_name:
             duplicate = Product.objects.filter(
-                company_id=self.company_id, normalized_name=self.normalized_name
+                company_id=self.company_id,
+                normalized_name=self.normalized_name,
+                archived_at__isnull=True,
             )
             if self.pk:
                 duplicate = duplicate.exclude(pk=self.pk)
@@ -402,10 +421,16 @@ class ProductBranchConfig(BaseModel):
     branch = models.ForeignKey(
         'companies.Branch', on_delete=models.CASCADE, related_name='product_configs'
     )
+    category = models.ForeignKey(
+        Category, on_delete=models.PROTECT, related_name='branch_product_configs',
+        blank=True, null=True,
+    )
     is_available = models.BooleanField(default=True)
     available_counter = models.BooleanField(blank=True, null=True)
     available_table = models.BooleanField(blank=True, null=True)
     available_command = models.BooleanField(blank=True, null=True)
+    participates_in_service_fee = models.BooleanField(blank=True, null=True)
+    participates_in_commission = models.BooleanField(blank=True, null=True)
 
     class Meta:
         ordering = ('branch__name', 'product__name')
@@ -421,6 +446,11 @@ class ProductBranchConfig(BaseModel):
         if self.product_id and self.branch_id:
             if self.product.company_id != self.branch.company_id:
                 raise ValidationError({'branch': 'A filial deve pertencer a empresa do produto.'})
+        if self.category_id and self.branch_id:
+            if self.category.company_id != self.branch.company_id:
+                raise ValidationError({'category': 'A categoria deve pertencer a empresa da filial.'})
+            if self.category.branch_id != self.branch_id:
+                raise ValidationError({'category': 'A categoria deve pertencer a filial do produto.'})
 
     def save(self, *args, **kwargs):
         self.full_clean()
@@ -428,6 +458,12 @@ class ProductBranchConfig(BaseModel):
 
     def effective_channel(self, channel):
         field = f'available_{channel}'
+        override = getattr(self, field)
+        return getattr(self.product, field) if override is None else override
+
+    def effective_participation(self, field):
+        if field not in ('participates_in_service_fee', 'participates_in_commission'):
+            raise ValueError('Campo de participacao invalido.')
         override = getattr(self, field)
         return getattr(self.product, field) if override is None else override
 
@@ -684,11 +720,21 @@ class ModifierGroup(SoftDeletedModifierModel):
     company = models.ForeignKey(
         Company, on_delete=models.PROTECT, related_name='modifier_groups'
     )
+    branch = models.ForeignKey(
+        'companies.Branch', on_delete=models.PROTECT, related_name='modifier_groups',
+        blank=True, null=True,
+    )
     name = models.CharField(max_length=100)
     is_required = models.BooleanField(default=False)
     min_selections = models.PositiveIntegerField(default=0)
     max_selections = models.PositiveIntegerField(blank=True, null=True)
     allow_option_quantity = models.BooleanField(default=False)
+    min_total_quantity = models.DecimalField(
+        max_digits=12, decimal_places=3, default=Decimal('0')
+    )
+    max_total_quantity = models.DecimalField(
+        max_digits=12, decimal_places=3, blank=True, null=True
+    )
     substitution_component = models.ForeignKey(
         Product,
         on_delete=models.PROTECT,
@@ -706,9 +752,9 @@ class ModifierGroup(SoftDeletedModifierModel):
         ordering = ('sort_order', 'id')
         constraints = [
             models.UniqueConstraint(
-                'company', Lower('name'),
+                'branch', Lower('name'),
                 condition=Q(deleted_at__isnull=True),
-                name='products_modifier_group_company_name_ci_unique',
+                name='products_modifier_group_branch_name_ci_unique',
             ),
             models.CheckConstraint(
                 condition=(
@@ -732,8 +778,32 @@ class ModifierGroup(SoftDeletedModifierModel):
             raise ValidationError({'max_selections': 'O máximo não pode ser menor que o mínimo.'})
         if self.is_required and self.min_selections < 1:
             raise ValidationError({'min_selections': 'Grupo obrigatório exige mínimo de 1.'})
-        if self.max_selections == 1 and self.allow_option_quantity:
-            raise ValidationError({'allow_option_quantity': 'Seleção única não permite quantidade por opção.'})
+        if self.min_total_quantity < 0:
+            raise ValidationError({
+                'min_total_quantity': 'O mínimo total não pode ser negativo.'
+            })
+        if self.max_total_quantity is not None and self.max_total_quantity < 0:
+            raise ValidationError({
+                'max_total_quantity': 'O máximo total não pode ser negativo.'
+            })
+        if (
+            self.min_total_quantity
+            and self.max_total_quantity is not None
+            and self.min_total_quantity > self.max_total_quantity
+        ):
+            raise ValidationError({
+                'max_total_quantity': 'O máximo total não pode ser menor que o mínimo total.'
+            })
+        if not self.allow_option_quantity and (
+            self.min_total_quantity or self.max_total_quantity is not None
+        ):
+            raise ValidationError({
+                'allow_option_quantity': (
+                    'Limites de quantidade total exigem quantidade por opção habilitada.'
+                )
+            })
+        if self.branch_id and self.branch.company_id != self.company_id:
+            raise ValidationError({'branch': 'A filial deve pertencer a empresa do grupo.'})
         if self.substitution_component_id:
             component = self.substitution_component
             if component.company_id != self.company_id:
@@ -743,6 +813,12 @@ class ModifierGroup(SoftDeletedModifierModel):
             if component.inventory_behavior != InventoryBehavior.DIRECT:
                 raise ValidationError({
                     'substitution_component': 'O componente substituído deve controlar estoque próprio.'
+                })
+            if self.branch_id and not ProductBranchConfig.objects.filter(
+                product=component, branch=self.branch
+            ).exists():
+                raise ValidationError({
+                    'substitution_component': 'O componente deve estar habilitado nesta filial.'
                 })
 
     def save(self, *args, **kwargs):
@@ -823,6 +899,10 @@ class ModifierOption(SoftDeletedModifierModel):
             errors['stock_product'] = 'O produto deve pertencer à mesma empresa do grupo.'
         if product.inventory_behavior != InventoryBehavior.DIRECT:
             errors['stock_product'] = 'A opção deve apontar para produto com estoque próprio.'
+        if group.branch_id and not ProductBranchConfig.objects.filter(
+            product=product, branch=group.branch
+        ).exists():
+            errors['stock_product'] = 'O produto deve estar habilitado na filial do grupo.'
         if self.option_type == ModifierOptionType.COMPONENT_SUBSTITUTION:
             if not group.substitution_component_id:
                 errors['modifier_group'] = 'Configure o componente substituído no grupo.'
@@ -879,6 +959,12 @@ class ProductModifierGroup(SoftDeletedModifierModel):
                 raise ValidationError({'modifier_group': 'O grupo de modificador foi excluido.'})
             if self.product.company_id != self.modifier_group.company_id:
                 raise ValidationError({'modifier_group': 'O grupo deve pertencer à mesma empresa do produto.'})
+            if self.modifier_group.branch_id and not ProductBranchConfig.objects.filter(
+                product=self.product, branch=self.modifier_group.branch
+            ).exists():
+                raise ValidationError({
+                    'modifier_group': 'O produto deve estar habilitado na filial do grupo.'
+                })
 
     def save(self, *args, **kwargs):
         self.full_clean()

@@ -27,8 +27,8 @@ import {
   TableLoading,
   Textarea,
 } from "@/components/ui";
-import { moneyToCents, normalizeMoney } from "@/lib/cash";
-import { formatBRL, formatDate } from "@/lib/format";
+import { moneyToCents, normalizeMoney, signedMoneyToCents } from "@/lib/cash";
+import { formatDecimalBRL as formatBRL, formatDate } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
@@ -82,7 +82,8 @@ function CashFinancialBridge({ summary }: { summary: CashSummary }) {
     financial.receipts?.reversal_payment_total ||
     financial.receipts?.reversals ||
     "0";
-  const hasDelta = Math.abs(Number(financial.reconciliation_delta || 0)) >= 0.005;
+  const reconciliationDelta = signedMoneyToCents(financial.reconciliation_delta || "0");
+  const hasDelta = reconciliationDelta === null || reconciliationDelta !== BigInt(0);
   return (
     <section className="card overflow-hidden">
       <div className="card-header">

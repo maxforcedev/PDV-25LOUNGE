@@ -10,7 +10,7 @@ import { PageHeader } from "@/components/page-header";
 import { Alert, Spinner } from "@/components/ui";
 import { domainLabel } from "@/lib/domain-labels";
 import { formatDate } from "@/lib/format";
-import { movementDomainOriginLabel, physicalQuantityDisplay } from "@/lib/inventory";
+import { inventoryDecimalSign, movementDomainOriginLabel, physicalQuantityDisplay } from "@/lib/inventory";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import type { Product, StockMovement } from "@/types";
@@ -66,7 +66,7 @@ function MovementDetail() {
             ["Origem de domínio", movementDomainOriginLabel(movement.domain_origin)],
             ["Natureza", domainLabel(movement.nature)],
             ["Quantidade anterior", previousDisplay],
-            ["Movimento", `${movement.content_quantity != null && Number(movement.content_quantity) > 0 ? "+" : ""}${movementDisplay}`],
+            ["Movimento", `${movement.content_quantity != null && inventoryDecimalSign(movement.content_quantity) === 1 ? "+" : ""}${movementDisplay}`],
             ["Quantidade final", finalDisplay],
             ["Responsável", movement.user_name],
             ["Referência da operação", movement.operation_reference || "-"],

@@ -7,6 +7,22 @@ export function quantityToThousandths(value: unknown): bigint | null {
   return BigInt(match[1]) * BigInt(1000) + BigInt((match[2] || "").padEnd(3, "0"));
 }
 
+export function thousandthsToDecimal(value: bigint) {
+  const negative = value < BigInt(0);
+  const absolute = negative ? -value : value;
+  const fraction = String(absolute % BigInt(1000)).padStart(3, "0").replace(/0+$/, "");
+  return `${negative ? "-" : ""}${absolute / BigInt(1000)}${fraction ? `.${fraction}` : ""}`;
+}
+
+export function modifierContributionCents(price: unknown, quantity: unknown) {
+  const cents = moneyToCents(price);
+  const units = quantityToThousandths(quantity);
+  if (cents === null || units === null) return null;
+  const raw = cents * units;
+  const whole = raw / BigInt(1000);
+  return raw % BigInt(1000) >= BigInt(500) ? whole + BigInt(1) : whole;
+}
+
 export function provisionalItemTotal(price: unknown, quantity: unknown) {
   const cents = moneyToCents(price);
   const units = quantityToThousandths(quantity);

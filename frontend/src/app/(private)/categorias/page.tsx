@@ -11,6 +11,7 @@ import {
   Search,
   SlidersHorizontal,
   Tags,
+  Trash2,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { AdminGuard } from "@/components/admin-guard";
@@ -28,7 +29,7 @@ import {
   TableLoading,
   Textarea,
 } from "@/components/ui";
-import { fieldError, formatBRL } from "@/lib/format";
+import { fieldError, formatDecimalBRL as formatBRL } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
@@ -67,6 +68,7 @@ function Categories() {
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState<Category | null>(null);
+  const [deleting, setDeleting] = useState<Category | null>(null);
   const [draftFilters, setDraftFilters] =
     useState<CategoryFilters>(emptyFilters);
   const [appliedFilters, setAppliedFilters] =
@@ -297,6 +299,23 @@ function Categories() {
     }
   }
 
+  async function deleteCategory() {
+    if (!deleting || !canChange) return;
+    setSaving(true);
+    setError("");
+    try {
+      await http.delete(`categories/${deleting.id}/`);
+      setDeleting(null);
+      setSuccess("Categoria excluída com sucesso.");
+      await load();
+    } catch (caught) {
+      setDeleting(null);
+      setError(caught instanceof ApiError ? caught.message : "Não foi possível excluir a categoria.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <>
       <PageHeader
@@ -486,6 +505,14 @@ function Categories() {
                           >
                             <Power className="size-4" />
                           </button>
+                          <button
+                            className="icon-button text-danger-strong"
+                            disabled={!canChange}
+                            title="Excluir categoria"
+                            onClick={() => setDeleting(item)}
+                          >
+                            <Trash2 className="size-4" />
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -641,6 +668,16 @@ function Categories() {
         loading={saving}
         onClose={() => setApplyingConfig(null)}
         onConfirm={applyConfig}
+      />
+      <ConfirmDialog
+        open={!!deleting}
+        title="Excluir categoria"
+        message={`Excluir “${deleting?.name || ""}”? A exclusão é permitida somente sem produtos operacionais ativos vinculados.`}
+        confirmLabel="Excluir"
+        danger
+        loading={saving}
+        onClose={() => setDeleting(null)}
+        onConfirm={deleteCategory}
       />
     </>
   );

@@ -18,7 +18,7 @@ import {
   TableLoading,
 } from "@/components/ui";
 import { domainLabel } from "@/lib/domain-labels";
-import { movementDomainOriginLabel, movementDomainOriginLabels, physicalQuantityDisplay } from "@/lib/inventory";
+import { inventoryDecimalSign, movementDomainOriginLabel, movementDomainOriginLabels, physicalQuantityDisplay, subtractInventoryDecimals } from "@/lib/inventory";
 import { formatDate, formatQuantity } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
@@ -73,12 +73,13 @@ function signed(movement: StockMovement) {
       completePackages: movement.movement_complete_packages,
       residualContent: movement.movement_residual_content,
     });
-    return `${Number(movement.content_quantity) > 0 ? "+" : ""}${display}`;
+    return `${inventoryDecimalSign(movement.content_quantity) === 1 ? "+" : ""}${display}`;
   }
   if (movement.type === "adjustment") {
-    const difference =
-      Number(movement.final_quantity) - Number(movement.previous_quantity);
-    return `${difference > 0 ? "+" : ""}${formatQuantity(difference.toFixed(3))} ${movement.unit.toUpperCase()}`;
+    const difference = subtractInventoryDecimals(
+      movement.final_quantity, movement.previous_quantity,
+    );
+    return `${inventoryDecimalSign(difference) === 1 ? "+" : ""}${formatQuantity(difference)} ${movement.unit.toUpperCase()}`;
   }
   const positive = [
     "entry",

@@ -5,16 +5,23 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase
 
 from apps.accounts.models import User
+from apps.cash.models import CashRegister
+from apps.cash.services import open_session
 from apps.commands.services import (
     add_order_item, cancel_order_item, confirm_order_item, open_command,
 )
 from apps.companies.services import create_company_with_matrix, ensure_permission_catalog
+from apps.companies.models import Branch
 from apps.inventory.models import Stock, StockMovement
 from apps.products.models import (
     Category, InventoryBehavior, ModifierGroup, ModifierOption,
     ModifierOptionType, Product, ProductComponent, ProductModifierGroup, Unit,
+    ProductBranchConfig,
 )
 from apps.sales.services import resolve_modifiers
+from apps.sales.models import OperationType
+from apps.sales.services import cancel_sale, ensure_default_payment_methods, finalize_sale
+from apps.suppliers.models import Supplier
 
 
 PASSWORD = 'Mission-m6-password-123!'
@@ -29,8 +36,12 @@ class IntelligentModifierMissionTests(TestCase):
         )
         self.branch = self.company.branches.get(is_matrix=True)
         self.branch.settings.uses_commands = True
+        self.branch.settings.uses_counter = True
+        self.branch.settings.uses_cash_register = True
         self.branch.settings.save()
-        self.category = Category.objects.create(company=self.company, name='Bebidas M6')
+        self.category = Category.objects.create(
+            company=self.company, branch=self.branch, name='Bebidas M6'
+        )
         self.black = self.product('Black Label', 'M6-BLACK')
         self.red_bull = self.product('Red Bull', 'M6-RB')
         self.watermelon = self.product('Red Bull Melancia', 'M6-WATER')
@@ -51,8 +62,11 @@ class IntelligentModifierMissionTests(TestCase):
         )
         self.combo.is_sellable = True
         self.combo.save()
+        ProductBranchConfig.objects.create(
+            product=self.combo, branch=self.branch, category=self.category,
+        )
         self.group = ModifierGroup.objects.create(
-            company=self.company, name='Sabores de Red Bull', is_required=True,
+            company=self.company, branch=self.branch, name='Sabores de Red Bull', is_required=True,
             min_selections=1, allow_option_quantity=True,
             substitution_component=self.red_bull,
         )
@@ -71,9 +85,14 @@ class IntelligentModifierMissionTests(TestCase):
             option_type=ModifierOptionType.COMPONENT_SUBSTITUTION,
             stock_product=self.original,
         )
+        self.traditional_option = ModifierOption.objects.create(
+            modifier_group=self.group, name='Tradicional',
+            option_type=ModifierOptionType.COMPONENT_SUBSTITUTION,
+            stock_product=self.red_bull,
+        )
         ProductModifierGroup.objects.create(product=self.red_bull, modifier_group=self.group)
         self.extra_group = ModifierGroup.objects.create(
-            company=self.company, name='Adicionais M6', allow_option_quantity=True,
+            company=self.company, branch=self.branch, name='Adicionais M6', allow_option_quantity=True,
         )
         self.bacon_option = ModifierOption.objects.create(
             modifier_group=self.extra_group, name='Bacon extra',
@@ -93,10 +112,14 @@ class IntelligentModifierMissionTests(TestCase):
             ))
 
     def product(self, name, code):
-        return Product.objects.create(
+        product = Product.objects.create(
             company=self.company, category=self.category, name=name, internal_code=code,
             unit=Unit.UNIT, cost=Decimal('1.00'), sale_price=Decimal('5.00'),
         )
+        ProductBranchConfig.objects.create(
+            product=product, branch=self.branch, category=self.category,
+        )
+        return product
 
     def selections(self, watermelon, tropical):
         return [
@@ -166,12 +189,37 @@ class IntelligentModifierMissionTests(TestCase):
         self.assertEqual(Stock.objects.get(product=self.watermelon, branch=self.branch).current_quantity, Decimal('7'))
         self.assertEqual(Stock.objects.get(product=self.tropical, branch=self.branch).current_quantity, Decimal('8'))
         self.assertEqual(StockMovement.objects.filter(order_item=item).count(), 3)
+        self.assertEqual(
+            {row['product'] for row in confirmed.component_cost_snapshot},
+            {self.black.pk, self.watermelon.pk, self.tropical.pk},
+        )
 
         cancel_order_item(item=item, user=self.owner, idempotency_key=uuid.uuid4(), reason='Teste')
         self.assertEqual(Stock.objects.get(product=self.black, branch=self.branch).current_quantity, Decimal('10'))
         self.assertEqual(Stock.objects.get(product=self.red_bull, branch=self.branch).current_quantity, Decimal('10'))
         self.assertEqual(Stock.objects.get(product=self.watermelon, branch=self.branch).current_quantity, Decimal('10'))
         self.assertEqual(Stock.objects.get(product=self.tropical, branch=self.branch).current_quantity, Decimal('10'))
+
+    def test_component_substitution_can_keep_the_original_component(self):
+        command = open_command(branch=self.branch, user=self.owner, identifier='M6 Tradicional')
+        item = add_order_item(
+            command=command, user=self.owner, product_id=self.combo.pk,
+            quantity=Decimal('1'), modifiers=[
+                {'option': self.traditional_option.pk, 'quantity': '5'},
+            ],
+        )
+
+        confirmed = confirm_order_item(
+            item=item, user=self.owner, idempotency_key=uuid.uuid4(),
+        )
+
+        self.assertEqual(Stock.objects.get(product=self.black, branch=self.branch).current_quantity, Decimal('9'))
+        self.assertEqual(Stock.objects.get(product=self.red_bull, branch=self.branch).current_quantity, Decimal('5'))
+        self.assertEqual(StockMovement.objects.filter(order_item=item).count(), 2)
+        self.assertEqual(
+            {row['product'] for row in confirmed.component_cost_snapshot},
+            {self.black.pk, self.red_bull.pk},
+        )
 
     def test_product_input_modifier_moves_its_real_stock(self):
         command = open_command(branch=self.branch, user=self.owner, identifier='M6 input')
@@ -187,6 +235,63 @@ class IntelligentModifierMissionTests(TestCase):
         self.assertEqual(Stock.objects.get(product=self.red_bull, branch=self.branch).current_quantity, Decimal('10'))
         self.assertEqual(Stock.objects.get(product=self.watermelon, branch=self.branch).current_quantity, Decimal('9'))
         self.assertEqual(Stock.objects.get(product=self.bacon, branch=self.branch).current_quantity, Decimal('9'))
+
+    def test_counter_sale_substitution_uses_replacement_cost_and_cancels(self):
+        for product, cost in ((self.black, '4.00'), (self.watermelon, '2.00'), (self.tropical, '3.00')):
+            stock = Stock.objects.get(product=product, branch=self.branch)
+            stock.average_unit_cost = Decimal(cost)
+            stock.save(update_fields=('average_unit_cost', 'updated_at'))
+        register = CashRegister.objects.create(branch=self.branch, name='M6 Counter')
+        session = open_session(
+            cash_register=register, opening_amount=Decimal('0.00'), user=self.owner,
+            current_branch=self.branch,
+        )
+        cash = next(method for method in ensure_default_payment_methods(self.company) if method.code == 'cash')
+        sale = finalize_sale(
+            branch=self.branch, user=self.owner, operation_type=OperationType.SALE,
+            cash_session=session.pk, seller_user=self.owner.pk,
+            items=[{'product': self.combo.pk, 'quantity': '1', 'modifiers': self.selections(3, 2)}],
+            payments=[{'payment_method': cash.pk, 'amount': 'auto', 'received_amount': '100.00'}],
+            idempotency_key=uuid.uuid4(),
+        )
+        components = sale.items.get().component_cost_snapshot
+        self.assertEqual({row['product'] for row in components}, {
+            self.black.pk, self.watermelon.pk, self.tropical.pk,
+        })
+        movements = {movement.stock.product_id: movement for movement in sale.stock_movements.select_related('stock__product')}
+        self.assertEqual(movements[self.watermelon.pk].unit_cost_snapshot, Decimal('2.000000000000'))
+        self.assertEqual(movements[self.tropical.pk].unit_cost_snapshot, Decimal('3.000000000000'))
+        cancel_sale(sale=sale, branch=self.branch, user=self.owner, reason='Teste de substituição')
+        self.assertEqual(Stock.objects.get(product=self.watermelon, branch=self.branch).current_quantity, Decimal('10'))
+        self.assertEqual(Stock.objects.get(product=self.tropical, branch=self.branch).current_quantity, Decimal('10'))
+
+    def test_operational_records_are_independent_between_branches(self):
+        other_branch = Branch.objects.create(company=self.company, name='M6 Outra')
+        other_category = Category.objects.create(
+            company=self.company, branch=other_branch, name=self.category.name,
+        )
+        ProductBranchConfig.objects.create(
+            product=self.red_bull, branch=other_branch, category=other_category,
+        )
+        other_group = ModifierGroup.objects.create(
+            company=self.company, branch=other_branch, name=self.group.name,
+        )
+        supplier = Supplier.objects.create(
+            company=self.company, branch=self.branch, trade_name='Fornecedor M6'
+        )
+
+        self.assertFalse(Category.objects.filter(pk=self.category.pk, branch=other_branch).exists())
+        self.assertFalse(ModifierGroup.objects.filter(pk=self.group.pk, branch=other_branch).exists())
+        self.assertNotEqual(supplier.branch_id, other_branch.pk)
+
+        from apps.products.services import soft_delete_modifier_group
+
+        soft_delete_modifier_group(group=self.group, user=self.owner)
+        self.assertFalse(ModifierGroup.objects.filter(pk=self.group.pk).exists())
+        self.assertTrue(ModifierGroup.objects.filter(pk=other_group.pk).exists())
+        self.assertTrue(ProductBranchConfig.objects.filter(
+            product=self.red_bull, branch=other_branch, category=other_category,
+        ).exists())
 
     def test_deleted_or_cross_tenant_option_is_blocked(self):
         from apps.products.services import soft_delete_modifier_option

@@ -26,7 +26,7 @@ import {
   StatusBadge,
   TableLoading,
 } from "@/components/ui";
-import { formatDate } from "@/lib/format";
+import { formatDate, formatDecimalBRL, formatEditableDecimal, formatPercent } from "@/lib/format";
 import { ApiError, friendlyError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
@@ -147,7 +147,7 @@ function Promotions() {
           name: item.name,
           branch: item.branch,
           discount_type: item.discount_type,
-          discount_value: item.discount_value,
+          discount_value: formatEditableDecimal(item.discount_value),
           starts_at: localDatetime(item.starts_at),
           ends_at: item.ends_at ? localDatetime(item.ends_at) : "",
           schedules: item.schedules.map((s) => ({
@@ -324,8 +324,8 @@ function Promotions() {
                         </td>
                         <td>
                           {item.discount_type === "percentage"
-                            ? `${item.discount_value}%`
-                            : `R$ ${item.discount_value}`}
+                            ? formatPercent(item.discount_value)
+                            : formatDecimalBRL(item.discount_value)}
                         </td>
                         <td>
                           <span className="block text-xs">

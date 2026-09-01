@@ -1,4 +1,4 @@
-import { formatBRL } from "@/lib/format";
+import { formatDecimalBRL as formatBRL } from "@/lib/format";
 import { signedMoneyToCents } from "@/lib/cash";
 
 export function CashStatus({ status }: { status: "open" | "closed" | "cancelled" }) {

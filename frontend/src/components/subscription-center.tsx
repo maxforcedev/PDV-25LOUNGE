@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, ArrowRightLeft, CalendarClock, CreditCard, History, LifeBuoy, Users } from "lucide-react";
 import { Alert, Button, EmptyState, Field, Modal, Select, Spinner, Textarea, Input } from "@/components/ui";
-import { fieldError, formatBRL, formatDate } from "@/lib/format";
+import { fieldError, formatDate, formatDecimalBRL as formatBRL } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { useAuth } from "@/providers/auth-provider";
 import type { BillingRecord, OwnerSubscriptionContext, PublicPlan, SubscriptionChangeRequest, SupportSessionContext } from "@/types";

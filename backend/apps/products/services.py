@@ -2,6 +2,8 @@ import re
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
+from django.db.models import F, Q
+from django.utils import timezone
 
 from apps.companies.models import Branch, Company
 
@@ -14,7 +16,7 @@ from .models import (
 
 
 @transaction.atomic
-def create_product(*, components=None, fraction_components=None, **product_data):
+def create_product(*, branch=None, components=None, fraction_components=None, **product_data):
     company = Company.objects.select_for_update().get(pk=product_data['company'].pk)
     product_data['company'] = company
     desired_sellable = product_data.get('is_sellable', True)
@@ -56,14 +58,79 @@ def create_product(*, components=None, fraction_components=None, **product_data)
         if desired_sellable:
             product.is_sellable = True
             product.save(update_fields=('is_sellable', 'updated_at'))
+    if branch is not None:
+        branch = Branch.objects.select_for_update().get(pk=branch.pk if hasattr(branch, 'pk') else branch)
+        if branch.company_id != product.company_id:
+            raise ValidationError({'branch': 'A filial deve pertencer a empresa do produto.'})
+        ProductBranchConfig.objects.create(
+            product=product, branch=branch, category=product.category,
+        )
     return product
 
 
 @transaction.atomic
-def reorder_categories(*, company, category_ids):
-    Company.objects.select_for_update().get(pk=company.pk)
+def soft_delete_category(*, category, user):
+    category = Category.objects.select_for_update().get(pk=category.pk)
+    if category.deleted_at is not None:
+        return category
+    if ProductBranchConfig.objects.filter(
+        category=category,
+        is_available=True,
+        product__status='active',
+        product__archived_at__isnull=True,
+    ).exists():
+        raise ValidationError({
+            'category': 'A categoria possui produtos operacionais ativos vinculados.'
+        })
+    now = timezone.now()
+    Category.objects.filter(pk=category.pk).update(
+        deleted_at=now, deleted_by=user, status='inactive', updated_at=now,
+    )
+    category.deleted_at = now
+    category.deleted_by = user
+    category.status = 'inactive'
+    return category
+
+
+@transaction.atomic
+def restore_product(*, product, user):
+    product = Product.objects.select_for_update().select_related('company').get(pk=product.pk)
+    Company.objects.select_for_update().get(pk=product.company_id)
+    if product.archived_at is None:
+        return product
+    conflicts = {}
+    checks = (
+        ('name', 'normalized_name', product.normalized_name),
+        ('internal_code', 'internal_code__iexact', product.internal_code),
+        ('barcode', 'barcode__iexact', product.barcode),
+        ('sku', 'sku__iexact', product.sku),
+    )
+    for field, lookup, value in checks:
+        if value and Product.objects.filter(
+            company_id=product.company_id,
+            archived_at__isnull=True,
+            **{lookup: value},
+        ).exclude(pk=product.pk).exists():
+            conflicts[field] = f'Já existe um produto ativo com o mesmo {field}.'
+    invalid_configs = product.branch_configs.filter(
+        Q(category__deleted_at__isnull=False)
+        | ~Q(category__branch_id=F('branch_id'))
+    )
+    if invalid_configs.exists():
+        conflicts['branch_configuration'] = 'A configuração possui categoria excluída ou de outra filial.'
+    if conflicts:
+        raise ValidationError(conflicts)
+    product.archived_at = None
+    product.archived_by = None
+    product.save(update_fields=('archived_at', 'archived_by', 'updated_at'))
+    return product
+
+
+@transaction.atomic
+def reorder_categories(*, branch, category_ids):
+    Branch.objects.select_for_update().get(pk=branch.pk)
     categories = list(
-        Category.objects.select_for_update().filter(company=company)
+        Category.objects.select_for_update().filter(branch=branch)
     )
     if len(category_ids) != len(set(category_ids)) or set(category_ids) != {
         category.pk for category in categories
@@ -91,10 +158,10 @@ def _reorder(*, queryset, item_ids, field_name):
 
 
 @transaction.atomic
-def reorder_modifier_groups(*, company, group_ids):
-    Company.objects.select_for_update().get(pk=company.pk)
+def reorder_modifier_groups(*, branch, group_ids):
+    Branch.objects.select_for_update().get(pk=branch.pk)
     return _reorder(
-        queryset=ModifierGroup.objects.filter(company=company), item_ids=group_ids,
+        queryset=ModifierGroup.objects.filter(branch=branch), item_ids=group_ids,
         field_name='group_ids',
     )
 
@@ -109,10 +176,12 @@ def reorder_modifier_options(*, group, option_ids):
 
 
 @transaction.atomic
-def reorder_product_modifier_groups(*, product, link_ids):
+def reorder_product_modifier_groups(*, product, branch, link_ids):
     Product.objects.select_for_update().get(pk=product.pk)
     return _reorder(
-        queryset=ProductModifierGroup.objects.filter(product=product), item_ids=link_ids,
+        queryset=ProductModifierGroup.objects.filter(
+            product=product, modifier_group__branch=branch
+        ), item_ids=link_ids,
         field_name='link_ids',
     )
 
@@ -307,9 +376,31 @@ def copy_branch_configuration(*, products, source_branch, target_branches):
             config, _created = ProductBranchConfig.objects.get_or_create(
                 product=product,
                 branch=target,
-                defaults={'is_available': True},
+                defaults={'is_available': False},
             )
-            config.is_available = source_config.is_available if source_config else True
+            config.is_available = source_config.is_available if source_config else False
+            if source_config and source_config.category_id:
+                source_category = source_config.category
+                target_category = Category.objects.filter(
+                    branch=target, name__iexact=source_category.name
+                ).first()
+                if target_category is None:
+                    target_category = Category.objects.create(
+                        company=product.company,
+                        branch=target,
+                        name=source_category.name,
+                        description=source_category.description,
+                        sort_order=source_category.sort_order,
+                        available_counter=source_category.available_counter,
+                        available_table=source_category.available_table,
+                        available_command=source_category.available_command,
+                        participates_in_service_fee=source_category.participates_in_service_fee,
+                        participates_in_commission=source_category.participates_in_commission,
+                        status=source_category.status,
+                    )
+                config.category = target_category
+            else:
+                config.category = None
             for field in ('available_counter', 'available_table', 'available_command'):
                 setattr(config, field, getattr(source_config, field) if source_config else None)
             config.save()
@@ -360,7 +451,7 @@ def branch_configuration_snapshot(product, branch):
     }
     return {
         'branch_id': branch.pk,
-        'is_available': config.is_available if config else True,
+        'is_available': config.is_available if config else False,
         'channel_overrides': overrides,
         'effective_channels': {
             channel: (

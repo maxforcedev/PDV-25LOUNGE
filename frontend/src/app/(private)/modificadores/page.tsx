@@ -15,7 +15,7 @@ import {
   TableLoading,
   Select,
 } from "@/components/ui";
-import { fieldError, formatBRL } from "@/lib/format";
+import { decimalCompare, decimalIsZero, fieldError, formatDecimalBRL, formatEditableDecimal, formatQuantity } from "@/lib/format";
 import { ApiError, friendlyError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
@@ -29,7 +29,7 @@ interface OptionForm {
 }
 
 function ModifiersPage() {
-  const { currentCompany, hasPermission, supportSession } = useAuth();
+  const { currentCompany, currentBranch, hasPermission, supportSession } = useAuth();
   const readOnly = supportSession?.mode === "READ_ONLY";
   const canChange = hasPermission(permissions.changeModifiers) && !readOnly;
   const [groups, setGroups] = useState<ModifierGroup[]>([]);
@@ -46,6 +46,8 @@ function ModifiersPage() {
     min_selections: "0",
     max_selections: "",
     allow_option_quantity: false,
+    min_total_quantity: "0",
+    max_total_quantity: "",
     substitution_component: "",
   });
   const [options, setOptions] = useState<OptionForm[]>([]);
@@ -69,10 +71,10 @@ function ModifiersPage() {
   const [draggedOptionId, setDraggedOptionId] = useState<number | null>(null);
   const context = useRef("");
 
-  context.current = String(currentCompany?.id || "");
+  context.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}`;
 
   async function load(token: string) {
-    if (!currentCompany) {
+    if (!currentCompany || !currentBranch) {
       setGroups([]);
       setLoading(false);
       return;
@@ -100,11 +102,11 @@ function ModifiersPage() {
   loadRef.current = load;
   useEffect(() => {
     setGroups([]);
-    void loadRef.current(String(currentCompany?.id || ""));
-  }, [currentCompany?.id]);
+    void loadRef.current(`${currentCompany?.id || ""}:${currentBranch?.id || ""}`);
+  }, [currentCompany?.id, currentBranch?.id]);
 
   useEffect(() => {
-    if (!currentCompany) {
+    if (!currentCompany || !currentBranch) {
       setStockProducts([]);
       return;
     }
@@ -114,7 +116,7 @@ function ModifiersPage() {
       )
       .then(setStockProducts)
       .catch(() => setStockProducts([]));
-  }, [currentCompany?.id]);
+  }, [currentCompany?.id, currentBranch?.id]);
 
   function openCreate() {
     setEditing(null);
@@ -124,6 +126,8 @@ function ModifiersPage() {
       min_selections: "0",
       max_selections: "",
       allow_option_quantity: false,
+      min_total_quantity: "0",
+      max_total_quantity: "",
       substitution_component: "",
     });
     setOptions([]);
@@ -140,6 +144,8 @@ function ModifiersPage() {
       max_selections:
         group.max_selections != null ? String(group.max_selections) : "",
       allow_option_quantity: group.allow_option_quantity,
+      min_total_quantity: formatEditableDecimal(group.min_total_quantity),
+      max_total_quantity: formatEditableDecimal(group.max_total_quantity || ""),
       substitution_component: group.substitution_component
         ? String(group.substitution_component)
         : "",
@@ -152,12 +158,26 @@ function ModifiersPage() {
     if (!currentCompany) return;
     const minimum = Number(form.min_selections) || 0;
     const maximum = form.max_selections ? Number(form.max_selections) : null;
+    const minimumTotal = form.allow_option_quantity
+      ? formatEditableDecimal(form.min_total_quantity || "0")
+      : "0";
+    const maximumTotal = form.allow_option_quantity && form.max_total_quantity
+      ? formatEditableDecimal(form.max_total_quantity)
+      : null;
     if (form.is_required && minimum < 1) {
       setError("Grupo obrigatório exige pelo menos uma seleção.");
       return;
     }
     if (maximum !== null && minimum > maximum) {
       setError("A seleção máxima não pode ser menor que a mínima.");
+      return;
+    }
+    if (!minimumTotal || (maximumTotal !== null && !maximumTotal)) {
+      setError("Informe limites totais válidos, com até 3 casas decimais.");
+      return;
+    }
+    if (maximumTotal !== null && decimalCompare(minimumTotal, maximumTotal) === 1) {
+      setError("A quantidade total máxima não pode ser menor que a mínima.");
       return;
     }
     setSaving(true);
@@ -170,6 +190,8 @@ function ModifiersPage() {
       min_selections: minimum,
       max_selections: maximum,
       allow_option_quantity: form.allow_option_quantity,
+      min_total_quantity: minimumTotal,
+      max_total_quantity: maximumTotal,
       substitution_component: form.substitution_component
         ? Number(form.substitution_component)
         : null,
@@ -247,7 +269,7 @@ function ModifiersPage() {
     setOptionForm({
       name: opt.name,
       option_type: opt.option_type === "text" ? "add" : opt.option_type,
-      additional_price: opt.additional_price,
+      additional_price: formatEditableDecimal(opt.additional_price),
       stock_product: opt.stock_product ? String(opt.stock_product) : "",
     });
   }
@@ -425,10 +447,18 @@ function ModifiersPage() {
                     </td>
                     <td>{group.is_required ? "Sim" : "Não"}</td>
                     <td>
-                      {group.min_selections}
+                      Distintas: {group.min_selections}
                       {group.max_selections != null
                         ? ` / ${group.max_selections}`
                         : " / ∞"}
+                      {group.allow_option_quantity && (
+                        <div className="text-xs text-muted">
+                          Total: {formatQuantity(group.min_total_quantity)}
+                          {group.max_total_quantity != null
+                            ? ` / ${formatQuantity(group.max_total_quantity)}`
+                            : " / ∞"}
+                        </div>
+                      )}
                     </td>
                     <td>{group.allow_option_quantity ? "Sim" : "Não"}</td>
                     {canChange && (
@@ -485,7 +515,7 @@ function ModifiersPage() {
           </Field>
           <div className="grid gap-4 sm:grid-cols-3">
             <Field
-              label="Seleção mínima"
+              label="Mínimo de opções distintas"
               error={fieldError(fields, "min_selections")}
             >
               <Input
@@ -499,7 +529,7 @@ function ModifiersPage() {
               />
             </Field>
             <Field
-              label="Seleção máxima (vazio = ilimitado)"
+              label="Máximo de opções distintas (vazio = ilimitado)"
               error={fieldError(fields, "max_selections")}
             >
               <Input
@@ -539,6 +569,40 @@ function ModifiersPage() {
               Permitir quantidade por opção
             </label>
           </div>
+          {form.allow_option_quantity && (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field
+                label="Quantidade total mínima"
+                error={fieldError(fields, "min_total_quantity")}
+              >
+                <Input
+                  inputMode="decimal"
+                  min="0"
+                  step="0.001"
+                  value={form.min_total_quantity}
+                  onChange={(e) =>
+                    setForm({ ...form, min_total_quantity: e.target.value })
+                  }
+                  disabled={saving}
+                />
+              </Field>
+              <Field
+                label="Quantidade total máxima (vazio = ilimitado)"
+                error={fieldError(fields, "max_total_quantity")}
+              >
+                <Input
+                  inputMode="decimal"
+                  min="0"
+                  step="0.001"
+                  value={form.max_total_quantity}
+                  onChange={(e) =>
+                    setForm({ ...form, max_total_quantity: e.target.value })
+                  }
+                  disabled={saving}
+                />
+              </Field>
+            </div>
+          )}
           <Field
             label="Componente substituído"
             optional
@@ -624,8 +688,8 @@ function ModifiersPage() {
                                     : "Observação"}
                           {opt.stock_product_name &&
                             ` · ${opt.stock_product_name}`}
-                          {opt.additional_price !== "0" &&
-                            ` · ${formatBRL(opt.additional_price)}`}
+                          {!decimalIsZero(opt.additional_price) &&
+                            ` · ${formatDecimalBRL(opt.additional_price)}`}
                         </div>
                       </div>
                       {canChange && (
@@ -720,15 +784,7 @@ function ModifiersPage() {
                           disabled={saving}
                         >
                           <option value="">Selecione</option>
-                          {stockProducts
-                            .filter(
-                              (product) =>
-                                optionForm.option_type !==
-                                  "component_substitution" ||
-                                product.id !==
-                                  viewingGroup?.substitution_component,
-                            )
-                            .map((product) => (
+                          {stockProducts.map((product) => (
                               <option key={product.id} value={product.id}>
                                 {product.name} ({product.unit.toUpperCase()})
                               </option>

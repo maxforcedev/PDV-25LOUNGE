@@ -5,7 +5,7 @@ import { Pencil, Plus, Power, ShieldCheck, Users } from "lucide-react";
 import { AdminGuard } from "@/components/admin-guard";
 import { PageHeader } from "@/components/page-header";
 import { Alert, Button, ConfirmDialog, EmptyState, Field, Input, Modal, Pagination, StatusBadge, TableLoading, Textarea } from "@/components/ui";
-import { fieldError, formatDate } from "@/lib/format";
+import { fieldError, formatDate, formatEditableDecimal } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
@@ -86,7 +86,7 @@ function Profiles() {
     try {
       const detail = await http.get<AccessProfile>(`access-profiles/${profile.id}/`);
       if (companyIdRef.current !== requestedCompanyId || detail.company !== requestedCompanyId) return;
-      setEditing(detail); setForm({ company: detail.company, name: detail.name, description: detail.description || "", receives_commission: detail.receives_commission ?? true, commission_rate: detail.commission_rate ?? null, permission_codes: detail.permission_codes }); setFields({}); setOpen(true);
+       setEditing(detail); setForm({ company: detail.company, name: detail.name, description: detail.description || "", receives_commission: detail.receives_commission ?? true, commission_rate: detail.commission_rate === null ? null : formatEditableDecimal(detail.commission_rate), permission_codes: detail.permission_codes }); setFields({}); setOpen(true);
     } catch (caught) { setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar o perfil."); }
   }
 

@@ -78,7 +78,7 @@ def _item_matches(item, filters):
         (filters.get('product') is None or item.product_id == filters['product'])
         and (
             filters.get('category') is None
-            or item.product.category_id == filters['category']
+            or item.category_id_snapshot == filters['category']
         )
     )
 

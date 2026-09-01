@@ -51,8 +51,10 @@ class StockSerializer(serializers.ModelSerializer):
     company_name = serializers.CharField(source='branch.company.trade_name', read_only=True)
     unit = serializers.CharField(source='product.unit', read_only=True)
     state = serializers.SerializerMethodField()
-    category = serializers.IntegerField(source='product.category_id', read_only=True)
-    category_name = serializers.CharField(source='product.category.name', read_only=True)
+    category = serializers.SerializerMethodField()
+    category_name = serializers.SerializerMethodField()
+    product_deleted = serializers.SerializerMethodField()
+    product_deleted_at = serializers.DateTimeField(source='product.archived_at', read_only=True)
     unit_cost = serializers.SerializerMethodField()
     total_cost = serializers.SerializerMethodField()
     product_status = serializers.CharField(source='product.status', read_only=True)
@@ -70,7 +72,8 @@ class StockSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'product', 'product_name', 'internal_code', 'branch', 'branch_name',
             'company', 'company_name', 'category', 'category_name', 'unit',
-            'unit_cost', 'total_cost', 'product_status', 'inventory_behavior',
+            'unit_cost', 'total_cost', 'product_status', 'product_deleted',
+            'product_deleted_at', 'inventory_behavior',
             'average_unit_cost', 'last_unit_cost', 'current_quantity',
             'equivalent_quantity', 'current_content', 'package_content',
             'content_unit', 'complete_packages', 'residual_content',
@@ -87,6 +90,22 @@ class StockSerializer(serializers.ModelSerializer):
         if quantity < obj.minimum_quantity:
             return 'below_minimum'
         return 'normal'
+
+    @staticmethod
+    def _branch_config(obj):
+        configs = getattr(obj.product, '_inventory_branch_configs', ())
+        return next((item for item in configs if item.branch_id == obj.branch_id), None)
+
+    def get_category(self, obj):
+        config = self._branch_config(obj)
+        return config.category_id if config else None
+
+    def get_category_name(self, obj):
+        config = self._branch_config(obj)
+        return config.category.name if config and config.category_id else ''
+
+    def get_product_deleted(self, obj):
+        return obj.product.archived_at is not None
 
     def get_total_cost(self, obj):
         value = exact_multiply_quantized(

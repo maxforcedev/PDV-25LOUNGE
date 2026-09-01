@@ -27,6 +27,7 @@ import {
   TableLoading,
 } from "@/components/ui";
 import {
+  decimalIsZero,
   fieldError,
   formatDate,
   formatDecimalBRL,
@@ -44,6 +45,7 @@ import type {
   ProductBranchConfig,
   ProductModifierGroup,
   ProductPurchasePresentation,
+  PresentationType,
   PrinterDevice,
   Supplier,
   UserBranch,
@@ -94,8 +96,9 @@ type UnitForm = {
   is_default: boolean;
 };
 type PresentationForm = {
-  unit_code: string;
-  description: string;
+  presentation_type: PresentationType;
+  custom_code: string;
+  custom_name: string;
   conversion_factor: string;
 };
 
@@ -111,10 +114,15 @@ const emptyUnit = (): UnitForm => ({
   is_default: false,
 });
 const emptyPresentation = (): PresentationForm => ({
-  unit_code: "",
-  description: "",
+  presentation_type: "CX",
+  custom_code: "",
+  custom_name: "",
   conversion_factor: "1",
 });
+const presentationNames: Record<PresentationType, string> = {
+  UN: "Unidade", CX: "Caixa", FD: "Fardo", PK: "Pack", PCT: "Pacote",
+  ENG: "Engradado", DSP: "Display", BDJ: "Bandeja", SC: "Saco", KIT: "Kit", OTHER: "Outro",
+};
 const channelLabels = {
   counter: "Balcão",
   table: "Mesa",
@@ -583,8 +591,11 @@ export function ProductV26Sections({
     setPresentationForm(
       presentation
         ? {
-            unit_code: presentation.unit_code,
-            description: presentation.description,
+            presentation_type: (presentation.unit_code in presentationNames
+              ? presentation.unit_code
+              : "OTHER") as PresentationType,
+            custom_code: presentation.unit_code in presentationNames ? "" : presentation.unit_code,
+            custom_name: "",
             conversion_factor: formatEditableDecimal(
               presentation.conversion_factor,
             ),
@@ -600,8 +611,13 @@ export function ProductV26Sections({
     const payload = {
       company: companyId,
       product: product.id,
-      unit_code: presentationForm.unit_code.trim().toUpperCase(),
-      description: presentationForm.description.trim(),
+      presentation_type: presentationForm.presentation_type,
+      ...(presentationForm.presentation_type === "OTHER"
+        ? {
+            custom_code: presentationForm.custom_code.trim().toUpperCase(),
+            custom_name: presentationForm.custom_name.trim(),
+          }
+        : {}),
       conversion_factor: presentationForm.conversion_factor.replace(",", "."),
     };
     const saved = await run(
@@ -903,7 +919,7 @@ export function ProductV26Sections({
                     <div className="min-w-0 flex-1">
                       <strong className="block">{group.name}</strong>
                       <span className="text-[10px] text-muted">
-                        {`${group.is_required ? "Obrigatório" : "Opcional"} · ${group.min_selections}/${group.max_selections ?? "∞"}${group.allow_option_quantity ? " · permite quantidade" : ""}`}
+                        {`${group.is_required ? "Obrigatório" : "Opcional"} · distintas ${group.min_selections}/${group.max_selections ?? "∞"}${group.allow_option_quantity ? ` · total ${formatQuantity(group.min_total_quantity)}/${group.max_total_quantity != null ? formatQuantity(group.max_total_quantity) : "∞"}` : ""}`}
                       </span>
                     </div>
                   </div>
@@ -914,7 +930,7 @@ export function ProductV26Sections({
                         ? group.options
                             .map(
                               (option) =>
-                                `${option.name}${option.additional_price !== "0.00" ? ` (+${formatDecimalBRL(option.additional_price)})` : ""}`,
+                                `${option.name}${!decimalIsZero(option.additional_price) ? ` (+${formatDecimalBRL(option.additional_price)})` : ""}`,
                             )
                             .join(" · ")
                         : "Nenhuma opção cadastrada."}
@@ -1636,18 +1652,18 @@ export function ProductV26Sections({
       >
         <form onSubmit={savePresentation}>
           <div className="grid gap-4 p-5 sm:grid-cols-2">
-            <Field label="Código" error={fieldError(fields, "unit_code")}>
-              <Input
-                required
-                maxLength={20}
-                value={presentationForm.unit_code}
-                onChange={(event) =>
-                  setPresentationForm((value) => ({
-                    ...value,
-                    unit_code: event.target.value.toUpperCase(),
-                  }))
-                }
-              />
+            <Field label="Código" error={fieldError(fields, "presentation_type")}>
+              <Select
+                value={presentationForm.presentation_type}
+                onChange={(event) => setPresentationForm((value) => ({
+                  ...value,
+                  presentation_type: event.target.value as PresentationType,
+                }))}
+              >
+                {Object.entries(presentationNames).map(([code, name]) => (
+                  <option key={code} value={code}>{code} - {name}</option>
+                ))}
+              </Select>
             </Field>
             <Field
               label="Quantidade na unidade de estoque"
@@ -1666,24 +1682,36 @@ export function ProductV26Sections({
                 }
               />
             </Field>
-            <Field
-              label="Descrição"
-              error={fieldError(fields, "description")}
-            >
+            {presentationForm.presentation_type === "OTHER" ? <>
+              <Field label="Sigla personalizada" error={fieldError(fields, "custom_code")}>
               <Input
                 required
-                maxLength={200}
-                value={presentationForm.description}
+                maxLength={20}
+                value={presentationForm.custom_code}
                 onChange={(event) =>
                   setPresentationForm((value) => ({
                     ...value,
-                    description: event.target.value,
+                    custom_code: event.target.value.toUpperCase(),
                   }))
                 }
               />
-            </Field>
+              </Field>
+              <Field label="Nome personalizado" error={fieldError(fields, "custom_name")}>
+                <Input
+                  required
+                  maxLength={100}
+                  value={presentationForm.custom_name}
+                  onChange={(event) => setPresentationForm((value) => ({
+                    ...value,
+                    custom_name: event.target.value,
+                  }))}
+                />
+              </Field>
+            </> : null}
             <p className="self-end text-[11px] text-muted">
-              1 {presentationForm.unit_code || "apresentação"} = {formatQuantity(presentationForm.conversion_factor || "0")} {product.unit.toUpperCase()}.
+              {presentationForm.presentation_type === "OTHER"
+                ? presentationForm.custom_name || "Outro"
+                : presentationNames[presentationForm.presentation_type]} com {formatQuantity(presentationForm.conversion_factor || "0")} {product.unit.toUpperCase()}.
             </p>
           </div>
           <div className="flex justify-end gap-2 border-t border-subtle px-5 py-4">

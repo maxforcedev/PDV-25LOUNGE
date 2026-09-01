@@ -125,6 +125,8 @@ def _validate_product_supplier(unit, *, company, supplier, allow_exclusive=False
         errors['product'] = 'O produto deve pertencer a empresa da compra.'
     if product.status != Status.ACTIVE:
         errors['product'] = 'O produto deve estar ativo.'
+    if product.archived_at is not None:
+        errors['product'] = 'O produto está arquivado.'
     if product.inventory_behavior != InventoryBehavior.DIRECT:
         errors['product'] = 'Somente produtos com estoque proprio podem ser comprados.'
     exclusive = ProductSupplier.objects.filter(
@@ -182,6 +184,8 @@ def _validate_purchase_item(item, *, company, supplier, allow_exclusive=False):
         errors['product'] = 'O produto deve pertencer a empresa da compra.'
     if product.status != Status.ACTIVE:
         errors['product'] = 'O produto deve estar ativo.'
+    if product.archived_at is not None:
+        errors['product'] = 'O produto está arquivado.'
     if product.inventory_behavior != InventoryBehavior.DIRECT:
         errors['product'] = 'Somente produtos com estoque proprio podem ser comprados.'
     exclusive = ProductSupplier.objects.filter(
@@ -196,16 +200,40 @@ def _validate_purchase_item(item, *, company, supplier, allow_exclusive=False):
     return None, product
 
 
+def _assert_supplier_available_for_branch(*, supplier, branch):
+    if supplier.branch_id != branch.pk or supplier.deleted_at is not None:
+        raise ValidationError({
+            'supplier': 'O fornecedor não pertence à filial atual.'
+        })
+
+
+def _assert_product_available_for_branch(*, product, branch):
+    from apps.products.models import ProductBranchConfig
+
+    if product.archived_at is not None:
+        raise ValidationError({'product': 'O produto está arquivado.'})
+    if not ProductBranchConfig.objects.filter(
+        product=product, branch=branch, is_available=True
+    ).exists():
+        raise ValidationError({
+            'product': 'O produto não está habilitado na filial da compra.'
+        })
+
+
 def _create_items(order, raw_items, *, allow_exclusive=False):
     if not isinstance(raw_items, list) or not raw_items:
         raise ValidationError({'items': 'Informe ao menos um item.'})
     unit_ids = []
     product_ids = []
+    presentation_ids = []
     for index, raw in enumerate(raw_items):
         if not isinstance(raw, dict):
             raise ValidationError({'items': f'Item {index + 1}: formato inválido.'})
         unit_id = raw.get('product_supplier_unit')
         product_id = raw.get('product')
+        presentation_id = raw.get('purchase_presentation')
+        if presentation_id not in (None, ''):
+            presentation_ids.append(int(presentation_id))
         if unit_id in (None, ''):
             if product_id in (None, ''):
                 raise ValidationError({
@@ -218,6 +246,8 @@ def _create_items(order, raw_items, *, allow_exclusive=False):
         raise ValidationError({'items': 'Não repita a mesma apresentação na compra.'})
     if len(product_ids) != len(set(product_ids)):
         raise ValidationError({'items': 'Não repita o mesmo produto na compra.'})
+    if len(presentation_ids) != len(set(presentation_ids)):
+        raise ValidationError({'items': 'Não repita a mesma apresentação na compra.'})
 
     units = {
         unit.pk: unit
@@ -236,10 +266,19 @@ def _create_items(order, raw_items, *, allow_exclusive=False):
     } if product_ids else {}
     if len(direct_products) != len(product_ids):
         raise ValidationError({'items': 'Um produto informado é inválido ou não pertence à empresa.'})
+    presentations = {
+        item.pk: item
+        for item in ProductPurchasePresentation.objects.select_for_update(of=('self',)).select_related(
+            'product'
+        ).filter(pk__in=presentation_ids, company_id=order.company_id).order_by('pk')
+    } if presentation_ids else {}
+    if len(presentations) != len(presentation_ids):
+        raise ValidationError({'items': 'Uma apresentação informada é inválida.'})
 
     created = []
     for index, raw in enumerate(raw_items, start=1):
         unit_id = raw.get('product_supplier_unit')
+        presentation_id = raw.get('purchase_presentation')
         if unit_id not in (None, ''):
             unit = units[int(unit_id)]
             relation, product = _validate_product_supplier(
@@ -248,7 +287,12 @@ def _create_items(order, raw_items, *, allow_exclusive=False):
             supplied_product = raw.get('product')
             if supplied_product not in (None, '') and int(_pk(supplied_product)) != product.pk:
                 raise ValidationError({'items': f'Item {index}: produto e apresentação divergem.'})
-            presentation = unit.purchase_presentation
+            presentation = (
+                presentations.get(int(presentation_id))
+                if presentation_id not in (None, '') else unit.purchase_presentation
+            )
+            if presentation and presentation.product_id != product.pk:
+                raise ValidationError({'items': f'Item {index}: produto e apresentação divergem.'})
             if presentation is None:
                 # Legacy supplier units are normalized before their first purchase snapshot.
                 presentation, _created = ProductPurchasePresentation.objects.get_or_create(
@@ -277,12 +321,23 @@ def _create_items(order, raw_items, *, allow_exclusive=False):
             })()
             _validate_purchase_item(temporary, company=order.company, supplier=order.supplier, allow_exclusive=allow_exclusive)
             relation = None
-            conversion_factor = Decimal('1')
-            presentation_unit_code = product.unit
-            presentation_description = 'Unidade de estoque'
+            presentation = (
+                presentations.get(int(presentation_id))
+                if presentation_id not in (None, '') else None
+            )
+            if presentation and presentation.product_id != product.pk:
+                raise ValidationError({'items': f'Item {index}: produto e apresentação divergem.'})
+            if presentation and presentation.status != Status.ACTIVE:
+                raise ValidationError({
+                    'items': f'Item {index}: a apresentação do produto está inativa.'
+                })
+            conversion_factor = presentation.conversion_factor if presentation else Decimal('1')
+            presentation_unit_code = presentation.unit_code if presentation else product.unit
+            presentation_description = presentation.description if presentation else 'Unidade de estoque'
             supplier_code = ''
             product_supplier = None
             product_supplier_unit = None
+        _assert_product_available_for_branch(product=product, branch=order.branch)
         quantity = strict_decimal(
             raw.get('ordered_quantity', raw.get('quantity')),
             f'items.{index - 1}.ordered_quantity',
@@ -543,10 +598,12 @@ def create_purchase_order(*, branch, supplier, order_type, items, user,
     company = Company.objects.select_for_update().get(pk=branch.company_id)
     try:
         supplier = Supplier.objects.select_for_update().get(
-            pk=_pk(supplier), company=company, status=Status.ACTIVE
+            pk=_pk(supplier), company=company, branch=branch,
+            status=Status.ACTIVE, deleted_at__isnull=True,
         )
     except (Supplier.DoesNotExist, TypeError, ValueError) as error:
         raise ValidationError({'supplier': 'Fornecedor ativo invalido para esta empresa.'}) from error
+    _assert_supplier_available_for_branch(supplier=supplier, branch=branch)
     if order_type not in PurchaseOrderType.values:
         raise ValidationError({'order_type': 'Tipo de compra invalido.'})
     requested_discount = _money(global_discount, 'global_discount')
@@ -786,6 +843,7 @@ def place_purchase_order(*, purchase_order, user, support_session=None,
     )
     if order.order_type != PurchaseOrderType.ORDER or order.status != PurchaseOrderStatus.DRAFT:
         raise ValidationError({'status': 'Somente pedido em rascunho pode ser realizado.'})
+    _assert_supplier_available_for_branch(supplier=order.supplier, branch=order.branch)
     item_ids = list(order.items.values_list('pk', flat=True))
     items = list(
         order.items.select_for_update().filter(pk__in=item_ids)
@@ -803,6 +861,7 @@ def place_purchase_order(*, purchase_order, user, support_session=None,
             item, company=order.company, supplier=order.supplier,
             allow_exclusive=allow_exclusive,
         )
+        _assert_product_available_for_branch(product=item.product, branch=order.branch)
     _assert_installment_reconciliation(order)
     order.status = PurchaseOrderStatus.PLACED
     order.placed_by = user

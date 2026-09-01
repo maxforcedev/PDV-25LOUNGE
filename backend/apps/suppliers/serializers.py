@@ -4,7 +4,10 @@ from rest_framework import serializers
 
 from apps.companies.models import Status
 
-from .models import PresentationPreset, PresentationType, ProductPurchasePresentation, ProductSupplier, ProductSupplierUnit, Supplier
+from .models import (
+    PresentationPreset, PresentationType, ProductPurchasePresentation, ProductSupplier,
+    ProductSupplierUnit, Supplier,
+)
 from .services import (
     _save_presentation_preset, _save_product_purchase_presentation,
     _save_product_supplier, _save_product_supplier_unit, _save_supplier,
@@ -58,6 +61,7 @@ class ImmutableTenantSerializer(serializers.ModelSerializer):
 
 class SupplierSerializer(ImmutableTenantSerializer):
     company_name = serializers.CharField(source='company.trade_name', read_only=True)
+    branch_name = serializers.CharField(source='branch.name', read_only=True)
     legal_name = serializers.CharField(required=False, allow_blank=True, max_length=200)
     trade_name = serializers.CharField(required=True, allow_blank=False, max_length=200)
     tax_id = serializers.CharField(
@@ -68,11 +72,14 @@ class SupplierSerializer(ImmutableTenantSerializer):
     class Meta:
         model = Supplier
         fields = (
-            'id', 'company', 'company_name', 'legal_name', 'trade_name', 'tax_id',
+            'id', 'company', 'company_name', 'branch', 'branch_name', 'legal_name', 'trade_name', 'tax_id',
             'phone', 'email', 'contact_name', 'address', 'notes', 'status',
+            'deleted_at', 'created_at', 'updated_at',
+        )
+        read_only_fields = (
+            'id', 'company_name', 'branch', 'branch_name', 'status', 'deleted_at',
             'created_at', 'updated_at',
         )
-        read_only_fields = ('id', 'company_name', 'status', 'created_at', 'updated_at')
         validators = []
 
     def validate_tax_id(self, value):
@@ -94,14 +101,19 @@ class SupplierSerializer(ImmutableTenantSerializer):
     def validate(self, attrs):
         attrs = super().validate(attrs)
         company = attrs.get('company', getattr(self.instance, 'company', None))
+        branch = getattr(self.context.get('request'), 'branch_context', None)
         tax_id = attrs.get('tax_id', getattr(self.instance, 'tax_id', None))
-        if company and tax_id:
-            duplicate = Supplier.objects.filter(company=company, tax_id=tax_id)
+        if company and branch and company.pk != branch.company_id:
+            raise serializers.ValidationError({'company': 'Empresa fora da filial atual.'})
+        if branch and tax_id:
+            duplicate = Supplier.objects.filter(
+                branch=branch, tax_id=tax_id, deleted_at__isnull=True,
+            )
             if self.instance:
                 duplicate = duplicate.exclude(pk=self.instance.pk)
             if duplicate.exists():
                 raise serializers.ValidationError({
-                    'tax_id': 'Outro fornecedor desta empresa já utiliza este CPF/CNPJ.'
+                    'tax_id': 'Outro fornecedor desta filial já utiliza este CPF/CNPJ.'
                 })
         return attrs
 
@@ -179,12 +191,20 @@ class ProductPurchasePresentationSerializer(ImmutableTenantSerializer):
     conversion_factor = serializers.DecimalField(
         max_digits=18, decimal_places=6, min_value=Decimal('0.000001')
     )
+    unit_code = serializers.CharField(required=False, max_length=20)
+    description = serializers.CharField(required=False, max_length=200)
+    presentation_type = serializers.ChoiceField(
+        choices=PresentationType.choices, required=False, write_only=True
+    )
+    custom_code = serializers.CharField(required=False, allow_blank=False, max_length=20, write_only=True)
+    custom_name = serializers.CharField(required=False, allow_blank=False, max_length=100, write_only=True)
 
     class Meta:
         model = ProductPurchasePresentation
         fields = (
             'id', 'company', 'company_name', 'product', 'product_name', 'unit_code',
-            'description', 'conversion_factor', 'status', 'created_at', 'updated_at',
+            'description', 'conversion_factor', 'presentation_type', 'custom_code', 'custom_name',
+            'status', 'created_at', 'updated_at',
         )
         read_only_fields = (
             'id', 'company_name', 'product_name', 'status', 'created_at', 'updated_at',
@@ -207,10 +227,28 @@ class ProductPurchasePresentationSerializer(ImmutableTenantSerializer):
         attrs = super().validate(attrs)
         company = attrs.get('company', getattr(self.instance, 'company', None))
         product = attrs.get('product', getattr(self.instance, 'product', None))
-        unit_code = attrs.get('unit_code', getattr(self.instance, 'unit_code', ''))
         factor = attrs.get(
             'conversion_factor', getattr(self.instance, 'conversion_factor', None)
         )
+        presentation_type = attrs.pop('presentation_type', None)
+        custom_code = attrs.pop('custom_code', '')
+        custom_name = attrs.pop('custom_name', '')
+        if presentation_type:
+            if presentation_type == PresentationType.OTHER and (not custom_code or not custom_name):
+                raise serializers.ValidationError({
+                    'custom_code': 'Informe a sigla e o nome da apresentação personalizada.'
+                })
+            quantity = PresentationPreset._quantity_text(factor)
+            unit_code = custom_code.strip().upper() if presentation_type == PresentationType.OTHER else presentation_type
+            friendly_name = (
+                ' '.join(custom_name.split())
+                if presentation_type == PresentationType.OTHER
+                else PresentationType(presentation_type).label
+            )
+            attrs['unit_code'] = unit_code
+            attrs['description'] = f'{friendly_name} com {quantity} {product.unit.upper()}'
+        unit_code = attrs.get('unit_code', getattr(self.instance, 'unit_code', ''))
+        description = attrs.get('description', getattr(self.instance, 'description', ''))
         errors = {}
         if company and product and company.pk != product.company_id:
             errors['product'] = 'O produto deve pertencer à empresa da apresentação.'
@@ -222,6 +260,10 @@ class ProductPurchasePresentationSerializer(ImmutableTenantSerializer):
                 duplicate = duplicate.exclude(pk=self.instance.pk)
             if duplicate.exists():
                 errors['non_field_errors'] = 'Esta apresentação já existe para o produto.'
+        if not unit_code:
+            errors['unit_code'] = 'Escolha o código da apresentação.'
+        if not description:
+            errors['description'] = 'A descrição da apresentação é obrigatória.'
         if errors:
             raise serializers.ValidationError(errors)
         return attrs

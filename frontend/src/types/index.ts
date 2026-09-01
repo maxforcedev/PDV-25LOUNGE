@@ -418,6 +418,7 @@ export interface Category {
     status: Status;
   }>;
   status: Status;
+  deleted_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -615,6 +616,8 @@ export interface Supplier {
   id: number;
   company: number;
   company_name: string;
+  branch: number;
+  branch_name: string;
   legal_name: string;
   trade_name: string;
   tax_id: string | null;
@@ -624,6 +627,7 @@ export interface Supplier {
   contact_name: string;
   notes: string;
   status: Status;
+  deleted_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -743,6 +747,7 @@ export interface ProductPriceComparison {
     internal_code: string;
     default_price: string;
     prices: Record<string, string | null>;
+    availability: Record<string, boolean>;
   }>;
 }
 
@@ -761,6 +766,8 @@ export interface Stock {
   average_unit_cost?: string | null;
   last_unit_cost?: string | null;
   product_status: Status;
+  product_deleted: boolean;
+  product_deleted_at: string | null;
   inventory_behavior: InventoryBehavior;
   current_quantity: string;
   current_content: string | null;
@@ -1355,6 +1362,8 @@ export interface ModifierGroup {
   min_selections: number;
   max_selections: number | null;
   allow_option_quantity: boolean;
+  min_total_quantity: string;
+  max_total_quantity: string | null;
   required_quantity?: string | null;
   substitution_component: number | null;
   inherit_component_quantity: boolean;

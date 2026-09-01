@@ -138,6 +138,7 @@ class MissionM3InventoryTests(TestCase):
             self.assertEqual(response.data['results'][0]['id'], self.alpha.pk)
 
     def test_history_exposes_a_typed_transfer_origin(self):
+        set_stock(self.destination, self.alpha, '0', '0')
         transfer = create_stock_transfer(
             origin_branch=self.branch,
             destination_branch=self.destination,

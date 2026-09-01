@@ -25,7 +25,7 @@ import {
   TableLoading,
   Textarea,
 } from "@/components/ui";
-import { formatDate, fieldError } from "@/lib/format";
+import { formatDate, fieldError, formatQuantity } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
@@ -802,7 +802,7 @@ export function PrintJobDetail({ id }: { id: string }) {
                   <div>
                     <dt className="text-xs text-muted">Quantidade</dt>
                     <dd>
-                      {order?.quantity || "-"} {order?.unit || ""}
+                       {order?.quantity ? formatQuantity(order.quantity) : "-"} {order?.unit || ""}
                     </dd>
                   </div>
                   <div>

@@ -7,7 +7,7 @@ import { AdminGuard } from "@/components/admin-guard";
 import { CashStatus } from "@/components/cash-ui";
 import { PageHeader } from "@/components/page-header";
 import { Alert, Button, ConfirmDialog, EmptyState, Field, Input, Modal, Pagination, Select, StatusBadge, TableLoading } from "@/components/ui";
-import { formatBRL, formatDate, fieldError } from "@/lib/format";
+import { fieldError, formatDate, formatDecimalBRL as formatBRL } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";

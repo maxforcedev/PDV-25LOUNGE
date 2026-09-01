@@ -18,10 +18,11 @@ import {
   TableLoading,
   Tooltip,
 } from "@/components/ui";
-import { formatBRL, formatDate, formatQuantity } from "@/lib/format";
+import { formatDate, formatDecimalBRL as formatBRL, formatQuantity } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { businessPeriodPreset } from "@/lib/period";
 import { permissions } from "@/lib/permissions";
+import { centsToDecimal, sumMoney } from "@/lib/sales";
 import { useAuth } from "@/providers/auth-provider";
 import type {
   AuditLog,
@@ -671,9 +672,10 @@ function AuditPageInner() {
                         </thead>
                         <tbody>
                           {saleItems(selected.metadata).map((item, index) => {
-                            const discount =
-                              Number(item.promotion_discount || 0) +
-                              Number(item.manual_item_discount || 0);
+                            const discount = sumMoney([
+                              item.promotion_discount || "0",
+                              item.manual_item_discount || "0",
+                            ]);
                             return (
                               <tr key={`${item.product_name}-${index}`}>
                                 <td className="font-semibold">
@@ -681,7 +683,7 @@ function AuditPageInner() {
                                 </td>
                                 <td>{formatQuantity(item.quantity)}</td>
                                 <td>{formatBRL(item.unit_price)}</td>
-                                <td>{formatBRL(discount.toFixed(2))}</td>
+                                <td>{discount === null ? "-" : formatBRL(centsToDecimal(discount))}</td>
                               </tr>
                             );
                           })}

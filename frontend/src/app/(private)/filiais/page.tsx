@@ -29,7 +29,7 @@ import {
   StatusBadge,
   TableLoading,
 } from "@/components/ui";
-import { fieldError, formatDate } from "@/lib/format";
+import { fieldError, formatDate, formatEditableDecimal } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import {
@@ -374,7 +374,14 @@ function BranchesAdministration() {
       const nextSettings = await http.get<BranchSettings>(
         `branches/${branch.id}/settings/?company=${currentCompany?.id}`,
       );
-      setSettings(nextSettings);
+       setSettings({
+         ...nextSettings,
+         command_consumption_limit: nextSettings.command_consumption_limit === null ? null : formatEditableDecimal(nextSettings.command_consumption_limit),
+         table_consumption_limit: nextSettings.table_consumption_limit === null ? null : formatEditableDecimal(nextSettings.table_consumption_limit),
+         service_fee_rate: formatEditableDecimal(nextSettings.service_fee_rate),
+         ...(nextSettings.commission_rate === undefined ? {} : { commission_rate: formatEditableDecimal(nextSettings.commission_rate) }),
+         fixed_daily_cost: formatEditableDecimal(nextSettings.fixed_daily_cost),
+       });
       if (nextSettings.negative_stock_state === "legacy_inconsistent") {
         setNegativeRecovery({
           count: nextSettings.negative_stock_count,

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Percent } from "lucide-react";
 import { Alert, Button, Field, Input, Select, Spinner } from "@/components/ui";
+import { decimalCompare, formatEditableDecimal } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
@@ -30,7 +31,7 @@ export function UserCommissionSection({ userId }: { userId: number }) {
         const item = items[0] || null;
         setOverride(item);
         setMode(!item ? "profile" : !item.receives_commission ? "none" : item.commission_rate !== null ? "individual" : "profile");
-        setRate(item?.commission_rate || "");
+         setRate(formatEditableDecimal(item?.commission_rate || ""));
       })
       .catch((caught) => setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar a comissão."))
       .finally(() => setLoading(false));
@@ -40,7 +41,7 @@ export function UserCommissionSection({ userId }: { userId: number }) {
 
   async function save() {
     if (!currentBranch || !canChange) return;
-    if (mode === "individual" && (!rate.trim() || Number(rate) < 0 || Number(rate) > 100)) { setError("Informe um percentual entre 0 e 100."); return; }
+    if (mode === "individual" && (!rate.trim() || decimalCompare(rate, "0") === -1 || decimalCompare(rate, "100") === 1)) { setError("Informe um percentual entre 0 e 100."); return; }
     setSaving(true); setError(""); setSuccess("");
     try {
       if (mode === "profile") {
@@ -49,7 +50,8 @@ export function UserCommissionSection({ userId }: { userId: number }) {
       } else {
         const payload = { branch: currentBranch.id, user: userId, receives_commission: mode === "individual", commission_rate: mode === "individual" ? rate : null };
         const saved = override ? await http.patch<CommissionOverride>(`user-commission-overrides/${override.id}/`, payload) : await http.post<CommissionOverride>("user-commission-overrides/", payload);
-        setOverride(saved);
+         setOverride(saved);
+         setRate(formatEditableDecimal(saved.commission_rate || ""));
       }
       setSuccess("Configuração de comissão atualizada.");
     } catch (caught) { setError(caught instanceof ApiError ? caught.message : "Não foi possível salvar a comissão."); }

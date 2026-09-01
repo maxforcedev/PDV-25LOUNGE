@@ -741,6 +741,8 @@ def add_order_item(*, command, user, product_id, quantity, modifiers=None,
         raise ValidationError({'product': 'Produto não pertence à empresa da comanda.'})
     if product.status != Status.ACTIVE:
         raise ValidationError({'product': 'Produto inativo.'})
+    if product.archived_at is not None:
+        raise ValidationError({'product': 'Produto arquivado.'})
     if not product.is_sellable:
         raise ValidationError({'product': 'Produto não vendável.'})
     if not product.available_command:
@@ -748,9 +750,7 @@ def add_order_item(*, command, user, product_id, quantity, modifiers=None,
     branch_config = ProductBranchConfig.objects.filter(
         branch=command.branch, product=product
     ).first()
-    if branch_config and (
-        not branch_config.is_available or branch_config.available_command is False
-    ):
+    if branch_config is None or not branch_config.is_available or branch_config.available_command is False:
         raise ValidationError({'product': 'Produto indisponível para Comanda nesta filial.'})
     if product.unit == Unit.UNIT and quantity != quantity.to_integral_value():
         raise ValidationError({'quantity': 'Produto UN exige quantidade inteira.'})
@@ -814,6 +814,8 @@ def confirm_order_item(*, item, user, idempotency_key, support_session=None):
 
     product = Product.objects.select_for_update().get(pk=item.product_id)
     item.product = product
+    if product.archived_at is not None:
+        raise ValidationError({'product': 'Produto arquivado.'})
     requirements, content_requirements, component_snapshots = (
         _resolve_stock_requirements_for_product(
             product, item.quantity, command.branch, item.modifier_snapshot,
@@ -821,9 +823,11 @@ def confirm_order_item(*, item, user, idempotency_key, support_session=None):
     )
 
     operation_ref = str(idempotency_key)
+    locked_stocks = {}
     for product_id in sorted(requirements):
         qty = requirements[product_id]
         stock = _get_locked_stock(product_id, command.branch)
+        locked_stocks[product_id] = stock
         allow_negative = _branch_allows_negative(command.branch)
         new_quantity = stock.current_quantity - qty
         if new_quantity < 0 and not allow_negative:
@@ -843,6 +847,16 @@ def confirm_order_item(*, item, user, idempotency_key, support_session=None):
             unit_cost_snapshot=unit_cost_snapshot,
             content_quantity=-content_qty if content_qty is not None else None,
         )
+
+    from apps.sales.services import _reconcile_modifier_component_costs
+
+    reconciled_snapshot = {
+        'quantity': item.quantity,
+        'component_cost_snapshot': component_snapshots,
+        'modifier_snapshot': item.modifier_snapshot,
+    }
+    _reconcile_modifier_component_costs([reconciled_snapshot], locked_stocks)
+    component_snapshots = reconciled_snapshot['component_cost_snapshot']
 
     item.status = OrderItemStatus.CONFIRMED
     item.confirmed_at = timezone.now()

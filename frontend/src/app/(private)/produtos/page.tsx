@@ -40,7 +40,7 @@ import {
   TableLoading,
   Textarea,
 } from "@/components/ui";
-import { fieldError, formatDecimalBRL, formatQuantity } from "@/lib/format";
+import { fieldError, formatDecimalBRL, formatEditableDecimal, formatQuantity } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
@@ -97,8 +97,8 @@ const blank = (company = 0, includeCost = false): ProductForm => ({
   sku: "",
   barcode: "",
   unit: "un",
-  ...(includeCost ? { cost: "0.00" } : {}),
-  sale_price: "0.00",
+  ...(includeCost ? { cost: "0" } : {}),
+  sale_price: "0",
   is_sellable: true,
   is_favorite: false,
   inventory_behavior: "direct",
@@ -148,8 +148,7 @@ function displayComponent(component: ProductComponent, candidates: Product[]) {
   const candidate = candidates.find(
     (item) => item.id === component.component_product,
   );
-  const quantity = component.quantity.replace(/(?:\.0+|(?:(\.\d*?)0+))$/, "$1");
-  return `${quantity} ${(component.component_unit || candidate?.unit || "").toUpperCase()}`;
+  return `${formatQuantity(component.quantity)} ${(component.component_unit || candidate?.unit || "").toUpperCase()}`;
 }
 const productTabs = [
   ["data", "Dados"],
@@ -252,6 +251,7 @@ function Products() {
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState<Product | null>(null);
   const [archiving, setArchiving] = useState<Product | null>(null);
+  const [archivedConflict, setArchivedConflict] = useState<{ productId: number; name: string } | null>(null);
   const [detailTab, setDetailTab] = useState<ProductV26Tab>("data");
   const [detailRetry, setDetailRetry] = useState(0);
   const touched = useRef({ cost: false, sale_price: false });
@@ -440,9 +440,9 @@ function Products() {
               barcode: detail.barcode || "",
               unit: detail.unit,
               ...(canViewCosts && typeof detail.cost === "string"
-                ? { cost: detail.cost }
+                ? { cost: formatEditableDecimal(detail.cost) }
                 : {}),
-              sale_price: detail.sale_price,
+               sale_price: formatEditableDecimal(detail.sale_price),
               is_sellable: detail.is_sellable,
               is_favorite: detail.is_favorite,
               inventory_behavior: detail.inventory_behavior,
@@ -455,8 +455,8 @@ function Products() {
             }
           : blank(currentCompany?.id, canViewCosts),
       );
-      setComponents(detail?.components || []);
-      setFractionComponents(detail?.fraction_components || []);
+       setComponents((detail?.components || []).map((component) => ({ ...component, quantity: formatEditableDecimal(component.quantity) })));
+       setFractionComponents((detail?.fraction_components || []).map((component) => ({ ...component, content_quantity: formatEditableDecimal(component.content_quantity) })));
       if (detail?.inventory_behavior === "components") {
         const details = await Promise.all(
           candidates.map((candidate) =>
@@ -494,7 +494,7 @@ function Products() {
           component_name: "",
           component_internal_code: "",
           component_unit: "",
-          quantity: "1.000",
+           quantity: "1",
           quantity_display: "",
         },
       ]);
@@ -636,11 +636,56 @@ function Products() {
       await load();
     } catch (caught) {
       if (caught instanceof ApiError) {
+        if (caught.code === "archived_product_exists") {
+          const productId = Number(caught.details.product_id);
+          if (Number.isSafeInteger(productId) && productId > 0) {
+            setArchivedConflict({
+              productId,
+              name: String(caught.details.name || form.name),
+            });
+            return;
+          }
+        }
         setError(
           `${caught.message} ${Object.values(caught.fields).flat().join(" ")}`.trim(),
         );
         setFields(caught.fields);
       } else setError("Não foi possível salvar o produto.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function resolveArchivedProduct(restore: boolean) {
+    if (!archivedConflict) return;
+    setSaving(true);
+    setError("");
+    try {
+      if (restore) {
+        await http.post(`products/${archivedConflict.productId}/restore/`);
+        setSuccess(`Produto “${archivedConflict.name}” restaurado com sucesso.`);
+      } else {
+        await http.post<Product>("products/", {
+          ...form,
+          image: form.image || null,
+          create_new: true,
+          ...(form.inventory_behavior === "components"
+            ? {
+                components: components.map(({ component_product, quantity }) => ({ component_product, quantity })),
+                fraction_components: fractionComponents.map(({ component_product, content_quantity }) => ({
+                  component_product,
+                  content_quantity: content_quantity.replace(",", "."),
+                })),
+              }
+            : {}),
+        });
+        setSuccess("Novo produto criado com sucesso.");
+      }
+      setArchivedConflict(null);
+      if (!isDetail) setOpen(false);
+      await load();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Não foi possível concluir a escolha.");
     } finally {
       setSaving(false);
     }
@@ -856,21 +901,6 @@ function Products() {
                         <option value="direct">Estoque próprio</option>
                         <option value="none">Sem estoque</option>
                         <option value="components">Componentes</option>
-                      </Select>
-                    </Field>
-                    <Field label="Exibição">
-                      <Select
-                        value={draft.lifecycle}
-                        onChange={(event) =>
-                          setDraft((value) => ({
-                            ...value,
-                            lifecycle: event.target.value,
-                          }))
-                        }
-                      >
-                        <option value="active">Ativos</option>
-                        <option value="archived">Arquivados</option>
-                        <option value="all">Todos</option>
                       </Select>
                     </Field>
                     <Field label="Venda">
@@ -1269,7 +1299,7 @@ function Products() {
                     />
                     {form.inventory_behavior === "components" && (
                       <span className="mt-1 flex items-center justify-between text-[10px] text-slate-400">
-                        Sugestão local: R$ {suggestionCost}
+                         Sugestão local: {formatDecimalBRL(suggestionCost)}
                         {canChangeCost && (
                           <button
                             type="button"
@@ -1286,7 +1316,7 @@ function Products() {
                     )}
                     {editing?.suggested_cost && (
                       <small className="text-[10px] text-slate-400">
-                        Sugestão salva pela API: R$ {editing.suggested_cost}
+                         Sugestão salva pela API: {formatDecimalBRL(editing.suggested_cost)}
                       </small>
                     )}
                   </Field>
@@ -1303,7 +1333,7 @@ function Products() {
                   />
                   {form.inventory_behavior === "components" && (
                     <span className="mt-1 flex items-center justify-between text-[10px] text-slate-400">
-                      Sugestão local: R$ {suggestionSale}
+                       Sugestão local: {formatDecimalBRL(suggestionSale)}
                       {canChangePrice && (
                         <button
                           type="button"
@@ -1320,7 +1350,7 @@ function Products() {
                   )}
                   {editing?.suggested_sale_price && (
                     <small className="text-[10px] text-slate-400">
-                      Sugestão salva pela API: R$ {editing.suggested_sale_price}
+                         Sugestão salva pela API: {formatDecimalBRL(editing.suggested_sale_price)}
                     </small>
                   )}
                 </Field>
@@ -1598,7 +1628,7 @@ function Products() {
                                 .map((item) => (
                                   <option key={item.id} value={item.id}>
                                     {item.name} ·{" "}
-                                    {item.fraction_config?.package_content}{" "}
+                                     {formatQuantity(item.fraction_config?.package_content)}{" "}
                                     {item.fraction_config?.content_unit}
                                   </option>
                                 ))}
@@ -1621,7 +1651,7 @@ function Products() {
                               />
                               <span className="mt-1 block text-[10px] text-muted">
                                 Conteúdo por venda:{" "}
-                                {component.content_quantity || "0"}{" "}
+                                 {formatQuantity(component.content_quantity || "0")}{" "}
                                 {unit === "ml" ? "mL" : "g"}
                               </span>
                             </div>
@@ -1784,6 +1814,22 @@ function Products() {
         onClose={() => setArchiving(null)}
         onConfirm={archiveProduct}
       />
+      <Modal
+        open={!!archivedConflict}
+        title="Produto excluído encontrado"
+        description={`Já existiu um produto chamado “${archivedConflict?.name || ""}”. Escolha restaurar o cadastro histórico ou criar um novo produto.`}
+        onClose={() => !saving && setArchivedConflict(null)}
+        size="md"
+      >
+        <div className="space-y-4 p-5 sm:p-6">
+          {error && <Alert message={error} />}
+          <p className="text-sm text-muted">Restaurar preserva o histórico e as configurações existentes. Criar novo mantém o registro anterior excluído.</p>
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button variant="secondary" disabled={saving} onClick={() => void resolveArchivedProduct(false)}>Criar novo</Button>
+            <Button loading={saving} onClick={() => void resolveArchivedProduct(true)}>Restaurar</Button>
+          </div>
+        </div>
+      </Modal>
     </>
   );
 }

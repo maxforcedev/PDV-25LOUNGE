@@ -6,6 +6,7 @@ from rest_framework import serializers
 
 from apps.companies.models import Status
 from apps.companies.selectors import user_has_branch_permission, user_has_company_permission
+from apps.base.exceptions import DomainValidationError
 
 from .models import (
     BranchProductPrice, Category, ContentUnit, FractionableProductConfig,
@@ -43,20 +44,21 @@ class CompanyBoundSerializer(serializers.ModelSerializer):
 
 class CategorySerializer(CompanyBoundSerializer):
     company_name = serializers.CharField(source='company.trade_name', read_only=True)
+    branch_name = serializers.CharField(source='branch.name', read_only=True)
     product_count = serializers.IntegerField(read_only=True, default=0)
     related_products = serializers.SerializerMethodField()
 
     class Meta:
         model = Category
         fields = (
-            'id', 'company', 'company_name', 'name', 'description', 'sort_order',
+            'id', 'company', 'company_name', 'branch', 'branch_name', 'name', 'description', 'sort_order',
             'available_counter', 'available_table', 'available_command',
             'participates_in_service_fee', 'participates_in_commission',
-            'status', 'product_count', 'related_products',
+            'status', 'deleted_at', 'product_count', 'related_products',
             'created_at', 'updated_at',
         )
         read_only_fields = (
-            'id', 'company_name', 'sort_order', 'status', 'product_count',
+            'id', 'company_name', 'branch', 'branch_name', 'sort_order', 'status', 'deleted_at', 'product_count',
             'related_products', 'created_at', 'updated_at',
         )
 
@@ -71,13 +73,21 @@ class CategorySerializer(CompanyBoundSerializer):
                 'sale_price': f'{product.sale_price:.2f}',
                 'status': product.status,
             }
-            for product in obj.products.all()
+            for config in obj.branch_product_configs.select_related('product').filter(
+                is_available=True,
+                product__status=Status.ACTIVE,
+                product__archived_at__isnull=True,
+            )
+            for product in [config.product]
         ]
 
     def validate_name(self, value):
         value = ' '.join(value.split())
         company_id = self.initial_data.get('company') or getattr(self.instance, 'company_id', None)
-        queryset = Category.objects.filter(company_id=company_id, name__iexact=value)
+        branch = getattr(self.context.get('request'), 'branch_context', None)
+        queryset = Category.objects.filter(
+            branch=branch, name__iexact=value, deleted_at__isnull=True,
+        )
         if self.instance:
             queryset = queryset.exclude(pk=self.instance.pk)
         if company_id and queryset.exists():
@@ -223,17 +233,20 @@ class ProductBranchConfigSerializer(serializers.ModelSerializer):
     branch_name = serializers.CharField(source='branch.name', read_only=True)
     effective_channels = serializers.SerializerMethodField()
     effective_sale_price = serializers.SerializerMethodField()
+    effective_participation = serializers.SerializerMethodField()
 
     class Meta:
         model = ProductBranchConfig
         fields = (
-            'id', 'product', 'product_name', 'branch', 'branch_name', 'is_available',
+            'id', 'product', 'product_name', 'branch', 'branch_name', 'category', 'is_available',
             'available_counter', 'available_table', 'available_command',
-            'effective_channels', 'effective_sale_price', 'created_at', 'updated_at',
+            'participates_in_service_fee', 'participates_in_commission',
+            'effective_channels', 'effective_participation', 'effective_sale_price',
+            'created_at', 'updated_at',
         )
         read_only_fields = (
             'id', 'product_name', 'branch_name', 'effective_channels',
-            'effective_sale_price', 'created_at', 'updated_at',
+            'effective_participation', 'effective_sale_price', 'created_at', 'updated_at',
         )
 
     def get_fields(self):
@@ -245,6 +258,9 @@ class ProductBranchConfigSerializer(serializers.ModelSerializer):
                 company_id=branch.company_id
             )
             fields['branch'].queryset = fields['branch'].queryset.filter(pk=branch.pk)
+            fields['category'].queryset = Category.objects.filter(
+                branch=branch, deleted_at__isnull=True,
+            )
         return fields
 
     def get_effective_channels(self, config):
@@ -259,6 +275,12 @@ class ProductBranchConfigSerializer(serializers.ModelSerializer):
         ).values_list('sale_price', flat=True).first()
         return f'{(config.product.sale_price if price is None else price):.2f}'
 
+    def get_effective_participation(self, config):
+        return {
+            field: config.effective_participation(field)
+            for field in ('participates_in_service_fee', 'participates_in_commission')
+        }
+
     def validate(self, attrs):
         product = attrs.get('product', getattr(self.instance, 'product', None))
         branch = attrs.get('branch', getattr(self.instance, 'branch', None))
@@ -267,6 +289,11 @@ class ProductBranchConfigSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'branch': 'Filial fora da empresa do produto.'})
         if context_branch and branch and context_branch.pk != branch.pk:
             raise serializers.ValidationError({'branch': 'Selecione a filial ativa.'})
+        category = attrs.get('category', getattr(self.instance, 'category', None))
+        if not self.instance and category is None:
+            raise serializers.ValidationError({'category': 'Informe a categoria operacional da filial.'})
+        if category and branch and category.branch_id != branch.pk:
+            raise serializers.ValidationError({'category': 'A categoria deve pertencer a filial ativa.'})
         return attrs
 
 
@@ -319,6 +346,7 @@ class ProductSerializer(CompanyBoundSerializer):
     sale_price = serializers.DecimalField(
         max_digits=12, decimal_places=2, min_value=Decimal('0.00')
     )
+    create_new = serializers.BooleanField(write_only=True, required=False, default=False)
 
     class Meta:
         model = Product
@@ -334,7 +362,7 @@ class ProductSerializer(CompanyBoundSerializer):
             'components', 'fraction_components', 'suggested_cost', 'suggested_sale_price',
             'branch_configuration', 'branch_stock', 'fraction_config',
             'production_destinations', 'purchase_presentations', 'suppliers',
-            'created_at', 'updated_at',
+            'create_new', 'created_at', 'updated_at',
         )
 
     def get_fields(self):
@@ -342,9 +370,7 @@ class ProductSerializer(CompanyBoundSerializer):
         request = self.context.get('request')
         branch = getattr(request, 'branch_context', None) if request else None
         if branch and 'category' in fields:
-            fields['category'].queryset = Category.objects.filter(
-                company_id=branch.company_id
-            )
+            fields['category'].queryset = Category.objects.filter(branch=branch)
         can_view_costs = bool(
             request and (
                 request.user.is_superuser
@@ -371,18 +397,39 @@ class ProductSerializer(CompanyBoundSerializer):
             fields.pop('suppliers', None)
         return fields
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        branch = getattr(self.context.get('request'), 'branch_context', None)
+        if branch:
+            configs = getattr(instance, '_prefetched_objects_cache', {}).get('branch_configs', ())
+            config = next((item for item in configs if item.branch_id == branch.pk), None)
+            if config is None:
+                config = ProductBranchConfig.objects.filter(
+                    product=instance, branch=branch
+                ).select_related('category').first()
+            if config and config.category_id:
+                data['category'] = config.category_id
+                data['category_name'] = config.category.name
+        return data
+
     def validate(self, attrs):
         attrs = super().validate(attrs)
         company = attrs.get('company', getattr(self.instance, 'company', None))
         category = attrs.get('category', getattr(self.instance, 'category', None))
-        if category and category.company_id != company.id:
-            raise serializers.ValidationError({'category': 'A categoria deve pertencer a empresa do produto.'})
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if category and (
+            category.company_id != company.id
+            or branch and category.branch_id != branch.pk
+            or category.deleted_at is not None
+        ):
+            raise serializers.ValidationError({'category': 'A categoria deve pertencer a filial ativa.'})
         name, normalized_name = normalize_product_name(
             attrs.get('name', getattr(self.instance, 'name', ''))
         )
         attrs['name'] = name
         duplicate_name = Product.objects.filter(
-            company=company, normalized_name=normalized_name
+            company=company, normalized_name=normalized_name, archived_at__isnull=True,
         )
         if self.instance:
             duplicate_name = duplicate_name.exclude(pk=self.instance.pk)
@@ -390,23 +437,44 @@ class ProductSerializer(CompanyBoundSerializer):
             raise serializers.ValidationError(
                 {'name': 'Já existe um produto com este nome nesta empresa.'}
             )
+        if not self.instance and not attrs.get('create_new', False):
+            archived = Product.objects.filter(
+                company=company,
+                normalized_name=normalized_name,
+                archived_at__isnull=False,
+            ).order_by('-archived_at', '-id').first()
+            if archived:
+                raise DomainValidationError(
+                    code='archived_product_exists',
+                    message='Já existiu um produto com este nome.',
+                    details={
+                        'product_id': archived.pk,
+                        'name': archived.name,
+                    },
+                )
         code = attrs.get('internal_code', getattr(self.instance, 'internal_code', '')).strip()
         if code:
-            same_code = Product.objects.filter(company=company, internal_code__iexact=code)
+            same_code = Product.objects.filter(
+                company=company, internal_code__iexact=code, archived_at__isnull=True,
+            )
             if self.instance:
                 same_code = same_code.exclude(pk=self.instance.pk)
             if same_code.exists():
                 raise serializers.ValidationError({'internal_code': 'Já existe um produto com este código nesta empresa.'})
         barcode = (attrs.get('barcode', getattr(self.instance, 'barcode', '')) or '').strip()
         if barcode:
-            same_barcode = Product.objects.filter(company=company, barcode__iexact=barcode)
+            same_barcode = Product.objects.filter(
+                company=company, barcode__iexact=barcode, archived_at__isnull=True,
+            )
             if self.instance:
                 same_barcode = same_barcode.exclude(pk=self.instance.pk)
             if same_barcode.exists():
                 raise serializers.ValidationError({'barcode': 'Já existe um produto com este código de barras nesta empresa.'})
         sku = (attrs.get('sku', getattr(self.instance, 'sku', '')) or '').strip()
         if sku:
-            same_sku = Product.objects.filter(company=company, sku__iexact=sku)
+            same_sku = Product.objects.filter(
+                company=company, sku__iexact=sku, archived_at__isnull=True,
+            )
             if self.instance:
                 same_sku = same_sku.exclude(pk=self.instance.pk)
             if same_sku.exists():
@@ -558,10 +626,12 @@ class ProductSerializer(CompanyBoundSerializer):
         return value
 
     def create(self, validated_data):
+        validated_data.pop('create_new', None)
         components = validated_data.pop('components', None)
         fraction_components = validated_data.pop('fraction_components', None)
         try:
             return create_product(
+                branch=getattr(self.context.get('request'), 'branch_context', None),
                 components=components,
                 fraction_components=fraction_components,
                 **validated_data,
@@ -575,6 +645,7 @@ class ProductSerializer(CompanyBoundSerializer):
         instance.company.__class__.objects.select_for_update().get(pk=instance.company_id)
         components = validated_data.pop('components', None)
         fraction_components = validated_data.pop('fraction_components', None)
+        category = validated_data.pop('category', None)
         if not validated_data.get('internal_code', instance.internal_code):
             validated_data.pop('internal_code', None)
         desired_sellable = validated_data.get('is_sellable', instance.is_sellable)
@@ -582,6 +653,13 @@ class ProductSerializer(CompanyBoundSerializer):
             validated_data['is_sellable'] = False
         try:
             instance = super().update(instance, validated_data)
+            if category is not None:
+                branch = getattr(self.context.get('request'), 'branch_context', None)
+                config = ProductBranchConfig.objects.select_for_update().get(
+                    product=instance, branch=branch
+                )
+                config.category = category
+                config.save(update_fields=('category', 'updated_at'))
             if components is not None and fraction_components is not None:
                 for row in ProductFractionComponent.objects.filter(parent_product=instance):
                     row.delete()
@@ -661,7 +739,7 @@ class ProductSerializer(CompanyBoundSerializer):
         ).values_list('sale_price', flat=True).first()
         return {
             'branch': branch.pk,
-            'is_available': config.is_available if config else True,
+            'is_available': config.is_available if config else False,
             'channels': {
                 channel: (
                     config.effective_channel(channel) if config
@@ -1014,6 +1092,16 @@ class BranchProductPriceSerializer(serializers.ModelSerializer):
                 })
         if product and branch and product.company_id != branch.company_id:
             raise serializers.ValidationError({'branch': 'A filial deve pertencer a empresa do produto.'})
+        if product and (
+            product.status != Status.ACTIVE or product.archived_at is not None
+        ):
+            raise serializers.ValidationError({'product': 'O produto não está ativo para precificação.'})
+        if product and branch and not ProductBranchConfig.objects.filter(
+            product=product, branch=branch, is_available=True,
+        ).exists():
+            raise serializers.ValidationError({
+                'product': 'O produto não está disponível nesta filial.'
+            })
         return attrs
 
 
@@ -1086,10 +1174,10 @@ class ModifierOptionSerializer(serializers.ModelSerializer):
         branch = getattr(request, 'branch_context', None) if request else None
         if branch:
             fields['modifier_group'].queryset = ModifierGroup.objects.filter(
-                company_id=branch.company_id
+                branch=branch
             )
             fields['stock_product'].queryset = Product.objects.filter(
-                company_id=branch.company_id
+                company_id=branch.company_id, branch_configs__branch=branch
             )
         return fields
 
@@ -1107,9 +1195,9 @@ class ModifierOptionSerializer(serializers.ModelSerializer):
         group = attrs.get('modifier_group', getattr(self.instance, 'modifier_group', None))
         if request and group and not request.user.is_superuser:
             branch = getattr(request, 'branch_context', None)
-            if not branch or group.company_id != branch.company_id:
+            if not branch or group.branch_id != branch.pk:
                 raise serializers.ValidationError({
-                    'modifier_group': 'O grupo modificador deve pertencer à empresa da filial atual.'
+                    'modifier_group': 'O grupo modificador deve pertencer à filial atual.'
                 })
         return attrs
 
@@ -1121,11 +1209,12 @@ class ModifierGroupSerializer(serializers.ModelSerializer):
         model = ModifierGroup
         fields = (
             'id', 'company', 'name', 'is_required', 'min_selections',
-            'max_selections', 'allow_option_quantity', 'substitution_component',
+            'max_selections', 'allow_option_quantity', 'min_total_quantity',
+            'max_total_quantity', 'branch', 'substitution_component',
             'inherit_component_quantity', 'sort_order',
             'status', 'options', 'created_at', 'updated_at',
         )
-        read_only_fields = ('id', 'status', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'branch', 'status', 'created_at', 'updated_at')
 
     def get_fields(self):
         fields = super().get_fields()
@@ -1136,7 +1225,7 @@ class ModifierGroupSerializer(serializers.ModelSerializer):
                 pk=branch.company_id
             )
             fields['substitution_component'].queryset = Product.objects.filter(
-                company_id=branch.company_id
+                company_id=branch.company_id, branch_configs__branch=branch
             )
         return fields
 
@@ -1159,12 +1248,26 @@ class ModifierGroupSerializer(serializers.ModelSerializer):
         max_sel = attrs.get('max_selections', getattr(self.instance, 'max_selections', None))
         is_req = attrs.get('is_required', getattr(self.instance, 'is_required', False))
         allow_qty = attrs.get('allow_option_quantity', getattr(self.instance, 'allow_option_quantity', False))
+        min_total = attrs.get(
+            'min_total_quantity', getattr(self.instance, 'min_total_quantity', Decimal('0'))
+        )
+        max_total = attrs.get(
+            'max_total_quantity', getattr(self.instance, 'max_total_quantity', None)
+        )
         if max_sel is not None and min_sel and min_sel > max_sel:
             raise serializers.ValidationError({'max_selections': 'O máximo não pode ser menor que o mínimo.'})
         if is_req and min_sel < 1:
             raise serializers.ValidationError({'min_selections': 'Grupo obrigatório exige mínimo de 1.'})
-        if max_sel == 1 and allow_qty:
-            raise serializers.ValidationError({'allow_option_quantity': 'Seleção única não permite quantidade por opção.'})
+        if max_total is not None and min_total and min_total > max_total:
+            raise serializers.ValidationError({
+                'max_total_quantity': 'O máximo total não pode ser menor que o mínimo total.'
+            })
+        if not allow_qty and (min_total or max_total is not None):
+            raise serializers.ValidationError({
+                'allow_option_quantity': (
+                    'Limites de quantidade total exigem quantidade por opção habilitada.'
+                )
+            })
         return attrs
 
     @transaction.atomic
@@ -1230,10 +1333,10 @@ class ProductModifierGroupSerializer(serializers.ModelSerializer):
         branch = getattr(request, 'branch_context', None) if request else None
         if branch:
             fields['product'].queryset = Product.objects.filter(
-                company_id=branch.company_id
+                company_id=branch.company_id, branch_configs__branch=branch
             )
             fields['modifier_group'].queryset = ModifierGroup.objects.filter(
-                company_id=branch.company_id
+                branch=branch
             )
         return fields
 
@@ -1248,6 +1351,8 @@ class ProductModifierGroupSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({'product': 'O produto deve pertencer à empresa da filial atual.'})
             if modifier_group and company_id and modifier_group.company_id != company_id:
                 raise serializers.ValidationError({'modifier_group': 'O grupo modificador deve pertencer à empresa da filial atual.'})
+            if modifier_group and branch_context and modifier_group.branch_id != branch_context.pk:
+                raise serializers.ValidationError({'modifier_group': 'O grupo deve pertencer à filial atual.'})
             if product and modifier_group and product.company_id != modifier_group.company_id:
                 raise serializers.ValidationError({'modifier_group': 'Produto e grupo modificador devem pertencer à mesma empresa.'})
         return attrs

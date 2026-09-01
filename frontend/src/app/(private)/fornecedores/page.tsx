@@ -108,12 +108,14 @@ function addressText(address: Supplier["address"]) {
 }
 
 function Suppliers() {
-  const { currentCompany, hasPermission, supportSession } = useAuth();
+  const { currentCompany, currentBranch, hasPermission, supportSession } = useAuth();
   const readOnlySupport = supportSession?.mode === "READ_ONLY";
   const canChange =
     hasPermission(permissions.changeSupplier) && !readOnlySupport;
   const companyIdRef = useRef(currentCompany?.id);
   companyIdRef.current = currentCompany?.id;
+  const branchIdRef = useRef(currentBranch?.id);
+  branchIdRef.current = currentBranch?.id;
 
   const [data, setData] = useState<Paginated<Supplier> | null>(null);
   const [loading, setLoading] = useState(true);
@@ -156,7 +158,8 @@ function Suppliers() {
     requestedCompanyId = currentCompany?.id,
     selected = appliedFilters,
   ) {
-    if (!requestedCompanyId) {
+    const requestedBranchId = branchIdRef.current;
+    if (!requestedCompanyId || !requestedBranchId) {
       setData(null);
       setLoading(false);
       return;
@@ -167,9 +170,12 @@ function Suppliers() {
       const response = await http.get<Paginated<Supplier>>(
         path || listPath(requestedCompanyId, selected),
       );
-      if (companyIdRef.current === requestedCompanyId) setData(response);
+      if (
+        companyIdRef.current === requestedCompanyId
+        && branchIdRef.current === requestedBranchId
+      ) setData(response);
     } catch (caught) {
-      if (companyIdRef.current === requestedCompanyId) {
+      if (companyIdRef.current === requestedCompanyId && branchIdRef.current === requestedBranchId) {
         setPageError(
           caught instanceof ApiError
             ? caught.message
@@ -177,7 +183,7 @@ function Suppliers() {
         );
       }
     } finally {
-      if (companyIdRef.current === requestedCompanyId) setLoading(false);
+      if (companyIdRef.current === requestedCompanyId && branchIdRef.current === requestedBranchId) setLoading(false);
     }
   }
 
@@ -199,7 +205,7 @@ function Suppliers() {
     setSaving(false);
     setChangingStatus(false);
     if (companyId) void loadRef.current(undefined, companyId, cleared);
-  }, [currentCompany?.id]);
+  }, [currentCompany?.id, currentBranch?.id]);
 
   useEffect(() => {
     const zipCode = zipCodeDigits(form.address.zip_code);
@@ -421,16 +427,17 @@ function Suppliers() {
     )
       return;
 
-    const action = supplier.status === "active" ? "deactivate" : "activate";
+    const action = supplier.status === "active" ? "delete" : "activate";
     setChangingStatus(true);
     setPageError("");
     setSuccess("");
     try {
-      await http.post(`suppliers/${supplier.id}/${action}/`);
+      if (action === "delete") await http.delete(`suppliers/${supplier.id}/`);
+      else await http.post(`suppliers/${supplier.id}/activate/`);
       if (companyIdRef.current !== requestedCompanyId) return;
       setConfirming(null);
       setSuccess(
-        `Fornecedor ${action === "activate" ? "ativado" : "inativado"} com sucesso.`,
+        `Fornecedor ${action === "activate" ? "ativado" : "excluído"} com sucesso.`,
       );
       await load(undefined, requestedCompanyId, appliedFilters);
     } catch (caught) {
@@ -952,9 +959,9 @@ function Suppliers() {
 
       <ConfirmDialog
         open={!!confirming && canChange}
-        title={`${confirming?.status === "active" ? "Inativar" : "Ativar"} fornecedor`}
-        message={`Confirma a alteração de status de “${confirming ? supplierName(confirming) : ""}”? O histórico será preservado.`}
-        confirmLabel={confirming?.status === "active" ? "Inativar" : "Ativar"}
+        title={`${confirming?.status === "active" ? "Excluir" : "Ativar"} fornecedor`}
+        message={`Confirma ${confirming?.status === "active" ? "a exclusão de" : "a ativação de"} “${confirming ? supplierName(confirming) : ""}”? O histórico será preservado.`}
+        confirmLabel={confirming?.status === "active" ? "Excluir" : "Ativar"}
         danger={confirming?.status === "active"}
         loading={changingStatus}
         onClose={() => !changingStatus && setConfirming(null)}

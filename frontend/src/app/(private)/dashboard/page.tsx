@@ -22,7 +22,9 @@ import {
   TableLoading,
 } from "@/components/ui";
 import { domainLabel } from "@/lib/domain-labels";
-import { formatBRL, formatDate, formatQuantity } from "@/lib/format";
+import { decimalIsZero, formatDate, formatDecimalBRL as formatBRL, formatPercent, formatQuantity } from "@/lib/format";
+import { moneyToCents } from "@/lib/sales";
+import { signedMoneyToCents } from "@/lib/cash";
 import { ApiError, http } from "@/lib/http";
 import {
   businessPeriod,
@@ -90,14 +92,14 @@ function HorizontalBars({
   title: string;
   rows: Array<{
     label: string;
-    value: number;
+    value: bigint;
     display: string;
     note?: string;
     query?: string;
   }>;
   href?: string;
 }) {
-  const max = Math.max(...rows.map((row) => row.value), 0);
+  const max = rows.reduce((largest, row) => row.value > largest ? row.value : largest, BigInt(0));
   return (
     <section className="card overflow-hidden">
       <div className="card-header">
@@ -126,7 +128,7 @@ function HorizontalBars({
                 <div
                   className="h-full rounded-full bg-gradient-to-r from-chart-1 to-chart-2"
                   style={{
-                    width: `${max ? Math.max(3, (row.value / max) * 100) : 0}%`,
+                    width: `${ratioPercent(row.value, max, 2, BigInt(300))}%`,
                   }}
                 />
               </div>
@@ -158,6 +160,22 @@ function HorizontalBars({
   );
 }
 
+function positiveMoneyCents(value: unknown) {
+  const cents = signedMoneyToCents(value);
+  return cents !== null && cents > BigInt(0) ? cents : BigInt(0);
+}
+
+function ratioPercent(value: bigint, total: bigint, places = 2, minimum = BigInt(0)) {
+  if (value <= BigInt(0) || total <= BigInt(0)) return "0";
+  const scale = BigInt(10) ** BigInt(places);
+  const maximum = BigInt(100) * scale;
+  let scaled = (value * maximum) / total;
+  if (scaled < minimum) scaled = minimum;
+  if (scaled > maximum) scaled = maximum;
+  const fraction = String(scaled % scale).padStart(places, "0").replace(/0+$/, "");
+  return `${scaled / scale}${fraction ? `.${fraction}` : ""}`;
+}
+
 function PaymentChart({
   rows,
   href,
@@ -183,68 +201,58 @@ function PaymentChart({
     "var(--chart-5)",
     "var(--chart-6)",
   ];
-  const total = Number(totalReceived);
+  const total = moneyToCents(totalReceived);
   const values = rows.map((row) => ({
-    amount: Number(row.amount),
-    paymentTotal: Number(row.payment_total),
-    percentage: Number(row.percentage),
+    amount: signedMoneyToCents(row.amount),
+    paymentTotal: signedMoneyToCents(row.payment_total),
   }));
-  const percentageTotal = values.reduce(
-    (sum, row) => sum + row.percentage,
-    0,
-  );
-  const roundedPercentageTotal = Number(percentageTotal.toFixed(6));
   const hasInvalidMethod = values.some(
     (row) =>
-      !Number.isFinite(row.amount) ||
-      !Number.isFinite(row.paymentTotal) ||
-      !Number.isFinite(row.percentage) ||
-      row.amount < 0 ||
-      row.paymentTotal < 0 ||
-      row.percentage < 0,
+      row.amount === null ||
+      row.paymentTotal === null ||
+      row.amount < BigInt(0) ||
+      row.paymentTotal < BigInt(0),
   );
-  const hasInconsistentPercentage =
-    total > 0 &&
-    values.some(
-      (row) =>
-        Number.isFinite(row.paymentTotal) &&
-        Number.isFinite(row.percentage) &&
-        Math.abs(row.percentage - (row.paymentTotal * 100) / total) > 0.02,
-    );
-  const hasReconciliationDelta =
-    Number.isFinite(Number(reconciliationDelta)) &&
-    Math.abs(Number(reconciliationDelta)) >= 0.005;
+  const paymentTotal = values.reduce<bigint | null>(
+    (sum, row) =>
+      sum === null || row.paymentTotal === null ? null : sum + row.paymentTotal,
+    BigInt(0),
+  );
+  const hasInconsistentPaymentTotal = total !== null && paymentTotal !== total;
+  const hasReconciliationDelta = !decimalIsZero(reconciliationDelta);
   const canDrawDonut =
-    total > 0 &&
-    Number.isFinite(total) &&
+    total !== null &&
+    total > BigInt(0) &&
     !hasInvalidMethod &&
-    !hasInconsistentPercentage &&
+    !hasInconsistentPaymentTotal &&
     !hasReconciliationDelta &&
-    roundedPercentageTotal > 0;
+    paymentTotal !== null &&
+    paymentTotal > BigInt(0);
   const unavailableReason =
-    total <= 0 || !Number.isFinite(total)
+    total === null || total <= BigInt(0)
       ? "O Total recebido não é positivo neste periodo."
       : hasInvalidMethod
         ? "Há valores líquidos negativos ou inválidos por forma de pagamento após reversões."
-        : hasInconsistentPercentage
-          ? "Os percentuais por forma não reconciliam com o Total recebido."
+        : hasInconsistentPaymentTotal
+          ? "Os valores por forma não reconciliam com o Total recebido."
           : hasReconciliationDelta
             ? "Os pagamentos não reconciliam com o Total recebido neste periodo."
-        : roundedPercentageTotal <= 0
+        : paymentTotal === null || paymentTotal <= BigInt(0)
           ? "Não há participação positiva por forma de pagamento neste periodo."
           : "A distribuição excede 100% do Total recebido e não pode ser representada com segurança.";
-  let cursor = 0;
-  const visualScale = 100 / percentageTotal;
+  let cursor = BigInt(0);
+  const chartTotal = total !== null && total > BigInt(0) ? total : BigInt(1);
   const segments = values.map((row, index) => {
-    const start = cursor;
-    cursor = Number((cursor + row.percentage * visualScale).toFixed(6));
-    return `${colors[index % colors.length]} ${start}% ${cursor}%`;
+    const start = ratioPercent(cursor, chartTotal, 6);
+    cursor += row.paymentTotal ?? BigInt(0);
+    const end = ratioPercent(cursor, chartTotal, 6);
+    return `${colors[index % colors.length]} ${start}% ${end}%`;
   });
-  if (cursor < 100) segments.push(`var(--surface-muted) ${cursor}% 100%`);
+  if (cursor < chartTotal) segments.push(`var(--surface-muted) ${ratioPercent(cursor, chartTotal, 6)}% 100%`);
   const donutTitle = rows
     .map(
       (row) =>
-        `${row.name}: ${formatBRL(row.payment_total)} (${row.percentage}%)`,
+        `${row.name}: ${formatBRL(row.payment_total)} (${formatPercent(row.percentage)})`,
     )
     .join(" · ");
   return (
@@ -252,6 +260,7 @@ function PaymentChart({
       <div className="card-header">
         <div>
           <h2 className="text-sm font-bold">{title}</h2>
+          <p className="mt-1 text-[11px] text-slate-500">{subtitle}</p>
         </div>
         {href && (
           <Link className="text-xs font-bold text-link" href={href}>
@@ -311,7 +320,7 @@ function PaymentChart({
                 <span className="flex shrink-0 items-baseline gap-2">
                   <strong>{formatBRL(row.payment_total)}</strong>
                   <small className="min-w-11 text-right text-slate-500">
-                    {row.percentage}%
+                    {formatPercent(row.percentage)}
                   </small>
                 </span>
                 </>
@@ -320,7 +329,7 @@ function PaymentChart({
                 <Link
                   key={`${row.name}-${index}`}
                   href={`${href}&payment_method_code=${encodeURIComponent(row.code)}`}
-                  title={`${row.name}: ${formatBRL(row.payment_total)} (${row.percentage}%)`}
+                  title={`${row.name}: ${formatBRL(row.payment_total)} (${formatPercent(row.percentage)})`}
                   className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5 text-xs transition hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-focus/25"
                 >
                   {content}
@@ -328,7 +337,7 @@ function PaymentChart({
               ) : (
                 <div
                   key={`${row.name}-${index}`}
-                  title={`${row.name}: ${formatBRL(row.payment_total)} (${row.percentage}%)`}
+                  title={`${row.name}: ${formatBRL(row.payment_total)} (${formatPercent(row.percentage)})`}
                   className="flex items-center justify-between gap-3 px-2 py-1.5 text-xs"
                 >
                   {content}
@@ -425,17 +434,15 @@ function WeeklyComparison({
     current: comparison.current[index],
     previous: comparison.previous[index],
   }));
-  const max = Math.max(
-    ...points.flatMap((point) => [
-      Number(point.current?.sales_revenue || 0),
-      Number(point.previous?.sales_revenue || 0),
-    ]),
-    0,
-  );
+  const max = points.reduce((largest, point) => {
+    const current = positiveMoneyCents(point.current?.sales_revenue);
+    const previous = positiveMoneyCents(point.previous?.sales_revenue);
+    return current > largest ? current : previous > largest ? previous : largest;
+  }, BigInt(0));
   const hasData = points.some(
     (point) =>
-      Number(point.current?.sales_revenue || 0) ||
-      Number(point.previous?.sales_revenue || 0),
+      !decimalIsZero(point.current?.sales_revenue || "0") ||
+      !decimalIsZero(point.previous?.sales_revenue || "0"),
   );
   function dayHref(date: string) {
     if (!href) return "";
@@ -500,7 +507,7 @@ function WeeklyComparison({
                       const label = `${series.label}, ${series.row.date}: ${formatBRL(series.row.sales_revenue)}`;
                       const className = `group relative w-3 rounded-t ${series.tone} ${href ? "transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-focus" : ""}`;
                       const style = {
-                        height: `${max ? Math.max(2, (Number(series.row.sales_revenue) * 100) / max) : 0}%`,
+                         height: `${ratioPercent(positiveMoneyCents(series.row.sales_revenue), max, 2, BigInt(200))}%`,
                       };
                       const content = (
                         <span className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 w-max -translate-x-1/2 rounded bg-chart-tooltip px-2 py-1 text-[10px] text-chart-tooltip-fg opacity-0 shadow-lg transition group-hover:opacity-100 group-focus-visible:opacity-100">
@@ -602,7 +609,7 @@ function SellerRanking({
                   <td>{formatBRL(row.average)}</td>
                   {showCommission && (
                     <td>
-                      {row.commission_rate ? `${row.commission_rate}%` : "-"}
+                        {row.commission_rate && !decimalIsZero(row.commission_rate) ? formatPercent(row.commission_rate) : "-"}
                     </td>
                   )}
                   {showCommission && (
@@ -867,10 +874,13 @@ function DashboardPage() {
   ]);
   const sales = data?.sales;
   const weekdays = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
-  const heatMax = Math.max(
-    ...(sales?.heatmap || []).map((row) => Number(row.sales_revenue)),
-    0,
+  const hasHeatRevenue = (sales?.heatmap || []).some(
+    (row) => !decimalIsZero(row.sales_revenue),
   );
+  const heatMax = (sales?.heatmap || []).reduce((largest, row) => {
+    const revenue = positiveMoneyCents(row.sales_revenue);
+    return revenue > largest ? revenue : largest;
+  }, BigInt(0));
   const resultDetails: Array<[string, string | undefined]> = data?.operational_result
     ? [
         ["CMV de vendas", data.operational_result.historical_sales_cogs],
@@ -1143,7 +1153,7 @@ function DashboardPage() {
                       </div>
                       {data.operational_result.margin != null && (
                         <small className="mt-2 block text-slate-500">
-                          Margem sobre Total recebido: {data.operational_result.margin}%
+                          Margem sobre Total recebido: {formatPercent(data.operational_result.margin)}
                         </small>
                       )}
                       {resultDetails.some(([, value]) => value !== undefined) && (
@@ -1198,7 +1208,7 @@ function DashboardPage() {
                     href={canViewProductsReport ? report("produtos") : undefined}
                     rows={sales.top_products.slice(0, 8).map((row) => ({
                       label: row.product_name,
-                      value: Number(row.sales_revenue),
+                      value: positiveMoneyCents(row.sales_revenue),
                       display: formatBRL(row.sales_revenue),
                       note: formatQuantity(row.quantity),
                       query: row.product_id ? `&product=${row.product_id}` : "",
@@ -1257,13 +1267,10 @@ function DashboardPage() {
                                 (row) =>
                                   row.weekday === weekday && row.hour === hour,
                               );
-                              const strength =
-                                cell && heatMax
-                                  ? Math.max(
-                                      0.08,
-                                      Number(cell.sales_revenue) / heatMax,
-                                    )
-                                  : 0.03;
+                              const strengthPercent =
+                                cell && hasHeatRevenue
+                                  ? ratioPercent(positiveMoneyCents(cell.sales_revenue), heatMax, 2, BigInt(800))
+                                  : "3";
                               const title = cell
                                 ? `${formatBRL(cell.sales_revenue)} · ${cell.count} vendas · ticket ${formatBRL(cell.average)}`
                                 : "Sem vendas";
@@ -1272,7 +1279,7 @@ function DashboardPage() {
                                 : `${day}, ${hour} horas: sem vendas`;
                               const className = `group relative aspect-square rounded-sm border border-chart-1/20 ${canViewSalesReport ? "focus-visible:z-10 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-focus" : ""}`;
                               const style = {
-                                backgroundColor: `color-mix(in srgb, var(--chart-1) ${Math.round(strength * 100)}%, transparent)`,
+                                backgroundColor: `color-mix(in srgb, var(--chart-1) ${strengthPercent}%, transparent)`,
                               };
                               const content = (
                                 <span className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 w-max -translate-x-1/2 rounded bg-chart-tooltip px-2 py-1 text-[10px] text-chart-tooltip-fg opacity-0 shadow-lg transition group-hover:opacity-100 group-focus-visible:opacity-100">

@@ -14,8 +14,10 @@ from apps.base.labels import audit_labels
 from apps.base.models import AuditLog
 from apps.companies.models import (
     AccessProfile,
+    Branch,
     Company,
     FunctionalPermission,
+    UserBranchAccess,
     UserCompanyAccess,
     UserPermissionBlock,
 )
@@ -42,7 +44,12 @@ def create_company(name):
 
 
 def create_product(company, name, code):
-    category, _ = Category.objects.get_or_create(company=company, name='Bebidas')
+    branch, _ = Branch.objects.get_or_create(
+        company=company, name='Matriz', defaults={'is_matrix': True},
+    )
+    category, _ = Category.objects.get_or_create(
+        company=company, branch=branch, name='Bebidas'
+    )
     return Product.objects.create(
         company=company,
         category=category,
@@ -54,8 +61,12 @@ def create_product(company, name, code):
 
 
 def create_supplier(company, name, tax_id=None):
+    branch, _ = Branch.objects.get_or_create(
+        company=company, name='Matriz', defaults={'is_matrix': True},
+    )
     return Supplier.objects.create(
         company=company,
+        branch=branch,
         legal_name=f'{name} Ltda',
         trade_name=name,
         tax_id=tax_id,
@@ -67,7 +78,7 @@ class SupplierModelTests(TestCase):
         self.company = create_company('Tenant A')
         self.other_company = create_company('Tenant B')
 
-    def test_tax_id_is_validated_normalized_and_unique_only_per_company(self):
+    def test_tax_id_is_validated_normalized_and_unique_only_per_branch(self):
         supplier = create_supplier(self.company, 'Primeiro', '529.982.247-25')
         self.assertEqual(supplier.tax_id, '52998224725')
 
@@ -362,7 +373,7 @@ class SupplierApiTests(TestCase):
         self.assertEqual(response.status_code, 400, response.data)
         self.assertIn('supplier', response.data)
 
-    def test_all_mutations_are_audited_and_delete_is_not_available(self):
+    def test_all_mutations_are_audited_and_delete_is_soft(self):
         response = self.client.post(
             reverse('supplier-list'), self.supplier_payload(), format='json'
         )
@@ -396,7 +407,13 @@ class SupplierApiTests(TestCase):
         self.assertEqual(labels['action_label'], 'Fornecedor alterado')
 
         response = self.client.delete(reverse('supplier-detail', args=[supplier_id]))
-        self.assertEqual(response.status_code, 405)
+        self.assertEqual(response.status_code, 204)
+        supplier = Supplier.objects.get(pk=supplier_id)
+        self.assertIsNotNone(supplier.deleted_at)
+        self.assertFalse(self.client.get(reverse('supplier-list')).data['count'])
+        self.assertTrue(AuditLog.objects.filter(
+            action='supplier.delete', object_id=str(supplier_id)
+        ).exists())
 
     def test_tax_id_and_address_contract(self):
         response = self.client.post(
@@ -424,6 +441,40 @@ class SupplierApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 400, response.data)
         self.assertIn('address', response.data)
+
+    def test_suppliers_are_branch_owned_and_soft_deleted_tax_id_can_be_reused(self):
+        created = self.client.post(
+            reverse('supplier-list'), self.supplier_payload(), format='json'
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        supplier_id = created.data['id']
+
+        other_branch = Branch.objects.create(company=self.company, name='Filial B')
+        profile = AccessProfile.objects.get(
+            company=self.company, name='Administrador', is_system=True
+        )
+        UserBranchAccess.objects.create(
+            user=self.user, branch=other_branch, access_profile=profile
+        )
+        self.client.defaults['HTTP_X_BRANCH_ID'] = str(other_branch.pk)
+        self.assertEqual(self.client.get(reverse('supplier-list')).data['count'], 0)
+        other = self.client.post(
+            reverse('supplier-list'),
+            self.supplier_payload(trade_name='Fornecedor Filial B'),
+            format='json',
+        )
+        self.assertEqual(other.status_code, 201, other.data)
+
+        self.client.defaults['HTTP_X_BRANCH_ID'] = str(self.branch.pk)
+        deleted = self.client.delete(reverse('supplier-detail', args=[supplier_id]))
+        self.assertEqual(deleted.status_code, 204, deleted.data)
+        recreated = self.client.post(
+            reverse('supplier-list'),
+            self.supplier_payload(trade_name='Fornecedor Recriado'),
+            format='json',
+        )
+        self.assertEqual(recreated.status_code, 201, recreated.data)
+        self.assertNotEqual(recreated.data['id'], supplier_id)
 
     def test_legal_name_is_optional_and_trade_name_is_required(self):
         payload = self.supplier_payload(tax_id='')
@@ -579,6 +630,7 @@ class SupplierSupportSessionTests(TestCase):
         self.owner, self.company, _ = create_tenant(
             'Supplier Support', plan_version=version
         )
+        self.branch = self.company.branches.get(is_matrix=True)
         self.agent = create_user('supplier-support-agent-v23@example.com')
         call_command(
             'bootstrap_platform_admin', email=self.agent.email, stdout=StringIO()
@@ -595,7 +647,10 @@ class SupplierSupportSessionTests(TestCase):
         self.assertTrue(self.client.login(email=self.agent.email, password=PASSWORD))
 
     def support_headers(self):
-        return {'HTTP_X_SUPPORT_SESSION_ID': str(self.session.pk)}
+        return {
+            'HTTP_X_SUPPORT_SESSION_ID': str(self.session.pk),
+            'HTTP_X_BRANCH_ID': str(self.branch.pk),
+        }
 
     def test_non_impersonated_support_gets_scoped_supplier_and_me_context(self):
         response = self.client.get(reverse('supplier-list'), **self.support_headers())

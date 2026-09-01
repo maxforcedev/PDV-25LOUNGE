@@ -34,12 +34,12 @@ import {
   TableLoading,
   Textarea,
 } from "@/components/ui";
-import { fieldError, formatBRL, formatDecimalBRL, formatQuantity } from "@/lib/format";
+import { fieldError, formatDecimalBRL, formatEditableDecimal, formatQuantity } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { contentUnitLabel, isExactContentValid, isUnitQuantityValid, lossReasonLabels, packageContentDisplay, quantityInputMode } from "@/lib/inventory";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
-import type { Category, FractionableProductConfig, LossReason, LossRecord, Paginated, Product, Stock, StockMovement } from "@/types";
+import type { Category, LossReason, LossRecord, Paginated, Product, Stock, StockMovement } from "@/types";
 
 type Action = "entry" | "exit" | "adjustment" | "minimum";
 type Summary = {
@@ -90,7 +90,6 @@ function Inventory() {
   const canMove = canEntry || canExit || canAdjust;
   const canMinimum = hasPermission(permissions.changeMinimum);
   const canHistory = hasPermission(permissions.viewInventoryHistory);
-  const canViewProducts = hasPermission(permissions.viewProduct);
   const canViewKpis = hasPermission(permissions.viewStockKpis);
   const canViewCosts = hasPermission(permissions.viewStockCosts);
   const canRegularize = hasPermission(permissions.regularizeInventory);
@@ -102,7 +101,6 @@ function Inventory() {
   const [data, setData] = useState<Paginated<Stock> | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [fractionConfigs, setFractionConfigs] = useState<Record<number, FractionableProductConfig>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState<OperationSuccess | null>(null);
@@ -126,14 +124,20 @@ function Inventory() {
   const [lossAttachment, setLossAttachment] = useState<File | null>(null);
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
+  const [writeOffStock, setWriteOffStock] = useState<Stock | null>(null);
+  const [writeOffReason, setWriteOffReason] = useState("");
   const movementIdempotencyKey = useRef<string | null>(null);
   const showRegularize = canRegularize && !!summary?.allow_negative_stock && (summary?.negative_count ?? 0) > 0;
   const showLegacyRecovery = canRegularize && !!summary?.legacy_negative_state && (summary?.negative_count ?? 0) > 0;
   const contextRef = useRef("");
   contextRef.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}`;
   const isLoss = action === "exit" && nature === "loss";
-  const lossFractionConfig = selected
-    ? fractionConfigs[selected.product]
+  const lossFractionConfig = selected?.package_content && selected.content_unit
+    ? {
+        package_content: selected.package_content,
+        content_unit: selected.content_unit,
+        tracking_active: true,
+      }
     : selectedProduct?.fraction_config || null;
   const activeUnit = selected?.unit || selectedProduct?.unit;
   function params(
@@ -193,12 +197,6 @@ function Inventory() {
       if (contextRef.current === context) {
         setData(stocks);
         setSummary(totals);
-        if (canViewProducts) {
-          void Promise.all(stocks.results.filter((stock) => stock.current_content != null).map((stock) => http.get<Product>(`products/${stock.product}/`).catch(() => null))).then((details) => {
-            if (contextRef.current !== context) return;
-            setFractionConfigs(Object.fromEntries(details.filter((item): item is Product => !!item?.fraction_config).map((item) => [item.id, item.fraction_config!] )));
-          });
-        }
       }
     } catch (caught) {
       if (contextRef.current === context) {
@@ -225,7 +223,6 @@ function Inventory() {
     setBehavior("");
     setOrdering("product");
     setData(null);
-    setFractionConfigs({});
     setSummary(null);
     setAction(null);
     setSuccess(null);
@@ -239,12 +236,9 @@ function Inventory() {
     void load(undefined, params(initialFilters, "", "product"), context);
     let active = true;
     http
-      .getAll<Category>(
-        `categories/?company=${currentCompany.id}&status=active`,
-      )
-      .then(
-        (items) =>
-          active && contextRef.current === context && setCategories(items),
+      .get<{ categories: Category[] }>("stocks/options/")
+      .then((response) =>
+        active && contextRef.current === context && setCategories(response.categories),
       )
       .catch(() => active && setCategories([]));
     return () => {
@@ -258,9 +252,9 @@ function Inventory() {
     setAction(next);
     setQuantity(
       next === "minimum" && stock
-        ? stock.minimum_quantity
+        ? formatEditableDecimal(stock.minimum_quantity)
         : next === "adjustment" && stock
-          ? stock.current_quantity
+          ? formatEditableDecimal(stock.current_quantity)
           : "",
     );
     setReason("");
@@ -279,6 +273,33 @@ function Inventory() {
   function selectNature(next: string) {
     setNature(next);
     movementIdempotencyKey.current = null;
+  }
+  async function submitWriteOff(event: React.FormEvent) {
+    event.preventDefault();
+    if (!writeOffStock || writeOffReason.trim().length < 3) {
+      setError("Informe um motivo com pelo menos 3 caracteres.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const movement = await http.post<StockMovement>(
+        `stocks/${writeOffStock.id}/write-off-residual/`,
+        { reason: writeOffReason.trim() },
+      );
+      setWriteOffStock(null);
+      setWriteOffReason("");
+      setSuccess({
+        label: "Saldo residual baixado.",
+        description: `${writeOffStock.product_name} foi zerado sem reabrir o produto.`,
+        reference: movement.operation_reference,
+      });
+      await load();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Não foi possível baixar o saldo residual.");
+    } finally {
+      setSaving(false);
+    }
   }
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -488,7 +509,7 @@ function Inventory() {
                     {loading
                       ? "..."
                       : summary?.estimated_value !== undefined
-                        ? formatBRL(summary.estimated_value)
+                        ? formatDecimalBRL(summary.estimated_value)
                         : "-"}
                   </strong>
                   <p className="text-[11px] text-slate-500">
@@ -680,28 +701,29 @@ function Inventory() {
                   </thead>
                   <tbody>
                     {data.results.map((stock) => (
-                      <tr key={stock.id}>
+                      <tr key={stock.id} className={stock.product_deleted ? "bg-slate-50 text-slate-500" : undefined}>
                         <td>
                           <strong className="block">
                             {stock.product_name}
                           </strong>
+                          {stock.product_deleted && <span className="mt-1 inline-flex rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-bold text-slate-700">Excluído</span>}
                           <span className="text-[11px] text-slate-400">
                             {stock.internal_code}
                           </span>
                         </td>
                         <td>{stock.category_name || "-"}</td>
                         <td>
-                           <strong>{stock.current_content != null && fractionConfigs[stock.product] ? packageContentDisplay(stock.current_content, fractionConfigs[stock.product]) : `${formatQuantity(stock.current_quantity)} ${stock.unit.toUpperCase()}`}</strong>
+                           <strong>{stock.current_content != null && stock.package_content && stock.content_unit ? packageContentDisplay(stock.current_content, { package_content: stock.package_content, content_unit: stock.content_unit }) : `${formatQuantity(stock.current_quantity)} ${stock.unit.toUpperCase()}`}</strong>
                            <span className="block text-[10px] text-slate-400">
                              Mín. {formatQuantity(stock.minimum_quantity)}
                            </span>
-                           {stock.current_content != null && fractionConfigs[stock.product] && <span className="mt-1 block text-[10px] text-muted">Total exato: {formatQuantity(stock.current_content)} {contentUnitLabel(fractionConfigs[stock.product].content_unit)}</span>}
+                           {stock.current_content != null && stock.content_unit && <span className="mt-1 block text-[10px] text-muted">Total exato: {formatQuantity(stock.current_content)} {contentUnitLabel(stock.content_unit)}</span>}
                         </td>
                         {canViewCosts && (
                           <>
                             <td>{formatDecimalBRL(stock.average_unit_cost ?? stock.unit_cost)}</td>
                             <td>{formatDecimalBRL(stock.last_unit_cost)}</td>
-                            <td>{formatBRL(stock.total_cost)}</td>
+                            <td>{formatDecimalBRL(stock.total_cost)}</td>
                           </>
                         )}
                         <td>
@@ -709,7 +731,7 @@ function Inventory() {
                         </td>
                         <td>
                           <div className="flex justify-end gap-1">
-                            {canEntry && (
+                            {!stock.product_deleted && canEntry && (
                                  <button
                                   className="icon-button"
                                   title="Entrada"
@@ -718,7 +740,7 @@ function Inventory() {
                                   <ArrowDown className="size-4 text-success" />
                                  </button>
                             )}
-                            {canExit && (
+                            {!stock.product_deleted && canExit && (
                                  <button
                                   className="icon-button"
                                   title="Saída"
@@ -727,7 +749,7 @@ function Inventory() {
                                   <ArrowUp className="size-4 text-danger" />
                                  </button>
                             )}
-                            {canAdjust && (
+                            {!stock.product_deleted && canAdjust && (
                                  <button
                                   className="icon-button"
                                   title="Ajustar saldo"
@@ -738,13 +760,26 @@ function Inventory() {
                                   <Settings2 className="size-4" />
                                  </button>
                             )}
-                            {canMinimum && (
+                            {!stock.product_deleted && canMinimum && (
                               <button
                                 className="icon-button"
                                 title="Estoque mínimo"
                                 onClick={() => resetAction("minimum", stock)}
                               >
                                 <SlidersHorizontal className="size-4" />
+                              </button>
+                            )}
+                            {stock.product_deleted && canAdjust && (
+                              <button
+                                className="icon-button"
+                                title="Baixar saldo remanescente"
+                                onClick={() => {
+                                  setWriteOffStock(stock);
+                                  setWriteOffReason("");
+                                  setError("");
+                                }}
+                              >
+                                <PackageX className="size-4 text-danger" />
                               </button>
                             )}
                           </div>
@@ -820,7 +855,7 @@ function Inventory() {
                     companyId={currentCompany?.id}
                     branchId={currentBranch?.id}
                     value={selectedProduct}
-                    disabled={!canViewProducts}
+                    optionsEndpoint={action === "exit" ? "stock-movements/exit-options/" : "stock-movements/adjustment-options/"}
                     onError={setError}
                     onChange={(product) => {
                       setSelectedProduct(product);
@@ -908,11 +943,36 @@ function Inventory() {
                 type="submit"
                 loading={saving}
                 disabled={
-                 !selected && (!canViewProducts || !selectedProduct)
+                 !selected && !selectedProduct
                 }
             >
               Confirmar
             </Button>
+          </div>
+        </form>
+      </Modal>
+      <Modal
+        open={!!writeOffStock}
+        title="Baixar saldo remanescente"
+        description={writeOffStock ? `${writeOffStock.product_name} está excluído e será zerado sem retornar ao catálogo.` : undefined}
+        onClose={() => !saving && setWriteOffStock(null)}
+      >
+        <form onSubmit={submitWriteOff}>
+          <div className="space-y-4 p-5">
+            {error && <Alert message={error} />}
+            <Alert message="Esta operação é auditada e não pode ser usada para adicionar estoque ao produto excluído." />
+            <Field label="Motivo da baixa">
+              <Textarea
+                required
+                minLength={3}
+                value={writeOffReason}
+                onChange={(event) => setWriteOffReason(event.target.value)}
+              />
+            </Field>
+          </div>
+          <div className="flex justify-end gap-2 border-t border-subtle px-5 py-4">
+            <Button type="button" variant="secondary" disabled={saving} onClick={() => setWriteOffStock(null)}>Cancelar</Button>
+            <Button type="submit" loading={saving}>Confirmar baixa</Button>
           </div>
         </form>
       </Modal>

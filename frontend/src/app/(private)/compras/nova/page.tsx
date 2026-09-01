@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Plus, Trash2 } from "lucide-react";
 import { AdminGuard } from "@/components/admin-guard";
@@ -25,14 +25,13 @@ import {
   moneyCents,
   purchaseBaseUnitPrice,
   purchasePresentationLabel,
+  purchasePresentationPriceLabel,
   purchasePresentationPrice,
   purchaseTypeLabels,
   validatePurchaseAttachmentFile,
 } from "@/lib/purchases";
 import { useAuth } from "@/providers/auth-provider";
 import type {
-  ProductSupplier,
-  ProductSupplierUnit,
   Product,
   PurchaseOrder,
   PurchaseOrderType,
@@ -41,15 +40,16 @@ import type {
 
 type Line = {
   product: string;
-  unit: string;
+  presentation: string;
   quantity: string;
   price: string;
   basePrice: string;
 };
 type Installment = { amount: string; due_date: string; notes: string };
+type PurchaseCreationOptions = { suppliers: Supplier[]; products: Product[] };
 const emptyLine = (): Line => ({
   product: "",
-  unit: "",
+  presentation: "",
   quantity: "1",
   price: "",
   basePrice: "",
@@ -67,8 +67,6 @@ function NewPurchase() {
   const [supplier, setSupplier] = useState("");
   const [type, setType] = useState<PurchaseOrderType>("ORDER");
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
-  const [relations, setRelations] = useState<ProductSupplier[]>([]);
-  const [units, setUnits] = useState<ProductSupplierUnit[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [lines, setLines] = useState<Line[]>([emptyLine()]);
   const [discount, setDiscount] = useState("0.00");
@@ -91,10 +89,6 @@ function NewPurchase() {
   const context = useRef("");
   context.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}`;
 
-  const relationById = useMemo(
-    () => new Map(relations.map((item) => [item.id, item])),
-    [relations],
-  );
   const grossCents = lines.reduce(
     (total, line) => total + lineTotalCents(line.quantity, line.price),
     BigInt(0),
@@ -112,8 +106,6 @@ function NewPurchase() {
   useEffect(() => {
     const key = context.current;
     setSupplier("");
-    setRelations([]);
-    setUnits([]);
     setLines([emptyLine()]);
     setError("");
     if (!companyId || !branchId) {
@@ -122,9 +114,12 @@ function NewPurchase() {
     }
     setLoadingOptions(true);
     http
-      .getAll<Supplier>(`suppliers/?company=${companyId}&status=active`)
-      .then((items) => {
-        if (context.current === key) setSuppliers(items);
+      .get<PurchaseCreationOptions>("purchase-orders/options/")
+      .then((options) => {
+        if (context.current === key) {
+          setSuppliers(options.suppliers);
+          setProducts(options.products);
+        }
       })
       .catch((caught) => {
         if (context.current === key)
@@ -137,50 +132,7 @@ function NewPurchase() {
       .finally(() => {
         if (context.current === key) setLoadingOptions(false);
       });
-    void http.getAll<Product>(`products/?company=${companyId}&inventory_behavior=direct&status=active`).then((items) => {
-      if (context.current === key) setProducts(items);
-    }).catch(() => { if (context.current === key) setProducts([]); });
   }, [companyId, branchId]);
-
-  useEffect(() => {
-    const key = context.current;
-    setRelations([]);
-    setUnits([]);
-    setLines([emptyLine()]);
-    if (!supplier || !companyId) return;
-    setLoadingOptions(true);
-    Promise.all([
-      http.getAll<ProductSupplier>(
-        `product-suppliers/?company=${companyId}&supplier=${supplier}&status=active`,
-      ),
-      http.getAll<ProductSupplierUnit>(
-        `product-supplier-units/?company=${companyId}&supplier=${supplier}&status=active`,
-      ),
-    ])
-      .then(([nextRelations, nextUnits]) => {
-        if (context.current === key) {
-          setRelations(nextRelations);
-          setUnits(
-            nextUnits.filter((unit) =>
-              nextRelations.some(
-                (relation) => relation.id === unit.product_supplier,
-              ),
-            ),
-          );
-        }
-      })
-      .catch((caught) => {
-        if (context.current === key)
-          setError(
-            caught instanceof ApiError
-              ? caught.message
-              : "Não foi possível carregar as apresentações do fornecedor.",
-          );
-      })
-      .finally(() => {
-        if (context.current === key) setLoadingOptions(false);
-      });
-  }, [supplier, companyId]);
 
   function updateLine(index: number, patch: Partial<Line>) {
     setLines((current) =>
@@ -253,10 +205,12 @@ function NewPurchase() {
         supplier: Number(supplier),
         order_type: type,
         items: lines.map((line) => {
-          const unit = units.find((item) => item.id === Number(line.unit));
+          const presentation = products
+            .find((item) => item.id === Number(line.product))
+            ?.purchase_presentations?.find((item) => item.id === Number(line.presentation));
           return {
             product: Number(line.product),
-            ...(unit ? { product_supplier_unit: unit.id } : {}),
+            ...(presentation ? { purchase_presentation: presentation.id } : {}),
             ordered_quantity: line.quantity,
             purchase_unit_price: line.price,
           };
@@ -371,7 +325,7 @@ function NewPurchase() {
             <div>
               <h2 className="text-sm font-bold">Itens</h2>
               <p className="mt-1 text-[11px] text-muted">
-                Escolha qualquer produto comprável. Use uma apresentação do produto vinculada ao fornecedor ou a unidade de estoque.
+                As apresentações pertencem ao produto e não dependem do fornecedor selecionado.
               </p>
             </div>
             <Button
@@ -386,13 +340,17 @@ function NewPurchase() {
           </div>
           <div className="space-y-3 p-4">
             {lines.map((line, index) => {
-              const selected = units.find(
-                (item) => item.id === Number(line.unit),
+              const product = products.find((item) => item.id === Number(line.product));
+              const presentations = (product?.purchase_presentations || []).filter(
+                (item) => item.status === "active",
+              );
+              const selected = presentations.find(
+                (item) => item.id === Number(line.presentation),
               );
               return (
                 <div
                   key={index}
-                  className="grid gap-3 rounded-lg border border-subtle p-3 md:grid-cols-[minmax(14rem,1fr)_minmax(14rem,1fr)_8rem_10rem_10rem_auto] md:items-end"
+                  className="grid gap-3 rounded-lg border border-subtle p-3 md:grid-cols-2 md:items-end lg:grid-cols-3 2xl:grid-cols-[minmax(14rem,1fr)_minmax(14rem,1fr)_8rem_10rem_10rem_auto]"
                 >
                   <Field label={`Produto ${index + 1}`}>
                     <Select
@@ -401,7 +359,7 @@ function NewPurchase() {
                       onChange={(event) =>
                         updateLine(index, {
                           product: event.target.value,
-                          unit: "",
+                          presentation: "",
                           basePrice: line.price,
                         })
                       }
@@ -425,16 +383,16 @@ function NewPurchase() {
                   </Field>
                   <Field label="Unidade de compra / Apresentação">
                     <Select
-                      value={line.unit}
+                      value={line.presentation}
                       onChange={(event) => {
-                        const next = units.find(
-                          (unit) => unit.id === Number(event.target.value),
+                        const next = presentations.find(
+                          (presentation) => presentation.id === Number(event.target.value),
                         );
                         const factor = next?.conversion_factor || "1";
                         const basePrice =
                           line.basePrice || purchaseBaseUnitPrice(line.price, factor);
                         updateLine(index, {
-                          unit: event.target.value,
+                          presentation: event.target.value,
                           basePrice,
                           price: purchasePresentationPrice(basePrice, factor),
                         });
@@ -442,7 +400,7 @@ function NewPurchase() {
                       disabled={!line.product || saving}
                     >
                       <option value="">Unidade de estoque</option>
-                      {units.filter((unit) => relationById.get(unit.product_supplier)?.product === Number(line.product)).map((unit) => <option key={unit.id} value={unit.id}>{purchasePresentationLabel(unit.unit_code, unit.description)}</option>)}
+                      {presentations.map((presentation) => <option key={presentation.id} value={presentation.id}>{purchasePresentationLabel(presentation.unit_code, presentation.description)}</option>)}
                     </Select>
                   </Field>
                   <Field label="Quantidade">
@@ -459,7 +417,7 @@ function NewPurchase() {
                       disabled={saving}
                     />
                   </Field>
-                  <Field label="Preço por apresentação">
+                  <Field label={purchasePresentationPriceLabel(selected?.description)}>
                     <Input
                       required
                       inputMode="decimal"
@@ -478,23 +436,9 @@ function NewPurchase() {
                     />
                   </Field>
                   <Field label="Preço unitário">
-                    <Input
-                      required
-                      inputMode="decimal"
-                      pattern="\d+([.,]\d{1,6})?"
-                      value={line.basePrice}
-                      onChange={(event) => {
-                        const basePrice = event.target.value.replace(",", ".");
-                        updateLine(index, {
-                          basePrice,
-                          price: purchasePresentationPrice(
-                            basePrice,
-                            selected?.conversion_factor || "1",
-                          ),
-                        });
-                      }}
-                      disabled={saving}
-                    />
+                    <div className="flex h-10 items-center rounded-md bg-surface-muted px-3 text-sm font-semibold">
+                      {line.basePrice ? formatBRL(line.basePrice) : "R$ 0,00"}
+                    </div>
                   </Field>
                   <div>
                     <span className="label">Subtotal</span>

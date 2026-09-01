@@ -54,14 +54,17 @@ class DomainValidationError(APIException):
     status_code = status.HTTP_400_BAD_REQUEST
 
     def __init__(self, *, code, message, details=None):
-        super().__init__({
+        self.payload = {
             'code': code,
             'message': message,
             'details': details or {},
-        })
+        }
+        super().__init__(self.payload)
 
 
 def api_exception_handler(exc, context):
+    if isinstance(exc, DomainValidationError):
+        return Response(exc.payload, status=exc.status_code)
     response = exception_handler(exc, context)
     if response is not None:
         return response

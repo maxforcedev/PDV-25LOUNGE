@@ -2,11 +2,11 @@ from django.db import transaction
 from django.db.models import Q
 from rest_framework import viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from apps.base.audit import audit_log, model_snapshot
-from apps.companies.models import Status
+from apps.companies.models import Branch, Status
 from apps.companies.permissions import FunctionalCompanyPermission
 from apps.companies.selectors import accessible_companies
 
@@ -28,6 +28,7 @@ from .services import (
     _set_product_supplier_unit_status,
     _set_presentation_preset_status,
     _set_supplier_status,
+    soft_delete_supplier,
 )
 
 
@@ -122,9 +123,46 @@ class SupplierViewSet(SupplierDomainViewSet):
         'contact_name', 'address', 'notes', 'status',
     )
     status_service = staticmethod(_set_supplier_status)
+    http_method_names = (*SupplierDomainViewSet.http_method_names, 'delete')
+
+    def _branch_context(self):
+        branch = getattr(self.request, 'branch_context', None)
+        if branch is not None:
+            return branch
+        branch_id = self.request.headers.get('X-Branch-ID')
+        if not branch_id:
+            return None
+        try:
+            branch = Branch.objects.select_related('company').get(
+                pk=branch_id, status=Status.ACTIVE, company__status=Status.ACTIVE,
+            )
+        except (Branch.DoesNotExist, TypeError, ValueError):
+            raise PermissionDenied('Selecione uma filial ativa e autorizada.')
+        support = getattr(self.request, 'support_session', None)
+        support_allowed = bool(support and support.company_id == branch.company_id)
+        allowed_companies = accessible_companies(
+            self.request.user, self.permission_codes[self.action]
+        )
+        if (
+            not self.request.user.is_superuser
+            and not support_allowed
+            and not allowed_companies.filter(pk=branch.company_id).exists()
+        ):
+            raise PermissionDenied('Filial fora do contexto autorizado.')
+        self.request.branch_context = branch
+        return branch
+
+    def get_serializer_context(self):
+        self._branch_context()
+        return super().get_serializer_context()
 
     def get_queryset(self):
-        queryset = self.scope_company(Supplier.objects.select_related('company'))
+        queryset = self.scope_company(Supplier.objects.select_related('company', 'branch')).filter(
+            deleted_at__isnull=True,
+        )
+        branch = self._branch_context()
+        if branch:
+            queryset = queryset.filter(branch=branch)
         params = self.request.query_params
         supplier_status = params.get('status')
         if supplier_status:
@@ -143,6 +181,28 @@ class SupplierViewSet(SupplierDomainViewSet):
             )
         return queryset.order_by('trade_name', 'legal_name', 'id')
 
+    @transaction.atomic
+    def perform_create(self, serializer):
+        branch = self._branch_context()
+        if branch is None:
+            raise PermissionDenied('Selecione a filial ativa.')
+        supplier = serializer.save(branch=branch)
+        audit_log(
+            actor=self.request.user, action='supplier.create', obj=supplier,
+            company=supplier.company, branch=branch,
+            after=model_snapshot(supplier, self.audit_fields),
+        )
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        before = model_snapshot(instance, ('status', 'deleted_at', 'deleted_by_id'))
+        supplier = soft_delete_supplier(supplier=instance, user=self.request.user)
+        audit_log(
+            actor=self.request.user, action='supplier.delete', obj=supplier,
+            company=supplier.company, branch=supplier.branch, before=before,
+            after=model_snapshot(supplier, ('status', 'deleted_at', 'deleted_by_id')),
+        )
+
 
 class ProductSupplierViewSet(SupplierDomainViewSet):
     queryset = ProductSupplier.objects.all()
@@ -158,6 +218,14 @@ class ProductSupplierViewSet(SupplierDomainViewSet):
         queryset = self.scope_company(ProductSupplier.objects.select_related(
             'company', 'product', 'supplier'
         ))
+        branch = getattr(self.request, 'branch_context', None)
+        if branch:
+            queryset = queryset.filter(
+                product__branch_configs__branch=branch,
+                product__branch_configs__is_available=True,
+                supplier__branch=branch,
+                supplier__deleted_at__isnull=True,
+            )
         params = self.request.query_params
         for field in ('product', 'supplier'):
             if params.get(field):
@@ -244,6 +312,14 @@ class ProductSupplierUnitViewSet(SupplierDomainViewSet):
             'company', 'product_supplier__product', 'product_supplier__supplier',
             'purchase_presentation',
         ))
+        branch = getattr(self.request, 'branch_context', None)
+        if branch:
+            queryset = queryset.filter(
+                product_supplier__product__branch_configs__branch=branch,
+                product_supplier__product__branch_configs__is_available=True,
+                product_supplier__supplier__branch=branch,
+                product_supplier__supplier__deleted_at__isnull=True,
+            )
         params = self.request.query_params
         for parameter, lookup in (
             ('product_supplier', 'product_supplier_id'),

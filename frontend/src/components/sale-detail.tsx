@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { Alert, Button, Modal, Spinner, Textarea } from "@/components/ui";
-import { formatBRL, formatDate, formatQuantity } from "@/lib/format";
+import { decimalIsZero, formatDate, formatDecimalBRL as formatBRL, formatPercent, formatQuantity } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
@@ -270,7 +270,7 @@ export function SaleDetail({
                         {!!item.modifier_snapshot?.length && (
                           <span className="mt-1 block text-[10px] text-slate-500">
                             {item.modifier_snapshot.map((mod) => mod.option_name).join(", ")}
-                            {item.modifier_unit_total && item.modifier_unit_total !== "0.00"
+                            {item.modifier_unit_total && !decimalIsZero(item.modifier_unit_total)
                               ? ` (+${formatBRL(item.modifier_unit_total)})`
                               : ""}
                           </span>
@@ -281,7 +281,7 @@ export function SaleDetail({
                             {formatBRL(item.promotion_benefit)}
                           </span>
                         )}
-                        {item.manual_discount !== "0.00" && (
+                        {!decimalIsZero(item.manual_discount) && (
                           <span className="mt-1 block text-[10px] font-bold text-warning-strong">
                             Desconto do item {formatBRL(item.manual_discount)}
                             {item.discount_approved_by_name
@@ -311,7 +311,7 @@ export function SaleDetail({
                         <strong
                           className={
                             item.promotion_name ||
-                            item.manual_discount !== "0.00"
+                             !decimalIsZero(item.manual_discount)
                               ? "text-slate-400 line-through"
                               : ""
                           }
@@ -319,7 +319,7 @@ export function SaleDetail({
                           {formatBRL(item.subtotal)}
                         </strong>
                         {(item.promotion_name ||
-                          item.manual_discount !== "0.00") && (
+                          !decimalIsZero(item.manual_discount)) && (
                           <strong className="block text-success-strong">
                             {formatBRL(item.net_subtotal)}
                           </strong>
@@ -343,13 +343,13 @@ export function SaleDetail({
                 <span>{consumption ? "Referência" : "Subtotal bruto"}</span>
                 <span>{formatBRL(sale.subtotal)}</span>
               </div>
-              {!consumption && sale.promotion_discount_total !== "0.00" && (
+              {!consumption && !decimalIsZero(sale.promotion_discount_total) && (
                 <div className="flex justify-between text-sm text-success-strong">
                   <span>Promoções</span>
                   <span>- {formatBRL(sale.promotion_discount_total)}</span>
                 </div>
               )}
-              {!consumption && sale.item_discount_total !== "0.00" && (
+              {!consumption && !decimalIsZero(sale.item_discount_total) && (
                 <div className="flex justify-between text-sm text-warning-strong">
                   <span>Descontos por item</span>
                   <span>- {formatBRL(sale.item_discount_total)}</span>
@@ -361,9 +361,9 @@ export function SaleDetail({
                   <span>- {formatBRL(sale.discount)}</span>
                 </div>
               )}
-              {!consumption && sale.service_fee_amount !== "0.00" && (
+              {!consumption && !decimalIsZero(sale.service_fee_amount) && (
                 <div className="flex justify-between text-sm text-info-strong">
-                  <span>Taxa de serviço ({sale.service_fee_rate}%)</span>
+                  <span>Taxa de serviço ({formatPercent(sale.service_fee_rate)})</span>
                   <span>+ {formatBRL(sale.service_fee_amount)}</span>
                 </div>
               )}
@@ -377,7 +377,7 @@ export function SaleDetail({
                 canViewCommission &&
                 sale.commission_amount !== undefined && (
                   <div className="flex justify-between text-xs text-slate-400">
-                    <span>Comissão ({sale.commission_rate}%)</span>
+                     <span>Comissão ({formatPercent(sale.commission_rate)})</span>
                     <span
                       className={
                         sale.status === "cancelled" ? "line-through" : ""

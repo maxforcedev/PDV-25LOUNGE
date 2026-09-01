@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowRight, Building2, Check, RefreshCw, Users } from "lucide-react";
 import { Alert, Spinner } from "@/components/ui";
-import { formatBRL } from "@/lib/format";
+import { formatDecimalBRL as formatBRL } from "@/lib/format";
 import { http } from "@/lib/http";
 import type { PublicPlan } from "@/types";
 

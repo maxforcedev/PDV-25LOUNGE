@@ -16,11 +16,13 @@ import {
   TableLoading,
 } from "@/components/ui";
 import { domainLabel } from "@/lib/domain-labels";
-import { formatBRL, formatDate, formatQuantity } from "@/lib/format";
-import { contentUnitLabel, physicalQuantityDisplay } from "@/lib/inventory";
+import { decimalIsZero, formatDate, formatDecimalBRL as formatBRL, formatPercent, formatQuantity } from "@/lib/format";
+import { contentUnitLabel, divideInventoryDecimals, inventoryDecimalSign, physicalQuantityDisplay, subtractInventoryDecimals, sumInventoryDecimals } from "@/lib/inventory";
 import { ApiError, http } from "@/lib/http";
 import { businessMonthToDate } from "@/lib/period";
 import { permissions } from "@/lib/permissions";
+import { centsToDecimal } from "@/lib/sales";
+import { signedMoneyToCents } from "@/lib/cash";
 import { useAuth } from "@/providers/auth-provider";
 import type {
   ProductPriceComparison,
@@ -150,8 +152,23 @@ function rows(value: unknown) {
   return Array.isArray(value) ? (value as Array<Record<string, unknown>>) : [];
 }
 
-function money(value: unknown) {
+function numberValue(value: unknown) {
   return Number(value || 0);
+}
+
+function sumReportMoney(values: unknown[]) {
+  const total = values.reduce<bigint | null>((sum, value) => {
+    const cents = signedMoneyToCents(value);
+    return sum === null || cents === null ? null : sum + cents;
+  }, BigInt(0));
+  return total === null ? "0.00" : centsToDecimal(total);
+}
+
+function averageReportMoney(rows: Array<Record<string, unknown>>, amountKey: string) {
+  const count = rows.reduce((total, row) => total + numberValue(row.count), 0);
+  if (!count) return "0.00";
+  const total = signedMoneyToCents(sumReportMoney(rows.map((row) => row[amountKey])));
+  return total === null ? "0.00" : centsToDecimal(total / BigInt(count));
 }
 
 function firstValue(summary: Record<string, unknown>, ...keys: string[]) {
@@ -187,19 +204,21 @@ function ConsumptionQuantity({ row, quantityKey, prefix }: { row: Record<string,
   const packageContent = reportValue(row, "package_content");
   const combined = reportValue(row, quantityKey) ?? 0;
   const unit = String(product.unit || "equiv.").toUpperCase();
-  if (content == null || packageContent == null || Number(packageContent) <= 0) {
+  if (content == null || packageContent == null || inventoryDecimalSign(packageContent) !== 1) {
     return <span><strong>{formatQuantity(String(combined))} {unit}</strong><small className="block text-muted">Equivalente legado</small></span>;
   }
-  const legacy = Number(combined) - Number(content) / Number(packageContent);
+  const packageEquivalent = divideInventoryDecimals(content, packageContent);
+  const legacy = packageEquivalent === null ? null : subtractInventoryDecimals(combined, packageEquivalent);
   return <span>
     <strong className="block">{reportPhysicalQuantity(row, quantityKey, prefix)}</strong>
-    <small className="block text-muted">Equivalente legado: {formatQuantity(String(legacy))} {unit}</small>
+    <small className="block text-muted">Equivalente legado: {formatQuantity(legacy ?? combined)} {unit}</small>
     <small className="block text-muted">Total combinado equivalente: {formatQuantity(String(combined))} {unit}</small>
   </span>;
 }
 
 function hasDelta(value: unknown) {
-  return Math.abs(money(value)) >= 0.005;
+  const cents = signedMoneyToCents(value);
+  return cents !== null ? cents !== BigInt(0) : !decimalIsZero(value);
 }
 
 function ReconciliationWarning({
@@ -236,7 +255,7 @@ function Kpi({
       : format === "quantity"
         ? formatQuantity(String(value || "0"))
         : format === "percent"
-          ? `${String(value || "0")}%`
+          ? formatPercent(value)
           : String(value ?? "0");
   return (
     <div className="rounded-lg border border-dashed border-slate-200 p-4">
@@ -280,12 +299,12 @@ function reportKpis(kind: ReportKind, summary: Record<string, unknown>) {
     products: [
       [
         "Faturamento de vendas",
-        productRows.reduce((total, row) => total + money(row.revenue), 0),
+        sumReportMoney(productRows.map((row) => row.revenue)),
         "money",
       ],
       [
         "Unidades vendidas",
-        productRows.reduce((total, row) => total + money(row.quantity), 0),
+        sumInventoryDecimals(productRows.map((row) => row.quantity)) || "0",
         "quantity",
       ],
       ["Produtos vendidos", productRows.length, "number"],
@@ -312,73 +331,54 @@ function reportKpis(kind: ReportKind, summary: Record<string, unknown>) {
     operators: [
       [
         "Faturamento de vendas",
-        operatorRows.reduce(
-          (total, row) => total + money(row.sales_revenue),
-          0,
-        ),
+        sumReportMoney(operatorRows.map((row) => row.sales_revenue)),
         "money",
       ],
       [
         "Taxa de serviço",
-        operatorRows.reduce((total, row) => total + money(row.service_fee), 0),
+        sumReportMoney(operatorRows.map((row) => row.service_fee)),
         "money",
       ],
       [
         "Total recebido",
-        operatorRows.reduce(
-          (total, row) => total + money(row.total_received),
-          0,
-        ),
+        sumReportMoney(operatorRows.map((row) => row.total_received)),
         "money",
       ],
       [
         "Vendas",
-        operatorRows.reduce((total, row) => total + money(row.count), 0),
+        operatorRows.reduce((total, row) => total + numberValue(row.count), 0),
         "number",
       ],
       [
         "Ticket médio comercial",
-        operatorRows.reduce((total, row) => total + money(row.count), 0)
-          ? operatorRows.reduce(
-              (total, row) => total + money(row.sales_revenue),
-              0,
-            ) / operatorRows.reduce((total, row) => total + money(row.count), 0)
-          : 0,
+        averageReportMoney(operatorRows, "sales_revenue"),
         "money",
       ],
     ],
     sellers: [
       [
         "Faturamento de vendas",
-        sellerRows.reduce(
-          (total, row) => total + money(row.sales_revenue),
-          0,
-        ),
+        sumReportMoney(sellerRows.map((row) => row.sales_revenue)),
         "money",
       ],
       [
         "Taxa de serviço",
-        sellerRows.reduce((total, row) => total + money(row.service_fee), 0),
+        sumReportMoney(sellerRows.map((row) => row.service_fee)),
         "money",
       ],
       [
         "Total recebido",
-        sellerRows.reduce((total, row) => total + money(row.total_received), 0),
+        sumReportMoney(sellerRows.map((row) => row.total_received)),
         "money",
       ],
       [
         "Vendas",
-        sellerRows.reduce((total, row) => total + money(row.count), 0),
+        sellerRows.reduce((total, row) => total + numberValue(row.count), 0),
         "number",
       ],
       [
         "Ticket médio comercial",
-        sellerRows.reduce((total, row) => total + money(row.count), 0)
-          ? sellerRows.reduce(
-              (total, row) => total + money(row.sales_revenue),
-              0,
-            ) / sellerRows.reduce((total, row) => total + money(row.count), 0)
-          : 0,
+        averageReportMoney(sellerRows, "sales_revenue"),
         "money",
       ],
     ],
@@ -1398,7 +1398,7 @@ function CashSummarySections({
               <strong>
                 {formatBRL(
                   String(
-                    money(summary.sales_revenue) + money(summary.service_fee),
+                    sumReportMoney([summary.sales_revenue, summary.service_fee]),
                   ),
                 )}
               </strong>
@@ -1435,11 +1435,8 @@ function CashSummarySections({
                 {formatBRL(
                   String(
                     summary.payment_totals
-                      ? rows(summary.payment_totals).reduce(
-                          (total, row) => total + money(row.gross_received),
-                          0,
-                        )
-                      : 0,
+                        ? sumReportMoney(rows(summary.payment_totals).map((row) => row.gross_received))
+                        : "0.00",
                   ),
                 )}
               </strong>
@@ -1791,7 +1788,7 @@ function ResultStatement({ summary }: { summary: Record<string, unknown> }) {
         {summary.margin !== undefined && summary.margin !== null && (
           <div className="flex justify-between px-4 py-3">
             <span className="text-sm">Margem sobre o Total recebido</span>
-            <strong>{String(summary.margin)}%</strong>
+            <strong>{formatPercent(summary.margin)}</strong>
           </div>
         )}
         {visibleCostDetails.length > 0 && (

@@ -77,6 +77,11 @@ export function purchasePresentationLabel(code: string, description: string) {
   return `${code} — ${text ? `${text[0].toLocaleUpperCase("pt-BR")}${text.slice(1)}` : "Apresentação"}`;
 }
 
+export function purchasePresentationPriceLabel(description?: string) {
+  const presentation = description?.trim().split(/\s+/)[0];
+  return presentation ? `Preço por ${presentation}` : "Preço por unidade";
+}
+
 function baseUnitLabel(unit: string, quantity: bigint) {
   if (unit.toUpperCase() === "UN")
     return quantity === BigInt(1) ? "unidade" : "unidades";

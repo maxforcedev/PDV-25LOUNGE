@@ -14,6 +14,7 @@ type ProductAutocompleteProps = {
   disabled?: boolean;
   placeholder?: string;
   onError?: (message: string) => void;
+  optionsEndpoint?: string;
 };
 
 export function ProductAutocomplete({
@@ -24,6 +25,7 @@ export function ProductAutocomplete({
   disabled = false,
   placeholder = "Buscar por nome, código, SKU ou código de barras",
   onError,
+  optionsEndpoint,
 }: ProductAutocompleteProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Product[]>([]);
@@ -53,8 +55,11 @@ export function ProductAutocomplete({
         page: String(page),
         page_size: "20",
       });
-      void http
-        .get<Paginated<Product>>(`products/?${params}`)
+      const request = optionsEndpoint
+        ? http.get<{ products: Product[] }>(`${optionsEndpoint}?search=${encodeURIComponent(term)}`)
+            .then((response) => ({ results: response.products, next: null }))
+        : http.get<Paginated<Product>>(`products/?${params}`);
+      void request
         .then((response) => {
           if (requestRef.current !== requestId) return;
           setResults((current) =>
@@ -77,7 +82,7 @@ export function ProductAutocomplete({
         });
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [branchId, companyId, onError, page, query]);
+  }, [branchId, companyId, onError, optionsEndpoint, page, query]);
 
   function search(value: string) {
     setQuery(value);

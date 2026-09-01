@@ -5,7 +5,9 @@ from django.core.exceptions import ValidationError
 from django.db import connection, transaction
 
 from apps.companies.models import Branch
-from apps.products.models import FractionableProductConfig, InventoryBehavior, Product
+from apps.products.models import (
+    FractionableProductConfig, InventoryBehavior, Product, ProductBranchConfig,
+)
 
 from .content import exact_multiply_quantized
 from .models import Stock
@@ -58,6 +60,8 @@ def materialize_stock(*, product, branch):
         raise ValidationError({'branch': 'A filial deve pertencer a empresa do produto.'})
     if product.inventory_behavior != InventoryBehavior.DIRECT:
         raise ValidationError({'product': 'Somente produtos com estoque proprio possuem saldo.'})
+    if not ProductBranchConfig.objects.filter(product=product, branch=branch).exists():
+        raise ValidationError({'product': 'O produto não está habilitado nesta filial.'})
 
     config = FractionableProductConfig.objects.select_for_update().filter(
         product_id=product.pk,
@@ -98,42 +102,9 @@ def materialize_stock(*, product, branch):
 
 @transaction.atomic
 def materialize_product_stocks(product):
-    if product.inventory_behavior != InventoryBehavior.DIRECT:
-        return
-    _lock_company_materialization(product.company_id)
-    branches = Branch.objects.filter(company_id=product.company_id).order_by('pk')
-    Stock.objects.bulk_create(
-        [
-            Stock(product_id=product.pk, branch_id=branch_id)
-            for branch_id in branches.values_list('pk', flat=True)
-        ],
-        ignore_conflicts=True,
-    )
+    """Product creation no longer enrolls it in every company branch."""
 
 
 @transaction.atomic
 def materialize_branch_stocks(branch):
-    _lock_company_materialization(branch.company_id)
-    products = list(Product.objects.select_for_update().filter(
-        company_id=branch.company_id,
-        inventory_behavior=InventoryBehavior.DIRECT,
-    ).order_by('pk'))
-    active_fraction_product_ids = set(
-        FractionableProductConfig.objects.select_for_update().filter(
-            product_id__in=[product.pk for product in products],
-            tracking_active=True,
-        ).values_list('product_id', flat=True)
-    )
-    Stock.objects.bulk_create(
-        [
-            Stock(
-                product_id=product.pk,
-                branch_id=branch.pk,
-                current_content=(
-                    Decimal('0') if product.pk in active_fraction_product_ids else None
-                ),
-            )
-            for product in products
-        ],
-        ignore_conflicts=True,
-    )
+    """New branches start without copied stock or product enrollment."""

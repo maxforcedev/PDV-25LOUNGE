@@ -548,6 +548,8 @@ class SaleItem(ImmutableHistoricalModel):
     product_name = models.CharField(max_length=200)
     internal_code = models.CharField(max_length=100)
     unit = models.CharField(max_length=5, choices=Unit.choices)
+    category_id_snapshot = models.PositiveBigIntegerField(blank=True, null=True, editable=False)
+    category_name_snapshot = models.CharField(max_length=150, blank=True, editable=False)
     unit_cost = models.DecimalField(max_digits=14, decimal_places=2)
     base_unit_price = models.DecimalField(
         max_digits=14, decimal_places=2, default=Decimal('0.00'), editable=False
@@ -695,8 +697,6 @@ class SaleItem(ImmutableHistoricalModel):
             self.product_name = self.product.name
             self.internal_code = self.product.internal_code
             self.unit = self.product.unit
-            self.participates_in_service_fee = self.product.participates_in_service_fee
-            self.participates_in_commission = self.product.participates_in_commission
             if self.unit_cost is None:
                 from apps.inventory.models import Stock
 

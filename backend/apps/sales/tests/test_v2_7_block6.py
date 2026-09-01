@@ -8,6 +8,7 @@ Covers mandatory test areas:
   14 SELLER_COMMISSION
 """
 import uuid
+from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -39,14 +40,16 @@ from apps.production.services import reprint_print_job
 from apps.production.views import PrinterDeviceViewSet
 from apps.products.models import (
     Category, Product, ProductProductionDestination, ProductionDestination,
-    SalesChannel, Unit, InventoryBehavior,
+    ProductBranchConfig, SalesChannel, Unit, InventoryBehavior,
 )
-from apps.sales.models import OperationType, Sale, SaleStatus, Payment
+from apps.sales.models import (
+    OperationType, Payment, Promotion, PromotionDiscountType, Sale, SaleStatus,
+)
 from apps.sales.services import (
     calculate_preview, finalize_sale, cancel_sale,
     ensure_default_payment_methods,
 )
-from apps.reports.selectors import filtered_cash_sessions
+from apps.reports.selectors import filtered_cash_sessions, sale_rankings
 
 PASSWORD = 'Block6-sales-password-123!'
 
@@ -103,11 +106,16 @@ class SalesFixture:
         settings.uses_cash_register = True
         settings.uses_consumption = True
         settings.save()
-        self.category = Category.objects.create(company=self.company, name='Food')
+        self.category = Category.objects.create(
+            company=self.company, branch=self.branch, name='Food'
+        )
         self.product = Product.objects.create(
             company=self.company, category=self.category, name='Burger',
             internal_code='BURG01', unit=Unit.UNIT, cost=Decimal('10.00'),
             sale_price=Decimal('20.00'), inventory_behavior=InventoryBehavior.DIRECT,
+        )
+        ProductBranchConfig.objects.create(
+            product=self.product, branch=self.branch, category=self.category,
         )
         set_stock(self.branch, self.product, '100', '10.00')
         self.cash_register = CashRegister.objects.create(branch=self.branch, name='Main')
@@ -147,6 +155,65 @@ class SalesFixture:
 # ---------------------------------------------------------------------------
 # Area 4: SERVICE_FEE
 # ---------------------------------------------------------------------------
+
+class BranchCategorySnapshotTests(SalesFixture, TestCase):
+    def test_sale_and_reports_keep_effective_branch_category_and_participation(self):
+        branch_category = Category.objects.create(
+            company=self.company, branch=self.branch, name='Combos'
+        )
+        config = ProductBranchConfig.objects.get(
+            product=self.product, branch=self.branch
+        )
+        config.category = branch_category
+        config.participates_in_service_fee = False
+        config.participates_in_commission = False
+        config.save()
+
+        sale = self.finalize_sale_via_service()
+        item = sale.items.get()
+        self.assertEqual(item.category_id_snapshot, branch_category.pk)
+        self.assertEqual(item.category_name_snapshot, 'Combos')
+        self.assertFalse(item.participates_in_service_fee)
+        self.assertFalse(item.participates_in_commission)
+
+        config.category = self.category
+        config.save()
+        _products, categories = sale_rankings(Sale.objects.filter(pk=sale.pk))
+        self.assertEqual(categories[0]['category_id'], branch_category.pk)
+        self.assertEqual(categories[0]['category_name'], 'Combos')
+
+    def test_category_promotion_uses_effective_branch_category(self):
+        branch_category = Category.objects.create(
+            company=self.company, branch=self.branch, name='Promocional'
+        )
+        config = ProductBranchConfig.objects.get(
+            product=self.product, branch=self.branch
+        )
+        config.category = branch_category
+        config.save()
+        promotion = Promotion.objects.create(
+            company=self.company,
+            branch=self.branch,
+            name='Promo filial',
+            discount_type=PromotionDiscountType.PERCENTAGE,
+            discount_value=Decimal('10.00'),
+            starts_at=timezone.now() - timedelta(minutes=1),
+            status=Status.ACTIVE,
+        )
+        promotion.categories.add(branch_category)
+
+        preview = calculate_preview(
+            company=self.company,
+            branch=self.branch,
+            operation_type=OperationType.SALE,
+            raw_items=[{'product': self.product.pk, 'quantity': '1'}],
+            discount='0',
+            charged_amount=None,
+            beneficiary_user=None,
+            channel=SalesChannel.COUNTER,
+        )
+        self.assertEqual(preview['promotion_discount_total'], Decimal('2.00'))
+
 
 class ServiceFeeTests(SalesFixture, TestCase):
     def test_charges_false_rate_10_fee_zero(self):

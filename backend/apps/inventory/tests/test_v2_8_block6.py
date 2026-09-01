@@ -24,7 +24,7 @@ from apps.inventory.services import (
     apply_locked_stock,
 )
 from apps.products.models import (
-    Category, Product, Unit, InventoryBehavior,
+    Category, Product, ProductBranchConfig, Unit, InventoryBehavior,
 )
 from apps.sales.models import OperationType, SaleStatus
 from apps.sales.services import (
@@ -70,11 +70,16 @@ class InventoryRegressionFixture:
         settings.uses_counter = True
         settings.uses_cash_register = True
         settings.save()
-        self.category = Category.objects.create(company=self.company, name='Cat')
+        self.category = Category.objects.create(
+            company=self.company, branch=self.branch, name='Cat'
+        )
         self.product = Product.objects.create(
             company=self.company, category=self.category, name='Flour',
             internal_code='FL01', unit=Unit.KILOGRAM, cost=Decimal('2.00'),
             sale_price=Decimal('5.00'), inventory_behavior=InventoryBehavior.DIRECT,
+        )
+        ProductBranchConfig.objects.create(
+            product=self.product, branch=self.branch, category=self.category
         )
         set_stock(self.branch, self.product, '100', '2.00')
         self.payment_methods = ensure_default_payment_methods(self.company)

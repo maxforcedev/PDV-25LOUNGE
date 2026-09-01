@@ -27,7 +27,7 @@ from apps.base.audit import audit_log
 from apps.base.report_exports import render_report_export, report_key_value_rows
 from apps.companies.models import Branch, BranchSettings, Status
 from apps.companies.selectors import accessible_branches, user_has_branch_permission, user_has_company_permission
-from apps.products.models import Category, Product
+from apps.products.models import Category, Product, ProductBranchConfig
 from apps.purchases.models import PurchaseReceipt
 
 from .content import content_breakdown, exact_multiply, exact_sum
@@ -51,7 +51,7 @@ from .models import (
     TransferResolutionType,
 )
 from .permissions import InventoryFunctionalPermission
-from .selectors import active_transfer_destinations, eligible_workflow_stocks
+from .selectors import active_transfer_destinations, eligible_inventory_products, eligible_workflow_stocks
 from .serializers import (
     AdjustmentRequestSerializer,
     AdvancedInventoryReportQuerySerializer,
@@ -94,6 +94,7 @@ from .services import (
     record_loss,
     regularize_negatives,
     resolve_transfer_divergence,
+    write_off_archived_stock,
 )
 
 
@@ -177,6 +178,8 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
         'retrieve': 'inventory.view',
         'minimum': 'inventory.change_minimum',
         'summary': 'inventory.view',
+        'options': 'inventory.view',
+        'write_off_residual': 'inventory.adjust',
         'regularize_negatives': 'inventory.regularize',
     }
 
@@ -190,7 +193,10 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
         if filters.get('branch'):
             queryset = queryset.filter(branch_id=filters['branch'])
         if filters.get('category'):
-            queryset = queryset.filter(product__category_id=filters['category'])
+            queryset = queryset.filter(
+                product__branch_configs__branch=F('branch_id'),
+                product__branch_configs__category_id=filters['category'],
+            )
         if params.get('status'):
             queryset = queryset.filter(product__status=params['status'])
         if params.get('inventory_behavior'):
@@ -246,19 +252,31 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
         code = self.permission_codes.get(self.action, 'inventory.view')
         branches = _scoped_inventory_branches(self.request, code)
         queryset = Stock.objects.select_related(
-            'product', 'product__category', 'product__fraction_config',
+            'product', 'product__fraction_config',
             'branch', 'branch__company'
-        ).filter(
+        ).prefetch_related(Prefetch(
+            'product__branch_configs',
+            queryset=ProductBranchConfig.objects.select_related('category'),
+            to_attr='_inventory_branch_configs',
+        )).filter(
             branch__in=branches,
             product__inventory_behavior='direct',
-        )
+            product__branch_configs__branch=F('branch_id'),
+            product__branch_configs__is_available=True,
+        ).filter(
+            Q(product__archived_at__isnull=True, product__status=Status.ACTIVE)
+            | Q(product__archived_at__isnull=False) & (
+                Q(current_content__isnull=False) & ~Q(current_content=0)
+                | Q(current_content__isnull=True) & ~Q(current_quantity=0)
+            )
+        ).distinct()
         queryset = self._filtered_queryset(queryset)
         ordering = self.request.query_params.get('ordering', 'product')
         descending = ordering.startswith('-')
         ordering = ordering.removeprefix('-')
         fields = {
             'product': 'product__name',
-            'category': 'product__category__name',
+            'category': 'product__branch_configs__category__name',
             'balance': 'current_quantity',
             'average_unit_cost': 'average_unit_cost',
             'last_unit_cost': 'last_unit_cost',
@@ -296,7 +314,10 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=('get',))
     def summary(self, request):
-        queryset = self.get_queryset()
+        queryset = self.get_queryset().filter(
+            product__archived_at__isnull=True,
+            product__status=Status.ACTIVE,
+        )
         branch = getattr(request, 'branch_context', None)
         branch_id = branch.pk if branch else None
         can_view_kpis = request.user.is_superuser or user_has_branch_permission(
@@ -347,6 +368,33 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
             result['estimated_value'] = f'{estimated_value:.2f}'
         return Response(result)
 
+    @action(detail=False, methods=('get',))
+    def options(self, request):
+        branch = getattr(request, 'branch_context', None)
+        if branch is None:
+            raise PermissionDenied('Selecione a filial ativa.')
+        categories = Category.objects.filter(
+            branch=branch, status=Status.ACTIVE, deleted_at__isnull=True,
+            branch_product_configs__in=ProductBranchConfig.objects.filter(
+                product__in=eligible_inventory_products(branch), branch=branch,
+                is_available=True,
+            ),
+        ).distinct().order_by('sort_order', 'name')
+        return Response({'categories': [
+            {'id': item.pk, 'name': item.name} for item in categories
+        ]})
+
+    @action(detail=True, methods=('post',), url_path='write-off-residual')
+    def write_off_residual(self, request, pk=None):
+        reason = str(request.data.get('reason') or '').strip()
+        movement = write_off_archived_stock(
+            stock=self.get_object(), user=request.user, reason=reason,
+        )
+        movement = _with_operation_count(StockMovement.objects.select_related(
+            'stock__product', 'stock__branch', 'stock__branch__company', 'user', 'sale',
+        )).get(pk=movement.pk)
+        return Response(StockMovementSerializer(movement, context={'request': request}).data)
+
     @action(detail=False, methods=('post',), url_path='regularize-negatives')
     def regularize_negatives(self, request):
         serializer = RegularizeNegativesSerializer(data=request.data)
@@ -395,6 +443,8 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
         'exit': 'inventory.exit',
         'adjustment': 'inventory.adjust',
         'entry_options': 'inventory.entry',
+        'exit_options': 'inventory.exit',
+        'adjustment_options': 'inventory.adjust',
     }
 
     def get_queryset(self):
@@ -429,7 +479,10 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
         if filters.get('branch'):
             queryset = queryset.filter(stock__branch_id=filters['branch'])
         if filters.get('category'):
-            queryset = queryset.filter(stock__product__category_id=filters['category'])
+            queryset = queryset.filter(
+                stock__product__branch_configs__branch_id=F('stock__branch_id'),
+                stock__product__branch_configs__category_id=filters['category'],
+            )
         if filters.get('product'):
             queryset = queryset.filter(stock__product_id=filters['product'])
         movement_type = params.get('movement_type') or params.get('type')
@@ -520,8 +573,7 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
             'results': results,
         }, status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED)
 
-    @action(detail=False, methods=('get',), url_path='entry-options')
-    def entry_options(self, request):
+    def _movement_options(self, request):
         branch = getattr(request, 'branch_context', None)
         if (
             branch is None
@@ -533,9 +585,11 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
                 message='Selecione uma filial ativa para carregar as opcoes de entrada.',
             )
         categories = Category.objects.filter(
-            company_id=branch.company_id, status=Status.ACTIVE,
-            products__status=Status.ACTIVE,
-            products__inventory_behavior='direct',
+            branch=branch, status=Status.ACTIVE, deleted_at__isnull=True,
+            branch_product_configs__product__status=Status.ACTIVE,
+            branch_product_configs__product__archived_at__isnull=True,
+            branch_product_configs__product__inventory_behavior='direct',
+            branch_product_configs__is_available=True,
         ).distinct().order_by('sort_order', 'name', 'id')
         category_id = request.query_params.get('category')
         search = (request.query_params.get('search') or '').strip()
@@ -550,22 +604,33 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
                     details={'category_id': category_id},
                 ) from error
             products = Product.objects.filter(
-                company_id=branch.company_id, category=category,
-                inventory_behavior='direct', status=Status.ACTIVE,
-            ).select_related('category', 'fraction_config').order_by('name', 'id')
+                company_id=branch.company_id, branch_configs__branch=branch,
+                branch_configs__category=category, branch_configs__is_available=True,
+                inventory_behavior='direct', status=Status.ACTIVE, archived_at__isnull=True,
+            ).select_related('fraction_config').order_by('name', 'id')
         elif request.query_params.get('all') == 'true':
             products = Product.objects.filter(
-                company_id=branch.company_id, inventory_behavior='direct', status=Status.ACTIVE,
-            ).select_related('category', 'fraction_config').order_by('name', 'id')
+                company_id=branch.company_id, branch_configs__branch=branch,
+                branch_configs__is_available=True, inventory_behavior='direct', status=Status.ACTIVE,
+                archived_at__isnull=True,
+            ).select_related('fraction_config').order_by('name', 'id')
         elif search:
             products = Product.objects.filter(
-                company_id=branch.company_id, inventory_behavior='direct', status=Status.ACTIVE,
+                company_id=branch.company_id, branch_configs__branch=branch,
+                branch_configs__is_available=True, inventory_behavior='direct', status=Status.ACTIVE,
+                archived_at__isnull=True,
             ).filter(
                 Q(name__icontains=search)
                 | Q(internal_code__icontains=search)
                 | Q(barcode__icontains=search)
                 | Q(sku__icontains=search)
-            ).select_related('category', 'fraction_config').order_by('name', 'id')[:50]
+            ).select_related('fraction_config').order_by('name', 'id')[:50]
+        configs = {
+            config.product_id: config
+            for config in ProductBranchConfig.objects.filter(
+                branch=branch, product__in=products, is_available=True,
+            ).select_related('category')
+        }
         balances = dict(Stock.objects.filter(
             branch=branch, product__in=products
         ).values_list('product_id', 'current_quantity'))
@@ -578,8 +643,8 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
                 'internal_code': product.internal_code,
                 'barcode': product.barcode,
                 'sku': product.sku,
-                'category_id': product.category_id,
-                'category_name': product.category.name,
+                'category_id': configs[product.pk].category_id,
+                'category_name': configs[product.pk].category.name if configs[product.pk].category_id else '',
                 'unit': product.unit,
                 'current_quantity': str(balances.get(product.pk, 0)),
                 'fraction_config': (
@@ -593,6 +658,18 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
                 ),
             } for product in products],
         })
+
+    @action(detail=False, methods=('get',), url_path='entry-options')
+    def entry_options(self, request):
+        return self._movement_options(request)
+
+    @action(detail=False, methods=('get',), url_path='exit-options')
+    def exit_options(self, request):
+        return self._movement_options(request)
+
+    @action(detail=False, methods=('get',), url_path='adjustment-options')
+    def adjustment_options(self, request):
+        return self._movement_options(request)
 
 
 class StockTransferViewSet(viewsets.ReadOnlyModelViewSet):
@@ -1045,13 +1122,13 @@ class InventoryCountViewSet(viewsets.ReadOnlyModelViewSet):
             stock.product_id: stock
             for stock in eligible_workflow_stocks(branch, exclude_open_counts=True)
         }
-        products = Product.objects.filter(
-            company=branch.company,
-            status=Status.ACTIVE,
-            inventory_behavior='direct',
-        ).exclude(pk__in=open_product_ids).select_related(
-            'category', 'fraction_config'
-        ).order_by('category__name', 'name', 'pk')
+        products = eligible_inventory_products(branch).exclude(pk__in=open_product_ids)
+        configs = {
+            config.product_id: config
+            for config in ProductBranchConfig.objects.filter(
+                branch=branch, product__in=products, is_available=True,
+            ).select_related('category')
+        }
         options = []
         for product in products:
             stock = stocks.get(product.pk)
@@ -1061,8 +1138,8 @@ class InventoryCountViewSet(viewsets.ReadOnlyModelViewSet):
                 'product_name': product.name,
                 'internal_code': product.internal_code,
                 'unit': product.unit,
-                'category': product.category_id,
-                'category_name': product.category.name if product.category_id else '',
+                'category': configs[product.pk].category_id,
+                'category_name': configs[product.pk].category.name if configs[product.pk].category_id else '',
                 'current_quantity': format(stock.current_quantity, 'f') if stock else '0',
                 'equivalent_quantity': format(stock.equivalent_quantity(), 'f') if stock else '0',
             }

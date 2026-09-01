@@ -232,7 +232,7 @@ class ReportsOptionsView(APIView):
         products = Product.objects.filter(company_id=branch.company_id).order_by(
             'name', 'id'
         ) if can_view_products else Product.objects.none()
-        categories = Category.objects.filter(company_id=branch.company_id).order_by(
+        categories = Category.objects.filter(branch=branch).order_by(
             'sort_order', 'name', 'id'
         ) if can_view_products else Category.objects.none()
         payment_methods = PaymentMethod.objects.filter(
@@ -415,13 +415,13 @@ class DashboardView(APIView):
             except (TypeError, ValueError):
                 from rest_framework.exceptions import ValidationError
                 raise ValidationError({'category': 'Informe uma categoria válida.'})
-            if not Category.objects.filter(pk=category, company_id=branch.company_id).exists():
+            if not Category.objects.filter(pk=category, branch=branch).exists():
                 from rest_framework.exceptions import ValidationError
                 raise ValidationError({'category': 'Categoria fora da filial atual.'})
         response['filters'] = {
             'category': category,
             'categories': list(Category.objects.filter(
-                company_id=branch.company_id, status='active'
+                branch=branch, status='active', deleted_at__isnull=True,
             ).values('id', 'name').order_by('sort_order', 'name')),
         }
 

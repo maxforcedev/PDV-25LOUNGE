@@ -8,8 +8,8 @@ import { AdminGuard } from "@/components/admin-guard";
 import { InventoryNav } from "@/components/inventory-nav";
 import { PageHeader } from "@/components/page-header";
 import { Alert, Button, ConfirmDialog, Field, Input, Modal, Spinner, Textarea } from "@/components/ui";
-import { fieldError, formatDate, formatDecimalBRL, formatQuantity } from "@/lib/format";
-import { contentUnitLabel, inventoryTone, isUnitQuantityValid, quantityInputMode, transferStatusLabels } from "@/lib/inventory";
+import { decimalIsZero, fieldError, formatDate, formatDecimalBRL, formatEditableDecimal, formatQuantity } from "@/lib/format";
+import { contentUnitLabel, inventoryDecimalSign, inventoryTone, isUnitQuantityValid, quantityInputMode, transferStatusLabels } from "@/lib/inventory";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
@@ -89,7 +89,7 @@ function TransferDetail() {
     try {
       const options = await http.get<TransferReceiveOptions>(`stock-transfers/${id}/receive-options/`);
       setReceiveOptions(options);
-      setQuantities(Object.fromEntries(options.items.filter((item) => Number(item.pending_quantity) > 0).map((item) => [item.transfer_item, item.pending_quantity])));
+       setQuantities(Object.fromEntries(options.items.filter((item) => !decimalIsZero(item.pending_quantity)).map((item) => [item.transfer_item, formatEditableDecimal(item.pending_quantity)])));
       setReceiptOpen(true);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar as opções de recebimento.");
@@ -117,7 +117,7 @@ function TransferDetail() {
     if (!receiveOptions) return;
     setError("");
     setFields({});
-    const items = receiveOptions.items.flatMap((item) => Number(String(quantities[item.transfer_item] || "").replace(",", ".")) > 0 ? [{ transfer_item: item.transfer_item, quantity: quantities[item.transfer_item].replace(",", ".") }] : []);
+    const items = receiveOptions.items.flatMap((item) => inventoryDecimalSign(quantities[item.transfer_item] || "") === 1 ? [{ transfer_item: item.transfer_item, quantity: quantities[item.transfer_item].replace(",", ".") }] : []);
     const clientFields: Record<string, string[]> = {};
     items.forEach((entry, index) => {
       const transferItem = receiveOptions.items.find((item) => item.transfer_item === entry.transfer_item);
@@ -201,10 +201,10 @@ function TransferDetail() {
       <form onSubmit={receive}>
         <div className="space-y-4 p-5 sm:p-6">
           {error && <Alert message={error} />}
-           {receiveOptions?.items.filter((item) => Number(item.pending_quantity) > 0).map((item, index) => <div key={item.transfer_item} className="grid gap-2 rounded-md border border-subtle p-3 sm:grid-cols-[1fr_180px]"><div><strong className="text-sm">{item.product_name}</strong><p className="mt-1 text-xs text-muted">Pendente: {formatQuantity(item.pending_quantity)} {item.unit.toUpperCase()}</p>{transfer?.items.find((row) => row.id === item.transfer_item)?.package_content_snapshot && <p className="mt-1 text-[10px] font-semibold text-warning-strong">Receba somente embalagens fechadas.</p>}</div><Field label="Recebido agora" error={fieldError(fields, `items.${index}.quantity`)}><Input inputMode={quantityInputMode(item.unit)} step={item.unit.toLowerCase() === "un" ? "1" : "0.001"} min="0" value={quantities[item.transfer_item] || ""} onChange={(event) => changeReceiptPayload(() => setQuantities((value) => ({ ...value, [item.transfer_item]: event.target.value })))} /></Field></div>)}
+           {receiveOptions?.items.filter((item) => inventoryDecimalSign(item.pending_quantity) === 1).map((item, index) => <div key={item.transfer_item} className="grid gap-2 rounded-md border border-subtle p-3 sm:grid-cols-[1fr_180px]"><div><strong className="text-sm">{item.product_name}</strong><p className="mt-1 text-xs text-muted">Pendente: {formatQuantity(item.pending_quantity)} {item.unit.toUpperCase()}</p>{transfer?.items.find((row) => row.id === item.transfer_item)?.package_content_snapshot && <p className="mt-1 text-[10px] font-semibold text-warning-strong">Receba somente embalagens fechadas.</p>}</div><Field label="Recebido agora" error={fieldError(fields, `items.${index}.quantity`)}><Input inputMode={quantityInputMode(item.unit)} step={item.unit.toLowerCase() === "un" ? "1" : "0.001"} min="0" value={quantities[item.transfer_item] || ""} onChange={(event) => changeReceiptPayload(() => setQuantities((value) => ({ ...value, [item.transfer_item]: event.target.value })))} /></Field></div>)}
           <Field label="Observações" optional error={fieldError(fields, "notes")}><Textarea value={notes} onChange={(event) => changeReceiptPayload(() => setNotes(event.target.value))} /></Field>
           <label className="flex items-start gap-3 rounded-md border border-warning/30 bg-warning-surface p-3 text-xs"><input type="checkbox" className="mt-0.5" checked={finalize} onChange={(event) => changeReceiptPayload(() => { setFinalize(event.target.checked); setConfirmEmptyFinalize(false); })} /><span><strong className="block text-warning-strong">Finalizar conferência</strong><span className="text-muted">Quantidades pendentes serão divergências finalizadas, não itens em trânsito.</span></span></label>
-          {finalize && !receiveOptions?.items.some((item) => Number(String(quantities[item.transfer_item] || "").replace(",", ".")) > 0) && <label className="flex items-start gap-3 rounded-md border border-danger/30 bg-danger-surface p-3 text-xs"><input type="checkbox" className="mt-0.5" checked={confirmEmptyFinalize} onChange={(event) => changeReceiptPayload(() => setConfirmEmptyFinalize(event.target.checked))} /><span><strong className="block text-danger-strong">Confirmo recebimento zero</strong><span className="text-muted">Nenhum item foi recebido. Todo o saldo pendente será convertido em divergência explícita.</span></span></label>}
+          {finalize && !receiveOptions?.items.some((item) => inventoryDecimalSign(quantities[item.transfer_item] || "") === 1) && <label className="flex items-start gap-3 rounded-md border border-danger/30 bg-danger-surface p-3 text-xs"><input type="checkbox" className="mt-0.5" checked={confirmEmptyFinalize} onChange={(event) => changeReceiptPayload(() => setConfirmEmptyFinalize(event.target.checked))} /><span><strong className="block text-danger-strong">Confirmo recebimento zero</strong><span className="text-muted">Nenhum item foi recebido. Todo o saldo pendente será convertido em divergência explícita.</span></span></label>}
         </div>
         <div className="flex justify-end gap-2 border-t border-subtle px-5 py-4"><Button type="button" variant="secondary" disabled={saving} onClick={() => setReceiptOpen(false)}>Cancelar</Button><Button type="submit" loading={saving}>{finalize ? "Confirmar e finalizar" : "Confirmar parcial"}</Button></div>
       </form>

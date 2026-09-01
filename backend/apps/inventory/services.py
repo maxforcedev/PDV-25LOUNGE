@@ -15,7 +15,7 @@ from apps.companies.models import Branch, Company, Status
 from apps.companies.selectors import user_has_branch_permission
 from apps.products.models import (
     BranchProductPrice, Category, FractionableProductConfig, InventoryBehavior,
-    Product, Unit,
+    Product, ProductBranchConfig, Unit,
 )
 
 from .content import (
@@ -159,8 +159,21 @@ def _validate_operational_stock(product, branch):
             code='inactive_product', message='O produto deve estar ativo.',
             details={'product_id': product.pk},
         )
+    if product.archived_at is not None:
+        raise DomainValidationError(
+            code='archived_product', message='O produto está arquivado.',
+            details={'product_id': product.pk},
+        )
     if product.company_id != branch.company_id:
         raise ValidationError({'branch': 'A filial deve pertencer a empresa do produto.'})
+    if not ProductBranchConfig.objects.filter(
+        product=product, branch=branch, is_available=True
+    ).exists():
+        raise DomainValidationError(
+            code='product_not_enabled_for_branch',
+            message='Habilite o produto nesta filial antes de movimentar o estoque.',
+            details={'product_id': product.pk, 'branch_id': branch.pk},
+        )
     if product.inventory_behavior != InventoryBehavior.DIRECT:
         raise ValidationError({'product': 'Somente produtos com estoque próprio podem ser movimentados.'})
 
@@ -667,6 +680,50 @@ def adjustment(product, branch, user, final_quantity=None, final_content=None, r
 
 
 @transaction.atomic
+def write_off_archived_stock(*, stock, user, reason):
+    reason = (reason or '').strip()
+    if len(reason) < 3:
+        raise ValidationError({'reason': 'Informe o motivo da baixa residual.'})
+    stock = Stock.objects.select_related(
+        'product', 'branch', 'branch__company', 'product__fraction_config',
+    ).select_for_update(of=('self',)).get(pk=_pk(stock))
+    branch = _authorized_branch(stock.branch, user, 'inventory.adjust')
+    branch = _lock_active_company_branch(branch)
+    product = Product.objects.select_for_update().get(pk=stock.product_id)
+    if product.archived_at is None:
+        raise ValidationError({'product': 'A baixa residual exige um produto excluído.'})
+    config = _active_fraction_config(product)
+    if config:
+        current_content = stock.current_content or Decimal('0')
+        if current_content == 0:
+            raise ValidationError({'stock': 'O saldo residual já está zerado.'})
+        quantity = Decimal('0')
+        content_quantity = -current_content
+    else:
+        if stock.current_quantity == 0:
+            raise ValidationError({'stock': 'O saldo residual já está zerado.'})
+        quantity = -stock.current_quantity
+        content_quantity = None
+    reference = uuid.uuid4()
+    movement = apply_locked_stock(
+        stock=stock, quantity=quantity, content_quantity=content_quantity,
+        user=user, reason=reason, movement_type=MovementType.ADJUSTMENT,
+        nature=MovementNature.BALANCE_CORRECTION,
+        operation_reference=reference, domain_origin=MovementDomainOrigin.MANUAL,
+    )
+    audit_log(
+        actor=user, action='inventory.archived_stock_write_off', obj=movement,
+        company=branch.company, branch=branch,
+        after=model_snapshot(movement, (
+            'quantity', 'previous_quantity', 'final_quantity',
+            'content_quantity', 'previous_content', 'final_content', 'reason',
+        )),
+        metadata={'product_id': product.pk, 'operation_reference': str(reference)},
+    )
+    return movement
+
+
+@transaction.atomic
 def group_entry(*, branch, category=None, items, user, operation_reference,
                 nature=MovementNature.NORMAL, reason=''):
     branch = _authorized_branch(branch, user, 'inventory.entry')
@@ -719,7 +776,7 @@ def group_entry(*, branch, category=None, items, user, operation_reference,
         return existing
     product_ids = [product_id for product_id, _quantity, _content in requested]
     if category is not None and not Category.objects.filter(
-        pk=_pk(category), company_id=branch.company_id, status=Status.ACTIVE
+        pk=_pk(category), branch=branch, status=Status.ACTIVE
     ).exists():
         raise DomainValidationError(
             code='invalid_inventory_entry_category',
@@ -731,9 +788,12 @@ def group_entry(*, branch, category=None, items, user, operation_reference,
         company_id=branch.company_id,
         inventory_behavior=InventoryBehavior.DIRECT,
         status=Status.ACTIVE,
+        branch_configs__branch=branch,
+        branch_configs__is_available=True,
+        archived_at__isnull=True,
     )
     if category is not None:
-        valid_products = valid_products.filter(category_id=_pk(category))
+        valid_products = valid_products.filter(branch_configs__category_id=_pk(category))
     valid_ids = set(valid_products.values_list('id', flat=True))
     if valid_ids != set(product_ids) or len(product_ids) != len(set(product_ids)):
         raise ValidationError({
@@ -907,10 +967,24 @@ def create_stock_transfer(*, origin_branch, destination_branch, items, user,
         for product in Product.objects.select_for_update().filter(
             pk__in=sorted(seen), company=origin.company,
             inventory_behavior=InventoryBehavior.DIRECT, status=Status.ACTIVE,
+            archived_at__isnull=True,
+            branch_configs__branch=origin,
+            branch_configs__is_available=True,
         ).order_by('pk')
     }
     if set(products) != seen:
         raise ValidationError({'items': 'Todos os produtos devem ser fisicos e ativos nesta empresa.'})
+    unavailable = [
+        product_id for product_id in products if not ProductBranchConfig.objects.filter(
+            product_id=product_id, branch=destination, is_available=True
+        ).exists()
+    ]
+    if unavailable:
+        raise DomainValidationError(
+            code='destination_product_not_enabled',
+            message='Habilite o produto na filial de destino antes da transferência.',
+            details={'product_ids': unavailable, 'destination_branch_id': destination.pk},
+        )
     for index, (product_id, quantity) in enumerate(prepared):
         _validate_whole_unit_quantity(products[product_id], quantity, f'items.{index}.quantity')
     transfer = StockTransfer.objects.create(
@@ -1672,11 +1746,8 @@ def create_inventory_count(*, branch, items, observation='', mode=InventoryCount
     if set(products) != seen:
         raise ValidationError({'items': 'Todos os produtos devem possuir estoque proprio nesta empresa.'})
     if mode == InventoryCountMode.FULL:
-        expected_ids = set(Product.objects.filter(
-            company=branch.company,
-            inventory_behavior=InventoryBehavior.DIRECT,
-            status=Status.ACTIVE,
-        ).values_list('pk', flat=True))
+        from apps.products.selectors import countable_products
+        expected_ids = set(countable_products(branch).values_list('pk', flat=True))
         if seen != expected_ids:
             raise ValidationError({
                 'items': 'A contagem completa deve incluir todos os produtos controlados ativos da filial.'

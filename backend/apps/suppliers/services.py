@@ -1,5 +1,6 @@
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 
 from apps.companies.models import Company, Status
 from apps.products.models import Product
@@ -52,8 +53,20 @@ def _save_supplier(*, instance=None, **values):
         instance = Supplier(**values)
     return _save_with_validation(
         instance,
-        {'tax_id': 'Outro fornecedor desta empresa já utiliza este CPF/CNPJ.'},
+        {'tax_id': 'Outro fornecedor desta filial já utiliza este CPF/CNPJ.'},
     )
+
+
+@transaction.atomic
+def soft_delete_supplier(*, supplier, user):
+    supplier = _lock_instance(supplier)
+    if supplier.deleted_at is not None:
+        return supplier
+    supplier.deleted_at = timezone.now()
+    supplier.deleted_by = user
+    supplier.status = Status.INACTIVE
+    supplier.save(update_fields=('deleted_at', 'deleted_by', 'status', 'updated_at'))
+    return supplier
 
 
 @transaction.atomic

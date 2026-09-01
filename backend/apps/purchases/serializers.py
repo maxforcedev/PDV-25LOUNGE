@@ -327,6 +327,9 @@ class PurchaseItemInputSerializer(serializers.Serializer):
     product_supplier_unit = serializers.IntegerField(
         min_value=1, max_value=MAX_BIGINT, required=False, allow_null=True
     )
+    purchase_presentation = serializers.IntegerField(
+        min_value=1, max_value=MAX_BIGINT, required=False, allow_null=True
+    )
     ordered_quantity = serializers.DecimalField(
         max_digits=18, decimal_places=6, min_value=Decimal('0.000001')
     )

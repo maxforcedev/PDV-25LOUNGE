@@ -96,8 +96,12 @@ class ProductRbacFixture:
         self.settings_b.uses_cash_register = True
         self.settings_b.save()
 
-        self.cat_a = Category.objects.create(company=self.company_a, name='Cat A')
-        self.cat_b = Category.objects.create(company=self.company_b, name='Cat B')
+        self.cat_a = Category.objects.create(
+            company=self.company_a, branch=self.branch_a, name='Cat A'
+        )
+        self.cat_b = Category.objects.create(
+            company=self.company_b, branch=self.branch_b, name='Cat B'
+        )
         self.product_a = Product.objects.create(
             company=self.company_a, category=self.cat_a, name='ProdA Item',
             internal_code='PA01', unit=Unit.UNIT, cost=Decimal('1.00'),
@@ -107,6 +111,12 @@ class ProductRbacFixture:
             company=self.company_b, category=self.cat_b, name='ProdB Item',
             internal_code='PB01', unit=Unit.UNIT, cost=Decimal('2.00'),
             sale_price=Decimal('8.00'), inventory_behavior=InventoryBehavior.DIRECT,
+        )
+        ProductBranchConfig.objects.create(
+            product=self.product_a, branch=self.branch_a, category=self.cat_a
+        )
+        ProductBranchConfig.objects.create(
+            product=self.product_b, branch=self.branch_b, category=self.cat_b
         )
         ensure_default_payment_methods(self.company_a)
         ensure_default_payment_methods(self.company_b)
@@ -227,11 +237,16 @@ class CategoryConfigurationTests(ProductRbacFixture, TestCase):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data['affected_count'], 1)
         self.product_a.refresh_from_db()
-        self.assertFalse(self.product_a.available_command)
+        self.assertTrue(self.product_a.available_command)
+        config = ProductBranchConfig.objects.get(
+            product=self.product_a, branch=self.branch_a
+        )
+        self.assertFalse(config.available_command)
+        self.assertFalse(config.participates_in_service_fee)
         audit = AuditLog.objects.filter(
             action='category.apply_config', object_id=str(self.product_a.pk)
         ).latest('pk')
-        self.assertTrue(audit.before['available_command'])
+        self.assertIsNone(audit.before['available_command'])
         self.assertFalse(audit.after['available_command'])
 
 
@@ -239,7 +254,10 @@ class ModifierReorderTests(ProductRbacFixture, TestCase):
     def setUp(self):
         super().setUp()
         self.groups = [
-            ModifierGroup.objects.create(company=self.company_a, name=name, sort_order=index)
+            ModifierGroup.objects.create(
+                company=self.company_a, branch=self.branch_a,
+                name=name, sort_order=index,
+            )
             for index, name in enumerate(('Primeiro', 'Segundo', 'Terceiro'))
         ]
         self.options = [
@@ -281,7 +299,9 @@ class ModifierReorderTests(ProductRbacFixture, TestCase):
         self.assertEqual(list(ProductModifierGroup.objects.filter(product=self.product_a).values_list('pk', flat=True)), [self.links[2].pk, self.links[0].pk, self.links[1].pk])
 
     def test_reorder_rejects_cross_tenant_and_missing_ids(self):
-        foreign = ModifierGroup.objects.create(company=self.company_b, name='Externo')
+        foreign = ModifierGroup.objects.create(
+            company=self.company_b, branch=self.branch_b, name='Externo'
+        )
         response = self._post('/api/v1/modifier-groups/reorder/', {
             'group_ids': [self.groups[0].pk, self.groups[1].pk, foreign.pk],
         })
@@ -309,7 +329,8 @@ class ModifierTests(ProductRbacFixture, TestCase):
     def setUp(self):
         super().setUp()
         self.group_a = ModifierGroup.objects.create(
-            company=self.company_a, name='Extras', is_required=False,
+            company=self.company_a, branch=self.branch_a,
+            name='Extras', is_required=False,
             min_selections=0, max_selections=3,
         )
         self.option_a1 = ModifierOption.objects.create(
@@ -482,7 +503,9 @@ class ModifierTests(ProductRbacFixture, TestCase):
             )
 
     def test_cross_tenant_modifier_delete_returns_not_found(self):
-        foreign = ModifierGroup.objects.create(company=self.company_b, name='Foreign delete')
+        foreign = ModifierGroup.objects.create(
+            company=self.company_b, branch=self.branch_b, name='Foreign delete'
+        )
         response = self.api_client(self.owner_a, self.branch_a.pk).delete(
             f'/api/v1/modifier-groups/{foreign.pk}/'
         )
@@ -492,7 +515,8 @@ class ModifierTests(ProductRbacFixture, TestCase):
 
     def test_required_group_blocks_without_selection(self):
         req_group = ModifierGroup.objects.create(
-            company=self.company_a, name='Required', is_required=True,
+            company=self.company_a, branch=self.branch_a,
+            name='Required', is_required=True,
             min_selections=1, max_selections=2,
         )
         ProductModifierGroup.objects.create(
@@ -508,7 +532,8 @@ class ModifierTests(ProductRbacFixture, TestCase):
 
     def test_min_selections_enforced(self):
         group = ModifierGroup.objects.create(
-            company=self.company_a, name='Min2', is_required=False,
+            company=self.company_a, branch=self.branch_a,
+            name='Min2', is_required=False,
             min_selections=2, max_selections=None,
         )
         ProductModifierGroup.objects.create(product=self.product_a, modifier_group=group)
@@ -522,7 +547,8 @@ class ModifierTests(ProductRbacFixture, TestCase):
 
     def test_max_selections_enforced(self):
         group = ModifierGroup.objects.create(
-            company=self.company_a, name='Max1', is_required=False,
+            company=self.company_a, branch=self.branch_a,
+            name='Max1', is_required=False,
             min_selections=0, max_selections=1,
         )
         ProductModifierGroup.objects.create(product=self.product_a, modifier_group=group)
@@ -541,9 +567,60 @@ class ModifierTests(ProductRbacFixture, TestCase):
                 {'option': opt2.pk, 'quantity': '1'},
             ], self.company_a.pk)
 
+    def test_quantity_group_enforces_total_limits_independently(self):
+        group = ModifierGroup.objects.create(
+            company=self.company_a, branch=self.branch_a, name='Total entre 2 e 3',
+            allow_option_quantity=True, min_total_quantity='2', max_total_quantity='3',
+        )
+        ProductModifierGroup.objects.create(product=self.product_a, modifier_group=group)
+        option = ModifierOption.objects.create(
+            modifier_group=group, name='Extra',
+            option_type=ModifierOptionType.ADD, additional_price=Decimal('1.00'),
+        )
+
+        from apps.sales.services import resolve_modifiers
+
+        with self.assertRaisesRegex(DjangoValidationError, 'quantidade total mínima'):
+            resolve_modifiers(self.product_a, [
+                {'option': option.pk, 'quantity': '1'},
+            ], self.company_a.pk)
+        with self.assertRaisesRegex(DjangoValidationError, 'quantidade total máxima'):
+            resolve_modifiers(self.product_a, [
+                {'option': option.pk, 'quantity': '4'},
+            ], self.company_a.pk)
+        resolve_modifiers(self.product_a, [
+            {'option': option.pk, 'quantity': '2'},
+        ], self.company_a.pk)
+
+    def test_quantity_group_enforces_distinct_option_limits_independently(self):
+        group = ModifierGroup.objects.create(
+            company=self.company_a, branch=self.branch_a, name='Uma opção distinta',
+            allow_option_quantity=True, max_selections=1,
+        )
+        ProductModifierGroup.objects.create(product=self.product_a, modifier_group=group)
+        first = ModifierOption.objects.create(
+            modifier_group=group, name='Primeira',
+            option_type=ModifierOptionType.ADD, additional_price=Decimal('1.00'),
+        )
+        second = ModifierOption.objects.create(
+            modifier_group=group, name='Segunda',
+            option_type=ModifierOptionType.ADD, additional_price=Decimal('1.00'),
+        )
+
+        from apps.sales.services import resolve_modifiers
+
+        resolve_modifiers(self.product_a, [
+            {'option': first.pk, 'quantity': '3'},
+        ], self.company_a.pk)
+        with self.assertRaisesRegex(DjangoValidationError, 'opções distintas'):
+            resolve_modifiers(self.product_a, [
+                {'option': first.pk, 'quantity': '1'},
+                {'option': second.pk, 'quantity': '1'},
+            ], self.company_a.pk)
+
     def test_cross_tenant_modifier_option_rejected(self):
         group_b = ModifierGroup.objects.create(
-            company=self.company_b, name='ExtrasB',
+            company=self.company_b, branch=self.branch_b, name='ExtrasB',
         )
         opt_b = ModifierOption.objects.create(
             modifier_group=group_b, name='BaconB',
@@ -614,11 +691,41 @@ class ModifierTests(ProductRbacFixture, TestCase):
 
 
 class ProductMissionM5Tests(ProductRbacFixture, TestCase):
+    def test_create_product_returns_201_with_branch_context(self):
+        category = Category.objects.create(
+            company=self.company_a, branch=self.branch_a, name='Produtos novos',
+        )
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).post('/api/v1/products/', {
+            'company': self.company_a.pk,
+            'category': category.pk,
+            'name': 'Produto criado pela API',
+            'internal_code': 'POST-201',
+            'unit': Unit.UNIT,
+            'cost': '1.00',
+            'sale_price': '2.00',
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['name'], 'Produto criado pela API')
+        self.assertEqual(
+            Product.objects.filter(
+                company=self.company_a, internal_code='POST-201'
+            ).count(),
+            1,
+        )
+
     def test_product_list_is_resilient_when_new_branch_has_no_materialized_stock(self):
         from apps.companies.services import create_branch_with_access
 
         branch = create_branch_with_access(
             creator=self.owner_a, company=self.company_a, name='Filial sem saldo',
+        )
+        category = Category.objects.create(
+            company=self.company_a, branch=branch, name='Categoria filial sem saldo'
+        )
+        ProductBranchConfig.objects.create(
+            product=self.product_a, branch=branch, category=category
         )
         Stock.objects.filter(product=self.product_a, branch=branch).delete()
         response = self.api_client(self.owner_a, branch.pk).get('/api/v1/products/')
@@ -762,12 +869,43 @@ class ProductMissionM5Tests(ProductRbacFixture, TestCase):
         self.assertEqual(active.status_code, 200, active.data)
         self.assertEqual(active.data['count'], 0)
         self.assertEqual(active.data['results'], [])
-        self.assertEqual(
-            client.get('/api/v1/products/?lifecycle=archived').data['count'], 1,
-        )
+        archived_catalog = client.get('/api/v1/products/?lifecycle=archived')
+        self.assertEqual(archived_catalog.status_code, 400)
         self.assertTrue(AuditLog.objects.filter(
             action='product.archive', object_id=str(self.product_a.pk),
         ).exists())
+
+    def test_archived_product_identifiers_can_be_reused(self):
+        category = Category.objects.create(
+            company=self.company_a, branch=self.branch_a, name='Produtos arquiváveis',
+        )
+        payload = {
+            'company': self.company_a.pk,
+            'category': category.pk,
+            'name': 'Produto substituído',
+            'internal_code': 'ARQ-001',
+            'barcode': '7890000000001',
+            'sku': 'SKU-ARQ-001',
+            'unit': Unit.UNIT,
+            'cost': '1.00',
+            'sale_price': '2.00',
+        }
+        client = self.api_client(self.owner_a, self.branch_a.pk)
+        first = client.post('/api/v1/products/', payload, format='json')
+
+        self.assertEqual(first.status_code, 201, first.data)
+        archived = client.post(f"/api/v1/products/{first.data['id']}/archive/")
+        self.assertEqual(archived.status_code, 200, archived.data)
+
+        replacement = client.post(
+            '/api/v1/products/', {**payload, 'create_new': True}, format='json'
+        )
+
+        self.assertEqual(replacement.status_code, 201, replacement.data)
+        self.assertEqual(
+            Product.objects.filter(company=self.company_a, internal_code='ARQ-001').count(),
+            2,
+        )
 
     def test_branch_stock_and_minimum_are_scoped_to_active_branch(self):
         set_stock(self.branch_a, self.product_a, '7.000', '2.50')
@@ -793,10 +931,13 @@ class ProductMissionM5Tests(ProductRbacFixture, TestCase):
     def test_branch_channel_inheritance_uses_null_as_global_default(self):
         self.product_a.available_counter = False
         self.product_a.save()
-        config = ProductBranchConfig.objects.create(
+        config = ProductBranchConfig.objects.get(
             product=self.product_a, branch=self.branch_a,
-            available_counter=None, available_table=True, available_command=False,
         )
+        config.available_counter = None
+        config.available_table = True
+        config.available_command = False
+        config.save()
 
         response = self.api_client(self.owner_a, self.branch_a.pk).get(
             f'/api/v1/products/{self.product_a.pk}/branch-config/'
@@ -814,10 +955,14 @@ class ProductMissionM5Tests(ProductRbacFixture, TestCase):
         target = create_branch_with_access(
             creator=self.owner_a, company=self.company_a, name='Filial M5',
         )
-        ProductBranchConfig.objects.create(
-            product=self.product_a, branch=self.branch_a, is_available=False,
-            available_counter=False, available_table=True, available_command=None,
+        source = ProductBranchConfig.objects.get(
+            product=self.product_a, branch=self.branch_a
         )
+        source.is_available = False
+        source.available_counter = False
+        source.available_table = True
+        source.available_command = None
+        source.save()
 
         response = self.api_client(self.owner_a, self.branch_a.pk).post(
             f'/api/v1/products/{self.product_a.pk}/copy-branch-config/',

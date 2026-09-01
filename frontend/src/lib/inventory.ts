@@ -1,5 +1,5 @@
-import { http } from "@/lib/http";
-import type { FractionableProductConfig, InventoryCountStatus, InventoryQuantityGroup, InventoryQuantityGroups, InventoryWorkflowStockOption, LossReason, Product, StockTransferStatus, TransferDivergenceStatus, TransferResolutionType } from "@/types";
+import { formatQuantity } from "@/lib/format";
+import type { FractionableProductConfig, InventoryCountStatus, InventoryQuantityGroup, InventoryQuantityGroups, LossReason, StockTransferStatus, TransferDivergenceStatus, TransferResolutionType } from "@/types";
 
 export const transferStatusLabels: Record<StockTransferStatus, string> = {
   DRAFT: "Rascunho", IN_TRANSIT: "Em trânsito", PARTIALLY_RECEIVED: "Recebida parcialmente",
@@ -47,9 +47,9 @@ export function movementDomainOriginLabel(value: string | undefined) {
 export function isUnitQuantityValid(value: string, unit: string | undefined, allowZero = false) {
   const normalized = value.trim().replace(",", ".");
   if (!/^\d+(\.\d{1,3})?$/.test(normalized)) return false;
-  const quantity = Number(normalized);
-  if (!Number.isFinite(quantity) || (allowZero ? quantity < 0 : quantity <= 0)) return false;
-  return unit?.toLowerCase() !== "un" || Number.isInteger(quantity);
+  const quantity = inventoryDecimalToScaled(normalized, 3);
+  if (quantity === null || (allowZero ? quantity < BigInt(0) : quantity <= BigInt(0))) return false;
+  return unit?.toLowerCase() !== "un" || quantity % BigInt(1000) === BigInt(0);
 }
 
 export function quantityInputMode(unit: string | undefined) {
@@ -59,15 +59,18 @@ export function quantityInputMode(unit: string | undefined) {
 export function isExactContentValid(value: string, allowZero = false) {
   const normalized = value.trim().replace(",", ".");
   if (!/^\d+(\.\d{1,9})?$/.test(normalized)) return false;
-  const quantity = Number(normalized);
-  return Number.isFinite(quantity) && (allowZero ? quantity >= 0 : quantity > 0);
+  const quantity = inventoryDecimalToScaled(normalized);
+  return quantity !== null && (allowZero ? quantity >= BigInt(0) : quantity > BigInt(0));
 }
 
 export function contentUnitLabel(unit: string | null | undefined) {
   return unit?.toLowerCase() === "ml" ? "mL" : unit?.toLowerCase() === "g" ? "g" : "";
 }
 
-export function packageContentDisplay(content: string | null | undefined, config: FractionableProductConfig | null | undefined) {
+export function packageContentDisplay(
+  content: string | null | undefined,
+  config: Pick<FractionableProductConfig, "package_content" | "content_unit"> | null | undefined,
+) {
   if (!config) return null;
   return exactContentDisplay({ content, packageContent: config.package_content, contentUnit: config.content_unit });
 }
@@ -80,29 +83,78 @@ type ExactContentDisplay = {
   residualContent?: string | number | null;
 };
 
-function scaledDecimal(value: string | number, places = 9) {
-  const normalized = String(value).trim().replace(",", ".");
+export function inventoryDecimalToScaled(value: unknown, places = 9) {
+  const normalized = typeof value === "string"
+    ? value.trim().replace(",", ".")
+    : typeof value === "number" && Number.isFinite(value)
+      ? String(value)
+      : "";
   if (!/^-?\d+(\.\d+)?$/.test(normalized)) return null;
   const negative = normalized.startsWith("-");
-  const [whole, fraction = ""] = normalized.replace("-", "").split(".");
-  const scaled = BigInt(`${whole}${fraction.padEnd(places, "0").slice(0, places)}`);
+  const [rawWhole, rawFraction = ""] = normalized.replace("-", "").split(".");
+  const fraction = rawFraction.replace(/0+$/, "");
+  if (fraction.length > places) return null;
+  const whole = rawWhole.replace(/^0+(?=\d)/, "");
+  const scaled = BigInt(`${whole}${fraction.padEnd(places, "0")}`);
   return negative ? -scaled : scaled;
 }
 
-function displayScaled(value: bigint, places = 9) {
+export function inventoryScaledToDecimal(value: bigint, places = 9) {
   const zero = BigInt(0);
   const negative = value < zero;
   const absolute = negative ? -value : value;
   const scale = BigInt(10) ** BigInt(places);
   const fraction = String(absolute % scale).padStart(places, "0").replace(/0+$/, "");
-  return `${negative ? "-" : ""}${absolute / scale}${fraction ? `,${fraction}` : ""}`;
+  return `${negative ? "-" : ""}${absolute / scale}${fraction ? `.${fraction}` : ""}`;
+}
+
+export function inventoryDecimalSign(value: unknown, places = 9) {
+  const scaled = inventoryDecimalToScaled(value, places);
+  return scaled === null ? null : scaled < BigInt(0) ? -1 : scaled > BigInt(0) ? 1 : 0;
+}
+
+export function compareInventoryDecimals(left: unknown, right: unknown, places = 9) {
+  const leftScaled = inventoryDecimalToScaled(left, places);
+  const rightScaled = inventoryDecimalToScaled(right, places);
+  if (leftScaled === null || rightScaled === null) return null;
+  return leftScaled < rightScaled ? -1 : leftScaled > rightScaled ? 1 : 0;
+}
+
+export function sumInventoryDecimals(values: unknown[], places = 9) {
+  let total = BigInt(0);
+  for (const value of values) {
+    const scaled = inventoryDecimalToScaled(value, places);
+    if (scaled === null) return null;
+    total += scaled;
+  }
+  return inventoryScaledToDecimal(total, places);
+}
+
+export function subtractInventoryDecimals(left: unknown, right: unknown, places = 9) {
+  const leftScaled = inventoryDecimalToScaled(left, places);
+  const rightScaled = inventoryDecimalToScaled(right, places);
+  return leftScaled === null || rightScaled === null
+    ? null
+    : inventoryScaledToDecimal(leftScaled - rightScaled, places);
+}
+
+export function divideInventoryDecimals(left: unknown, right: unknown, places = 9) {
+  const leftScaled = inventoryDecimalToScaled(left, places);
+  const rightScaled = inventoryDecimalToScaled(right, places);
+  if (leftScaled === null || rightScaled === null || rightScaled === BigInt(0)) return null;
+  const scale = BigInt(10) ** BigInt(places);
+  return inventoryScaledToDecimal((leftScaled * scale) / rightScaled, places);
+}
+
+function displayScaled(value: bigint, places = 9) {
+  return inventoryScaledToDecimal(value, places).replace(".", ",");
 }
 
 export function exactContentDisplay({ content, packageContent, contentUnit, completePackages, residualContent }: ExactContentDisplay) {
   const unit = contentUnitLabel(contentUnit);
   if (!unit) return null;
-  const total = content == null ? null : scaledDecimal(content);
-  const packageSize = packageContent == null ? null : scaledDecimal(packageContent);
+  const total = content == null ? null : inventoryDecimalToScaled(content);
+  const packageSize = packageContent == null ? null : inventoryDecimalToScaled(packageContent);
   if (total != null && packageSize != null && packageSize > BigInt(0)) {
     const negative = total < BigInt(0);
     const absolute = negative ? -total : total;
@@ -111,22 +163,20 @@ export function exactContentDisplay({ content, packageContent, contentUnit, comp
     return `${negative ? "-" : ""}${complete} ${complete === BigInt(1) ? "embalagem" : "embalagens"} + ${displayScaled(residual)} ${unit}`;
   }
   if (completePackages != null && residualContent != null) {
-    const negative = Number(completePackages) < 0 || Number(residualContent) < 0;
-    const complete = negative ? Math.abs(Number(completePackages)) : completePackages;
-    const residual = negative ? Math.abs(Number(residualContent)) : residualContent;
-    return `${negative ? "-" : ""}${formatPackageCount(complete)} + ${formatContentNumber(residual)} ${unit}`;
+    const complete = inventoryDecimalToScaled(completePackages);
+    const residual = inventoryDecimalToScaled(residualContent);
+    if (complete !== null && residual !== null) {
+      const negative = complete < BigInt(0) || residual < BigInt(0);
+      return `${negative ? "-" : ""}${formatPackageCount(complete < BigInt(0) ? -complete : complete)} + ${displayScaled(residual < BigInt(0) ? -residual : residual)} ${unit}`;
+    }
   }
   return total == null ? null : `${displayScaled(total)} ${unit}`;
 }
 
-function formatPackageCount(value: string | number) {
-  const quantity = Number(value);
-  return `${Number.isFinite(quantity) ? quantity.toLocaleString("pt-BR", { maximumFractionDigits: 0 }) : value} ${quantity === 1 ? "embalagem" : "embalagens"}`;
-}
-
-function formatContentNumber(value: string | number) {
-  const scaled = scaledDecimal(value);
-  return scaled == null ? String(value) : displayScaled(scaled);
+function formatPackageCount(value: bigint) {
+  const scale = BigInt(10) ** BigInt(9);
+  const quantity = value / scale;
+  return `${quantity.toLocaleString("pt-BR")} ${quantity === BigInt(1) ? "embalagem" : "embalagens"}`;
 }
 
 export function physicalQuantityDisplay({
@@ -142,21 +192,11 @@ export function physicalQuantityDisplay({
   if (exact) return exact;
   if (quantity == null) return "-";
   const normalizedUnit = String(unit || "").toUpperCase();
-  const numeric = Number(quantity);
-  const formatted = numeric.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
-  if (normalizedUnit === "UN" && !Number.isInteger(numeric)) return `${formatted} unidades equivalentes`;
+  const formatted = formatQuantity(quantity);
+  const scaled = inventoryDecimalToScaled(quantity);
+  const scale = BigInt(10) ** BigInt(9);
+  if (normalizedUnit === "UN" && scaled !== null && scaled % scale !== BigInt(0)) return `${formatted} unidades equivalentes`;
   return `${formatted}${normalizedUnit ? ` ${normalizedUnit}` : ""}`;
-}
-
-export async function enrichFractionStockOptions(stocks: InventoryWorkflowStockOption[]) {
-  return Promise.all(stocks.map(async (stock) => {
-    try {
-      const product = await http.get<Product>(`products/${stock.product}/`);
-      return { ...stock, fraction_config: product.fraction_config || null };
-    } catch {
-      return stock;
-    }
-  }));
 }
 
 export function normalizeQuantityGroups(groups: InventoryQuantityGroups | undefined, fallback?: string): InventoryQuantityGroup[] {

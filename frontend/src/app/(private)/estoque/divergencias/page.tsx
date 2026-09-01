@@ -8,7 +8,7 @@ import { InventoryNav } from "@/components/inventory-nav";
 import { PageHeader } from "@/components/page-header";
 import { PeriodFilter, type PeriodValue } from "@/components/period-filter";
 import { Alert, Button, EmptyState, Field, Input, Modal, Select, TableLoading, Textarea } from "@/components/ui";
-import { fieldError, formatDate, formatDecimalBRL, formatQuantity } from "@/lib/format";
+import { fieldError, formatDate, formatDecimalBRL, formatEditableDecimal, formatQuantity } from "@/lib/format";
 import { divergenceStatusLabels, inventoryTone, isUnitQuantityValid, quantityInputMode, resolutionTypeLabels } from "@/lib/inventory";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
@@ -81,13 +81,13 @@ function Divergences() {
     setSelected(item);
     setSelectedTransfer(null);
     setResolutionType("FOUND_RECEIPT");
-    setQuantity(item.pending_quantity);
+    setQuantity(formatEditableDecimal(item.pending_quantity));
     setObservation("");
     key.current = crypto.randomUUID();
     try {
       const divergence = await http.get<TransferDivergence>(`transfer-divergences/${item.id}/`);
       setSelected(divergence);
-      setQuantity(divergence.pending_quantity);
+      setQuantity(formatEditableDecimal(divergence.pending_quantity));
       if (canViewHistory) {
         setSelectedTransfer(await http.get<StockTransfer>(`stock-transfers/${item.transfer}/`));
       }

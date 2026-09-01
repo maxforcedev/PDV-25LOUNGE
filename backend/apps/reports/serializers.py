@@ -38,7 +38,7 @@ class BaseReportQuerySerializer(serializers.Serializer):
                 company_accesses__company_id=branch.company_id,
             ),
             'product': Product.objects.filter(company_id=branch.company_id),
-            'category': Category.objects.filter(company_id=branch.company_id),
+            'category': Category.objects.filter(branch=branch),
             'payment_method': PaymentMethod.objects.filter(company_id=branch.company_id),
             'cash_register': CashRegister.objects.filter(branch=branch),
             'cash_session': CashSession.objects.filter(branch=branch),
@@ -322,7 +322,7 @@ class ReportSaleSerializer(serializers.ModelSerializer):
                     'customer_total': f"{scoped['total_received']:.2f}",
                 })
             category_by_id = {
-                item.pk: item.product.category_id for item in instance.items.all()
+                item.pk: item.category_id_snapshot for item in instance.items.all()
             }
             data['items'] = [
                 item for item in data['items']

@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
@@ -49,6 +50,9 @@ class Supplier(ProtectedSupplierModel):
     company = models.ForeignKey(
         Company, on_delete=models.PROTECT, related_name='suppliers'
     )
+    branch = models.ForeignKey(
+        'companies.Branch', on_delete=models.PROTECT, related_name='suppliers'
+    )
     legal_name = models.CharField(max_length=200, blank=True)
     trade_name = models.CharField(max_length=200, blank=False)
     tax_id = models.CharField(
@@ -60,14 +64,19 @@ class Supplier(ProtectedSupplierModel):
     address = models.JSONField(default=dict, blank=True)
     notes = models.TextField(blank=True)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
+    deleted_at = models.DateTimeField(blank=True, null=True, editable=False)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='deleted_suppliers', blank=True, null=True, editable=False,
+    )
 
     class Meta:
         ordering = ('trade_name', 'legal_name', 'id')
         constraints = [
             models.UniqueConstraint(
-                fields=('company', 'tax_id'),
-                condition=Q(tax_id__isnull=False),
-                name='suppliers_supplier_company_tax_id_unique',
+                fields=('branch', 'tax_id'),
+                condition=Q(tax_id__isnull=False, deleted_at__isnull=True),
+                name='suppliers_supplier_active_branch_tax_id_unique',
             ),
         ]
 
@@ -85,12 +94,17 @@ class Supplier(ProtectedSupplierModel):
             errors['trade_name'] = 'Informe o nome fantasia.'
         if not isinstance(self.address, dict):
             errors['address'] = 'Informe o endereço como um objeto.'
+        if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
+            errors['branch'] = 'A filial deve pertencer à empresa do fornecedor.'
         if self.pk:
-            original_company_id = type(self).objects.filter(pk=self.pk).values_list(
-                'company_id', flat=True
+            original = type(self).objects.filter(pk=self.pk).values(
+                'company_id', 'branch_id'
             ).first()
-            if original_company_id and self.company_id != original_company_id:
-                errors['company'] = 'A empresa do fornecedor não pode ser alterada.'
+            if original:
+                if self.company_id != original['company_id']:
+                    errors['company'] = 'A empresa do fornecedor não pode ser alterada.'
+                if self.branch_id != original['branch_id']:
+                    errors['branch'] = 'A filial do fornecedor não pode ser alterada.'
         if errors:
             raise ValidationError(errors)
 
@@ -99,7 +113,7 @@ class Supplier(ProtectedSupplierModel):
         return super().save(*args, **kwargs)
 
     def __str__(self):
-        return f'{self.company} - {self.trade_name}'
+        return f'{self.branch} - {self.trade_name}'
 
 
 class ProductSupplier(ProtectedSupplierModel):

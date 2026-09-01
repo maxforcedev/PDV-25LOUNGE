@@ -385,6 +385,8 @@ def _resolve_modifiers(product, raw_modifiers, company_id, *, branch=None,
         modifier_group__deleted_at__isnull=True,
         modifier_group__company_id=company_id,
     ).select_related('modifier_group__substitution_component').order_by('sort_order', 'id')
+    if branch:
+        links = links.filter(modifier_group__branch=branch)
     group_map = {link.modifier_group_id: link.modifier_group for link in links}
     if any(not isinstance(modifier, dict) for modifier in raw_modifiers):
         raise ValidationError({'modifiers': 'Cada modificador deve informar opção e quantidade.'})
@@ -458,9 +460,35 @@ def _resolve_modifiers(product, raw_modifiers, company_id, *, branch=None,
                 })
         else:
             if group.min_selections and selection_count < group.min_selections:
-                raise ValidationError({'modifiers': f'O grupo {group.name} exige mínimo de {group.min_selections}.'})
+                raise ValidationError({
+                    'modifiers': (
+                        f'O grupo {group.name} exige no mínimo {group.min_selections} opções distintas.'
+                    )
+                })
             if group.max_selections is not None and selection_count > group.max_selections:
-                raise ValidationError({'modifiers': f'O grupo {group.name} permite máximo de {group.max_selections}.'})
+                raise ValidationError({
+                    'modifiers': (
+                        f'O grupo {group.name} permite no máximo {group.max_selections} opções distintas.'
+                    )
+                })
+            if group.allow_option_quantity:
+                if group.min_total_quantity and total_qty < group.min_total_quantity:
+                    raise ValidationError({
+                        'modifiers': (
+                            f'O grupo {group.name} exige quantidade total mínima de '
+                            f'{_format_quantity(group.min_total_quantity)}.'
+                        )
+                    })
+                if (
+                    group.max_total_quantity is not None
+                    and total_qty > group.max_total_quantity
+                ):
+                    raise ValidationError({
+                        'modifiers': (
+                            f'O grupo {group.name} permite quantidade total máxima de '
+                            f'{_format_quantity(group.max_total_quantity)}.'
+                        )
+                    })
 
     modifier_total = Decimal('0.00')
     snapshot = []
@@ -468,13 +496,17 @@ def _resolve_modifiers(product, raw_modifiers, company_id, *, branch=None,
         for opt, qty in selections_by_group.get(group.pk, []):
             stock_product = opt.stock_product
             if stock_product:
-                if stock_product.company_id != company_id or stock_product.status != Status.ACTIVE:
+                if (
+                    stock_product.company_id != company_id
+                    or stock_product.status != Status.ACTIVE
+                    or stock_product.archived_at is not None
+                ):
                     raise ValidationError({'modifiers': f'A opção {opt.name} está indisponível.'})
                 if branch:
                     config = ProductBranchConfig.objects.filter(
                         product=stock_product, branch=branch
                     ).first()
-                    if config and not config.is_available:
+                    if config is None or not config.is_available:
                         raise ValidationError({
                             'modifiers': f'A opção {opt.name} está indisponível nesta filial.'
                         })
@@ -579,6 +611,18 @@ def _consolidate_items(raw_items, products, *, price_overrides=None, cost_overri
                 'modifier_snapshot': modifier_snapshot,
             }
         entry = line_keys[line_key]
+        if entry['quantity']:
+            existing_by_option = {
+                item['option_id']: item for item in entry['modifier_snapshot']
+            }
+            for modifier in modifier_snapshot:
+                if modifier['stock_effect'] != 'component_substitution':
+                    continue
+                existing = existing_by_option[modifier['option_id']]
+                existing['selected_quantity'] = str(
+                    Decimal(existing['selected_quantity']) + Decimal(modifier['selected_quantity'])
+                )
+                existing['required_quantity'] = existing['selected_quantity']
         entry['quantity'] += quantity
         item_discount = strict_decimal(
             raw_item.get('discount', '0'),
@@ -596,9 +640,21 @@ def _consolidate_items(raw_items, products, *, price_overrides=None, cost_overri
     provisional = []
     subtotal = Decimal('0.00')
     products_by_id = {product.pk: product for product in products.values()}
+    branch_configs = {
+        config.product_id: config
+        for config in ProductBranchConfig.objects.filter(
+            branch=branch, product_id__in=products_by_id,
+        ).select_related('category')
+    } if branch else {}
     for line_key in ordered_keys:
         product_id, _sig = line_key
         product = products_by_id[product_id]
+        branch_config = branch_configs.get(product_id)
+        category = (
+            branch_config.category
+            if branch_config and branch_config.category_id
+            else product.category
+        )
         entry = line_keys[line_key]
         quantity = entry['quantity']
         base_unit_price = entry['base_unit_price']
@@ -619,6 +675,8 @@ def _consolidate_items(raw_items, products, *, price_overrides=None, cost_overri
             'product_name': product.name,
             'internal_code': product.internal_code,
             'unit': product.unit,
+            'category_id_snapshot': category.pk if category else None,
+            'category_name_snapshot': category.name if category else '',
             'unit_cost': cost_overrides.get(product_id, product.cost).quantize(
                 CENT, rounding=ROUND_HALF_UP
             ),
@@ -628,8 +686,14 @@ def _consolidate_items(raw_items, products, *, price_overrides=None, cost_overri
             'unit_price': unit_price,
             'subtotal': item_subtotal,
             'manual_discount_requested': entry['discount'],
-            'participates_in_service_fee': product.participates_in_service_fee,
-            'participates_in_commission': product.participates_in_commission,
+            'participates_in_service_fee': (
+                branch_config.effective_participation('participates_in_service_fee')
+                if branch_config else product.participates_in_service_fee
+            ),
+            'participates_in_commission': (
+                branch_config.effective_participation('participates_in_commission')
+                if branch_config else product.participates_in_commission
+            ),
         })
     return provisional, subtotal
 
@@ -683,7 +747,7 @@ def _channel_available(product, branch, channel, configs=None):
         configs.get(product.pk) if configs is not None
         else ProductBranchConfig.objects.filter(product=product, branch=branch).first()
     )
-    if config and not config.is_available:
+    if config is None or not config.is_available:
         return False
     field = f'available_{channel}'
     override = getattr(config, field) if config else None
@@ -748,7 +812,7 @@ def _apply_promotions(operation_type, items, promotions):
                 product_ids = {target.pk for target in promotion.products.all()}
                 category_ids = {target.pk for target in promotion.categories.all()}
                 direct_target = product.pk in product_ids
-                if not direct_target and product.category_id not in category_ids:
+                if not direct_target and item['category_id_snapshot'] not in category_ids:
                     continue
                 if promotion.discount_type == PromotionDiscountType.PERCENTAGE:
                     benefit = (
@@ -881,7 +945,8 @@ def calculate_preview(*, company, operation_type, raw_items, discount, charged_a
     products = {
         str(product.pk): product
         for product in Product.objects.select_related('category').filter(
-            pk__in=product_ids, company=company, status=Status.ACTIVE, is_sellable=True
+            pk__in=product_ids, company=company, status=Status.ACTIVE,
+            archived_at__isnull=True, is_sellable=True,
         )
     }
     configs = {
@@ -901,7 +966,7 @@ def calculate_preview(*, company, operation_type, raw_items, discount, charged_a
     cost_overrides = _branch_cost_map(branch, numeric_product_ids)
     provisional, subtotal = _consolidate_items(
         raw_items, products, price_overrides=price_overrides,
-        cost_overrides=cost_overrides,
+        cost_overrides=cost_overrides, branch=branch,
     )
     financials = _calculate_sale_financials(
         company=company, branch=branch, operation_type=operation_type,
@@ -945,10 +1010,14 @@ def _pk(value):
 def _promotion_effective_products(promotion):
     product_ids = set(promotion.products.values_list('pk', flat=True))
     if promotion.categories.exists():
-        from apps.products.models import Product
         category_ids = set(promotion.categories.values_list('pk', flat=True))
         product_ids = product_ids | set(
-            Product.objects.filter(category_id__in=category_ids).values_list('pk', flat=True)
+            ProductBranchConfig.objects.filter(
+                category_id__in=category_ids,
+                is_available=True,
+                product__status=Status.ACTIVE,
+                product__archived_at__isnull=True,
+            ).values_list('product_id', flat=True)
         )
     return product_ids
 
@@ -1090,7 +1159,7 @@ def _prepare_products(company, raw_items, *, branch=None, channel=SalesChannel.C
     locked_parents = {
         product.pk: product
         for product in Product.objects.select_for_update()
-        .filter(pk__in=parent_ids, company=company).order_by('pk')
+        .filter(pk__in=parent_ids, company=company, archived_at__isnull=True).order_by('pk')
     }
     parents = {str(pk): locked_parents[pk] for pk in parent_ids if pk in locked_parents}
     if len(parents) != len(parent_ids):
@@ -1142,7 +1211,7 @@ def _prepare_products(company, raw_items, *, branch=None, channel=SalesChannel.C
         snapshot['component_cost_snapshot'] = []
         if product.company_id != company.pk:
             raise PermissionDenied('Produto fora da empresa da filial.')
-        if product.status != Status.ACTIVE or not product.is_sellable:
+        if product.status != Status.ACTIVE or product.archived_at is not None or not product.is_sellable:
             raise ValidationError({'items': f'Item {index + 1}: produto inativo ou indisponível para venda.'})
         if branch and not _channel_available(product, branch, channel, branch_configs):
             raise ValidationError({
@@ -1173,6 +1242,7 @@ def _prepare_products(company, raw_items, *, branch=None, channel=SalesChannel.C
             if (
                 not component or component.company_id != company.pk
                 or component.status != Status.ACTIVE
+                or component.archived_at is not None
                 or component.inventory_behavior != InventoryBehavior.DIRECT
             ):
                 raise ValidationError({'items': f'Item {index + 1}: a composição possui componente inválido ou inativo.'})
@@ -1207,6 +1277,7 @@ def _prepare_products(company, raw_items, *, branch=None, channel=SalesChannel.C
             if (
                 not component or component.company_id != company.pk
                 or component.status != Status.ACTIVE
+                or component.archived_at is not None
                 or component.inventory_behavior != InventoryBehavior.DIRECT
                 or not fraction_config or not fraction_config.tracking_active
             ):
@@ -1293,6 +1364,73 @@ def _lock_required_stocks(branch, requirements, content_requirements=None):
     return stocks
 
 
+def _reconcile_modifier_component_costs(snapshots, stocks):
+    """Make compound snapshots describe the components actually consumed after substitutions."""
+    for snapshot in snapshots:
+        quantity = snapshot['quantity']
+        components = snapshot.get('component_cost_snapshot', [])
+        for modifier in snapshot.get('modifier_snapshot', []):
+            if modifier.get('stock_effect') != 'component_substitution':
+                continue
+            target_id = modifier.get('stock_product_id')
+            base_id = modifier.get('substituted_component_id')
+            selected = Decimal(str(modifier['selected_quantity']))
+            target_stock = stocks.get(target_id)
+            if target_stock is None:
+                raise ValidationError({'modifiers': 'Produto substituto sem estoque bloqueado.'})
+            target_product = target_stock.product
+            target_cost = (
+                target_stock.average_unit_cost
+                if target_stock.average_unit_cost is not None else target_product.cost
+            )
+            per_unit = selected / quantity
+            base_component = next(
+                (item for item in components if item['product'] == base_id), None
+            )
+            if base_component is not None:
+                base_per_unit = Decimal(base_component['quantity_per_unit']) - per_unit
+                if base_per_unit < 0:
+                    raise ValidationError({'modifiers': 'A substituição excede o componente original.'})
+                if base_per_unit == 0:
+                    components.remove(base_component)
+                else:
+                    base_component['quantity_per_unit'] = format(base_per_unit, 'f')
+                    base_component['consumed_quantity'] = format(base_per_unit * quantity, 'f')
+                    base_component['unit_cost_contribution'] = (
+                        f'{(Decimal(base_component["unit_cost"]) * base_per_unit).quantize(CENT, rounding=ROUND_HALF_UP):.2f}'
+                    )
+            components.append({
+                'product': target_product.pk,
+                'product_name': target_product.name,
+                'internal_code': target_product.internal_code,
+                'unit': target_product.unit,
+                'quantity_per_unit': format(per_unit, 'f'),
+                'consumed_quantity': format(selected, 'f'),
+                'unit_cost': f'{target_cost:.12f}',
+                'unit_cost_contribution': (
+                    f'{(target_cost * per_unit).quantize(CENT, rounding=ROUND_HALF_UP):.2f}'
+                ),
+                'consumption_mode': 'quantity',
+            })
+        if components:
+            snapshot['unit_cost'] = exact_sum(
+                Decimal(component['unit_cost']) * Decimal(component['quantity_per_unit'])
+                for component in components
+            ).quantize(CENT, rounding=ROUND_HALF_UP)
+        elif any(
+            modifier.get('stock_effect') == 'component_substitution'
+            for modifier in snapshot.get('modifier_snapshot', [])
+        ):
+            replacement = next(
+                modifier for modifier in snapshot['modifier_snapshot']
+                if modifier.get('stock_effect') == 'component_substitution'
+            )
+            stock = stocks[replacement['stock_product_id']]
+            snapshot['unit_cost'] = (
+                stock.average_unit_cost if stock.average_unit_cost is not None else stock.product.cost
+            ).quantize(CENT, rounding=ROUND_HALF_UP)
+
+
 def _prepare_payments(company, raw_payments, total, *, free_consumption):
     if not isinstance(raw_payments, list):
         raise ValidationError({'payments': 'Informe uma lista de pagamentos.'})
@@ -1373,10 +1511,19 @@ def _prepare_payments(company, raw_payments, total, *, free_consumption):
     return prepared
 
 
-def _frozen_command_snapshots(order_items):
+def _frozen_command_snapshots(order_items, branch):
     snapshots = []
     subtotal = Decimal('0.00')
+    configs = {
+        config.product_id: config
+        for config in ProductBranchConfig.objects.filter(
+            branch=branch,
+            product_id__in=[item.product_id for item in order_items],
+        ).select_related('category')
+    }
     for item in order_items:
+        config = configs.get(item.product_id)
+        category = config.category if config and config.category_id else item.product.category
         item_subtotal = (item.unit_price * item.quantity).quantize(CENT, rounding=ROUND_HALF_UP)
         subtotal += item_subtotal
         snapshots.append({
@@ -1386,6 +1533,8 @@ def _frozen_command_snapshots(order_items):
             'product_name': item.product_name,
             'internal_code': item.internal_code,
             'unit': item.unit,
+            'category_id_snapshot': category.pk if category else None,
+            'category_name_snapshot': category.name if category else '',
             'unit_cost': item.unit_cost,
             'base_unit_price': item.base_unit_price,
             'modifier_unit_total': item.modifier_unit_total,
@@ -1393,8 +1542,14 @@ def _frozen_command_snapshots(order_items):
             'unit_price': item.unit_price,
             'subtotal': item_subtotal,
             'manual_discount_requested': Decimal('0.00'),
-            'participates_in_service_fee': item.product.participates_in_service_fee,
-            'participates_in_commission': item.product.participates_in_commission,
+            'participates_in_service_fee': (
+                config.effective_participation('participates_in_service_fee')
+                if config else item.product.participates_in_service_fee
+            ),
+            'participates_in_commission': (
+                config.effective_participation('participates_in_commission')
+                if config else item.product.participates_in_commission
+            ),
             'component_cost_snapshot': item.component_cost_snapshot or [],
         })
     return snapshots, subtotal
@@ -1404,7 +1559,7 @@ def calculate_command_preview(*, branch, order_items, discount=Decimal('0.00'),
                               seller_user=None, service_fee_waived=False, lock=False,
                               include_internal_snapshots=False):
     """Calculate a command from its confirmed, immutable item snapshots."""
-    snapshots, subtotal = _frozen_command_snapshots(order_items)
+    snapshots, subtotal = _frozen_command_snapshots(order_items, branch)
     financials = _calculate_sale_financials(
         company=branch.company, branch=branch, operation_type=OperationType.SALE,
         snapshots=snapshots, subtotal=subtotal, discount=discount,
@@ -1537,8 +1692,9 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             company, items, branch=branch, channel=channel
         )
         stocks = _lock_required_stocks(branch, requirements, content_requirements)
+        _reconcile_modifier_component_costs(snapshots, stocks)
     else:
-        snapshots, subtotal = _frozen_command_snapshots(confirmed_order_items)
+        snapshots, subtotal = _frozen_command_snapshots(confirmed_order_items, branch)
         requirements = {}
         content_requirements = {}
         stocks = {}
@@ -1631,6 +1787,8 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             sale=sale,
             product=snapshot['product_object'],
             quantity=snapshot['quantity'],
+            category_id_snapshot=snapshot['category_id_snapshot'],
+            category_name_snapshot=snapshot['category_name_snapshot'],
             unit_cost=snapshot.get('unit_cost'),
             base_unit_price=snapshot.get('base_unit_price', snapshot.get('unit_price')),
             modifier_unit_total=snapshot.get('modifier_unit_total', Decimal('0.00')),
@@ -1669,14 +1827,13 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         MovementType.CONSUMPTION
         if operation_type == OperationType.CONSUMPTION else MovementType.SALE
     )
-    movement_costs = {}
-    for snapshot in snapshots:
-        product = snapshot['product_object']
-        if product.inventory_behavior == InventoryBehavior.DIRECT:
-            movement_costs[product.pk] = snapshot['unit_cost']
-        else:
-            for component in snapshot['component_cost_snapshot']:
-                movement_costs[int(component['product'])] = Decimal(component['unit_cost'])
+    movement_costs = {
+        product_id: (
+            stock.average_unit_cost
+            if stock.average_unit_cost is not None else stock.product.cost
+        )
+        for product_id, stock in stocks.items()
+    }
     for product_id in sorted(requirements):
         apply_locked_stock(
             stock=stocks[product_id], quantity=-requirements[product_id], user=user,

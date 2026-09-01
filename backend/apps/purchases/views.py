@@ -1,15 +1,17 @@
 import mimetypes
 
 from django.http import FileResponse
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 
-from apps.companies.models import Branch
+from apps.companies.models import Branch, Status
 from apps.companies.selectors import accessible_branches
+from apps.products.selectors import purchasable_products
+from apps.suppliers.models import ProductPurchasePresentation, Supplier
 
 from .models import PayableInstallment, PurchaseAttachment, PurchaseOrder, PurchaseReceipt
 from .permissions import PurchaseFunctionalPermission
@@ -74,6 +76,7 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
         'attachments': 'purchases.create',
         'download_attachment': 'purchases.view',
         'remove_attachment': 'purchases.create',
+        'creation_options': 'purchases.create',
     }
 
     def get_queryset(self):
@@ -117,6 +120,56 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             PurchaseOrderSerializer(order, context={'request': request}).data,
             status=status.HTTP_201_CREATED,
         )
+
+    @action(detail=False, methods=('get',), url_path='options')
+    def creation_options(self, request):
+        branch = getattr(request, 'branch_context', None)
+        if branch is None:
+            raise PermissionDenied('Selecione a filial ativa.')
+        suppliers = Supplier.objects.filter(
+            branch=branch,
+            status=Status.ACTIVE,
+            deleted_at__isnull=True,
+        ).order_by('trade_name', 'id')
+        products = purchasable_products(branch).prefetch_related(Prefetch(
+            'purchase_presentations',
+            queryset=ProductPurchasePresentation.objects.filter(
+                status=Status.ACTIVE,
+            ).order_by('unit_code', 'id'),
+            to_attr='_active_purchase_presentations',
+        )).order_by('name', 'id')
+        return Response({
+            'suppliers': [
+                {
+                    'id': supplier.pk,
+                    'trade_name': supplier.trade_name,
+                    'legal_name': supplier.legal_name,
+                    'tax_id': supplier.tax_id,
+                }
+                for supplier in suppliers
+            ],
+            'products': [
+                {
+                    'id': product.pk,
+                    'name': product.name,
+                    'internal_code': product.internal_code,
+                    'unit': product.unit,
+                    'purchase_presentations': [
+                        {
+                            'id': presentation.pk,
+                            'unit_code': presentation.unit_code,
+                            'description': presentation.description,
+                            'conversion_factor': format(
+                                presentation.conversion_factor, 'f'
+                            ),
+                            'status': presentation.status,
+                        }
+                        for presentation in product._active_purchase_presentations
+                    ],
+                }
+                for product in products
+            ],
+        })
 
     def _update(self, request, partial):
         order = self.get_object()

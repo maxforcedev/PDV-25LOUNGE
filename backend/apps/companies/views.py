@@ -387,7 +387,9 @@ class BranchViewSet(viewsets.ModelViewSet):
             },
             'counts': {
                 'branches': branches.count(),
-                'products': Product.objects.filter(company_id=company_id).count(),
+                'products': Product.objects.filter(
+                    company_id=company_id, archived_at__isnull=True,
+                ).count(),
                 'active_users': User.objects.filter(
                     is_active=True,
                     archived_at__isnull=True,

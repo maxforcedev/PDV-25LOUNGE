@@ -9,7 +9,7 @@ import { StockOperationDetails } from "@/components/stock-operation-details";
 import { Alert, Button, EmptyState, Field, Input, Modal, Select, Spinner, Textarea } from "@/components/ui";
 import { formatQuantity } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
-import { contentUnitLabel, isExactContentValid, isUnitQuantityValid, physicalQuantityDisplay, quantityInputMode } from "@/lib/inventory";
+import { contentUnitLabel, inventoryDecimalSign, isExactContentValid, isUnitQuantityValid, physicalQuantityDisplay, quantityInputMode } from "@/lib/inventory";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
 import type { Product } from "@/types";
@@ -23,10 +23,6 @@ type EntryProduct = {
 type EntryOptions = { branch: { id: number; name: string }; categories: EntryCategory[]; products: EntryProduct[] };
 type EntryRow = { mode: "packages" | "content"; value: string };
 type OperationSuccess = { label: string; reference: string; count: number };
-
-function decimal(value: string) {
-  return Number(value.replace(",", "."));
-}
 
 export default function EntryPage() {
   const { currentCompany, currentBranch, hasPermission } = useAuth();
@@ -132,7 +128,7 @@ export default function EntryPage() {
   }
 
   function isPositive(product: EntryProduct) {
-    return decimal(rows[product.id]?.value || "0") > 0;
+    return inventoryDecimalSign(rows[product.id]?.value || "0") === 1;
   }
 
   async function submit(event: React.FormEvent) {
@@ -191,7 +187,7 @@ export default function EntryPage() {
         <div className="flex justify-end border-t border-subtle p-4"><Button type="submit" loading={saving} disabled={!products.some(isPositive)}>Confirmar entrada</Button></div>
       </section>
     </form>
-    <Modal open={productModal} title="Adicionar produto" description="Pesquise um produto elegível para a filial atual." onClose={() => setProductModal(false)} size="xl" tall><div className="p-5"><ProductAutocomplete companyId={currentCompany?.id} branchId={currentBranch?.id} value={null} onError={setError} onChange={(product) => { if (product) { addProducts([fromProduct(product)]); setProductModal(false); } }} /></div></Modal>
+    <Modal open={productModal} title="Adicionar produto" description="Pesquise um produto elegível para a filial atual." onClose={() => setProductModal(false)} size="xl" tall><div className="p-5"><ProductAutocomplete companyId={currentCompany?.id} branchId={currentBranch?.id} optionsEndpoint="stock-movements/entry-options/" value={null} onError={setError} onChange={(product) => { if (product) { addProducts([fromProduct(product)]); setProductModal(false); } }} /></div></Modal>
     <Modal open={categoryModal} title="Adicionar por categoria" description="Todos os produtos elegíveis da categoria serão adicionados à mesma entrada." onClose={() => setCategoryModal(false)}><div className="space-y-4 p-5"><Field label="Categoria"><Select value={category} onChange={(event) => setCategory(event.target.value)}><option value="">Selecione</option>{categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field><div className="flex justify-end"><Button type="button" onClick={() => void addCategory()} disabled={!category || loadingProducts}>Adicionar produtos</Button></div></div></Modal>
   </>;
 }

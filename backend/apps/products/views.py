@@ -1,7 +1,7 @@
 import uuid
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import BooleanField, Count, Max, OuterRef, Q, Subquery, Value
+from django.db.models import BooleanField, Count, F, Max, OuterRef, Q, Subquery
 from django.db.models.functions import Coalesce
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -23,6 +23,7 @@ from .models import (
     ProductProductionDestination, ProductionDestination,
 )
 from .permissions import ProductFunctionalPermission
+from .selectors import priceable_products
 from .serializers import (
     BranchProductPriceSerializer,
     CategorySerializer,
@@ -45,16 +46,20 @@ from .services import (
     copy_branch_configuration, duplicate_product, reorder_categories,
     reorder_modifier_groups, reorder_modifier_options, reorder_product_modifier_groups,
     soft_delete_modifier_group, soft_delete_modifier_option,
-    soft_delete_product_modifier_group,
+    soft_delete_product_modifier_group, soft_delete_category, restore_product,
 )
 
 
 def branch_price_comparison(company_id, *, product=None, category=None, status=None):
-    products_queryset = Product.objects.filter(company_id=company_id)
+    company = Company.objects.get(pk=company_id)
+    products_queryset = priceable_products(company=company)
     if product is not None:
         products_queryset = products_queryset.filter(pk=product)
     if category is not None:
-        products_queryset = products_queryset.filter(category_id=category)
+        products_queryset = products_queryset.filter(
+            branch_configs__category_id=category,
+            branch_configs__is_available=True,
+        )
     if status is not None:
         products_queryset = products_queryset.filter(status=status)
     products = list(products_queryset.order_by('name', 'id'))
@@ -69,6 +74,11 @@ def branch_price_comparison(company_id, *, product=None, category=None, status=N
             product__in=products, branch__in=branches
         )
     }
+    availability = set(ProductBranchConfig.objects.filter(
+        product__in=products,
+        branch__in=branches,
+        is_available=True,
+    ).values_list('product_id', 'branch_id'))
     return {
         'branches': [{'id': branch.pk, 'name': branch.name} for branch in branches],
         'products': [
@@ -82,6 +92,10 @@ def branch_price_comparison(company_id, *, product=None, category=None, status=N
                         f'{prices[(product.pk, branch.pk)]:.2f}'
                         if (product.pk, branch.pk) in prices else None
                     )
+                    for branch in branches
+                },
+                'availability': {
+                    str(branch.pk): (product.pk, branch.pk) in availability
                     for branch in branches
                 },
             }
@@ -146,6 +160,7 @@ class CatalogViewSet(viewsets.ModelViewSet):
 
 class CategoryViewSet(CatalogViewSet):
     serializer_class = CategorySerializer
+    http_method_names = (*CatalogViewSet.http_method_names, 'delete')
     permission_codes = {
         'list': 'categories.view', 'retrieve': 'categories.view',
         'create': 'categories.add', 'update': 'categories.change',
@@ -153,15 +168,23 @@ class CategoryViewSet(CatalogViewSet):
         'activate': 'categories.change_status', 'deactivate': 'categories.change_status',
         'reorder': 'categories.change',
         'apply_config_to_products': 'categories.change',
+        'destroy': 'categories.change',
     }
 
     def get_queryset(self):
-        queryset = Category.objects.select_related('company').annotate(
-            product_count=Count('products')
-        ).prefetch_related('products').order_by('sort_order', 'name', 'id')
+        queryset = Category.objects.filter(deleted_at__isnull=True).select_related('company').annotate(
+            product_count=Count(
+                'branch_product_configs',
+                filter=Q(
+                    branch_product_configs__is_available=True,
+                    branch_product_configs__product__status=Status.ACTIVE,
+                    branch_product_configs__product__archived_at__isnull=True,
+                ),
+            )
+        ).prefetch_related('branch_product_configs__product').order_by('sort_order', 'name', 'id')
         branch = getattr(self.request, 'branch_context', None)
         if branch:
-            queryset = queryset.filter(company_id=branch.company_id)
+            queryset = queryset.filter(branch=branch)
         queryset = self.filter_common(queryset)
         params = self.request.query_params
         category_status = params.get('status')
@@ -185,7 +208,7 @@ class CategoryViewSet(CatalogViewSet):
 
     @transaction.atomic
     def perform_create(self, serializer):
-        category = serializer.save()
+        category = serializer.save(branch=self.request.branch_context)
         fields = (
             'name', 'description', 'sort_order', 'available_counter', 'available_table',
             'available_command', 'participates_in_service_fee',
@@ -193,7 +216,7 @@ class CategoryViewSet(CatalogViewSet):
         )
         audit_log(
             actor=self.request.user, action='category.create', obj=category,
-            company=category.company,
+            company=category.company, branch=category.branch,
             after=model_snapshot(category, fields),
         )
 
@@ -208,18 +231,30 @@ class CategoryViewSet(CatalogViewSet):
         category = serializer.save()
         audit_log(
             actor=self.request.user, action='category.update', obj=category,
-            company=category.company, before=before,
+            company=category.company, branch=category.branch, before=before,
             after=model_snapshot(category, fields),
+        )
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        before = model_snapshot(instance, ('status', 'deleted_at', 'deleted_by_id'))
+        try:
+            category = soft_delete_category(category=instance, user=self.request.user)
+        except DjangoValidationError as error:
+            raise ValidationError(getattr(error, 'message_dict', {'category': error.messages}))
+        audit_log(
+            actor=self.request.user, action='category.delete', obj=category,
+            company=category.company, branch=category.branch, before=before,
+            after=model_snapshot(category, ('status', 'deleted_at', 'deleted_by_id')),
         )
 
     @action(detail=False, methods=['post'])
     @transaction.atomic
     def reorder(self, request):
-        company_id = request.data.get('company')
         branch = getattr(request, 'branch_context', None)
-        if branch and str(branch.company_id) != str(company_id):
+        if branch is None:
             return Response(
-                {'company': ['Empresa fora do contexto da filial.']},
+                {'branch': ['Selecione a filial ativa.']},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         category_ids = request.data.get('category_ids')
@@ -229,28 +264,23 @@ class CategoryViewSet(CatalogViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
-            company = Company.objects.get(pk=company_id)
-            if branch and company.pk != branch.company_id:
-                raise Company.DoesNotExist
-            before = dict(Category.objects.filter(company=company).values_list('id', 'sort_order'))
-            categories = reorder_categories(company=company, category_ids=category_ids)
-        except (Company.DoesNotExist, DjangoValidationError) as error:
-            detail = getattr(error, 'message_dict', {'company': ['Empresa inválida.']})
+            before = dict(Category.objects.filter(branch=branch).values_list('id', 'sort_order'))
+            categories = reorder_categories(branch=branch, category_ids=category_ids)
+        except DjangoValidationError as error:
+            detail = getattr(error, 'message_dict', {'category_ids': ['Categorias inválidas.']})
             return Response(detail, status=status.HTTP_400_BAD_REQUEST)
         reference = uuid.uuid4()
         for category in categories:
             if before.get(category.pk) != category.sort_order:
                 audit_log(
                     actor=request.user, action='category.reorder', obj=category,
-                    company=company,
+                    company=branch.company, branch=branch,
                     before={'sort_order': before.get(category.pk)},
                     after={'sort_order': category.sort_order},
                     metadata={'operation_reference': str(reference)},
                 )
         return Response(
-            self.get_serializer(
-                self.get_queryset().filter(company=company), many=True
-            ).data
+            self.get_serializer(self.get_queryset().filter(branch=branch), many=True).data
         )
 
     @action(detail=True, methods=['post'], url_path='apply-config')
@@ -261,25 +291,28 @@ class CategoryViewSet(CatalogViewSet):
             'available_counter', 'available_table', 'available_command',
             'participates_in_service_fee', 'participates_in_commission',
         )
-        products = list(category.products.all())
+        configs = list(
+            ProductBranchConfig.objects.select_related('product').filter(category=category)
+        )
         affected = 0
         reference = uuid.uuid4()
-        for product in products:
+        for config in configs:
+            product = config.product
             changed = {}
             before = {}
             for field in fields_to_apply:
-                current = getattr(product, field, None)
+                current = getattr(config, field, None)
                 target = getattr(category, field)
                 if current is None or current != target:
                     before[field] = current
-                    setattr(product, field, target)
+                    setattr(config, field, target)
                     changed[field] = target
             if changed:
-                product.save(update_fields=list(changed.keys()) + ['updated_at'])
+                config.save(update_fields=list(changed.keys()) + ['updated_at'])
                 affected += 1
                 audit_log(
-                    actor=request.user, action='category.apply_config',
-                    obj=product, company=category.company,
+                    actor=request.user, action='category.apply_config', obj=product,
+                    company=category.company, branch=category.branch,
                     before=before,
                     after=changed,
                     metadata={
@@ -290,7 +323,7 @@ class CategoryViewSet(CatalogViewSet):
         return Response({
             'category': category.name,
             'affected_count': affected,
-            'total_products': len(products),
+            'total_products': len(configs),
         })
 
 
@@ -360,10 +393,10 @@ class ProductViewSet(CatalogViewSet):
         }
 
     def get_queryset(self):
-        queryset = Product.objects.select_related('company', 'category').prefetch_related(
+        queryset = Product.objects.filter(archived_at__isnull=True).select_related('company', 'category').prefetch_related(
             'components__component_product',
             'fraction_components__component_product__fraction_config',
-            'branch_configs', 'branch_prices',
+            'branch_configs__category', 'branch_prices',
             'production_destination_links__destination',
             'purchase_presentations', 'product_suppliers__supplier',
             'product_suppliers__units__presentation_preset',
@@ -371,7 +404,7 @@ class ProductViewSet(CatalogViewSet):
         )
         branch = getattr(self.request, 'branch_context', None)
         if branch:
-            queryset = queryset.filter(company_id=branch.company_id)
+            queryset = queryset.filter(branch_configs__branch=branch)
         queryset = self.filter_common(queryset)
         params = self.request.query_params
         category = params.get('category')
@@ -380,15 +413,10 @@ class ProductViewSet(CatalogViewSet):
         favorite = params.get('is_favorite')
         search = params.get('search')
         lifecycle = params.get('lifecycle')
-        if lifecycle:
-            if lifecycle not in ('active', 'archived', 'all'):
-                raise ValidationError({'lifecycle': 'Informe active, archived ou all.'})
-            if lifecycle == 'active':
-                queryset = queryset.filter(archived_at__isnull=True)
-            elif lifecycle == 'archived':
-                queryset = queryset.filter(archived_at__isnull=False)
+        if lifecycle and lifecycle != 'active':
+            raise ValidationError({'lifecycle': 'Produtos excluídos não fazem parte do catálogo operacional.'})
         if category:
-            queryset = queryset.filter(category_id=category)
+            queryset = queryset.filter(branch_configs__category_id=category)
         if behavior:
             queryset = queryset.filter(inventory_behavior=behavior)
         if sellable in ('true', 'false'):
@@ -411,12 +439,8 @@ class ProductViewSet(CatalogViewSet):
                     branch=branch, product_id=OuterRef('pk')
                 )
                 queryset = queryset.annotate(
-                    effective_branch_available=Coalesce(
-                        Subquery(
-                            config.values('is_available')[:1],
-                            output_field=BooleanField(),
-                        ),
-                        Value(True),
+                    effective_branch_available=Subquery(
+                        config.values('is_available')[:1], output_field=BooleanField(),
                     ),
                     effective_branch_channel=Coalesce(
                         Subquery(
@@ -456,13 +480,21 @@ class ProductViewSet(CatalogViewSet):
     @action(detail=True, methods=('post',))
     @transaction.atomic
     def restore(self, request, pk=None):
-        product = self.get_object()
+        branch = getattr(request, 'branch_context', None)
+        product = Product.objects.filter(
+            pk=pk,
+            company_id=branch.company_id if branch else None,
+            archived_at__isnull=False,
+        ).first()
+        if product is None:
+            raise NotFound('Produto excluído não encontrado neste contexto.')
         if not product.archived_at:
             return Response(self.get_serializer(product).data)
         before = model_snapshot(product, ('archived_at', 'archived_by_id'))
-        product.archived_at = None
-        product.archived_by = None
-        product.save(update_fields=('archived_at', 'archived_by', 'updated_at'))
+        try:
+            product = restore_product(product=product, user=request.user)
+        except DjangoValidationError as error:
+            raise ValidationError(getattr(error, 'message_dict', {'product': error.messages}))
         audit_log(
             actor=request.user, action='product.restore', obj=product,
             company=product.company, before=before,
@@ -615,7 +647,7 @@ class ProductViewSet(CatalogViewSet):
         if request.method == 'GET':
             if config is None:
                 config = ProductBranchConfig(
-                    product=product, branch=branch, is_available=True
+                    product=product, branch=branch, is_available=False
                 )
             return Response(ProductBranchConfigSerializer(
                 config, context={'request': request}
@@ -860,14 +892,16 @@ class ProductViewSet(CatalogViewSet):
         branch = request.branch_context
         try:
             category = Category.objects.get(
-                pk=data.pop('category'), company_id=branch.company_id
+                pk=data.pop('category'), branch=branch
             )
         except Category.DoesNotExist:
             raise ValidationError({'category': 'Categoria fora da empresa atual.'})
         self._validate_copy_branches(
             request, data['source_branch'], data['target_branches']
         )
-        products = list(Product.objects.filter(category=category).order_by('pk'))
+        products = list(
+            Product.objects.filter(branch_configs__category=category).order_by('pk')
+        )
         copied = copy_branch_configuration(products=products, **data)
         reference = uuid.uuid4()
         for copied_row in copied:
@@ -966,7 +1000,11 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         branch = self.request.branch_context
         queryset = BranchProductPrice.objects.select_related('product', 'branch').filter(
-            product__company_id=branch.company_id
+            product__company_id=branch.company_id,
+            product__status=Status.ACTIVE,
+            product__archived_at__isnull=True,
+            product__branch_configs__branch=F('branch'),
+            product__branch_configs__is_available=True,
         )
         if self.action in {'list', 'retrieve', 'table'}:
             if not self._has_company_permission('branch_prices.view_company'):
@@ -1250,7 +1288,7 @@ class ModifierGroupViewSet(viewsets.ModelViewSet):
         queryset = ModifierGroup.objects.select_related('company').prefetch_related('options')
         branch = getattr(self.request, 'branch_context', None)
         if branch:
-            queryset = queryset.filter(company_id=branch.company_id)
+            queryset = queryset.filter(branch=branch)
         if not self.request.user.is_superuser:
             queryset = queryset.filter(
                 company__in=accessible_companies(self.request.user, 'modifiers.view')
@@ -1279,15 +1317,19 @@ class ModifierGroupViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         last_order = ModifierGroup.objects.filter(
-            company=serializer.validated_data['company']
+            branch=self.request.branch_context
         ).aggregate(value=Max('sort_order'))['value']
-        group = serializer.save(sort_order=(last_order if last_order is not None else -1) + 1)
+        group = serializer.save(
+            branch=self.request.branch_context,
+            sort_order=(last_order if last_order is not None else -1) + 1,
+        )
         audit_log(
             actor=self.request.user, action='modifier_group.create',
-            obj=group, company=group.company,
+            obj=group, company=group.company, branch=group.branch,
             after=model_snapshot(group, (
                 'company_id', 'name', 'is_required', 'min_selections',
-                'max_selections', 'allow_option_quantity', 'substitution_component_id',
+                'max_selections', 'allow_option_quantity', 'min_total_quantity',
+                'max_total_quantity', 'substitution_component_id',
                 'inherit_component_quantity', 'sort_order', 'status',
             )),
         )
@@ -1301,13 +1343,14 @@ class ModifierGroupViewSet(viewsets.ModelViewSet):
             raise NotFound('Grupo de modificador não encontrado.')
         serializer.instance = group
         fields = ('company_id', 'name', 'is_required', 'min_selections',
-                   'max_selections', 'allow_option_quantity', 'substitution_component_id',
+                    'max_selections', 'allow_option_quantity', 'min_total_quantity',
+                    'max_total_quantity', 'substitution_component_id',
                    'inherit_component_quantity', 'sort_order', 'status')
         before = model_snapshot(serializer.instance, fields)
         group = serializer.save()
         audit_log(
             actor=self.request.user, action='modifier_group.update',
-            obj=group, company=group.company, before=before,
+            obj=group, company=group.company, branch=group.branch, before=before,
             after=model_snapshot(group, fields),
         )
 
@@ -1317,7 +1360,7 @@ class ModifierGroupViewSet(viewsets.ModelViewSet):
         group = soft_delete_modifier_group(group=instance, user=self.request.user)
         audit_log(
             actor=self.request.user, action='modifier_group.delete',
-            obj=group, company=group.company, before=before,
+            obj=group, company=group.company, branch=group.branch, before=before,
             after=model_snapshot(group, ('name', 'deleted_at', 'deleted_by_id')),
         )
 
@@ -1328,11 +1371,11 @@ class ModifierGroupViewSet(viewsets.ModelViewSet):
         group_ids = request.data.get('group_ids')
         if not isinstance(group_ids, list):
             raise ValidationError({'group_ids': 'Informe uma lista de grupos.'})
-        groups = reorder_modifier_groups(company=branch.company, group_ids=group_ids)
+        groups = reorder_modifier_groups(branch=branch, group_ids=group_ids)
         reference = str(uuid.uuid4())
         for group in groups:
             audit_log(actor=request.user, action='modifier_group.reorder', obj=group,
-                      company=branch.company, after={'sort_order': group.sort_order},
+                      company=branch.company, branch=branch, after={'sort_order': group.sort_order},
                       metadata={'operation_reference': reference})
         return Response(self.get_serializer(groups, many=True).data)
 
@@ -1348,7 +1391,10 @@ class ProductModifierGroupViewSet(viewsets.ModelViewSet):
         ).filter(modifier_group__deleted_at__isnull=True)
         branch = getattr(self.request, 'branch_context', None)
         if branch:
-            queryset = queryset.filter(product__company_id=branch.company_id)
+            queryset = queryset.filter(
+                product__branch_configs__branch=branch,
+                modifier_group__branch=branch,
+            )
         if not self.request.user.is_superuser:
             queryset = queryset.filter(
                 product__company__in=accessible_companies(
@@ -1380,7 +1426,7 @@ class ProductModifierGroupViewSet(viewsets.ModelViewSet):
         if group.deleted_at is not None:
             raise ValidationError({'modifier_group': 'O grupo foi excluído.'})
         last_order = ProductModifierGroup.objects.filter(
-            product=serializer.validated_data['product']
+            product=serializer.validated_data['product'], modifier_group__branch=group.branch,
         ).aggregate(value=Max('sort_order'))['value']
         link = serializer.save(
             modifier_group=group,
@@ -1388,7 +1434,7 @@ class ProductModifierGroupViewSet(viewsets.ModelViewSet):
         )
         audit_log(
             actor=self.request.user, action='product_modifier_link.create',
-            obj=link, company=link.product.company,
+            obj=link, company=link.product.company, branch=group.branch,
             after=model_snapshot(link, ('product_id', 'modifier_group_id', 'sort_order', 'status')),
         )
 
@@ -1412,7 +1458,7 @@ class ProductModifierGroupViewSet(viewsets.ModelViewSet):
         link = serializer.save()
         audit_log(
             actor=self.request.user, action='product_modifier_link.update',
-            obj=link, company=link.product.company, before=before,
+            obj=link, company=link.product.company, branch=group.branch, before=before,
             after=model_snapshot(link, fields),
         )
 
@@ -1422,7 +1468,7 @@ class ProductModifierGroupViewSet(viewsets.ModelViewSet):
         link = soft_delete_product_modifier_group(link=instance, user=self.request.user)
         audit_log(
             actor=self.request.user, action='product_modifier_link.delete',
-            obj=link, company=link.product.company, before=before,
+            obj=link, company=link.product.company, branch=link.modifier_group.branch, before=before,
             after=model_snapshot(link, ('product_id', 'modifier_group_id', 'deleted_at')),
         )
 
@@ -1433,16 +1479,16 @@ class ProductModifierGroupViewSet(viewsets.ModelViewSet):
         link_ids = request.data.get('link_ids')
         branch = request.branch_context
         try:
-            product = Product.objects.get(pk=product_id, company_id=branch.company_id)
+            product = Product.objects.get(pk=product_id, branch_configs__branch=branch)
         except Product.DoesNotExist:
             raise ValidationError({'product': 'Produto fora da empresa atual.'})
         if not isinstance(link_ids, list):
             raise ValidationError({'link_ids': 'Informe uma lista de vínculos.'})
-        links = reorder_product_modifier_groups(product=product, link_ids=link_ids)
+        links = reorder_product_modifier_groups(product=product, branch=branch, link_ids=link_ids)
         reference = str(uuid.uuid4())
         for link in links:
             audit_log(actor=request.user, action='product_modifier_link.reorder', obj=link,
-                      company=branch.company, after={'sort_order': link.sort_order},
+                      company=branch.company, branch=branch, after={'sort_order': link.sort_order},
                       metadata={'operation_reference': reference})
         return Response(self.get_serializer(links, many=True).data)
 
@@ -1462,7 +1508,7 @@ class ModifierOptionViewSet(CatalogViewSet):
         queryset = queryset.filter(modifier_group__deleted_at__isnull=True)
         branch = getattr(self.request, 'branch_context', None)
         if branch:
-            queryset = queryset.filter(modifier_group__company_id=branch.company_id)
+            queryset = queryset.filter(modifier_group__branch=branch)
         if not self.request.user.is_superuser:
             queryset = queryset.filter(
                 modifier_group__company__in=accessible_companies(self.request.user, 'modifiers.view')
@@ -1525,7 +1571,7 @@ class ModifierOptionViewSet(CatalogViewSet):
         option_ids = request.data.get('option_ids')
         branch = request.branch_context
         try:
-            group = ModifierGroup.objects.get(pk=group_id, company_id=branch.company_id)
+            group = ModifierGroup.objects.get(pk=group_id, branch=branch)
         except ModifierGroup.DoesNotExist:
             raise ValidationError({'modifier_group': 'Grupo fora da empresa atual.'})
         if not isinstance(option_ids, list):
@@ -1534,7 +1580,7 @@ class ModifierOptionViewSet(CatalogViewSet):
         reference = str(uuid.uuid4())
         for option in options:
             audit_log(actor=request.user, action='modifier_option.reorder', obj=option,
-                      company=branch.company, after={'sort_order': option.sort_order},
+                      company=branch.company, branch=branch, after={'sort_order': option.sort_order},
                       metadata={'operation_reference': reference})
         return Response(self.get_serializer(options, many=True).data)
 

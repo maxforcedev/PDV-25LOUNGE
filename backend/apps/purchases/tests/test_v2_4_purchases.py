@@ -28,7 +28,9 @@ from apps.companies.models import (
 from apps.inventory.models import MovementNature, Stock, StockMovement
 from apps.inventory.serializers import StockSerializer
 from apps.inventory.services import exit as stock_exit
-from apps.products.models import Category, InventoryBehavior, Product, ProductComponent
+from apps.products.models import (
+    Category, InventoryBehavior, Product, ProductBranchConfig, ProductComponent,
+)
 from apps.sales.services import _prepare_products
 from apps.reports.selectors import inventory_kpis, stock_consumption_report
 from apps.saas.models import SupportSession
@@ -69,7 +71,7 @@ from ..services import (
 def company_fixture(name='V24'):
     company = Company.objects.create(trade_name=name, legal_name=f'{name} Ltda')
     branch = Branch.objects.create(company=company, name='Matriz', is_matrix=True)
-    category = Category.objects.create(company=company, name='Compras')
+    category = Category.objects.create(company=company, branch=branch, name='Compras')
     return company, branch, category
 
 
@@ -93,7 +95,7 @@ def user_fixture(company, branch, email='v24@example.com', *, superuser=False):
 
 
 def product_fixture(company, category, name='Produto', code='P1', cost='2.00'):
-    return Product.objects.create(
+    product = Product.objects.create(
         company=company,
         category=category,
         name=name,
@@ -101,11 +103,16 @@ def product_fixture(company, category, name='Produto', code='P1', cost='2.00'):
         cost=cost,
         sale_price='20.00',
     )
+    ProductBranchConfig.objects.create(
+        product=product, branch=category.branch, category=category,
+    )
+    return product
 
 
 def supplier_unit_fixture(company, product, name='Fornecedor', factor='1', **relation):
     supplier = Supplier.objects.create(
-        company=company, legal_name=f'{name} Ltda', trade_name=name
+        company=company, branch=company.branches.order_by('pk').first(),
+        legal_name=f'{name} Ltda', trade_name=name
     )
     link = ProductSupplier.objects.create(
         company=company, product=product, supplier=supplier, **relation
@@ -597,6 +604,14 @@ class BranchCostAndSaleSnapshotTests(TestCase):
         )
 
     def test_weighted_average_is_isolated_by_branch_and_sale_uses_branch_cost(self):
+        other_category = Category.objects.create(
+            company=self.company, branch=self.other_branch, name='Categoria filial 2'
+        )
+        ProductBranchConfig.objects.create(
+            product=self.product,
+            branch=self.other_branch,
+            category=other_category,
+        )
         own = Stock.objects.get(branch=self.branch, product=self.product)
         own.current_quantity = Decimal('10')
         own.average_unit_cost = Decimal('5')
@@ -654,6 +669,9 @@ class BranchCostAndSaleSnapshotTests(TestCase):
         )
         parent.is_sellable = True
         parent.save()
+        ProductBranchConfig.objects.create(
+            product=parent, branch=self.branch, category=self.category
+        )
         snapshots, _requirements, _content_req, _subtotal = _prepare_products(
             self.company,
             [{'product': parent.pk, 'quantity': '1'}],
@@ -770,6 +788,44 @@ class PurchaseApiRbacTests(TestCase):
             **self.headers,
         )
         self.assertEqual(response.status_code, 403)
+
+    def test_creation_options_use_purchase_permission_and_current_branch(self):
+        limited = AccessProfile.objects.create(
+            company=self.company, name='Somente criar compra'
+        )
+        limited.permissions.add(
+            FunctionalPermission.objects.get(code='purchases.create')
+        )
+        branch_access = self.user.branch_accesses.get()
+        branch_access.access_profile = limited
+        branch_access.save()
+        company_access = self.user.company_accesses.get()
+        company_access.access_profile = limited
+        company_access.save()
+
+        other_branch = Branch.objects.create(company=self.company, name='Filial B')
+        Supplier.objects.create(
+            company=self.company,
+            branch=other_branch,
+            trade_name='Fornecedor oculto',
+        )
+        archived = product_fixture(
+            self.company, self.category, name='Arquivado', code='ARQ'
+        )
+        Product.objects.filter(pk=archived.pk).update(archived_at=timezone.now())
+
+        response = self.client.get(
+            reverse('purchase-order-creation-options'), **self.headers
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            [item['id'] for item in response.data['suppliers']],
+            [self.supplier.pk],
+        )
+        self.assertEqual(
+            [item['id'] for item in response.data['products']],
+            [self.product.pk],
+        )
 
     def test_nested_installments_require_manage_payables(self):
         limited = AccessProfile.objects.create(
@@ -988,7 +1044,9 @@ class PurchaseSupportSessionTests(TestCase):
             'Purchase Support', plan_version=version
         )
         self.branch = self.company.branches.get(is_matrix=True)
-        category = Category.objects.create(company=self.company, name='Suporte')
+        category = Category.objects.create(
+            company=self.company, branch=self.branch, name='Suporte'
+        )
         product = product_fixture(self.company, category, name='Suporte', code='SUP')
         self.supplier, _link, self.unit = supplier_unit_fixture(
             self.company, product, name='Fornecedor suporte'

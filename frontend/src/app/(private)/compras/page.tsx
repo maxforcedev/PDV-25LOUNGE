@@ -20,7 +20,7 @@ import {
   Select,
   TableLoading,
 } from "@/components/ui";
-import { formatBRL, formatDate } from "@/lib/format";
+import { formatDate, formatDecimalBRL as formatBRL } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import {

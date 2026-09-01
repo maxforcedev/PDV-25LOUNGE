@@ -53,7 +53,7 @@ def _apply_sale_filters(queryset, filters, *, timestamp_field):
         'operator': 'created_by_id',
         'seller': 'seller_user_id',
         'product': 'items__product_id',
-        'category': 'items__product__category_id',
+        'category': 'items__category_id_snapshot',
         'payment_method': 'payments__payment_method_id',
         'payment_method_code': 'payments__payment_method_code',
         'status': 'status',
@@ -158,7 +158,7 @@ def _item_matches(item, filters):
         (filters.get('product') is None or item.product_id == filters['product'])
         and (
             filters.get('category') is None
-            or item.product.category_id == filters['category']
+            or item.category_id_snapshot == filters['category']
         )
     )
 
@@ -204,7 +204,7 @@ def filtered_sale_items(queryset, filters=None):
     if filters.get('product') is not None:
         items = items.filter(product_id=filters['product'])
     if filters.get('category') is not None:
-        items = items.filter(product__category_id=filters['category'])
+        items = items.filter(category_id_snapshot=filters['category'])
     return items
 
 
@@ -291,7 +291,7 @@ def sale_rankings(queryset, *, limit=None, filters=None, reversals=()):
             for row in _sale_item_financials(sale, filters):
                 item = row['item']
                 product_key = item.product_id
-                category_key = item.product.category_id
+                category_key = item.category_id_snapshot
                 product_entry = by_product.setdefault(product_key, {
                     'product_id': product_key,
                     'product_name': item.product_name,
@@ -303,7 +303,7 @@ def sale_rankings(queryset, *, limit=None, filters=None, reversals=()):
                 product_entry['sales_revenue'] += sign * row['sales_revenue']
                 category_entry = by_category.setdefault(category_key, {
                     'category_id': category_key,
-                    'category_name': item.product.category.name if item.product.category_id else 'Sem categoria',
+                    'category_name': item.category_name_snapshot or 'Sem categoria',
                     'quantity': Decimal('0.000'),
                     'sales_revenue': Decimal('0.00'),
                 })
@@ -770,13 +770,17 @@ def filtered_inventory_movements(*, branch, start, end, filters):
     )
     mappings = {
         'product': 'stock__product_id',
-        'category': 'stock__product__category_id',
         'movement_type': 'movement_type',
         'user': 'user_id',
     }
     for parameter, lookup in mappings.items():
         if filters.get(parameter) is not None:
             queryset = queryset.filter(**{lookup: filters[parameter]})
+    if filters.get('category') is not None:
+        queryset = queryset.filter(
+            stock__product__branch_configs__branch=branch,
+            stock__product__branch_configs__category_id=filters['category'],
+        )
     return queryset.order_by('-created_at', '-id')
 
 
@@ -798,7 +802,10 @@ def stock_consumption_report(*, branch, start, end, filters):
     if filters.get('product') is not None:
         rows = rows.filter(stock__product_id=filters['product'])
     if filters.get('category') is not None:
-        rows = rows.filter(stock__product__category_id=filters['category'])
+        rows = rows.filter(
+            stock__product__branch_configs__branch=branch,
+            stock__product__branch_configs__category_id=filters['category'],
+        )
     origin = filters.get('origin')
     if origin == 'sale':
         rows = rows.filter(movement_type=MovementType.SALE)
@@ -898,13 +905,17 @@ def stock_consumption_report(*, branch, start, end, filters):
 
 
 def inventory_kpis(branch, *, include_value=False, category=None):
-    stocks = list(Stock.objects.select_related(
+    stocks = Stock.objects.select_related(
         'product', 'product__fraction_config'
     ).filter(
         branch=branch, product__inventory_behavior=InventoryBehavior.DIRECT,
-    ))
+    )
     if category:
-        stocks = [stock for stock in stocks if stock.product.category_id == category]
+        stocks = stocks.filter(
+            product__branch_configs__branch=branch,
+            product__branch_configs__category_id=category,
+        )
+    stocks = list(stocks)
     quantities = [stock.equivalent_quantity() for stock in stocks]
     result = {
         'zero_count': sum(quantity == 0 for quantity in quantities),

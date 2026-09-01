@@ -9,9 +9,10 @@ import { ModifierPicker } from "@/components/modifier-picker";
 import { CustomerQuickPicker } from "@/components/customer-quick-picker";
 import { PageHeader } from "@/components/page-header";
 import { Alert, Button, Field, Input, Modal, Select, Spinner } from "@/components/ui";
-import { formatBRL, formatDate, formatQuantity, fieldError } from "@/lib/format";
+import { decimalIsOne, decimalIsZero, formatDate, formatDecimalBRL, formatDecimalBRL as formatBRL, formatEditableDecimal, formatPercent, formatQuantity, fieldError } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
+import { centsToDecimal, moneyToCents, provisionalItemTotal, quantityToThousandths, sumMoney } from "@/lib/sales";
 import { useAuth } from "@/providers/auth-provider";
 import type { CheckoutOptions, Command, CommandPayment, CommandPaymentSummary, Customer, ModifierSelection, OrderItem, Product, SalePreview, SaleUserOption, Table } from "@/types";
 
@@ -83,7 +84,7 @@ function CommandDetail() {
   const [splitIdentifier, setSplitIdentifier] = useState("");
   const [itemQuantities, setItemQuantities] = useState<Record<number, string>>({});
   const context = useRef("");
-  const hasAppliedPayments = Number(paymentSummary?.paid_total || "0") > 0;
+  const hasAppliedPayments = !decimalIsZero(paymentSummary?.paid_total || "0");
 
   async function load() {
     setLoading(true); setError("");
@@ -179,7 +180,7 @@ function CommandDetail() {
 
   async function openOperation(next: "transfer" | "items" | "merge" | "split") {
     setError(""); setFields({}); setDestinationCommand(""); setDestinationTable(""); setSplitIdentifier("");
-    setItemQuantities(Object.fromEntries(items.filter((item) => item.status !== "cancelled").map((item) => [item.id, item.quantity])));
+    setItemQuantities(Object.fromEntries(items.filter((item) => item.status !== "cancelled").map((item) => [item.id, formatEditableDecimal(item.quantity)])));
     try {
       const [commands, tables] = await Promise.all([
         http.getAll<Command>("commands/open-list/"),
@@ -196,7 +197,8 @@ function CommandDetail() {
   function selectedOperationItems() {
     return items.flatMap((item) => {
       const quantity = itemQuantities[item.id]?.trim().replace(",", ".");
-      return item.status !== "cancelled" && quantity && Number(quantity) > 0 ? [{ item: item.id, quantity }] : [];
+      const parsedQuantity = quantityToThousandths(quantity);
+      return item.status !== "cancelled" && parsedQuantity !== null && parsedQuantity > BigInt(0) ? [{ item: item.id, quantity }] : [];
     });
   }
 
@@ -298,7 +300,8 @@ function CommandDetail() {
   async function recordPayment() {
     if (!command) return;
     const method = paymentMethods.find((item) => item.id === Number(paymentMethod));
-    if (!method || Number(paymentAmount.replace(",", ".")) <= 0) {
+    const amountCents = moneyToCents(paymentAmount);
+    if (!method || amountCents === null || amountCents <= BigInt(0)) {
       setError("Informe a forma e o valor aplicado.");
       return;
     }
@@ -308,7 +311,7 @@ function CommandDetail() {
     }
     setSaving(true); setError(""); setFields({});
     try {
-      const discountAuthorization = !canDiscount && Number(discount.replace(",", ".")) > 0
+      const discountAuthorization = !canDiscount && !decimalIsZero(discount)
         ? { user: Number(discountAuthorizer), method: "password", credential: discountPassword }
         : undefined;
       const feeAuthorization = !canWaiveServiceFee && serviceFeeWaived
@@ -365,7 +368,7 @@ function CommandDetail() {
       setSaving(false);
       return;
     }
-    if (Number(discount.replace(",", ".")) > 0 && !canDiscount && (!discountAuthorizer || !discountPassword)) {
+    if (!decimalIsZero(discount) && !canDiscount && (!discountAuthorizer || !discountPassword)) {
       setError("Informe o autorizador e a senha para aplicar o desconto.");
       setSaving(false);
       return;
@@ -381,7 +384,10 @@ function CommandDetail() {
     ]);
     if (!latestPreview || !latestSummary) { setSaving(false); return; }
     setPaymentSummary(latestSummary);
-    const payments = paymentRows.filter((row) => row.method && Number(row.amount) > 0).map((row) => {
+    const payments = paymentRows.filter((row) => {
+      const amount = moneyToCents(row.amount);
+      return row.method && amount !== null && amount > BigInt(0);
+    }).map((row) => {
       const amount = row.amount.replace(",", ".");
       return {
         payment_method: Number(row.method),
@@ -389,15 +395,15 @@ function CommandDetail() {
         ...(paymentMethods.find((method) => method.id === Number(row.method))?.code === "cash" ? { received_amount: (row.received_amount || amount).replace(",", ".") } : {}),
       };
     });
-    const tendered = payments.reduce((sum, row) => sum + Number(row.amount), 0);
-    const remaining = Number(latestSummary.remaining_total);
-    if (Math.abs(tendered - remaining) > 0.01) {
-      setError(`Informe apenas o saldo restante (${formatBRL(latestSummary.remaining_total)}). Valor informado: ${formatBRL(String(tendered))}.`);
+    const tendered = sumMoney(payments.map((row) => row.amount));
+    const remaining = moneyToCents(latestSummary.remaining_total);
+    if (tendered === null || remaining === null || tendered !== remaining) {
+      setError(`Informe apenas o saldo restante (${formatDecimalBRL(latestSummary.remaining_total)}). Valor informado: ${tendered === null ? "-" : formatDecimalBRL(centsToDecimal(tendered))}.`);
       setSaving(false);
       return;
     }
     try {
-      const discountAuthorization = !canDiscount && Number(discount.replace(",", ".")) > 0
+      const discountAuthorization = !canDiscount && !decimalIsZero(discount)
         ? { user: Number(discountAuthorizer), method: "password", credential: discountPassword }
         : undefined;
       const feeAuthorization = serviceFeeWaived && !canWaiveServiceFee
@@ -420,7 +426,11 @@ function CommandDetail() {
   const confirmedItems = items.filter((item) => item.status === "confirmed");
   const pendingItems = items.filter((item) => item.status === "pending");
   const cancelledItems = items.filter((item) => item.status === "cancelled");
-  const confirmedTotal = confirmedItems.reduce((sum, item) => sum + Number(item.unit_price) * Number(item.quantity), 0);
+  const confirmedTotal = confirmedItems.reduce<bigint | null>((total, item) => {
+    if (total === null) return null;
+    const itemTotal = provisionalItemTotal(item.unit_price, item.quantity);
+    return itemTotal === null ? null : total + itemTotal;
+  }, BigInt(0));
 
   if (loading) return <div className="p-6"><Spinner /></div>;
   if (error && !command) return <div className="p-6"><Alert message={error} /><Link href="/comandas" className="btn btn-secondary mt-4"><ArrowLeft className="size-4" />Voltar</Link></div>;
@@ -432,7 +442,7 @@ function CommandDetail() {
       <div className="space-y-4 p-4 sm:p-6 lg:p-8">
         {error && <Alert message={error} />}
         {success && <Alert message={success} type="success" />}
-          <section className="card p-5"><div className="grid gap-4 sm:grid-cols-3"><div><strong className="block text-sm">Mesa</strong><span>{command.table_name || "Sem mesa"}</span></div><div><strong className="block text-sm">Itens confirmados</strong><span>{confirmedItems.length}</span></div><div><strong className="block text-sm">Subtotal dos itens</strong><span className="text-lg font-bold">{formatBRL(String(confirmedTotal))}</span></div></div>{command.status === "open" && canSetCustomer ? <div className="mt-4 max-w-md border-t border-subtle pt-4"><strong className="mb-2 block text-sm">Cliente</strong><CustomerQuickPicker value={customer} onChange={(next) => void changeCustomer(next)} disabled={customerSaving} /></div> : customer ? <div className="mt-4 border-t border-subtle pt-4 text-sm"><strong>Cliente: </strong>{customer.name}{customer.phone ? ` · ${customer.phone}` : ""}</div> : null}</section>
+          <section className="card p-5"><div className="grid gap-4 sm:grid-cols-3"><div><strong className="block text-sm">Mesa</strong><span>{command.table_name || "Sem mesa"}</span></div><div><strong className="block text-sm">Itens confirmados</strong><span>{confirmedItems.length}</span></div><div><strong className="block text-sm">Subtotal dos itens</strong><span className="text-lg font-bold">{confirmedTotal === null ? "-" : formatDecimalBRL(centsToDecimal(confirmedTotal))}</span></div></div>{command.status === "open" && canSetCustomer ? <div className="mt-4 max-w-md border-t border-subtle pt-4"><strong className="mb-2 block text-sm">Cliente</strong><CustomerQuickPicker value={customer} onChange={(next) => void changeCustomer(next)} disabled={customerSaving} /></div> : customer ? <div className="mt-4 border-t border-subtle pt-4 text-sm"><strong>Cliente: </strong>{customer.name}{customer.phone ? ` · ${customer.phone}` : ""}</div> : null}</section>
 
         {command.status === "open" && canRecordPayments && !canViewPayments && <section className="card p-4"><Button onClick={() => void openPayment()}><WalletCards className="size-4" />Registrar pagamento</Button></section>}
         {canViewPayments && <section className="card overflow-hidden"><div className="card-header flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-sm font-bold">Pagamentos</h2><p className="mt-1 text-sm text-muted">Valores apurados pelo servidor.</p></div>{command.status === "open" && canRecordPayments && <Button onClick={() => void openPayment()}><WalletCards className="size-4" />Registrar pagamento</Button>}</div><div className="grid gap-px bg-subtle sm:grid-cols-3"><div className="bg-card p-4"><span className="block text-xs font-medium text-muted">TOTAL</span><strong className="mt-1 block text-lg">{formatBRL(paymentSummary?.command_total || "0")}</strong></div><div className="bg-card p-4"><span className="block text-xs font-medium text-muted">PAGO</span><strong className="mt-1 block text-lg text-success">{formatBRL(paymentSummary?.paid_total || "0")}</strong></div><div className="bg-card p-4"><span className="block text-xs font-medium text-muted">SALDO</span><strong className="mt-1 block text-lg">{formatBRL(paymentSummary?.remaining_total || "0")}</strong></div></div><div className="divide-y divide-subtle">{commandPayments.map((payment) => { const reversed = payment.status === "reversed"; const hasReversal = commandPayments.some((item) => item.reversal_of === payment.id); return <div key={payment.id} className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm"><div><div className="flex flex-wrap items-center gap-2"><strong>{reversed ? "Estorno" : payment.payment_method_name}</strong><span className={reversed ? "text-danger" : "text-muted"}>{reversed ? "Estornado" : "Aplicado"}</span></div><p className="mt-1 text-xs text-muted">{formatDate(payment.created_at)}{payment.received_amount ? ` · Recebido: ${formatBRL(payment.received_amount)}` : ""}{payment.change_amount ? ` · Troco: ${formatBRL(payment.change_amount)}` : ""}{payment.reversal_reason ? ` · Motivo: ${payment.reversal_reason}` : ""}</p></div><div className="flex items-center gap-3"><strong className={reversed ? "text-danger" : ""}>{reversed ? "- " : ""}{formatBRL(payment.amount)}</strong>{!reversed && !hasReversal && command.status === "open" && canReversePayments && <Button variant="secondary" onClick={() => { setReversePayment(payment); setReverseReason(""); }}><RotateCcw className="size-4" />Estornar</Button>}</div></div>; })}{!commandPayments.length && <div className="p-4 text-center text-sm text-muted">Nenhum pagamento registrado.</div>}</div></section>}
@@ -455,12 +465,12 @@ function CommandDetail() {
             <div className="card-header flex items-center justify-between"><h2 className="text-sm font-bold">Itens</h2>{canAddItems && <Button variant="secondary" onClick={() => void openAdd()}><Plus className="size-4" />Adicionar item</Button>}</div>
             <div className="divide-y divide-subtle">
               {pendingItems.map((item) => (
-                <div key={item.id} className="flex items-center justify-between p-4"><div><strong className="block">{item.product_name}</strong><small className="text-muted">{formatQuantity(item.quantity)} {item.unit.toUpperCase()} · {formatBRL(item.unit_price)}</small></div>
+                <div key={item.id} className="flex items-center justify-between p-4"><div><strong className="block">{item.product_name}</strong><small className="text-muted">{formatQuantity(item.quantity)} {item.unit.toUpperCase()} · {formatDecimalBRL(item.unit_price)}</small></div>
                   <div className="flex gap-2">{canAddItems && <Button variant="secondary" onClick={() => void confirmItem(item)}><CheckCircle2 className="size-4" />Confirmar</Button>}{canCancelItems && <button className="icon-button" title="Cancelar" onClick={() => { setCancelItem(item); setCancelReason(""); }}><Ban className="size-4" /></button>}</div>
                 </div>
               ))}
               {confirmedItems.map((item) => (
-                  <div key={item.id} className="flex items-center justify-between p-4 opacity-80"><div><strong className="block">{item.product_name}</strong><small className="text-muted">{formatQuantity(item.quantity)} {item.unit.toUpperCase()} · {formatBRL(item.unit_price)} · Confirmado</small>{item.modifier_snapshot?.length ? <small className="mt-1 block text-muted">{item.modifier_snapshot.map((modifier) => `${modifier.option_name}${modifier.selected_quantity !== "1" ? ` × ${modifier.selected_quantity}` : ""}`).join(" · ")}</small> : null}</div>{canCancelItems && <button className="icon-button" title="Cancelar" onClick={() => { setCancelItem(item); setCancelReason(""); }}><Ban className="size-4" /></button>}</div>
+                  <div key={item.id} className="flex items-center justify-between p-4 opacity-80"><div><strong className="block">{item.product_name}</strong><small className="text-muted">{formatQuantity(item.quantity)} {item.unit.toUpperCase()} · {formatDecimalBRL(item.unit_price)} · Confirmado</small>{item.modifier_snapshot?.length ? <small className="mt-1 block text-muted">{item.modifier_snapshot.map((modifier) => `${modifier.option_name}${!decimalIsOne(modifier.selected_quantity) ? ` × ${formatQuantity(modifier.selected_quantity)}` : ""}`).join(" · ")}</small> : null}</div>{canCancelItems && <button className="icon-button" title="Cancelar" onClick={() => { setCancelItem(item); setCancelReason(""); }}><Ban className="size-4" /></button>}</div>
               ))}
               {cancelledItems.map((item) => (
                 <div key={item.id} className="flex items-center justify-between p-4 opacity-50"><div><strong className="block line-through">{item.product_name}</strong><small className="text-muted">{formatQuantity(item.quantity)} {item.unit.toUpperCase()} · Cancelado</small></div></div>
@@ -490,7 +500,7 @@ function CommandDetail() {
 
       <Modal open={!!cancelItem} title="Cancelar item" onClose={() => setCancelItem(null)}>
         <div className="space-y-4 p-5">
-          <p className="text-sm text-muted">{cancelItem ? `${cancelItem.product_name} × ${cancelItem.quantity}` : ""}</p>
+          <p className="text-sm text-muted">{cancelItem ? `${cancelItem.product_name} × ${formatQuantity(cancelItem.quantity)}` : ""}</p>
           <Field label="Motivo do cancelamento" error={fieldError(fields, "reason")}><Input value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} disabled={saving} /></Field>
           {error && <Alert message={error} />}
           <div className="flex justify-end gap-2 border-t border-subtle pt-4"><Button variant="secondary" onClick={() => setCancelItem(null)}>Voltar</Button><Button loading={saving} onClick={() => void doCancel()}>Cancelar item</Button></div>
@@ -499,32 +509,32 @@ function CommandDetail() {
 
       <Modal open={paymentOpen} title="Registrar pagamento" onClose={() => setPaymentOpen(false)}>
         <div className="space-y-4 p-5">
-          <div className="grid gap-3 rounded-md bg-surface p-3 text-sm sm:grid-cols-3"><div><span className="block text-xs text-muted">Total</span><strong>{formatBRL(paymentSummary?.command_total || "0")}</strong></div><div><span className="block text-xs text-muted">Pago</span><strong>{formatBRL(paymentSummary?.paid_total || "0")}</strong></div><div><span className="block text-xs text-muted">Saldo</span><strong>{formatBRL(paymentSummary?.remaining_total || "0")}</strong></div></div>
+          <div className="grid gap-3 rounded-md bg-surface p-3 text-sm sm:grid-cols-3"><div><span className="block text-xs text-muted">Total</span><strong>{formatDecimalBRL(paymentSummary?.command_total || "0")}</strong></div><div><span className="block text-xs text-muted">Pago</span><strong>{formatDecimalBRL(paymentSummary?.paid_total || "0")}</strong></div><div><span className="block text-xs text-muted">Saldo</span><strong>{formatDecimalBRL(paymentSummary?.remaining_total || "0")}</strong></div></div>
           <Field label="Forma de pagamento" error={fieldError(fields, "payment_method")}><Select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)} disabled={saving}><option value="">Selecione</option>{paymentMethods.map((method) => <option key={method.id} value={method.id}>{method.name}</option>)}</Select></Field>
           <Field label="Valor aplicado" error={fieldError(fields, "amount")}><Input value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} disabled={saving} inputMode="decimal" placeholder="0,00" /></Field>
-          {paymentMethods.find((method) => method.id === Number(paymentMethod))?.code === "cash" && <><Field label="Sessão de Caixa" error={fieldError(fields, "cash_session")}><Select value={paymentCashSession} onChange={(event) => setPaymentCashSession(event.target.value)} disabled={saving}><option value="">Selecione uma sessão aberta</option>{cashSessions.map((session) => <option key={session.id} value={session.id}>{session.register_name} · {session.opened_by_name}</option>)}</Select></Field><Field label="Valor recebido" error={fieldError(fields, "received_amount")}><Input value={paymentReceivedAmount} onChange={(event) => setPaymentReceivedAmount(event.target.value)} disabled={saving} inputMode="decimal" placeholder="0,00" /></Field>{paymentReceivedAmount && Number(paymentReceivedAmount.replace(",", ".")) >= Number(paymentAmount.replace(",", ".")) ? <p className="text-sm text-muted">Troco: <strong>{formatBRL(String(Number(paymentReceivedAmount.replace(",", ".")) - Number(paymentAmount.replace(",", "."))))}</strong></p> : null}</>}
+          {paymentMethods.find((method) => method.id === Number(paymentMethod))?.code === "cash" && <><Field label="Sessão de Caixa" error={fieldError(fields, "cash_session")}><Select value={paymentCashSession} onChange={(event) => setPaymentCashSession(event.target.value)} disabled={saving}><option value="">Selecione uma sessão aberta</option>{cashSessions.map((session) => <option key={session.id} value={session.id}>{session.register_name} · {session.opened_by_name}</option>)}</Select></Field><Field label="Valor recebido" error={fieldError(fields, "received_amount")}><Input value={paymentReceivedAmount} onChange={(event) => setPaymentReceivedAmount(event.target.value)} disabled={saving} inputMode="decimal" placeholder="0,00" /></Field>{(() => { const received = moneyToCents(paymentReceivedAmount); const applied = moneyToCents(paymentAmount); return received !== null && applied !== null && received >= applied ? <p className="text-sm text-muted">Troco: <strong>{formatDecimalBRL(centsToDecimal(received - applied))}</strong></p> : null; })()}</>}
           {error && <Alert message={error} />}<div className="flex justify-end gap-2 border-t border-subtle pt-4"><Button variant="secondary" onClick={() => setPaymentOpen(false)} disabled={saving}>Cancelar</Button><Button loading={saving} onClick={() => void recordPayment()}>Registrar pagamento</Button></div>
         </div>
       </Modal>
 
       <Modal open={!!reversePayment} title="Estornar pagamento" onClose={() => setReversePayment(null)}>
-        <div className="space-y-4 p-5"><p className="text-sm text-muted">{reversePayment ? `${reversePayment.payment_method_name} · ${formatBRL(reversePayment.amount)}` : ""}</p><Field label="Motivo do estorno" error={fieldError(fields, "reason")}><Input value={reverseReason} onChange={(event) => setReverseReason(event.target.value)} disabled={saving} /></Field>{error && <Alert message={error} />}<div className="flex justify-end gap-2 border-t border-subtle pt-4"><Button variant="secondary" onClick={() => setReversePayment(null)} disabled={saving}>Cancelar</Button><Button loading={saving} onClick={() => void doReversePayment()}>Estornar pagamento</Button></div></div>
+        <div className="space-y-4 p-5"><p className="text-sm text-muted">{reversePayment ? `${reversePayment.payment_method_name} · ${formatDecimalBRL(reversePayment.amount)}` : ""}</p><Field label="Motivo do estorno" error={fieldError(fields, "reason")}><Input value={reverseReason} onChange={(event) => setReverseReason(event.target.value)} disabled={saving} /></Field>{error && <Alert message={error} />}<div className="flex justify-end gap-2 border-t border-subtle pt-4"><Button variant="secondary" onClick={() => setReversePayment(null)} disabled={saving}>Cancelar</Button><Button loading={saving} onClick={() => void doReversePayment()}>Estornar pagamento</Button></div></div>
       </Modal>
 
       <Modal open={finalizeOpen} title="Fechar comanda" onClose={() => setFinalizeOpen(false)}>
         <div className="space-y-4 p-5">
           <div className="rounded-md bg-surface p-3 text-sm">
-            <div className="flex justify-between"><span>Subtotal</span><strong>{formatBRL(preview?.subtotal || "0")}</strong></div>
-            {preview && Number(preview.promotion_discount_total) > 0 ? <div className="mt-1 flex justify-between text-success"><span>Promoções</span><span>- {formatBRL(preview.promotion_discount_total)}</span></div> : null}
-            {preview && Number(preview.discount) > 0 ? <div className="mt-1 flex justify-between text-success"><span>Desconto</span><span>- {formatBRL(preview.discount)}</span></div> : null}
-            {preview && Number(preview.service_fee_amount) > 0 ? <div className="mt-1 flex justify-between"><span>Taxa de serviço ({preview.service_fee_rate}%)</span><span>{formatBRL(preview.service_fee_amount)}</span></div> : null}
-            <div className="mt-2 flex justify-between border-t border-subtle pt-2 text-base"><strong>Total final</strong><strong>{previewLoading ? "Calculando..." : formatBRL(preview?.total || "0")}</strong></div>
+            <div className="flex justify-between"><span>Subtotal</span><strong>{formatDecimalBRL(preview?.subtotal || "0")}</strong></div>
+            {preview && !decimalIsZero(preview.promotion_discount_total) ? <div className="mt-1 flex justify-between text-success"><span>Promoções</span><span>- {formatDecimalBRL(preview.promotion_discount_total)}</span></div> : null}
+            {preview && !decimalIsZero(preview.discount) ? <div className="mt-1 flex justify-between text-success"><span>Desconto</span><span>- {formatDecimalBRL(preview.discount)}</span></div> : null}
+            {preview && !decimalIsZero(preview.service_fee_amount) ? <div className="mt-1 flex justify-between"><span>Taxa de serviço ({formatPercent(preview.service_fee_rate)})</span><span>{formatDecimalBRL(preview.service_fee_amount)}</span></div> : null}
+            <div className="mt-2 flex justify-between border-t border-subtle pt-2 text-base"><strong>Total final</strong><strong>{previewLoading ? "Calculando..." : formatDecimalBRL(preview?.total || "0")}</strong></div>
           </div>
-          <div className="grid gap-2 rounded-md border border-subtle p-3 text-sm sm:grid-cols-3"><div><span className="block text-xs text-muted">Total da comanda</span><strong>{formatBRL(paymentSummary?.command_total || "0")}</strong></div><div><span className="block text-xs text-muted">Já pago</span><strong>{formatBRL(paymentSummary?.paid_total || "0")}</strong></div><div><span className="block text-xs text-muted">Saldo a receber</span><strong>{formatBRL(paymentSummary?.remaining_total || "0")}</strong></div></div>
-          {preview?.items.length ? <div className="max-h-32 space-y-1 overflow-y-auto text-xs text-muted">{preview.items.map((item, index) => <div key={`${item.product}-${item.product_name}-${index}`}><span>{item.product_name} · {item.quantity} · {formatBRL(item.subtotal)}</span>{item.modifier_snapshot?.length ? <span> · {item.modifier_snapshot.map((modifier) => modifier.option_name).join(", ")}</span> : null}</div>)}</div> : null}
+          <div className="grid gap-2 rounded-md border border-subtle p-3 text-sm sm:grid-cols-3"><div><span className="block text-xs text-muted">Total da comanda</span><strong>{formatDecimalBRL(paymentSummary?.command_total || "0")}</strong></div><div><span className="block text-xs text-muted">Já pago</span><strong>{formatDecimalBRL(paymentSummary?.paid_total || "0")}</strong></div><div><span className="block text-xs text-muted">Saldo a receber</span><strong>{formatDecimalBRL(paymentSummary?.remaining_total || "0")}</strong></div></div>
+          {preview?.items.length ? <div className="max-h-32 space-y-1 overflow-y-auto text-xs text-muted">{preview.items.map((item, index) => <div key={`${item.product}-${item.product_name}-${index}`}><span>{item.product_name} · {formatQuantity(item.quantity)} · {formatDecimalBRL(item.subtotal)}</span>{item.modifier_snapshot?.length ? <span> · {item.modifier_snapshot.map((modifier) => modifier.option_name).join(", ")}</span> : null}</div>)}</div> : null}
           <Field label="Atendente"><Select value={seller} onChange={(event) => { setSeller(event.target.value); void requestPreview({ seller: event.target.value }); }} disabled={saving}><option value="">Selecione</option>{sellers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field>
           <Field label="Desconto na conta"><Input value={discount} onChange={(event) => setDiscount(event.target.value)} onBlur={() => void requestPreview()} disabled={saving} inputMode="decimal" /></Field>
-          {Number(discount.replace(",", ".")) > 0 && !canDiscount ? <div className="grid gap-3 sm:grid-cols-2"><Field label="Autorizador"><Select value={discountAuthorizer} onChange={(event) => setDiscountAuthorizer(event.target.value)} disabled={saving}><option value="">Selecione</option>{authorizers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field><Field label="Senha do autorizador"><Input type="password" value={discountPassword} onChange={(event) => setDiscountPassword(event.target.value)} disabled={saving} /></Field></div> : null}
+          {!decimalIsZero(discount) && !canDiscount ? <div className="grid gap-3 sm:grid-cols-2"><Field label="Autorizador"><Select value={discountAuthorizer} onChange={(event) => setDiscountAuthorizer(event.target.value)} disabled={saving}><option value="">Selecione</option>{authorizers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field><Field label="Senha do autorizador"><Input type="password" value={discountPassword} onChange={(event) => setDiscountPassword(event.target.value)} disabled={saving} /></Field></div> : null}
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={serviceFeeWaived} onChange={(event) => { setServiceFeeWaived(event.target.checked); void requestPreview({ serviceFeeWaived: event.target.checked }); }} disabled={saving} />Retirar taxa de serviço</label>
           {serviceFeeWaived && !canWaiveServiceFee ? <div className="grid gap-3 sm:grid-cols-2"><Field label="Autorizador"><Select value={serviceFeeAuthorizer} onChange={(event) => setServiceFeeAuthorizer(event.target.value)} disabled={saving}><option value="">Selecione</option>{serviceFeeAuthorizers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field><Field label="Senha do autorizador"><Input type="password" value={serviceFeePassword} onChange={(event) => setServiceFeePassword(event.target.value)} disabled={saving} /></Field></div> : null}
           <Field label="Sessão de Caixa"><Select value={cashSession} onChange={(e) => setCashSession(e.target.value)} disabled={saving}><option value="">Selecione uma sessão aberta</option>{cashSessions.map((session) => <option key={session.id} value={session.id}>{session.register_name} · {session.opened_by_name}</option>)}</Select></Field>
