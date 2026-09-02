@@ -15,7 +15,33 @@ type ProfileForm = { company: number; name: string; description: string; receive
 
 type CrudColumn = "view" | "create" | "change" | "change_status";
 const columnLabels: Record<CrudColumn, string> = { view: "Visualizar", create: "Cadastrar", change: "Editar", change_status: "Inativar" };
-const moduleLabels: Record<string, string> = { companies: "Empresas e filiais", accounts: "Usuários e perfis", products: "Produtos", suppliers: "Fornecedores", branch_prices: "Preços por filial", inventory: "Estoque", cash_registers: "Caixa", sales: "Vendas", payment_methods: "Formas de pagamento", promotions: "Promoções", reports: "Relatórios", audit_logs: "Auditoria", commissions: "Comissões" };
+const moduleLabels: Record<string, string> = {
+  companies: "Empresas e filiais",
+  customers: "Clientes",
+  accounts: "Usuários, perfis e bloqueios",
+  products: "Produtos, categorias e preços",
+  suppliers: "Fornecedores",
+  modifiers: "Modificadores",
+  purchases: "Compras e contas a pagar",
+  inventory: "Estoque",
+  cash_registers: "Caixa",
+  sales: "Vendas e consumações",
+  commands: "Mesas, comandas e pagamentos",
+  production: "Produção e impressão",
+  tickets: "Tickets",
+  payment_methods: "Formas de pagamento",
+  promotions: "Promoções",
+  reports: "Dashboard e relatórios",
+  audit_logs: "Auditoria",
+  commissions: "Comissões",
+};
+const scopeLabels: Record<FunctionalPermission["scope"], string> = {
+  COMPANY: "Empresa",
+  BRANCH: "Filial",
+};
+function moduleLabel(module: string) {
+  return moduleLabels[module] || module.replaceAll("_", " ").replace(/^./, (value) => value.toUpperCase());
+}
 function permissionSuffix(code: string) { return code.split(".").slice(1).join("."); }
 function PermissionMatrix({ catalog, selected, onChange }: { catalog: FunctionalPermission[]; selected: string[]; onChange: (codes: string[]) => void }) {
   const modules = Object.entries(Object.groupBy(catalog, (item) => item.module || "general"));
@@ -29,10 +55,10 @@ function PermissionMatrix({ catalog, selected, onChange }: { catalog: Functional
     return { resource, label: (permissions || [])[0]?.label.replace(/^(Visualizar|Cadastrar|Editar|Alterar status de|Configurar)\s+/i, "") || resource, cells, special };
   });
   const moduleCodes = items.map((item) => item.code); const allModule = moduleCodes.every((code) => selected.includes(code));
-  return <fieldset key={module} className="overflow-hidden rounded-lg border border-slate-200"><legend className="sr-only">{moduleLabels[module] || module}</legend><div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-4 py-3"><strong className="text-xs text-primary">{moduleLabels[module] || module}</strong><button type="button" className="text-[11px] font-semibold text-primary" onClick={() => setCodes(moduleCodes, !allModule)}>{allModule ? "Desmarcar módulo" : "Selecionar módulo"}</button></div>
-    <div className="hidden overflow-x-auto md:block"><table className="w-full min-w-160 text-left text-xs"><thead><tr className="border-b border-slate-100 text-[10px] uppercase text-slate-400"><th className="px-4 py-3">Recurso</th>{(Object.keys(columnLabels) as CrudColumn[]).map((column) => { const codes = rows.map((row) => row.cells[column]?.code).filter(Boolean) as string[]; const checked = !!codes.length && codes.every((code) => selected.includes(code)); return <th key={column} className="px-3 py-3 text-center"><button type="button" disabled={!codes.length} className="font-bold disabled:text-slate-200" onClick={() => setCodes(codes, !checked)}>{columnLabels[column]}</button></th>; })}</tr></thead><tbody>{rows.filter((row) => Object.keys(row.cells).length).map((row) => <tr key={row.resource} className="border-b border-slate-100 last:border-0"><td className="px-4 py-3 font-semibold">{row.label}</td>{(Object.keys(columnLabels) as CrudColumn[]).map((column) => { const permission = row.cells[column]; return <td key={column} className="px-3 py-3 text-center">{permission ? <input aria-label={`${columnLabels[column]} ${row.label}`} type="checkbox" className="size-4 accent-primary" checked={selected.includes(permission.code)} onChange={() => setCodes([permission.code], !selected.includes(permission.code))} /> : <span className="text-slate-200">-</span>}</td>; })}</tr>)}</tbody></table></div>
+  return <fieldset key={module} className="overflow-hidden rounded-lg border border-slate-200"><legend className="sr-only">{moduleLabel(module)}</legend><div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-4 py-3"><strong className="text-xs text-primary">{moduleLabel(module)}</strong><button type="button" className="text-[11px] font-semibold text-primary" onClick={() => setCodes(moduleCodes, !allModule)}>{allModule ? "Desmarcar módulo" : "Selecionar módulo"}</button></div>
+    <div className="hidden overflow-x-auto md:block"><table className="w-full min-w-160 text-left text-xs"><thead><tr className="border-b border-slate-100 text-[10px] uppercase text-slate-400"><th className="px-4 py-3">Recurso</th>{(Object.keys(columnLabels) as CrudColumn[]).map((column) => { const codes = rows.map((row) => row.cells[column]?.code).filter(Boolean) as string[]; const checked = !!codes.length && codes.every((code) => selected.includes(code)); return <th key={column} className="px-3 py-3 text-center"><button type="button" disabled={!codes.length} className="font-bold disabled:text-slate-200" onClick={() => setCodes(codes, !checked)}>{columnLabels[column]}</button></th>; })}</tr></thead><tbody>{rows.filter((row) => Object.keys(row.cells).length).map((row) => <tr key={row.resource} className="border-b border-slate-100 last:border-0"><td className="px-4 py-3 font-semibold">{row.label}</td>{(Object.keys(columnLabels) as CrudColumn[]).map((column) => { const permission = row.cells[column]; return <td key={column} className="px-3 py-3 text-center">{permission ? <input aria-label={`${columnLabels[column]} ${row.label} (${scopeLabels[permission.scope]})`} title={`${permission.label} · ${scopeLabels[permission.scope]} · ${permission.code}`} type="checkbox" className="size-4 accent-primary" checked={selected.includes(permission.code)} onChange={() => setCodes([permission.code], !selected.includes(permission.code))} /> : <span className="text-slate-200">-</span>}</td>; })}</tr>)}</tbody></table></div>
     <div className="divide-y divide-slate-100 md:hidden">{rows.filter((row) => Object.keys(row.cells).length).map((row) => <div key={row.resource} className="p-4"><strong className="text-xs">{row.label}</strong><div className="mt-3 grid grid-cols-2 gap-2">{(Object.keys(columnLabels) as CrudColumn[]).map((column) => { const permission = row.cells[column]; return permission && <label key={column} className="flex items-center gap-2 text-[11px]"><input type="checkbox" className="size-4 accent-primary" checked={selected.includes(permission.code)} onChange={() => setCodes([permission.code], !selected.includes(permission.code))} />{columnLabels[column]}</label>; })}</div></div>)}</div>
-    {rows.some((row) => row.special.length) && <div className="border-t border-slate-200 p-4"><h4 className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">Ações especiais</h4><div className="grid gap-2 sm:grid-cols-2">{rows.flatMap((row) => row.special).map((permission) => <label key={permission.code} className="flex cursor-pointer gap-3 rounded-md p-2 hover:bg-slate-50"><input type="checkbox" className="mt-0.5 size-4 accent-primary" checked={selected.includes(permission.code)} onChange={() => setCodes([permission.code], !selected.includes(permission.code))} /><span><strong className="block text-xs">{permission.label}</strong><small className="text-[10px] leading-4 text-slate-400">{permission.description}</small></span></label>)}</div></div>}
+    {rows.some((row) => row.special.length) && <div className="border-t border-slate-200 p-4"><h4 className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">Permissões específicas</h4><div className="grid gap-2 sm:grid-cols-2">{rows.flatMap((row) => row.special).map((permission) => <label key={permission.code} className="flex cursor-pointer gap-3 rounded-md p-2 hover:bg-slate-50"><input type="checkbox" className="mt-0.5 size-4 accent-primary" checked={selected.includes(permission.code)} onChange={() => setCodes([permission.code], !selected.includes(permission.code))} /><span><strong className="block text-xs">{permission.label}</strong><small className="text-[10px] leading-4 text-slate-400">{permission.description}</small><small className="mt-1 block font-mono text-[9px] text-slate-400">{scopeLabels[permission.scope]} · {permission.code}</small></span></label>)}</div></div>}
   </fieldset>; })}</div>;
 }
 

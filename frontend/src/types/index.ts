@@ -367,10 +367,14 @@ export interface UserPayload {
   neighborhood: string;
   city: string;
   state: string;
+  link_existing?: boolean;
   company_accesses: Array<{
     company_id: number;
     access_profile_id: number | null;
-    branch_accesses: Array<{ branch_id: number; access_profile_id: number }>;
+    branch_accesses: Array<{
+      branch_id: number;
+      access_profile_id: number | null;
+    }>;
   }>;
 }
 
@@ -395,6 +399,7 @@ export interface AccessProfile {
 export interface FunctionalPermission {
   code: string;
   module: string;
+  scope: "COMPANY" | "BRANCH";
   label: string;
   description: string;
 }
@@ -752,6 +757,9 @@ export interface BranchProductPrice {
 }
 
 export interface ProductPriceComparison {
+  count?: number;
+  next?: string | null;
+  previous?: string | null;
   branches: Array<{ id: number; name: string }>;
   products: Array<{
     id: number;
@@ -760,6 +768,15 @@ export interface ProductPriceComparison {
     default_price: string;
     prices: Record<string, string | null>;
     availability: Record<string, boolean>;
+    cells: Record<
+      string,
+      {
+        state: "unavailable" | "specific" | "inherited";
+        effective_price: string | null;
+        specific_price: string | null;
+        label: string;
+      }
+    >;
   }>;
 }
 
@@ -1969,6 +1986,7 @@ export interface ReportsOptions {
   operators: Array<{ id: number; name: string }>;
   sellers: Array<{ id: number; name: string }>;
   beneficiaries: Array<{ id: number; name: string; user_type: UserType }>;
+  customers: Array<{ id: number; name: string }>;
   products: Array<{
     id: number;
     name: string;

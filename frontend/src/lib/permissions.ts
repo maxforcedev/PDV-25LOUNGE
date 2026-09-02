@@ -42,6 +42,7 @@ export const permissions = {
   viewAuditLog: "audit_logs.view",
   viewCommission: "commissions.view", changeBranchCommission: "commissions.change_branch_default", changeProfileCommission: "commissions.change_profile", changeUserCommission: "commissions.change_user_override",
   viewProduction: "production.view", managePrinters: "printers.manage", viewPrintJobs: "print_jobs.view", retryPrintJobs: "print_jobs.retry", reprintPrintJobs: "print_jobs.reprint",
+  viewTickets: "tickets.view", reprintTickets: "tickets.reprint",
 } as const;
 
 export const reportMenuPermissions = [

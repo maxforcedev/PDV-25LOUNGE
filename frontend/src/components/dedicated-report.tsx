@@ -11,6 +11,7 @@ import {
   Button,
   EmptyState,
   Field,
+  Input,
   Pagination,
   Select,
   TableLoading,
@@ -34,6 +35,7 @@ import {
 import { ApiError, http } from "@/lib/http";
 import { businessMonthToDate } from "@/lib/period";
 import { permissions } from "@/lib/permissions";
+import { branchPriceState } from "@/lib/report-presentation";
 import { centsToDecimal } from "@/lib/sales";
 import { signedMoneyToCents } from "@/lib/cash";
 import { useAuth } from "@/providers/auth-provider";
@@ -56,6 +58,7 @@ export type ReportKind =
   | "cash"
   | "withdrawals"
   | "stock-consumption"
+  | "inventory-movements"
   | "cancellations"
   | "prices"
   | "result";
@@ -65,7 +68,7 @@ const configs: Record<
   { title: string; description: string; endpoint: string; permission: string }
 > = {
   overview: {
-    title: "Visão gerencial",
+    title: "Visão geral",
     description: "Resumo comercial e financeiro da filial.",
     endpoint: "sales",
     permission: permissions.viewSalesReport,
@@ -83,7 +86,7 @@ const configs: Record<
     permission: permissions.viewProductsReport,
   },
   receipts: {
-    title: "Recebimentos",
+    title: "Recebimentos / Formas de pagamento",
     description: "Distribuição do total recebido por forma de pagamento.",
     endpoint: "sales",
     permission: permissions.viewReceiptsReport,
@@ -107,13 +110,13 @@ const configs: Record<
     permission: permissions.viewCommission,
   },
   discounts: {
-    title: "Descontos",
-    description: "Descontos manuais por item, na conta e promoções.",
+    title: "Descontos e autorizações",
+    description: "Descontos, promoções e responsáveis pela autorização.",
     endpoint: "sales",
     permission: permissions.viewDiscountsReport,
   },
   consumptions: {
-    title: "Consumações e cortesias",
+    title: "Consumação / Cortesias",
     description: "Referência, valor cobrado e benefício operacional.",
     endpoint: "consumptions",
     permission: permissions.viewConsumptionsReport,
@@ -131,10 +134,16 @@ const configs: Record<
     permission: permissions.viewWithdrawalsReport,
   },
   "stock-consumption": {
-    title: "Consumo de estoque",
+    title: "Consumo / Custos",
     description: "Resumo físico e movimentos reais de saída e reversão.",
     endpoint: "stock-consumption",
     permission: permissions.viewStockConsumptionReport,
+  },
+  "inventory-movements": {
+    title: "Movimentações de estoque",
+    description: "Entradas, saídas, ajustes, inventários e reversões da filial.",
+    endpoint: "inventory-movements",
+    permission: permissions.viewInventoryReport,
   },
   cancellations: {
     title: "Cancelamentos e estornos",
@@ -341,13 +350,91 @@ function Kpi({
   );
 }
 
-function reportKpis(kind: ReportKind, summary: Record<string, unknown>) {
+type ReportTab = { value: string; label: string };
+
+function reportTabs(
+  kind: ReportKind,
+  summary: Record<string, unknown> | null,
+  canViewCosts: boolean,
+): ReportTab[] {
+  if (kind === "sales")
+    return [
+      { value: "resumo", label: "Resumo" },
+      { value: "vendas", label: "Vendas" },
+      { value: "itens", label: "Itens" },
+      { value: "pagamentos", label: "Pagamentos" },
+      { value: "cancelamentos", label: "Cancelamentos" },
+    ];
+  if (kind === "products") {
+    const tabs = [
+      { value: "desempenho", label: "Desempenho" },
+      { value: "categorias", label: "Categorias" },
+      { value: "modificadores", label: "Modificadores" },
+      { value: "promocoes", label: "Promoções" },
+    ];
+    const hasCosts = summary?.has_costs === true;
+    if (canViewCosts && hasCosts)
+      tabs.push({ value: "custos", label: "Margem e custos" });
+    return tabs;
+  }
+  if (kind === "cash")
+    return [
+      { value: "resumo", label: "Resumo" },
+      { value: "sessoes", label: "Sessões" },
+      { value: "recebimentos", label: "Recebimentos" },
+      { value: "movimentos", label: "Entradas e sangrias" },
+      { value: "diferencas", label: "Diferenças" },
+    ];
+  return [];
+}
+
+function ReportTabs({
+  tabs,
+  active,
+  onChange,
+}: {
+  tabs: ReportTab[];
+  active: string;
+  onChange: (tab: string) => void;
+}) {
+  if (!tabs.length) return null;
+  return (
+    <nav className="overflow-x-auto rounded-lg border border-subtle bg-surface p-1" aria-label="Seções do relatório">
+      <div className="flex min-w-max gap-1">
+        {tabs.map((tab) => (
+          <button
+            key={tab.value}
+            type="button"
+            className={`rounded-md px-4 py-2 text-xs font-bold transition ${active === tab.value ? "bg-primary text-white" : "text-muted hover:bg-surface-muted hover:text-fg"}`}
+            aria-current={active === tab.value ? "page" : undefined}
+            onClick={() => onChange(tab.value)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
+function reportKpis(
+  kind: ReportKind,
+  summary: Record<string, unknown>,
+  canViewCosts: boolean,
+  canViewCommission: boolean,
+) {
   const productRows = rows(summary.product_ranking);
   const operatorRows = rows(summary.operator_groups);
   const sellerRows = rows(summary.seller_groups);
   const stockRows = rows(summary.products);
   const filteredMethod = summary.filtered_payment_method as
     Record<string, unknown> | undefined;
+  const receiptMethods = rows(summary.payment_totals);
+  const receiptAmount = (...codes: string[]) => sumReportMoney(
+    receiptMethods.filter((row) => codes.includes(String(row.code))).map((row) => row.applied_total),
+  );
+  const knownReceiptCodes = ["cash", "pix", "credit_card", "debit_card", "card"];
+  const overviewCurrent = ((summary.period_comparison as Record<string, unknown> | undefined)?.current || {}) as Record<string, unknown>;
   const definitions: Partial<
     Record<
       ReportKind,
@@ -355,12 +442,17 @@ function reportKpis(kind: ReportKind, summary: Record<string, unknown>) {
     >
   > = {
     overview: [
-      ["Faturamento de vendas", summary.sales_revenue, "money"],
-      ["Taxa de serviço", summary.service_fee, "money"],
-      ["Total recebido", summary.total_received, "money"],
-      ["Total dos pagamentos", summary.payment_total, "money"],
-      ["Vendas", summary.count, "number"],
-      ["Ticket médio comercial", summary.ticket_average, "money"],
+      ["Faturamento bruto", overviewCurrent.gross_revenue ?? summary.gross, "money"],
+      ["Faturamento líquido", overviewCurrent.net_revenue ?? summary.sales_revenue, "money"],
+      ["Vendas", overviewCurrent.sales_count ?? summary.count, "number"],
+      ["Ticket médio", overviewCurrent.ticket_average ?? summary.ticket_average, "money"],
+      ["Total recebido", overviewCurrent.total_received ?? summary.total_received, "money"],
+      ["Descontos", overviewCurrent.discounts ?? summary.total_discount, "money"],
+      ["Taxa de serviço", overviewCurrent.service_fee ?? summary.service_fee, "money"],
+      ["Cancelamentos", overviewCurrent.cancellations ?? (summary.cancellations as Record<string, unknown> | undefined)?.value, "money"],
+      ...(overviewCurrent.consumptions_courtesies !== undefined ? [["Consumação / cortesias", overviewCurrent.consumptions_courtesies, "money"] as [string, unknown, "money"]] : []),
+      ...(overviewCurrent.estimated_result !== undefined ? [["Resultado estimado", overviewCurrent.estimated_result, "money"] as [string, unknown, "money"]] : []),
+      ...(overviewCurrent.estimated_margin !== undefined ? [["Margem estimada", overviewCurrent.estimated_margin, "percent"] as [string, unknown, "percent"]] : []),
     ],
     sales: [
       ["Faturamento de vendas", summary.sales_revenue, "money"],
@@ -373,16 +465,22 @@ function reportKpis(kind: ReportKind, summary: Record<string, unknown>) {
     products: [
       [
         "Faturamento de vendas",
-        sumReportMoney(productRows.map((row) => row.revenue)),
+        summary.sales_revenue ?? sumReportMoney(productRows.map((row) => row.revenue)),
         "money",
       ],
       [
         "Unidades vendidas",
-        sumInventoryDecimals(productRows.map((row) => row.quantity)) || "0",
+        summary.quantity ?? (sumInventoryDecimals(productRows.map((row) => row.quantity)) || "0"),
         "quantity",
       ],
-      ["Produtos vendidos", productRows.length, "number"],
-      ["Categorias", rows(summary.category_ranking).length, "number"],
+      ["Produtos vendidos", summary.product_count ?? productRows.length, "number"],
+      ["Categorias", summary.category_count ?? rows(summary.category_ranking).length, "number"],
+      ...(canViewCosts && summary.cost !== undefined
+        ? [["Custo histórico", summary.cost, "money"] as [string, unknown, "money"]]
+        : []),
+      ...(canViewCosts && summary.margin !== undefined
+        ? [["Margem", summary.margin, "money"] as [string, unknown, "money"]]
+        : []),
     ],
     receipts: [
       ...(filteredMethod
@@ -394,13 +492,15 @@ function reportKpis(kind: ReportKind, summary: Record<string, unknown>) {
             ] as [string, unknown, "money"],
           ]
         : []),
-      ["Faturamento de vendas", summary.sales_revenue, "money"],
-      ["Consumação cobrada", summary.consumption_charged, "money"],
-      ["Faturamento efetivo", summary.effective_revenue, "money"],
-      ["Taxa de serviço", summary.service_fee, "money"],
       ["Total recebido", summary.total_received, "money"],
-      ["Total dos pagamentos", summary.payment_total, "money"],
-      ["Reversões / estornos", summary.reversals, "money"],
+      ["Pagamentos", summary.payment_count, "number"],
+      ["Ticket médio recebido", summary.ticket_average_received, "money"],
+      ["Dinheiro", receiptAmount("cash"), "money"],
+      ["PIX", receiptAmount("pix"), "money"],
+      ["Cartão", receiptAmount("credit_card", "debit_card", "card"), "money"],
+      ["Outros", sumReportMoney(receiptMethods.filter((row) => !knownReceiptCodes.includes(String(row.code))).map((row) => row.applied_total)), "money"],
+      ["Troco total", summary.change_total, "money"],
+      ["Estornos", summary.reversals, "money"],
     ],
     operators: [
       [
@@ -460,7 +560,7 @@ function reportKpis(kind: ReportKind, summary: Record<string, unknown>) {
       ["Faturamento de vendas", summary.sales_revenue, "money"],
       ["Taxa de serviço", summary.service_fee, "money"],
       ["Total recebido", summary.total_received, "money"],
-      ...(summary.commission !== undefined
+      ...(canViewCommission && summary.commission !== undefined
         ? [
             ["Comissão gerada", summary.commission, "money"] as [
               string,
@@ -473,17 +573,19 @@ function reportKpis(kind: ReportKind, summary: Record<string, unknown>) {
       ["Atendentes", summary.commission_attendant_count, "number"],
     ],
     discounts: [
+      ["Desconto total", summary.total_discount, "money"],
+      ["Desconto médio", summary.discount_average, "money"],
       ["Desconto na conta", summary.account_discount, "money"],
       ["Desconto por item", summary.item_discount, "money"],
       ["Promoções", summary.promotion_discount, "money"],
-      ["Vendas afetadas", summary.count, "number"],
+      ["Taxas removidas", summary.service_fee_waiver_count, "number"],
     ],
     consumptions: [
       ["Valor de referência", summary.reference, "money"],
       ["Valor cobrado", summary.charged, "money"],
       ["Benefício concedido", summary.benefit, "money"],
       ["Operações", summary.count, "number"],
-      ...(summary.historical_cost !== undefined
+      ...(canViewCosts && summary.historical_cost !== undefined
         ? [
             ["Custo histórico", summary.historical_cost, "money"] as [
               string,
@@ -494,13 +596,11 @@ function reportKpis(kind: ReportKind, summary: Record<string, unknown>) {
         : []),
     ],
     cash: [
-      ["Faturamento de vendas", summary.sales_revenue, "money"],
-      ["Consumação cobrada", summary.consumption_charged, "money"],
-      ["Faturamento efetivo", summary.effective_revenue, "money"],
-      ["Taxa de serviço", summary.service_fee, "money"],
-      ["Total recebido", summary.total_received, "money"],
-      ["Total dos pagamentos", summary.payment_total, "money"],
-      ["Reversões no período", summary.reversals, "money"],
+      ["Sessões abertas", summary.opened_count, "number"],
+      ["Sessões fechadas", summary.closed_count, "number"],
+      ["Diferença total", summary.difference, "money"],
+      ["Sangrias", summary.withdrawals, "money"],
+      ["Entradas manuais", summary.manual_entries, "money"],
     ],
     withdrawals: [
       ["Total de sangrias", summary.amount, "money"],
@@ -510,7 +610,7 @@ function reportKpis(kind: ReportKind, summary: Record<string, unknown>) {
       ["Consumo bruto · total equivalente", summary.gross_quantity, "quantity"],
       ["Devoluções · total equivalente", summary.returned_quantity, "quantity"],
       ["Consumo líquido · total equivalente", summary.net_quantity, "quantity"],
-      ...(summary.estimated_cost !== undefined
+      ...(canViewCosts && summary.estimated_cost !== undefined
         ? [
             [
               "Custo estimado pelo custo atual",
@@ -526,21 +626,32 @@ function reportKpis(kind: ReportKind, summary: Record<string, unknown>) {
             ],
           ]),
     ],
+    "inventory-movements": [
+      ["Movimentações", summary.count, "number"],
+      ["Entradas", summary.entries, "quantity"],
+      ["Saídas", summary.exits, "quantity"],
+      ["Saldo dos movimentos", summary.equivalent_quantity, "quantity"],
+      ...(canViewCosts && summary.historical_cost_impact !== undefined ? [["Impacto em custo", summary.historical_cost_impact, "money"] as [string, unknown, "money"]] : []),
+    ],
     cancellations: [
-      [
-        "Faturamento de vendas revertido",
-        summary.reversed_sales_revenue,
-        "money",
-      ],
-      ["Taxa de serviço revertida", summary.reversed_service_fee, "money"],
-      ["Total revertido", summary.reversed_total_received, "money"],
-      ["Cancelamentos", summary.count, "number"],
+      ["Vendas canceladas", summary.sale_cancellation_count, "number"],
+      ["Valor total cancelado", summary.financial_impact, "money"],
+      ["% do faturamento cancelado", summary.cancellation_percentage, "percent"],
+      ["Itens cancelados em comandas", summary.item_cancellation_count, "number"],
+      ["Pagamentos estornados", summary.payment_reversal_count, "number"],
     ],
     result: [
       ["Total recebido", summary.total_received, "money"],
-      ["Custos e despesas", summary.costs_and_expenses, "money"],
-      ["Resultado estimado", summary.result, "money"],
-      ...(summary.margin !== null && summary.margin !== undefined
+      ...(canViewCosts && canViewCommission
+        ? [
+            ["Custos e despesas", summary.costs_and_expenses, "money"],
+            ["Resultado estimado", firstValue(summary, "result", "estimated_result"), "money"],
+          ] as Array<[string, unknown, "money"]>
+        : []),
+      ...(canViewCosts &&
+      canViewCommission &&
+      summary.margin !== null &&
+      summary.margin !== undefined
         ? [
             ["Margem sobre o total recebido", summary.margin, "percent"] as [
               string,
@@ -591,13 +702,37 @@ function SalesTable({
       />
     );
   return (
-    <div className="table-wrap">
-      <table className="data-table">
+    <>
+      <div className="divide-y divide-subtle md:hidden">
+        {data.results.map((row) => {
+          const seller = row.seller as { name?: string } | null;
+          const operator = row.operator as { name?: string } | null;
+          return (
+            <article key={`mobile:${String(row.operation_key)}`} className="space-y-3 p-4 text-xs">
+              <div className="flex items-start justify-between gap-3">
+                <span><strong className="block text-sm">{String(row.sale_number)}</strong><small className="text-muted">{formatDate(String(row.event_at || row.created_at))}</small></span>
+                <StatusBadge value={row.status} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <span><small className="block text-muted">Atendente</small>{seller?.name || "-"}</span>
+                <span><small className="block text-muted">Operador</small>{operator?.name || "-"}</span>
+                <span><small className="block text-muted">Desconto</small>{formatBRL(sumReportMoney([row.item_discount_total, row.discount, row.promotion_discount_total]))}</span>
+                <span><small className="block text-muted">Total recebido</small><strong>{formatBRL(String(row.total_received || row.total || "0"))}</strong></span>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+      <div className="table-wrap hidden md:block">
+      <table className="data-table min-w-260">
         <thead>
           <tr>
             <th>Operação</th>
             <th>{kind === "cancellations" ? "Cancelada em" : "Data"}</th>
-            <th>Responsáveis</th>
+            {kind === "sales" && <th>Cliente</th>}
+            <th>Atendente</th>
+            <th>Operador</th>
+            {kind === "sales" && <th>Caixa</th>}
             <th>Status</th>
             {kind === "discounts" ? (
               <>
@@ -627,6 +762,8 @@ function SalesTable({
             const seller = row.seller as { name?: string } | null;
             const operator = row.operator as { name?: string } | null;
             const beneficiary = row.beneficiary as { name?: string } | null;
+            const customer = row.customer as { name?: string } | null;
+            const cashSession = row.cash_session as { register?: { name?: string } } | null;
             const isConsumption =
               row.operation_type === "consumption" || kind === "consumptions";
             const canOpen = isConsumption ? canViewConsumptions : canViewSales;
@@ -644,20 +781,10 @@ function SalesTable({
                     ),
                   )}
                 </td>
-                <td>
-                  {kind === "consumptions" ? (
-                    <span>Beneficiário: {beneficiary?.name || "-"}</span>
-                  ) : (
-                    <>
-                      <span className="block">
-                        Atendente: {seller?.name || "-"}
-                      </span>
-                      <small className="text-slate-500">
-                        Operador: {operator?.name || "-"}
-                      </small>
-                    </>
-                  )}
-                </td>
+                {kind === "sales" && <td>{customer?.name || "-"}</td>}
+                <td>{kind === "consumptions" ? beneficiary?.name || "-" : seller?.name || "-"}</td>
+                <td>{operator?.name || "-"}</td>
+                {kind === "sales" && <td>{cashSession?.register?.name || "-"}</td>}
                 <td>
                   <StatusBadge value={row.status} />
                 </td>
@@ -678,6 +805,11 @@ function SalesTable({
                     <td>{formatBRL(String(row.service_fee_amount || "0"))}</td>
                     <td>{formatBRL(String(row.total_received || "0"))}</td>
                   </>
+                ) : kind === "sales" ? (
+                  <td>
+                    <strong>{formatBRL(String(row.total_received || row.total || "0"))}</strong>
+                    <small className="block text-muted">Subtotal {formatBRL(String(row.subtotal || "0"))} · desconto {formatBRL(sumReportMoney([row.item_discount_total, row.discount, row.promotion_discount_total]))} · taxa {formatBRL(String(row.service_fee_amount || "0"))} · pago {formatBRL(String(row.payment_total || "0"))}</small>
+                  </td>
                 ) : (
                   <td>{formatBRL(String(row.total || "0"))}</td>
                 )}
@@ -700,6 +832,188 @@ function SalesTable({
           })}
         </tbody>
       </table>
+      </div>
+    </>
+  );
+}
+
+function SalesItemsTable({ data, canViewCosts }: { data: ReportResponse<Record<string, unknown>>; canViewCosts: boolean }) {
+  const items = data.results.flatMap((sale) =>
+    rows(sale.items).map((item) => ({ sale, item })),
+  );
+  if (!items.length)
+    return <EmptyState title="Sem itens" description="Nenhum item encontrado nas vendas desta página." />;
+  return (
+    <div className="table-wrap">
+      <table className="data-table min-w-300">
+        <thead><tr><th>Venda</th><th>Produto</th><th>Categoria histórica</th><th>Quantidade</th><th>Preço base</th><th>Modificadores</th><th>Promoção</th><th>Desconto do item</th><th>Subtotal</th><th>Total</th>{canViewCosts && <><th>Custo unitário</th><th>Custo total</th><th>Margem</th><th>Margem %</th></>}</tr></thead>
+        <tbody>{items.map(({ sale, item }) => <tr key={`${String(sale.operation_key)}:${String(item.id)}`}>
+          <td><strong>{String(sale.sale_number)}</strong><small className="block text-muted">{formatDate(String(sale.event_at || sale.created_at))}</small></td>
+          <td><strong>{String(item.product_name || "-")}</strong><small className="block text-muted">{String(item.internal_code || "")}</small></td>
+          <td>{String((item.category as Record<string, unknown> | undefined)?.name || "Sem categoria")}</td>
+          <td>{formatQuantity(String(item.quantity || "0"))} {String(item.unit || "").toUpperCase()}</td>
+          <td>{formatBRL(String(item.base_unit_price || item.unit_price || "0"))}</td>
+          <td>{rows(item.modifier_snapshot).length ? rows(item.modifier_snapshot).map((modifier) => `${String(modifier.option_name)} × ${formatQuantity(String(modifier.selected_quantity || "0"))}`).join(", ") : "-"}</td>
+          <td>{item.promotion_name ? <span>{String(item.promotion_name)}<small className="block text-muted">{formatBRL(String(item.promotion_benefit || "0"))}</small></span> : "-"}</td>
+          <td>{formatBRL(String(item.manual_discount || "0"))}</td>
+          <td>{formatBRL(String(item.subtotal || "0"))}</td>
+          <td><strong>{formatBRL(String(item.net_subtotal || "0"))}</strong></td>
+          {canViewCosts && <><td>{formatBRL(String(item.unit_cost || "0"))}</td><td>{formatBRL(String(item.cost_total || "0"))}</td><td>{formatBRL(String(item.margin_amount || "0"))}</td><td>{formatPercent(item.margin_percentage)}</td></>}
+        </tr>)}</tbody>
+      </table>
+    </div>
+  );
+}
+
+function SalesPaymentsTable({ data }: { data: ReportResponse<Record<string, unknown>> }) {
+  const payments = data.results.flatMap((sale) =>
+    rows(sale.payments).map((payment, index) => ({ sale, payment, index })),
+  );
+  if (!payments.length)
+    return <EmptyState title="Sem pagamentos" description="Nenhum pagamento encontrado nas vendas desta página." />;
+  return (
+    <div className="table-wrap">
+      <table className="data-table min-w-160">
+        <thead><tr><th>Venda</th><th>Data/hora</th><th>Forma</th><th>Valor aplicado</th><th>Valor recebido</th><th>Troco</th><th>Origem</th><th>Operador</th><th>Status</th></tr></thead>
+        <tbody>{payments.map(({ sale, payment, index }) => {
+          const operator = sale.operator as { name?: string } | null;
+          return <tr key={`${String(sale.operation_key)}:${String(payment.payment_method_code)}:${index}`}>
+            <td><strong>{String(sale.sale_number)}</strong></td>
+            <td>{formatDate(String(payment.occurred_at || sale.event_at || sale.created_at))}</td>
+            <td>{String(payment.payment_method_name || payment.payment_method_code || "-")}</td>
+            <td><strong>{formatBRL(String(payment.amount || "0"))}</strong></td>
+            <td>{formatBRL(String(payment.received_amount || payment.amount || "0"))}</td>
+            <td>{formatBRL(String(payment.change_amount || "0"))}</td>
+            <td>{domainLabel(payment.origin)}</td>
+            <td>{String((payment.operator as Record<string, unknown> | null)?.name || operator?.name || "-")}</td>
+            <td><StatusBadge value={payment.status || sale.status} /></td>
+          </tr>;
+        })}</tbody>
+      </table>
+    </div>
+  );
+}
+
+function ReceiptEventsTable({ data }: { data: ReportResponse<Record<string, unknown>> }) {
+  if (!data.results.length)
+    return <EmptyState title="Sem eventos" description="Nenhum recebimento ou estorno ocorreu no período." />;
+  return (
+    <div className="table-wrap">
+      <table className="data-table min-w-260">
+        <thead><tr><th>Data/hora</th><th>Venda / comanda</th><th>Forma</th><th>Aplicado</th><th>Recebido</th><th>Troco</th><th>Origem</th><th>Operador</th><th>Caixa</th><th>Status</th><th>Motivo do estorno</th></tr></thead>
+        <tbody>{data.results.map((row) => {
+          const sale = row.sale as Record<string, unknown> | null;
+          const command = row.command as Record<string, unknown> | null;
+          const method = row.payment_method as Record<string, unknown>;
+          const operator = row.operator as Record<string, unknown>;
+          const register = row.cash_register as Record<string, unknown> | null;
+          return <tr key={String(row.event_id)}>
+            <td className="whitespace-nowrap">{formatDate(String(row.occurred_at))}</td>
+            <td><strong>{sale?.number ? `Venda ${String(sale.number)}` : command?.number ? `Comanda ${String(command.number)}` : "-"}</strong><small className="block text-muted">{String(row.event_id)}</small></td>
+            <td>{String(method?.name || method?.code || "-")}</td>
+            <td><strong>{formatBRL(String(row.applied_amount || "0"))}</strong></td>
+            <td>{formatBRL(String(row.received_amount || "0"))}</td>
+            <td>{formatBRL(String(row.change_amount || "0"))}</td>
+            <td>{domainLabel(row.origin)}</td>
+            <td>{String(operator?.name || "-")}</td>
+            <td>{String(register?.name || "-")}</td>
+            <td><StatusBadge value={row.status} /></td>
+            <td className="max-w-64">{String(row.reversal_reason || "-")}</td>
+          </tr>;
+        })}</tbody>
+      </table>
+    </div>
+  );
+}
+
+function ReceiptDistributionTable({ summary }: { summary: Record<string, unknown> }) {
+  const methods = rows(summary.payment_totals);
+  if (!methods.length) return <EmptyState title="Sem recebimentos" description="Nenhuma forma de pagamento foi utilizada no período." />;
+  return <div className="table-wrap"><table className="data-table"><thead><tr><th>Forma</th><th>Quantidade</th><th>Valor aplicado líquido</th><th>Valor recebido</th><th>Troco</th><th>Estornos</th><th>%</th></tr></thead><tbody>{methods.map((row) => <tr key={String(row.code)}><td><strong>{String(row.name || row.code)}</strong></td><td>{String(row.count || 0)}</td><td>{formatBRL(String(row.applied_total || "0"))}</td><td>{formatBRL(String(row.received_total || "0"))}</td><td>{formatBRL(String(row.change_total || "0"))}</td><td className="text-danger">{formatBRL(String(row.reversals || "0"))}</td><td>{formatPercent(row.percentage)}</td></tr>)}</tbody></table></div>;
+}
+
+function CancellationEventsTable({ data }: { data: ReportResponse<Record<string, unknown>> }) {
+  if (!data.results.length)
+    return <EmptyState title="Sem cancelamentos" description="Nenhum cancelamento ou estorno ocorreu no período." />;
+  return (
+    <div className="table-wrap">
+      <table className="data-table min-w-260">
+        <thead><tr><th>Data/hora</th><th>Tipo</th><th>Operação</th><th>Produto</th><th>Quantidade</th><th>Responsável</th><th>Motivo</th><th>Impacto financeiro</th><th>Impacto no estoque</th></tr></thead>
+        <tbody>{data.results.map((row) => {
+          const product = row.product as Record<string, unknown> | null;
+          const actor = row.cancellation_actor as Record<string, unknown> | null;
+          return <tr key={String(row.event_id)}>
+            <td className="whitespace-nowrap">{formatDate(String(row.cancelled_at))}</td>
+            <td>{domainLabel(row.event_type)}</td>
+            <td><strong>{String(row.operation_number || row.operation_id || "-")}</strong><small className="block text-muted">{domainLabel(row.operation_type)}</small></td>
+            <td>{String(product?.name || "-")}</td>
+            <td>{row.quantity == null ? "-" : formatQuantity(String(row.quantity))}</td>
+            <td>{String(actor?.name || "-")}</td>
+            <td className="max-w-72">{String(row.reason || "Não informado")}</td>
+            <td className="text-danger">{formatBRL(String(row.financial_impact || "0"))}</td>
+            <td>{String(row.stock_impact || "-")}</td>
+          </tr>;
+        })}</tbody>
+      </table>
+    </div>
+  );
+}
+
+function DiscountEventsTable({ data }: { data: ReportResponse<Record<string, unknown>> }) {
+  const events = data.results.flatMap((sale) => {
+    const operator = sale.operator as Record<string, unknown> | null;
+    const seller = sale.seller as Record<string, unknown> | null;
+    const saleApprover = sale.discount_approved_by as Record<string, unknown> | null;
+    const base = { sale, operator, seller };
+    const itemEvents = rows(sale.items).flatMap((item) => {
+      const approver = item.discount_approved_by as Record<string, unknown> | null;
+      const itemRows: Array<Record<string, unknown>> = [];
+      if (hasDelta(item.manual_discount)) itemRows.push({ ...base, id: `item:${String(item.id)}`, type: "item", value: item.manual_discount, approver, product: item.product_name });
+      if (hasDelta(item.promotion_benefit)) itemRows.push({ ...base, id: `promotion:${String(item.id)}`, type: "promotion", value: item.promotion_benefit, approver: null, product: item.product_name });
+      return itemRows;
+    });
+    if (hasDelta(sale.discount)) itemEvents.push({ ...base, id: `account:${String(sale.id)}`, type: "account", value: sale.discount, approver: saleApprover, product: null });
+    if (sale.service_fee_waived) itemEvents.push({ ...base, id: `fee:${String(sale.id)}`, type: "service_fee_waiver", value: sale.service_fee_waived_value, approver: sale.service_fee_waived_by, product: null });
+    return itemEvents;
+  });
+  if (!events.length) return <EmptyState title="Sem descontos" description="Nenhum desconto ou retirada de taxa foi encontrado nesta página." />;
+  return <div className="table-wrap"><table className="data-table min-w-220"><thead><tr><th>Venda</th><th>Tipo</th><th>Produto</th><th>Valor</th><th>Aplicado por</th><th>Aprovado por</th><th>Atendente</th><th>Data/hora</th></tr></thead><tbody>{events.map((event) => {
+    const sale = event.sale as Record<string, unknown>;
+    const operator = event.operator as Record<string, unknown> | null;
+    const seller = event.seller as Record<string, unknown> | null;
+    const approver = event.approver as Record<string, unknown> | null;
+    return <tr key={String(event.id)}><td><strong>{String(sale.sale_number)}</strong></td><td>{domainLabel(event.type)}</td><td>{String(event.product || "-")}</td><td>{formatBRL(String(event.value || "0"))}</td><td>{String(operator?.name || "-")}</td><td>{String(approver?.name || "Automático")}</td><td>{String(seller?.name || "-")}</td><td>{formatDate(String(sale.event_at || sale.created_at))}</td></tr>;
+  })}</tbody></table></div>;
+}
+
+function ConsumptionDetailsTable({ data, canViewCosts }: { data: ReportResponse<Record<string, unknown>>; canViewCosts: boolean }) {
+  const items = data.results.flatMap((sale) => rows(sale.items).map((item) => ({ sale, item })));
+  if (!items.length) return <EmptyState title="Sem itens" description="Nenhuma consumação foi encontrada nesta página." />;
+  return <div className="table-wrap"><table className="data-table min-w-260"><thead><tr><th>Data/hora</th><th>Beneficiário</th><th>Produto</th><th>Categoria</th><th>Quantidade</th><th>Valor comercial</th><th>Valor cobrado</th><th>Subsídio / cortesia</th>{canViewCosts && <th>Custo histórico</th>}<th>Responsável</th></tr></thead><tbody>{items.map(({ sale, item }) => { const beneficiary = sale.beneficiary as Record<string, unknown> | null; const operator = sale.operator as Record<string, unknown> | null; const category = item.category as Record<string, unknown> | null; return <tr key={`consumption:${String(sale.id)}:${String(item.id)}`}><td>{formatDate(String(sale.event_at || sale.created_at))}</td><td>{String(beneficiary?.name || "-")}</td><td><strong>{String(item.product_name || "-")}</strong></td><td>{String(category?.name || "Sem categoria")}</td><td>{formatQuantity(String(item.quantity || "0"))}</td><td>{formatBRL(String(item.commercial_value || item.subtotal || "0"))}</td><td>{formatBRL(String(item.charged_value || "0"))}</td><td>{formatBRL(String(item.subsidy_value || "0"))}</td>{canViewCosts && <td>{formatBRL(String(item.cost_total || "0"))}</td>}<td>{String(operator?.name || "-")}</td></tr>; })}</tbody></table></div>;
+}
+
+function CommissionDetailsTable({ data }: { data: ReportResponse<Record<string, unknown>> }) {
+  const items = data.results.flatMap((sale) => rows(sale.items).filter((item) => hasDelta(item.commission_amount)).map((item) => ({ sale, item })));
+  if (!items.length) return <EmptyState title="Sem comissões detalhadas" description="Nenhum item elegível foi encontrado nesta página." />;
+  return <div className="table-wrap"><table className="data-table min-w-220"><thead><tr><th>Venda</th><th>Atendente</th><th>Produto</th><th>Quantidade</th><th>Base</th><th>Percentual</th><th>Comissão</th></tr></thead><tbody>{items.map(({ sale, item }) => { const seller = sale.seller as Record<string, unknown> | null; return <tr key={`commission:${String(sale.id)}:${String(item.id)}`}><td><strong>{String(sale.sale_number)}</strong><small className="block text-muted">{formatDate(String(sale.created_at))}</small></td><td>{String(seller?.name || "-")}</td><td>{String(item.product_name || "-")}</td><td>{formatQuantity(String(item.quantity || "0"))}</td><td>{formatBRL(String(item.net_subtotal || "0"))}</td><td>{formatPercent(sale.commission_rate)}</td><td><strong>{formatBRL(String(item.commission_amount || "0"))}</strong></td></tr>; })}</tbody></table></div>;
+}
+
+function ProductCommercialBreakdown({
+  summary,
+  kind,
+}: {
+  summary: Record<string, unknown>;
+  kind: "modifiers" | "promotions";
+}) {
+  const list = rows(summary[kind === "modifiers" ? "modifier_ranking" : "promotion_ranking"]);
+  if (!list.length)
+    return <EmptyState title="Sem dados" description={`Nenhuma ocorrência de ${kind === "modifiers" ? "modificador" : "promoção"} no período.`} />;
+  return (
+    <div className="table-wrap">
+      <table className="data-table">
+        <thead>{kind === "modifiers" ? <tr><th>Modificador</th><th>Quantidade</th><th>Produtos</th><th>Receita adicional</th><th>Ticket médio</th></tr> : <tr><th>Promoção</th><th>Usos</th><th>Desconto concedido</th><th>Receita líquida associada</th></tr>}</thead>
+        <tbody>{list.map((row) => kind === "modifiers" ? <tr key={`modifier:${String(row.option_id || row.option_name)}`}><td><strong>{String(row.option_name)}</strong></td><td>{formatQuantity(String(row.quantity || "0"))}</td><td>{String(row.product_count || 0)}</td><td>{formatBRL(String(row.additional_revenue || "0"))}</td><td>{formatBRL(String(row.ticket_average || "0"))}</td></tr> : <tr key={`promotion:${String(row.promotion_id)}`}><td><strong>{String(row.promotion_name)}</strong></td><td>{String(row.uses || 0)}</td><td>{formatBRL(String(row.discount || "0"))}</td><td>{formatBRL(String(row.net_revenue || "0"))}</td></tr>)}</tbody>
+      </table>
     </div>
   );
 }
@@ -707,9 +1021,15 @@ function SalesTable({
 function RankingTable({
   kind,
   summary,
+  canViewCosts = false,
+  canViewCommission = false,
+  dataRows,
 }: {
   kind: ReportKind;
   summary: Record<string, unknown>;
+  canViewCosts?: boolean;
+  canViewCommission?: boolean;
+  dataRows?: Array<Record<string, unknown>>;
 }) {
   const key =
     kind === "products"
@@ -719,7 +1039,7 @@ function RankingTable({
         : kind === "operators"
           ? "operator_groups"
           : "seller_groups";
-  const list = rows(summary[key]);
+  const list = dataRows || rows(summary[key]);
   if (!list.length)
     return (
       <EmptyState
@@ -729,7 +1049,11 @@ function RankingTable({
     );
   const isTeam = ["operators", "sellers", "commissions"].includes(kind);
   const showCommission =
-    isTeam && list.some((row) => row.commission !== undefined);
+    canViewCommission && isTeam && list.some((row) => row.commission !== undefined);
+  const showProductCosts =
+    canViewCosts &&
+    kind === "products" &&
+    list.some((row) => row.cost !== undefined || row.margin !== undefined);
   return (
     <div className="table-wrap">
       <table className="data-table">
@@ -743,6 +1067,7 @@ function RankingTable({
                   : "Pessoa"}
             </th>
             {kind === "products" && <th>Unidades</th>}
+            {kind === "products" && <><th>Vendas</th><th>Descontos</th><th>Ticket médio</th></>}
             {isTeam && <th>Vendas</th>}
             <th>
               {kind === "receipts"
@@ -765,7 +1090,11 @@ function RankingTable({
                 <th>Cancelamentos</th>
               </>
             )}
+            {kind === "sellers" && <><th>Itens vendidos</th><th>Descontos</th><th>Taxas removidas</th></>}
+            {kind === "operators" && <><th>Caixas operados</th><th>Descontos autorizados</th><th>Cancelados por</th><th>Estornos</th><th>Diferença de caixa</th></>}
+            {kind === "commissions" && <><th>Base de cálculo</th><th>Percentual efetivo</th></>}
             {showCommission && <th>Comissão histórica</th>}
+            {showProductCosts && <><th>Custo histórico</th><th>Margem</th><th>Margem %</th></>}
           </tr>
         </thead>
         <tbody>
@@ -794,6 +1123,7 @@ function RankingTable({
                 {kind === "products" && (
                   <td>{formatQuantity(String(row.quantity || "0"))}</td>
                 )}
+                {kind === "products" && <><td>{String(row.sale_count || 0)}</td><td>{formatBRL(String(row.discounts || "0"))}</td><td>{formatBRL(String(row.ticket_average || "0"))}</td></>}
                 {isTeam && <td>{String(row.count || 0)}</td>}
                 <td>
                   {formatBRL(
@@ -835,6 +1165,9 @@ function RankingTable({
                     </td>
                   </>
                 )}
+                {kind === "sellers" && <><td>{formatQuantity(String(row.item_quantity || "0"))}</td><td>{formatBRL(String(row.discounts || "0"))}</td><td>{String(row.service_fee_waiver_count || 0)}</td></>}
+                {kind === "operators" && <><td>{String(row.cash_session_count || 0)}</td><td>{String(row.authorized_discount_count || 0)}</td><td>{String(row.actor_cancellation_count || 0)}</td><td>{String(row.payment_reversal_count || 0)}</td><td>{formatBRL(String(row.cash_difference || "0"))}</td></>}
+                {kind === "commissions" && <><td>{formatBRL(String(row.commission_base || "0"))}</td><td>{formatPercent(row.commission_rate)}</td></>}
                 {showCommission && (
                   <td>
                     <strong>{formatBRL(String(row.commission || "0"))}</strong>
@@ -845,6 +1178,11 @@ function RankingTable({
                     )}
                   </td>
                 )}
+                {showProductCosts && <>
+                  <td>{formatBRL(String(row.cost || "0"))}</td>
+                  <td>{formatBRL(String(row.margin || "0"))}</td>
+                  <td>{formatPercent(row.margin_percent)}</td>
+                </>}
               </tr>
             );
           })}
@@ -854,8 +1192,15 @@ function RankingTable({
   );
 }
 
-function CategoryRanking({ summary }: { summary: Record<string, unknown> }) {
+function CategoryRanking({
+  summary,
+  canViewCosts = false,
+}: {
+  summary: Record<string, unknown>;
+  canViewCosts?: boolean;
+}) {
   const categories = rows(summary.category_ranking);
+  const showCosts = canViewCosts && categories.some((row) => row.cost !== undefined);
   return (
     <section className="card overflow-hidden">
       <div className="card-header">
@@ -869,6 +1214,7 @@ function CategoryRanking({ summary }: { summary: Record<string, unknown> }) {
                 <th>Categoria</th>
                 <th>Unidades</th>
                 <th>Faturamento de vendas</th>
+                {showCosts && <><th>Custo histórico</th><th>Margem</th></>}
               </tr>
             </thead>
             <tbody>
@@ -880,7 +1226,8 @@ function CategoryRanking({ summary }: { summary: Record<string, unknown> }) {
                     </strong>
                   </td>
                   <td>{formatQuantity(String(row.quantity || "0"))}</td>
-                  <td>{formatBRL(String(row.revenue || "0"))}</td>
+                   <td>{formatBRL(String(row.revenue || "0"))}</td>
+                   {showCosts && <><td>{formatBRL(String(row.cost || "0"))}</td><td>{formatBRL(String(row.margin || "0"))}</td></>}
                 </tr>
               ))}
             </tbody>
@@ -1356,6 +1703,16 @@ function ConsumptionGroups({ summary }: { summary: Record<string, unknown> }) {
       rows(summary.user_type_groups),
       (row) => userTypeLabels[String(row.user_type)] || String(row.user_type),
     ],
+    [
+      "Por produto",
+      rows(summary.product_groups),
+      (row) => String(row.product_name || "Produto não informado"),
+    ],
+    [
+      "Por categoria",
+      rows(summary.category_groups),
+      (row) => String(row.category_name || "Sem categoria"),
+    ],
   ];
   return (
     <div className="grid gap-5 xl:grid-cols-2">
@@ -1370,7 +1727,7 @@ function ConsumptionGroups({ summary }: { summary: Record<string, unknown> }) {
                 <thead>
                   <tr>
                     <th>{title.replace("Por ", "")}</th>
-                    <th>Operações</th>
+                    <th>{title === "Por produto" || title === "Por categoria" ? "Quantidade" : "Operações"}</th>
                     <th>Referência</th>
                     <th>Cobrado</th>
                     <th>Benefício</th>
@@ -1379,12 +1736,12 @@ function ConsumptionGroups({ summary }: { summary: Record<string, unknown> }) {
                 <tbody>
                   {list.map((row) => (
                     <tr
-                      key={`${title}:${String((row.beneficiary as { id?: number } | undefined)?.id || row.user_type || "unassigned")}`}
+                      key={`${title}:${String((row.beneficiary as { id?: number } | undefined)?.id || row.user_type || row.product_id || row.category_id || "unassigned")}`}
                     >
                       <td>
                         <strong>{label(row)}</strong>
                       </td>
-                      <td>{String(row.count)}</td>
+                      <td>{row.count === undefined ? formatQuantity(String(row.quantity || "0")) : String(row.count)}</td>
                       <td>{formatBRL(String(row.reference))}</td>
                       <td>{formatBRL(String(row.charged))}</td>
                       <td>{formatBRL(String(row.benefit))}</td>
@@ -1411,9 +1768,11 @@ function WithdrawalCategories({
   summary: Record<string, unknown>;
 }) {
   const categories = rows(summary.by_category);
-  if (!categories.length) return null;
+  const operators = rows(summary.by_operator);
+  const beneficiaries = rows(summary.by_beneficiary);
+  if (!categories.length && !operators.length && !beneficiaries.length) return null;
   return (
-    <section className="card overflow-hidden">
+    <div className="grid gap-5 xl:grid-cols-3"><section className="card overflow-hidden">
       <div className="card-header">
         <h2 className="text-sm font-bold">Resumo por categoria</h2>
       </div>
@@ -1439,14 +1798,16 @@ function WithdrawalCategories({
           </tbody>
         </table>
       </div>
-    </section>
+    </section>{[["Por operador", operators, "operator"], ["Por beneficiário", beneficiaries, "beneficiary"]].map(([title, list, key]) => <section key={String(title)} className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">{String(title)}</h2></div>{(list as Array<Record<string, unknown>>).length ? <div className="divide-y divide-subtle">{(list as Array<Record<string, unknown>>).map((row) => { const user = row[String(key)] as Record<string, unknown> | null; return <div key={`${String(key)}:${String(user?.id || "none")}`} className="flex items-center justify-between gap-4 px-5 py-3 text-sm"><span>{String(user?.name || "Não informado")}<small className="block text-muted">{String(row.count || 0)} movimentos</small></span><strong>{formatBRL(String(row.amount || "0"))}</strong></div>; })}</div> : <EmptyState title="Sem agrupamento" description="Nenhum movimento no período." />}</section>)}</div>
   );
 }
 
 function CashSummarySections({
   summary,
+  canViewCommission,
 }: {
   summary: Record<string, unknown>;
+  canViewCommission: boolean;
 }) {
   const payments = rows(summary.payment_totals);
   return (
@@ -1484,7 +1845,7 @@ function CashSummarySections({
                 )}
               </strong>
             </p>
-            {summary.commission !== undefined && (
+            {canViewCommission && summary.commission !== undefined && (
               <p className="flex justify-between text-danger">
                 <span>Comissão histórica (custo)</span>
                 <strong>{formatBRL(String(summary.commission))}</strong>
@@ -1626,16 +1987,33 @@ function CashTable({
       />
     );
   return (
-    <div className="table-wrap">
-      <table className="data-table">
+    <>
+      <div className="divide-y divide-subtle md:hidden">
+        {data.results.map((row) => {
+          const register = row.register as { name?: string };
+          const operator = row.operator as { name?: string };
+          return <article key={`mobile-cash:${String(row.id)}`} className="space-y-3 p-4 text-xs">
+            <div className="flex items-start justify-between gap-3"><span><strong className="block text-sm">{register.name} #{String(row.id)}</strong><small className="text-muted">{operator.name || "-"}</small></span><StatusBadge value={row.status} /></div>
+            <p>{formatDate(String(row.opened_at))}{row.closed_at ? ` até ${formatDate(String(row.closed_at))}` : " · Em andamento"}</p>
+            <div className="grid grid-cols-2 gap-3"><span><small className="block text-muted">Esperado</small><strong>{formatBRL(String(row.expected || "0"))}</strong></span><span><small className="block text-muted">Informado</small>{row.informed == null ? "-" : formatBRL(String(row.informed))}</span><span><small className="block text-muted">Entradas</small>{formatBRL(String(row.manual_entries || "0"))}</span><span><small className="block text-muted">Sangrias</small>{formatBRL(String(row.withdrawals || "0"))}</span></div>
+          </article>;
+        })}
+      </div>
+      <div className="table-wrap hidden md:block">
+      <table className="data-table min-w-320">
         <thead>
           <tr>
             <th>Sessão</th>
+            <th>Operador</th>
+            <th>Aberto por</th>
+            <th>Fechado por</th>
             <th>Status</th>
             <th>Período</th>
-            <th>Vendas</th>
-            <th>Consumações</th>
-            <th>Gaveta da sessão completa</th>
+            <th>Duração</th>
+            <th>Fundo</th>
+            <th>Entradas</th>
+            <th>Sangrias</th>
+            <th>Esperado</th>
             <th>Informado</th>
             <th>Diferença</th>
           </tr>
@@ -1643,6 +2021,9 @@ function CashTable({
         <tbody>
           {data.results.map((row) => {
             const register = row.register as { name?: string };
+            const operator = row.operator as { name?: string };
+            const openedBy = row.opened_by as { name?: string } | null;
+            const closedBy = row.closed_by as { name?: string } | null;
             const operational = row.operational_summary as Record<
               string,
               unknown
@@ -1668,6 +2049,9 @@ function CashTable({
                     </strong>
                   )}
                 </td>
+                <td>{operator.name || "-"}</td>
+                <td>{openedBy?.name || "-"}</td>
+                <td>{closedBy?.name || "-"}</td>
                 <td>
                   <StatusBadge value={row.status} />
                 </td>
@@ -1679,27 +2063,11 @@ function CashTable({
                       : "Em andamento"}
                   </small>
                 </td>
-                <td>
-                  {String(sales.count || 0)}
-                  <small className="block text-slate-500">
-                    {formatBRL(String(sales.sales_revenue || "0"))} +{" "}
-                    {formatBRL(String(sales.service_fee || "0"))} de taxa
-                  </small>
-                </td>
-                <td>
-                  {String(consumptions.count || 0)}
-                  <small className="block text-slate-500">
-                    {formatBRL(String(consumptions.charged || "0"))} cobrados
-                  </small>
-                </td>
-                <td>
-                  <strong>{formatBRL(String(row.expected || "0"))}</strong>
-                  <small className="block text-slate-500">
-                    Vendas {formatBRL(String(row.sale_cash || "0"))} ·
-                    Consumações {formatBRL(String(row.consumption_cash || "0"))}{" "}
-                    · Reversões {formatBRL(String(row.cash_reversals || "0"))}
-                  </small>
-                </td>
+                <td>{Math.floor(Number(row.duration_seconds || 0) / 3600)}h {Math.floor((Number(row.duration_seconds || 0) % 3600) / 60)}min</td>
+                <td>{formatBRL(String(row.opening || "0"))}</td>
+                <td>{formatBRL(String(row.manual_entries || "0"))}</td>
+                <td>{formatBRL(String(row.withdrawals || "0"))}</td>
+                <td><strong>{formatBRL(String(row.expected || "0"))}</strong><small className="block text-muted">Vendas {String(sales.count || 0)} · Consumações {String(consumptions.count || 0)}</small></td>
                 <td>
                   {row.informed == null ? "-" : formatBRL(String(row.informed))}
                 </td>
@@ -1713,17 +2081,20 @@ function CashTable({
           })}
         </tbody>
       </table>
-    </div>
+      </div>
+    </>
   );
 }
 
 function StockConsumption({
   data,
+  canViewCosts,
 }: {
   data: ReportResponse<Record<string, unknown>>;
+  canViewCosts: boolean;
 }) {
   const products = rows(data.summary.products);
-  const showCost = products.some((row) => row.estimated_cost !== undefined);
+  const showCost = canViewCosts && products.some((row) => row.estimated_cost !== undefined);
   const contentByUnit = Object.entries(
     (data.summary.content_by_unit || {}) as Record<
       string,
@@ -1878,7 +2249,68 @@ function StockConsumption({
   );
 }
 
-function ResultStatement({ summary }: { summary: Record<string, unknown> }) {
+function InventoryMovementsTable({
+  data,
+  canViewCosts = false,
+}: {
+  data: ReportResponse<Record<string, unknown>>;
+  canViewCosts?: boolean;
+}) {
+  if (!data.results.length)
+    return <EmptyState title="Sem movimentações" description="Nenhuma movimentação encontrada no período." />;
+  return (
+    <>
+      <div className="divide-y divide-subtle md:hidden">
+        {data.results.map((row) => {
+          const product = row.product as Record<string, unknown>;
+          const user = row.user as Record<string, unknown>;
+          return <article key={`mobile-movement:${String(row.id)}`} className="space-y-3 p-4 text-xs">
+            <div className="flex items-start justify-between gap-3"><span><strong className="block text-sm">{String(product.name || "-")}</strong><small className="text-muted">{formatDate(String(row.created_at))}</small></span><span className="rounded-full bg-surface-muted px-2 py-1 font-bold">{domainLabel(row.movement_type)}</span></div>
+            <div className="grid grid-cols-2 gap-3"><span><small className="block text-muted">Movimento</small><strong>{formatQuantity(String(row.quantity || "0"))}</strong></span><span><small className="block text-muted">Saldo</small>{formatQuantity(String(row.previous_quantity || "0"))} → {formatQuantity(String(row.final_quantity || "0"))}</span><span><small className="block text-muted">Responsável</small>{String(user.name || "-")}</span><span><small className="block text-muted">Categoria</small>{String((product.category as Record<string, unknown> | undefined)?.name || "-")}</span></div>
+            {Boolean(row.reason) && <p className="text-muted">{String(row.reason)}</p>}
+          </article>;
+        })}
+      </div>
+      <div className="table-wrap hidden md:block">
+        <table className="data-table min-w-300">
+          <thead><tr><th>Data/hora</th><th>Produto</th><th>Categoria</th><th>Tipo</th><th>Origem</th><th>Saldo anterior</th><th>Movimento</th><th>Saldo final</th><th>Unidade</th>{canViewCosts && <><th>Custo snapshot</th><th>Impacto em custo</th></>}<th>Responsável</th><th>Motivo</th><th>Referência</th></tr></thead>
+          <tbody>{data.results.map((row) => {
+            const product = row.product as Record<string, unknown>;
+            const category = product.category as Record<string, unknown> | undefined;
+            const user = row.user as Record<string, unknown>;
+            const sale = row.sale as Record<string, unknown> | null;
+            const origin = row.origin as Record<string, unknown> | null;
+            return <tr key={`inventory-movement:${String(row.id)}`}>
+              <td className="whitespace-nowrap">{formatDate(String(row.created_at))}</td>
+              <td><strong>{String(product.name || "-")}</strong><small className="block text-muted">{String(product.internal_code || "")}</small></td>
+              <td>{String(category?.name || "-")}</td>
+              <td>{domainLabel(row.movement_type)}</td>
+              <td>{String(origin?.label || domainLabel(row.domain_origin || row.nature))}</td>
+              <td>{formatQuantity(String(row.previous_quantity || "0"))}</td>
+              <td className="font-bold">{formatQuantity(String(row.quantity || "0"))}<small className="block text-muted">Equiv. {formatQuantity(String(row.equivalent_quantity || "0"))}</small></td>
+              <td>{formatQuantity(String(row.final_quantity || "0"))}</td>
+              <td>{String(row.unit || "-").toUpperCase()}</td>
+              {canViewCosts && <><td>{row.unit_cost_snapshot == null ? "-" : formatBRL(String(row.unit_cost_snapshot))}</td><td>{row.cost_impact == null ? "-" : formatBRL(String(row.cost_impact))}</td></>}
+              <td>{String(user.name || "-")}</td>
+              <td className="max-w-64">{String(row.reason || "-")}</td>
+              <td className="max-w-64 break-all font-mono text-xs">{sale?.number ? `Venda ${String(sale.number)}` : String(row.operation_reference || "-")}</td>
+            </tr>;
+          })}</tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+function ResultStatement({
+  summary,
+  canViewCosts,
+  canViewCommission,
+}: {
+  summary: Record<string, unknown>;
+  canViewCosts: boolean;
+  canViewCommission: boolean;
+}) {
   const lines: Array<[string, string, boolean?]> = [
     ["Valor bruto a preço de tabela", "gross"],
     ["(-) Descontos promocionais", "promotion_discount"],
@@ -1899,14 +2331,20 @@ function ResultStatement({ summary }: { summary: Record<string, unknown> }) {
     ["Despesas operacionais", "operating_expenses"],
     ["Custo fixo rateado", "fixed_cost"],
   ];
-  const visibleCostDetails = costDetails.filter(
-    ([, key]) => summary[key] !== undefined,
+  const visibleCostDetails = costDetails.filter(([, key]) =>
+    key === "commission"
+      ? canViewCommission && summary[key] !== undefined
+      : canViewCosts && summary[key] !== undefined,
   );
   return (
     <div className="p-5">
       <div className="mx-auto max-w-2xl space-y-1">
         {lines
-          .filter(([, key]) => summary[key] !== undefined)
+          .filter(([, key]) => {
+            if (["costs_and_expenses", "result"].includes(key))
+              return canViewCosts && canViewCommission && summary[key] !== undefined;
+            return summary[key] !== undefined;
+          })
           .map(([label, key, strong]) => (
             <div
               key={key}
@@ -1916,7 +2354,7 @@ function ResultStatement({ summary }: { summary: Record<string, unknown> }) {
               <strong>{formatBRL(String(summary[key] || "0"))}</strong>
             </div>
           ))}
-        {summary.margin !== undefined && summary.margin !== null && (
+        {canViewCosts && canViewCommission && summary.margin !== undefined && summary.margin !== null && (
           <div className="flex justify-between px-4 py-3">
             <span className="text-sm">Margem sobre o Total recebido</span>
             <strong>{formatPercent(summary.margin)}</strong>
@@ -1960,14 +2398,6 @@ type TimeAnalysisRow = {
   sales_revenue: string;
 };
 
-type HeatmapRow = {
-  weekday: number;
-  hour: number;
-  count: number;
-  sales_revenue: string;
-  average: string;
-};
-
 function positiveMoney(value: unknown) {
   const cents = signedMoneyToCents(value);
   return cents !== null && cents > BigInt(0) ? cents : BigInt(0);
@@ -1983,7 +2413,7 @@ function OverviewAnalytics({ summary }: { summary: Record<string, unknown> }) {
     current: [],
     previous: [],
   }) as { current: TimeAnalysisRow[]; previous: TimeAnalysisRow[] };
-  const heatmap = (summary.heatmap || []) as HeatmapRow[];
+  const payments = rows(summary.payment_totals);
   const points = Array.from(
     { length: Math.max(comparison.current.length, comparison.previous.length) },
     (_, index) => ({
@@ -2000,14 +2430,34 @@ function OverviewAnalytics({ summary }: { summary: Record<string, unknown> }) {
         ? previous
         : largest;
   }, BigInt(0));
-  const heatMax = heatmap.reduce((largest, row) => {
-    const value = positiveMoney(row.sales_revenue);
-    return value > largest ? value : largest;
-  }, BigInt(0));
-  const weekdays = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
+  const currentRevenue = signedMoneyToCents(sumReportMoney(comparison.current.map((row) => row.sales_revenue))) || BigInt(0);
+  const previousRevenue = signedMoneyToCents(sumReportMoney(comparison.previous.map((row) => row.sales_revenue))) || BigInt(0);
+  const revenueDelta = currentRevenue - previousRevenue;
+  const revenueDeltaPercent = previousRevenue === BigInt(0)
+    ? null
+    : Number((revenueDelta * BigInt(10_000)) / (previousRevenue < 0 ? -previousRevenue : previousRevenue)) / 100;
+  const currentCount = comparison.current.reduce((total, row) => total + row.count, 0);
+  const previousCount = comparison.previous.reduce((total, row) => total + row.count, 0);
+  const periodComparison = (summary.period_comparison || {}) as Record<string, unknown>;
+  const currentPeriod = (periodComparison.current || {}) as Record<string, unknown>;
+  const previousPeriod = (periodComparison.previous || {}) as Record<string, unknown>;
+  const deltas = (periodComparison.deltas || {}) as Record<string, Record<string, unknown>>;
+  const comparisonMetrics: Array<[string, string, "money" | "number" | "percent"]> = [
+    ["Faturamento bruto", "gross_revenue", "money"],
+    ["Faturamento líquido", "net_revenue", "money"],
+    ["Vendas", "sales_count", "number"],
+    ["Ticket médio", "ticket_average", "money"],
+    ["Total recebido", "total_received", "money"],
+    ["Descontos", "discounts", "money"],
+    ["Taxa de serviço", "service_fee", "money"],
+    ["Cancelamentos", "cancellations", "money"],
+    ["Consumação / cortesias", "consumptions_courtesies", "money"],
+    ["Resultado estimado", "estimated_result", "money"],
+    ["Margem estimada", "estimated_margin", "percent"],
+  ].filter(([, key]) => currentPeriod[key] !== undefined) as Array<[string, string, "money" | "number" | "percent"]>;
 
   return (
-    <div className="grid gap-5 xl:grid-cols-2">
+    <div className="grid gap-5 lg:grid-cols-2">
       <section className="card overflow-hidden">
         <div className="card-header">
           <div>
@@ -2017,8 +2467,13 @@ function OverviewAnalytics({ summary }: { summary: Record<string, unknown> }) {
             </p>
           </div>
         </div>
-        {comparisonMax > BigInt(0) ? (
-          <div className="overflow-x-auto p-5">
+        {comparison.current.length || comparison.previous.length ? (
+          <div className="p-5">
+            <div className="mb-5 grid grid-cols-2 gap-3">
+              <div className="rounded-lg bg-surface-muted p-3"><small className="text-muted">Variação de faturamento</small><strong className={`mt-1 block ${revenueDelta < 0 ? "text-danger" : "text-success-strong"}`}>{revenueDelta < 0 ? "" : "+"}{formatBRL(centsToDecimal(revenueDelta))}</strong>{revenueDeltaPercent !== null && <small className="text-muted">{revenueDeltaPercent > 0 ? "+" : ""}{formatPercent(revenueDeltaPercent)}</small>}</div>
+              <div className="rounded-lg bg-surface-muted p-3"><small className="text-muted">Variação de vendas</small><strong className={`mt-1 block ${currentCount - previousCount < 0 ? "text-danger" : "text-success-strong"}`}>{currentCount - previousCount > 0 ? "+" : ""}{currentCount - previousCount}</strong></div>
+            </div>
+            {comparisonMax > BigInt(0) && <div className="overflow-x-auto">
             <div className="mb-4 flex gap-4 text-[10px] font-semibold text-muted">
               <span className="flex items-center gap-1.5">
                 <i className="size-2.5 rounded-sm bg-chart-1" /> Atual
@@ -2064,6 +2519,7 @@ function OverviewAnalytics({ summary }: { summary: Record<string, unknown> }) {
                 </div>
               ))}
             </div>
+            </div>}
           </div>
         ) : (
           <EmptyState
@@ -2076,63 +2532,28 @@ function OverviewAnalytics({ summary }: { summary: Record<string, unknown> }) {
       <section className="card overflow-hidden">
         <div className="card-header">
           <div>
-            <h2 className="text-sm font-bold">Mapa de calor · dia × hora</h2>
+            <h2 className="text-sm font-bold">Recebimentos por forma</h2>
             <p className="mt-1 text-[11px] text-muted">
-              Concentração do faturamento comercial
+              Distribuição dos pagamentos do período
             </p>
           </div>
         </div>
-        {heatmap.length ? (
-          <div className="overflow-x-auto p-5">
-            <div className="grid min-w-240 grid-cols-[42px_repeat(24,minmax(28px,1fr))] gap-1">
-              <span />
-              {Array.from({ length: 24 }, (_, hour) => (
-                <span key={hour} className="text-center text-[9px] text-muted">
-                  {hour}
-                </span>
-              ))}
-              {weekdays.map((day, weekday) => (
-                <div key={day} className="contents">
-                  <span className="self-center text-[10px] font-bold">
-                    {day}
-                  </span>
-                  {Array.from({ length: 24 }, (_, hour) => {
-                    const cell = heatmap.find(
-                      (row) => row.weekday === weekday && row.hour === hour,
-                    );
-                    const strength = cell
-                      ? chartPercent(
-                          positiveMoney(cell.sales_revenue),
-                          heatMax,
-                          3,
-                        )
-                      : 3;
-                    const title = cell
-                      ? `${formatBRL(cell.sales_revenue)} · ${cell.count} vendas · ticket ${formatBRL(cell.average)}`
-                      : "Sem vendas";
-                    return (
-                      <span
-                        key={hour}
-                        className="aspect-square rounded-sm border border-chart-1/20"
-                        style={{
-                          backgroundColor: `color-mix(in srgb, var(--chart-1) ${strength}%, transparent)`,
-                        }}
-                        title={title}
-                        aria-label={`${day}, ${hour} horas: ${title}`}
-                      />
-                    );
-                  })}
-                </div>
-              ))}
-            </div>
+        {payments.length ? (
+          <div className="divide-y divide-subtle">
+            {payments.map((row) => <div key={String(row.code)} className="flex items-center justify-between gap-4 px-5 py-4 text-sm"><span>{String(row.name || row.code)}</span><strong>{formatBRL(String(row.amount || row.payment_total || "0"))}</strong></div>)}
           </div>
         ) : (
           <EmptyState
-            title="Sem mapa de calor"
-            description="Nenhuma venda no período selecionado."
+            title="Sem recebimentos"
+            description="Nenhum pagamento no período selecionado."
           />
         )}
       </section>
+      {comparisonMetrics.length > 0 && <section className="card overflow-hidden lg:col-span-2"><div className="card-header"><div><h2 className="text-sm font-bold">Indicadores contra o período anterior</h2><p className="mt-1 text-[11px] text-muted">Variação absoluta e percentual para o mesmo intervalo imediatamente anterior.</p></div></div><div className="table-wrap"><table className="data-table"><thead><tr><th>Indicador</th><th>Atual</th><th>Anterior</th><th>Variação</th><th>Variação %</th></tr></thead><tbody>{comparisonMetrics.map(([label, key, format]) => {
+        const delta = deltas[key] || {};
+        const display = (value: unknown) => format === "number" ? String(value ?? 0) : format === "percent" ? formatPercent(value) : formatBRL(String(value || "0"));
+        return <tr key={key}><td><strong>{label}</strong></td><td>{display(currentPeriod[key])}</td><td>{display(previousPeriod[key])}</td><td className={delta.direction === "down" ? "text-danger" : delta.direction === "up" ? "text-success-strong" : ""}>{display(delta.amount)}</td><td>{delta.percentage == null ? "Sem base" : formatPercent(delta.percentage)}</td></tr>;
+      })}</tbody></table></div></section>}
     </div>
   );
 }
@@ -2140,28 +2561,36 @@ function OverviewAnalytics({ summary }: { summary: Record<string, unknown> }) {
 function ReportBody({
   kind,
   data,
+  activeTab,
   canViewSales,
   canViewConsumptions,
   canViewCash,
+  canViewCosts,
+  canViewCommission,
 }: {
   kind: ReportKind;
   data: ReportResponse<Record<string, unknown>>;
+  activeTab: string;
   canViewSales: boolean;
   canViewConsumptions: boolean;
   canViewCash: boolean;
+  canViewCosts: boolean;
+  canViewCommission: boolean;
 }) {
-  if (kind === "products")
+  if (kind === "products") {
+    if (activeTab === "categorias")
+      return <CategoryRanking summary={data.summary} canViewCosts={canViewCosts} />;
+    if (activeTab === "modificadores")
+      return <section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Desempenho por modificador</h2></div><ProductCommercialBreakdown summary={data.summary} kind="modifiers" /></section>;
+    if (activeTab === "promocoes")
+      return <section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Desempenho por promoção</h2></div><ProductCommercialBreakdown summary={data.summary} kind="promotions" /></section>;
     return (
-      <div className="grid gap-5 xl:grid-cols-2">
-        <section className="card overflow-hidden">
-          <div className="card-header">
-            <h2 className="text-sm font-bold">Classificação por produto</h2>
-          </div>
-          <RankingTable kind={kind} summary={data.summary} />
-        </section>
-        <CategoryRanking summary={data.summary} />
-      </div>
+      <section className="card overflow-hidden">
+        <div className="card-header"><h2 className="text-sm font-bold">Desempenho por produto</h2></div>
+        <RankingTable kind={kind} summary={data.summary} canViewCosts={canViewCosts} dataRows={data.results} />
+      </section>
     );
+  }
   if (kind === "receipts")
     return (
       <div className="space-y-5">
@@ -2177,38 +2606,43 @@ function ReportBody({
               </p>
             </div>
           </div>
-          <RankingTable kind={kind} summary={data.summary} />
+          <ReceiptDistributionTable summary={data.summary} />
+        </section>
+        <section className="card overflow-hidden">
+          <div className="card-header"><div><h2 className="text-sm font-bold">Eventos detalhados</h2><p className="mt-1 text-[11px] text-muted">Uma linha por recebimento ou estorno ocorrido no período.</p></div></div>
+          <ReceiptEventsTable data={data} />
         </section>
       </div>
     );
-  if (["operators", "sellers", "commissions"].includes(kind))
+  if (["operators", "sellers"].includes(kind))
     return (
-      <section className="card overflow-hidden">
-        <div className="card-header">
-          <h2 className="text-sm font-bold">Detalhamento</h2>
-        </div>
-        <RankingTable kind={kind} summary={data.summary} />
-      </section>
+      <div className="space-y-5"><section className="card overflow-hidden">
+          <div className="card-header"><h2 className="text-sm font-bold">Desempenho consolidado</h2></div>
+          <RankingTable kind={kind} summary={data.summary} canViewCommission={canViewCommission} />
+        </section><section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Vendas relacionadas</h2><p className="mt-1 text-[11px] text-muted">Use o filtro de {kind === "operators" ? "operador" : "atendente"} para o drill-down individual.</p></div></div><SalesTable kind="sales" data={data} canViewSales={canViewSales} canViewConsumptions={canViewConsumptions} /></section></div>
     );
-  if (kind === "stock-consumption") return <StockConsumption data={data} />;
-  if (kind === "cash")
+  if (kind === "commissions")
+    return <div className="space-y-5"><section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Comissão por atendente</h2></div><RankingTable kind={kind} summary={data.summary} canViewCommission={canViewCommission} /></section><section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Comissão por venda e produto</h2></div><CommissionDetailsTable data={data} /></section></div>;
+  if (kind === "stock-consumption") return <StockConsumption data={data} canViewCosts={canViewCosts} />;
+  if (kind === "inventory-movements")
+    return <section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Movimentações detalhadas</h2><p className="mt-1 text-[11px] text-muted">Transição de saldo e referência operacional.</p></div></div><InventoryMovementsTable data={data} canViewCosts={canViewCosts} /></section>;
+  if (kind === "cash") {
+    if (activeTab === "sessoes")
+      return <section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Sessões de caixa</h2></div><CashTable data={data} canViewCash={canViewCash} /></section>;
+    if (activeTab === "recebimentos")
+      return <section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Recebimentos por forma</h2></div><RankingTable kind="receipts" summary={data.summary} /></section>;
+    if (activeTab === "movimentos")
+      return <section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Entradas e sangrias no período</h2><p className="mt-1 text-[11px] text-muted">Movimentos manuais, motivos e responsáveis.</p></div></div>{data.results.length ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Data/hora</th><th>Tipo</th><th>Caixa</th><th>Sessão</th><th>Responsável</th><th>Motivo</th><th>Valor</th></tr></thead><tbody>{data.results.map((row) => { const register = row.cash_register as Record<string, unknown>; const operator = row.operator as Record<string, unknown>; return <tr key={`cash-movement:${String(row.id)}`}><td>{formatDate(String(row.created_at))}</td><td>{domainLabel(row.movement_type)}</td><td>{String(register?.name || "-")}</td><td>#{String(row.cash_session)}</td><td>{String(operator?.name || "-")}</td><td>{String(row.reason || "-")}</td><td>{formatBRL(String(row.amount || "0"))}</td></tr>; })}</tbody></table></div> : <EmptyState title="Sem movimentos" description="Nenhuma entrada manual ou sangria ocorreu no período." />}</section>;
+    if (activeTab === "diferencas") {
+      const differenceData = { ...data, results: data.results.filter((row) => row.difference != null && hasDelta(row.difference)) };
+      return <section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Sessões com diferença</h2></div><CashTable data={differenceData} canViewCash={canViewCash} /></section>;
+    }
     return (
       <div className="space-y-5">
-        <CashSummarySections summary={data.summary} />
-        <section className="card overflow-hidden">
-          <div className="card-header">
-            <div>
-              <h2 className="text-sm font-bold">Sessões de caixa</h2>
-              <p className="mt-1 text-[11px] text-slate-500">
-                Resumo superior usa eventos do período solicitado; cada linha
-                abaixo mostra valores da sessão completa.
-              </p>
-            </div>
-          </div>
-          <CashTable data={data} canViewCash={canViewCash} />
-        </section>
+        <CashSummarySections summary={data.summary} canViewCommission={canViewCommission} />
       </div>
     );
+  }
   if (kind === "result")
     return (
       <div className="space-y-5">
@@ -2217,7 +2651,7 @@ function ReportBody({
           <div className="card-header">
             <h2 className="text-sm font-bold">Demonstrativo de resultado</h2>
           </div>
-          <ResultStatement summary={data.summary} />
+          <ResultStatement summary={data.summary} canViewCosts={canViewCosts} canViewCommission={canViewCommission} />
         </section>
       </div>
     );
@@ -2235,6 +2669,7 @@ function ReportBody({
                 <thead>
                   <tr>
                     <th>Data</th>
+                    <th>Caixa / sessão</th>
                     <th>Categoria</th>
                     <th>Beneficiário</th>
                     <th>Motivo</th>
@@ -2248,9 +2683,12 @@ function ReportBody({
                       name?: string;
                     } | null;
                     const operator = row.operator as { name?: string };
+                    const register = row.cash_register as { name?: string };
+                    const session = row.cash_session as { id?: number };
                     return (
                       <tr key={`withdrawal:${String(row.id)}`}>
                         <td>{formatDate(String(row.created_at))}</td>
+                        <td>{register?.name || "-"}<small className="block text-muted">Sessão #{String(session?.id || "-")}</small></td>
                         <td>{String(row.category_label)}</td>
                         <td>{beneficiary?.name || "-"}</td>
                         <td>{String(row.reason)}</td>
@@ -2271,6 +2709,8 @@ function ReportBody({
         </section>
       </div>
     );
+  if (kind === "cancellations")
+    return <section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Eventos de cancelamento e estorno</h2><p className="mt-1 text-[11px] text-muted">Vendas canceladas, itens de comandas cancelados e pagamentos estornados.</p></div></div><CancellationEventsTable data={data} /></section>;
   const operations = (
     <section className="card overflow-hidden">
       <div className="card-header">
@@ -2288,24 +2728,24 @@ function ReportBody({
     return (
       <div className="space-y-5">
         <OverviewAnalytics summary={data.summary} />
-        <SalesSections summary={data.summary} />
-        <SalesPaymentTotal summary={data.summary} />
-        {operations}
+        <FinancialBridge summary={data.summary} title="Composição do total recebido" />
       </div>
     );
-  if (kind === "sales")
-    return (
-      <div className="space-y-5">
-        <SalesSections summary={data.summary} />
-        <SalesPaymentTotal summary={data.summary} />
-        {operations}
-      </div>
-    );
+  if (kind === "sales") {
+    if (activeTab === "itens") return <section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Itens vendidos</h2></div><SalesItemsTable data={data} canViewCosts={canViewCosts} /></section>;
+    if (activeTab === "pagamentos") return <section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Pagamentos das vendas</h2></div><SalesPaymentsTable data={data} /></section>;
+    if (activeTab === "vendas") return operations;
+    if (activeTab === "cancelamentos") {
+      const cancelledData = { ...data, results: data.results.filter((row) => row.event_type === "reversal" || row.status === "cancelled") };
+      return <section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Cancelamentos no recorte carregado</h2></div><SalesTable kind="cancellations" data={cancelledData} canViewSales={canViewSales} canViewConsumptions={canViewConsumptions} /></section>;
+    }
+    return <div className="space-y-5"><FinancialBridge summary={data.summary} /><SalesPaymentTotal summary={data.summary} /></div>;
+  }
   if (kind === "discounts")
     return (
       <div className="space-y-5">
         <DiscountReconstruction summary={data.summary} />
-        {operations}
+        <section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Descontos e autorizações detalhados</h2></div><DiscountEventsTable data={data} /></section>
       </div>
     );
   if (kind === "consumptions")
@@ -2313,7 +2753,7 @@ function ReportBody({
       <div className="space-y-5">
         <ConsumptionFinancials summary={data.summary} />
         <ConsumptionGroups summary={data.summary} />
-        {operations}
+        <section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Consumação e cortesias detalhadas</h2></div><ConsumptionDetailsTable data={data} canViewCosts={canViewCosts} /></section>
       </div>
     );
   return operations;
@@ -2332,6 +2772,7 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
   const [appliedFilters, setAppliedFilters] = useState<Record<string, string>>(
     {},
   );
+  const [activeTab, setActiveTab] = useState("");
   const [options, setOptions] = useState<ReportsOptions | null>(null);
   const [data, setData] = useState<ReportResponse<
     Record<string, unknown>
@@ -2368,11 +2809,14 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
         );
         setPrices(null);
         setAppliedFilters(nextFilters);
+        const tab = new URLSearchParams(window.location.search).get("tab");
+        if (tab) query.set("tab", tab);
         window.history.replaceState(
           null,
           "",
           `${window.location.pathname}${query.size ? `?${query}` : ""}`,
         );
+        query.delete("tab");
         const result = await http.get<ProductPriceComparison>(
           `products/price-comparison/${query.size ? `?${query}` : ""}`,
         );
@@ -2385,10 +2829,13 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
       setData(null);
       setAppliedPeriod(nextPeriod);
       setAppliedFilters(nextFilters);
+      const urlQuery = new URLSearchParams(query);
+      const tab = new URLSearchParams(window.location.search).get("tab");
+      if (tab) urlQuery.set("tab", tab);
       window.history.replaceState(
         null,
         "",
-        `${window.location.pathname}?${query}`,
+        `${window.location.pathname}?${urlQuery}`,
       );
       const result = await http.get<ReportResponse<Record<string, unknown>>>(
         `reports/${config.endpoint}/?${query}`,
@@ -2428,10 +2875,29 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
     }
   }
 
+  async function loadPricePage(path: string, token = context.current) {
+    const currentRequest = ++requestId.current;
+    setLoading(true);
+    setPrices(null);
+    setError("");
+    try {
+      const result = await http.get<ProductPriceComparison>(path);
+      if (context.current === token && requestId.current === currentRequest)
+        setPrices(result);
+    } catch {
+      if (context.current === token && requestId.current === currentRequest)
+        setError("Não foi possível trocar a página.");
+    } finally {
+      if (context.current === token && requestId.current === currentRequest)
+        setLoading(false);
+    }
+  }
+
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
     const start = query.get("start_datetime");
     const end = query.get("end_datetime");
+    setActiveTab(query.get("tab") || "");
     const nextPeriod = start && end ? { start, end } : initialPeriod();
     const nextFilters = Object.fromEntries(
       [...query.entries()].filter(
@@ -2444,9 +2910,13 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
             "export",
             "page",
             "page_size",
+            "tab",
           ].includes(key),
       ),
     );
+    if (kind === "cash" && query.get("tab") === "movimentos") {
+      nextFilters.section = "movements";
+    }
     setData(null);
     setPrices(null);
     setPeriod(nextPeriod);
@@ -2476,9 +2946,12 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
 
   function clearReportFilters() {
     const resetPeriod = initialPeriod();
+    const resetFilters: Record<string, string> = kind === "cash" && activeTab === "movimentos"
+      ? { section: "movements" }
+      : {};
     setPeriod(resetPeriod);
-    setFilters({});
-    void load(resetPeriod, {});
+    setFilters(resetFilters);
+    void load(resetPeriod, resetFilters);
   }
 
   if (!allowed)
@@ -2498,8 +2971,29 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
     "discounts",
     "consumptions",
     "stock-consumption",
+    "inventory-movements",
     "cancellations",
   ];
+  const canViewCosts = hasPermission(permissions.viewStockCosts);
+  const canViewCommission = hasPermission(permissions.viewCommission);
+  const tabs = reportTabs(kind, data?.summary || null, canViewCosts);
+  const selectedTab = tabs.some((tab) => tab.value === activeTab)
+    ? activeTab
+    : tabs[0]?.value || "";
+
+  function changeTab(tab: string) {
+    setActiveTab(tab);
+    const query = new URLSearchParams(window.location.search);
+    query.set("tab", tab);
+    window.history.replaceState(null, "", `${window.location.pathname}?${query}`);
+    if (kind === "cash") {
+      const nextFilters = { ...filters };
+      if (tab === "movimentos") nextFilters.section = "movements";
+      else delete nextFilters.section;
+      setFilters(nextFilters);
+      void load(period, nextFilters);
+    }
+  }
   return (
     <>
       <PageHeader
@@ -2690,6 +3184,16 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
                   </Select>
                 </Field>
               )}
+              {kind === "sales" && (
+                <Field label="Cliente">
+                  <Select value={filters.customer || ""} onChange={(event) => setFilters((current) => ({ ...current, customer: event.target.value }))}>
+                    <option value="">Todos</option>
+                    {options?.customers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                  </Select>
+                </Field>
+              )}
+              {kind === "sales" && <Field label="Valor mínimo"><Input type="number" min="0" step="0.01" value={filters.minimum_value || ""} onChange={(event) => setFilters((current) => ({ ...current, minimum_value: event.target.value }))} /></Field>}
+              {kind === "sales" && <Field label="Valor máximo"><Input type="number" min="0" step="0.01" value={filters.maximum_value || ""} onChange={(event) => setFilters((current) => ({ ...current, maximum_value: event.target.value }))} /></Field>}
               {[
                 "sales",
                 "overview",
@@ -3013,15 +3517,29 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
                         <td>{formatBRL(product.default_price)}</td>
                         {prices.branches.map((branch) => (
                           <td key={branch.id}>
-                            {formatBRL(
-                              product.prices[String(branch.id)] ||
-                                product.default_price,
-                            )}
-                            <small className="block text-slate-500">
-                              {product.prices[String(branch.id)]
-                                ? "Preço da filial"
-                                : "Preço padrão"}
-                            </small>
+                            {(() => {
+                              const key = String(branch.id);
+                              const cell = product.cells?.[key];
+                              const state = cell
+                                ? {
+                                    kind: cell.state,
+                                    price: cell.effective_price,
+                                    detail: cell.label,
+                                  }
+                                : branchPriceState(
+                                    product.availability[key],
+                                    product.prices[key],
+                                    product.default_price,
+                                  );
+                              return state.price == null ? (
+                                <strong className="text-muted">Não disponível</strong>
+                              ) : (
+                                <>
+                                  {formatBRL(state.price)}
+                                  <small className="block text-slate-500">{state.detail}</small>
+                                </>
+                              );
+                            })()}
                           </td>
                         ))}
                       </tr>
@@ -3034,6 +3552,16 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
                 title="Sem produtos"
                 description="Nenhum preço disponível para os filtros selecionados."
               />
+            )}
+            {prices && (prices.count || 0) > prices.products.length && (
+              <div className="border-t border-subtle p-4">
+                <Pagination
+                  count={prices.count || 0}
+                  next={prices.next || null}
+                  previous={prices.previous || null}
+                  onPage={(path) => void loadPricePage(path)}
+                />
+              </div>
             )}
           </section>
         ) : loading ? (
@@ -3049,8 +3577,9 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
           </section>
         ) : (
           <>
+            <ReportTabs tabs={tabs} active={selectedTab} onChange={changeTab} />
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              {reportKpis(kind, data.summary).map(([label, value, format]) => (
+              {reportKpis(kind, data.summary, canViewCosts, canViewCommission).map(([label, value, format]) => (
                 <Kpi key={label} label={label} value={value} format={format} />
               ))}
             </div>
@@ -3058,6 +3587,7 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
             <ReportBody
               kind={kind}
               data={data}
+              activeTab={selectedTab}
               canViewSales={
                 hasPermission(permissions.viewSale) ||
                 hasPermission(permissions.cancelSale)
@@ -3067,6 +3597,8 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
                 hasPermission(permissions.cancelConsumption)
               }
               canViewCash={hasPermission(permissions.viewCashRegister)}
+              canViewCosts={canViewCosts}
+              canViewCommission={canViewCommission}
             />
             {data.count > data.results.length && (
               <Pagination

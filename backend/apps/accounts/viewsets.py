@@ -263,6 +263,9 @@ class UserViewSet(viewsets.ModelViewSet):
                         request.user.is_superuser
                         or (
                             profile.company_id in manageable_company_ids
+                            and company_codes <= actor_company_codes.get(
+                                profile.company_id, set()
+                            )
                             and operating_codes <= actor_branch_codes[branch.pk]
                         )
                     )
@@ -321,9 +324,20 @@ class UserViewSet(viewsets.ModelViewSet):
     @transaction.atomic
     def perform_create(self, serializer):
         user = serializer.save()
+        company_id = self.context_company_id()
         after = model_snapshot(user, self.audit_fields)
-        after.update(self.access_snapshot(user))
-        self.audit_user(user, 'user.create', after=after)
+        after.update(self.access_snapshot(
+            user, company_id if getattr(serializer, 'linked_existing', False) else None
+        ))
+        self.audit_user(
+            user,
+            'user.company_link' if getattr(serializer, 'linked_existing', False) else 'user.create',
+            after=after,
+            metadata={
+                'identity_reused': bool(getattr(serializer, 'linked_existing', False)),
+                'credential_changed': False,
+            },
+        )
 
     @transaction.atomic
     def perform_update(self, serializer):
@@ -398,31 +412,6 @@ class UserViewSet(viewsets.ModelViewSet):
             after={'membership_active': False, **snapshot},
         )
         return Response(self.get_serializer(user).data)
-
-    @action(detail=True, methods=['post'], url_path='reset-password')
-    @transaction.atomic
-    def reset_password(self, request, pk=None):
-        user = self.get_object()
-        if user.is_superuser and not request.user.is_superuser:
-            raise PermissionDenied('Você não pode alterar um superusuário.')
-        new_password = request.data.get('new_password', '')
-        if not new_password:
-            raise ValidationError({'new_password': 'A nova senha é obrigatória.'})
-        from django.contrib.auth.password_validation import validate_password
-        try:
-            validate_password(new_password, user=user)
-        except Exception as error:
-            raise ValidationError({'new_password': list(error.messages)}) from error
-        user.set_password(new_password)
-        user.save(update_fields=['password', 'updated_at'])
-        company_id = self.context_company_id()
-        snapshot = self.access_snapshot(user, company_id)
-        self.audit_user(
-            user, 'user.reset_password',
-            before=snapshot, after=snapshot,
-            metadata={'source': 'admin_reset'},
-        )
-        return Response({'detail': 'Senha redefinida com sucesso.'})
 
     @action(detail=True, methods=['post'])
     @transaction.atomic

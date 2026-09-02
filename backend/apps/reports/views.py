@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from django.db.models import Count, DecimalField, Q, Sum
@@ -20,9 +21,13 @@ from apps.cash.models import (
     CashMovement, CashMovementType, CashRegister, CashSession, WithdrawalCategory,
 )
 from apps.cash.services import build_session_operational_summary
+from apps.companies.models import Customer
 from apps.companies.rbac import OPERATING_PERMISSION_CODES
 from apps.companies.selectors import branch_permission_codes, eligible_branch_users, user_has_company_permission
-from apps.commands.models import Command, CommandStatus
+from apps.commands.models import (
+    Command, CommandPayment, CommandPaymentStatus, CommandStatus, OrderItem,
+    OrderItemStatus,
+)
 from apps.inventory.content import exact_sum
 from apps.inventory.models import MovementType
 from apps.products.models import Category, Product
@@ -37,6 +42,7 @@ from .selectors import (
     commercial_summary,
     cancellation_summary,
     consumption_groupings,
+    consumption_item_groupings,
     consumption_summary,
     current_cash_sessions,
     dashboard_time_analysis,
@@ -51,6 +57,9 @@ from .selectors import (
     hourly_sales,
     operational_result,
     period_end_exclusive,
+    product_commercial_breakdowns,
+    receipt_event_rows,
+    receipt_event_summary,
     receipt_summary,
     sale_rankings,
     sale_rows,
@@ -59,11 +68,14 @@ from .selectors import (
 )
 from .serializers import (
     CashReportQuerySerializer,
+    CashMovementReportSerializer,
     CashSessionReportSerializer,
+    CancellationReportSerializer,
     ConsumptionsReportQuerySerializer,
     InventoryMovementReportSerializer,
     InventoryReportQuerySerializer,
     OperationalResultQuerySerializer,
+    PaymentEventReportSerializer,
     ReportSaleSerializer,
     SalesReportQuerySerializer,
     StockConsumptionMovementSerializer,
@@ -98,11 +110,92 @@ def payment_distribution(rows, total_received):
     return result
 
 
+def overview_comparison_data(request, *, start, end, filters):
+    def period_values(period_start, period_end):
+        sales, reversals = period_event_sales(
+            branch=request.branch_context, start=period_start, end=period_end,
+            filters=filters, operation_types=(OperationType.SALE,),
+        )
+        commercial, _ = commercial_summary(sales, filters, reversals=reversals)
+        _rows, cancellations = cancellation_summary(
+            branch=request.branch_context, start=period_start, end=period_end,
+            filters=filters,
+        )
+        values = {
+            'gross_revenue': commercial['gross'],
+            'net_revenue': commercial['sales_revenue'],
+            'sales_count': Decimal(commercial['count']),
+            'ticket_average': commercial['average'],
+            'total_received': commercial['total_received'],
+            'discounts': commercial['total_discount'],
+            'service_fee': commercial['service_fee'],
+            'cancellations': cancellations['value'],
+        }
+        if any(user_has_code(request, code) for code in (
+            'reports.view_consumptions', 'sales.view_consumption',
+        )):
+            consumptions, consumption_reversals = period_event_sales(
+                branch=request.branch_context, start=period_start, end=period_end,
+                filters=filters, operation_types=(OperationType.CONSUMPTION,),
+            )
+            consumption = consumption_summary(
+                consumptions, filters=filters, reversals=consumption_reversals,
+            )
+            values['consumptions_courtesies'] = consumption['subsidy']
+        can_view_result = all((
+            user_has_code(request, 'reports.view_operational_result'),
+            user_has_code(request, 'inventory.view_stock_costs'),
+            user_has_code(request, 'commissions.view'),
+        ))
+        if can_view_result:
+            result_sales = filtered_sales(
+                branch=request.branch_context, start=period_start, end=period_end,
+                operation_type=OperationType.SALE, filters=filters,
+            )
+            statement = operational_result(
+                branch=request.branch_context, start=period_start, end=period_end,
+                sales=result_sales, filters=filters,
+            )
+            values['estimated_result'] = statement['estimated_result']
+            values['estimated_margin'] = statement['margin']
+        return values
+
+    current_end = period_end_exclusive(end)
+    duration = current_end - start
+    previous_start = start - duration
+    previous_end = start - timedelta(microseconds=1)
+    current = period_values(start, end)
+    previous = period_values(previous_start, previous_end)
+    deltas = {}
+    for key, current_value in current.items():
+        previous_value = previous.get(key, Decimal('0.00'))
+        difference = current_value - previous_value
+        percentage = (
+            difference * Decimal('100') / abs(previous_value)
+            if previous_value else None
+        )
+        deltas[key] = {
+            'amount': decimal_string(difference),
+            'percentage': decimal_string(percentage) if percentage is not None else None,
+            'direction': 'up' if difference > 0 else 'down' if difference < 0 else 'stable',
+        }
+    serialize = lambda values: {
+        key: (int(value) if key == 'sales_count' else decimal_string(value))
+        for key, value in values.items()
+    }
+    return {
+        'current_period': canonical_datetime_range(start, end),
+        'previous_period': canonical_datetime_range(previous_start, previous_end),
+        'current': serialize(current),
+        'previous': serialize(previous),
+        'deltas': deltas,
+    }
+
+
 def operational_result_data(request, summary, *, extra_keys=()):
     keys = (
         'sales_revenue', 'consumption_charged', 'effective_revenue', 'service_fee',
         'total_received', 'payment_total', 'reconciliation_delta',
-        'costs_and_expenses', 'estimated_result', 'result', 'margin',
         'sales_revenue_inflows', 'sales_revenue_reversals',
         'consumption_charged_inflows', 'consumption_charged_reversals',
         'service_fee_inflows', 'service_fee_reversals',
@@ -136,7 +229,10 @@ def operational_result_data(request, summary, *, extra_keys=()):
             if key in summary:
                 data[key] = decimal_string(summary[key])
     if can_view_commission and can_view_costs:
-        for key in ('operating_expenses', 'fixed_cost'):
+        for key in (
+            'operating_expenses', 'fixed_cost', 'costs_and_expenses',
+            'estimated_result', 'result', 'margin',
+        ):
             if key in summary:
                 data[key] = decimal_string(summary[key])
     return data
@@ -274,6 +370,14 @@ class ReportsOptionsView(APIView):
                 }
                 for user in users
             ],
+            'customers': [
+                {'id': customer.pk, 'name': customer.name}
+                for customer in (
+                    Customer.objects.filter(
+                        company_id=branch.company_id, status='active',
+                    ).order_by('name', 'id') if can_view_sales_data else []
+                )
+            ],
             'products': [
                 {
                     'id': product.pk,
@@ -344,10 +448,13 @@ class BaseReportView(APIView):
     def serialize_rows(self, rows, request):
         return self.row_serializer_class(rows, many=True, context={'request': request}).data
 
+    def export_headers(self, request):
+        return self.csv_headers
+
     def respond(self, request, *, rows, period, summary):
         if request.query_params.get('export') in ('csv', 'xlsx', 'pdf'):
             data = self.serialize_rows(rows, request)
-            headers = self.csv_headers
+            headers = self.export_headers(request)
             if not user_has_code(request, 'commissions.view'):
                 headers = tuple(
                     header for header in headers
@@ -756,8 +863,17 @@ class SalesReportView(BaseReportView):
         'items', 'payments',
     )
 
+    def serialize_rows(self, rows, request):
+        scope = request.query_params.get('scope', 'sales')
+        if scope == 'receipts':
+            return PaymentEventReportSerializer(rows, many=True).data
+        if scope == 'products':
+            return rows
+        return super().serialize_rows(rows, request)
+
     def get(self, request):
         scope = request.query_params.get('scope', 'sales')
+        receipt_detail_rows = []
         filters, start, end = self.parse_query(request)
         can_view_team = user_has_code(request, 'reports.view_team')
         can_view_sellers = can_view_team or (
@@ -788,6 +904,9 @@ class SalesReportView(BaseReportView):
             sales_graph, limit=None if scope == 'products' else 10, filters=filters,
             reversals=sales_reversals,
         )
+        modifier_rows, promotion_rows = product_commercial_breakdowns(
+            sales_graph, filters, sales_reversals,
+        )
         operator_groups = (
             sale_user_groups(
                 sales_graph, 'created_by', filters, sales_reversals,
@@ -798,6 +917,77 @@ class SalesReportView(BaseReportView):
                 sales_graph, 'seller_user', filters, sales_reversals,
             ) if can_view_sellers else []
         )
+        if can_view_team:
+            operator_by_id = {
+                row['user']['id']: row for row in operator_groups
+            }
+            sessions_by_operator = {}
+            for session in filtered_cash_sessions(
+                branch=request.branch_context, start=start, end=end, filters={},
+            ):
+                metrics = sessions_by_operator.setdefault(session.opened_by_id, {
+                    'cash_session_count': 0,
+                    'cash_difference': Decimal('0.00'),
+                })
+                metrics['cash_session_count'] += 1
+                metrics['cash_difference'] += session.closing_difference or Decimal('0.00')
+            authorization_counts = {}
+            for sale in sales_graph:
+                if sale.discount_approved_by_id:
+                    authorization_counts[sale.discount_approved_by_id] = (
+                        authorization_counts.get(sale.discount_approved_by_id, 0) + 1
+                    )
+                for item in sale.items.all():
+                    if item.discount_approved_by_id:
+                        authorization_counts[item.discount_approved_by_id] = (
+                            authorization_counts.get(item.discount_approved_by_id, 0) + 1
+                        )
+            cancellation_actor_counts = {}
+            for sale in sales_reversals:
+                if sale.cancelled_by_id:
+                    cancellation_actor_counts[sale.cancelled_by_id] = (
+                        cancellation_actor_counts.get(sale.cancelled_by_id, 0) + 1
+                    )
+            command_reversals = CommandPayment.objects.filter(
+                branch=request.branch_context,
+                status=CommandPaymentStatus.REVERSED,
+                created_at__gte=start,
+                created_at__lt=period_end_exclusive(end),
+            ).values('operator_id').annotate(count=Count('id'))
+            reversal_counts = {
+                row['operator_id']: row['count'] for row in command_reversals
+            }
+            activity_ids = (
+                set(sessions_by_operator) | set(authorization_counts)
+                | set(cancellation_actor_counts) | set(reversal_counts)
+            )
+            missing_users = User.objects.filter(
+                pk__in=activity_ids - set(operator_by_id)
+            )
+            for user in missing_users:
+                row = {
+                    'user': {'id': user.pk, 'name': readable_user_name(user)},
+                    'count': 0,
+                    'inflow_count': 0,
+                    'reversal_count': 0,
+                    'cancellation_count': 0,
+                    'service_fee_waiver_count': 0,
+                }
+                operator_groups.append(row)
+                operator_by_id[user.pk] = row
+            for user_id, row in operator_by_id.items():
+                row.update(sessions_by_operator.get(user_id, {
+                    'cash_session_count': 0, 'cash_difference': Decimal('0.00'),
+                }))
+                row['authorized_discount_count'] = authorization_counts.get(user_id, 0)
+                row['actor_cancellation_count'] = cancellation_actor_counts.get(user_id, 0)
+                row['payment_reversal_count'] = reversal_counts.get(user_id, 0)
+            operator_groups.sort(
+                key=lambda row: (
+                    -row.get('total_received', Decimal('0.00')),
+                    row['user']['name'],
+                )
+            )
         sales_receipts = receipt_summary(
             branch=request.branch_context, start=start, end=end, filters=filters,
             inflow_sales=sales_graph, operation_types=(OperationType.SALE,),
@@ -870,21 +1060,24 @@ class SalesReportView(BaseReportView):
                 }
                 for row in sales_receipts['payment_methods']
             ],
-            'product_ranking': [
+            'product_ranking': [_ranking_json(row) for row in products],
+            'category_ranking': [_ranking_json(row) for row in categories],
+            'modifier_ranking': [
                 {
-                    **row, 'quantity': decimal_string(row['quantity'], 3),
-                    'sales_revenue': decimal_string(row['sales_revenue']),
-                    'revenue': decimal_string(row['sales_revenue']),
+                    **row,
+                    'quantity': decimal_string(row['quantity'], 3),
+                    'additional_revenue': decimal_string(row['additional_revenue']),
+                    'ticket_average': decimal_string(row['ticket_average']),
                 }
-                for row in products
+                for row in modifier_rows
             ],
-            'category_ranking': [
+            'promotion_ranking': [
                 {
-                    **row, 'quantity': decimal_string(row['quantity'], 3),
-                    'sales_revenue': decimal_string(row['sales_revenue']),
-                    'revenue': decimal_string(row['sales_revenue']),
+                    **row,
+                    'discount': decimal_string(row['discount']),
+                    'net_revenue': decimal_string(row['net_revenue']),
                 }
-                for row in categories
+                for row in promotion_rows
             ],
             'operator_groups': [_group_json(row) for row in operator_groups],
             'seller_groups': [_group_json(row) for row in seller_groups],
@@ -925,23 +1118,56 @@ class SalesReportView(BaseReportView):
                     for row in previous_comparison
                 ],
             }
+            result['period_comparison'] = overview_comparison_data(
+                request, start=start, end=end, filters=filters,
+            )
+            result['kpis'] = result['period_comparison']['current']
+        if scope == 'products':
+            result['quantity'] = decimal_string(sum(
+                (row['quantity'] for row in products), Decimal('0.000')
+            ), 3)
+            result['product_count'] = len(products)
+            result['category_count'] = len(categories)
+            result['has_costs'] = user_has_code(
+                request, 'inventory.view_stock_costs'
+            )
+            result['discounts'] = decimal_string(sum(
+                (row['discounts'] for row in products), Decimal('0.00')
+            ))
+            if user_has_code(request, 'inventory.view_stock_costs'):
+                result['cost'] = decimal_string(sum(
+                    (row['cost'] for row in products), Decimal('0.00')
+                ))
+                result['margin'] = decimal_string(sum(
+                    (row['margin'] for row in products), Decimal('0.00')
+                ))
+            else:
+                for row in result['product_ranking'] + result['category_ranking']:
+                    for key in ('cost', 'margin', 'margin_percent'):
+                        row.pop(key, None)
         if scope == 'discounts':
             item_filters = {
                 key: filters[key] for key in ('category', 'product') if filters.get(key)
             }
             discounted_graph = [
                 sale for sale in sales_graph
-                if _scoped_sale_values(sale, item_filters)['total_discount'] > 0
+                if (
+                    _scoped_sale_values(sale, item_filters)['total_discount'] > 0
+                    or sale.service_fee_waived
+                )
             ]
             discounted_reversals = [
                 sale for sale in sales_reversals
-                if _scoped_sale_values(sale, item_filters)['total_discount'] > 0
+                if (
+                    _scoped_sale_values(sale, item_filters)['total_discount'] > 0
+                    or sale.service_fee_waived
+                )
             ]
             discount_summary, _ = commercial_summary(
                 discounted_graph, filters, reversals=discounted_reversals,
             )
             result.update({
-                'count': discount_summary['discounted_count'],
+                'count': len(discounted_graph) - len(discounted_reversals),
                 'inflow_count': discount_summary['inflow_count'],
                 'reversal_count': discount_summary['reversal_count'],
                 'gross': decimal_string(discount_summary['gross']),
@@ -971,11 +1197,22 @@ class SalesReportView(BaseReportView):
                 'received_reconstruction_delta': decimal_string(
                     discount_summary['received_reconstruction_delta']
                 ),
+                'service_fee_waiver_count': sum(
+                    sale.service_fee_waived for sale in discounted_graph
+                ) - sum(sale.service_fee_waived for sale in discounted_reversals),
+                'discount_average': decimal_string(
+                    discount_summary['total_discount'] / discount_summary['discounted_count']
+                    if discount_summary['discounted_count'] else Decimal('0.00')
+                ),
             })
         if scope == 'receipts':
-            receipts = receipt_summary(
+            reconciliation = receipt_summary(
                 branch=request.branch_context, start=start, end=end, filters=filters,
             )
+            receipt_detail_rows = receipt_event_rows(
+                branch=request.branch_context, start=start, end=end, filters=filters,
+            )
+            receipts = receipt_event_summary(receipt_detail_rows)
             result = {
                 key: (
                     decimal_string(value) if isinstance(value, Decimal) else value
@@ -983,27 +1220,36 @@ class SalesReportView(BaseReportView):
                 for key, value in receipts.items()
                 if key != 'payment_methods'
             }
+            result['reconciliation'] = {
+                key: decimal_string(reconciliation[key])
+                for key in (
+                    'sales_revenue', 'consumption_charged', 'effective_revenue',
+                    'service_fee', 'total_received', 'payment_total',
+                    'reconciliation_delta',
+                )
+            }
+            for key in (
+                'sales_revenue', 'consumption_charged', 'effective_revenue',
+                'service_fee',
+            ):
+                result[key] = decimal_string(reconciliation[key])
+            result['reconciliation_delta'] = decimal_string(
+                receipts['payment_total'] - reconciliation['total_received']
+            )
             result['payment_totals'] = [
                 {
                     **row,
                     **{
                         key: decimal_string(row[key])
                         for key in (
-                            'commercial_received', 'consumption_received',
-                            'gross_received', 'reversals', 'net_received',
-                            'sales_payment_total', 'consumption_payment_total',
-                            'payment_total_before_reversals',
-                            'reversal_payment_total', 'payment_total',
+                            'applied_total', 'received_total', 'change_total',
+                            'reversals', 'percentage',
                         )
                     },
                 }
                 for row in receipts['payment_methods']
             ]
-            if result.get('filtered_payment_method'):
-                for key in ('subtotal', 'payment_total'):
-                    result['filtered_payment_method'][key] = decimal_string(
-                        result['filtered_payment_method'][key]
-                    )
+            result['summary_basis'] = 'payment_occurred_at'
         if not user_has_code(request, 'commissions.view'):
             for key in (
                 'commission', 'commission_sale_count', 'commission_attendant_count',
@@ -1017,7 +1263,11 @@ class SalesReportView(BaseReportView):
         if not can_view_sellers:
             result.pop('seller_groups', None)
         summary_keys = {
-            'products': {'product_ranking', 'category_ranking'},
+            'products': {
+                'product_ranking', 'category_ranking', 'modifier_ranking',
+                'promotion_ranking', 'quantity', 'product_count', 'category_count',
+                'has_costs', 'sales_revenue', 'discounts', 'cost', 'margin',
+            },
             'receipts': set(result),
             'operators': {'operator_groups'},
             'sellers': {'seller_groups'},
@@ -1034,6 +1284,8 @@ class SalesReportView(BaseReportView):
                 'total_received', 'payment_total', 'reconciliation_delta',
                 'discount_reconstruction_delta', 'inflow_count', 'reversal_count',
                 'received_reconstruction_delta',
+                'service_fee_waiver_count',
+                'discount_average',
             },
         }.get(scope)
         if summary_keys is not None:
@@ -1047,6 +1299,12 @@ class SalesReportView(BaseReportView):
                         'internal_code': row['internal_code'],
                         'quantity': row['quantity'],
                         'sales_revenue': row['sales_revenue'],
+                        'discounts': row['discounts'],
+                        'sale_count': row['sale_count'],
+                        'ticket_average': row['ticket_average'],
+                        'cost': row.get('cost'),
+                        'margin': row.get('margin'),
+                        'margin_percent': row.get('margin_percent'),
                     }
                     for row in result.get('product_ranking', [])
                 ] + [
@@ -1056,50 +1314,34 @@ class SalesReportView(BaseReportView):
                         'internal_code': '',
                         'quantity': row['quantity'],
                         'sales_revenue': row['sales_revenue'],
+                        'discounts': row['discounts'],
+                        'sale_count': row['sale_count'],
+                        'ticket_average': row['ticket_average'],
+                        'cost': row.get('cost'),
+                        'margin': row.get('margin'),
+                        'margin_percent': row.get('margin_percent'),
                     }
                     for row in result.get('category_ranking', [])
                 ]
                 return self.export_response(
                     request, filename='relatorio-produtos.csv', title='Relatório de produtos',
-                    headers=('ranking_type', 'name', 'internal_code', 'quantity', 'sales_revenue'),
+                    headers=(
+                        'ranking_type', 'name', 'internal_code', 'quantity',
+                        'sale_count', 'sales_revenue', 'discounts', 'ticket_average',
+                    ) + ((
+                        'cost', 'margin', 'margin_percent',
+                    ) if user_has_code(request, 'inventory.view_stock_costs') else ()),
                     rows=ranking_rows, period=canonical_datetime_range(start, end), summary=result,
                 )
             if scope == 'receipts':
-                filtered_method = result.get('filtered_payment_method') or {}
-                export_rows = [{
-                    'row_type': 'reconciliation',
-                    'name': 'Reconciliação do período',
-                    'sales_revenue': result.get('sales_revenue'),
-                    'consumption_charged': result.get('consumption_charged'),
-                    'effective_revenue': result.get('effective_revenue'),
-                    'service_fee': result.get('service_fee'),
-                    'total_received': result.get('total_received'),
-                    'payment_total': result.get('payment_total'),
-                    'reconciliation_delta': result.get('reconciliation_delta'),
-                }] + [
-                    {
-                        'row_type': 'payment_method',
-                        **row,
-                        'is_filtered_method': (
-                            row['code'] == filtered_method.get('code')
-                            if filtered_method else ''
-                        ),
-                        'filtered_subtotal_is_integral_revenue': (
-                            False if row['code'] == filtered_method.get('code') else ''
-                        ),
-                    }
-                    for row in result.get('payment_totals', [])
-                ]
+                export_rows = self.serialize_rows(receipt_detail_rows, request)
                 return self.export_response(
                     request, filename='relatorio-recebimentos.csv', title='Relatório de recebimentos',
                     headers=(
-                        'row_type', 'code', 'name', 'sales_revenue',
-                        'consumption_charged', 'effective_revenue', 'service_fee',
-                        'total_received', 'reconciliation_delta',
-                        'sales_payment_total',
-                        'consumption_payment_total', 'payment_total_before_reversals',
-                        'reversal_payment_total', 'payment_total', 'is_filtered_method',
-                        'filtered_subtotal_is_integral_revenue',
+                        'event_id', 'occurred_at', 'sale', 'command', 'payment_method',
+                        'applied_amount', 'received_amount', 'change_amount', 'origin',
+                        'operator', 'cash_session', 'cash_register', 'status',
+                        'reversal_reason',
                     ),
                     rows=export_rows, period=canonical_datetime_range(start, end), summary=result,
                 )
@@ -1117,7 +1359,17 @@ class SalesReportView(BaseReportView):
                     'cancellation_count', 'cancellation_value',
                 )
                 if scope == 'commissions':
-                    headers += ('commission',)
+                    headers += ('commission_base', 'commission_rate', 'commission')
+                elif scope == 'sellers':
+                    headers += (
+                        'item_quantity', 'discounts', 'service_fee_waiver_count',
+                    )
+                elif scope == 'operators':
+                    headers += (
+                        'cash_session_count', 'authorized_discount_count',
+                        'actor_cancellation_count', 'payment_reversal_count',
+                        'cash_difference',
+                    )
                 return self.export_response(
                     request, filename=f'relatorio-{scope}.csv', title=f'Relatório {scope}',
                     headers=headers, rows=group_rows, period=canonical_datetime_range(start, end), summary=result,
@@ -1125,10 +1377,20 @@ class SalesReportView(BaseReportView):
         if scope == 'discounts':
             detail_rows = event_rows(discounted_graph, discounted_reversals)
         else:
-            detail_rows = (
-                event_rows(sales_graph, sales_reversals)
-                if scope in ('overview', 'sales') else []
-            )
+            detail_rows = list(sale_rows(filtered_sales(
+                branch=request.branch_context, start=start, end=end,
+                operation_type=OperationType.SALE, filters=filters,
+            ))) if scope in (
+                'overview', 'sales', 'operators', 'sellers', 'commissions',
+            ) else []
+            if scope == 'commissions':
+                detail_rows = [
+                    sale for sale in detail_rows if sale.commission_amount > 0
+                ]
+        if scope == 'receipts':
+            detail_rows = receipt_detail_rows
+        if scope == 'products':
+            detail_rows = result.pop('product_ranking', [])
         return self.respond(
             request,
             rows=detail_rows,
@@ -1140,9 +1402,13 @@ class SalesReportView(BaseReportView):
 class CancellationsReportView(BaseReportView):
     required_permission = 'reports.view_cancellations'
     query_serializer_class = SalesReportQuerySerializer
-    row_serializer_class = ReportSaleSerializer
+    row_serializer_class = CancellationReportSerializer
     csv_filename = 'relatorio-cancelamentos.csv'
-    csv_headers = SalesReportView.csv_headers
+    csv_headers = (
+        'event_id', 'event_type', 'cancelled_at', 'operation_id',
+        'operation_number', 'operation_type', 'product', 'quantity',
+        'cancellation_actor', 'reason', 'financial_impact', 'stock_impact',
+    )
 
     def get(self, request):
         filters, start, end = self.parse_query(request)
@@ -1155,17 +1421,96 @@ class CancellationsReportView(BaseReportView):
         rows, totals = cancellation_summary(
             branch=request.branch_context, start=start, end=end, filters=filters,
         )
-        detail_rows = rows.select_related(
-            'created_by', 'seller_user', 'discount_approved_by', 'beneficiary_user'
-        ).prefetch_related('items__product__category', 'payments').order_by(
+        sale_rows_list = list(rows.select_related(
+            'created_by', 'seller_user', 'discount_approved_by', 'beneficiary_user',
+            'service_fee_waived_by', 'cancelled_by', 'customer',
+            'cash_session__cash_register',
+        ).prefetch_related(
+            'items__product__category', 'items__discount_approved_by',
+            'payments__payment_method', 'payments__source_command_payment__operator',
+        ).order_by(
             '-cancelled_at', '-id'
+        ))
+        end_exclusive = period_end_exclusive(end)
+        order_items = OrderItem.objects.filter(
+            order__command__branch=request.branch_context,
+            status=OrderItemStatus.CANCELLED,
+            cancelled_at__gte=start,
+            cancelled_at__lt=end_exclusive,
+        ).select_related(
+            'order__command__table', 'product', 'cancelled_by',
         )
-        detail_rows = event_rows([], list(detail_rows))
+        payments = CommandPayment.objects.filter(
+            branch=request.branch_context,
+            status=CommandPaymentStatus.REVERSED,
+            created_at__gte=start,
+            created_at__lt=end_exclusive,
+        ).select_related(
+            'command__table', 'payment_method', 'operator', 'reversal_of',
+        )
+        if filters.get('operator') is not None:
+            order_items = order_items.filter(cancelled_by_id=filters['operator'])
+            payments = payments.filter(operator_id=filters['operator'])
+        if filters.get('product') is not None:
+            order_items = order_items.filter(product_id=filters['product'])
+            payments = payments.none()
+        if filters.get('category') is not None:
+            order_items = order_items.filter(
+                product__branch_configs__branch=request.branch_context,
+                product__branch_configs__category_id=filters['category'],
+            )
+            payments = payments.none()
+        if filters.get('payment_method') is not None:
+            order_items = order_items.none()
+            payments = payments.filter(payment_method_id=filters['payment_method'])
+        if filters.get('seller') is not None:
+            order_items = order_items.none()
+            payments = payments.none()
+        if filters.get('customer') is not None:
+            order_items = order_items.filter(
+                order__command__customer_id=filters['customer']
+            )
+            payments = payments.filter(command__customer_id=filters['customer'])
+        if filters.get('number'):
+            order_items = order_items.filter(
+                order__command__command_number__icontains=filters['number']
+            )
+            payments = payments.filter(
+                command__command_number__icontains=filters['number']
+            )
+        order_items = list(order_items.order_by('-cancelled_at', '-id'))
+        payments = list(payments.order_by('-created_at', '-id'))
+        detail_rows = sale_rows_list + order_items + payments
+        detail_rows.sort(
+            key=lambda row: (
+                row.cancelled_at if isinstance(row, (Sale, OrderItem)) else row.created_at,
+                row.pk,
+            ),
+            reverse=True,
+        )
+        total_impact = totals['reversed_total_received'] + sum(
+            (item.quantity * item.unit_price for item in order_items), Decimal('0.00')
+        )
+        handled = FinancialAggregator(
+            period_event_sales(
+                branch=request.branch_context, start=start, end=end,
+                filters=filters, operation_types=(OperationType.SALE,),
+            )[0],
+            {key: filters[key] for key in ('product', 'category') if filters.get(key)},
+        ).commercial()['total_received']
         return self.respond(
             request, rows=detail_rows, period=canonical_datetime_range(start, end),
             summary={
-                'count': totals['count'],
+                'count': len(detail_rows),
+                'sale_cancellation_count': len(sale_rows_list),
+                'item_cancellation_count': len(order_items),
+                'payment_reversal_count': len(payments),
                 'value': decimal_string(totals['value']),
+                'financial_impact': decimal_string(total_impact),
+                'cancellation_percentage': decimal_string(
+                    total_impact * Decimal('100') / (handled + total_impact)
+                    if handled + total_impact else Decimal('0.00')
+                ),
                 'reversed_sales_revenue': decimal_string(
                     totals['reversed_sales_revenue']
                 ),
@@ -1188,7 +1533,7 @@ class CancellationsReportView(BaseReportView):
 
 
 def _group_json(row):
-    return {
+    result = {
         **row,
         **{
             field: decimal_string(row[field])
@@ -1198,9 +1543,34 @@ def _group_json(row):
                 'service_fee', 'commission', 'customer_total', 'total_received',
                 'payment_total', 'reconciliation_delta',
                 'payment_reconciliation_delta', 'average',
-                'cancellation_value',
+                'cancellation_value', 'item_quantity', 'discounts',
+                'commission_base', 'commission_rate', 'cash_difference',
             )
             if field in row
+        },
+    }
+    result['top_products'] = [
+        {
+            **item,
+            'quantity': decimal_string(item['quantity'], 3),
+            'sales_revenue': decimal_string(item['sales_revenue']),
+        }
+        for item in row.get('top_products', [])
+    ]
+    return result
+
+
+def _ranking_json(row):
+    return {
+        **row,
+        'quantity': decimal_string(row['quantity'], 3),
+        **{
+            key: decimal_string(row[key])
+            for key in (
+                'sales_revenue', 'revenue', 'discounts', 'cost', 'margin',
+                'margin_percent', 'ticket_average',
+            )
+            if key in row
         },
     }
 
@@ -1431,6 +1801,23 @@ class ConsumptionsReportView(BaseReportView):
         data['user_type_groups'] = [
             _consumption_group_json(row) for row in user_type_groups
         ]
+        product_groups, category_groups = consumption_item_groupings(
+            consumption_graph, filters, consumption_reversals,
+        )
+        def consumption_item_json(row):
+            return {
+                **row,
+                'quantity': decimal_string(row['quantity'], 3),
+                **{
+                    key: decimal_string(row[key])
+                    for key in ('reference', 'charged', 'benefit')
+                },
+                **({
+                    'historical_cost': decimal_string(row['historical_cost'])
+                } if include_cost else {}),
+            }
+        data['product_groups'] = [consumption_item_json(row) for row in product_groups]
+        data['category_groups'] = [consumption_item_json(row) for row in category_groups]
         return self.respond(
             request,
             rows=event_rows(consumption_graph, consumption_reversals),
@@ -1450,6 +1837,22 @@ class CashReportView(BaseReportView):
         'cash_cancellations', 'cash_payments', 'withdrawals', 'expected', 'informed',
         'difference',
     )
+    movement_csv_headers = (
+        'id', 'created_at', 'movement_type', 'cash_register', 'cash_session',
+        'operator', 'reason', 'amount',
+    )
+
+    def serialize_rows(self, rows, request):
+        if request.query_params.get('section') == 'movements':
+            return CashMovementReportSerializer(
+                rows, many=True, context={'request': request}
+            ).data
+        return super().serialize_rows(rows, request)
+
+    def export_headers(self, request):
+        if request.query_params.get('section') == 'movements':
+            return self.movement_csv_headers
+        return super().export_headers(request)
 
     def get(self, request):
         filters, start, end = self.parse_query(request)
@@ -1485,7 +1888,9 @@ class CashReportView(BaseReportView):
             ))
             for name, attribute in fields.items()
         }
-        serialized = self.serialize_rows(sessions, request)
+        serialized = CashSessionReportSerializer(
+            sessions, many=True, context={'request': request}
+        ).data
         end_exclusive = period_end_exclusive(end)
         clipped = receipt_summary(
             branch=request.branch_context, start=start, end=end, filters={},
@@ -1509,8 +1914,30 @@ class CashReportView(BaseReportView):
                 Decimal('0.00'), output_field=DecimalField(max_digits=20, decimal_places=2),
             ),
         )
+        period_movements = CashMovement.objects.filter(
+            cash_session_id__in=session_ids,
+            created_at__gte=start,
+            created_at__lt=end_exclusive,
+        ).select_related(
+            'cash_session__cash_register', 'user', 'beneficiary_user',
+        ).order_by('-created_at', '-id')
+        opened_count = sum(start <= session.opened_at < end_exclusive for session in sessions)
+        closed_count = sum(
+            bool(session.closed_at and start <= session.closed_at < end_exclusive)
+            for session in sessions
+        )
+        differences = [
+            session.closing_difference for session in sessions
+            if session.closing_difference is not None and session.closing_difference != 0
+        ]
         summary = {
             'count': len(sessions),
+            'opened_count': opened_count,
+            'closed_count': closed_count,
+            'difference_count': len(differences),
+            'difference_absolute_total': decimal_string(sum(
+                (abs(value) for value in differences), Decimal('0.00')
+            )),
             'session_rows_scope': 'complete_session',
             'top_summary_scope': 'requested_period_events',
             'complete_session_totals': complete_session_totals,
@@ -1549,6 +1976,13 @@ class CashReportView(BaseReportView):
             }
             for row in clipped['payment_methods']
         ]
+        if filters.get('section') == 'movements':
+            return self.respond(
+                request,
+                rows=period_movements,
+                period=canonical_datetime_range(start, end),
+                summary=summary,
+            )
         if user_has_code(request, 'commissions.view'):
             clipped_sales = [
                 sale for sale in session_sales
@@ -1670,6 +2104,22 @@ def _withdrawal_summary_json(summary, *, include_groups=True):
             }
             for row in summary['by_category']
         ]
+        result['by_beneficiary'] = [
+            {
+                'beneficiary': row['beneficiary'],
+                'count': row['count'],
+                'amount': decimal_string(row['amount']),
+            }
+            for row in summary.get('by_beneficiary', [])
+        ]
+        result['by_operator'] = [
+            {
+                'operator': row['operator'],
+                'count': row['count'],
+                'amount': decimal_string(row['amount']),
+            }
+            for row in summary.get('by_operator', [])
+        ]
     return result
 
 
@@ -1688,11 +2138,33 @@ class WithdrawalsReportView(BaseReportView):
         rows = filtered_withdrawals(
             branch=request.branch_context, start=start, end=end, filters=filters
         )
+        summary = withdrawal_summary(rows)
+        materialized = list(rows)
+        def grouped_user(field, output_key):
+            groups = {}
+            for movement in materialized:
+                user = getattr(movement, field)
+                key = getattr(movement, f'{field}_id')
+                entry = groups.setdefault(key, {
+                    output_key: ({
+                        'id': key, 'name': readable_user_name(user),
+                    } if user else None),
+                    'count': 0,
+                    'amount': Decimal('0.00'),
+                })
+                entry['count'] += 1
+                entry['amount'] += movement.amount
+            return sorted(
+                groups.values(),
+                key=lambda item: (-item['amount'], str(item[output_key])),
+            )
+        summary['by_beneficiary'] = grouped_user('beneficiary_user', 'beneficiary')
+        summary['by_operator'] = grouped_user('user', 'operator')
         return self.respond(
             request,
-            rows=rows,
+            rows=materialized,
             period=canonical_datetime_range(start, end),
-            summary=_withdrawal_summary_json(withdrawal_summary(rows)),
+            summary=_withdrawal_summary_json(summary),
         )
 
 
@@ -1706,7 +2178,7 @@ class InventoryMovementsReportView(BaseReportView):
         'final_quantity', 'equivalent_quantity', 'legacy_equivalent_quantity',
         'exact_content_equivalent_quantity', 'previous_content', 'content_quantity',
         'final_content', 'package_content', 'content_unit', 'complete_packages',
-        'residual_content', 'reason', 'user', 'sale',
+        'residual_content', 'unit_cost_snapshot', 'cost_impact', 'reason', 'user', 'sale',
     )
 
     def get(self, request):
@@ -1729,7 +2201,18 @@ class InventoryMovementsReportView(BaseReportView):
             if (quantity := movement.exact_content_equivalent_quantity()) is not None
         )
         content_by_unit = {}
+        entries = Decimal('0.000')
+        exits = Decimal('0.000')
+        historical_cost_impact = Decimal('0.00')
         for movement in movements:
+            if movement.quantity > 0:
+                entries += movement.equivalent_quantity()
+            elif movement.quantity < 0:
+                exits += abs(movement.equivalent_quantity())
+            if user_has_code(request, 'inventory.view_stock_costs'):
+                historical_cost_impact += (
+                    (movement.unit_cost_snapshot or Decimal('0.00')) * movement.quantity
+                )
             if movement.content_quantity is None:
                 continue
             unit = movement.stock.product.fraction_config.content_unit
@@ -1757,6 +2240,11 @@ class InventoryMovementsReportView(BaseReportView):
                     unit: format(value, 'f')
                     for unit, value in sorted(content_by_unit.items())
                 },
+                'entries': format(entries, 'f'),
+                'exits': format(exits, 'f'),
+                **({
+                    'historical_cost_impact': decimal_string(historical_cost_impact),
+                } if user_has_code(request, 'inventory.view_stock_costs') else {}),
             },
         )
 

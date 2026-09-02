@@ -2,6 +2,7 @@ ACTION_LABELS = {
     'auth.login': 'Login realizado',
     'auth.logout': 'Sessão encerrada',
     'user.create': 'Usuário criado',
+    'user.company_link': 'Usuário vinculado à empresa',
     'user.update': 'Usuário alterado',
     'user.update_self': 'Dados pessoais alterados',
     'user.activate': 'Usuário ativado',

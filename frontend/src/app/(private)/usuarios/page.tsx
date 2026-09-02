@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
-  KeyRound,
   Pencil,
   Plus,
   Power,
@@ -104,6 +103,10 @@ interface ArchivedUserConflict {
   email: string | null;
   archivedAt: string;
 }
+interface ExistingCoreLink {
+  email: string | null;
+  requiresBackofficeFalse: boolean;
+}
 const emptyFilters = (branchId?: number): UserFilters => ({
   search: "",
   status: "active",
@@ -189,10 +192,9 @@ function UsersAdministration() {
   const [editorTab, setEditorTab] = useState<EditorTab>("personal");
   const [history, setHistory] = useState<AuditLog[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
-  const [resetTarget, setResetTarget] = useState<User | null>(null);
-  const [resetPassword, setResetPassword] = useState("");
-  const [resetFields, setResetFields] = useState<Record<string, string[]>>({});
-  const [resetSaving, setResetSaving] = useState(false);
+  const [needsInitialPassword, setNeedsInitialPassword] = useState(false);
+  const [existingCoreLink, setExistingCoreLink] =
+    useState<ExistingCoreLink | null>(null);
   const [restoreConflict, setRestoreConflict] =
     useState<ArchivedUserConflict | null>(null);
   const [draftFilters, setDraftFilters] = useState<UserFilters>(emptyFilters);
@@ -433,6 +435,8 @@ function UsersAdministration() {
     );
     setFields({});
     setError("");
+    setNeedsInitialPassword(false);
+    setExistingCoreLink(null);
     setRestoreConflict(null);
     setOpen(true);
   }
@@ -459,10 +463,10 @@ function UsersAdministration() {
     const existing = access.branch_accesses.some(
       (item) => item.branch_id === branchId,
     );
-    const assignableProfile = profiles[companyId]?.find((profile) =>
+    const hasAssignableProfile = profiles[companyId]?.some((profile) =>
       profile.assignable_branch_ids.includes(branchId),
     );
-    if (!existing && !assignableProfile) {
+    if (!existing && !hasAssignableProfile) {
       setError("Nenhum perfil atribuível está disponível para esta filial.");
       return;
     }
@@ -473,7 +477,7 @@ function UsersAdministration() {
             ...access.branch_accesses,
             {
               branch_id: branchId,
-              access_profile_id: assignableProfile!.id,
+              access_profile_id: null,
             },
           ],
     });
@@ -481,7 +485,7 @@ function UsersAdministration() {
   function updateBranchProfile(
     companyId: number,
     branchId: number,
-    profileId: number,
+    profileId: number | null,
   ) {
     const access = form.company_accesses.find(
       (item) => item.company_id === companyId,
@@ -501,16 +505,23 @@ function UsersAdministration() {
       can_login: value,
       password: value ? current.password : null,
     }));
+    if (!value) setNeedsInitialPassword(false);
   }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (
+      form.company_accesses.some((access) =>
+        access.branch_accesses.some((branch) => !branch.access_profile_id),
+      )
+    ) {
+      setError("Selecione explicitamente um perfil para cada filial marcada.");
+      return;
+    }
+    if (
       form.can_login &&
       form.company_accesses.some(
-        (access) =>
-          !access.branch_accesses.length ||
-          access.branch_accesses.some((branch) => !branch.access_profile_id),
+        (access) => !access.branch_accesses.length,
       )
     ) {
       setError(
@@ -566,9 +577,61 @@ function UsersAdministration() {
           });
           return;
         }
+        if (!editing && caught.code === "existing_core_user_link_available") {
+          setForm((current) => ({ ...current, password: null }));
+          setNeedsInitialPassword(false);
+          setExistingCoreLink({
+            email:
+              typeof caught.details.email === "string"
+                ? caught.details.email
+                : form.email,
+            requiresBackofficeFalse:
+              caught.details.requires_backoffice_false === true,
+          });
+          return;
+        }
+        if (!editing && caught.fields.password?.length) {
+          setNeedsInitialPassword(true);
+        }
         setError(caught.message);
         setFields(caught.fields);
       } else setError("Não foi possível salvar o usuário.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function linkExistingCoreUser() {
+    if (!existingCoreLink || !currentCompany) return;
+    setSaving(true);
+    setError("");
+    setFields({});
+    const canLogin = existingCoreLink.requiresBackofficeFalse
+      ? false
+      : form.can_login;
+    try {
+      await http.post<User>(`users/?company=${currentCompany.id}`, {
+        ...form,
+        email: form.email?.trim() || null,
+        password: undefined,
+        can_login: canLogin,
+        link_existing: true,
+      });
+      setExistingCoreLink(null);
+      if (isDetail) {
+        router.push("/usuarios?saved=created");
+        return;
+      }
+      setOpen(false);
+      setSuccess("Usuário vinculado à empresa com sucesso.");
+      await load();
+    } catch (caught) {
+      if (caught instanceof ApiError) {
+        setError(caught.message);
+        setFields(caught.fields);
+      } else {
+        setError("Não foi possível vincular o usuário à empresa.");
+      }
     } finally {
       setSaving(false);
     }
@@ -583,7 +646,7 @@ function UsersAdministration() {
       const payload = {
         ...form,
         email: form.email?.trim() || null,
-        password: form.password?.trim() || undefined,
+        password: undefined,
       };
       await http.post<User>(
         `users/${restoreConflict.userId}/restore/?company=${currentCompany.id}`,
@@ -654,33 +717,6 @@ function UsersAdministration() {
       );
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function doResetPassword() {
-    if (!resetTarget || !resetPassword.trim()) return;
-    setResetSaving(true);
-    setResetFields({});
-    setError("");
-    try {
-      await http.post(
-        `users/${resetTarget.id}/reset-password/?company=${currentCompany?.id}`,
-        {
-          new_password: resetPassword,
-        },
-      );
-      setResetTarget(null);
-      setResetPassword("");
-      setSuccess("Senha redefinida com sucesso.");
-    } catch (caught) {
-      if (caught instanceof ApiError) {
-        setError(caught.message);
-        setResetFields(caught.fields);
-      } else {
-        setError("Não foi possível redefinir a senha.");
-      }
-    } finally {
-      setResetSaving(false);
     }
   }
 
@@ -845,7 +881,8 @@ function UsersAdministration() {
                     <thead>
                       <tr>
                         <th>Usuário</th>
-                        <th>Cargo</th>
+                        <th>Cargo/Função</th>
+                        <th>Perfil de acesso</th>
                         <th>Login</th>
                         <th>Status</th>
                         <th>Último acesso</th>
@@ -877,6 +914,21 @@ function UsersAdministration() {
                             </span>
                           </td>
                           <td>
+                            {Array.from(
+                              new Set(
+                                (item.membership?.branch_accesses || []).map(
+                                  (access) =>
+                                    Object.values(profiles)
+                                      .flat()
+                                      .find(
+                                        (profile) =>
+                                          profile.id === access.access_profile_id,
+                                      )?.name || "Perfil indisponível",
+                                ),
+                              ),
+                            ).join(", ") || "Sem perfil"}
+                          </td>
+                          <td>
                             <span
                               className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${item.can_login ? "bg-primary/10 text-primary" : "bg-slate-100 text-slate-500"}`}
                             >
@@ -904,18 +956,6 @@ function UsersAdministration() {
                               >
                                 <Pencil className="size-4" />
                               </Link>
-                              <button
-                                className="icon-button"
-                                aria-label="Redefinir senha"
-                                disabled={!canChange || !!item.is_superuser}
-                                onClick={() => {
-                                  setResetTarget(item);
-                                  setResetPassword("");
-                                  setResetFields({});
-                                }}
-                              >
-                                <KeyRound className="size-4" />
-                              </button>
                               <Link
                                 className="icon-button"
                                 aria-label="Bloqueios de acesso"
@@ -1066,7 +1106,7 @@ function UsersAdministration() {
                     }
                   />
                 </Field>
-                <Field label="Tipo/Cargo">
+                <Field label="Cargo/Função">
                   <Select
                     value={form.user_type}
                     onChange={(event) =>
@@ -1097,18 +1137,18 @@ function UsersAdministration() {
                     </small>
                   </span>
                 </label>
-                {form.can_login && (
-                  <>
-                    <Field label="E-mail" error={fieldError(fields, "email")}>
-                      <Input
-                        type="email"
-                        required
-                        value={form.email || ""}
-                        onChange={(event) =>
-                          update("email", event.target.value || null)
-                        }
-                      />
-                    </Field>
+                <Field label="E-mail" error={fieldError(fields, "email")}>
+                  <Input
+                    type="email"
+                    required={form.can_login}
+                    value={form.email || ""}
+                    onChange={(event) => {
+                      update("email", event.target.value || null);
+                      setNeedsInitialPassword(false);
+                    }}
+                  />
+                </Field>
+                {form.can_login && needsInitialPassword && (
                     <Field
                       label="Senha inicial"
                       error={fieldError(fields, "password")}
@@ -1123,12 +1163,15 @@ function UsersAdministration() {
                         }
                       />
                     </Field>
-                  </>
                 )}
                 <div className="space-y-3 sm:col-span-2">
                   <h3 className="text-sm font-bold">
-                    Perfil e filiais autorizadas
+                    Perfis de acesso e filiais autorizadas
                   </h3>
+                  <p className="text-xs text-muted">
+                    O perfil define permissões no sistema. Ele é independente do
+                    cargo ou função da pessoa.
+                  </p>
                   {branches
                     .filter((branch) => branch.company === currentCompany?.id)
                     .map((branch) => {
@@ -1169,7 +1212,9 @@ function UsersAdministration() {
                                 updateBranchProfile(
                                   currentCompany.id,
                                   branch.id,
-                                  Number(event.target.value),
+                                  event.target.value
+                                    ? Number(event.target.value)
+                                    : null,
                                 )
                               }
                             >
@@ -1348,23 +1393,6 @@ function UsersAdministration() {
                           }
                         />
                       </Field>
-                      {form.can_login &&
-                        !editing.login_credential_available && (
-                        <Field
-                          label="Senha inicial"
-                          error={fieldError(fields, "password")}
-                        >
-                          <Input
-                            type="password"
-                            minLength={8}
-                            required
-                            value={form.password || ""}
-                            onChange={(event) =>
-                              update("password", event.target.value || null)
-                            }
-                          />
-                        </Field>
-                      )}
                     </div>
                     <div className="flex items-center justify-between rounded-lg border border-subtle p-4">
                       <div>
@@ -1379,10 +1407,14 @@ function UsersAdministration() {
                       <StatusBadge active={form.can_login} />
                     </div>
                     <div>
-                        <h2 className="text-sm font-bold">
-                          Filiais e perfis autorizados
-                        </h2>
-                        <div className="mt-3 space-y-2">
+                      <h2 className="text-sm font-bold">
+                        Filiais e perfis de acesso autorizados
+                      </h2>
+                      <p className="mt-1 text-xs text-muted">
+                        O perfil controla permissões e não altera o cargo ou
+                        função.
+                      </p>
+                      <div className="mt-3 space-y-2">
                           {branches
                             .filter(
                               (branch) => branch.company === currentCompany?.id,
@@ -1421,16 +1453,20 @@ function UsersAdministration() {
                                   </label>
                                   {branchAccess && (
                                     <Select
-                                      value={branchAccess.access_profile_id}
+                                      required
+                                      value={branchAccess.access_profile_id || ""}
                                       onChange={(event) =>
                                         currentCompany &&
                                         updateBranchProfile(
                                           currentCompany.id,
                                           branch.id,
-                                          Number(event.target.value),
+                                          event.target.value
+                                            ? Number(event.target.value)
+                                            : null,
                                         )
                                       }
                                     >
+                                      <option value="">Selecione o perfil</option>
                                       {(profiles[currentCompany?.id || 0] || [])
                                         .filter(
                                           (profile) =>
@@ -1453,7 +1489,7 @@ function UsersAdministration() {
                                 </div>
                               );
                             })}
-                        </div>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1461,21 +1497,11 @@ function UsersAdministration() {
                   <div className="space-y-4">
                     <h2 className="text-sm font-bold">Segurança</h2>
                     {success && <Alert type="success" message={success} />}
+                    <p className="text-xs text-muted">
+                      A senha é uma credencial CORE global e só pode ser alterada
+                      pelo próprio titular em Minha conta.
+                    </p>
                     <div className="flex flex-wrap gap-2">
-                      {canChange && (
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          onClick={() => {
-                            setResetTarget(editing);
-                            setResetPassword("");
-                            setResetFields({});
-                          }}
-                        >
-                          <KeyRound className="size-4" />
-                          Redefinir senha
-                        </Button>
-                      )}
                       <Link
                         className="btn btn-secondary"
                         href={`/usuarios/bloqueios?user=${editing.id}`}
@@ -1597,38 +1623,37 @@ function UsersAdministration() {
         onConfirm={archiveUser}
       />
       <Modal
-        open={!!resetTarget}
-        title="Redefinir senha"
-        onClose={() => setResetTarget(null)}
+        open={!!existingCoreLink}
+        title="Vincular conta CORE existente"
+        description="Esta identidade já está cadastrada globalmente."
+        onClose={() => !saving && setExistingCoreLink(null)}
+        size="md"
       >
         <div className="space-y-4 p-5">
           <p className="text-sm text-muted">
-            Defina uma nova senha para {resetTarget?.first_name}{" "}
-            {resetTarget?.last_name} ({resetTarget?.email}).
+            Deseja vincular {existingCoreLink?.email || "esta identidade"} à
+            empresa atual? A senha existente será preservada e não será exibida
+            nem alterada.
           </p>
-          <Field
-            label="Nova senha"
-            error={fieldError(resetFields, "new_password")}
-          >
-            <Input
-              type="password"
-              required
-              value={resetPassword}
-              onChange={(e) => setResetPassword(e.target.value)}
-              disabled={resetSaving}
-              autoComplete="new-password"
-            />
-          </Field>
+          {existingCoreLink?.requiresBackofficeFalse && (
+            <Alert message="Esta identidade não possui credencial utilizável. O vínculo será criado com Backoffice desativado." />
+          )}
           {error && <Alert message={error} />}
           <div className="flex justify-end gap-2 border-t border-subtle pt-4">
-            <Button variant="secondary" onClick={() => setResetTarget(null)}>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={saving}
+              onClick={() => setExistingCoreLink(null)}
+            >
               Cancelar
             </Button>
             <Button
-              loading={resetSaving}
-              onClick={() => void doResetPassword()}
+              type="button"
+              loading={saving}
+              onClick={() => void linkExistingCoreUser()}
             >
-              Redefinir senha
+              Vincular à empresa
             </Button>
           </div>
         </div>

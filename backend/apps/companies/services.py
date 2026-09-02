@@ -229,6 +229,43 @@ def replace_user_company_access(*, user, company, access_profile, branch_accesse
     return access
 
 
+@transaction.atomic
+def link_existing_user_to_company(
+    *, user, company, access_profile, branch_accesses, can_login,
+):
+    company = Company.objects.select_for_update().get(pk=company.pk)
+    user = User.objects.select_for_update().get(pk=user.pk)
+    if not user.is_active or user.archived_at is not None:
+        raise ValidationError({
+            'email': 'A conta CORE existente precisa ser regularizada antes do vínculo.'
+        })
+    if UserCompanyAccess.objects.filter(user=user, company=company).exists():
+        raise ValidationError({
+            'email': 'Já existe um usuário com este e-mail nesta empresa.'
+        })
+    if can_login and (not user.can_login or not user.has_usable_password()):
+        raise ValidationError({
+            'can_login': 'Vincule com o acesso ao Backoffice desativado.'
+        })
+    UserCompanyAccess.objects.create(
+        user=user,
+        company=company,
+        access_profile=access_profile,
+        is_active=True,
+        can_login=can_login,
+        archived_at=None,
+        is_owner=False,
+        saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
+    )
+    replace_user_company_access(
+        user=user,
+        company=company,
+        access_profile=access_profile,
+        branch_accesses=branch_accesses,
+    )
+    return user
+
+
 def _validate_owner_target(access):
     errors = {}
     if not access.is_active:

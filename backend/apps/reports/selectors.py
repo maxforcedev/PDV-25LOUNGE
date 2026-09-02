@@ -61,10 +61,15 @@ def _apply_sale_filters(queryset, filters, *, timestamp_field):
         'beneficiary': 'beneficiary_user_id',
         'user_type': 'beneficiary_user__user_type',
         'channel': 'channel',
+        'customer': 'customer_id',
     }
     for parameter, lookup in mappings.items():
         if filters.get(parameter) is not None:
             queryset = queryset.filter(**{lookup: filters[parameter]})
+    if filters.get('minimum_value') is not None:
+        queryset = queryset.filter(total__gte=filters['minimum_value'])
+    if filters.get('maximum_value') is not None:
+        queryset = queryset.filter(total__lte=filters['maximum_value'])
     if filters.get('weekday') is not None:
         queryset = queryset.annotate(
             report_iso_weekday=ExtractIsoWeekDay(timestamp_field)
@@ -144,9 +149,7 @@ def event_rows(inflows, reversals):
 
 
 def sale_rows(queryset):
-    return queryset.select_related(
-        'created_by', 'seller_user', 'discount_approved_by', 'beneficiary_user'
-    ).prefetch_related('items__product__category', 'payments').order_by('-created_at', '-id')
+    return _financial_sales(queryset).order_by('-created_at', '-id')
 
 
 def _allocate_money(total, weighted_rows):
@@ -172,9 +175,14 @@ def _financial_sales(queryset):
     if isinstance(queryset, (list, tuple)):
         return queryset
     return queryset.select_related(
-        'created_by', 'seller_user', 'beneficiary_user', 'discount_approved_by'
+        'created_by', 'seller_user', 'beneficiary_user', 'discount_approved_by',
+        'service_fee_waived_by', 'cancelled_by', 'customer',
+        'cash_session__cash_register',
     ).prefetch_related(
-        'items__product__category', 'payments'
+        'items__product__category', 'items__discount_approved_by',
+        'payments__payment_method',
+        'payments__source_command_payment__operator',
+        'payments__source_command_payment__command',
     ).order_by('id')
 
 
@@ -280,6 +288,61 @@ def consumption_groupings(queryset, filters=None, reversals=()):
     return beneficiary_rows, type_rows
 
 
+def consumption_item_groupings(queryset, filters=None, reversals=()):
+    filters = filters or {}
+    products = {}
+    categories = {}
+    for sales, sign in ((queryset, 1), (reversals, -1)):
+        for sale in sales:
+            items = sorted(sale.items.all(), key=lambda item: item.pk)
+            charged = allocate_money(
+                sale.total, [(item.pk, item.subtotal) for item in items]
+            )
+            for item in items:
+                if not (
+                    (filters.get('product') is None or item.product_id == filters['product'])
+                    and (
+                        filters.get('category') is None
+                        or item.category_id_snapshot == filters['category']
+                    )
+                ):
+                    continue
+                values = {
+                    'quantity': item.quantity,
+                    'reference': item.subtotal,
+                    'charged': charged[item.pk],
+                    'benefit': item.subtotal - charged[item.pk],
+                    'historical_cost': item.unit_cost * item.quantity,
+                }
+                targets = (
+                    (products, item.product_id, {
+                        'product_id': item.product_id,
+                        'product_name': item.product_name,
+                        'internal_code': item.internal_code,
+                    }),
+                    (categories, item.category_id_snapshot, {
+                        'category_id': item.category_id_snapshot,
+                        'category_name': item.category_name_snapshot or 'Sem categoria',
+                    }),
+                )
+                for grouping, key, identity in targets:
+                    row = grouping.setdefault(key, {
+                        **identity,
+                        'quantity': Decimal('0.000'),
+                        'reference': Decimal('0.00'),
+                        'charged': Decimal('0.00'),
+                        'benefit': Decimal('0.00'),
+                        'historical_cost': Decimal('0.00'),
+                    })
+                    for field, value in values.items():
+                        row[field] += sign * value
+    order = lambda row: (-row['reference'], -row['quantity'])
+    return (
+        sorted(products.values(), key=order),
+        sorted(categories.values(), key=order),
+    )
+
+
 def payment_totals(queryset, filters=None):
     return FinancialAggregator(_financial_sales(queryset), filters).payment_totals()
 
@@ -301,17 +364,35 @@ def sale_rankings(
                     'internal_code': item.internal_code,
                     'quantity': Decimal('0.000'),
                     'sales_revenue': Decimal('0.00'),
+                    'discounts': Decimal('0.00'),
+                    'cost': Decimal('0.00'),
+                    'sale_ids': set(),
                 })
                 product_entry['quantity'] += sign * item.quantity
                 product_entry['sales_revenue'] += sign * row['sales_revenue']
+                product_entry['discounts'] += sign * (
+                    row['promotion_discount'] + row['item_discount']
+                    + row['account_discount']
+                )
+                product_entry['cost'] += sign * row['historical_cost']
+                product_entry['sale_ids'].add(sale.pk)
                 category_entry = by_category.setdefault(category_key, {
                     'category_id': category_key,
                     'category_name': item.category_name_snapshot or 'Sem categoria',
                     'quantity': Decimal('0.000'),
                     'sales_revenue': Decimal('0.00'),
+                    'discounts': Decimal('0.00'),
+                    'cost': Decimal('0.00'),
+                    'sale_ids': set(),
                 })
                 category_entry['quantity'] += sign * item.quantity
                 category_entry['sales_revenue'] += sign * row['sales_revenue']
+                category_entry['discounts'] += sign * (
+                    row['promotion_discount'] + row['item_discount']
+                    + row['account_discount']
+                )
+                category_entry['cost'] += sign * row['historical_cost']
+                category_entry['sale_ids'].add(sale.pk)
     if product_order not in ('quantity', 'revenue'):
         raise ValueError('Ordenação de produtos inválida.')
     product_key = (
@@ -323,10 +404,68 @@ def sale_rankings(
     categories = sorted(by_category.values(), key=lambda row: (-row['quantity'], -row['sales_revenue'], row['category_name']))
     for row in products + categories:
         row['revenue'] = row['sales_revenue']
+        row['margin'] = row['sales_revenue'] - row['cost']
+        row['margin_percent'] = (
+            row['margin'] * Decimal('100') / row['sales_revenue']
+            if row['sales_revenue'] else Decimal('0.00')
+        )
+        row['sale_count'] = len(row.pop('sale_ids'))
+        row['ticket_average'] = (
+            row['sales_revenue'] / row['sale_count']
+            if row['sale_count'] else Decimal('0.00')
+        )
     if limit is not None:
         products = products[:limit]
         categories = categories[:limit]
     return products, categories
+
+
+def product_commercial_breakdowns(queryset, filters=None, reversals=()):
+    modifiers = {}
+    promotions = {}
+    for sales, sign in ((queryset, 1), (reversals, -1)):
+        for sale in sales:
+            for row in _sale_item_financials(sale, filters):
+                item = row['item']
+                if item.promotion_id:
+                    promotion = promotions.setdefault(item.promotion_id, {
+                        'promotion_id': item.promotion_id,
+                        'promotion_name': item.promotion_name or 'Promoção sem nome',
+                        'uses': 0,
+                        'discount': Decimal('0.00'),
+                        'net_revenue': Decimal('0.00'),
+                    })
+                    promotion['uses'] += sign
+                    promotion['discount'] += sign * row['promotion_discount']
+                    promotion['net_revenue'] += sign * row['sales_revenue']
+                for snapshot in item.modifier_snapshot or []:
+                    option_id = snapshot.get('option_id')
+                    option_name = snapshot.get('option_name') or 'Modificador sem nome'
+                    key = option_id or option_name
+                    modifier = modifiers.setdefault(key, {
+                        'option_id': option_id,
+                        'option_name': option_name,
+                        'quantity': Decimal('0.000'),
+                        'additional_revenue': Decimal('0.00'),
+                        'product_ids': set(),
+                    })
+                    quantity = Decimal(str(snapshot.get('selected_quantity') or 0))
+                    contribution = Decimal(str(snapshot.get('contribution') or 0))
+                    modifier['quantity'] += sign * quantity * item.quantity
+                    modifier['additional_revenue'] += sign * contribution * item.quantity
+                    modifier['product_ids'].add(item.product_id)
+    modifier_rows = []
+    for row in modifiers.values():
+        row['product_count'] = len(row.pop('product_ids'))
+        row['ticket_average'] = (
+            row['additional_revenue'] / row['quantity']
+            if row['quantity'] else Decimal('0.00')
+        )
+        modifier_rows.append(row)
+    return (
+        sorted(modifier_rows, key=lambda row: (-row['quantity'], row['option_name'])),
+        sorted(promotions.values(), key=lambda row: (-row['uses'], row['promotion_name'])),
+    )
 
 
 def hourly_sales(queryset, filters=None, reversals=()):
@@ -375,6 +514,9 @@ def sale_user_groups(queryset, user_field, filters=None, reversals=()):
             'reversal_count': 0,
             'cancellation_count': 0,
             'cancellation_value': Decimal('0.00'),
+            'item_quantity': Decimal('0.000'),
+            'discounts': Decimal('0.00'),
+            'service_fee_waiver_count': 0,
             **{
                 key: Decimal('0.00') for key in (
                     'gross', 'account_discount', 'item_discount', 'manual_discount',
@@ -405,6 +547,12 @@ def sale_user_groups(queryset, user_field, filters=None, reversals=()):
             row['inflow_count' if sign > 0 else 'reversal_count'] += 1
             for key in financial_fields:
                 row[key] += sign * values[key]
+            row['item_quantity'] += sign * sum(
+                (item_row['item'].quantity for item_row in _sale_item_financials(sale, filters)),
+                Decimal('0.000'),
+            )
+            row['discounts'] += sign * values['total_discount']
+            row['service_fee_waiver_count'] += sign * int(sale.service_fee_waived)
             row['payment_total'] += sign * sum(
                 (payment['amount'] for payment in _scoped_payment_rows(sale, filters)),
                 Decimal('0.00'),
@@ -414,8 +562,22 @@ def sale_user_groups(queryset, user_field, filters=None, reversals=()):
                 row['cancellation_value'] += values['total_received']
             if user_field == 'seller_user':
                 row['commission'] += sign * values['commission']
+                row.setdefault('commission_base', Decimal('0.00'))
+                if values['commission'] > 0:
+                    row['commission_base'] += sign * values['sales_revenue']
                 row.setdefault('commission_sale_count', 0)
                 row['commission_sale_count'] += sign * int(values['commission'] > 0)
+                product_totals = row.setdefault('_product_totals', {})
+                for item_row in _sale_item_financials(sale, filters):
+                    item = item_row['item']
+                    product = product_totals.setdefault(item.product_id, {
+                        'product_id': item.product_id,
+                        'product_name': item.product_name,
+                        'quantity': Decimal('0.000'),
+                        'sales_revenue': Decimal('0.00'),
+                    })
+                    product['quantity'] += sign * item.quantity
+                    product['sales_revenue'] += sign * item_row['sales_revenue']
     for row in grouped.values():
         row['average'] = (
             row['sales_revenue'] / row['count']
@@ -424,6 +586,17 @@ def sale_user_groups(queryset, user_field, filters=None, reversals=()):
         row['reconciliation_delta'] = row['payment_total'] - row['total_received']
         row['payment_reconciliation_delta'] = row['reconciliation_delta']
         row['customer_total'] = row['total_received']
+        if user_field == 'seller_user':
+            row['commission_rate'] = (
+                row['commission'] * Decimal('100') / row['commission_base']
+                if row.get('commission_base') else Decimal('0.00')
+            )
+            row['top_products'] = sorted(
+                row.pop('_product_totals', {}).values(),
+                key=lambda item: (
+                    -item['quantity'], -item['sales_revenue'], item['product_name'],
+                ),
+            )[:5]
     return sorted(
         grouped.values(),
         key=lambda row: (-row['sales_revenue'], row['user']['name'], row['user']['id'] or 0),
@@ -502,6 +675,283 @@ def receipt_summary(
             'is_integral_revenue': False,
         }
     return result
+
+
+def receipt_event_rows(*, branch, start, end, filters):
+    """Return tender-ledger events by their business occurrence timestamp."""
+    from apps.commands.models import CommandPayment, CommandPaymentStatus
+
+    end_exclusive = period_end_exclusive(end)
+    sale_filters = {
+        key: value for key, value in (filters or {}).items()
+        if key not in (
+            'weekday', 'hour', 'payment_method', 'payment_method_code', 'operator',
+        )
+    }
+    sales = _apply_sale_filters(
+        Sale.objects.filter(branch=branch), sale_filters, timestamp_field='created_at',
+    )
+    payments = Payment.objects.filter(sale__in=sales).select_related(
+        'sale__created_by', 'sale__cancelled_by', 'sale__cash_session__cash_register',
+        'payment_method', 'source_command_payment__operator',
+        'source_command_payment__command',
+    )
+    if filters.get('payment_method') is not None:
+        payments = payments.filter(payment_method_id=filters['payment_method'])
+    if filters.get('payment_method_code'):
+        payments = payments.filter(payment_method_code=filters['payment_method_code'])
+
+    rows = []
+
+    def user_json(user):
+        if user is None:
+            return None
+        return {'id': user.pk, 'name': user.get_full_name().strip() or user.email}
+
+    def cash_json(session):
+        if session is None:
+            return None, None
+        return (
+            {'id': session.pk},
+            {'id': session.cash_register_id, 'name': session.cash_register.name},
+        )
+
+    def append_sale_payment(payment, *, reversed_event=False):
+        sale = payment.sale
+        source = payment.source_command_payment
+        occurred_at = sale.cancelled_at if reversed_event else (
+            payment.occurred_at or payment.created_at
+        )
+        if not occurred_at or not (start <= occurred_at < end_exclusive):
+            return
+        if filters.get('weekday') is not None and (
+            timezone.localtime(occurred_at).weekday() != filters['weekday']
+        ):
+            return
+        if filters.get('hour') is not None and (
+            timezone.localtime(occurred_at).hour != filters['hour']
+        ):
+            return
+        sign = Decimal('-1') if reversed_event else Decimal('1')
+        received = payment.received_amount if payment.received_amount is not None else payment.amount
+        change = payment.change_amount or Decimal('0.00')
+        cash_session, cash_register = cash_json(sale.cash_session)
+        operator = sale.cancelled_by if reversed_event else (
+            source.operator if source else sale.created_by
+        )
+        if filters.get('operator') is not None and (
+            operator is None or operator.pk != filters['operator']
+        ):
+            return
+        rows.append({
+            'event_id': f'sale-payment:{payment.pk}:{"reversed" if reversed_event else "applied"}',
+            'occurred_at': occurred_at,
+            'status': 'reversed' if reversed_event else 'applied',
+            'is_reversal': reversed_event,
+            'applied_amount': sign * payment.amount,
+            'received_amount': sign * received,
+            'change_amount': sign * change,
+            'amount': sign * payment.amount,
+            'origin': 'command' if source else 'direct_sale',
+            'operator': user_json(operator),
+            'payment_method': {
+                'id': payment.payment_method_id,
+                'code': payment.payment_method_code,
+                'name': payment.payment_method_name,
+            },
+            'sale': {
+                'id': sale.pk, 'number': sale.sale_number,
+                'operation_type': sale.operation_type, 'status': sale.status,
+            },
+            'command': (
+                {'id': source.command_id, 'number': source.command.command_number}
+                if source else None
+            ),
+            'cash_session': cash_session,
+            'cash_register': cash_register,
+            'reversal_reason': sale.cancellation_reason if reversed_event else '',
+        })
+
+    for payment in payments:
+        append_sale_payment(payment)
+        if payment.sale.status == SaleStatus.CANCELLED:
+            append_sale_payment(payment, reversed_event=True)
+
+    command_payments = CommandPayment.objects.filter(
+        branch=branch,
+        created_at__gte=start,
+        created_at__lt=end_exclusive,
+        final_payment__isnull=True,
+    ).select_related(
+        'command__sale', 'command__table', 'payment_method', 'cash_session__cash_register',
+        'operator', 'reversal_of',
+    )
+    if filters.get('payment_method') is not None:
+        command_payments = command_payments.filter(payment_method_id=filters['payment_method'])
+    if filters.get('payment_method_code'):
+        command_payments = command_payments.filter(
+            payment_method__code=filters['payment_method_code']
+        )
+    if filters.get('operator') is not None:
+        command_payments = command_payments.filter(operator_id=filters['operator'])
+    if filters.get('number'):
+        command_payments = command_payments.filter(
+            command__command_number__icontains=filters['number']
+        )
+    if filters.get('search'):
+        command_payments = command_payments.filter(
+            Q(command__command_number__icontains=filters['search'])
+            | Q(command__identifier__icontains=filters['search'])
+        )
+    if filters.get('product') is not None:
+        command_payments = command_payments.filter(
+            command__orders__items__product_id=filters['product']
+        )
+    if filters.get('category') is not None:
+        command_payments = command_payments.filter(
+            command__orders__items__product__branch_configs__branch=branch,
+            command__orders__items__product__branch_configs__category_id=filters['category'],
+        )
+    if filters.get('customer') is not None:
+        command_payments = command_payments.filter(
+            command__customer_id=filters['customer']
+        )
+    if any(filters.get(key) is not None for key in (
+        'seller', 'status', 'channel', 'minimum_value', 'maximum_value',
+    )):
+        command_payments = command_payments.filter(command__sale__isnull=False)
+        if filters.get('seller') is not None:
+            command_payments = command_payments.filter(
+                command__sale__seller_user_id=filters['seller']
+            )
+        if filters.get('status') is not None:
+            command_payments = command_payments.filter(
+                command__sale__status=filters['status']
+            )
+        if filters.get('channel') is not None:
+            command_payments = command_payments.filter(
+                command__sale__channel=filters['channel']
+            )
+        if filters.get('minimum_value') is not None:
+            command_payments = command_payments.filter(
+                command__sale__total__gte=filters['minimum_value']
+            )
+        if filters.get('maximum_value') is not None:
+            command_payments = command_payments.filter(
+                command__sale__total__lte=filters['maximum_value']
+            )
+    command_payments = command_payments.distinct()
+    for payment in command_payments:
+        occurred_at = payment.created_at
+        if filters.get('weekday') is not None and (
+            timezone.localtime(occurred_at).weekday() != filters['weekday']
+        ):
+            continue
+        if filters.get('hour') is not None and (
+            timezone.localtime(occurred_at).hour != filters['hour']
+        ):
+            continue
+        reversed_event = payment.status == CommandPaymentStatus.REVERSED
+        sign = Decimal('-1') if reversed_event else Decimal('1')
+        received = payment.received_amount if payment.received_amount is not None else payment.amount
+        change = payment.change_amount or Decimal('0.00')
+        cash_session, cash_register = cash_json(payment.cash_session)
+        sale = payment.command.sale
+        rows.append({
+            'event_id': f'command-payment:{payment.pk}',
+            'occurred_at': occurred_at,
+            'status': payment.status,
+            'is_reversal': reversed_event,
+            'applied_amount': sign * payment.amount,
+            'received_amount': sign * received,
+            'change_amount': sign * change,
+            'amount': sign * payment.amount,
+            'origin': 'command_partial',
+            'operator': user_json(payment.operator),
+            'payment_method': {
+                'id': payment.payment_method_id,
+                'code': payment.payment_method.code,
+                'name': payment.payment_method.name,
+            },
+            'sale': ({
+                'id': sale.pk, 'number': sale.sale_number,
+                'operation_type': sale.operation_type, 'status': sale.status,
+            } if sale else None),
+            'command': {
+                'id': payment.command_id,
+                'number': payment.command.command_number,
+                'table': ({
+                    'id': payment.command.table_id, 'name': payment.command.table.name,
+                } if payment.command.table_id else None),
+            },
+            'cash_session': cash_session,
+            'cash_register': cash_register,
+            'reversal_reason': payment.reversal_reason,
+        })
+    return sorted(rows, key=lambda row: (row['occurred_at'], row['event_id']), reverse=True)
+
+
+def receipt_event_summary(rows):
+    totals = {
+        'payment_event_count': len(rows),
+        'payment_count': sum(not row['is_reversal'] for row in rows),
+        'reversal_count': sum(row['is_reversal'] for row in rows),
+        'applied_total': Decimal('0.00'),
+        'received_total': Decimal('0.00'),
+        'change_total': Decimal('0.00'),
+        'reversals': Decimal('0.00'),
+        'payment_total_before_reversals': Decimal('0.00'),
+        'sales_received_before_reversals': Decimal('0.00'),
+        'consumption_received_before_reversals': Decimal('0.00'),
+        'unassigned_received_before_reversals': Decimal('0.00'),
+    }
+    methods = {}
+    for row in rows:
+        totals['applied_total'] += row['applied_amount']
+        totals['received_total'] += row['received_amount']
+        totals['change_total'] += row['change_amount']
+        if row['is_reversal']:
+            totals['reversals'] += abs(row['applied_amount'])
+        else:
+            totals['payment_total_before_reversals'] += row['applied_amount']
+            operation_type = (row.get('sale') or {}).get('operation_type')
+            if operation_type == OperationType.CONSUMPTION:
+                totals['consumption_received_before_reversals'] += row['applied_amount']
+            elif operation_type == OperationType.SALE:
+                totals['sales_received_before_reversals'] += row['applied_amount']
+            else:
+                totals['unassigned_received_before_reversals'] += row['applied_amount']
+        method = row['payment_method']
+        entry = methods.setdefault(method['code'], {
+            'code': method['code'], 'name': method['name'], 'count': 0,
+            'applied_total': Decimal('0.00'), 'received_total': Decimal('0.00'),
+            'change_total': Decimal('0.00'), 'reversals': Decimal('0.00'),
+        })
+        entry['count'] += 1
+        entry['applied_total'] += row['applied_amount']
+        entry['received_total'] += row['received_amount']
+        entry['change_total'] += row['change_amount']
+        if row['is_reversal']:
+            entry['reversals'] += abs(row['applied_amount'])
+    totals['total_received'] = totals['applied_total']
+    totals['payment_total'] = totals['applied_total']
+    totals['reversal_payment_total'] = totals['reversals']
+    totals['ticket_average_received'] = (
+        totals['applied_total'] / totals['payment_count']
+        if totals['payment_count'] else Decimal('0.00')
+    )
+    for method in methods.values():
+        method['percentage'] = (
+            method['applied_total'] * Decimal('100') / totals['payment_total']
+            if totals['payment_total'] else Decimal('0.00')
+        )
+    totals['payment_methods'] = sorted(methods.values(), key=lambda row: row['name'])
+    totals['event_accounting'] = {
+        'basis': 'payment_occurred_at',
+        'inflows': 'Data real do pagamento.',
+        'reversals': 'Data real do estorno ou cancelamento.',
+    }
+    return totals
 
 
 def dashboard_time_analysis(
@@ -689,7 +1139,7 @@ def filtered_cash_sessions(*, branch, start, end, filters):
             queryset = queryset.filter(
                 Q(closed_at__isnull=True) | Q(closed_at__gt=start)
             )
-    queryset = queryset.select_related('cash_register', 'opened_by').annotate(
+    queryset = queryset.select_related('cash_register', 'opened_by', 'closed_by').annotate(
         manual_entries=Coalesce(Subquery(manual, output_field=MONEY_FIELD), ZERO_MONEY),
         withdrawals=Coalesce(Subquery(withdrawals, output_field=MONEY_FIELD), ZERO_MONEY),
         sale_cash=Coalesce(Subquery(sale_cash, output_field=MONEY_FIELD), ZERO_MONEY),
@@ -768,6 +1218,16 @@ def withdrawal_summary(queryset):
         queryset.values('withdrawal_category')
         .annotate(count=Count('id'), amount=Sum('amount'))
         .order_by('withdrawal_category')
+    )
+    totals['by_operator'] = list(
+        queryset.values('user_id', 'user__first_name', 'user__last_name', 'user__email')
+        .annotate(count=Count('id'), amount=Sum('amount')).order_by('user_id')
+    )
+    totals['by_beneficiary'] = list(
+        queryset.values(
+            'beneficiary_user_id', 'beneficiary_user__first_name',
+            'beneficiary_user__last_name', 'beneficiary_user__email',
+        ).annotate(count=Count('id'), amount=Sum('amount')).order_by('beneficiary_user_id')
     )
     return totals
 

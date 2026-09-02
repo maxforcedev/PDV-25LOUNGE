@@ -20,7 +20,11 @@ from apps.companies.selectors import (
     company_permission_codes,
     user_has_company_permission,
 )
-from apps.companies.services import replace_user_accesses, replace_user_company_access
+from apps.companies.services import (
+    link_existing_user_to_company,
+    replace_user_accesses,
+    replace_user_company_access,
+)
 from apps.base.exceptions import DomainValidationError
 
 from .models import User
@@ -389,10 +393,14 @@ class UserManagementSerializer(UserSerializer):
         required=False,
         write_only=True,
     )
+    link_existing = serializers.BooleanField(
+        required=False, default=False, write_only=True,
+    )
 
     class Meta(UserSerializer.Meta):
         fields = UserSerializer.Meta.fields + (
-            'password', 'company_accesses', 'membership', 'login_credential_available',
+            'password', 'company_accesses', 'membership',
+            'login_credential_available', 'link_existing',
         )
         read_only_fields = (
             'id',
@@ -469,6 +477,10 @@ class UserManagementSerializer(UserSerializer):
             })
         user = email_user or cpf_user
         if not user:
+            if attrs.get('link_existing'):
+                raise serializers.ValidationError({
+                    'email': 'A conta CORE existente não foi encontrada. Refaça o cadastro.'
+                })
             return
         company_id = self._context_company_id()
         membership = user.company_accesses.filter(
@@ -486,21 +498,40 @@ class UserManagementSerializer(UserSerializer):
                     'archived_at': membership.archived_at.isoformat(),
                 },
             )
-        errors = {}
         current_membership = user.company_accesses.filter(
             company_id=company_id, archived_at__isnull=True,
         ).exists()
-        if email_user:
-            errors['email'] = [
-                'Já existe um usuário com este e-mail nesta empresa.'
-                if current_membership else 'Este e-mail já está em uso.'
-            ]
-        if cpf_users:
-            errors['cpf'] = [
-                'Já existe um usuário com este CPF nesta empresa.'
-                if current_membership else 'Este CPF já está em uso.'
-            ]
-        raise serializers.ValidationError(errors)
+        if current_membership:
+            errors = {}
+            if email_user:
+                errors['email'] = ['Já existe um usuário com este e-mail nesta empresa.']
+            if cpf_users:
+                errors['cpf'] = ['Já existe um usuário com este CPF nesta empresa.']
+            raise serializers.ValidationError(errors)
+        credential_available = user.can_login and user.has_usable_password()
+        if not attrs.get('link_existing'):
+            raise DomainValidationError(
+                code='existing_core_user_link_available',
+                message='Esta identidade já possui uma conta no CORE.',
+                details={
+                    'email': email,
+                    'requires_backoffice_false': not credential_available,
+                },
+            )
+        if attrs.get('password'):
+            raise serializers.ValidationError({
+                'password': 'A senha CORE existente não pode ser alterada neste vínculo.'
+            })
+        if attrs.get('can_login', False) and not credential_available:
+            raise serializers.ValidationError({
+                'can_login': 'Vincule com o acesso ao Backoffice desativado.'
+            })
+        if not user.is_active or user.archived_at is not None:
+            raise serializers.ValidationError({
+                'email': 'A conta CORE existente precisa ser regularizada antes do vínculo.'
+            })
+        self._link_existing_user_id = user.pk
+        return
 
     def _validate_company_accesses(self, items, permission_code):
         request = self.context['request']
@@ -603,8 +634,15 @@ class UserManagementSerializer(UserSerializer):
                             'code', flat=True
                         )
                     )
-                    requested_codes &= OPERATING_PERMISSION_CODES
-                    if requested_codes - branch_permission_codes(request.user, branch.id):
+                    requested_company_codes = requested_codes - OPERATING_PERMISSION_CODES
+                    requested_operating_codes = requested_codes & OPERATING_PERMISSION_CODES
+                    if requested_company_codes - company_permission_codes(
+                        request.user, company.id
+                    ):
+                        raise PermissionDenied(
+                            'Você não pode atribuir um perfil com permissões que não possui.'
+                        )
+                    if requested_operating_codes - branch_permission_codes(request.user, branch.id):
                         raise PermissionDenied(
                             'Você não pode atribuir um perfil de filial com permissões que não possui.'
                         )
@@ -632,11 +670,6 @@ class UserManagementSerializer(UserSerializer):
             'can_login',
             context_access.can_login if context_access else getattr(self.instance, 'can_login', True),
         )
-        enabling_login = bool(
-            self.instance and not self.instance.can_login and can_login
-        )
-        if can_login and (not self.instance or enabling_login) and not attrs.get('password'):
-            raise serializers.ValidationError({'password': 'A senha e obrigatoria.'})
         email = attrs.get('email', getattr(self.instance, 'email', None))
         if can_login and not email:
             raise serializers.ValidationError(
@@ -648,6 +681,10 @@ class UserManagementSerializer(UserSerializer):
             )
 
         password = attrs.get('password')
+        if self.instance and password:
+            raise serializers.ValidationError({
+                'password': 'A senha global só pode ser alterada pelo próprio titular.'
+            })
         if password:
             candidate = User()
             for attribute in ('email', 'first_name', 'last_name'):
@@ -713,6 +750,19 @@ class UserManagementSerializer(UserSerializer):
             )
 
         self._validate_identity_conflict(attrs)
+        self._requested_can_login = can_login
+
+        linking_existing = bool(getattr(self, '_link_existing_user_id', None))
+        if can_login and not self.instance and not linking_existing and not password:
+            raise serializers.ValidationError({'password': 'A senha é obrigatória.'})
+        if (
+            self.instance
+            and can_login
+            and (not self.instance.can_login or not self.instance.has_usable_password())
+        ):
+            raise serializers.ValidationError({
+                'can_login': 'Esta identidade não possui credencial global utilizável.'
+            })
 
         accesses = attrs.get('company_accesses')
         if can_login:
@@ -742,6 +792,23 @@ class UserManagementSerializer(UserSerializer):
     def create(self, validated_data):
         company_accesses = validated_data.pop('company_accesses')
         password = validated_data.pop('password', None)
+        validated_data.pop('link_existing', None)
+        link_user_id = getattr(self, '_link_existing_user_id', None)
+        if link_user_id:
+            item = company_accesses[0]
+            try:
+                user = link_existing_user_to_company(
+                    user=User.objects.get(pk=link_user_id),
+                    company=item['company'],
+                    access_profile=item['access_profile'],
+                    branch_accesses=item['branch_accesses'],
+                    can_login=self._requested_can_login,
+                )
+            except DjangoValidationError as error:
+                detail = getattr(error, 'message_dict', {'non_field_errors': error.messages})
+                raise serializers.ValidationError(detail) from error
+            self.linked_existing = True
+            return user
         validated_data.setdefault('email', None)
         user = User.objects.create_user(password=password, **validated_data)
         replace_user_accesses(user=user, company_accesses=company_accesses)
@@ -757,7 +824,8 @@ class UserManagementSerializer(UserSerializer):
     def update(self, instance, validated_data):
         restoring_membership = self.context.get('restoring_membership', False)
         company_accesses = validated_data.pop('company_accesses', None)
-        password = validated_data.pop('password', None)
+        validated_data.pop('password', None)
+        validated_data.pop('link_existing', None)
         requested_login = validated_data.pop('can_login', None)
         context_company_id = self._context_company_id()
         context_access = None
@@ -785,8 +853,6 @@ class UserManagementSerializer(UserSerializer):
             if requested_login is not None:
                 instance.can_login = requested_login
 
-        if password and (not restoring_membership or not instance.has_usable_password()):
-            instance.set_password(password)
         if restoring_membership:
             instance.archived_at = None
             instance.is_active = True

@@ -12,6 +12,7 @@ from rest_framework.response import Response
 
 from apps.base.audit import audit_log, model_snapshot
 from apps.base.report_exports import render_report_export
+from apps.base.pagination import StandardPagination
 from apps.companies.models import Branch, Company, Status
 from apps.companies.selectors import (
     accessible_companies, user_has_branch_permission, user_has_company_permission,
@@ -97,6 +98,31 @@ def branch_price_comparison(company_id, *, product=None, category=None, status=N
                 },
                 'availability': {
                     str(branch.pk): (product.pk, branch.pk) in availability
+                    for branch in branches
+                },
+                'cells': {
+                    str(branch.pk): (
+                        {
+                            'state': 'unavailable',
+                            'effective_price': None,
+                            'specific_price': None,
+                            'label': 'Não disponível',
+                        }
+                        if (product.pk, branch.pk) not in availability else
+                        {
+                            'state': 'specific',
+                            'effective_price': f'{prices[(product.pk, branch.pk)]:.2f}',
+                            'specific_price': f'{prices[(product.pk, branch.pk)]:.2f}',
+                            'label': 'Preço da filial',
+                        }
+                        if (product.pk, branch.pk) in prices else
+                        {
+                            'state': 'inherited',
+                            'effective_price': f'{product.sale_price:.2f}',
+                            'specific_price': None,
+                            'label': 'Preço padrão',
+                        }
+                    )
                     for branch in branches
                 },
             }
@@ -998,6 +1024,28 @@ class ProductViewSet(CatalogViewSet):
                 raise ValidationError({'status': 'Informe um status válido.'})
             filters['status'] = product_status
         data = branch_price_comparison(request.branch_context.company_id, **filters)
+        if not (
+            request.user.is_superuser or user_has_company_permission(
+                request.user,
+                request.branch_context.company_id,
+                'branch_prices.view_company',
+            )
+        ):
+            branch = request.branch_context
+            data['branches'] = [
+                item for item in data['branches'] if item['id'] == branch.pk
+            ]
+            for product_row in data['products']:
+                branch_key = str(branch.pk)
+                product_row['prices'] = {
+                    branch_key: product_row['prices'].get(branch_key)
+                }
+                product_row['availability'] = {
+                    branch_key: product_row['availability'].get(branch_key, False)
+                }
+                product_row['cells'] = {
+                    branch_key: product_row['cells'][branch_key]
+                }
         if request.query_params.get('export') in ('csv', 'xlsx', 'pdf'):
             branch_columns = {
                 branch['id']: f'Preço - {branch["name"]}' for branch in data['branches']
@@ -1008,7 +1056,17 @@ class ProductViewSet(CatalogViewSet):
             rows = [{
                 'product_name': product['name'], 'internal_code': product['internal_code'],
                 'default_price': product['default_price'],
-                **{branch_columns[branch['id']]: product['prices'].get(str(branch['id'])) for branch in data['branches']},
+                **{
+                    branch_columns[branch['id']]: (
+                        product['cells'][str(branch['id'])]['label']
+                        if product['cells'][str(branch['id'])]['effective_price'] is None
+                        else (
+                            f"{product['cells'][str(branch['id'])]['effective_price']} "
+                            f"({product['cells'][str(branch['id'])]['label']})"
+                        )
+                    )
+                    for branch in data['branches']
+                },
             } for product in data['products']]
             response = render_report_export(
                 request, filename='comparativo-precos.csv', title='Comparativo de preços',
@@ -1017,7 +1075,15 @@ class ProductViewSet(CatalogViewSet):
             audit_log(actor=request.user, action='report.export', company=request.branch_context.company,
                       branch=request.branch_context, metadata={'report': 'price_comparison', 'format': request.query_params['export']})
             return response
-        return Response(data)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(data['products'], request, view=self)
+        return Response({
+            **data,
+            'products': page,
+            'count': paginator.page.paginator.count,
+            'next': paginator.get_next_link(),
+            'previous': paginator.get_previous_link(),
+        })
 
 
 class BranchProductPriceViewSet(viewsets.ModelViewSet):
@@ -1101,8 +1167,15 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
                 item for item in data['branches'] if item['id'] == branch.pk
             ]
             for product in data['products']:
+                branch_key = str(branch.pk)
                 product['prices'] = {
-                    str(branch.pk): product['prices'].get(str(branch.pk))
+                    branch_key: product['prices'].get(branch_key)
+                }
+                product['availability'] = {
+                    branch_key: product['availability'].get(branch_key, False)
+                }
+                product['cells'] = {
+                    branch_key: product['cells'][branch_key]
                 }
         overrides = self.get_queryset().order_by('product__name', 'id')
         data['overrides'] = self.get_serializer(overrides, many=True).data

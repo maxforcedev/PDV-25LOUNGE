@@ -5,7 +5,7 @@ import { reportMenuPermissions } from "@/lib/permissions";
 
 const legacy: Record<string, string> = {
   sales: "vendas", consumptions: "consumacoes", cash: "caixa",
-  withdrawals: "sangrias", "inventory-movements": "consumo-estoque",
+  withdrawals: "sangrias", "inventory-movements": "movimentacoes",
   "stock-consumption": "consumo-estoque", "operational-result": "resultado",
 };
 
