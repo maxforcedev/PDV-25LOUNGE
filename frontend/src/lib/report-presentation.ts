@@ -5,12 +5,12 @@ export type ReportCenterItem = {
 };
 
 export type ReportCenterGroup = {
-  title: "Vendas" | "Financeiro" | "Estoque";
+  title: "Vendas" | "Financeiro" | "Estoque" | "Inventários";
   description: string;
   reports: readonly ReportCenterItem[];
 };
 
-export const phaseOneReportGroups: readonly ReportCenterGroup[] = [
+export const reportGroups: readonly ReportCenterGroup[] = [
   {
     title: "Vendas",
     description: "Operações, recebimentos, desempenho e cancelamentos.",
@@ -40,11 +40,33 @@ export const phaseOneReportGroups: readonly ReportCenterGroup[] = [
     title: "Estoque",
     description: "Movimentações, consumo, custos e preços por filial.",
     reports: [
+      { href: "/relatorios/posicao-estoque", label: "Posição de estoque", permission: "inventory.report.view" },
       { href: "/relatorios/movimentacoes", label: "Movimentações de estoque", permission: "reports.view_inventory" },
       { href: "/relatorios/precos", label: "Preços por filial", permission: "reports.view_prices" },
+      { href: "/relatorios/transferencias", label: "Transferências de estoque", permission: "inventory.report.view" },
+    ],
+  },
+  {
+    title: "Inventários",
+    description: "Contagens físicas, divergências e impacto histórico.",
+    reports: [
+      { href: "/relatorios/inventarios", label: "Inventários realizados", permission: "inventory.report.view" },
     ],
   },
 ];
+
+export const phaseOneReportGroups: readonly ReportCenterGroup[] = reportGroups
+  .filter((group) => group.title !== "Inventários")
+  .map((group) => ({
+    ...group,
+    reports: group.reports.filter(
+      (report) =>
+        ![
+          "/relatorios/posicao-estoque",
+          "/relatorios/transferencias",
+        ].includes(report.href),
+    ),
+  }));
 
 export type BranchPriceState =
   | { kind: "unavailable"; price: null; detail: "Não disponível" }

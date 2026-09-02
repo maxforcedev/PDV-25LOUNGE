@@ -4,9 +4,12 @@ import json
 from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
-from django.db.models import Count, DecimalField, Q, Sum
+from django.db.models import (
+    Case, Count, DecimalField, ExpressionWrapper, F, Q, Sum, Value, When,
+)
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
+from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -29,7 +32,13 @@ from apps.commands.models import (
     OrderItemStatus,
 )
 from apps.inventory.content import exact_sum
-from apps.inventory.models import MovementType
+from apps.inventory.models import (
+    InventoryCountItem,
+    MovementType,
+    TransferDivergence,
+    TransferDivergenceStatus,
+    StockTransferItem,
+)
 from apps.products.models import Category, Product
 from apps.sales.models import OperationType, PaymentMethod, Sale, SaleStatus
 from apps.sales.serializers import readable_user_name
@@ -48,10 +57,13 @@ from .selectors import (
     dashboard_time_analysis,
     event_rows,
     filtered_cash_sessions,
+    filtered_inventory_counts,
     filtered_inventory_movements,
     filtered_sales,
+    filtered_stock_transfers,
     period_event_sales,
     stock_consumption_report,
+    stock_position_report,
     filtered_withdrawals,
     inventory_kpis,
     hourly_sales,
@@ -72,6 +84,8 @@ from .serializers import (
     CashSessionReportSerializer,
     CancellationReportSerializer,
     ConsumptionsReportQuerySerializer,
+    InventoryCountReportSerializer,
+    InventoryCountsReportQuerySerializer,
     InventoryMovementReportSerializer,
     InventoryReportQuerySerializer,
     OperationalResultQuerySerializer,
@@ -81,6 +95,10 @@ from .serializers import (
     StockConsumptionMovementSerializer,
     StockConsumptionReportQuerySerializer,
     StockConsumptionSummarySerializer,
+    StockPositionReportQuerySerializer,
+    StockPositionReportSerializer,
+    StockTransferReportSerializer,
+    StockTransfersReportQuerySerializer,
     WithdrawalReportSerializer,
     WithdrawalsReportQuerySerializer,
 )
@@ -111,6 +129,12 @@ def payment_distribution(rows, total_received):
 
 
 def overview_comparison_data(request, *, start, end, filters):
+    def numeric_decimal(value):
+        if isinstance(value, bool) or not isinstance(value, (Decimal, int, float)):
+            return None
+        decimal_value = value if isinstance(value, Decimal) else Decimal(str(value))
+        return decimal_value if decimal_value.is_finite() else None
+
     def period_values(period_start, period_end):
         sales, reversals = period_event_sales(
             branch=request.branch_context, start=period_start, end=period_end,
@@ -168,21 +192,40 @@ def overview_comparison_data(request, *, start, end, filters):
     previous = period_values(previous_start, previous_end)
     deltas = {}
     for key, current_value in current.items():
-        previous_value = previous.get(key, Decimal('0.00'))
-        difference = current_value - previous_value
+        previous_value = previous.get(key)
+        current_number = numeric_decimal(current_value)
+        previous_number = numeric_decimal(previous_value)
+        if current_number is None or previous_number is None:
+            deltas[key] = {
+                'amount': None,
+                'percentage': None,
+                'direction': None,
+                'comparable': False,
+            }
+            continue
+        difference = current_number - previous_number
         percentage = (
-            difference * Decimal('100') / abs(previous_value)
-            if previous_value else None
+            difference * Decimal('100') / abs(previous_number)
+            if previous_number else None
         )
         deltas[key] = {
             'amount': decimal_string(difference),
             'percentage': decimal_string(percentage) if percentage is not None else None,
             'direction': 'up' if difference > 0 else 'down' if difference < 0 else 'stable',
+            'comparable': True,
         }
-    serialize = lambda values: {
-        key: (int(value) if key == 'sales_count' else decimal_string(value))
-        for key, value in values.items()
-    }
+
+    def serialize(values):
+        result = {}
+        for key, value in values.items():
+            numeric_value = numeric_decimal(value)
+            result[key] = (
+                None if numeric_value is None else
+                int(numeric_value) if key == 'sales_count' else
+                decimal_string(numeric_value)
+            )
+        return result
+
     return {
         'current_period': canonical_datetime_range(start, end),
         'previous_period': canonical_datetime_range(previous_start, previous_end),
@@ -299,6 +342,7 @@ class ReportsOptionsView(APIView):
         can_view_inventory = any(user_has_code(request, code) for code in (
             'reports.view_inventory', 'reports.view_stock_consumption',
         ))
+        can_view_phase_two = user_has_code(request, 'inventory.report.view')
         can_view_sales_data = any(user_has_code(request, code) for code in (
             'reports.view_sales', 'reports.view_products', 'reports.view_receipts',
             'reports.view_discounts', 'reports.view_cancellations', 'dashboard.view',
@@ -311,6 +355,7 @@ class ReportsOptionsView(APIView):
         ))
         can_view_products = (
             can_view_sales_data or can_view_consumptions or can_view_inventory
+            or can_view_phase_two
         )
         users = User.objects.filter(
             is_active=True,
@@ -354,6 +399,12 @@ class ReportsOptionsView(APIView):
         sellers = User.objects.filter(
             Q(id__in=eligible_seller_ids) | Q(id__in=historical_seller_ids)
         ).distinct().order_by('first_name', 'last_name', 'id') if can_view_sellers else User.objects.none()
+        inventory_users = User.objects.filter(
+            is_active=True,
+            archived_at__isnull=True,
+            company_accesses__company_id=branch.company_id,
+            company_accesses__is_active=True,
+        ).distinct().order_by('first_name', 'last_name', 'id') if can_view_phase_two else User.objects.none()
         return Response({
             'operators': [
                 {'id': user.pk, 'name': readable_user_name(user)} for user in operators
@@ -369,6 +420,10 @@ class ReportsOptionsView(APIView):
                     'user_type': user.user_type,
                 }
                 for user in users
+            ],
+            'inventory_users': [
+                {'id': user.pk, 'name': readable_user_name(user)}
+                for user in inventory_users
             ],
             'customers': [
                 {'id': customer.pk, 'name': customer.name}
@@ -2246,6 +2301,219 @@ class InventoryMovementsReportView(BaseReportView):
                     'historical_cost_impact': decimal_string(historical_cost_impact),
                 } if user_has_code(request, 'inventory.view_stock_costs') else {}),
             },
+        )
+
+
+class StockPositionReportView(BaseReportView):
+    required_permission = 'inventory.report.view'
+    query_serializer_class = StockPositionReportQuerySerializer
+    row_serializer_class = StockPositionReportSerializer
+    csv_filename = 'relatorio-posicao-estoque.csv'
+    csv_headers = (
+        'product', 'category', 'unit', 'current_quantity', 'minimum_quantity',
+        'maximum_quantity', 'average_unit_cost', 'last_unit_cost',
+        'inventory_value', 'state',
+    )
+
+    def serialize_rows(self, rows, request):
+        return self.row_serializer_class(
+            rows,
+            many=True,
+            context={
+                'request': request,
+                'include_cost': user_has_code(request, 'inventory.view_stock_costs'),
+            },
+        ).data
+
+    def export_headers(self, request):
+        if user_has_code(request, 'inventory.view_stock_costs'):
+            return self.csv_headers
+        return tuple(
+            header for header in self.csv_headers
+            if header not in (
+                'average_unit_cost', 'last_unit_cost', 'inventory_value',
+            )
+        )
+
+    def get(self, request):
+        serializer = self.query_serializer_class(
+            data=request.query_params, context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        rows = stock_position_report(
+            branch=request.branch_context, filters=serializer.validated_data,
+        )
+        active_rows = rows.filter(product__archived_at__isnull=True)
+        summary = active_rows.aggregate(
+            below_minimum=Count('pk', filter=Q(
+                current_quantity__gt=0,
+                current_quantity__lt=F('minimum_quantity'),
+            )),
+            zero=Count('pk', filter=Q(current_quantity=0)),
+            negative=Count('pk', filter=Q(current_quantity__lt=0)),
+        )
+        summary['product_count'] = active_rows.count()
+        if user_has_code(request, 'inventory.view_stock_costs'):
+            money_field = DecimalField(max_digits=40, decimal_places=12)
+            current_value = ExpressionWrapper(
+                F('current_quantity') * Coalesce(
+                    F('average_unit_cost'), F('product__cost'),
+                    output_field=money_field,
+                ),
+                output_field=money_field,
+            )
+            summary['inventory_value'] = decimal_string(active_rows.aggregate(
+                total=Coalesce(
+                    Sum(Case(
+                        When(current_quantity__gt=0, then=current_value),
+                        default=Value(Decimal('0'), output_field=money_field),
+                        output_field=money_field,
+                    )),
+                    Value(Decimal('0'), output_field=money_field),
+                )
+            )['total'])
+        return self.respond(
+            request,
+            rows=rows,
+            period={'as_of': timezone.now().isoformat()},
+            summary=summary,
+        )
+
+
+class InventoryCountsReportView(BaseReportView):
+    required_permission = 'inventory.report.view'
+    query_serializer_class = InventoryCountsReportQuerySerializer
+    row_serializer_class = InventoryCountReportSerializer
+    csv_filename = 'relatorio-inventarios-realizados.csv'
+    csv_headers = (
+        'id', 'date', 'branch', 'responsible', 'status', 'mode', 'item_count',
+        'correct_count', 'shortage_count', 'surplus_count', 'financial_impact',
+        'items',
+    )
+
+    def serialize_rows(self, rows, request):
+        return self.row_serializer_class(
+            rows,
+            many=True,
+            context={
+                'request': request,
+                'include_cost': user_has_code(request, 'inventory.view_stock_costs'),
+            },
+        ).data
+
+    def export_headers(self, request):
+        if user_has_code(request, 'inventory.view_stock_costs'):
+            return self.csv_headers
+        return tuple(
+            header for header in self.csv_headers if header != 'financial_impact'
+        )
+
+    def get(self, request):
+        filters, start, end = self.parse_query(request)
+        rows = filtered_inventory_counts(
+            branch=request.branch_context, start=start, end=end, filters=filters,
+        )
+        item_rows = InventoryCountItem.objects.filter(
+            inventory_count_id__in=rows.order_by().values('pk')
+        )
+        if filters.get('product') is not None:
+            item_rows = item_rows.filter(product_id=filters['product'])
+        if filters.get('category') is not None:
+            item_rows = item_rows.filter(
+                product__branch_configs__branch=request.branch_context,
+                product__branch_configs__category_id=filters['category'],
+            )
+        summary = item_rows.aggregate(
+            item_count=Count('pk'),
+            divergent_count=Count('pk', filter=~Q(difference_quantity=0)),
+            correct_count=Count('pk', filter=Q(difference_quantity=0)),
+            shortage_count=Count('pk', filter=Q(difference_quantity__lt=0)),
+            surplus_count=Count('pk', filter=Q(difference_quantity__gt=0)),
+        )
+        summary['inventory_count'] = rows.count()
+        if user_has_code(request, 'inventory.view_stock_costs'):
+            money_field = DecimalField(max_digits=40, decimal_places=12)
+            summary['financial_impact'] = decimal_string(item_rows.aggregate(
+                total=Coalesce(
+                    Sum('cost_impact'),
+                    Value(Decimal('0'), output_field=money_field),
+                    output_field=money_field,
+                )
+            )['total'])
+        return self.respond(
+            request,
+            rows=rows,
+            period=canonical_datetime_range(start, end),
+            summary=summary,
+        )
+
+
+class StockTransfersReportView(BaseReportView):
+    required_permission = 'inventory.report.view'
+    query_serializer_class = StockTransfersReportQuerySerializer
+    row_serializer_class = StockTransferReportSerializer
+    csv_filename = 'relatorio-transferencias-estoque.csv'
+    csv_headers = (
+        'id', 'origin', 'destination', 'date', 'responsible', 'status',
+        'item_count', 'quantities_by_unit', 'cost_value', 'items',
+    )
+
+    def serialize_rows(self, rows, request):
+        return self.row_serializer_class(
+            rows,
+            many=True,
+            context={
+                'request': request,
+                'include_cost': user_has_code(request, 'inventory.view_stock_costs'),
+            },
+        ).data
+
+    def export_headers(self, request):
+        if user_has_code(request, 'inventory.view_stock_costs'):
+            return self.csv_headers
+        return tuple(header for header in self.csv_headers if header != 'cost_value')
+
+    def get(self, request):
+        filters, start, end = self.parse_query(request)
+        rows = filtered_stock_transfers(
+            branch=request.branch_context, start=start, end=end, filters=filters,
+        )
+        item_rows = StockTransferItem.objects.filter(
+            transfer_id__in=rows.order_by().values('pk')
+        )
+        if filters.get('product') is not None:
+            item_rows = item_rows.filter(product_id=filters['product'])
+        divergences = TransferDivergence.objects.filter(
+            transfer_item_id__in=item_rows.values('pk')
+        )
+        summary = {
+            'transfer_count': rows.count(),
+            'item_count': item_rows.count(),
+            'divergent_transfer_count': divergences.values(
+                'transfer_item__transfer_id'
+            ).distinct().count(),
+            'pending_divergence_count': divergences.filter(
+                status=TransferDivergenceStatus.PENDING
+            ).count(),
+        }
+        if user_has_code(request, 'inventory.view_stock_costs'):
+            money_field = DecimalField(max_digits=40, decimal_places=12)
+            cost_expression = ExpressionWrapper(
+                F('dispatched_quantity') * F('origin_unit_cost_snapshot'),
+                output_field=money_field,
+            )
+            summary['cost_value'] = decimal_string(item_rows.aggregate(
+                total=Coalesce(
+                    Sum(cost_expression),
+                    Value(Decimal('0'), output_field=money_field),
+                    output_field=money_field,
+                )
+            )['total'])
+        return self.respond(
+            request,
+            rows=rows,
+            period=canonical_datetime_range(start, end),
+            summary=summary,
         )
 
 

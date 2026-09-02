@@ -6,10 +6,13 @@ from .views import (
     ConsumptionsReportView,
     DashboardView,
     InventoryMovementsReportView,
+    InventoryCountsReportView,
     OperationalResultReportView,
     ReportsOptionsView,
     SalesReportView,
     StockConsumptionReportView,
+    StockPositionReportView,
+    StockTransfersReportView,
     WithdrawalsReportView,
 )
 
@@ -36,5 +39,20 @@ urlpatterns = [
         'reports/stock-consumption/',
         StockConsumptionReportView.as_view(),
         name='report-stock-consumption',
+    ),
+    path(
+        'reports/stock-position/',
+        StockPositionReportView.as_view(),
+        name='report-stock-position',
+    ),
+    path(
+        'reports/inventory-counts/',
+        InventoryCountsReportView.as_view(),
+        name='report-inventory-counts',
+    ),
+    path(
+        'reports/stock-transfers/',
+        StockTransfersReportView.as_view(),
+        name='report-stock-transfers',
     ),
 ]

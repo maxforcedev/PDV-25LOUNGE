@@ -76,8 +76,8 @@ class StockSerializer(serializers.ModelSerializer):
             'product_deleted_at', 'inventory_behavior',
             'average_unit_cost', 'last_unit_cost', 'current_quantity',
             'equivalent_quantity', 'current_content', 'package_content',
-            'content_unit', 'complete_packages', 'residual_content',
-            'minimum_quantity', 'state', 'created_at', 'updated_at',
+             'content_unit', 'complete_packages', 'residual_content',
+             'minimum_quantity', 'maximum_quantity', 'state', 'created_at', 'updated_at',
         )
         read_only_fields = fields
 
@@ -171,11 +171,18 @@ class MinimumQuantitySerializer(serializers.Serializer):
     minimum_quantity = serializers.DecimalField(
         max_digits=14, decimal_places=3, min_value=Decimal('0')
     )
+    maximum_quantity = serializers.DecimalField(
+        max_digits=14, decimal_places=3, min_value=Decimal('0'),
+        required=False, allow_null=True,
+    )
 
-    def update(self, instance, validated_data):
-        instance.minimum_quantity = validated_data['minimum_quantity']
-        instance.save(update_fields=('minimum_quantity', 'updated_at'))
-        return instance
+    def validate(self, attrs):
+        maximum = attrs.get('maximum_quantity')
+        if maximum is not None and maximum < attrs['minimum_quantity']:
+            raise serializers.ValidationError({
+                'maximum_quantity': 'O estoque máximo deve ser maior ou igual ao mínimo.'
+            })
+        return attrs
 
 
 class InventoryQuerySerializer(serializers.Serializer):

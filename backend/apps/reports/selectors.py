@@ -9,6 +9,7 @@ from django.db.models import (
     F,
     IntegerField,
     OuterRef,
+    Prefetch,
     Q,
     Subquery,
     Sum,
@@ -19,13 +20,20 @@ from django.db.models.functions import Coalesce, ExtractHour, ExtractIsoWeekDay,
 from django.utils import timezone
 
 from apps.cash.models import CashMovement, CashMovementType, CashSession, CashSessionStatus, ResultEffect
-from apps.companies.models import BranchSettings
+from apps.companies.models import BranchSettings, Status
 from apps.inventory.content import (
     exact_multiply, exact_multiply_quantized, exact_sum,
 )
-from apps.inventory.models import Stock, StockMovement
-from apps.inventory.models import MovementType
-from apps.products.models import InventoryBehavior
+from apps.inventory.models import (
+    InventoryCount,
+    InventoryCountItem,
+    MovementType,
+    Stock,
+    StockMovement,
+    StockTransfer,
+    StockTransferItem,
+)
+from apps.products.models import InventoryBehavior, ProductBranchConfig
 from apps.products.selectors import operational_product_configs
 from apps.sales.models import OperationType, Payment, PaymentMethod, PaymentMethodCode, Sale, SaleItem, SaleStatus
 
@@ -1406,3 +1414,134 @@ def inventory_kpis(branch, *, include_value=False, category=None):
             for stock, quantity in zip(stocks, quantities)
         ).quantize(CENT, rounding=ROUND_HALF_UP)
     return result
+
+
+def stock_position_report(*, branch, filters):
+    configs = ProductBranchConfig.objects.filter(branch=branch).select_related('category')
+    queryset = Stock.objects.select_related(
+        'product', 'product__fraction_config', 'branch',
+    ).prefetch_related(Prefetch(
+        'product__branch_configs',
+        queryset=configs,
+        to_attr='_report_branch_configs',
+    )).filter(
+        branch=branch,
+        product__inventory_behavior=InventoryBehavior.DIRECT,
+        product__branch_configs__branch=branch,
+    ).filter(
+        Q(
+            product__archived_at__isnull=True,
+            product__status=Status.ACTIVE,
+            product__branch_configs__is_available=True,
+        )
+        | Q(product__archived_at__isnull=False) & ~Q(current_quantity=0)
+    )
+    if filters.get('product') is not None:
+        queryset = queryset.filter(product_id=filters['product'])
+    if filters.get('category') is not None:
+        queryset = queryset.filter(
+            product__branch_configs__category_id=filters['category']
+        )
+    if filters.get('search'):
+        queryset = queryset.filter(
+            Q(product__name__icontains=filters['search'])
+            | Q(product__internal_code__icontains=filters['search'])
+        )
+    state = filters.get('state')
+    if state == 'archived_with_stock':
+        queryset = queryset.filter(
+            product__archived_at__isnull=False,
+        ).exclude(current_quantity=0)
+    elif state == 'negative':
+        queryset = queryset.filter(
+            product__archived_at__isnull=True, current_quantity__lt=0,
+        )
+    elif state == 'zero':
+        queryset = queryset.filter(
+            product__archived_at__isnull=True, current_quantity=0,
+        )
+    elif state == 'below_minimum':
+        queryset = queryset.filter(
+            product__archived_at__isnull=True,
+            current_quantity__gt=0,
+            current_quantity__lt=F('minimum_quantity'),
+        )
+    elif state == 'normal':
+        queryset = queryset.filter(
+            product__archived_at__isnull=True,
+            current_quantity__gt=0,
+            current_quantity__gte=F('minimum_quantity'),
+        )
+    ordering = filters.get('ordering', 'product')
+    order_field = 'current_quantity' if ordering.lstrip('-') == 'balance' else 'product__name'
+    prefix = '-' if ordering.startswith('-') else ''
+    return queryset.distinct().order_by(f'{prefix}{order_field}', 'pk')
+
+
+def filtered_inventory_counts(*, branch, start, end, filters):
+    item_queryset = InventoryCountItem.objects.select_related('product').order_by(
+        'product__name', 'pk'
+    )
+    if filters.get('product') is not None:
+        item_queryset = item_queryset.filter(product_id=filters['product'])
+    if filters.get('category') is not None:
+        item_queryset = item_queryset.filter(
+            product__branch_configs__branch=branch,
+            product__branch_configs__category_id=filters['category'],
+        )
+    queryset = InventoryCount.objects.select_related(
+        'branch', 'created_by', 'confirmed_by',
+    ).prefetch_related(Prefetch(
+        'items', queryset=item_queryset, to_attr='_report_items',
+    )).filter(branch=branch).annotate(
+        report_date=Coalesce('confirmed_at', 'created_at')
+    ).filter(
+        report_date__gte=start,
+        report_date__lt=period_end_exclusive(end),
+    )
+    if filters.get('status'):
+        queryset = queryset.filter(status=filters['status'])
+    if filters.get('responsible') is not None:
+        queryset = queryset.filter(created_by_id=filters['responsible'])
+    if filters.get('product') is not None:
+        queryset = queryset.filter(items__product_id=filters['product'])
+    if filters.get('category') is not None:
+        queryset = queryset.filter(
+            items__product__branch_configs__branch=branch,
+            items__product__branch_configs__category_id=filters['category'],
+        )
+    return queryset.distinct().order_by('-report_date', '-id')
+
+
+def filtered_stock_transfers(*, branch, start, end, filters):
+    item_queryset = StockTransferItem.objects.select_related('product').prefetch_related(
+        'receipt_items', 'divergence__resolutions',
+    ).order_by('id')
+    if filters.get('product') is not None:
+        item_queryset = item_queryset.filter(product_id=filters['product'])
+    queryset = StockTransfer.objects.select_related(
+        'origin_branch', 'destination_branch', 'created_by', 'dispatched_by',
+    ).prefetch_related(Prefetch(
+        'items', queryset=item_queryset, to_attr='_report_items',
+    )).filter(
+        Q(origin_branch=branch) | Q(destination_branch=branch)
+    ).annotate(
+        report_date=Coalesce('dispatched_at', 'created_at')
+    ).filter(
+        report_date__gte=start,
+        report_date__lt=period_end_exclusive(end),
+    )
+    if filters.get('status'):
+        queryset = queryset.filter(status=filters['status'])
+    if filters.get('responsible') is not None:
+        queryset = queryset.filter(
+            Q(dispatched_by_id=filters['responsible'])
+            | Q(dispatched_at__isnull=True, created_by_id=filters['responsible'])
+        )
+    if filters.get('product') is not None:
+        queryset = queryset.filter(items__product_id=filters['product'])
+    if filters.get('direction') == 'incoming':
+        queryset = queryset.filter(destination_branch=branch)
+    elif filters.get('direction') == 'outgoing':
+        queryset = queryset.filter(origin_branch=branch)
+    return queryset.distinct().order_by('-report_date', '-id')

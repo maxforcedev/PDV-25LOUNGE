@@ -25,12 +25,14 @@ import {
   formatQuantity,
 } from "@/lib/format";
 import {
+  countStatusLabels,
   contentUnitLabel,
   divideInventoryDecimals,
   inventoryDecimalSign,
   physicalQuantityDisplay,
   subtractInventoryDecimals,
   sumInventoryDecimals,
+  transferStatusLabels,
 } from "@/lib/inventory";
 import { ApiError, http } from "@/lib/http";
 import { businessMonthToDate } from "@/lib/period";
@@ -59,6 +61,9 @@ export type ReportKind =
   | "withdrawals"
   | "stock-consumption"
   | "inventory-movements"
+  | "stock-position"
+  | "inventory-counts"
+  | "stock-transfers"
   | "cancellations"
   | "prices"
   | "result";
@@ -144,6 +149,24 @@ const configs: Record<
     description: "Entradas, saídas, ajustes, inventários e reversões da filial.",
     endpoint: "inventory-movements",
     permission: permissions.viewInventoryReport,
+  },
+  "stock-position": {
+    title: "Posição de estoque",
+    description: "Saldos, limites, custos e situação atual por produto.",
+    endpoint: "stock-position",
+    permission: permissions.viewAdvancedInventory,
+  },
+  "inventory-counts": {
+    title: "Inventários realizados",
+    description: "Contagens físicas, divergências e impacto financeiro histórico.",
+    endpoint: "inventory-counts",
+    permission: permissions.viewAdvancedInventory,
+  },
+  "stock-transfers": {
+    title: "Transferências de estoque",
+    description: "Envios, recebimentos e diferenças entre filiais.",
+    endpoint: "stock-transfers",
+    permission: permissions.viewAdvancedInventory,
   },
   cancellations: {
     title: "Cancelamentos e estornos",
@@ -333,7 +356,9 @@ function Kpi({
   format?: "money" | "number" | "quantity" | "percent";
 }) {
   const display =
-    format === "money"
+    value == null
+      ? "—"
+      : format === "money"
       ? formatBRL(String(value || "0"))
       : format === "quantity"
         ? formatQuantity(String(value || "0"))
@@ -632,6 +657,31 @@ function reportKpis(
       ["Saídas", summary.exits, "quantity"],
       ["Saldo dos movimentos", summary.equivalent_quantity, "quantity"],
       ...(canViewCosts && summary.historical_cost_impact !== undefined ? [["Impacto em custo", summary.historical_cost_impact, "money"] as [string, unknown, "money"]] : []),
+    ],
+    "stock-position": [
+      ...(canViewCosts && summary.inventory_value !== undefined
+        ? [["Valor total em estoque", summary.inventory_value, "money"] as [string, unknown, "money"]]
+        : [["Produtos físicos", summary.product_count, "number"] as [string, unknown, "number"]]),
+      ["Abaixo do mínimo", summary.below_minimum, "number"],
+      ["Zerados", summary.zero, "number"],
+      ["Negativos", summary.negative, "number"],
+    ],
+    "inventory-counts": [
+      ["Inventários", summary.inventory_count, "number"],
+      ["Itens contados", summary.item_count, "number"],
+      ["Divergentes", summary.divergent_count, "number"],
+      ...(canViewCosts && summary.financial_impact !== undefined
+        ? [["Impacto financeiro", summary.financial_impact, "money"] as [string, unknown, "money"]]
+        : [["Itens corretos", summary.correct_count, "number"] as [string, unknown, "number"]]),
+    ],
+    "stock-transfers": [
+      ["Transferências", summary.transfer_count, "number"],
+      ["Itens", summary.item_count, "number"],
+      ["Com divergência", summary.divergent_transfer_count, "number"],
+      ["Divergências pendentes", summary.pending_divergence_count, "number"],
+      ...(canViewCosts && summary.cost_value !== undefined
+        ? [["Custo enviado", summary.cost_value, "money"] as [string, unknown, "money"]]
+        : []),
     ],
     cancellations: [
       ["Vendas canceladas", summary.sale_cancellation_count, "number"],
@@ -2302,6 +2352,104 @@ function InventoryMovementsTable({
   );
 }
 
+const stockStateLabels: Record<string, string> = {
+  normal: "Normal",
+  below_minimum: "Abaixo do mínimo",
+  zero: "Zerado",
+  negative: "Negativo",
+  archived_with_stock: "Arquivado com saldo",
+};
+
+function InventoryStateBadge({ value }: { value: unknown }) {
+  const state = String(value || "");
+  const tone =
+    state === "normal" || state === "exact" || state === "CONFIRMED" || state === "RECEIVED"
+      ? "bg-success/10 text-success-strong"
+      : state === "negative" || state === "shortage" || state === "RECEIVED_WITH_DIVERGENCE"
+        ? "bg-danger/10 text-danger-strong"
+        : "bg-warning/15 text-warning-strong";
+  const label =
+    stockStateLabels[state] ||
+    countStatusLabels[state as keyof typeof countStatusLabels] ||
+    transferStatusLabels[state as keyof typeof transferStatusLabels] ||
+    ({ exact: "Exato", shortage: "Falta", surplus: "Sobra" } as Record<string, string>)[state] ||
+    domainLabel(state);
+  return <span className={`inline-flex rounded-full px-2 py-1 text-[10px] font-bold ${tone}`}>{label}</span>;
+}
+
+function StockPositionTable({
+  data,
+  canViewCosts,
+}: {
+  data: ReportResponse<Record<string, unknown>>;
+  canViewCosts: boolean;
+}) {
+  if (!data.results.length)
+    return <EmptyState title="Sem saldos" description="Nenhum produto corresponde aos filtros aplicados." />;
+  return <>
+    <div className="divide-y divide-subtle md:hidden">{data.results.map((row) => {
+      const product = row.product as Record<string, unknown>;
+      const category = row.category as Record<string, unknown> | null;
+      return <article key={`stock-position-mobile:${String(row.id)}`} className="space-y-3 p-4 text-xs"><div className="flex items-start justify-between gap-3"><span><strong className="block text-sm">{String(product.name)}</strong><small className="text-muted">{String(product.internal_code || category?.name || "Sem categoria")}</small></span><InventoryStateBadge value={row.state} /></div><dl className="grid grid-cols-2 gap-3"><div><dt className="text-muted">Saldo atual</dt><dd className="font-bold">{formatQuantity(String(row.current_quantity))} {String(row.unit).toUpperCase()}</dd></div><div><dt className="text-muted">Limites</dt><dd>{formatQuantity(String(row.minimum_quantity))} / {row.maximum_quantity == null ? "Sem máximo" : formatQuantity(String(row.maximum_quantity))}</dd></div>{canViewCosts && row.inventory_value !== undefined && <><div><dt className="text-muted">Custo médio</dt><dd>{row.average_unit_cost == null ? "-" : formatBRL(String(row.average_unit_cost))}</dd></div><div><dt className="text-muted">Valor em estoque</dt><dd className="font-bold">{formatBRL(String(row.inventory_value))}</dd></div></>}</dl></article>;
+    })}</div>
+    <div className="table-wrap hidden md:block"><table className="data-table min-w-280"><thead><tr><th>Produto</th><th>Categoria</th><th>Unidade</th><th>Saldo atual</th><th>Mínimo</th><th>Máximo</th>{canViewCosts && <><th>Custo médio</th><th>Último custo</th><th>Valor em estoque</th></>}<th>Situação</th></tr></thead><tbody>{data.results.map((row) => { const product = row.product as Record<string, unknown>; const category = row.category as Record<string, unknown> | null; return <tr key={`stock-position:${String(row.id)}`}><td><strong>{String(product.name)}</strong><small className="block text-muted">{String(product.internal_code || "")}</small></td><td>{String(category?.name || "Sem categoria")}</td><td>{String(row.unit).toUpperCase()}</td><td className="font-bold">{formatQuantity(String(row.current_quantity))}</td><td>{formatQuantity(String(row.minimum_quantity))}</td><td>{row.maximum_quantity == null ? "-" : formatQuantity(String(row.maximum_quantity))}</td>{canViewCosts && <><td>{row.average_unit_cost == null ? "-" : formatBRL(String(row.average_unit_cost))}</td><td>{row.last_unit_cost == null ? "-" : formatBRL(String(row.last_unit_cost))}</td><td className="font-bold">{row.inventory_value == null ? "-" : formatBRL(String(row.inventory_value))}</td></>}<td><InventoryStateBadge value={row.state} /></td></tr>; })}</tbody></table></div>
+  </>;
+}
+
+function inventoryCountQuantity(item: Record<string, unknown>, kind: "expected" | "counted" | "difference") {
+  const quantityKey = kind === "expected" ? "expected_quantity" : `${kind}_quantity`;
+  const contentKey = kind === "expected" ? "theoretical_content" : `${kind}_content`;
+  return physicalQuantityDisplay({
+    quantity: item[quantityKey] as string,
+    unit: String(item.unit || ""),
+    content: item[contentKey] as string | undefined,
+    packageContent: item.package_content as string | undefined,
+    contentUnit: String(item.content_unit || ""),
+    completePackages: item[`${kind}_complete_packages`] as string | undefined,
+    residualContent: item[`${kind}_residual_content`] as string | undefined,
+  });
+}
+
+function InventoryCountDetails({ items, canViewCosts }: { items: Array<Record<string, unknown>>; canViewCosts: boolean }) {
+  if (!items.length) return <span className="text-muted">Sem itens neste recorte</span>;
+  return <div className="table-wrap mt-3"><table className="data-table min-w-180"><thead><tr><th>Produto</th><th>Saldo esperado</th><th>Contagem</th><th>Divergência</th><th>Tipo</th>{canViewCosts && <><th>Custo</th><th>Impacto</th></>}</tr></thead><tbody>{items.map((item) => { const product = item.product as Record<string, unknown>; return <tr key={`count-item:${String(item.id)}`}><td><strong>{String(product.name)}</strong><small className="block text-muted">{String(product.internal_code || "")}</small></td><td>{inventoryCountQuantity(item, "expected")}</td><td>{inventoryCountQuantity(item, "counted")}</td><td className={item.type === "shortage" ? "text-danger-strong" : item.type === "surplus" ? "text-warning-strong" : "text-success-strong"}>{inventoryCountQuantity(item, "difference")}</td><td><InventoryStateBadge value={item.type} /></td>{canViewCosts && <><td>{item.unit_cost_snapshot == null ? "-" : formatBRL(String(item.unit_cost_snapshot))}</td><td>{item.cost_impact == null ? "-" : formatBRL(String(item.cost_impact))}</td></>}</tr>; })}</tbody></table></div>;
+}
+
+function InventoryCountsTable({ data, canViewCosts }: { data: ReportResponse<Record<string, unknown>>; canViewCosts: boolean }) {
+  if (!data.results.length) return <EmptyState title="Sem inventários" description="Nenhuma contagem foi encontrada no período." />;
+  return <>
+    <div className="divide-y divide-subtle md:hidden">{data.results.map((row) => { const branch = row.branch as Record<string, unknown>; const responsible = row.responsible as Record<string, unknown>; const items = rows(row.items); return <article key={`inventory-count-mobile:${String(row.id)}`} className="p-4"><div className="flex items-start justify-between gap-3"><div><Link href={`/estoque/inventarios/${String(row.id)}`} className="font-bold text-link">Inventário {String(row.id).slice(0, 8).toUpperCase()}</Link><small className="mt-1 block text-muted">{formatDate(String(row.date))} · {String(branch.name)}</small></div><InventoryStateBadge value={row.status} /></div><p className="mt-3 text-xs text-muted">Responsável: <strong className="text-fg">{String(responsible.name)}</strong></p><div className="mt-3 grid grid-cols-4 gap-2 text-center text-xs"><span><strong className="block">{String(row.item_count)}</strong><small className="text-muted">Itens</small></span><span className="text-success-strong"><strong className="block">{String(row.correct_count)}</strong><small>Corretos</small></span><span className="text-danger-strong"><strong className="block">{String(row.shortage_count)}</strong><small>Faltas</small></span><span className="text-warning-strong"><strong className="block">{String(row.surplus_count)}</strong><small>Sobras</small></span></div>{canViewCosts && row.financial_impact !== undefined && <p className="mt-3 text-xs">Impacto: <strong>{formatBRL(String(row.financial_impact))}</strong></p>}<details className="mt-4 rounded-lg border border-subtle bg-surface-muted/40 px-3 py-2"><summary className="cursor-pointer text-xs font-bold">Ver detalhe por item</summary><InventoryCountDetails items={items} canViewCosts={canViewCosts} /></details></article>; })}</div>
+    <div className="table-wrap hidden md:block"><table className="data-table min-w-260"><thead><tr><th>Inventário</th><th>Data</th><th>Filial</th><th>Responsável</th><th>Status</th><th>Itens</th><th>Corretos</th><th>Faltas</th><th>Sobras</th>{canViewCosts && <th>Impacto financeiro</th>}</tr></thead>{data.results.map((row) => { const branch = row.branch as Record<string, unknown>; const responsible = row.responsible as Record<string, unknown>; const items = rows(row.items); return <tbody key={`inventory-count:${String(row.id)}`}><tr><td><Link href={`/estoque/inventarios/${String(row.id)}`} className="font-bold text-link">{String(row.id).slice(0, 8).toUpperCase()}</Link></td><td>{formatDate(String(row.date))}</td><td>{String(branch.name)}</td><td>{String(responsible.name)}</td><td><InventoryStateBadge value={row.status} /></td><td>{String(row.item_count)}</td><td className="text-success-strong">{String(row.correct_count)}</td><td className="text-danger-strong">{String(row.shortage_count)}</td><td className="text-warning-strong">{String(row.surplus_count)}</td>{canViewCosts && <td>{row.financial_impact == null ? "-" : formatBRL(String(row.financial_impact))}</td>}</tr><tr><td colSpan={canViewCosts ? 10 : 9} className="bg-surface-muted/30"><details><summary className="cursor-pointer text-xs font-bold">Detalhe dos itens contados</summary><InventoryCountDetails items={items} canViewCosts={canViewCosts} /></details></td></tr></tbody>; })}</table></div>
+  </>;
+}
+
+function TransferDetails({ items, canViewCosts }: { items: Array<Record<string, unknown>>; canViewCosts: boolean }) {
+  if (!items.length) return <span className="text-muted">Sem itens neste recorte</span>;
+  return <div className="table-wrap mt-3"><table className="data-table min-w-140"><thead><tr><th>Produto</th><th>Enviado</th><th>Recebido</th><th>Diferença</th>{canViewCosts && <><th>Custo unitário</th><th>Custo enviado</th></>}</tr></thead><tbody>{items.map((item) => { const product = item.product as Record<string, unknown>; return <tr key={`transfer-item:${String(item.id)}`}><td><strong>{String(product.name)}</strong><small className="block text-muted">{String(product.internal_code || "")}</small></td><td>{formatQuantity(String(item.sent_quantity))} {String(item.unit).toUpperCase()}</td><td>{formatQuantity(String(item.received_quantity))}</td><td className={inventoryDecimalSign(item.difference_quantity) === 1 ? "text-danger-strong" : "text-success-strong"}>{formatQuantity(String(item.difference_quantity))}</td>{canViewCosts && <><td>{item.unit_cost_snapshot == null ? "-" : formatBRL(String(item.unit_cost_snapshot))}</td><td>{item.cost_value == null ? "-" : formatBRL(String(item.cost_value))}</td></>}</tr>; })}</tbody></table></div>;
+}
+
+function TransferQuantityGroups({ groups, field }: { groups: Array<Record<string, unknown>>; field: "sent_quantity" | "received_quantity" | "difference_quantity" }) {
+  if (!groups.length) return <strong className="block">0</strong>;
+  return <span className="block space-y-0.5">{groups.map((group) => <strong key={`${field}:${String(group.unit)}`} className={`block ${field === "difference_quantity" && inventoryDecimalSign(group[field]) === 1 ? "text-danger-strong" : ""}`}>{formatQuantity(String(group[field]))} {String(group.unit).toUpperCase()}</strong>)}</span>;
+}
+
+function StockTransfersTable({ data, canViewCosts }: { data: ReportResponse<Record<string, unknown>>; canViewCosts: boolean }) {
+  const { hasPermission } = useAuth();
+  const canOpen = hasPermission(permissions.viewTransfers);
+  if (!data.results.length) return <EmptyState title="Sem transferências" description="Nenhuma transferência foi encontrada no período." />;
+  return <>
+  <div className="divide-y divide-subtle md:hidden">{data.results.map((row) => {
+    const origin = row.origin as Record<string, unknown>;
+    const destination = row.destination as Record<string, unknown>;
+    const responsible = row.responsible as Record<string, unknown>;
+    const items = rows(row.items);
+    const groups = rows(row.quantities_by_unit);
+    return <article key={`stock-transfer-mobile:${String(row.id)}`} className="p-4"><div className="flex items-start justify-between gap-3"><div>{canOpen ? <Link href={`/estoque/transferencias/${String(row.id)}`} className="font-bold text-link">Transferência {String(row.id).slice(0, 8).toUpperCase()}</Link> : <strong>Transferência {String(row.id).slice(0, 8).toUpperCase()}</strong>}<small className="mt-1 block text-muted">{String(origin.name)} → {String(destination.name)} · {formatDate(String(row.date))}</small></div><InventoryStateBadge value={row.status} /></div><p className="mt-3 text-xs text-muted">Responsável: <strong className="text-fg">{String(responsible.name)}</strong></p><div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs"><span><TransferQuantityGroups groups={groups} field="sent_quantity" /><small className="text-muted">Enviado</small></span><span><TransferQuantityGroups groups={groups} field="received_quantity" /><small className="text-muted">Recebido</small></span><span><TransferQuantityGroups groups={groups} field="difference_quantity" /><small className="text-muted">Diferença</small></span></div>{canViewCosts && row.cost_value !== undefined && <p className="mt-3 text-xs">Custo enviado: <strong>{formatBRL(String(row.cost_value))}</strong></p>}<details className="mt-4 rounded-lg border border-subtle bg-surface-muted/40 px-3 py-2"><summary className="cursor-pointer text-xs font-bold">Ver detalhe por produto</summary><TransferDetails items={items} canViewCosts={canViewCosts} /></details></article>;
+  })}</div>
+  <div className="table-wrap hidden md:block"><table className="data-table min-w-260"><thead><tr><th>Transferência</th><th>Origem</th><th>Destino</th><th>Data</th><th>Responsável</th><th>Status</th><th>Itens</th><th>Qtd. enviada</th><th>Qtd. recebida</th><th>Divergência</th>{canViewCosts && <th>Custo</th>}</tr></thead>{data.results.map((row) => { const origin = row.origin as Record<string, unknown>; const destination = row.destination as Record<string, unknown>; const responsible = row.responsible as Record<string, unknown>; const items = rows(row.items); const groups = rows(row.quantities_by_unit); return <tbody key={`stock-transfer:${String(row.id)}`}><tr><td>{canOpen ? <Link href={`/estoque/transferencias/${String(row.id)}`} className="font-bold text-link">{String(row.id).slice(0, 8).toUpperCase()}</Link> : <strong>{String(row.id).slice(0, 8).toUpperCase()}</strong>}</td><td>{String(origin.name)}</td><td>{String(destination.name)}</td><td>{formatDate(String(row.date))}</td><td>{String(responsible.name)}</td><td><InventoryStateBadge value={row.status} /></td><td>{String(row.item_count)}</td><td><TransferQuantityGroups groups={groups} field="sent_quantity" /></td><td><TransferQuantityGroups groups={groups} field="received_quantity" /></td><td><TransferQuantityGroups groups={groups} field="difference_quantity" /></td>{canViewCosts && <td>{row.cost_value == null ? "-" : formatBRL(String(row.cost_value))}</td>}</tr><tr><td colSpan={canViewCosts ? 11 : 10} className="bg-surface-muted/30"><details><summary className="cursor-pointer text-xs font-bold">Detalhe dos produtos transferidos</summary><TransferDetails items={items} canViewCosts={canViewCosts} /></details></td></tr></tbody>; })}</table></div>
+  </>;
+}
+
 function ResultStatement({
   summary,
   canViewCosts,
@@ -2454,7 +2602,7 @@ function OverviewAnalytics({ summary }: { summary: Record<string, unknown> }) {
     ["Consumação / cortesias", "consumptions_courtesies", "money"],
     ["Resultado estimado", "estimated_result", "money"],
     ["Margem estimada", "estimated_margin", "percent"],
-  ].filter(([, key]) => currentPeriod[key] !== undefined) as Array<[string, string, "money" | "number" | "percent"]>;
+  ].filter(([, key]) => currentPeriod[key] !== undefined || previousPeriod[key] !== undefined) as Array<[string, string, "money" | "number" | "percent"]>;
 
   return (
     <div className="grid gap-5 lg:grid-cols-2">
@@ -2551,8 +2699,9 @@ function OverviewAnalytics({ summary }: { summary: Record<string, unknown> }) {
       </section>
       {comparisonMetrics.length > 0 && <section className="card overflow-hidden lg:col-span-2"><div className="card-header"><div><h2 className="text-sm font-bold">Indicadores contra o período anterior</h2><p className="mt-1 text-[11px] text-muted">Variação absoluta e percentual para o mesmo intervalo imediatamente anterior.</p></div></div><div className="table-wrap"><table className="data-table"><thead><tr><th>Indicador</th><th>Atual</th><th>Anterior</th><th>Variação</th><th>Variação %</th></tr></thead><tbody>{comparisonMetrics.map(([label, key, format]) => {
         const delta = deltas[key] || {};
-        const display = (value: unknown) => format === "number" ? String(value ?? 0) : format === "percent" ? formatPercent(value) : formatBRL(String(value || "0"));
-        return <tr key={key}><td><strong>{label}</strong></td><td>{display(currentPeriod[key])}</td><td>{display(previousPeriod[key])}</td><td className={delta.direction === "down" ? "text-danger" : delta.direction === "up" ? "text-success-strong" : ""}>{display(delta.amount)}</td><td>{delta.percentage == null ? "Sem base" : formatPercent(delta.percentage)}</td></tr>;
+        const display = (value: unknown) => value == null ? "—" : format === "number" ? String(value) : format === "percent" ? formatPercent(value) : formatBRL(String(value));
+        const comparable = delta.comparable !== false && delta.amount != null;
+        return <tr key={key}><td><strong>{label}</strong></td><td>{display(currentPeriod[key])}</td><td>{display(previousPeriod[key])}</td><td className={comparable && delta.direction === "down" ? "text-danger" : comparable && delta.direction === "up" ? "text-success-strong" : ""}>{comparable ? display(delta.amount) : "—"}</td><td>{!comparable ? "Sem comparação" : delta.percentage == null ? "Sem base" : formatPercent(delta.percentage)}</td></tr>;
       })}</tbody></table></div></section>}
     </div>
   );
@@ -2626,6 +2775,12 @@ function ReportBody({
   if (kind === "stock-consumption") return <StockConsumption data={data} canViewCosts={canViewCosts} />;
   if (kind === "inventory-movements")
     return <section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Movimentações detalhadas</h2><p className="mt-1 text-[11px] text-muted">Transição de saldo e referência operacional.</p></div></div><InventoryMovementsTable data={data} canViewCosts={canViewCosts} /></section>;
+  if (kind === "stock-position")
+    return <section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Posição atual por produto</h2><p className="mt-1 text-[11px] text-muted">Produtos arquivados aparecem somente enquanto mantêm saldo.</p></div></div><StockPositionTable data={data} canViewCosts={canViewCosts} /></section>;
+  if (kind === "inventory-counts")
+    return <section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Inventários e divergências</h2><p className="mt-1 text-[11px] text-muted">O impacto usa o custo capturado no momento da contagem.</p></div></div><InventoryCountsTable data={data} canViewCosts={canViewCosts} /></section>;
+  if (kind === "stock-transfers")
+    return <section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Transferências entre filiais</h2><p className="mt-1 text-[11px] text-muted">Quantidades recebidas incluem resoluções por item localizado.</p></div></div><StockTransfersTable data={data} canViewCosts={canViewCosts} /></section>;
   if (kind === "cash") {
     if (activeTab === "sessoes")
       return <section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Sessões de caixa</h2></div><CashTable data={data} canViewCash={canViewCash} /></section>;
@@ -2784,8 +2939,12 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
 
   function params(nextPeriod = appliedPeriod, nextFilters = appliedFilters) {
     return new URLSearchParams({
-      start_datetime: nextPeriod.start,
-      end_datetime: nextPeriod.end,
+      ...(kind === "stock-position"
+        ? {}
+        : {
+            start_datetime: nextPeriod.start,
+            end_datetime: nextPeriod.end,
+          }),
       ...(config.endpoint === "sales" ? { scope: kind } : {}),
       ...Object.fromEntries(
         Object.entries(nextFilters).filter(([, value]) => value),
@@ -2972,8 +3131,12 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
     "consumptions",
     "stock-consumption",
     "inventory-movements",
+    "stock-position",
+    "inventory-counts",
+    "stock-transfers",
     "cancellations",
   ];
+  const categoryKinds = productKinds.filter((value) => value !== "stock-transfers");
   const canViewCosts = hasPermission(permissions.viewStockCosts);
   const canViewCommission = hasPermission(permissions.viewCommission);
   const tabs = reportTabs(kind, data?.summary || null, canViewCosts);
@@ -3106,7 +3269,7 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
               Filtros
             </div>
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              <PeriodFilter
+              {kind !== "stock-position" && <PeriodFilter
                 className="md:col-span-2 xl:col-span-4"
                 value={period}
                 onChange={setPeriod}
@@ -3115,8 +3278,8 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
                   void load(next, appliedFilters);
                 }}
                 showActions={false}
-              />
-              {productKinds.includes(kind) && (
+              />}
+              {categoryKinds.includes(kind) && (
                 <Field label="Categoria">
                   <Select
                     value={filters.category || ""}
@@ -3156,6 +3319,12 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
                   </Select>
                 </Field>
               )}
+              {kind === "stock-position" && <Field label="Situação"><Select value={filters.state || ""} onChange={(event) => setFilters((current) => ({ ...current, state: event.target.value }))}><option value="">Todas</option><option value="normal">Normal</option><option value="below_minimum">Abaixo do mínimo</option><option value="zero">Zerado</option><option value="negative">Negativo</option><option value="archived_with_stock">Arquivado com saldo</option></Select></Field>}
+              {kind === "stock-position" && <Field label="Busca"><Input value={filters.search || ""} placeholder="Nome ou código" onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} /></Field>}
+              {kind === "inventory-counts" && <Field label="Status"><Select value={filters.status || ""} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}><option value="">Todos</option>{Object.entries(countStatusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select></Field>}
+              {kind === "stock-transfers" && <Field label="Status"><Select value={filters.status || ""} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}><option value="">Todos</option>{Object.entries(transferStatusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select></Field>}
+              {["inventory-counts", "stock-transfers"].includes(kind) && <Field label="Responsável"><Select value={filters.responsible || ""} onChange={(event) => setFilters((current) => ({ ...current, responsible: event.target.value }))}><option value="">Todos</option>{options?.inventory_users.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field>}
+              {kind === "stock-transfers" && <Field label="Direção"><Select value={filters.direction || ""} onChange={(event) => setFilters((current) => ({ ...current, direction: event.target.value }))}><option value="">Entradas e saídas</option><option value="incoming">Entradas na filial</option><option value="outgoing">Saídas da filial</option></Select></Field>}
               {[
                 "sales",
                 "overview",

@@ -117,6 +117,7 @@ function Inventory() {
   const [selected, setSelected] = useState<Stock | null>(null);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [quantity, setQuantity] = useState("");
+  const [maximumQuantity, setMaximumQuantity] = useState("");
   const [nature, setNature] = useState("normal");
   const [reason, setReason] = useState("");
   const [lossReason, setLossReason] = useState<LossReason>("BREAKAGE");
@@ -257,6 +258,11 @@ function Inventory() {
           ? formatEditableDecimal(stock.current_quantity)
           : "",
     );
+    setMaximumQuantity(
+      next === "minimum" && stock?.maximum_quantity != null
+        ? formatEditableDecimal(stock.maximum_quantity)
+        : "",
+    );
     setReason("");
     setLossReason("BREAKAGE");
     setLossQuantityMode("packages");
@@ -313,6 +319,24 @@ function Inventory() {
       setError("Revise a quantidade informada.");
       return;
     }
+    if (
+      action === "minimum" &&
+      maximumQuantity &&
+      !isUnitQuantityValid(maximumQuantity, activeUnit, true)
+    ) {
+      setFields({ maximum_quantity: ["Informe uma quantidade válida com até 3 casas decimais."] });
+      setError("Revise o estoque máximo informado.");
+      return;
+    }
+    if (
+      action === "minimum" &&
+      maximumQuantity &&
+      Number(maximumQuantity.replace(",", ".")) < Number(quantity.replace(",", "."))
+    ) {
+      setFields({ maximum_quantity: ["O estoque máximo deve ser maior ou igual ao mínimo."] });
+      setError("Revise os limites de estoque.");
+      return;
+    }
     if (isLoss && lossReason === "OTHER" && reason.trim().length < 3) {
       setFields({ observation: ["Descreva a perda quando o motivo for Outro."] });
       setError("Revise a descrição da perda.");
@@ -327,7 +351,10 @@ function Inventory() {
       if (action === "minimum" && selected)
         await http.patch(
           `stocks/${selected.id}/minimum/?branch=${currentBranch.id}`,
-          { minimum_quantity: quantity },
+          {
+            minimum_quantity: quantity,
+            maximum_quantity: maximumQuantity || null,
+          },
         );
       else if (isLoss) {
         if (!movementIdempotencyKey.current) movementIdempotencyKey.current = crypto.randomUUID();
@@ -364,7 +391,7 @@ function Inventory() {
       setAction(null);
       setSelected(null);
       movementIdempotencyKey.current = null;
-      setSuccess(action === "minimum" ? { label: "Estoque mínimo atualizado." } : loss ? {
+      setSuccess(action === "minimum" ? { label: "Limites de estoque atualizados." } : loss ? {
         label: "Perda registrada.",
         description: "Baixa de estoque registrada com sucesso.",
         reference: loss.id,
@@ -392,7 +419,7 @@ function Inventory() {
         ? "Saída de estoque"
         : action === "adjustment"
           ? "Ajuste de saldo"
-          : "Estoque mínimo";
+          : "Limites de estoque";
   function openFilters() {
     setDraft({ state, category, status, behavior });
     setFiltersOpen(true);
@@ -715,7 +742,7 @@ function Inventory() {
                         <td>
                            <strong>{stock.current_content != null && stock.package_content && stock.content_unit ? packageContentDisplay(stock.current_content, { package_content: stock.package_content, content_unit: stock.content_unit }) : `${formatQuantity(stock.current_quantity)} ${stock.unit.toUpperCase()}`}</strong>
                            <span className="block text-[10px] text-slate-400">
-                             Mín. {formatQuantity(stock.minimum_quantity)}
+                              Mín. {formatQuantity(stock.minimum_quantity)} · Máx. {stock.maximum_quantity == null ? "-" : formatQuantity(stock.maximum_quantity)}
                            </span>
                            {stock.current_content != null && stock.content_unit && <span className="mt-1 block text-[10px] text-muted">Total exato: {formatQuantity(stock.current_content)} {contentUnitLabel(stock.content_unit)}</span>}
                         </td>
@@ -763,7 +790,7 @@ function Inventory() {
                             {!stock.product_deleted && canMinimum && (
                               <button
                                 className="icon-button"
-                                title="Estoque mínimo"
+                                title="Limites de estoque"
                                 onClick={() => resetAction("minimum", stock)}
                               >
                                 <SlidersHorizontal className="size-4" />
@@ -904,6 +931,22 @@ function Inventory() {
                />
                 {isLoss && lossQuantityMode === "content" && lossFractionConfig && <p className="mt-1 text-[10px] text-muted">Conteúdo em {contentUnitLabel(lossFractionConfig.content_unit)}. Embalagem canônica: {formatQuantity(lossFractionConfig.package_content)} {contentUnitLabel(lossFractionConfig.content_unit)}.</p>}
              </Field>
+             {action === "minimum" && (
+               <Field
+                 label="Quantidade máxima"
+                 optional
+                 error={fieldError(fields, "maximum_quantity")}
+               >
+                 <Input
+                   inputMode={quantityInputMode(activeUnit)}
+                   step={activeUnit?.toLowerCase() === "un" ? "1" : "0.001"}
+                   min="0"
+                   value={maximumQuantity}
+                   onChange={(event) => setMaximumQuantity(event.target.value)}
+                   placeholder="Sem limite máximo"
+                 />
+               </Field>
+             )}
             {action !== "minimum" && (
               <Field label="Natureza" error={fieldError(fields, "nature")}>
                 <Select value={nature} onChange={(event) => selectNature(event.target.value)}>

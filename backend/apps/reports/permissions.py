@@ -23,6 +23,7 @@ REPORT_PERMISSIONS = (
     'reports.view_discounts',
     'reports.view_cancellations',
     'reports.view_prices',
+    'inventory.report.view',
     'commissions.view',
 )
 

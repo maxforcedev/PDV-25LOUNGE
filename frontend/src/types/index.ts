@@ -805,6 +805,7 @@ export interface Stock {
   complete_packages?: string | null;
   residual_content?: string | null;
   minimum_quantity: string;
+  maximum_quantity: string | null;
   state: "normal" | "below_minimum" | "zero" | "negative";
   created_at: string;
   updated_at: string;
@@ -1986,6 +1987,7 @@ export interface ReportsOptions {
   operators: Array<{ id: number; name: string }>;
   sellers: Array<{ id: number; name: string }>;
   beneficiaries: Array<{ id: number; name: string; user_type: UserType }>;
+  inventory_users: Array<{ id: number; name: string }>;
   customers: Array<{ id: number; name: string }>;
   products: Array<{
     id: number;

@@ -26,6 +26,9 @@ class Stock(BaseModel):
     minimum_quantity = models.DecimalField(
         max_digits=14, decimal_places=3, default=Decimal('0')
     )
+    maximum_quantity = models.DecimalField(
+        max_digits=14, decimal_places=3, blank=True, null=True
+    )
     average_unit_cost = models.DecimalField(
         max_digits=28, decimal_places=12, blank=True, null=True
     )
@@ -42,6 +45,17 @@ class Stock(BaseModel):
             models.CheckConstraint(
                 condition=Q(minimum_quantity__gte=0),
                 name='inventory_stock_minimum_nonnegative',
+            ),
+            models.CheckConstraint(
+                condition=Q(maximum_quantity__isnull=True) | Q(maximum_quantity__gte=0),
+                name='inventory_stock_maximum_nonnegative',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(maximum_quantity__isnull=True)
+                    | Q(maximum_quantity__gte=F('minimum_quantity'))
+                ),
+                name='inventory_stock_maximum_gte_minimum',
             ),
             models.CheckConstraint(
                 condition=Q(average_unit_cost__isnull=True) | Q(average_unit_cost__gte=0),

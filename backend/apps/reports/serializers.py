@@ -9,7 +9,12 @@ from apps.cash.models import CashRegister, CashSession, CashSessionStatus, Withd
 from apps.cash.services import redact_operational_summary, session_operational_summary
 from apps.companies.models import Customer
 from apps.commands.models import CommandPayment, OrderItem
-from apps.inventory.models import MovementType
+from apps.inventory.models import (
+    InventoryCountStatus,
+    MovementType,
+    StockTransferStatus,
+    TransferResolutionType,
+)
 from apps.inventory.content import content_breakdown
 from apps.inventory.serializers import StockMovementSerializer
 from apps.products.models import Category, Product, SalesChannel
@@ -38,6 +43,9 @@ class BaseReportQuerySerializer(serializers.Serializer):
                 company_accesses__company_id=branch.company_id,
             ),
             'user': User.objects.filter(
+                company_accesses__company_id=branch.company_id,
+            ),
+            'responsible': User.objects.filter(
                 company_accesses__company_id=branch.company_id,
             ),
             'product': Product.objects.filter(company_id=branch.company_id),
@@ -168,6 +176,53 @@ class StockConsumptionReportQuerySerializer(BaseReportQuerySerializer):
 
     def validate(self, attrs):
         return self.validate_scoped_ids(attrs, ('product', 'category'))
+
+
+class StockPositionReportQuerySerializer(BaseReportQuerySerializer):
+    product = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    category = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    state = serializers.ChoiceField(
+        choices=(
+            'normal', 'below_minimum', 'zero', 'negative',
+            'archived_with_stock',
+        ),
+        required=False,
+    )
+    search = serializers.CharField(max_length=200, required=False, allow_blank=False)
+    ordering = serializers.ChoiceField(
+        choices=('product', '-product', 'balance', '-balance'), required=False,
+    )
+
+    def validate(self, attrs):
+        return self.validate_scoped_ids(attrs, ('product', 'category'))
+
+
+class InventoryCountsReportQuerySerializer(BaseReportQuerySerializer):
+    product = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    category = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    responsible = serializers.IntegerField(
+        min_value=1, max_value=MAX_BIGINT, required=False,
+    )
+    status = serializers.ChoiceField(choices=InventoryCountStatus.values, required=False)
+
+    def validate(self, attrs):
+        return self.validate_scoped_ids(
+            attrs, ('product', 'category', 'responsible')
+        )
+
+
+class StockTransfersReportQuerySerializer(BaseReportQuerySerializer):
+    product = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    responsible = serializers.IntegerField(
+        min_value=1, max_value=MAX_BIGINT, required=False,
+    )
+    status = serializers.ChoiceField(choices=StockTransferStatus.values, required=False)
+    direction = serializers.ChoiceField(
+        choices=('incoming', 'outgoing'), required=False,
+    )
+
+    def validate(self, attrs):
+        return self.validate_scoped_ids(attrs, ('product', 'responsible'))
 
 
 class ReportSaleItemSerializer(serializers.ModelSerializer):
@@ -1052,3 +1107,251 @@ class StockConsumptionMovementSerializer(InventoryMovementReportSerializer):
             MovementType.CONSUMPTION_CANCELLATION: 'reversal',
         }
         return mapping.get(movement.movement_type)
+
+
+class StockPositionReportSerializer(serializers.Serializer):
+    def to_representation(self, stock):
+        quantity = stock.equivalent_quantity()
+        archived = stock.product.archived_at is not None
+        if archived and quantity != 0:
+            state = 'archived_with_stock'
+        elif quantity < 0:
+            state = 'negative'
+        elif quantity == 0:
+            state = 'zero'
+        elif quantity < stock.minimum_quantity:
+            state = 'below_minimum'
+        else:
+            state = 'normal'
+        config = next(
+            iter(getattr(stock.product, '_report_branch_configs', ())), None
+        )
+        data = {
+            'id': stock.pk,
+            'product': {
+                'id': stock.product_id,
+                'name': stock.product.name,
+                'internal_code': stock.product.internal_code,
+            },
+            'category': (
+                {'id': config.category_id, 'name': config.category.name}
+                if config and config.category_id else None
+            ),
+            'unit': stock.product.unit,
+            'current_quantity': format(quantity, 'f'),
+            'minimum_quantity': format(stock.minimum_quantity, 'f'),
+            'maximum_quantity': (
+                format(stock.maximum_quantity, 'f')
+                if stock.maximum_quantity is not None else None
+            ),
+            'state': state,
+            'archived': archived,
+        }
+        if self.context.get('include_cost'):
+            unit_cost = (
+                stock.average_unit_cost
+                if stock.average_unit_cost is not None else stock.product.cost
+            )
+            data.update({
+                'average_unit_cost': (
+                    format(stock.average_unit_cost, 'f')
+                    if stock.average_unit_cost is not None else None
+                ),
+                'last_unit_cost': (
+                    format(stock.last_unit_cost, 'f')
+                    if stock.last_unit_cost is not None else None
+                ),
+                'inventory_value': f'{max(quantity, Decimal("0")) * unit_cost:.2f}',
+            })
+        return data
+
+
+class InventoryCountReportSerializer(serializers.Serializer):
+    def to_representation(self, inventory_count):
+        items = list(getattr(inventory_count, '_report_items', ()))
+        include_cost = self.context.get('include_cost', False)
+        details = []
+        for item in items:
+            difference = item.difference_quantity
+            detail = {
+                'id': item.pk,
+                'product': {
+                    'id': item.product_id,
+                    'name': item.product.name,
+                    'internal_code': item.product.internal_code,
+                },
+                'unit': item.product.unit,
+                'expected_quantity': format(item.theoretical_quantity, 'f'),
+                'counted_quantity': format(item.counted_quantity, 'f'),
+                'difference_quantity': format(difference, 'f'),
+                'type': (
+                    'shortage' if difference < 0
+                    else 'surplus' if difference > 0 else 'exact'
+                ),
+            }
+            if (
+                item.theoretical_content is not None
+                and item.package_content_snapshot is not None
+            ):
+                expected_complete, expected_residual = content_breakdown(
+                    item.theoretical_content, item.package_content_snapshot
+                )
+                difference_complete, difference_residual = content_breakdown(
+                    item.difference_content, item.package_content_snapshot
+                )
+                detail.update({
+                    'theoretical_content': format(item.theoretical_content, 'f'),
+                    'counted_content': format(item.counted_content, 'f'),
+                    'difference_content': format(item.difference_content, 'f'),
+                    'package_content': format(item.package_content_snapshot, 'f'),
+                    'content_unit': item.content_unit,
+                    'expected_complete_packages': format(expected_complete, 'f'),
+                    'expected_residual_content': format(expected_residual, 'f'),
+                    'counted_complete_packages': format(
+                        item.counted_complete_packages, 'f'
+                    ),
+                    'counted_residual_content': format(
+                        item.counted_residual_content, 'f'
+                    ),
+                    'difference_complete_packages': format(
+                        difference_complete, 'f'
+                    ),
+                    'difference_residual_content': format(
+                        difference_residual, 'f'
+                    ),
+                })
+            if include_cost:
+                detail.update({
+                    'unit_cost_snapshot': format(item.unit_cost_snapshot, 'f'),
+                    'cost_impact': f'{item.cost_impact:.2f}',
+                })
+            details.append(detail)
+        responsible = inventory_count.created_by
+        data = {
+            'id': str(inventory_count.pk),
+            'date': inventory_count.confirmed_at or inventory_count.created_at,
+            'branch': {
+                'id': inventory_count.branch_id,
+                'name': inventory_count.branch.name,
+            },
+            'responsible': {
+                'id': responsible.pk,
+                'name': readable_user_name(responsible),
+            },
+            'status': inventory_count.status,
+            'mode': inventory_count.mode,
+            'item_count': len(details),
+            'correct_count': sum(item['type'] == 'exact' for item in details),
+            'shortage_count': sum(item['type'] == 'shortage' for item in details),
+            'surplus_count': sum(item['type'] == 'surplus' for item in details),
+            'items': details,
+        }
+        if include_cost:
+            financial_impact = sum(
+                (item.cost_impact for item in items), Decimal('0')
+            )
+            data['financial_impact'] = f'{financial_impact:.2f}'
+        return data
+
+
+class StockTransferReportSerializer(serializers.Serializer):
+    @staticmethod
+    def _received_quantity(item):
+        received = sum(
+            (receipt.received_quantity for receipt in item.receipt_items.all()),
+            Decimal('0'),
+        )
+        try:
+            resolutions = item.divergence.resolutions.all()
+        except ObjectDoesNotExist:
+            resolutions = ()
+        return received + sum(
+            (
+                resolution.quantity for resolution in resolutions
+                if resolution.resolution_type == TransferResolutionType.FOUND_RECEIPT
+            ),
+            Decimal('0'),
+        )
+
+    def to_representation(self, transfer):
+        items = list(getattr(transfer, '_report_items', ()))
+        include_cost = self.context.get('include_cost', False)
+        details = []
+        for item in items:
+            sent = item.dispatched_quantity or Decimal('0')
+            received = self._received_quantity(item)
+            difference = sent - received
+            detail = {
+                'id': item.pk,
+                'product': {
+                    'id': item.product_id,
+                    'name': item.product_name_snapshot,
+                    'internal_code': item.product_internal_code_snapshot,
+                },
+                'unit': item.product_unit_snapshot,
+                'sent_quantity': format(sent, 'f'),
+                'received_quantity': format(received, 'f'),
+                'difference_quantity': format(difference, 'f'),
+            }
+            if include_cost:
+                detail.update({
+                    'unit_cost_snapshot': (
+                        format(item.origin_unit_cost_snapshot, 'f')
+                        if item.origin_unit_cost_snapshot is not None else None
+                    ),
+                    'cost_value': (
+                        f'{sent * item.origin_unit_cost_snapshot:.2f}'
+                        if item.origin_unit_cost_snapshot is not None else None
+                    ),
+                })
+            details.append(detail)
+        quantities_by_unit = {}
+        for item in details:
+            unit = item['unit']
+            group = quantities_by_unit.setdefault(unit, {
+                'unit': unit,
+                'sent_quantity': Decimal('0'),
+                'received_quantity': Decimal('0'),
+                'difference_quantity': Decimal('0'),
+            })
+            for field in (
+                'sent_quantity', 'received_quantity', 'difference_quantity',
+            ):
+                group[field] += Decimal(item[field])
+        responsible = transfer.dispatched_by or transfer.created_by
+        data = {
+            'id': str(transfer.pk),
+            'date': transfer.dispatched_at or transfer.created_at,
+            'origin': {
+                'id': transfer.origin_branch_id,
+                'name': transfer.origin_branch.name,
+            },
+            'destination': {
+                'id': transfer.destination_branch_id,
+                'name': transfer.destination_branch.name,
+            },
+            'responsible': {
+                'id': responsible.pk,
+                'name': readable_user_name(responsible),
+            },
+            'status': transfer.status,
+            'item_count': len(details),
+            'quantities_by_unit': [
+                {
+                    key: format(value, 'f') if isinstance(value, Decimal) else value
+                    for key, value in group.items()
+                }
+                for _unit, group in sorted(quantities_by_unit.items())
+            ],
+            'items': details,
+        }
+        if include_cost:
+            cost_value = sum(
+                (
+                    Decimal(item['cost_value']) for item in details
+                    if item.get('cost_value') is not None
+                ),
+                Decimal('0'),
+            )
+            data['cost_value'] = f'{cost_value:.2f}'
+        return data

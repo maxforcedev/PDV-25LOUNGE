@@ -427,6 +427,9 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
         stock = set_minimum(
             stock=stock,
             minimum_quantity=serializer.validated_data['minimum_quantity'],
+            maximum_quantity=serializer.validated_data.get(
+                'maximum_quantity', stock.maximum_quantity
+            ),
             user=request.user,
         )
         return Response(self.get_serializer(stock).data)

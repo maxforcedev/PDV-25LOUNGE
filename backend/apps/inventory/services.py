@@ -890,7 +890,7 @@ def regularize_negatives(*, branch, items, user, reason=''):
 
 
 @transaction.atomic
-def set_minimum(*, stock, minimum_quantity, user):
+def set_minimum(*, stock, minimum_quantity, maximum_quantity, user):
     stock_id = _pk(stock)
     stock_ref = Stock.objects.values(
         'branch_id', 'branch__company_id', 'product_id'
@@ -904,13 +904,23 @@ def set_minimum(*, stock, minimum_quantity, user):
     stock.branch = branch
     stock.product = product
     _validate_operational_stock(product, branch)
-    before = model_snapshot(stock, ('minimum_quantity',))
+    if maximum_quantity is not None and maximum_quantity < minimum_quantity:
+        raise DomainValidationError(
+            code='invalid_stock_limits',
+            message='O estoque máximo deve ser maior ou igual ao mínimo.',
+            details={
+                'minimum_quantity': str(minimum_quantity),
+                'maximum_quantity': str(maximum_quantity),
+            },
+        )
+    before = model_snapshot(stock, ('minimum_quantity', 'maximum_quantity'))
     stock.minimum_quantity = minimum_quantity
-    stock.save(update_fields=('minimum_quantity', 'updated_at'))
+    stock.maximum_quantity = maximum_quantity
+    stock.save(update_fields=('minimum_quantity', 'maximum_quantity', 'updated_at'))
     audit_log(
         actor=user, action='inventory.minimum.update', obj=stock,
         company=branch.company, branch=branch, before=before,
-        after=model_snapshot(stock, ('minimum_quantity',)),
+        after=model_snapshot(stock, ('minimum_quantity', 'maximum_quantity')),
     )
     return stock
 
