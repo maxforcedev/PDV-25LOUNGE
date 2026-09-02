@@ -21,6 +21,7 @@ class UserFunctionalPermission(BasePermission):
         'deactivate': 'users.change_status',
         'archive': 'users.change_status',
         'restore': 'users.add',
+        'send_password_reset': 'users.change',
         'management_options': ('users.view', 'users.add', 'users.change'),
     }
 

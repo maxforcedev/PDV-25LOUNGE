@@ -18,6 +18,7 @@ from apps.companies.selectors import (
 )
 
 from .models import User
+from .password_reset import send_password_reset
 from .permissions import UserFunctionalPermission
 from .serializers import UserManagementSerializer
 
@@ -361,6 +362,26 @@ class UserViewSet(viewsets.ModelViewSet):
                 'O usuário possui acessos fora do seu contexto autorizado.'
             )
         return company_id
+
+    @action(detail=True, methods=['post'], url_path='send-password-reset')
+    def send_password_reset(self, request, pk=None):
+        user = self.get_object()
+        company_id = self.context_company_id()
+        if not company_id or not user.company_accesses.filter(
+            company_id=company_id,
+            archived_at__isnull=True,
+        ).exists():
+            raise PermissionDenied('O usuário não pertence à empresa informada.')
+        if not user.email or not user.can_login or not user.has_usable_password():
+            raise ValidationError({
+                'detail': 'Este usuário não possui uma credencial global habilitada para redefinição.'
+            })
+        send_password_reset(
+            user=user,
+            actor=request.user,
+            source='company_admin',
+        )
+        return Response({'detail': 'Instruções de redefinição enviadas ao e-mail global do titular.'})
 
     @action(detail=True, methods=['post'])
     @transaction.atomic

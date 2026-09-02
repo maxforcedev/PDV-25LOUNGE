@@ -1,9 +1,14 @@
 import mimetypes
 
 from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.tokens import default_token_generator
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import FileResponse, Http404
 from django.middleware.csrf import get_token
 from django.utils.decorators import method_decorator
+from django.utils.encoding import force_str
+from django.utils.http import urlsafe_base64_decode
 from django.views.decorators.csrf import csrf_protect
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
@@ -19,6 +24,8 @@ from apps.companies.selectors import (
     active_operational_companies,
 )
 
+from .models import User
+from .password_reset import send_password_reset
 from .serializers import LoginSerializer, SelfProfileSerializer, UserSerializer
 
 
@@ -116,6 +123,66 @@ class LoginView(APIView):
         response = Response(UserSerializer(user, context={'request': request}).data)
         response['X-CSRFToken'] = get_token(request)
         return response
+
+
+@method_decorator(csrf_protect, name='dispatch')
+class PasswordResetRequestView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'password_reset'
+
+    def post(self, request):
+        email = str(request.data.get('email', '')).strip().lower()
+        user = User.objects.filter(
+            email__iexact=email,
+            can_login=True,
+            is_active=True,
+            archived_at__isnull=True,
+        ).first() if email else None
+        if user and user.has_usable_password():
+            send_password_reset(user=user, source='self_service')
+        return Response({
+            'detail': 'Se existir uma conta vinculada a este e-mail, enviaremos as instruções para redefinição.'
+        })
+
+
+@method_decorator(csrf_protect, name='dispatch')
+class PasswordResetConfirmView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'password_reset_confirm'
+
+    def post(self, request):
+        uid = str(request.data.get('uid', ''))
+        token = str(request.data.get('token', ''))
+        new_password = request.data.get('new_password', '')
+        try:
+            user_id = force_str(urlsafe_base64_decode(uid))
+            user = User.objects.get(
+                pk=user_id,
+                can_login=True,
+                is_active=True,
+                archived_at__isnull=True,
+            )
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            user = None
+        if user is None or not default_token_generator.check_token(user, token):
+            raise ValidationError({'token': 'Este link é inválido ou expirou.'})
+        try:
+            validate_password(new_password, user=user)
+        except DjangoValidationError as error:
+            raise ValidationError({'new_password': list(error.messages)}) from error
+        user.set_password(new_password)
+        user.save(update_fields=['password', 'updated_at'])
+        audit_log(
+            actor=user,
+            action='auth.password_reset_completed',
+            obj=user,
+            metadata={'source': 'self_service'},
+        )
+        return Response({'detail': 'Senha redefinida com sucesso.'})
 
 
 class LogoutView(APIView):
@@ -242,7 +309,6 @@ class ChangePasswordView(APIView):
         user = request.user
         if not user.check_password(current_password):
             raise ValidationError({'current_password': 'Senha atual incorreta.'})
-        from django.contrib.auth.password_validation import validate_password
         try:
             validate_password(new_password, user=user)
         except Exception as error:

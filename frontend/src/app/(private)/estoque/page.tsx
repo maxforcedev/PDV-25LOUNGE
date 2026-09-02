@@ -11,6 +11,7 @@ import {
   ListFilter,
   PackageX,
   Plus,
+  RotateCcw,
   Search,
   Settings2,
   SlidersHorizontal,
@@ -94,6 +95,7 @@ function Inventory() {
   const canViewCosts = hasPermission(permissions.viewStockCosts);
   const canRegularize = hasPermission(permissions.regularizeInventory);
   const canLoss = hasPermission(permissions.recordLoss);
+  const canRestoreProduct = hasPermission(permissions.changeProductStatus);
   const canTransfer = hasPermission(permissions.createTransfer) && !!currentBranch && !!user?.branches.some(
     (branch) => branch.company_id === currentBranch.company_id && branch.status === "active" && branch.id !== currentBranch.id,
   );
@@ -126,6 +128,7 @@ function Inventory() {
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
   const [writeOffStock, setWriteOffStock] = useState<Stock | null>(null);
+  const [restoreStock, setRestoreStock] = useState<Stock | null>(null);
   const [writeOffReason, setWriteOffReason] = useState("");
   const movementIdempotencyKey = useRef<string | null>(null);
   const showRegularize = canRegularize && !!summary?.allow_negative_stock && (summary?.negative_count ?? 0) > 0;
@@ -303,6 +306,24 @@ function Inventory() {
       await load();
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Não foi possível baixar o saldo residual.");
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function submitRestoreProduct() {
+    if (!restoreStock) return;
+    setSaving(true);
+    setError("");
+    try {
+      await http.post(`products/${restoreStock.product}/restore/`);
+      setSuccess({
+        label: "Produto restaurado.",
+        description: `${restoreStock.product_name} voltou ao catálogo com o mesmo saldo e histórico.`,
+      });
+      setRestoreStock(null);
+      await load();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Não foi possível restaurar o produto.");
     } finally {
       setSaving(false);
     }
@@ -796,6 +817,18 @@ function Inventory() {
                                 <SlidersHorizontal className="size-4" />
                               </button>
                             )}
+                            {stock.product_deleted && canRestoreProduct && (
+                              <button
+                                className="icon-button"
+                                title="Restaurar produto"
+                                onClick={() => {
+                                  setRestoreStock(stock);
+                                  setError("");
+                                }}
+                              >
+                                <RotateCcw className="size-4 text-primary" />
+                              </button>
+                            )}
                             {stock.product_deleted && canAdjust && (
                               <button
                                 className="icon-button"
@@ -993,6 +1026,22 @@ function Inventory() {
             </Button>
           </div>
         </form>
+      </Modal>
+      <Modal
+        open={!!restoreStock}
+        title="Restaurar produto"
+        description={restoreStock ? `${restoreStock.product_name} voltará ao catálogo sem alteração de saldo ou histórico.` : undefined}
+        onClose={() => !saving && setRestoreStock(null)}
+        size="md"
+      >
+        <div className="space-y-4 p-5">
+          {error && <Alert message={error} />}
+          <p className="text-sm leading-6 text-muted">O CORE validará conflitos de nome, código interno, SKU, código de barras e configurações atuais antes de restaurar.</p>
+        </div>
+        <div className="flex justify-end gap-2 border-t border-subtle px-5 py-4">
+          <Button type="button" variant="secondary" disabled={saving} onClick={() => setRestoreStock(null)}>Cancelar</Button>
+          <Button type="button" loading={saving} onClick={() => void submitRestoreProduct()}>Restaurar produto</Button>
+        </div>
       </Modal>
       <Modal
         open={!!writeOffStock}

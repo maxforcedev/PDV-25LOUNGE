@@ -1,12 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { Banknote, Boxes, ClipboardCheck, ReceiptText } from "lucide-react";
+import { Banknote, Boxes, ClipboardCheck, PackageCheck, ReceiptText } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { reportGroups } from "@/lib/report-presentation";
 import { useAuth } from "@/providers/auth-provider";
 
-const icons = { Vendas: ReceiptText, Financeiro: Banknote, Estoque: Boxes, Inventários: ClipboardCheck } as const;
+const icons = { Vendas: ReceiptText, Financeiro: Banknote, Estoque: Boxes, Inventários: ClipboardCheck, Compras: PackageCheck } as const;
 
 export function ReportsCenter() {
   const { currentBranch, hasPermission } = useAuth();

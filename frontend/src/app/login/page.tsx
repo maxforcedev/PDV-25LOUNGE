@@ -50,6 +50,11 @@ export default function LoginPage() {
               {error && <Alert message={error} />}
               <Field label="E-mail"><Input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="voce@empresa.com.br" disabled={submitting} /></Field>
               <Field label="Senha"><div className="relative"><Input type={showPassword ? "text" : "password"} autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Digite sua senha" className="pr-11" disabled={submitting} /><button type="button" className="icon-button absolute right-0.5 top-1/2 -translate-y-1/2" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Ocultar senha" : "Exibir senha"}>{showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}</button></div></Field>
+              <div className="-mt-2 text-right">
+                <Link href="/esqueci-senha" className="text-xs font-semibold text-primary hover:underline">
+                  Esqueci minha senha
+                </Link>
+              </div>
               <Button type="submit" className="w-full" loading={submitting}>Entrar</Button>
             </form>
           </div>

@@ -58,15 +58,16 @@ class ReportExportTests(SimpleTestCase):
     def test_xlsx_preserves_typed_values_and_sanitizes_text_metadata(self):
         response = self.render('xlsx')
         workbook = load_workbook(io.BytesIO(response.content), data_only=False)
-        sheet = workbook.active
-        self.assertEqual(sheet['B2'].value, 'A&B <Especial>')
-        self.assertEqual(sheet['A7'].value, 'Nome')
-        self.assertEqual(sheet['A8'].value, "'=SUM(A1)")
-        self.assertEqual(sheet['B8'].value, 12.50)
-        self.assertEqual(sheet['B11'].value, 12.50)
-        self.assertIsInstance(sheet['C8'].value, datetime)
-        self.assertEqual(sheet.freeze_panes, 'A8')
-        self.assertEqual(sheet.auto_filter.ref, 'A7:C8')
+        summary = workbook['Resumo']
+        details = workbook['Dados']
+        self.assertEqual(summary['B2'].value, 'A&B <Especial>')
+        self.assertEqual(summary['B8'].value, 12.50)
+        self.assertEqual(details['A1'].value, 'Nome')
+        self.assertEqual(details['A2'].value, "'=SUM(A1)")
+        self.assertEqual(details['B2'].value, 12.50)
+        self.assertIsInstance(details['C2'].value, datetime)
+        self.assertEqual(details.freeze_panes, 'A2')
+        self.assertEqual(details.auto_filter.ref, 'A1:C2')
 
     def test_export_removes_commission_when_not_visible_in_report(self):
         class Report(BaseReportView):

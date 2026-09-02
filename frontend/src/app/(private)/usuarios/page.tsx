@@ -8,6 +8,7 @@ import {
   Plus,
   Power,
   Search,
+  Send,
   ShieldX,
   SlidersHorizontal,
   Trash2,
@@ -187,6 +188,7 @@ function UsersAdministration() {
   const [accessesDirty, setAccessesDirty] = useState(false);
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
+  const [sendingPasswordReset, setSendingPasswordReset] = useState(false);
   const [confirming, setConfirming] = useState<User | null>(null);
   const [archiving, setArchiving] = useState<User | null>(null);
   const [editorTab, setEditorTab] = useState<EditorTab>("personal");
@@ -442,6 +444,23 @@ function UsersAdministration() {
   }
   function update<K extends keyof UserPayload>(key: K, value: UserPayload[K]) {
     setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  async function sendPasswordReset() {
+    if (!editing || !currentCompany) return;
+    setSendingPasswordReset(true);
+    setError("");
+    setSuccess("");
+    try {
+      const response = await http.post<{ detail: string }>(
+        `users/${editing.id}/send-password-reset/?company=${currentCompany.id}`,
+      );
+      setSuccess(response.detail);
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Não foi possível enviar a redefinição de senha.");
+    } finally {
+      setSendingPasswordReset(false);
+    }
   }
   function updateAccess(
     companyId: number,
@@ -1502,6 +1521,12 @@ function UsersAdministration() {
                       pelo próprio titular em Minha conta.
                     </p>
                     <div className="flex flex-wrap gap-2">
+                      {editing.email && editing.login_credential_available && (
+                        <Button variant="secondary" loading={sendingPasswordReset} onClick={() => void sendPasswordReset()}>
+                          <Send className="size-4" />
+                          Enviar redefinição de senha
+                        </Button>
+                      )}
                       <Link
                         className="btn btn-secondary"
                         href={`/usuarios/bloqueios?user=${editing.id}`}

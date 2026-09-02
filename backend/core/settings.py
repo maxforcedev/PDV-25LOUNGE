@@ -79,6 +79,8 @@ ENVIRONMENT = env(
     'ENVIRONMENT',
     default='development' if DEBUG else 'production',
 )
+FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:3000')
+PASSWORD_RESET_TIMEOUT = env.int('PASSWORD_RESET_TIMEOUT', default=3600)
 
 
 # Application definition
@@ -242,6 +244,8 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'login': '10/minute',
         'signup': '5/hour',
+        'password_reset': '5/hour',
+        'password_reset_confirm': '10/hour',
     },
 }
 
@@ -265,5 +269,19 @@ MAILERS = {
             'EMAIL_BACKEND',
             default='django.core.mail.backends.console.EmailBackend',
         ),
+        'OPTIONS': {
+            'host': env('EMAIL_HOST', default='localhost'),
+            'port': env.int('EMAIL_PORT', default=587),
+            'username': env('EMAIL_HOST_USER', default=''),
+            'password': env('EMAIL_HOST_PASSWORD', default=''),
+            'use_tls': env.bool('EMAIL_USE_TLS', default=True),
+            'use_ssl': env.bool('EMAIL_USE_SSL', default=False),
+            'timeout': env.int('EMAIL_TIMEOUT', default=10),
+        },
     },
 }
+
+DEFAULT_FROM_EMAIL = env(
+    'DEFAULT_FROM_EMAIL',
+    default='CORE PDV <nao-responda@corepdv.com>',
+)

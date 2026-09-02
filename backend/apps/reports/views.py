@@ -33,15 +33,24 @@ from apps.commands.models import (
 )
 from apps.inventory.content import exact_sum
 from apps.inventory.models import (
+    InventoryCount,
     InventoryCountItem,
     MovementType,
     TransferDivergence,
     TransferDivergenceStatus,
     StockTransferItem,
+    StockTransfer,
 )
 from apps.products.models import Category, Product
-from apps.sales.models import OperationType, PaymentMethod, Sale, SaleStatus
+from apps.purchases.models import (
+    PayableInstallment,
+    PayableInstallmentStatus,
+    PurchaseOrder,
+    PurchaseOrderStatus,
+)
+from apps.sales.models import OperationType, Payment, PaymentMethod, Sale, SaleItem, SaleStatus
 from apps.sales.serializers import readable_user_name
+from apps.suppliers.models import Supplier
 
 from .permissions import ReportsPermission
 from .financials import FinancialAggregator
@@ -90,8 +99,11 @@ from .serializers import (
     InventoryReportQuerySerializer,
     OperationalResultQuerySerializer,
     PaymentEventReportSerializer,
+    PayablesReportQuerySerializer,
+    PurchaseReportQuerySerializer,
     ReportSaleSerializer,
     SalesReportQuerySerializer,
+    SupplierReportQuerySerializer,
     StockConsumptionMovementSerializer,
     StockConsumptionReportQuerySerializer,
     StockConsumptionSummarySerializer,
@@ -328,6 +340,21 @@ class ReportsOptionsView(APIView):
 
     def get(self, request):
         branch = request.branch_context
+        start, end = parse_datetime_range(request.query_params)
+        period_filter = {}
+        cancellation_filter = {}
+        if start and end:
+            period_filter = {
+                'created_at__gte': start,
+                'created_at__lt': period_end_exclusive(end),
+            }
+            cancellation_filter = {
+                'cancelled_at__gte': start,
+                'cancelled_at__lt': period_end_exclusive(end),
+            }
+        historical_sales = Sale.objects.filter(branch=branch).filter(
+            Q(**period_filter) | Q(**cancellation_filter)
+        ) if period_filter else Sale.objects.none()
         can_view_team = user_has_code(request, 'reports.view_team')
         can_view_sellers = can_view_team or (
             request.query_params.get('scope') == 'commissions'
@@ -357,30 +384,63 @@ class ReportsOptionsView(APIView):
             can_view_sales_data or can_view_consumptions or can_view_inventory
             or can_view_phase_two
         )
+        historical_beneficiary_ids = historical_sales.filter(
+            operation_type=OperationType.CONSUMPTION,
+            beneficiary_user__isnull=False,
+        ).values_list('beneficiary_user_id', flat=True)
         users = User.objects.filter(
-            is_active=True,
-            archived_at__isnull=True,
-            company_accesses__company_id=branch.company_id,
-            company_accesses__is_active=True,
+            Q(
+                is_active=True,
+                archived_at__isnull=True,
+                company_accesses__company_id=branch.company_id,
+                company_accesses__is_active=True,
+            ) | Q(pk__in=historical_beneficiary_ids)
         ).distinct().order_by('first_name', 'last_name', 'id') if (
             can_view_consumptions or can_view_withdrawals
         ) else User.objects.none()
+        historical_operator_ids = set(historical_sales.values_list('created_by_id', flat=True))
+        historical_operator_ids.update(
+            historical_sales.exclude(cancelled_by_id=None).values_list('cancelled_by_id', flat=True)
+        )
         operators = User.objects.filter(
-            is_active=True,
-            archived_at__isnull=True,
-            branch_accesses__branch=branch,
-            branch_accesses__is_active=True,
+            Q(
+                is_active=True,
+                archived_at__isnull=True,
+                branch_accesses__branch=branch,
+                branch_accesses__is_active=True,
+            ) | Q(pk__in=historical_operator_ids)
         ).distinct().order_by('first_name', 'last_name', 'id') if can_view_team else User.objects.none()
-        products = Product.objects.filter(company_id=branch.company_id).order_by(
+        historical_items = SaleItem.objects.filter(sale__in=historical_sales)
+        historical_product_ids = historical_items.values_list('product_id', flat=True)
+        historical_category_ids = historical_items.exclude(
+            category_id_snapshot=None
+        ).values_list('category_id_snapshot', flat=True)
+        products = Product.objects.filter(company_id=branch.company_id).filter(
+            Q(status='active', archived_at__isnull=True)
+            | Q(pk__in=historical_product_ids)
+        ).order_by(
             'name', 'id'
         ) if can_view_products else Product.objects.none()
-        categories = Category.objects.filter(branch=branch).order_by(
+        categories = Category.objects.filter(branch=branch).filter(
+            Q(status='active', deleted_at__isnull=True)
+            | Q(pk__in=historical_category_ids)
+        ).order_by(
             'sort_order', 'name', 'id'
         ) if can_view_products else Category.objects.none()
+        historical_payment_method_ids = Payment.objects.filter(
+            sale__in=historical_sales,
+        ).values_list('payment_method_id', flat=True)
         payment_methods = PaymentMethod.objects.filter(
-            company_id=branch.company_id
+            company_id=branch.company_id,
+        ).filter(
+            Q(status='active') | Q(pk__in=historical_payment_method_ids)
         ).order_by('name', 'id') if can_view_payment_data else PaymentMethod.objects.none()
-        registers = CashRegister.objects.filter(branch=branch).order_by(
+        historical_register_ids = CashSession.objects.filter(
+            branch=branch, **period_filter,
+        ).values_list('cash_register_id', flat=True) if period_filter else []
+        registers = CashRegister.objects.filter(branch=branch).filter(
+            Q(status='active') | Q(pk__in=historical_register_ids)
+        ).order_by(
             'name', 'id'
         ) if (
             can_view_cash or can_view_withdrawals or can_view_result
@@ -393,24 +453,45 @@ class ReportsOptionsView(APIView):
         eligible_seller_ids = eligible_branch_users(
             branch, 'sales.create'
         ).values_list('id', flat=True)
-        historical_seller_ids = Sale.objects.filter(
-            branch=branch, seller_user__isnull=False
+        historical_seller_ids = historical_sales.filter(
+            seller_user__isnull=False
         ).values_list('seller_user_id', flat=True)
         sellers = User.objects.filter(
             Q(id__in=eligible_seller_ids) | Q(id__in=historical_seller_ids)
         ).distinct().order_by('first_name', 'last_name', 'id') if can_view_sellers else User.objects.none()
+        historical_inventory_user_ids = set()
+        if period_filter:
+            historical_inventory_user_ids.update(InventoryCount.objects.filter(
+                branch=branch, **period_filter,
+            ).values_list('created_by_id', flat=True))
+            historical_inventory_user_ids.update(StockTransfer.objects.filter(
+                Q(origin_branch=branch) | Q(destination_branch=branch),
+                **period_filter,
+            ).values_list('created_by_id', flat=True))
         inventory_users = User.objects.filter(
-            is_active=True,
-            archived_at__isnull=True,
-            company_accesses__company_id=branch.company_id,
-            company_accesses__is_active=True,
+            Q(
+                is_active=True,
+                archived_at__isnull=True,
+                company_accesses__company_id=branch.company_id,
+                company_accesses__is_active=True,
+            ) | Q(pk__in=historical_inventory_user_ids)
         ).distinct().order_by('first_name', 'last_name', 'id') if can_view_phase_two else User.objects.none()
         return Response({
             'operators': [
-                {'id': user.pk, 'name': readable_user_name(user)} for user in operators
+                {
+                    'id': user.pk,
+                    'name': readable_user_name(user),
+                    'historical': user.pk in historical_operator_ids and (
+                        not user.is_active or user.archived_at is not None
+                    ),
+                } for user in operators
             ],
             'sellers': [
-                {'id': user.pk, 'name': readable_user_name(user)}
+                {
+                    'id': user.pk,
+                    'name': readable_user_name(user),
+                    'historical': not user.is_active or user.archived_at is not None,
+                }
                 for user in sellers
             ],
             'beneficiaries': [
@@ -418,19 +499,33 @@ class ReportsOptionsView(APIView):
                     'id': user.pk,
                     'name': readable_user_name(user),
                     'user_type': user.user_type,
+                    'historical': user.pk in historical_beneficiary_ids and (
+                        not user.is_active or user.archived_at is not None
+                    ),
                 }
                 for user in users
             ],
             'inventory_users': [
-                {'id': user.pk, 'name': readable_user_name(user)}
+                {
+                    'id': user.pk,
+                    'name': readable_user_name(user),
+                    'historical': user.pk in historical_inventory_user_ids and (
+                        not user.is_active or user.archived_at is not None
+                    ),
+                }
                 for user in inventory_users
             ],
             'customers': [
-                {'id': customer.pk, 'name': customer.name}
+                {
+                    'id': customer.pk,
+                    'name': customer.name,
+                    'status': customer.status,
+                    'historical': customer.status != 'active',
+                }
                 for customer in (
-                    Customer.objects.filter(
-                        company_id=branch.company_id, status='active',
-                    ).order_by('name', 'id') if can_view_sales_data else []
+                    Customer.objects.filter(company_id=branch.company_id).filter(
+                        Q(status='active') | Q(sales__in=historical_sales)
+                    ).distinct().order_by('name', 'id') if can_view_sales_data else []
                 )
             ],
             'products': [
@@ -439,11 +534,17 @@ class ReportsOptionsView(APIView):
                     'name': product.name,
                     'internal_code': product.internal_code,
                     'status': product.status,
+                    'historical': product.archived_at is not None,
                 }
                 for product in products
             ],
             'categories': [
-                {'id': category.pk, 'name': category.name, 'status': category.status}
+                {
+                    'id': category.pk,
+                    'name': category.name,
+                    'status': category.status,
+                    'historical': category.deleted_at is not None,
+                }
                 for category in categories
             ],
             'payment_methods': [
@@ -452,11 +553,17 @@ class ReportsOptionsView(APIView):
                     'name': method.name,
                     'code': method.code,
                     'status': method.status,
+                    'historical': method.status != 'active',
                 }
                 for method in payment_methods
             ],
             'cash_registers': [
-                {'id': register.pk, 'name': register.name, 'status': register.status}
+                {
+                    'id': register.pk,
+                    'name': register.name,
+                    'status': register.status,
+                    'historical': register.status != 'active',
+                }
                 for register in registers
             ],
             'cash_sessions': [
@@ -1137,7 +1244,7 @@ class SalesReportView(BaseReportView):
             'operator_groups': [_group_json(row) for row in operator_groups],
             'seller_groups': [_group_json(row) for row in seller_groups],
         }
-        if scope == 'overview':
+        if scope in ('overview', 'sales'):
             heatmap, current_comparison, previous_comparison = dashboard_time_analysis(
                 sales_graph,
                 branch=request.branch_context,
@@ -1155,6 +1262,17 @@ class SalesReportView(BaseReportView):
                 }
                 for row in heatmap
             ]
+            result['hourly_sales'] = [
+                {
+                    **row,
+                    'sales_revenue': decimal_string(row['sales_revenue']),
+                    'effective_revenue': decimal_string(row['effective_revenue']),
+                    'service_fee': decimal_string(row['service_fee']),
+                    'total_received': decimal_string(row['total_received']),
+                }
+                for row in hourly_sales(sales_graph, filters, sales_reversals)
+            ]
+        if scope == 'overview':
             result['weekly_comparison'] = {
                 'current': [
                     {
@@ -2651,6 +2769,376 @@ class StockConsumptionReportView(BaseReportView):
                 request, headers=headers, rows=export_rows,
                 period=canonical_datetime_range(start, end), summary=summary,
             )
+        return self.respond(
+            request, rows=rows, period=canonical_datetime_range(start, end), summary=summary,
+        )
+
+
+def _purchase_report_queryset(*, branch, start, end, filters):
+    queryset = PurchaseOrder.objects.filter(
+        branch=branch,
+        created_at__gte=start,
+        created_at__lt=period_end_exclusive(end),
+    ).select_related('supplier').prefetch_related('items')
+    for parameter, lookup in (
+        ('supplier', 'supplier_id'),
+        ('status', 'status'),
+        ('order_type', 'order_type'),
+        ('product', 'items__product_id'),
+    ):
+        if filters.get(parameter) is not None:
+            queryset = queryset.filter(**{lookup: filters[parameter]})
+    if filters.get('search'):
+        value = filters['search']
+        queryset = queryset.filter(
+            Q(order_number__icontains=value)
+            | Q(document_number__icontains=value)
+            | Q(document_key__icontains=value)
+            | Q(supplier__trade_name__icontains=value)
+            | Q(items__product_name__icontains=value)
+            | Q(items__supplier_name__icontains=value)
+        )
+    return queryset.distinct().order_by('-created_at', '-id')
+
+
+def _purchase_supplier_name(order):
+    return next(
+        (
+            item.supplier_name for item in order.items.all()
+            if item.supplier_name
+        ),
+        order.supplier.trade_name,
+    )
+
+
+def _purchase_report_row(order, *, include_cost):
+    row = {
+        'id': order.pk,
+        'order_number': order.order_number,
+        'created_at': order.created_at,
+        'document_date': order.document_date,
+        'document_number': order.document_number,
+        'supplier_id': order.supplier_id,
+        'supplier_name': _purchase_supplier_name(order),
+        'order_type': order.order_type,
+        'status': order.status,
+        'items_count': len(order.items.all()),
+    }
+    if include_cost:
+        row.update({
+            'gross_total': decimal_string(order.gross_total),
+            'discount': decimal_string(order.global_discount),
+            'freight_total': decimal_string(order.freight_total),
+            'other_expenses_total': decimal_string(order.other_expenses_total),
+            'payable_total': decimal_string(order.payable_total),
+        })
+    return row
+
+
+class PhaseThreeReportOptionsView(APIView):
+    permission_classes = (ReportsPermission,)
+    permission_by_scope = {
+        'purchases': 'purchases.view',
+        'suppliers': 'suppliers.view',
+        'payables': 'purchases.manage_payables',
+    }
+
+    def get(self, request):
+        scope = request.query_params.get('scope')
+        if scope not in self.permission_by_scope:
+            raise ValidationError({'scope': 'Informe um escopo de relatório válido.'})
+        start, end = parse_datetime_range(request.query_params, required=True)
+        if scope == 'payables':
+            supplier_ids = PayableInstallment.objects.filter(
+                purchase_order__branch=request.branch_context,
+                due_date__gte=start.date(), due_date__lte=end.date(),
+            ).values_list('supplier_id', flat=True)
+        else:
+            supplier_ids = PurchaseOrder.objects.filter(
+                branch=request.branch_context,
+                created_at__gte=start,
+                created_at__lt=period_end_exclusive(end),
+            ).values_list('supplier_id', flat=True)
+        suppliers = Supplier.objects.filter(branch=request.branch_context).filter(
+            Q(status='active', deleted_at__isnull=True) | Q(pk__in=supplier_ids)
+        ).order_by('trade_name', 'id')
+        return Response({
+            'suppliers': [
+                {
+                    'id': supplier.pk,
+                    'name': supplier.trade_name,
+                    'status': supplier.status,
+                    'historical': supplier.deleted_at is not None,
+                }
+                for supplier in suppliers
+            ]
+        })
+
+
+class PurchaseReportView(BaseReportView):
+    required_permission = 'purchases.view'
+    query_serializer_class = PurchaseReportQuerySerializer
+    csv_filename = 'relatorio-compras.csv'
+    csv_headers = (
+        'order_number', 'created_at', 'document_date', 'document_number',
+        'supplier_name', 'order_type', 'status', 'items_count',
+        'gross_total', 'discount', 'freight_total', 'other_expenses_total',
+        'payable_total',
+    )
+
+    def serialize_rows(self, rows, request):
+        return list(rows)
+
+    def export_headers(self, request):
+        headers = super().export_headers(request)
+        if not user_has_code(request, 'purchases.view_costs'):
+            return tuple(header for header in headers if header not in (
+                'gross_total', 'discount', 'freight_total', 'other_expenses_total',
+                'payable_total',
+            ))
+        return headers
+
+    def get(self, request):
+        filters, start, end = self.parse_query(request)
+        include_cost = user_has_code(request, 'purchases.view_costs')
+        orders = list(_purchase_report_queryset(
+            branch=request.branch_context, start=start, end=end, filters=filters,
+        ))
+        status_groups = {
+            status: {'status': status, 'count': 0, 'payable_total': Decimal('0.00')}
+            for status in PurchaseOrderStatus.values
+        }
+        totals = {
+            'count': len(orders),
+            'items_count': sum(len(order.items.all()) for order in orders),
+            'received_count': sum(
+                order.status == PurchaseOrderStatus.RECEIVED for order in orders
+            ),
+            'partial_count': sum(
+                order.status == PurchaseOrderStatus.PARTIALLY_RECEIVED for order in orders
+            ),
+        }
+        if include_cost:
+            for key in (
+                'gross_total', 'global_discount', 'freight_total',
+                'other_expenses_total', 'payable_total',
+            ):
+                totals[key] = sum(
+                    (getattr(order, key) for order in orders), Decimal('0.00')
+                )
+        for order in orders:
+            group = status_groups[order.status]
+            group['count'] += 1
+            if include_cost:
+                group['payable_total'] += order.payable_total
+        summary = {
+            **totals,
+            'status_groups': [
+                {
+                    'status': group['status'],
+                    'count': group['count'],
+                    **({'payable_total': decimal_string(group['payable_total'])}
+                       if include_cost else {}),
+                }
+                for group in status_groups.values() if group['count']
+            ],
+        }
+        if include_cost:
+            summary = {
+                **summary,
+                **{
+                    key: decimal_string(value)
+                    for key, value in totals.items()
+                    if key not in ('count', 'items_count', 'received_count', 'partial_count')
+                },
+            }
+        return self.respond(
+            request,
+            rows=[_purchase_report_row(order, include_cost=include_cost) for order in orders],
+            period=canonical_datetime_range(start, end),
+            summary=summary,
+        )
+
+
+class SupplierReportView(BaseReportView):
+    required_permission = 'suppliers.view'
+    query_serializer_class = SupplierReportQuerySerializer
+    csv_filename = 'relatorio-fornecedores.csv'
+    csv_headers = (
+        'supplier_name', 'status', 'product_count', 'purchase_count',
+        'received_count', 'payable_total',
+    )
+
+    def serialize_rows(self, rows, request):
+        return list(rows)
+
+    def export_headers(self, request):
+        headers = super().export_headers(request)
+        if not user_has_code(request, 'purchases.view_costs'):
+            return tuple(header for header in headers if header != 'payable_total')
+        return headers
+
+    def get(self, request):
+        filters, start, end = self.parse_query(request)
+        include_cost = user_has_code(request, 'purchases.view_costs')
+        can_view_purchases = user_has_code(request, 'purchases.view')
+        orders = list(_purchase_report_queryset(
+            branch=request.branch_context, start=start, end=end, filters={},
+        )) if can_view_purchases else []
+        historical_ids = {order.supplier_id for order in orders}
+        suppliers = Supplier.objects.filter(branch=request.branch_context).filter(
+            Q(status='active', deleted_at__isnull=True) | Q(pk__in=historical_ids)
+        ).annotate(
+            product_count=Count(
+                'product_suppliers',
+                filter=Q(product_suppliers__status='active'),
+                distinct=True,
+            )
+        )
+        if filters.get('supplier') is not None:
+            suppliers = suppliers.filter(pk=filters['supplier'])
+        if filters.get('status'):
+            suppliers = suppliers.filter(status=filters['status'])
+        if filters.get('search'):
+            value = filters['search']
+            suppliers = suppliers.filter(
+                Q(trade_name__icontains=value)
+                | Q(legal_name__icontains=value)
+                | Q(tax_id__icontains=value)
+            )
+        grouped_orders = {}
+        for order in orders:
+            grouped_orders.setdefault(order.supplier_id, []).append(order)
+        rows = []
+        for supplier in suppliers.order_by('trade_name', 'id'):
+            supplier_orders = grouped_orders.get(supplier.pk, [])
+            row = {
+                'supplier_id': supplier.pk,
+                'supplier_name': next(
+                    (_purchase_supplier_name(order) for order in supplier_orders),
+                    supplier.trade_name,
+                ),
+                'status': supplier.status,
+                'historical': supplier.deleted_at is not None,
+                'product_count': supplier.product_count,
+                'purchase_count': len(supplier_orders),
+                'received_count': sum(
+                    order.status == PurchaseOrderStatus.RECEIVED
+                    for order in supplier_orders
+                ),
+            }
+            if include_cost:
+                row['payable_total'] = decimal_string(sum(
+                    (order.payable_total for order in supplier_orders), Decimal('0.00')
+                ))
+            rows.append(row)
+        summary = {
+            'supplier_count': len(rows),
+            'active_count': sum(row['status'] == 'active' for row in rows),
+            'historical_count': sum(row['historical'] for row in rows),
+            'purchase_count': sum(row['purchase_count'] for row in rows),
+        }
+        if include_cost:
+            summary['payable_total'] = decimal_string(sum(
+                (Decimal(row['payable_total']) for row in rows), Decimal('0.00')
+            ))
+        return self.respond(
+            request, rows=rows, period=canonical_datetime_range(start, end), summary=summary,
+        )
+
+
+class PayablesReportView(BaseReportView):
+    required_permission = 'purchases.manage_payables'
+    query_serializer_class = PayablesReportQuerySerializer
+    csv_filename = 'relatorio-contas-a-pagar.csv'
+    csv_headers = (
+        'order_number', 'supplier_name', 'installment_number', 'due_date', 'amount',
+        'status', 'paid_at', 'paid_amount', 'paid_payment_method', 'cancelled_at',
+        'cancellation_reason', 'notes',
+    )
+
+    def serialize_rows(self, rows, request):
+        return list(rows)
+
+    def get(self, request):
+        filters, start, end = self.parse_query(request)
+        queryset = PayableInstallment.objects.select_related(
+            'supplier', 'purchase_order',
+        ).prefetch_related('purchase_order__items').filter(
+            purchase_order__branch=request.branch_context,
+        )
+        end_exclusive = period_end_exclusive(end)
+        if filters['date_basis'] == 'settlement_date':
+            queryset = queryset.filter(
+                Q(paid_at__gte=start, paid_at__lt=end_exclusive)
+                | Q(cancelled_at__gte=start, cancelled_at__lt=end_exclusive)
+            )
+        else:
+            queryset = queryset.filter(
+                due_date__gte=start.date(), due_date__lte=end.date(),
+            )
+        for parameter, lookup in (('supplier', 'supplier_id'), ('status', 'status')):
+            if filters.get(parameter) is not None:
+                queryset = queryset.filter(**{lookup: filters[parameter]})
+        if filters.get('search'):
+            value = filters['search']
+            queryset = queryset.filter(
+                Q(purchase_order__order_number__icontains=value)
+                | Q(supplier__trade_name__icontains=value)
+                | Q(purchase_order__items__supplier_name__icontains=value)
+            )
+        installments = list(queryset.distinct().order_by('due_date', 'installment_number', 'id'))
+        groups = {
+            status: {'status': status, 'count': 0, 'amount': Decimal('0.00')}
+            for status in PayableInstallmentStatus.values
+        }
+        rows = []
+        for installment in installments:
+            group = groups[installment.status]
+            group['count'] += 1
+            group['amount'] += installment.amount
+            order = installment.purchase_order
+            rows.append({
+                'id': installment.pk,
+                'purchase_order_id': order.pk,
+                'order_number': order.order_number,
+                'supplier_id': installment.supplier_id,
+                'supplier_name': _purchase_supplier_name(order),
+                'installment_number': installment.installment_number,
+                'due_date': installment.due_date,
+                'amount': decimal_string(installment.amount),
+                'status': installment.status,
+                'paid_at': installment.paid_at,
+                'paid_amount': decimal_string(installment.paid_amount)
+                if installment.paid_amount is not None else None,
+                'paid_payment_method': installment.paid_payment_method,
+                'cancelled_at': installment.cancelled_at,
+                'cancellation_reason': installment.cancellation_reason,
+                'notes': installment.notes,
+            })
+        summary = {
+            'date_basis': filters['date_basis'],
+            'count': len(installments),
+            'pending_total': decimal_string(groups[PayableInstallmentStatus.PENDING]['amount']),
+            'paid_total': decimal_string(groups[PayableInstallmentStatus.PAID]['amount']),
+            'cancelled_total': decimal_string(groups[PayableInstallmentStatus.CANCELLED]['amount']),
+            'overdue_total': decimal_string(sum(
+                (
+                    installment.amount for installment in installments
+                    if installment.status == PayableInstallmentStatus.PENDING
+                    and installment.due_date < timezone.localdate()
+                ),
+                Decimal('0.00'),
+            )),
+            'status_groups': [
+                {
+                    'status': group['status'],
+                    'count': group['count'],
+                    'amount': decimal_string(group['amount']),
+                }
+                for group in groups.values() if group['count']
+            ],
+        }
         return self.respond(
             request, rows=rows, period=canonical_datetime_range(start, end), summary=summary,
         )

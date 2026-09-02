@@ -1,11 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { Download } from "lucide-react";
+import { ChevronDown, Download } from "lucide-react";
 import { http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
-import { Button, Select } from "@/components/ui";
+import { Button } from "@/components/ui";
 
 type ExportFormat = "pdf" | "csv" | "xlsx";
 
@@ -17,15 +17,14 @@ export function ReportExportAction({
   query: URLSearchParams;
 }) {
   const { hasPermission } = useAuth();
-  const [format, setFormat] = useState<ExportFormat>("pdf");
   const [status, setStatus] = useState("");
   const [downloading, setDownloading] = useState(false);
 
   if (!hasPermission(permissions.exportReports)) return null;
 
-  async function download() {
+  async function download(format: ExportFormat) {
     setDownloading(true);
-    setStatus("Gerando arquivo...");
+    setStatus("Preparando relatório...");
     try {
       const exportQuery = new URLSearchParams(query);
       exportQuery.set("export", format);
@@ -58,24 +57,23 @@ export function ReportExportAction({
 
   return (
     <div className="flex flex-wrap items-center justify-end gap-2">
-      <Select
-        aria-label="Formato de exportação"
-        className="w-24"
-        value={format}
-        onChange={(event) => setFormat(event.target.value as ExportFormat)}
-      >
-        <option value="pdf">PDF</option>
-        <option value="csv">CSV</option>
-        <option value="xlsx">Excel</option>
-      </Select>
-      <Button
-        variant="secondary"
-        loading={downloading}
-        onClick={() => void download()}
-      >
-        <Download className="size-4" />
-        Exportar
-      </Button>
+      <details className="relative" onToggle={(event) => downloading && (event.currentTarget.open = false)}>
+        <summary className="btn btn-secondary cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+          {downloading ? <Download className="size-4 animate-pulse" /> : <Download className="size-4" />}
+          Exportar
+          <ChevronDown className="size-4" />
+        </summary>
+        <div className="absolute right-0 z-20 mt-2 min-w-40 overflow-hidden rounded-lg border border-subtle bg-surface p-1 shadow-lg">
+          {(["xlsx", "pdf", "csv"] as ExportFormat[]).map((format) => (
+            <button key={format} type="button" disabled={downloading} className="flex w-full items-center rounded-md px-3 py-2 text-left text-xs font-semibold text-fg hover:bg-surface-muted disabled:opacity-50" onClick={(event) => {
+              event.currentTarget.closest("details")?.removeAttribute("open");
+              void download(format);
+            }}>
+              {format === "xlsx" ? "Excel (.xlsx)" : format.toUpperCase()}
+            </button>
+          ))}
+        </div>
+      </details>
       {status && (
         <span className="basis-full text-right text-xs text-muted" role="status">
           {status}

@@ -5,7 +5,7 @@ export type ReportCenterItem = {
 };
 
 export type ReportCenterGroup = {
-  title: "Vendas" | "Financeiro" | "Estoque" | "Inventários";
+  title: "Vendas" | "Financeiro" | "Estoque" | "Inventários" | "Compras";
   description: string;
   reports: readonly ReportCenterItem[];
 };
@@ -51,6 +51,15 @@ export const reportGroups: readonly ReportCenterGroup[] = [
     description: "Contagens físicas, divergências e impacto histórico.",
     reports: [
       { href: "/relatorios/inventarios", label: "Inventários realizados", permission: "inventory.report.view" },
+    ],
+  },
+  {
+    title: "Compras",
+    description: "Compras, fornecedores e compromissos financeiros da filial.",
+    reports: [
+      { href: "/relatorios/compras", label: "Compras", permission: "purchases.view" },
+      { href: "/relatorios/fornecedores", label: "Fornecedores", permission: "suppliers.view" },
+      { href: "/relatorios/contas-a-pagar", label: "Contas a pagar", permission: "purchases.manage_payables" },
     ],
   },
 ];

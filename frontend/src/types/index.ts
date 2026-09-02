@@ -1984,25 +1984,27 @@ export interface ReportResponse<
   summary: S;
 }
 export interface ReportsOptions {
-  operators: Array<{ id: number; name: string }>;
-  sellers: Array<{ id: number; name: string }>;
-  beneficiaries: Array<{ id: number; name: string; user_type: UserType }>;
-  inventory_users: Array<{ id: number; name: string }>;
-  customers: Array<{ id: number; name: string }>;
+  operators: Array<{ id: number; name: string; historical?: boolean }>;
+  sellers: Array<{ id: number; name: string; historical?: boolean }>;
+  beneficiaries: Array<{ id: number; name: string; user_type: UserType; historical?: boolean }>;
+  inventory_users: Array<{ id: number; name: string; historical?: boolean }>;
+  customers: Array<{ id: number; name: string; status: Status; historical?: boolean }>;
   products: Array<{
     id: number;
     name: string;
     internal_code: string;
     status: Status;
+    historical?: boolean;
   }>;
-  categories: Array<{ id: number; name: string; status: Status }>;
+  categories: Array<{ id: number; name: string; status: Status; historical?: boolean }>;
   payment_methods: Array<{
     id: number;
     name: string;
     code: string;
     status: Status;
+    historical?: boolean;
   }>;
-  cash_registers: Array<{ id: number; name: string; status: Status }>;
+  cash_registers: Array<{ id: number; name: string; status: Status; historical?: boolean }>;
   cash_sessions: Array<{
     id: number;
     name: string;

@@ -449,10 +449,12 @@ def product_commercial_breakdowns(queryset, filters=None, reversals=()):
                 for snapshot in item.modifier_snapshot or []:
                     option_id = snapshot.get('option_id')
                     option_name = snapshot.get('option_name') or 'Modificador sem nome'
-                    key = option_id or option_name
+                    group_name = snapshot.get('group_name') or 'Grupo sem nome'
+                    key = (snapshot.get('group_id'), option_id) if option_id else (group_name, option_name)
                     modifier = modifiers.setdefault(key, {
                         'option_id': option_id,
                         'option_name': option_name,
+                        'group_name': group_name,
                         'quantity': Decimal('0.000'),
                         'additional_revenue': Decimal('0.00'),
                         'product_ids': set(),
@@ -471,7 +473,7 @@ def product_commercial_breakdowns(queryset, filters=None, reversals=()):
         )
         modifier_rows.append(row)
     return (
-        sorted(modifier_rows, key=lambda row: (-row['quantity'], row['option_name'])),
+        sorted(modifier_rows, key=lambda row: (-row['quantity'], row['group_name'], row['option_name'])),
         sorted(promotions.values(), key=lambda row: (-row['uses'], row['promotion_name'])),
     )
 

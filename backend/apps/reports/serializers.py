@@ -20,6 +20,12 @@ from apps.inventory.serializers import StockMovementSerializer
 from apps.products.models import Category, Product, SalesChannel
 from apps.sales.models import OperationType, Payment, PaymentMethod, Sale, SaleItem, SaleStatus
 from apps.sales.serializers import readable_user_name
+from apps.suppliers.models import Supplier
+from apps.purchases.models import (
+    PayableInstallmentStatus,
+    PurchaseOrderStatus,
+    PurchaseOrderType,
+)
 
 
 class BaseReportQuerySerializer(serializers.Serializer):
@@ -54,6 +60,7 @@ class BaseReportQuerySerializer(serializers.Serializer):
             'cash_register': CashRegister.objects.filter(branch=branch),
             'cash_session': CashSession.objects.filter(branch=branch),
             'customer': Customer.objects.filter(company_id=branch.company_id),
+            'supplier': Supplier.objects.filter(branch=branch),
         }
         errors = {}
         for field in fields:
@@ -223,6 +230,40 @@ class StockTransfersReportQuerySerializer(BaseReportQuerySerializer):
 
     def validate(self, attrs):
         return self.validate_scoped_ids(attrs, ('product', 'responsible'))
+
+
+class PurchaseReportQuerySerializer(BaseReportQuerySerializer):
+    supplier = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    product = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    status = serializers.ChoiceField(choices=PurchaseOrderStatus.values, required=False)
+    order_type = serializers.ChoiceField(choices=PurchaseOrderType.values, required=False)
+    search = serializers.CharField(max_length=200, required=False, allow_blank=False)
+
+    def validate(self, attrs):
+        return self.validate_scoped_ids(attrs, ('supplier', 'product'))
+
+
+class SupplierReportQuerySerializer(BaseReportQuerySerializer):
+    supplier = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    status = serializers.ChoiceField(choices=('active', 'inactive'), required=False)
+    search = serializers.CharField(max_length=200, required=False, allow_blank=False)
+
+    def validate(self, attrs):
+        return self.validate_scoped_ids(attrs, ('supplier',))
+
+
+class PayablesReportQuerySerializer(BaseReportQuerySerializer):
+    supplier = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    status = serializers.ChoiceField(
+        choices=PayableInstallmentStatus.values, required=False,
+    )
+    date_basis = serializers.ChoiceField(
+        choices=('due_date', 'settlement_date'), required=False, default='due_date',
+    )
+    search = serializers.CharField(max_length=200, required=False, allow_blank=False)
+
+    def validate(self, attrs):
+        return self.validate_scoped_ids(attrs, ('supplier',))
 
 
 class ReportSaleItemSerializer(serializers.ModelSerializer):

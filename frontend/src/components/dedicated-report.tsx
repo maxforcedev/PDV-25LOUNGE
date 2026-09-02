@@ -2,7 +2,19 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { Filter } from "lucide-react";
+import {
+  Activity,
+  Boxes,
+  ChevronDown,
+  CircleDollarSign,
+  Filter,
+  PackageCheck,
+  ReceiptText,
+  ShoppingCart,
+  TrendingUp,
+  Users,
+  WalletCards,
+} from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { PeriodFilter, type PeriodValue } from "@/components/period-filter";
 import { ReportExportAction } from "@/components/report-export-action";
@@ -12,6 +24,7 @@ import {
   EmptyState,
   Field,
   Input,
+  Modal,
   Pagination,
   Select,
   TableLoading,
@@ -197,6 +210,12 @@ function rows(value: unknown) {
   return Array.isArray(value) ? (value as Array<Record<string, unknown>>) : [];
 }
 
+function optionLabel(item: { name: string; historical?: boolean; status?: string }) {
+  if (item.status === "inactive") return `${item.name} (Inativo)`;
+  if (item.historical) return `${item.name} (Arquivado)`;
+  return item.name;
+}
+
 function numberValue(value: unknown) {
   return Number(value || 0);
 }
@@ -346,31 +365,77 @@ function ReconciliationWarning({
   );
 }
 
-function Kpi({
+type ReportValueFormat =
+  | "money"
+  | "number"
+  | "quantity"
+  | "percent"
+  | "percentage_points";
+
+export function ReportKpiCard({
   label,
   value,
   format = "money",
+  tone,
 }: {
   label: string;
   value: unknown;
-  format?: "money" | "number" | "quantity" | "percent";
+  format?: ReportValueFormat;
+  tone?: "neutral" | "danger" | "warning" | "success";
 }) {
+  const normalized = label.toLowerCase();
+  const semanticTone = tone || (
+    /negativ|cancel|perda|impacto/.test(normalized)
+      ? "danger"
+      : /mínimo|zerad|diverg/.test(normalized)
+        ? "warning"
+        : "neutral"
+  );
+  const Icon = /fatur|recebid|custo|margem|ticket|desconto/.test(normalized)
+    ? CircleDollarSign
+    : /venda/.test(normalized)
+      ? ShoppingCart
+      : /pagamento/.test(normalized)
+        ? WalletCards
+        : /produto|estoque/.test(normalized)
+          ? Boxes
+          : /atendente|operador/.test(normalized)
+            ? Users
+            : /inventário|transfer/.test(normalized)
+              ? PackageCheck
+              : /taxa|percent/.test(normalized)
+                ? TrendingUp
+                : ReceiptText;
   const display =
     value == null
       ? "—"
       : format === "money"
       ? formatBRL(String(value || "0"))
-      : format === "quantity"
+       : format === "quantity"
         ? formatQuantity(String(value || "0"))
         : format === "percent"
           ? formatPercent(value)
+          : format === "percentage_points"
+            ? `${formatQuantity(String(value || "0"))} p.p.`
           : String(value ?? "0");
+  const tones = {
+    neutral: "border-subtle bg-surface text-primary",
+    danger: "border-danger/30 bg-danger-surface text-danger-strong",
+    warning: "border-warning/30 bg-warning-surface text-warning-strong",
+    success: "border-success/30 bg-success-surface text-success-strong",
+  };
   return (
-    <div className="rounded-lg border border-dashed border-slate-200 p-4">
-      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+    <div className={`group relative overflow-hidden rounded-xl border p-4 transition hover:-translate-y-0.5 ${tones[semanticTone]}`}>
+      <div className="mb-3 flex items-center justify-between">
+        <span className="flex size-8 items-center justify-center rounded-lg bg-current/10">
+          <Icon className="size-4" />
+        </span>
+        <Activity className="size-3.5 opacity-25 transition group-hover:opacity-50" />
+      </div>
+      <span className="text-[10px] font-bold uppercase tracking-wider text-muted">
         {label}
       </span>
-      <strong className="mt-2 block text-xl text-dark">{display}</strong>
+      <strong className="mt-1.5 block text-xl text-fg">{display}</strong>
     </div>
   );
 }
@@ -388,7 +453,7 @@ function reportTabs(
       { value: "vendas", label: "Vendas" },
       { value: "itens", label: "Itens" },
       { value: "pagamentos", label: "Pagamentos" },
-      { value: "cancelamentos", label: "Cancelamentos" },
+      { value: "vendas-por-hora", label: "Vendas por hora" },
     ];
   if (kind === "products") {
     const tabs = [
@@ -398,8 +463,6 @@ function reportTabs(
       { value: "promocoes", label: "Promoções" },
     ];
     const hasCosts = summary?.has_costs === true;
-    if (canViewCosts && hasCosts)
-      tabs.push({ value: "custos", label: "Margem e custos" });
     return tabs;
   }
   if (kind === "cash")
@@ -463,7 +526,7 @@ function reportKpis(
   const definitions: Partial<
     Record<
       ReportKind,
-      Array<[string, unknown, "money" | "number" | "quantity" | "percent"]>
+      Array<[string, unknown, ReportValueFormat]>
     >
   > = {
     overview: [
@@ -733,6 +796,27 @@ function StatusBadge({ value }: { value: unknown }) {
   );
 }
 
+function SaleReference({
+  id,
+  number,
+  canOpen,
+  prefix = false,
+}: {
+  id: unknown;
+  number: unknown;
+  canOpen: boolean;
+  prefix?: boolean;
+}) {
+  const label = `${prefix ? "Venda " : ""}${String(number || "-")}`;
+  return canOpen && id ? (
+    <Link href={`/vendas/${String(id)}`} className="font-bold text-link hover:underline">
+      {label}
+    </Link>
+  ) : (
+    <strong>{label}</strong>
+  );
+}
+
 function SalesTable({
   kind,
   data,
@@ -915,7 +999,7 @@ function SalesItemsTable({ data, canViewCosts }: { data: ReportResponse<Record<s
   );
 }
 
-function SalesPaymentsTable({ data }: { data: ReportResponse<Record<string, unknown>> }) {
+function SalesPaymentsTable({ data, canViewSales }: { data: ReportResponse<Record<string, unknown>>; canViewSales: boolean }) {
   const payments = data.results.flatMap((sale) =>
     rows(sale.payments).map((payment, index) => ({ sale, payment, index })),
   );
@@ -924,11 +1008,11 @@ function SalesPaymentsTable({ data }: { data: ReportResponse<Record<string, unkn
   return (
     <div className="table-wrap">
       <table className="data-table min-w-160">
-        <thead><tr><th>Venda</th><th>Data/hora</th><th>Forma</th><th>Valor aplicado</th><th>Valor recebido</th><th>Troco</th><th>Origem</th><th>Operador</th><th>Status</th></tr></thead>
+        <thead><tr><th>Venda</th><th>Data/hora</th><th>Forma</th><th>Valor aplicado</th><th>Valor recebido</th><th>Troco</th><th>Origem</th><th>Operador</th><th>Status da venda</th></tr></thead>
         <tbody>{payments.map(({ sale, payment, index }) => {
           const operator = sale.operator as { name?: string } | null;
           return <tr key={`${String(sale.operation_key)}:${String(payment.payment_method_code)}:${index}`}>
-            <td><strong>{String(sale.sale_number)}</strong></td>
+            <td><SaleReference id={sale.id} number={sale.sale_number} canOpen={canViewSales} /></td>
             <td>{formatDate(String(payment.occurred_at || sale.event_at || sale.created_at))}</td>
             <td>{String(payment.payment_method_name || payment.payment_method_code || "-")}</td>
             <td><strong>{formatBRL(String(payment.amount || "0"))}</strong></td>
@@ -936,7 +1020,7 @@ function SalesPaymentsTable({ data }: { data: ReportResponse<Record<string, unkn
             <td>{formatBRL(String(payment.change_amount || "0"))}</td>
             <td>{domainLabel(payment.origin)}</td>
             <td>{String((payment.operator as Record<string, unknown> | null)?.name || operator?.name || "-")}</td>
-            <td><StatusBadge value={payment.status || sale.status} /></td>
+            <td><StatusBadge value={sale.status} /></td>
           </tr>;
         })}</tbody>
       </table>
@@ -944,10 +1028,12 @@ function SalesPaymentsTable({ data }: { data: ReportResponse<Record<string, unkn
   );
 }
 
-function ReceiptEventsTable({ data }: { data: ReportResponse<Record<string, unknown>> }) {
+function ReceiptEventsTable({ data, canViewSales }: { data: ReportResponse<Record<string, unknown>>; canViewSales: boolean }) {
+  const [reason, setReason] = useState("");
   if (!data.results.length)
     return <EmptyState title="Sem eventos" description="Nenhum recebimento ou estorno ocorreu no período." />;
   return (
+    <>
     <div className="table-wrap">
       <table className="data-table min-w-260">
         <thead><tr><th>Data/hora</th><th>Venda / comanda</th><th>Forma</th><th>Aplicado</th><th>Recebido</th><th>Troco</th><th>Origem</th><th>Operador</th><th>Caixa</th><th>Status</th><th>Motivo do estorno</th></tr></thead>
@@ -959,7 +1045,7 @@ function ReceiptEventsTable({ data }: { data: ReportResponse<Record<string, unkn
           const register = row.cash_register as Record<string, unknown> | null;
           return <tr key={String(row.event_id)}>
             <td className="whitespace-nowrap">{formatDate(String(row.occurred_at))}</td>
-            <td><strong>{sale?.number ? `Venda ${String(sale.number)}` : command?.number ? `Comanda ${String(command.number)}` : "-"}</strong><small className="block text-muted">{String(row.event_id)}</small></td>
+             <td>{sale?.number ? <SaleReference id={sale.id} number={sale.number} canOpen={canViewSales} prefix /> : <strong>{command?.number ? `Comanda ${String(command.number)}` : "-"}</strong>}<small className="block text-muted">{String(row.event_id)}</small></td>
             <td>{String(method?.name || method?.code || "-")}</td>
             <td><strong>{formatBRL(String(row.applied_amount || "0"))}</strong></td>
             <td>{formatBRL(String(row.received_amount || "0"))}</td>
@@ -968,11 +1054,15 @@ function ReceiptEventsTable({ data }: { data: ReportResponse<Record<string, unkn
             <td>{String(operator?.name || "-")}</td>
             <td>{String(register?.name || "-")}</td>
             <td><StatusBadge value={row.status} /></td>
-            <td className="max-w-64">{String(row.reversal_reason || "-")}</td>
+             <td>{row.reversal_reason ? <button type="button" className="text-xs font-bold text-link hover:underline" onClick={() => setReason(String(row.reversal_reason))}>Ver motivo</button> : "-"}</td>
           </tr>;
         })}</tbody>
       </table>
     </div>
+    <Modal open={!!reason} title="Motivo do estorno" onClose={() => setReason("")} size="md">
+      <p className="whitespace-pre-wrap break-words p-5 text-sm leading-6 text-fg">{reason}</p>
+    </Modal>
+    </>
   );
 }
 
@@ -982,7 +1072,7 @@ function ReceiptDistributionTable({ summary }: { summary: Record<string, unknown
   return <div className="table-wrap"><table className="data-table"><thead><tr><th>Forma</th><th>Quantidade</th><th>Valor aplicado líquido</th><th>Valor recebido</th><th>Troco</th><th>Estornos</th><th>%</th></tr></thead><tbody>{methods.map((row) => <tr key={String(row.code)}><td><strong>{String(row.name || row.code)}</strong></td><td>{String(row.count || 0)}</td><td>{formatBRL(String(row.applied_total || "0"))}</td><td>{formatBRL(String(row.received_total || "0"))}</td><td>{formatBRL(String(row.change_total || "0"))}</td><td className="text-danger">{formatBRL(String(row.reversals || "0"))}</td><td>{formatPercent(row.percentage)}</td></tr>)}</tbody></table></div>;
 }
 
-function CancellationEventsTable({ data }: { data: ReportResponse<Record<string, unknown>> }) {
+function CancellationEventsTable({ data, canViewSales }: { data: ReportResponse<Record<string, unknown>>; canViewSales: boolean }) {
   if (!data.results.length)
     return <EmptyState title="Sem cancelamentos" description="Nenhum cancelamento ou estorno ocorreu no período." />;
   return (
@@ -995,7 +1085,7 @@ function CancellationEventsTable({ data }: { data: ReportResponse<Record<string,
           return <tr key={String(row.event_id)}>
             <td className="whitespace-nowrap">{formatDate(String(row.cancelled_at))}</td>
             <td>{domainLabel(row.event_type)}</td>
-            <td><strong>{String(row.operation_number || row.operation_id || "-")}</strong><small className="block text-muted">{domainLabel(row.operation_type)}</small></td>
+             <td>{row.operation_type === "sale" ? <SaleReference id={row.operation_id} number={row.operation_number} canOpen={canViewSales} prefix /> : <strong>{String(row.operation_number || row.operation_id || "-")}</strong>}<small className="block text-muted">{domainLabel(row.operation_type)}</small></td>
             <td>{String(product?.name || "-")}</td>
             <td>{row.quantity == null ? "-" : formatQuantity(String(row.quantity))}</td>
             <td>{String(actor?.name || "-")}</td>
@@ -1062,7 +1152,7 @@ function ProductCommercialBreakdown({
     <div className="table-wrap">
       <table className="data-table">
         <thead>{kind === "modifiers" ? <tr><th>Modificador</th><th>Quantidade</th><th>Produtos</th><th>Receita adicional</th><th>Ticket médio</th></tr> : <tr><th>Promoção</th><th>Usos</th><th>Desconto concedido</th><th>Receita líquida associada</th></tr>}</thead>
-        <tbody>{list.map((row) => kind === "modifiers" ? <tr key={`modifier:${String(row.option_id || row.option_name)}`}><td><strong>{String(row.option_name)}</strong></td><td>{formatQuantity(String(row.quantity || "0"))}</td><td>{String(row.product_count || 0)}</td><td>{formatBRL(String(row.additional_revenue || "0"))}</td><td>{formatBRL(String(row.ticket_average || "0"))}</td></tr> : <tr key={`promotion:${String(row.promotion_id)}`}><td><strong>{String(row.promotion_name)}</strong></td><td>{String(row.uses || 0)}</td><td>{formatBRL(String(row.discount || "0"))}</td><td>{formatBRL(String(row.net_revenue || "0"))}</td></tr>)}</tbody>
+        <tbody>{list.map((row) => kind === "modifiers" ? <tr key={`modifier:${String(row.group_name)}:${String(row.option_id || row.option_name)}`}><td><strong>{String(row.group_name || "Grupo sem nome")} — {String(row.option_name)}</strong></td><td>{formatQuantity(String(row.quantity || "0"))}</td><td>{String(row.product_count || 0)}</td><td>{formatBRL(String(row.additional_revenue || "0"))}</td><td>{formatBRL(String(row.ticket_average || "0"))}</td></tr> : <tr key={`promotion:${String(row.promotion_id)}`}><td><strong>{String(row.promotion_name)}</strong></td><td>{String(row.uses || 0)}</td><td>{formatBRL(String(row.discount || "0"))}</td><td>{formatBRL(String(row.net_revenue || "0"))}</td></tr>)}</tbody>
       </table>
     </div>
   );
@@ -1425,7 +1515,10 @@ function SalesSections({ summary }: { summary: Record<string, unknown> }) {
 }
 
 function SalesPaymentTotal({ summary }: { summary: Record<string, unknown> }) {
+  const methods = rows(summary.payment_totals);
+  const total = positiveMoney(summary.payment_total);
   return (
+    <div className="grid gap-5 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
     <section className="card p-5">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
@@ -1451,6 +1544,19 @@ function SalesPaymentTotal({ summary }: { summary: Record<string, unknown> }) {
         value={summary.reconciliation_delta}
       />
     </section>
+    <section className="card p-5">
+      <h2 className="text-sm font-bold">Gráfico por forma</h2>
+      <p className="mt-1 text-[11px] text-muted">Valor e participação no total dos pagamentos.</p>
+      {methods.length ? <div className="mt-5 space-y-4">{methods.map((method) => {
+        const amount = positiveMoney(method.amount ?? method.payment_total);
+        const percentage = chartPercent(amount, total);
+        return <div key={String(method.code)}>
+          <div className="mb-1.5 flex items-center justify-between gap-4 text-xs"><span className="font-semibold">{String(method.name || method.code)}</span><span><strong>{formatBRL(String(method.amount ?? method.payment_total ?? "0"))}</strong> · {formatPercent(percentage)}</span></div>
+          <div className="h-2 overflow-hidden rounded-full bg-surface-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${percentage}%` }} /></div>
+        </div>;
+      })}</div> : <EmptyState title="Sem pagamentos" description="Nenhuma forma foi utilizada no período." />}
+    </section>
+    </div>
   );
 }
 
@@ -2302,10 +2408,37 @@ function StockConsumption({
 function InventoryMovementsTable({
   data,
   canViewCosts = false,
+  canViewSales,
+  canViewPurchases,
+  canViewTransfers,
+  canViewCounts,
 }: {
   data: ReportResponse<Record<string, unknown>>;
   canViewCosts?: boolean;
+  canViewSales: boolean;
+  canViewPurchases: boolean;
+  canViewTransfers: boolean;
+  canViewCounts: boolean;
 }) {
+  function originReference(origin: Record<string, unknown> | null, sale: Record<string, unknown> | null) {
+    if (sale?.number)
+      return <SaleReference id={sale.id} number={sale.number} canOpen={canViewSales} prefix />;
+    if (!origin) return "-";
+    const kind = String(origin.kind || "");
+    const id = String(origin.id || "");
+    const target = kind === "purchase" && canViewPurchases
+      ? `/compras/${id}`
+      : kind === "transfer" && canViewTransfers
+        ? `/estoque/transferencias/${id}`
+        : kind === "inventory_count" && canViewCounts
+          ? `/estoque/inventarios/${id}`
+          : "";
+    const prefix = kind === "purchase" ? "Compra" : kind === "transfer" ? "Transferência" : kind === "inventory_count" ? "Inventário" : String(origin.label || domainLabel(kind));
+    const label = ["purchase", "transfer", "inventory_count"].includes(kind)
+      ? `${prefix} ${id.slice(0, 8).toUpperCase()}`
+      : prefix;
+    return target ? <Link className="font-bold text-link hover:underline" href={target}>{label}</Link> : label;
+  }
   if (!data.results.length)
     return <EmptyState title="Sem movimentações" description="Nenhuma movimentação encontrada no período." />;
   return (
@@ -2335,7 +2468,7 @@ function InventoryMovementsTable({
               <td><strong>{String(product.name || "-")}</strong><small className="block text-muted">{String(product.internal_code || "")}</small></td>
               <td>{String(category?.name || "-")}</td>
               <td>{domainLabel(row.movement_type)}</td>
-              <td>{String(origin?.label || domainLabel(row.domain_origin || row.nature))}</td>
+              <td>{originReference(origin, sale)}</td>
               <td>{formatQuantity(String(row.previous_quantity || "0"))}</td>
               <td className="font-bold">{formatQuantity(String(row.quantity || "0"))}<small className="block text-muted">Equiv. {formatQuantity(String(row.equivalent_quantity || "0"))}</small></td>
               <td>{formatQuantity(String(row.final_quantity || "0"))}</td>
@@ -2343,7 +2476,7 @@ function InventoryMovementsTable({
               {canViewCosts && <><td>{row.unit_cost_snapshot == null ? "-" : formatBRL(String(row.unit_cost_snapshot))}</td><td>{row.cost_impact == null ? "-" : formatBRL(String(row.cost_impact))}</td></>}
               <td>{String(user.name || "-")}</td>
               <td className="max-w-64">{String(row.reason || "-")}</td>
-              <td className="max-w-64 break-all font-mono text-xs">{sale?.number ? `Venda ${String(sale.number)}` : String(row.operation_reference || "-")}</td>
+              <td className="max-w-64 break-all font-mono text-xs">{originReference(origin, sale)}</td>
             </tr>;
           })}</tbody>
         </table>
@@ -2546,6 +2679,67 @@ type TimeAnalysisRow = {
   sales_revenue: string;
 };
 
+function SalesHourlyAnalysis({ summary }: { summary: Record<string, unknown> }) {
+  const [mode, setMode] = useState<"line" | "heatmap">("line");
+  const [metric, setMetric] = useState<"revenue" | "count">("revenue");
+  const rawHourly = rows(summary.hourly_sales);
+  const heatmap = rows(summary.heatmap);
+  const hourly = Array.from({ length: 24 }, (_, hour) => {
+    const matching = rawHourly.filter((row) => {
+      if (typeof row.hour === "number") return row.hour === hour;
+      const matched = String(row.hour || "").match(/T(\d{2}):/);
+      return Number(matched?.[1]) === hour;
+    });
+    return {
+      hour,
+      count: matching.reduce((total, row) => total + numberValue(row.count), 0),
+      revenue: Number(sumReportMoney(matching.map((row) => row.sales_revenue))),
+      received: sumReportMoney(matching.map((row) => row.total_received)),
+    };
+  });
+  const values = hourly.map((row) => metric === "count" ? row.count : row.revenue);
+  const maximum = Math.max(...values, 0);
+  const points = hourly.map((row, index) => {
+    const value = metric === "count" ? row.count : row.revenue;
+    return `${10 + index * 19},${150 - (maximum ? value * 130 / maximum : 0)}`;
+  }).join(" ");
+  const heatMaximum = Math.max(
+    ...heatmap.map((row) => metric === "count" ? numberValue(row.count) : Number(row.sales_revenue || row.revenue || 0)),
+    0,
+  );
+  const weekdays = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
+
+  return <section className="card overflow-hidden">
+    <div className="card-header flex-wrap gap-3">
+      <div><h2 className="text-sm font-bold">Vendas por hora</h2><p className="mt-1 text-[11px] text-muted">Distribuição por horário no período selecionado.</p></div>
+      <div className="flex flex-wrap gap-2">
+        <div className="rounded-lg border border-subtle bg-surface p-1">
+          {(["line", "heatmap"] as const).map((value) => <button key={value} type="button" className={`rounded-md px-3 py-1.5 text-xs font-bold ${mode === value ? "bg-primary text-white" : "text-muted"}`} onClick={() => setMode(value)}>{value === "line" ? "Linha" : "Mapa de calor"}</button>)}
+        </div>
+        <Select className="w-40" value={metric} onChange={(event) => setMetric(event.target.value as "revenue" | "count")}><option value="revenue">Faturamento</option><option value="count">Quantidade</option></Select>
+      </div>
+    </div>
+    {!rawHourly.length && !heatmap.length ? <EmptyState title="Sem dados horários" description="Nenhuma venda foi encontrada no período." /> : mode === "line" ? <div className="overflow-x-auto p-5">
+      <div className="min-w-180">
+        <svg viewBox="0 0 460 160" className="h-64 w-full" role="img" aria-label={`${metric === "count" ? "Quantidade de vendas" : "Faturamento"} por hora`}>
+          <line x1="10" y1="150" x2="447" y2="150" stroke="currentColor" className="text-subtle" />
+          <polyline points={points} fill="none" stroke="currentColor" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" className="text-primary" />
+          {hourly.map((row, index) => <circle key={row.hour} cx={10 + index * 19} cy={150 - (maximum ? (metric === "count" ? row.count : row.revenue) * 130 / maximum : 0)} r="3" fill="currentColor" className="text-primary"><title>{String(row.hour).padStart(2, "0")}h · {row.count} vendas · {formatBRL(String(row.revenue))} · recebido {formatBRL(row.received)}</title></circle>)}
+        </svg>
+        <div className="grid grid-cols-12 gap-y-2 text-center text-[9px] text-muted">{hourly.filter((row) => row.hour % 2 === 0).map((row) => <span key={row.hour}>{String(row.hour).padStart(2, "0")}h</span>)}</div>
+      </div>
+    </div> : <div className="overflow-x-auto p-5"><div className="grid min-w-180 grid-cols-[2.5rem_repeat(24,minmax(1.5rem,1fr))] gap-1 text-center text-[9px]">
+      <span />{hourly.map((row) => <span key={`head:${row.hour}`} className="text-muted">{row.hour}</span>)}
+      {weekdays.flatMap((weekday, weekdayIndex) => [<strong key={`day:${weekday}`}>{weekday}</strong>, ...hourly.map((hour) => {
+        const row = heatmap.find((item) => Number(item.weekday) === weekdayIndex && Number(item.hour) === hour.hour);
+        const value = row ? (metric === "count" ? numberValue(row.count) : Number(row.sales_revenue || row.revenue || 0)) : 0;
+        const opacity = value > 0 && heatMaximum > 0 ? 0.15 + value / heatMaximum * 0.85 : 0.05;
+        return <span key={`${weekdayIndex}:${hour.hour}`} className="aspect-square rounded bg-primary" style={{ opacity }} title={`${weekday} · ${hour.hour}h · ${row?.count || 0} vendas · ${formatBRL(String(row?.sales_revenue || row?.revenue || "0"))} · Ticket médio ${formatBRL(String(row?.average || "0"))}`} />;
+      })])}
+    </div></div>}
+  </section>;
+}
+
 function positiveMoney(value: unknown) {
   const cents = signedMoneyToCents(value);
   return cents !== null && cents > BigInt(0) ? cents : BigInt(0);
@@ -2590,10 +2784,10 @@ function OverviewAnalytics({ summary }: { summary: Record<string, unknown> }) {
   const currentPeriod = (periodComparison.current || {}) as Record<string, unknown>;
   const previousPeriod = (periodComparison.previous || {}) as Record<string, unknown>;
   const deltas = (periodComparison.deltas || {}) as Record<string, Record<string, unknown>>;
-  const comparisonMetrics: Array<[string, string, "money" | "number" | "percent"]> = [
+  const comparisonMetrics: Array<[string, string, ReportValueFormat]> = [
     ["Faturamento bruto", "gross_revenue", "money"],
     ["Faturamento líquido", "net_revenue", "money"],
-    ["Vendas", "sales_count", "number"],
+    ["Vendas", "sales_count", "quantity"],
     ["Ticket médio", "ticket_average", "money"],
     ["Total recebido", "total_received", "money"],
     ["Descontos", "discounts", "money"],
@@ -2602,7 +2796,7 @@ function OverviewAnalytics({ summary }: { summary: Record<string, unknown> }) {
     ["Consumação / cortesias", "consumptions_courtesies", "money"],
     ["Resultado estimado", "estimated_result", "money"],
     ["Margem estimada", "estimated_margin", "percent"],
-  ].filter(([, key]) => currentPeriod[key] !== undefined || previousPeriod[key] !== undefined) as Array<[string, string, "money" | "number" | "percent"]>;
+  ].filter(([, key]) => currentPeriod[key] !== undefined || previousPeriod[key] !== undefined) as Array<[string, string, ReportValueFormat]>;
 
   return (
     <div className="grid gap-5 lg:grid-cols-2">
@@ -2699,7 +2893,7 @@ function OverviewAnalytics({ summary }: { summary: Record<string, unknown> }) {
       </section>
       {comparisonMetrics.length > 0 && <section className="card overflow-hidden lg:col-span-2"><div className="card-header"><div><h2 className="text-sm font-bold">Indicadores contra o período anterior</h2><p className="mt-1 text-[11px] text-muted">Variação absoluta e percentual para o mesmo intervalo imediatamente anterior.</p></div></div><div className="table-wrap"><table className="data-table"><thead><tr><th>Indicador</th><th>Atual</th><th>Anterior</th><th>Variação</th><th>Variação %</th></tr></thead><tbody>{comparisonMetrics.map(([label, key, format]) => {
         const delta = deltas[key] || {};
-        const display = (value: unknown) => value == null ? "—" : format === "number" ? String(value) : format === "percent" ? formatPercent(value) : formatBRL(String(value));
+        const display = (value: unknown) => value == null ? "—" : format === "number" || format === "quantity" ? formatQuantity(String(value)) : format === "percent" ? formatPercent(value) : formatBRL(String(value));
         const comparable = delta.comparable !== false && delta.amount != null;
         return <tr key={key}><td><strong>{label}</strong></td><td>{display(currentPeriod[key])}</td><td>{display(previousPeriod[key])}</td><td className={comparable && delta.direction === "down" ? "text-danger" : comparable && delta.direction === "up" ? "text-success-strong" : ""}>{comparable ? display(delta.amount) : "—"}</td><td>{!comparable ? "Sem comparação" : delta.percentage == null ? "Sem base" : formatPercent(delta.percentage)}</td></tr>;
       })}</tbody></table></div></section>}
@@ -2716,6 +2910,9 @@ function ReportBody({
   canViewCash,
   canViewCosts,
   canViewCommission,
+  canViewPurchases,
+  canViewTransfers,
+  canViewCounts,
 }: {
   kind: ReportKind;
   data: ReportResponse<Record<string, unknown>>;
@@ -2725,6 +2922,9 @@ function ReportBody({
   canViewCash: boolean;
   canViewCosts: boolean;
   canViewCommission: boolean;
+  canViewPurchases: boolean;
+  canViewTransfers: boolean;
+  canViewCounts: boolean;
 }) {
   if (kind === "products") {
     if (activeTab === "categorias")
@@ -2759,7 +2959,7 @@ function ReportBody({
         </section>
         <section className="card overflow-hidden">
           <div className="card-header"><div><h2 className="text-sm font-bold">Eventos detalhados</h2><p className="mt-1 text-[11px] text-muted">Uma linha por recebimento ou estorno ocorrido no período.</p></div></div>
-          <ReceiptEventsTable data={data} />
+          <ReceiptEventsTable data={data} canViewSales={canViewSales} />
         </section>
       </div>
     );
@@ -2774,7 +2974,7 @@ function ReportBody({
     return <div className="space-y-5"><section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Comissão por atendente</h2></div><RankingTable kind={kind} summary={data.summary} canViewCommission={canViewCommission} /></section><section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Comissão por venda e produto</h2></div><CommissionDetailsTable data={data} /></section></div>;
   if (kind === "stock-consumption") return <StockConsumption data={data} canViewCosts={canViewCosts} />;
   if (kind === "inventory-movements")
-    return <section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Movimentações detalhadas</h2><p className="mt-1 text-[11px] text-muted">Transição de saldo e referência operacional.</p></div></div><InventoryMovementsTable data={data} canViewCosts={canViewCosts} /></section>;
+    return <section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Movimentações detalhadas</h2><p className="mt-1 text-[11px] text-muted">Transição de saldo e referência operacional.</p></div></div><InventoryMovementsTable data={data} canViewCosts={canViewCosts} canViewSales={canViewSales} canViewPurchases={canViewPurchases} canViewTransfers={canViewTransfers} canViewCounts={canViewCounts} /></section>;
   if (kind === "stock-position")
     return <section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Posição atual por produto</h2><p className="mt-1 text-[11px] text-muted">Produtos arquivados aparecem somente enquanto mantêm saldo.</p></div></div><StockPositionTable data={data} canViewCosts={canViewCosts} /></section>;
   if (kind === "inventory-counts")
@@ -2865,7 +3065,7 @@ function ReportBody({
       </div>
     );
   if (kind === "cancellations")
-    return <section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Eventos de cancelamento e estorno</h2><p className="mt-1 text-[11px] text-muted">Vendas canceladas, itens de comandas cancelados e pagamentos estornados.</p></div></div><CancellationEventsTable data={data} /></section>;
+    return <section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Eventos de cancelamento e estorno</h2><p className="mt-1 text-[11px] text-muted">Vendas canceladas, itens de comandas cancelados e pagamentos estornados.</p></div></div><CancellationEventsTable data={data} canViewSales={canViewSales} /></section>;
   const operations = (
     <section className="card overflow-hidden">
       <div className="card-header">
@@ -2882,13 +3082,14 @@ function ReportBody({
   if (kind === "overview")
     return (
       <div className="space-y-5">
-        <OverviewAnalytics summary={data.summary} />
         <FinancialBridge summary={data.summary} title="Composição do total recebido" />
+        <OverviewAnalytics summary={data.summary} />
       </div>
     );
   if (kind === "sales") {
     if (activeTab === "itens") return <section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Itens vendidos</h2></div><SalesItemsTable data={data} canViewCosts={canViewCosts} /></section>;
-    if (activeTab === "pagamentos") return <section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Pagamentos das vendas</h2></div><SalesPaymentsTable data={data} /></section>;
+    if (activeTab === "pagamentos") return <section className="card overflow-hidden"><div className="card-header"><h2 className="text-sm font-bold">Pagamentos das vendas</h2></div><SalesPaymentsTable data={data} canViewSales={canViewSales} /></section>;
+    if (activeTab === "vendas-por-hora") return <SalesHourlyAnalysis summary={data.summary} />;
     if (activeTab === "vendas") return operations;
     if (activeTab === "cancelamentos") {
       const cancelledData = { ...data, results: data.results.filter((row) => row.event_type === "reversal" || row.status === "cancelled") };
@@ -2935,6 +3136,7 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
   const [prices, setPrices] = useState<ProductPriceComparison | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false);
   const allowed = hasPermission(config.permission);
 
   function params(nextPeriod = appliedPeriod, nextFilters = appliedFilters) {
@@ -2952,6 +3154,34 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
     });
   }
 
+  async function loadOptions(
+    nextPeriod = period,
+    token = context.current,
+  ) {
+    if (!currentBranch || !allowed) return;
+    const currentOptionsRequest = ++optionsRequestId.current;
+    try {
+      const result = await http.get<ReportsOptions>(
+        `reports/options/?${new URLSearchParams({
+          scope: kind,
+          start_datetime: nextPeriod.start,
+          end_datetime: nextPeriod.end,
+        })}`,
+      );
+      if (
+        context.current === token &&
+        optionsRequestId.current === currentOptionsRequest
+      )
+        setOptions(result);
+    } catch {
+      if (
+        context.current === token &&
+        optionsRequestId.current === currentOptionsRequest
+      )
+        setOptions(null);
+    }
+  }
+
   async function load(
     nextPeriod = period,
     nextFilters = filters,
@@ -2961,6 +3191,7 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
     const currentRequest = ++requestId.current;
     setLoading(true);
     setError("");
+    void loadOptions(nextPeriod, token);
     try {
       if (kind === "prices") {
         const query = new URLSearchParams(
@@ -2985,7 +3216,6 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
         return;
       }
       const query = params(nextPeriod, nextFilters);
-      setData(null);
       setAppliedPeriod(nextPeriod);
       setAppliedFilters(nextFilters);
       const urlQuery = new URLSearchParams(query);
@@ -3018,7 +3248,6 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
   async function loadPage(path: string, token = context.current) {
     const currentRequest = ++requestId.current;
     setLoading(true);
-    setData(null);
     setError("");
     try {
       const result =
@@ -3082,25 +3311,7 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
     setFilters(nextFilters);
     setAppliedFilters(nextFilters);
     void load(nextPeriod, nextFilters, context.current);
-    const token = context.current;
-    const currentOptionsRequest = ++optionsRequestId.current;
     setOptions(null);
-    void http
-      .get<ReportsOptions>(`reports/options/?scope=${kind}`)
-      .then((result) => {
-        if (
-          context.current === token &&
-          optionsRequestId.current === currentOptionsRequest
-        )
-          setOptions(result);
-      })
-      .catch(() => {
-        if (
-          context.current === token &&
-          optionsRequestId.current === currentOptionsRequest
-        )
-          setOptions(null);
-      });
   }, [currentBranch?.id, kind, allowed]);
 
   function clearReportFilters() {
@@ -3143,6 +3354,9 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
   const selectedTab = tabs.some((tab) => tab.value === activeTab)
     ? activeTab
     : tabs[0]?.value || "";
+  const advancedFilterCount = Object.entries(filters).filter(
+    ([key, value]) => key !== "section" && Boolean(value),
+  ).length;
 
   function changeTab(tab: string) {
     setActiveTab(tab);
@@ -3264,13 +3478,14 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
           </section>
         ) : (
           <section className="card p-4">
-            <div className="mb-3 flex items-center gap-2 text-xs font-bold">
-              <Filter className="size-4 text-primary" />
-              Filtros
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-xs font-bold"><Filter className="size-4 text-primary" />Filtros</div>
+              <Button type="button" variant="secondary" className="shrink-0" onClick={() => setAdvancedFiltersOpen((open) => !open)} aria-expanded={advancedFiltersOpen}>
+                + Filtros{advancedFilterCount ? ` (${advancedFilterCount})` : ""}
+                <ChevronDown className={`size-4 transition ${advancedFiltersOpen ? "rotate-180" : ""}`} />
+              </Button>
             </div>
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               {kind !== "stock-position" && <PeriodFilter
-                className="md:col-span-2 xl:col-span-4"
                 value={period}
                 onChange={setPeriod}
                 onApply={(next) => {
@@ -3279,6 +3494,7 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
                 }}
                 showActions={false}
               />}
+            {advancedFiltersOpen && <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               {categoryKinds.includes(kind) && (
                 <Field label="Categoria">
                   <Select
@@ -3293,7 +3509,7 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
                     <option value="">Todas</option>
                     {options?.categories.map((item) => (
                       <option key={item.id} value={item.id}>
-                        {item.name}
+                        {optionLabel(item)}
                       </option>
                     ))}
                   </Select>
@@ -3313,7 +3529,7 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
                     <option value="">Todos</option>
                     {options?.products.map((item) => (
                       <option key={item.id} value={item.id}>
-                        {item.name}
+                        {optionLabel(item)}
                       </option>
                     ))}
                   </Select>
@@ -3323,7 +3539,7 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
               {kind === "stock-position" && <Field label="Busca"><Input value={filters.search || ""} placeholder="Nome ou código" onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} /></Field>}
               {kind === "inventory-counts" && <Field label="Status"><Select value={filters.status || ""} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}><option value="">Todos</option>{Object.entries(countStatusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select></Field>}
               {kind === "stock-transfers" && <Field label="Status"><Select value={filters.status || ""} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}><option value="">Todos</option>{Object.entries(transferStatusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select></Field>}
-              {["inventory-counts", "stock-transfers"].includes(kind) && <Field label="Responsável"><Select value={filters.responsible || ""} onChange={(event) => setFilters((current) => ({ ...current, responsible: event.target.value }))}><option value="">Todos</option>{options?.inventory_users.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field>}
+              {["inventory-counts", "stock-transfers"].includes(kind) && <Field label="Responsável"><Select value={filters.responsible || ""} onChange={(event) => setFilters((current) => ({ ...current, responsible: event.target.value }))}><option value="">Todos</option>{options?.inventory_users.map((item) => <option key={item.id} value={item.id}>{optionLabel(item)}</option>)}</Select></Field>}
               {kind === "stock-transfers" && <Field label="Direção"><Select value={filters.direction || ""} onChange={(event) => setFilters((current) => ({ ...current, direction: event.target.value }))}><option value="">Entradas e saídas</option><option value="incoming">Entradas na filial</option><option value="outgoing">Saídas da filial</option></Select></Field>}
               {[
                 "sales",
@@ -3347,7 +3563,7 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
                     <option value="">Todos</option>
                     {options?.operators.map((item) => (
                       <option key={item.id} value={item.id}>
-                        {item.name}
+                         {optionLabel(item)}
                       </option>
                     ))}
                   </Select>
@@ -3357,7 +3573,7 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
                 <Field label="Cliente">
                   <Select value={filters.customer || ""} onChange={(event) => setFilters((current) => ({ ...current, customer: event.target.value }))}>
                     <option value="">Todos</option>
-                    {options?.customers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    {options?.customers.map((item) => <option key={item.id} value={item.id}>{optionLabel(item)}</option>)}
                   </Select>
                 </Field>
               )}
@@ -3384,7 +3600,7 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
                     <option value="">Todos</option>
                     {options?.sellers.map((item) => (
                       <option key={item.id} value={item.id}>
-                        {item.name}
+                         {optionLabel(item)}
                       </option>
                     ))}
                   </Select>
@@ -3412,7 +3628,7 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
                     <option value="">Todas</option>
                     {options?.payment_methods.map((item) => (
                       <option key={item.id} value={item.id}>
-                        {item.name}
+                         {optionLabel(item)}
                       </option>
                     ))}
                   </Select>
@@ -3520,7 +3736,7 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
                     <option value="">Todos</option>
                     {options?.beneficiaries.map((item) => (
                       <option key={item.id} value={item.id}>
-                        {item.name}
+                        {optionLabel(item)}
                       </option>
                     ))}
                   </Select>
@@ -3579,7 +3795,7 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
                     <option value="">Todos</option>
                     {options?.cash_registers.map((item) => (
                       <option key={item.id} value={item.id}>
-                        {item.name}
+                        {optionLabel(item)}
                       </option>
                     ))}
                   </Select>
@@ -3642,7 +3858,7 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
                   </Select>
                 </Field>
               )}
-            </div>
+            </div>}
             <div className="mt-4 flex justify-end gap-2">
               <Button variant="secondary" onClick={clearReportFilters}>
                 Limpar filtros
@@ -3733,10 +3949,13 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
               </div>
             )}
           </section>
-        ) : loading ? (
-          <section className="card">
-            <TableLoading />
-          </section>
+        ) : loading && !data ? (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Carregando indicadores">
+              {Array.from({ length: 4 }, (_, index) => <div key={index} className="h-32 animate-pulse rounded-xl border border-subtle bg-surface-muted" />)}
+            </div>
+            <section className="card"><TableLoading /></section>
+          </>
         ) : !data ? (
           <section className="card">
             <EmptyState
@@ -3744,14 +3963,15 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
               description="Revise os filtros e tente novamente."
             />
           </section>
-        ) : (
-          <>
-            <ReportTabs tabs={tabs} active={selectedTab} onChange={changeTab} />
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              {reportKpis(kind, data.summary, canViewCosts, canViewCommission).map(([label, value, format]) => (
-                <Kpi key={label} label={label} value={value} format={format} />
-              ))}
-            </div>
+         ) : (
+           <>
+             {loading && <div className="flex items-center justify-center gap-2 rounded-lg border border-info/30 bg-info-surface px-4 py-2 text-xs font-semibold text-info-strong" role="status"><Activity className="size-4 animate-pulse" />Atualizando relatório...</div>}
+             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+               {reportKpis(kind, data.summary, canViewCosts, canViewCommission).map(([label, value, format]) => (
+                 <ReportKpiCard key={label} label={label} value={value} format={format} />
+               ))}
+             </div>
+             <ReportTabs tabs={tabs} active={selectedTab} onChange={changeTab} />
             <SummaryWarnings kind={kind} summary={data.summary} />
             <ReportBody
               kind={kind}
@@ -3767,7 +3987,10 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
               }
               canViewCash={hasPermission(permissions.viewCashRegister)}
               canViewCosts={canViewCosts}
-              canViewCommission={canViewCommission}
+               canViewCommission={canViewCommission}
+               canViewPurchases={hasPermission(permissions.viewPurchase)}
+               canViewTransfers={hasPermission(permissions.viewTransfers)}
+               canViewCounts={hasPermission(permissions.viewAdvancedInventory)}
             />
             {data.count > data.results.length && (
               <Pagination
