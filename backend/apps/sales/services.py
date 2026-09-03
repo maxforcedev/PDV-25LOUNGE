@@ -1774,6 +1774,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         idempotency_key=idempotency_key, idempotency_fingerprint=fingerprint,
         status=SaleStatus.FINALIZED, created_by=user, seller_user=seller_user,
         discount_approved_by=discount_approved_by, beneficiary_user=beneficiary_user, customer=customer,
+        customer_name_snapshot=customer.name if customer else '',
         subtotal=subtotal, promotion_discount_total=promotion_discount_total,
         item_discount_total=item_discount_total,
         discount=discount_value, service_fee_rate=service_fee_rate,

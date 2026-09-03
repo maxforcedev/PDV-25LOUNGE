@@ -259,6 +259,7 @@ class Sale(BaseModel):
         'companies.Customer', on_delete=models.PROTECT, related_name='sales',
         blank=True, null=True,
     )
+    customer_name_snapshot = models.CharField(max_length=150, blank=True, default='')
     subtotal = models.DecimalField(max_digits=14, decimal_places=2)
     promotion_discount_total = models.DecimalField(
         max_digits=14, decimal_places=2, default=Decimal('0.00')

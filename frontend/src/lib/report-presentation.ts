@@ -2,6 +2,7 @@ export type ReportCenterItem = {
   href: string;
   label: string;
   permission: string;
+  requiredPermissions?: readonly string[];
 };
 
 export type ReportCenterGroup = {
@@ -67,6 +68,12 @@ export const reportGroups: readonly ReportCenterGroup[] = [
     description: "Mesas, comandas, pagamentos e movimentações operacionais.",
     reports: [
       { href: "/relatorios/mesas-comandas", label: "Mesas e comandas", permission: "commands.view" },
+      { href: "/relatorios/promocoes", label: "Promoções", permission: "reports.view_products" },
+      { href: "/relatorios/modificadores", label: "Modificadores", permission: "reports.view_products" },
+      {
+        href: "/relatorios/clientes", label: "Clientes", permission: "customers.view",
+        requiredPermissions: ["reports.view_sales"],
+      },
     ],
   },
 ];

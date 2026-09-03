@@ -49,7 +49,7 @@ from apps.purchases.models import (
     PurchaseOrder,
     PurchaseOrderStatus,
 )
-from apps.sales.models import OperationType, Payment, PaymentMethod, Sale, SaleItem, SaleStatus
+from apps.sales.models import OperationType, Payment, PaymentMethod, Promotion, Sale, SaleItem, SaleStatus
 from apps.sales.serializers import readable_user_name
 from apps.suppliers.models import Supplier
 
@@ -94,6 +94,7 @@ from .serializers import (
     CashSessionReportSerializer,
     CancellationReportSerializer,
     CommandsReportQuerySerializer,
+    CommercialComplementsReportQuerySerializer,
     ConsumptionsReportQuerySerializer,
     InventoryCountReportSerializer,
     InventoryCountsReportQuerySerializer,
@@ -3657,6 +3658,473 @@ class CommandsReportView(BaseReportView):
                 operation, command_ids, filters.get('table'),
             )]
             rows = self._operation_rows(operations, branch)
+        return self.respond(
+            request, rows=rows, period=canonical_datetime_range(start, end), summary=summary,
+        )
+
+
+def _phase_five_item_matches(item, filters):
+    return (
+        (filters.get('product') is None or item.product_id == filters['product'])
+        and (
+            filters.get('category') is None
+            or item.category_id_snapshot == filters['category']
+        )
+    )
+
+
+def _phase_five_events(*, branch, start, end, filters):
+    sale_filters = {
+        key: value for key, value in filters.items()
+        if key in ('customer', 'product', 'category', 'channel', 'search')
+    }
+    inflows, reversals = period_event_sales(
+        branch=branch, start=start, end=end, filters=sale_filters,
+        operation_types=(OperationType.SALE,),
+    )
+    return [
+        (sale, sign, sale.created_at if sign > 0 else sale.cancelled_at)
+        for sales, sign in ((inflows, 1), (reversals, -1))
+        for sale in sales
+    ]
+
+
+def _phase_five_customer_name(sale):
+    return sale.customer_name_snapshot or (
+        sale.customer.name if sale.customer_id else ''
+    )
+
+
+def _phase_five_promotion_data(events, filters):
+    promotions = {}
+    products = {}
+    impact = []
+    for sale, sign, event_at in events:
+        for item in sale.items.all():
+            if not item.promotion_id or not _phase_five_item_matches(item, filters):
+                continue
+            if filters.get('promotion') is not None and item.promotion_id != filters['promotion']:
+                continue
+            key = item.promotion_id
+            row = promotions.setdefault(key, {
+                'promotion_id': item.promotion_id,
+                'promotion_name': item.promotion_name or 'Promoção sem nome',
+                'promotion_type': item.promotion_discount_type,
+                'promotion_value': item.promotion_discount_value,
+                'uses': 0,
+                'affected_quantity': Decimal('0.000'),
+                'gross_value': Decimal('0.00'),
+                'discount': Decimal('0.00'),
+                'net_revenue': Decimal('0.00'),
+                'product_ids': set(),
+                'sale_ids': set(),
+                'operator_ids': set(),
+            })
+            row['uses'] += sign
+            row['affected_quantity'] += sign * item.quantity
+            row['gross_value'] += sign * item.subtotal
+            row['discount'] += sign * item.promotion_benefit
+            row['net_revenue'] += sign * item.net_subtotal
+            row['product_ids'].add(item.product_id)
+            row['sale_ids'].add(sale.pk)
+            row['operator_ids'].add(sale.created_by_id)
+            product_key = (item.promotion_id, item.product_id)
+            product_row = products.setdefault(product_key, {
+                'promotion_id': item.promotion_id,
+                'promotion_name': item.promotion_name or 'Promoção sem nome',
+                'product_id': item.product_id,
+                'product_name': item.product_name,
+                'internal_code': item.internal_code,
+                'category_name': item.category_name_snapshot,
+                'quantity': Decimal('0.000'),
+                'gross_value': Decimal('0.00'),
+                'discount': Decimal('0.00'),
+                'net_revenue': Decimal('0.00'),
+            })
+            product_row['quantity'] += sign * item.quantity
+            product_row['gross_value'] += sign * item.subtotal
+            product_row['discount'] += sign * item.promotion_benefit
+            product_row['net_revenue'] += sign * item.net_subtotal
+            impact.append({
+                'id': f'{sale.pk}-{item.pk}-{sign}', 'sale_id': sale.pk,
+                'sale_number': sale.sale_number, 'event_type': 'inflow' if sign > 0 else 'reversal',
+                'event_at': event_at, 'promotion_id': item.promotion_id,
+                'promotion_name': item.promotion_name or 'Promoção sem nome',
+                'product_name': item.product_name, 'quantity': decimal_string(sign * item.quantity, 3),
+                'gross_value': decimal_string(sign * item.subtotal),
+                'discount': decimal_string(sign * item.promotion_benefit),
+                'net_revenue': decimal_string(sign * item.net_subtotal),
+                'operator_name': readable_user_name(sale.created_by),
+            })
+    rows = []
+    for row in promotions.values():
+        rows.append({
+            **{key: value for key, value in row.items() if key not in ('product_ids', 'sale_ids', 'operator_ids')},
+            'affected_quantity': decimal_string(row['affected_quantity'], 3),
+            'gross_value': decimal_string(row['gross_value']),
+            'discount': decimal_string(row['discount']),
+            'net_revenue': decimal_string(row['net_revenue']),
+            'product_count': len(row['product_ids']), 'sale_count': len(row['sale_ids']),
+            'operator_count': len(row['operator_ids']),
+        })
+    product_rows = [{
+        **{key: value for key, value in row.items() if key not in ('quantity', 'gross_value', 'discount', 'net_revenue')},
+        'quantity': decimal_string(row['quantity'], 3), 'gross_value': decimal_string(row['gross_value']),
+        'discount': decimal_string(row['discount']), 'net_revenue': decimal_string(row['net_revenue']),
+    } for row in products.values()]
+    return sorted(rows, key=lambda row: (-row['uses'], row['promotion_name'])), sorted(
+        product_rows, key=lambda row: (-Decimal(row['net_revenue']), row['promotion_name'], row['product_name'])
+    ), sorted(impact, key=lambda row: (row['event_at'], row['id']), reverse=True)
+
+
+def _phase_five_modifier_data(events, filters):
+    modifiers = {}
+    products = {}
+    impact = []
+    for sale, sign, event_at in events:
+        for item in sale.items.all():
+            if not _phase_five_item_matches(item, filters):
+                continue
+            for snapshot in item.modifier_snapshot or []:
+                group_name = snapshot.get('group_name') or 'Grupo sem nome'
+                option_name = snapshot.get('option_name') or 'Modificador sem nome'
+                key = (snapshot.get('group_id') or group_name, snapshot.get('option_id') or option_name)
+                selected_quantity = Decimal(str(snapshot.get('selected_quantity') or 0)) * item.quantity
+                contribution = Decimal(str(snapshot.get('contribution') or 0)) * item.quantity
+                row = modifiers.setdefault(key, {
+                    'group_id': snapshot.get('group_id'), 'group_name': group_name,
+                    'option_id': snapshot.get('option_id'), 'option_name': option_name,
+                    'option_type': snapshot.get('option_type'), 'quantity': Decimal('0.000'),
+                    'additional_revenue': Decimal('0.00'), 'product_ids': set(), 'sale_ids': set(),
+                })
+                row['quantity'] += sign * selected_quantity
+                row['additional_revenue'] += sign * contribution
+                row['product_ids'].add(item.product_id)
+                row['sale_ids'].add(sale.pk)
+                product_key = (*key, item.product_id)
+                product_row = products.setdefault(product_key, {
+                    'group_name': group_name, 'option_name': option_name, 'product_id': item.product_id,
+                    'product_name': item.product_name, 'internal_code': item.internal_code,
+                    'category_name': item.category_name_snapshot, 'quantity': Decimal('0.000'),
+                    'additional_revenue': Decimal('0.00'),
+                })
+                product_row['quantity'] += sign * selected_quantity
+                product_row['additional_revenue'] += sign * contribution
+                impact.append({
+                    'id': f'{sale.pk}-{item.pk}-{key[0]}-{key[1]}-{sign}', 'sale_id': sale.pk,
+                    'sale_number': sale.sale_number, 'event_type': 'inflow' if sign > 0 else 'reversal',
+                    'event_at': event_at, 'group_name': group_name, 'option_name': option_name,
+                    'product_name': item.product_name, 'quantity': decimal_string(sign * selected_quantity, 3),
+                    'additional_revenue': decimal_string(sign * contribution),
+                    'operator_name': readable_user_name(sale.created_by),
+                })
+    rows = [{
+        **{key: value for key, value in row.items() if key not in ('quantity', 'additional_revenue', 'product_ids', 'sale_ids')},
+        'quantity': decimal_string(row['quantity'], 3),
+        'additional_revenue': decimal_string(row['additional_revenue']),
+        'product_count': len(row['product_ids']), 'sale_count': len(row['sale_ids']),
+    } for row in modifiers.values()]
+    product_rows = [{
+        **{key: value for key, value in row.items() if key not in ('quantity', 'additional_revenue')},
+        'quantity': decimal_string(row['quantity'], 3),
+        'additional_revenue': decimal_string(row['additional_revenue']),
+    } for row in products.values()]
+    return sorted(rows, key=lambda row: (-Decimal(row['quantity']), row['group_name'], row['option_name'])), sorted(
+        product_rows, key=lambda row: (-Decimal(row['additional_revenue']), row['group_name'], row['option_name'])
+    ), sorted(impact, key=lambda row: (row['event_at'], row['id']), reverse=True)
+
+
+class CommercialComplementsOptionsView(APIView):
+    permission_classes = (ReportsPermission,)
+    required_permission = 'reports.view_products'
+    permission_by_scope = {
+        'promotions': 'reports.view_products', 'modifiers': 'reports.view_products',
+        'customers': 'reports.view_sales',
+    }
+
+    def get(self, request):
+        scope = request.query_params.get('scope')
+        if scope not in self.permission_by_scope:
+            raise ValidationError({'scope': 'Informe um escopo de relatório válido.'})
+        if scope == 'customers' and not user_has_code(request, 'customers.view'):
+            raise PermissionDenied('Você não possui permissão para consultar dados de clientes.')
+        start, end = parse_datetime_range(request.query_params, required=True)
+        branch = request.branch_context
+        end_exclusive = period_end_exclusive(end)
+        sales_in_period = Sale.objects.filter(branch=branch).filter(
+            Q(created_at__gte=start, created_at__lt=end_exclusive)
+            | Q(cancelled_at__gte=start, cancelled_at__lt=end_exclusive)
+        )
+        item_history = SaleItem.objects.filter(sale__in=sales_in_period)
+        historical_product_ids = item_history.values_list('product_id', flat=True)
+        historical_category_ids = item_history.exclude(category_id_snapshot=None).values_list(
+            'category_id_snapshot', flat=True,
+        )
+        response = {
+            'products': list(Product.objects.filter(company=branch.company).filter(
+                Q(status='active', archived_at__isnull=True) | Q(pk__in=historical_product_ids)
+            ).order_by('name', 'id').values(
+                'id', 'name', 'internal_code', 'status',
+            )),
+            'categories': list(Category.objects.filter(branch=branch).filter(
+                Q(status='active', deleted_at__isnull=True) | Q(pk__in=historical_category_ids)
+            ).order_by('name', 'id').values(
+                'id', 'name', 'status',
+            )),
+        }
+        if scope == 'promotions':
+            promotion_ids = item_history.exclude(
+                promotion_id=None,
+            ).values_list('promotion_id', flat=True)
+            response['promotions'] = [
+                {'id': promotion.pk, 'name': promotion.name, 'historical': promotion.status != 'active'}
+                for promotion in Promotion.objects.filter(company=branch.company).filter(
+                    Q(status='active') | Q(pk__in=promotion_ids)
+                ).order_by('name', 'id')
+            ]
+        if scope == 'customers':
+            customer_ids = sales_in_period.exclude(customer_id=None).values_list('customer_id', flat=True)
+            response['customers'] = [
+                {'id': customer.pk, 'name': customer.name, 'historical': customer.status != 'active'}
+                for customer in Customer.objects.filter(company=branch.company).filter(
+                    Q(status='active') | Q(pk__in=customer_ids)
+                ).order_by('name', 'id')
+            ]
+        return Response(response)
+
+
+class CommercialComplementReportView(BaseReportView):
+    required_permission = 'reports.view_products'
+    query_serializer_class = CommercialComplementsReportQuerySerializer
+    report_kind = None
+    csv_filename = 'relatorio-comercial-complementar.csv'
+
+    def serialize_rows(self, rows, request):
+        return list(rows)
+
+    def export_headers(self, request):
+        headers = {
+            'promotions': {
+                'records': (
+                    'promotion_name', 'promotion_type', 'promotion_value', 'uses',
+                    'affected_quantity', 'gross_value', 'discount', 'net_revenue',
+                    'product_count', 'sale_count', 'operator_count',
+                ),
+                'products': (
+                    'promotion_name', 'product_name', 'internal_code', 'category_name',
+                    'quantity', 'gross_value', 'discount', 'net_revenue',
+                ),
+                'impact': (
+                    'sale_number', 'event_type', 'event_at', 'promotion_name', 'product_name',
+                    'quantity', 'gross_value', 'discount', 'net_revenue', 'operator_name',
+                ),
+            },
+            'modifiers': {
+                'records': (
+                    'group_name', 'option_name', 'option_type', 'quantity',
+                    'additional_revenue', 'product_count', 'sale_count', 'participation',
+                ),
+                'products': (
+                    'group_name', 'option_name', 'product_name', 'internal_code',
+                    'category_name', 'quantity', 'additional_revenue',
+                ),
+                'impact': (
+                    'sale_number', 'event_type', 'event_at', 'group_name', 'option_name',
+                    'product_name', 'quantity', 'additional_revenue', 'operator_name',
+                ),
+            },
+        }
+        return headers[self.report_kind][request.query_params.get('section', 'records')]
+
+    def get(self, request):
+        filters, start, end = self.parse_query(request)
+        section = filters['section']
+        if section not in ('records', 'products', 'impact'):
+            raise ValidationError({'section': 'Informe uma aba válida para este relatório.'})
+        events = _phase_five_events(
+            branch=request.branch_context, start=start, end=end, filters=filters,
+        )
+        if self.report_kind == 'promotions':
+            records, products, impact = _phase_five_promotion_data(events, filters)
+            summary = {
+                'uses': sum((row['uses'] for row in records), 0),
+                'affected_quantity': decimal_string(sum((Decimal(row['affected_quantity']) for row in records), Decimal('0.000')), 3),
+                'gross_value': decimal_string(sum((Decimal(row['gross_value']) for row in records), Decimal('0.00'))),
+                'discount': decimal_string(sum((Decimal(row['discount']) for row in records), Decimal('0.00'))),
+                'net_revenue': decimal_string(sum((Decimal(row['net_revenue']) for row in records), Decimal('0.00'))),
+                'promotion_count': len(records), 'product_count': len({row['product_id'] for row in products}),
+            }
+        else:
+            records, products, impact = _phase_five_modifier_data(events, filters)
+            total_revenue = sum((sale.total * sign for sale, sign, _at in events), Decimal('0.00'))
+            for row in records:
+                row['participation'] = decimal_string(
+                    Decimal(row['additional_revenue']) * Decimal('100') / total_revenue
+                    if total_revenue else Decimal('0.00')
+                )
+            summary = {
+                'quantity': decimal_string(sum((Decimal(row['quantity']) for row in records), Decimal('0.000')), 3),
+                'additional_revenue': decimal_string(sum((Decimal(row['additional_revenue']) for row in records), Decimal('0.00'))),
+                'modifier_count': len(records), 'group_count': len({row['group_name'] for row in records}),
+                'product_count': len({row['product_id'] for row in products}),
+                'participation': decimal_string(
+                    sum((Decimal(row['additional_revenue']) for row in records), Decimal('0.00'))
+                    * Decimal('100') / total_revenue if total_revenue else Decimal('0.00')
+                ),
+            }
+        rows = {'records': records, 'products': products, 'impact': impact}[section]
+        return self.respond(
+            request, rows=rows, period=canonical_datetime_range(start, end), summary=summary,
+        )
+
+
+class PromotionsReportView(CommercialComplementReportView):
+    report_kind = 'promotions'
+    csv_filename = 'relatorio-promocoes.csv'
+
+
+class ModifiersReportView(CommercialComplementReportView):
+    report_kind = 'modifiers'
+    csv_filename = 'relatorio-modificadores.csv'
+
+
+def _phase_five_customer_data(events, filters):
+    customers = {}
+    products = {}
+    sales = []
+    sale_signs = {}
+    anonymous_sales = 0
+    for sale, sign, event_at in events:
+        sale_signs[sale.pk] = sale_signs.get(sale.pk, 0) + sign
+        if sale.customer_id is None:
+            anonymous_sales += sign
+            continue
+        customer = customers.setdefault(sale.customer_id, {
+            'customer_id': sale.customer_id, 'customer_name': _phase_five_customer_name(sale),
+            'customer_status': sale.customer.status if sale.customer_id else '', 'sales_count': 0,
+            'total_purchased': Decimal('0.00'), 'last_purchase_at': None, 'sale_ids': set(),
+        })
+        customer['sales_count'] += sign
+        customer['total_purchased'] += sign * sale.total
+        customer['sale_ids'].add(sale.pk)
+        if sign > 0 and (customer['last_purchase_at'] is None or sale.created_at > customer['last_purchase_at']):
+            customer['last_purchase_at'] = sale.created_at
+        sales.append({
+            'id': f'{sale.pk}-{sign}', 'sale_id': sale.pk, 'sale_number': sale.sale_number,
+            'customer_id': sale.customer_id, 'customer_name': _phase_five_customer_name(sale),
+            'event_type': 'inflow' if sign > 0 else 'reversal', 'event_at': event_at,
+            'channel': sale.channel, 'operator_name': readable_user_name(sale.created_by),
+            'total': decimal_string(sign * sale.total),
+        })
+        for item in sale.items.all():
+            if not _phase_five_item_matches(item, filters):
+                continue
+            key = (sale.customer_id, item.product_id)
+            product = products.setdefault(key, {
+                'customer_id': sale.customer_id, 'customer_name': _phase_five_customer_name(sale),
+                'product_id': item.product_id, 'product_name': item.product_name,
+                'internal_code': item.internal_code, 'category_name': item.category_name_snapshot,
+                'quantity': Decimal('0.000'), 'net_revenue': Decimal('0.00'),
+            })
+            product['quantity'] += sign * item.quantity
+            product['net_revenue'] += sign * item.net_subtotal
+    customer_rows = []
+    for row in customers.values():
+        customer_rows.append({
+            **{key: value for key, value in row.items() if key not in ('total_purchased', 'sale_ids')},
+            'total_purchased': decimal_string(row['total_purchased']),
+            'ticket_average': decimal_string(
+                row['total_purchased'] / row['sales_count'] if row['sales_count'] else Decimal('0.00')
+            ),
+            'recurring': row['sales_count'] > 1,
+        })
+    product_rows = [{
+        **{key: value for key, value in row.items() if key not in ('quantity', 'net_revenue')},
+        'quantity': decimal_string(row['quantity'], 3), 'net_revenue': decimal_string(row['net_revenue']),
+    } for row in products.values()]
+    return (
+        sorted(customer_rows, key=lambda row: (-Decimal(row['total_purchased']), row['customer_name'])),
+        sorted(sales, key=lambda row: (row['event_at'], row['id']), reverse=True),
+        sorted(product_rows, key=lambda row: (-Decimal(row['net_revenue']), row['customer_name'], row['product_name'])),
+        sale_signs, anonymous_sales,
+    )
+
+
+class CustomersReportView(BaseReportView):
+    required_permission = 'reports.view_sales'
+    required_permissions_all = ('reports.view_sales', 'customers.view')
+    query_serializer_class = CommercialComplementsReportQuerySerializer
+    csv_filename = 'relatorio-clientes.csv'
+
+    def serialize_rows(self, rows, request):
+        return list(rows)
+
+    def export_headers(self, request):
+        headers = {
+            'records': (
+                'customer_name', 'customer_status', 'sales_count', 'ticket_average',
+                'total_purchased', 'last_purchase_at', 'recurring',
+            ),
+            'sales': (
+                'sale_number', 'customer_name', 'event_type', 'event_at', 'channel',
+                'operator_name', 'total',
+            ),
+            'products': (
+                'customer_name', 'product_name', 'internal_code', 'category_name',
+                'quantity', 'net_revenue',
+            ),
+            'commands': ('command_number', 'table_name', 'customer_name', 'sale_number', 'closed_at', 'total'),
+        }
+        return headers[request.query_params.get('section', 'records')]
+
+    def get(self, request):
+        filters, start, end = self.parse_query(request)
+        section = filters['section']
+        if section not in ('records', 'sales', 'products', 'commands'):
+            raise ValidationError({'section': 'Informe uma aba válida para este relatório.'})
+        if section == 'commands' and not user_has_code(request, 'commands.view'):
+            raise PermissionDenied('Você não possui permissão para consultar comandas relacionadas.')
+        events = _phase_five_events(
+            branch=request.branch_context, start=start, end=end, filters=filters,
+        )
+        customers, sales, products, sale_signs, anonymous_sales = _phase_five_customer_data(events, filters)
+        if filters.get('search'):
+            value = filters['search'].casefold()
+            customers = [row for row in customers if value in row['customer_name'].casefold()]
+            sales = [row for row in sales if value in row['customer_name'].casefold()]
+            products = [row for row in products if value in row['customer_name'].casefold() or value in row['product_name'].casefold()]
+        command_rows = []
+        if section == 'commands':
+            sale_ids = [sale_id for sale_id, sign in sale_signs.items() if sign]
+            for command in Command.objects.select_related('sale', 'table', 'customer').filter(
+                branch=request.branch_context, sale_id__in=sale_ids,
+            ).order_by('-closed_at', '-id'):
+                command_rows.append({
+                    'id': command.pk, 'command_number': command.command_number,
+                    'table_name': _command_table_name(command),
+                    'customer_name': command.customer_name_snapshot or _phase_five_customer_name(command.sale),
+                    'sale_id': command.sale_id, 'sale_number': command.sale.sale_number,
+                    'closed_at': command.closed_at, 'total': decimal_string(command.sale.total),
+                })
+        summary = {
+            'customer_count': len(customers),
+            'recurring_count': sum(row['recurring'] for row in customers),
+            'total_purchased': decimal_string(sum((Decimal(row['total_purchased']) for row in customers), Decimal('0.00'))),
+            'ticket_average': decimal_string(
+                sum((Decimal(row['total_purchased']) for row in customers), Decimal('0.00'))
+                / sum((row['sales_count'] for row in customers), 0)
+                if sum((row['sales_count'] for row in customers), 0) else Decimal('0.00')
+            ),
+            'anonymous_sales': anonymous_sales,
+            'product_count': len({row['product_id'] for row in products}),
+            'command_count': len(command_rows) if section == 'commands' else Command.objects.filter(
+                branch=request.branch_context,
+                sale_id__in=[sale_id for sale_id, sign in sale_signs.items() if sign],
+            ).count(),
+        }
+        rows = {
+            'records': customers, 'sales': sales, 'products': products, 'commands': command_rows,
+        }[section]
         return self.respond(
             request, rows=rows, period=canonical_datetime_range(start, end), summary=summary,
         )

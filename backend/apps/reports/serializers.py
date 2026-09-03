@@ -18,7 +18,7 @@ from apps.inventory.models import (
 from apps.inventory.content import content_breakdown
 from apps.inventory.serializers import StockMovementSerializer
 from apps.products.models import Category, Product, SalesChannel
-from apps.sales.models import OperationType, Payment, PaymentMethod, Sale, SaleItem, SaleStatus
+from apps.sales.models import OperationType, Payment, PaymentMethod, Promotion, Sale, SaleItem, SaleStatus
 from apps.sales.serializers import readable_user_name
 from apps.suppliers.models import Supplier
 from apps.purchases.models import (
@@ -283,6 +283,30 @@ class CommandsReportQuerySerializer(BaseReportQuerySerializer):
         return self.validate_scoped_ids(
             attrs, ('table', 'customer', 'operator', 'payment_method')
         )
+
+
+class CommercialComplementsReportQuerySerializer(BaseReportQuerySerializer):
+    section = serializers.ChoiceField(
+        choices=('records', 'products', 'impact', 'sales', 'commands'),
+        required=False, default='records',
+    )
+    promotion = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    customer = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    product = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    category = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    channel = serializers.ChoiceField(choices=SalesChannel.values, required=False)
+    search = serializers.CharField(max_length=200, required=False, allow_blank=False)
+
+    def validate(self, attrs):
+        attrs = self.validate_scoped_ids(attrs, ('customer', 'product', 'category'))
+        promotion = attrs.get('promotion')
+        if promotion is not None and not Promotion.objects.filter(
+            pk=promotion, company_id=self.context['request'].branch_context.company_id,
+        ).exists():
+            raise serializers.ValidationError({
+                'promotion': 'Identificador inválido para a empresa atual.'
+            })
+        return attrs
 
 
 class ReportSaleItemSerializer(serializers.ModelSerializer):

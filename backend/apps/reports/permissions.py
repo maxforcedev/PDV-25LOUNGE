@@ -68,6 +68,9 @@ class ReportsPermission(BasePermission):
             allowed = self._has_code(user, branch, mandatory)
         else:
             allowed = any(self._has_code(user, branch, code) for code in codes)
+        required_all = getattr(view, 'required_permissions_all', ())
+        if allowed and required_all and not user.is_superuser:
+            allowed = all(self._has_code(user, branch, code) for code in required_all)
         if not allowed:
             return False
         if request.query_params.get('export') in ('csv', 'xlsx', 'pdf'):
