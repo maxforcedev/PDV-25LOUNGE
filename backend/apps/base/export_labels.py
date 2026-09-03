@@ -155,6 +155,13 @@ EXPORT_LABELS = {
     'payment_total_before_reversals': 'Pagamentos antes das reversões',
     'reversal_payment_total': 'Pagamentos revertidos',
     'row_type': 'Tipo de linha',
+    'ordered_total': 'Valor pedido',
+    'received_total': 'Valor recebido',
+    'unreceived_total': 'Valor não recebido',
+    'ordered_quantity': 'Quantidade pedida',
+    'received_quantity': 'Quantidade recebida',
+    'unreceived_quantity': 'Quantidade não recebida',
+    'item_details': 'Detalhamento por item',
 }
 
 

@@ -8,7 +8,7 @@ from apps.base.constants import MAX_BIGINT
 from apps.cash.models import CashRegister, CashSession, CashSessionStatus, WithdrawalCategory
 from apps.cash.services import redact_operational_summary, session_operational_summary
 from apps.companies.models import Customer
-from apps.commands.models import CommandPayment, OrderItem
+from apps.commands.models import CommandPayment, CommandStatus, OrderItem, Table
 from apps.inventory.models import (
     InventoryCountStatus,
     MovementType,
@@ -61,6 +61,7 @@ class BaseReportQuerySerializer(serializers.Serializer):
             'cash_session': CashSession.objects.filter(branch=branch),
             'customer': Customer.objects.filter(company_id=branch.company_id),
             'supplier': Supplier.objects.filter(branch=branch),
+            'table': Table.objects.filter(branch=branch),
         }
         errors = {}
         for field in fields:
@@ -264,6 +265,24 @@ class PayablesReportQuerySerializer(BaseReportQuerySerializer):
 
     def validate(self, attrs):
         return self.validate_scoped_ids(attrs, ('supplier',))
+
+
+class CommandsReportQuerySerializer(BaseReportQuerySerializer):
+    section = serializers.ChoiceField(
+        choices=('commands', 'items', 'payments', 'cancellations', 'operations'),
+        required=False, default='commands',
+    )
+    status = serializers.ChoiceField(choices=CommandStatus.values, required=False)
+    table = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    customer = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    operator = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    payment_method = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    command = serializers.CharField(max_length=100, required=False, allow_blank=False)
+
+    def validate(self, attrs):
+        return self.validate_scoped_ids(
+            attrs, ('table', 'customer', 'operator', 'payment_method')
+        )
 
 
 class ReportSaleItemSerializer(serializers.ModelSerializer):

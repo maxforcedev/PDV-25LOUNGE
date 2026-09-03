@@ -644,6 +644,14 @@ function PurchaseDetail() {
     (order.order_type === "ORDER" &&
       ["PLACED", "PARTIALLY_RECEIVED"].includes(order.status));
   const rows = receiptRows(order);
+  const receivedTotal = centsText(order.items.reduce(
+    (total, item) => total + moneyCents(item.received_total || "0"),
+    BigInt(0),
+  ));
+  const unreceivedTotal = centsText(order.items.reduce(
+    (total, item) => total + moneyCents(item.unreceived_total || "0"),
+    BigInt(0),
+  ));
 
   return (
     <>
@@ -761,12 +769,13 @@ function PurchaseDetail() {
                     <th>Apresentação</th>
                     <th>Pedido</th>
                     <th>Recebido</th>
-                    <th>Pendente</th>
-                    {canCosts && (
-                      <>
-                        <th>Preço</th>
-                        <th>Total efetivo</th>
-                      </>
+                        <th>Pendente</th>
+                        {canCosts && (
+                          <>
+                            <th>Valor pedido</th>
+                            <th>Valor recebido</th>
+                            <th>Não recebido</th>
+                          </>
                     )}
                   </tr>
                 </thead>
@@ -816,8 +825,9 @@ function PurchaseDetail() {
                       </td>
                       {canCosts && (
                         <>
-                          <td>{formatDecimalBRL(item.purchase_unit_price)}</td>
                           <td>{formatBRL(item.effective_total)}</td>
+                          <td>{formatBRL(item.received_total || "0")}</td>
+                          <td>{formatBRL(item.unreceived_total || "0")}</td>
                         </>
                       )}
                     </tr>
@@ -847,9 +857,21 @@ function PurchaseDetail() {
                   <dd>{formatBRL(order.other_expenses_total)}</dd>
                 </div>
                 <div className="flex justify-between border-t border-subtle pt-3 text-base font-extrabold">
-                  <dt>A pagar</dt>
-                  <dd>{formatBRL(order.payable_total)}</dd>
-                </div>
+                   <dt>Valor pedido</dt>
+                   <dd>{formatBRL(order.payable_total)}</dd>
+                 </div>
+                 <div className="flex justify-between">
+                   <dt className="text-muted">Valor recebido</dt>
+                   <dd>{formatBRL(receivedTotal)}</dd>
+                 </div>
+                 <div className="flex justify-between">
+                   <dt className="text-muted">Não recebido</dt>
+                   <dd>{formatBRL(unreceivedTotal)}</dd>
+                 </div>
+                 <div className="flex justify-between border-t border-subtle pt-3">
+                   <dt>Obrigação a pagar</dt>
+                   <dd>{formatBRL(order.payable_total)}</dd>
+                 </div>
               </dl>
             </section>
           )}

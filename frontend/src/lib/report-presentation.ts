@@ -5,7 +5,7 @@ export type ReportCenterItem = {
 };
 
 export type ReportCenterGroup = {
-  title: "Vendas" | "Financeiro" | "Estoque" | "Inventários" | "Compras";
+  title: "Vendas" | "Financeiro" | "Estoque" | "Inventários" | "Compras" | "Operação";
   description: string;
   reports: readonly ReportCenterItem[];
 };
@@ -60,6 +60,13 @@ export const reportGroups: readonly ReportCenterGroup[] = [
       { href: "/relatorios/compras", label: "Compras", permission: "purchases.view" },
       { href: "/relatorios/fornecedores", label: "Fornecedores", permission: "suppliers.view" },
       { href: "/relatorios/contas-a-pagar", label: "Contas a pagar", permission: "purchases.manage_payables" },
+    ],
+  },
+  {
+    title: "Operação",
+    description: "Mesas, comandas, pagamentos e movimentações operacionais.",
+    reports: [
+      { href: "/relatorios/mesas-comandas", label: "Mesas e comandas", permission: "commands.view" },
     ],
   },
 ];

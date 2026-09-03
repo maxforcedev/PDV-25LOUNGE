@@ -15,7 +15,7 @@ export const purchaseStatusLabels: Record<PurchaseOrderStatus, string> = {
   PARTIALLY_RECEIVED: "Recebido parcialmente",
   RECEIVED: "Recebido",
   CANCELLED: "Cancelado",
-  CLOSED_PARTIAL: "Parcial encerrado",
+  CLOSED_PARTIAL: "Parcial encerrada",
 };
 
 export const payableStatusLabels: Record<PayableInstallmentStatus, string> = {

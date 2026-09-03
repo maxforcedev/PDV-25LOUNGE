@@ -18,6 +18,7 @@ from apps.accounts.models import User
 from apps.base.datetimes import canonical_datetime_range, parse_datetime_range
 from apps.base.export_labels import export_label, export_value
 from apps.base.audit import audit_log
+from apps.base.models import AuditLog
 from apps.base.report_exports import render_report_export, report_key_value_rows
 from apps.base.pagination import StandardPagination
 from apps.cash.models import (
@@ -28,8 +29,8 @@ from apps.companies.models import Customer
 from apps.companies.rbac import OPERATING_PERMISSION_CODES
 from apps.companies.selectors import branch_permission_codes, eligible_branch_users, user_has_company_permission
 from apps.commands.models import (
-    Command, CommandPayment, CommandPaymentStatus, CommandStatus, OrderItem,
-    OrderItemStatus,
+    Command, CommandOperation, CommandOperationType, CommandPayment,
+    CommandPaymentStatus, CommandStatus, OrderItem, OrderItemStatus, Table,
 )
 from apps.inventory.content import exact_sum
 from apps.inventory.models import (
@@ -92,6 +93,7 @@ from .serializers import (
     CashMovementReportSerializer,
     CashSessionReportSerializer,
     CancellationReportSerializer,
+    CommandsReportQuerySerializer,
     ConsumptionsReportQuerySerializer,
     InventoryCountReportSerializer,
     InventoryCountsReportQuerySerializer,
@@ -2779,7 +2781,7 @@ def _purchase_report_queryset(*, branch, start, end, filters):
         branch=branch,
         created_at__gte=start,
         created_at__lt=period_end_exclusive(end),
-    ).select_related('supplier').prefetch_related('items')
+    ).select_related('supplier').prefetch_related('items__receipt_items')
     for parameter, lookup in (
         ('supplier', 'supplier_id'),
         ('status', 'status'),
@@ -2811,7 +2813,56 @@ def _purchase_supplier_name(order):
     )
 
 
-def _purchase_report_row(order, *, include_cost):
+def _purchase_financials(order):
+    item_values = []
+    for item in sorted(order.items.all(), key=lambda row: row.pk):
+        received_quantity = sum(
+            (receipt_item.received_quantity for receipt_item in item.receipt_items.all()),
+            Decimal('0.000000'),
+        )
+        received_stock_quantity = sum(
+            (receipt_item.stock_quantity for receipt_item in item.receipt_items.all()),
+            Decimal('0.000000'),
+        )
+        ordered_stock_quantity = item.ordered_quantity * item.conversion_factor
+        received_ratio = min(
+            received_stock_quantity / ordered_stock_quantity
+            if ordered_stock_quantity else Decimal('0'),
+            Decimal('1'),
+        )
+        received_value = (item.effective_total * received_ratio).quantize(
+            Decimal('0.01'), rounding=ROUND_HALF_UP,
+        )
+        item_values.append({
+            'purchase_order_id': order.pk,
+            'order_number': order.order_number,
+            'item_id': item.pk,
+            'line_number': item.line_number,
+            'product_name': item.product_name,
+            'product_internal_code': item.product_internal_code,
+            'presentation': f'{item.presentation_unit_code} - {item.presentation_description}',
+            'ordered_quantity': format(item.ordered_quantity, 'f'),
+            'received_quantity': format(received_quantity, 'f'),
+            'unreceived_quantity': format(
+                max(item.ordered_quantity - received_quantity, Decimal('0')), 'f'
+            ),
+            'ordered_total': item.effective_total,
+            'received_total': received_value,
+            'unreceived_total': item.effective_total - received_value,
+        })
+    return {
+        'ordered_total': order.payable_total,
+        'received_total': sum(
+            (item['received_total'] for item in item_values), Decimal('0.00')
+        ),
+        'unreceived_total': sum(
+            (item['unreceived_total'] for item in item_values), Decimal('0.00')
+        ),
+        'items': item_values,
+    }
+
+
+def _purchase_report_row(order, *, include_cost, financials=None):
     row = {
         'id': order.pk,
         'order_number': order.order_number,
@@ -2825,12 +2876,16 @@ def _purchase_report_row(order, *, include_cost):
         'items_count': len(order.items.all()),
     }
     if include_cost:
+        financials = financials or _purchase_financials(order)
         row.update({
             'gross_total': decimal_string(order.gross_total),
             'discount': decimal_string(order.global_discount),
             'freight_total': decimal_string(order.freight_total),
             'other_expenses_total': decimal_string(order.other_expenses_total),
             'payable_total': decimal_string(order.payable_total),
+            'ordered_total': decimal_string(financials['ordered_total']),
+            'received_total': decimal_string(financials['received_total']),
+            'unreceived_total': decimal_string(financials['unreceived_total']),
         })
     return row
 
@@ -2883,7 +2938,7 @@ class PurchaseReportView(BaseReportView):
         'order_number', 'created_at', 'document_date', 'document_number',
         'supplier_name', 'order_type', 'status', 'items_count',
         'gross_total', 'discount', 'freight_total', 'other_expenses_total',
-        'payable_total',
+        'ordered_total', 'received_total', 'unreceived_total', 'payable_total',
     )
 
     def serialize_rows(self, rows, request):
@@ -2894,7 +2949,7 @@ class PurchaseReportView(BaseReportView):
         if not user_has_code(request, 'purchases.view_costs'):
             return tuple(header for header in headers if header not in (
                 'gross_total', 'discount', 'freight_total', 'other_expenses_total',
-                'payable_total',
+                'ordered_total', 'received_total', 'unreceived_total', 'payable_total',
             ))
         return headers
 
@@ -2904,8 +2959,17 @@ class PurchaseReportView(BaseReportView):
         orders = list(_purchase_report_queryset(
             branch=request.branch_context, start=start, end=end, filters=filters,
         ))
+        financials_by_order = {
+            order.pk: _purchase_financials(order) for order in orders
+        } if include_cost else {}
         status_groups = {
-            status: {'status': status, 'count': 0, 'payable_total': Decimal('0.00')}
+            status: {
+                'status': status,
+                'count': 0,
+                'ordered_total': Decimal('0.00'),
+                'received_total': Decimal('0.00'),
+                'unreceived_total': Decimal('0.00'),
+            }
             for status in PurchaseOrderStatus.values
         }
         totals = {
@@ -2926,18 +2990,35 @@ class PurchaseReportView(BaseReportView):
                 totals[key] = sum(
                     (getattr(order, key) for order in orders), Decimal('0.00')
                 )
+            totals['ordered_total'] = sum(
+                (financials['ordered_total'] for financials in financials_by_order.values()),
+                Decimal('0.00'),
+            )
+            totals['received_total'] = sum(
+                (financials['received_total'] for financials in financials_by_order.values()),
+                Decimal('0.00'),
+            )
+            totals['unreceived_total'] = sum(
+                (financials['unreceived_total'] for financials in financials_by_order.values()),
+                Decimal('0.00'),
+            )
         for order in orders:
             group = status_groups[order.status]
             group['count'] += 1
             if include_cost:
-                group['payable_total'] += order.payable_total
+                financials = financials_by_order[order.pk]
+                for key in ('ordered_total', 'received_total', 'unreceived_total'):
+                    group[key] += financials[key]
         summary = {
             **totals,
             'status_groups': [
                 {
                     'status': group['status'],
                     'count': group['count'],
-                    **({'payable_total': decimal_string(group['payable_total'])}
+                    **({
+                        key: decimal_string(group[key])
+                        for key in ('ordered_total', 'received_total', 'unreceived_total')
+                    }
                        if include_cost else {}),
                 }
                 for group in status_groups.values() if group['count']
@@ -2951,10 +3032,31 @@ class PurchaseReportView(BaseReportView):
                     for key, value in totals.items()
                     if key not in ('count', 'items_count', 'received_count', 'partial_count')
                 },
+                'item_details': [
+                    {
+                        **{
+                            key: value for key, value in item.items()
+                            if key not in ('ordered_total', 'received_total', 'unreceived_total')
+                        },
+                        **{
+                            key: decimal_string(item[key])
+                            for key in ('ordered_total', 'received_total', 'unreceived_total')
+                        },
+                    }
+                    for financials in financials_by_order.values()
+                    for item in financials['items']
+                ],
             }
         return self.respond(
             request,
-            rows=[_purchase_report_row(order, include_cost=include_cost) for order in orders],
+            rows=[
+                _purchase_report_row(
+                    order,
+                    include_cost=include_cost,
+                    financials=financials_by_order.get(order.pk),
+                )
+                for order in orders
+            ],
             period=canonical_datetime_range(start, end),
             summary=summary,
         )
@@ -3139,6 +3241,422 @@ class PayablesReportView(BaseReportView):
                 for group in groups.values() if group['count']
             ],
         }
+        return self.respond(
+            request, rows=rows, period=canonical_datetime_range(start, end), summary=summary,
+        )
+
+
+def _command_name(command):
+    return command.command_number or str(command.pk)
+
+
+def _command_table_name(command):
+    return command.table_name_snapshot or (command.table.name if command.table_id else '')
+
+
+def _command_customer_name(command):
+    return command.customer_name_snapshot or (command.customer.name if command.customer_id else '')
+
+
+def _command_operator_name(command, field):
+    snapshot = getattr(command, f'{field}_name_snapshot', '')
+    user = getattr(command, field, None)
+    return snapshot or (readable_user_name(user) if user else '')
+
+
+def _command_subtotal(command):
+    return sum((
+        item.quantity * item.unit_price
+        for order in command.orders.all()
+        for item in order.items.all()
+        if item.status == OrderItemStatus.CONFIRMED
+    ), Decimal('0.00'))
+
+
+def _command_financials(command):
+    subtotal = _command_subtotal(command)
+    if command.sale_id:
+        sale = command.sale
+        return {
+            'subtotal': sale.subtotal,
+            'discount': sale.promotion_discount_total + sale.item_discount_total + sale.discount,
+            'service_fee': sale.service_fee_amount,
+            'total': sale.total,
+            'sale_id': sale.pk,
+            'sale_number': sale.sale_number,
+            'sale_status': sale.status,
+        }
+    # Open commands have no final-sale snapshot yet. Keep the recorded checkout
+    # discount, but do not recalculate promotions or service fees dynamically.
+    return {
+        'subtotal': subtotal,
+        'discount': command.checkout_discount,
+        'service_fee': Decimal('0.00'),
+        'total': max(subtotal - command.checkout_discount, Decimal('0.00')),
+        'sale_id': None,
+        'sale_number': '',
+        'sale_status': None,
+    }
+
+
+def _command_queryset(*, branch, filters):
+    queryset = Command.objects.select_related(
+        'table', 'customer', 'opened_by', 'closed_by', 'sale', 'sale__seller_user',
+    ).prefetch_related('orders__items', 'sale__items').filter(branch=branch)
+    if filters.get('status'):
+        queryset = queryset.filter(status=filters['status'])
+    if filters.get('table') is not None:
+        queryset = queryset.filter(table_id=filters['table'])
+    if filters.get('customer') is not None:
+        queryset = queryset.filter(customer_id=filters['customer'])
+    if filters.get('operator') is not None:
+        queryset = queryset.filter(
+            Q(opened_by_id=filters['operator'])
+            | Q(closed_by_id=filters['operator'])
+            | Q(sale__seller_user_id=filters['operator'])
+        )
+    if filters.get('payment_method') is not None:
+        queryset = queryset.filter(payments__payment_method_id=filters['payment_method'])
+    if filters.get('command'):
+        value = filters['command']
+        queryset = queryset.filter(
+            Q(command_number__icontains=value) | Q(identifier__icontains=value)
+        )
+    return queryset.distinct()
+
+
+def _command_period_queryset(queryset, start, end):
+    end_exclusive = period_end_exclusive(end)
+    return queryset.filter(
+        Q(created_at__gte=start, created_at__lt=end_exclusive)
+        | Q(closed_at__gte=start, closed_at__lt=end_exclusive)
+    )
+
+
+def _modifier_label(snapshot):
+    labels = []
+    for modifier in snapshot or []:
+        group = modifier.get('group_name', '')
+        option = modifier.get('option_name', '')
+        labels.append(' - '.join(value for value in (group, option) if value))
+    return '; '.join(label for label in labels if label)
+
+
+def _command_item_sale_snapshots(command):
+    confirmed = sorted((
+        item for order in command.orders.all() for item in order.items.all()
+        if item.status == OrderItemStatus.CONFIRMED
+    ), key=lambda item: item.pk)
+    sale_items = list(command.sale.items.all()) if command.sale_id else []
+    return {item.pk: sale_item for item, sale_item in zip(confirmed, sale_items)}
+
+
+def _operation_command_ids(operation):
+    result = operation.result or {}
+    source = result.get('source') or {}
+    destination = result.get('destination') or {}
+    return {
+        value for value in (
+            result.get('command_id'), result.get('source_command_id'),
+            source.get('id'), destination.get('id'),
+        ) if value is not None
+    }
+
+
+def _operation_matches_command_scope(operation, command_ids, table_id=None):
+    if not (_operation_command_ids(operation) & command_ids):
+        return False
+    if table_id is None:
+        return True
+    result = operation.result or {}
+    return table_id in {
+        reference.get('table_id')
+        for reference in (result.get('source') or {}, result.get('destination') or {})
+    }
+
+
+class CommandsReportOptionsView(APIView):
+    permission_classes = (ReportsPermission,)
+    required_permission = 'commands.view'
+
+    def get(self, request):
+        start, end = parse_datetime_range(request.query_params, required=True)
+        branch = request.branch_context
+        commands = _command_period_queryset(
+            Command.objects.filter(branch=branch), start, end,
+        )
+        table_ids = commands.exclude(table_id=None).values_list('table_id', flat=True)
+        customer_ids = commands.exclude(customer_id=None).values_list('customer_id', flat=True)
+        operator_ids = set(commands.values_list('opened_by_id', flat=True))
+        operator_ids.update(commands.exclude(closed_by_id=None).values_list('closed_by_id', flat=True))
+        operator_ids.update(commands.exclude(sale__seller_user_id=None).values_list('sale__seller_user_id', flat=True))
+        return Response({
+            'tables': [
+                {'id': table.pk, 'name': table.name, 'historical': table.status != 'active'}
+                for table in Table.objects.filter(branch=branch).filter(
+                    Q(status='active') | Q(pk__in=table_ids)
+                ).order_by('name', 'id')
+            ],
+            'customers': [
+                {'id': customer.pk, 'name': customer.name, 'historical': customer.status != 'active'}
+                for customer in Customer.objects.filter(company=branch.company).filter(
+                    Q(status='active') | Q(pk__in=customer_ids)
+                ).order_by('name', 'id')
+            ],
+            'operators': [
+                {'id': user.pk, 'name': readable_user_name(user)}
+                for user in User.objects.filter(pk__in=operator_ids).order_by('first_name', 'last_name', 'email', 'id')
+            ],
+            'payment_methods': [
+                {'id': method.pk, 'name': method.name, 'historical': method.status != 'active'}
+                for method in PaymentMethod.objects.filter(company=branch.company).filter(
+                    Q(status='active') | Q(command_payments__command__branch=branch)
+                ).distinct().order_by('name', 'id')
+            ],
+        })
+
+
+class CommandsReportView(BaseReportView):
+    required_permission = 'commands.view'
+    query_serializer_class = CommandsReportQuerySerializer
+    csv_filename = 'relatorio-mesas-comandas.csv'
+    csv_headers = (
+        'command_number', 'table_name', 'created_at', 'closed_at', 'opened_by_name',
+        'closed_by_name', 'customer_name', 'items_count', 'subtotal', 'discount',
+        'service_fee', 'total', 'status',
+    )
+
+    def serialize_rows(self, rows, request):
+        return list(rows)
+
+    def export_headers(self, request):
+        headers = {
+            'commands': self.csv_headers,
+            'items': (
+                'command_number', 'table_name', 'product_name', 'internal_code',
+                'category_name', 'quantity', 'modifiers', 'promotion', 'discount',
+                'subtotal', 'status', 'cancelled_at', 'cancellation_reason',
+            ),
+            'payments': (
+                'command_number', 'table_name', 'payment_method', 'amount',
+                'received_amount', 'change_amount', 'command_total', 'is_partial',
+                'status', 'reversal_reason', 'operator_name', 'sale_number', 'created_at',
+            ),
+            'cancellations': (
+                'command_number', 'table_name', 'product_name', 'quantity', 'amount',
+                'responsible_name', 'authorized_by_name', 'reason', 'cancelled_at',
+            ),
+            'operations': (
+                'operation_label', 'source_command', 'source_table', 'destination_command',
+                'destination_table', 'item_ids', 'responsible_name', 'created_at',
+            ),
+        }
+        return headers[request.query_params.get('section', 'commands')]
+
+    def _summary(self, branch, filters, start, end):
+        scope = _command_queryset(branch=branch, filters=filters)
+        end_exclusive = period_end_exclusive(end)
+        opened = list(scope.filter(created_at__gte=start, created_at__lt=end_exclusive))
+        closed = list(scope.filter(closed_at__gte=start, closed_at__lt=end_exclusive))
+        finalized = [command for command in closed if command.sale_id and command.sale.status == SaleStatus.FINALIZED]
+        cancellations = OrderItem.objects.filter(
+            order__command__in=scope, status=OrderItemStatus.CANCELLED,
+            cancelled_at__gte=start, cancelled_at__lt=end_exclusive,
+        )
+        operation_command_ids = set(scope.values_list('pk', flat=True))
+        operations = [operation for operation in CommandOperation.objects.filter(
+            branch=branch, created_at__gte=start, created_at__lt=end_exclusive,
+        ) if _operation_matches_command_scope(
+            operation, operation_command_ids, filters.get('table'),
+        )]
+        return {
+            'opened_tables': len({command.table_id for command in opened if command.table_id}),
+            'opened_commands': len(opened),
+            'closed_commands': len(closed),
+            'associated_revenue': decimal_string(sum((command.sale.total for command in finalized), Decimal('0.00'))),
+            'average_ticket': decimal_string(
+                sum((command.sale.total for command in finalized), Decimal('0.00')) / len(finalized)
+                if finalized else Decimal('0.00')
+            ),
+            'average_stay_minutes': decimal_string(
+                sum(((command.closed_at - command.created_at).total_seconds() / 60 for command in closed), 0)
+                / len(closed) if closed else 0,
+                places=1,
+            ),
+            'cancelled_items': cancellations.count(),
+            'cancelled_value': decimal_string(sum((
+                item.quantity * item.unit_price for item in cancellations
+            ), Decimal('0.00'))),
+            'operations_count': len(operations),
+        }
+
+    def _command_rows(self, commands):
+        rows = []
+        for command in commands:
+            financials = _command_financials(command)
+            rows.append({
+                'id': command.pk,
+                'command_number': _command_name(command),
+                'identifier': command.identifier,
+                'table_name': _command_table_name(command),
+                'created_at': command.created_at,
+                'closed_at': command.closed_at,
+                'opened_by_name': _command_operator_name(command, 'opened_by'),
+                'closed_by_name': _command_operator_name(command, 'closed_by'),
+                'attendant_name': readable_user_name(command.sale.seller_user) if command.sale_id and command.sale.seller_user_id else '',
+                'customer_id': command.customer_id,
+                'customer_name': _command_customer_name(command),
+                'items_count': sum(len(order.items.all()) for order in command.orders.all()),
+                **{key: decimal_string(value) for key, value in financials.items() if key in ('subtotal', 'discount', 'service_fee', 'total')},
+                **{key: value for key, value in financials.items() if key not in ('subtotal', 'discount', 'service_fee', 'total')},
+                'status': command.status,
+            })
+        return rows
+
+    def _item_rows(self, queryset):
+        rows = []
+        snapshots = {}
+        for item in queryset:
+            command = item.order.command
+            if command.pk not in snapshots:
+                snapshots[command.pk] = _command_item_sale_snapshots(command)
+            sale_item = snapshots[command.pk].get(item.pk)
+            rows.append({
+                'id': item.pk,
+                'command_id': command.pk,
+                'command_number': _command_name(command),
+                'table_name': _command_table_name(command),
+                'product_name': item.product_name,
+                'internal_code': item.internal_code,
+                'category_name': item.category_name_snapshot or item.product.category.name,
+                'quantity': decimal_string(item.quantity, places=3),
+                'modifiers': _modifier_label(item.modifier_snapshot),
+                'promotion': sale_item.promotion_name if sale_item else '',
+                'discount': decimal_string(
+                    (sale_item.promotion_benefit + sale_item.manual_discount) if sale_item else Decimal('0.00')
+                ),
+                'subtotal': decimal_string(item.quantity * item.unit_price),
+                'status': item.status,
+                'cancelled_at': item.cancelled_at,
+                'cancellation_reason': item.cancellation_reason,
+            })
+        return rows
+
+    def _payment_rows(self, queryset):
+        rows = []
+        for payment in queryset:
+            financials = _command_financials(payment.command)
+            reversed_payment = getattr(payment, 'reversal', None)
+            rows.append({
+                'id': payment.pk,
+                'command_id': payment.command_id,
+                'command_number': _command_name(payment.command),
+                'table_name': _command_table_name(payment.command),
+                'payment_method': payment.payment_method.name,
+                'amount': decimal_string(payment.amount),
+                'received_amount': decimal_string(payment.received_amount) if payment.received_amount is not None else None,
+                'change_amount': decimal_string(payment.change_amount) if payment.change_amount is not None else None,
+                'command_total': decimal_string(financials['total']),
+                'is_partial': payment.amount < financials['total'],
+                'status': 'reversed' if payment.status == CommandPaymentStatus.REVERSED or reversed_payment else payment.status,
+                'reversal_reason': payment.reversal_reason or (reversed_payment.reversal_reason if reversed_payment else ''),
+                'operator_name': readable_user_name(payment.operator),
+                'created_at': payment.created_at,
+                'sale_id': financials['sale_id'],
+                'sale_number': financials['sale_number'],
+            })
+        return rows
+
+    def _cancellation_rows(self, queryset):
+        return [{
+            'id': item.pk,
+            'command_id': item.order.command_id,
+            'command_number': _command_name(item.order.command),
+            'table_name': _command_table_name(item.order.command),
+            'product_name': item.product_name,
+            'quantity': decimal_string(item.quantity, places=3),
+            'amount': decimal_string(item.quantity * item.unit_price),
+            'responsible_name': readable_user_name(item.cancelled_by) if item.cancelled_by_id else '',
+            'authorized_by_name': '',
+            'reason': item.cancellation_reason,
+            'cancelled_at': item.cancelled_at,
+        } for item in queryset]
+
+    def _operation_rows(self, queryset, branch):
+        operation_ids = [str(operation.pk) for operation in queryset]
+        audits = AuditLog.objects.filter(
+            branch=branch, metadata__operation_reference__in=operation_ids,
+        ).select_related('actor')
+        actors = {str(audit.metadata.get('operation_reference')): audit.actor for audit in audits}
+        labels = {
+            CommandOperationType.TRANSFER: 'Transferência entre mesas',
+            CommandOperationType.TRANSFER_ITEMS: 'Transferência de itens',
+            CommandOperationType.MERGE: 'Merge de comandas',
+            CommandOperationType.SPLIT: 'Split de comanda',
+        }
+        rows = []
+        for operation in queryset:
+            result = operation.result or {}
+            source = result.get('source') or {}
+            destination = result.get('destination') or {}
+            rows.append({
+                'id': operation.pk,
+                'operation_type': operation.operation_type,
+                'operation_label': labels[operation.operation_type],
+                'source_command': source.get('number') or result.get('source_command_id') or '',
+                'source_table': source.get('table_name', ''),
+                'destination_command': destination.get('number') or result.get('command_id') or '',
+                'destination_table': destination.get('table_name', ''),
+                'item_ids': result.get('item_ids', []),
+                'responsible_name': result.get('responsible_name') or (
+                    readable_user_name(actors[str(operation.pk)])
+                    if actors.get(str(operation.pk)) else ''
+                ),
+                'created_at': operation.created_at,
+            })
+        return rows
+
+    def get(self, request):
+        filters, start, end = self.parse_query(request)
+        section = filters['section']
+        if section == 'payments' and not user_has_code(request, 'commands.payments.view'):
+            raise PermissionDenied('Você não possui permissão para consultar pagamentos de comandas.')
+        branch = request.branch_context
+        command_scope = _command_queryset(branch=branch, filters=filters)
+        end_exclusive = period_end_exclusive(end)
+        summary = self._summary(branch, filters, start, end)
+        if section == 'commands':
+            rows = self._command_rows(_command_period_queryset(command_scope, start, end).order_by('-created_at', '-id'))
+        elif section == 'items':
+            rows = self._item_rows(OrderItem.objects.select_related(
+                'product__category', 'order__command__table', 'order__command__customer',
+                'order__command__opened_by', 'order__command__closed_by', 'order__command__sale',
+            ).prefetch_related('order__command__orders__items', 'order__command__sale__items').filter(
+                order__command__in=command_scope, created_at__gte=start, created_at__lt=end_exclusive,
+            ).order_by('-created_at', '-id'))
+        elif section == 'payments':
+            rows = self._payment_rows(CommandPayment.objects.select_related(
+                'command__table', 'command__customer', 'command__opened_by', 'command__closed_by',
+                'command__sale', 'payment_method', 'operator', 'reversal',
+            ).prefetch_related('command__orders__items').filter(
+                command__in=command_scope, created_at__gte=start, created_at__lt=end_exclusive,
+            ).order_by('-created_at', '-id'))
+        elif section == 'cancellations':
+            rows = self._cancellation_rows(OrderItem.objects.select_related(
+                'order__command__table', 'order__command__customer', 'order__command__opened_by',
+                'order__command__closed_by', 'cancelled_by',
+            ).filter(
+                order__command__in=command_scope, status=OrderItemStatus.CANCELLED,
+                cancelled_at__gte=start, cancelled_at__lt=end_exclusive,
+            ).order_by('-cancelled_at', '-id'))
+        else:
+            command_ids = set(command_scope.values_list('pk', flat=True))
+            operations = [operation for operation in CommandOperation.objects.filter(
+                branch=branch, created_at__gte=start, created_at__lt=end_exclusive,
+            ).order_by('-created_at', '-id') if _operation_matches_command_scope(
+                operation, command_ids, filters.get('table'),
+            )]
+            rows = self._operation_rows(operations, branch)
         return self.respond(
             request, rows=rows, period=canonical_datetime_range(start, end), summary=summary,
         )

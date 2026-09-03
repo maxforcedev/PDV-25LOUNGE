@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from django.db.models import Sum
 from rest_framework import serializers
@@ -44,6 +44,8 @@ class PurchaseOrderItemSerializer(serializers.ModelSerializer):
     ordered_stock_quantity = serializers.SerializerMethodField()
     received_stock_quantity = serializers.SerializerMethodField()
     pending_stock_quantity = serializers.SerializerMethodField()
+    received_total = serializers.SerializerMethodField()
+    unreceived_total = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseOrderItem
@@ -56,6 +58,7 @@ class PurchaseOrderItemSerializer(serializers.ModelSerializer):
             'ordered_stock_quantity', 'received_stock_quantity', 'pending_stock_quantity',
             'gross_subtotal', 'allocated_discount', 'allocated_freight',
             'allocated_other_expenses', 'effective_total',
+            'received_total', 'unreceived_total',
             'effective_stock_unit_cost', 'created_at',
         )
         read_only_fields = fields
@@ -88,6 +91,24 @@ class PurchaseOrderItemSerializer(serializers.ModelSerializer):
         received = Decimal(self.get_received_stock_quantity(item))
         return format(max(item.ordered_stock_quantity - received, Decimal('0')), 'f')
 
+    @staticmethod
+    def _received_total(item):
+        received_stock = sum(
+            (receipt_item.stock_quantity for receipt_item in item.receipt_items.all()),
+            Decimal('0.000000'),
+        )
+        if not item.ordered_stock_quantity:
+            return Decimal('0.00')
+        return (item.effective_total * min(
+            received_stock / item.ordered_stock_quantity, Decimal('1'),
+        )).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+    def get_received_total(self, item):
+        return format(self._received_total(item), 'f')
+
+    def get_unreceived_total(self, item):
+        return format(item.effective_total - self._received_total(item), 'f')
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         request = self.context.get('request')
@@ -95,7 +116,7 @@ class PurchaseOrderItemSerializer(serializers.ModelSerializer):
             for field in (
                 'purchase_unit_price', 'gross_subtotal', 'allocated_discount',
                 'allocated_freight', 'allocated_other_expenses', 'effective_total',
-                'effective_stock_unit_cost',
+                'received_total', 'unreceived_total', 'effective_stock_unit_cost',
             ):
                 data.pop(field, None)
         return data

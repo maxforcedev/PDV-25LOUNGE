@@ -330,6 +330,19 @@ def _operation_metadata(operation, support_session):
     }
 
 
+def _user_name_snapshot(user):
+    return user.get_full_name().strip() or user.email
+
+
+def _command_reference(command):
+    return {
+        'id': command.pk,
+        'number': command.command_number,
+        'table_id': command.table_id,
+        'table_name': command.table_name_snapshot or (command.table.name if command.table_id else ''),
+    }
+
+
 def _new_target_order(command, user, status):
     return Order.objects.create(command=command, created_by=user, status=status)
 
@@ -374,6 +387,8 @@ def _move_items(*, source, destination, item_requests, user, operation, support_
             clone = OrderItem.objects.create(
                 order=target_order, product=item.product, quantity=quantity,
                 product_name=item.product_name, internal_code=item.internal_code, unit=item.unit,
+                category_id_snapshot=item.category_id_snapshot,
+                category_name_snapshot=item.category_name_snapshot,
                 unit_price=item.unit_price, base_unit_price=item.base_unit_price,
                 modifier_unit_total=item.modifier_unit_total, modifier_snapshot=item.modifier_snapshot,
                 unit_cost=item.unit_cost, component_cost_snapshot=item.component_cost_snapshot,
@@ -414,9 +429,16 @@ def transfer_command_table(*, command, table_id, user, idempotency_key, support_
         if table.branch_id != branch.pk or table.status != TableStatus.ACTIVE:
             raise CommandConflict('table_invalid', 'A mesa de destino deve estar ativa na filial atual.')
     before = model_snapshot(source, ('table_id', 'status'))
+    source_reference = _command_reference(source)
     source.table = table
-    source.save(update_fields=('table', 'updated_at'))
-    operation.result = {'command_id': source.pk}
+    source.table_name_snapshot = table.name if table else ''
+    source.save(update_fields=('table', 'table_name_snapshot', 'updated_at'))
+    operation.result = {
+        'command_id': source.pk,
+        'source': source_reference,
+        'destination': _command_reference(source),
+        'responsible_name': _user_name_snapshot(user),
+    }
     operation.save(update_fields=('result', 'updated_at'))
     audit_log(
         actor=user, action='command.transfer', obj=source, company=source.company, branch=branch,
@@ -446,7 +468,11 @@ def transfer_command_items(*, command, destination_command_id, items, user, idem
         operation=operation, support_session=support_session,
     )
     _assert_paid_not_above_total(source)
-    operation.result = {'command_id': destination.pk, 'item_ids': moved_ids}
+    operation.result = {
+        'command_id': destination.pk, 'item_ids': moved_ids,
+        'source': _command_reference(source), 'destination': _command_reference(destination),
+        'responsible_name': _user_name_snapshot(user),
+    }
     operation.save(update_fields=('result', 'updated_at'))
     audit_log(
         actor=user, action='command.transfer_items', obj=source, company=source.company, branch=branch,
@@ -486,13 +512,21 @@ def merge_commands(*, command, source_command_id, user, idempotency_key, support
         order.save(update_fields=('command', 'updated_at'))
     if destination.customer_id is None and source.customer_id is not None:
         destination.customer_id = source.customer_id
-        destination.save(update_fields=('customer', 'updated_at'))
+        destination.customer_name_snapshot = source.customer_name_snapshot or (
+            source.customer.name if source.customer_id else ''
+        )
+        destination.save(update_fields=('customer', 'customer_name_snapshot', 'updated_at'))
     _assert_paid_not_above_total(source)
     source.status = CommandStatus.CLOSED
     source.closed_at = timezone.now()
     source.closed_by = user
-    source.save(update_fields=('status', 'closed_at', 'closed_by', 'updated_at'))
-    operation.result = {'command_id': destination.pk, 'source_command_id': source.pk}
+    source.closed_by_name_snapshot = _user_name_snapshot(user)
+    source.save(update_fields=('status', 'closed_at', 'closed_by', 'closed_by_name_snapshot', 'updated_at'))
+    operation.result = {
+        'command_id': destination.pk, 'source_command_id': source.pk,
+        'source': _command_reference(source), 'destination': _command_reference(destination),
+        'responsible_name': _user_name_snapshot(user),
+    }
     operation.save(update_fields=('result', 'updated_at'))
     audit_log(
         actor=user, action='command.merge', obj=destination, company=destination.company, branch=branch,
@@ -532,13 +566,22 @@ def split_command(*, command, items, table_id, identifier, user, idempotency_key
         company=branch.company, branch=branch, table=table,
         command_number=f'C{Command.objects.filter(branch=branch).count() + 1:06d}',
         identifier=identifier, customer=source.customer, opened_by=user,
+        table_name_snapshot=table.name if table else '',
+        customer_name_snapshot=source.customer_name_snapshot or (
+            source.customer.name if source.customer_id else ''
+        ),
+        opened_by_name_snapshot=_user_name_snapshot(user),
     )
     moved_ids = _move_items(
         source=source, destination=destination, item_requests=items, user=user,
         operation=operation, support_session=support_session,
     )
     _assert_paid_not_above_total(source)
-    operation.result = {'command_id': destination.pk, 'item_ids': moved_ids}
+    operation.result = {
+        'command_id': destination.pk, 'item_ids': moved_ids,
+        'source': _command_reference(source), 'destination': _command_reference(destination),
+        'responsible_name': _user_name_snapshot(user),
+    }
     operation.save(update_fields=('result', 'updated_at'))
     audit_log(
         actor=user, action='command.split', obj=destination, company=destination.company, branch=branch,
@@ -695,6 +738,9 @@ def open_command(*, branch, user, table=None, identifier='', customer_id=None, s
         command_number=command_number,
         identifier=identifier,
         opened_by=user,
+        table_name_snapshot=table_obj.name if table_obj else '',
+        customer_name_snapshot=customer.name if customer else '',
+        opened_by_name_snapshot=_user_name_snapshot(user),
     )
     audit_log(
         actor=user, action='command.open', obj=command,
@@ -719,7 +765,8 @@ def set_command_customer(*, command, customer_id, user, support_session=None):
             raise ValidationError({'customer': 'Cliente inválido, inativo ou fora da empresa.'})
     before = model_snapshot(command, ('customer_id',))
     command.customer = customer
-    command.save(update_fields=('customer', 'updated_at'))
+    command.customer_name_snapshot = customer.name if customer else ''
+    command.save(update_fields=('customer', 'customer_name_snapshot', 'updated_at'))
     audit_log(actor=user, action='command.set_customer', obj=command, company=command.company,
               branch=command.branch, before=before, after=model_snapshot(command, ('customer_id',)),
               metadata={'support_session': str(support_session.pk) if support_session else None})
@@ -773,6 +820,7 @@ def add_order_item(*, command, user, product_id, quantity, modifiers=None,
     item = OrderItem.objects.create(
         order=order, product=product, quantity=quantity,
         product_name=product.name, internal_code=product.internal_code or '',
+        category_id_snapshot=product.category_id, category_name_snapshot=product.category.name,
         unit=product.unit, unit_price=unit_price,
         base_unit_price=base_price, modifier_unit_total=modifier_total,
         modifier_snapshot=modifier_snapshot_data, unit_cost=unit_cost,
@@ -1154,7 +1202,10 @@ def finalize_command(*, command, user, idempotency_key, cash_session, payments, 
     command.closed_at = timezone.now()
     command.closed_by = user
     command.sale = sale
-    command.save(update_fields=('status', 'closed_at', 'closed_by', 'sale', 'updated_at'))
+    command.closed_by_name_snapshot = _user_name_snapshot(user)
+    command.save(update_fields=(
+        'status', 'closed_at', 'closed_by', 'closed_by_name_snapshot', 'sale', 'updated_at',
+    ))
 
     audit_log(
         actor=user, action='command.finalize', obj=command,

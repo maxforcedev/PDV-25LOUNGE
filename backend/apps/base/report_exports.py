@@ -21,7 +21,7 @@ from reportlab.platypus import LongTable, Paragraph, SimpleDocTemplate, Spacer, 
 from .export_labels import export_label, export_value
 
 FORMULA_PREFIXES = ('=', '+', '-', '@')
-CURRENCY_FIELDS = ('amount', 'price', 'cost', 'value', 'revenue', 'received', 'payment', 'commission', 'discount', 'fee', 'opening', 'expected', 'informed', 'difference', 'result')
+CURRENCY_FIELDS = ('amount', 'price', 'cost', 'value', 'revenue', 'received', 'ordered_total', 'payment', 'commission', 'discount', 'fee', 'opening', 'expected', 'informed', 'difference', 'result')
 
 
 def _value(value):

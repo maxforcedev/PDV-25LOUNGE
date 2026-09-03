@@ -107,6 +107,10 @@ class Command(BaseModel):
     )
     checkout_discount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     checkout_service_fee_waived = models.BooleanField(default=False)
+    table_name_snapshot = models.CharField(max_length=100, blank=True, default='')
+    customer_name_snapshot = models.CharField(max_length=200, blank=True, default='')
+    opened_by_name_snapshot = models.CharField(max_length=200, blank=True, default='')
+    closed_by_name_snapshot = models.CharField(max_length=200, blank=True, default='')
 
     class Meta:
         ordering = ('-created_at', '-id')
@@ -260,6 +264,8 @@ class OrderItem(BaseModel):
     quantity = models.DecimalField(max_digits=14, decimal_places=3)
     product_name = models.CharField(max_length=200)
     internal_code = models.CharField(max_length=100, blank=True)
+    category_id_snapshot = models.PositiveBigIntegerField(blank=True, null=True)
+    category_name_snapshot = models.CharField(max_length=150, blank=True, default='')
     unit = models.CharField(max_length=5)
     unit_price = models.DecimalField(max_digits=14, decimal_places=2)
     base_unit_price = models.DecimalField(

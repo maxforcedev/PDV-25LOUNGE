@@ -3,6 +3,8 @@ from django.urls import path
 from .views import (
     CashReportView,
     CancellationsReportView,
+    CommandsReportOptionsView,
+    CommandsReportView,
     ConsumptionsReportView,
     DashboardView,
     InventoryMovementsReportView,
@@ -35,6 +37,8 @@ urlpatterns = [
         'reports/purchase-options/', PhaseThreeReportOptionsView.as_view(),
         name='report-purchase-options',
     ),
+    path('reports/command-options/', CommandsReportOptionsView.as_view(), name='report-command-options'),
+    path('reports/commands/', CommandsReportView.as_view(), name='report-commands'),
     path('reports/purchases/', PurchaseReportView.as_view(), name='report-purchases'),
     path('reports/suppliers/', SupplierReportView.as_view(), name='report-suppliers'),
     path('reports/payables/', PayablesReportView.as_view(), name='report-payables'),

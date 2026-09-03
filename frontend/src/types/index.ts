@@ -848,6 +848,8 @@ export interface PurchaseOrderItem {
   allocated_freight?: string;
   allocated_other_expenses?: string;
   effective_total?: string;
+  received_total?: string;
+  unreceived_total?: string;
   effective_stock_unit_cost?: string;
   created_at: string;
 }
