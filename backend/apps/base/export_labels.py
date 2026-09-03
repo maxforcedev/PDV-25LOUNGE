@@ -1,3 +1,6 @@
+from decimal import Decimal, InvalidOperation
+
+
 EXPORT_LABELS = {
     'id': 'ID',
     'sale_number': 'Número',
@@ -54,6 +57,7 @@ EXPORT_LABELS = {
     'promotion_discount_type': 'Tipo do desconto promocional',
     'promotion_discount_value': 'Valor do desconto promocional',
     'promotion_benefit': 'Benefício promocional',
+    'promotion_value_raw': 'Valor configurado da promoção',
     'net_subtotal': 'Subtotal líquido',
     'payment_method_name': 'Forma de pagamento',
     'payment_method_code': 'Identificador',
@@ -208,7 +212,33 @@ EXPORT_VALUES = {
     'inflow': 'Entrada',
     'reconciliation': 'Reconciliação',
     'payment_method': 'Forma de pagamento',
+    'add': 'Adicionar',
+    'remove': 'Remover',
+    'observation': 'Observação',
+    'text': 'Texto',
+    'product_input': 'Produto ou insumo',
+    'component_substitution': 'Substituição de componente',
+    'counter': 'Balcão',
+    'table': 'Mesa',
+    'command': 'Comanda',
+    'active': 'Ativo',
+    'inactive': 'Inativo',
 }
+
+
+def promotion_discount_type_label(value):
+    return EXPORT_VALUES.get(value, value or '')
+
+
+def promotion_discount_value_label(discount_type, value):
+    try:
+        decimal_value = Decimal(value or 0)
+    except (InvalidOperation, TypeError, ValueError):
+        return ''
+    if discount_type == 'percentage':
+        normalized = format(decimal_value.normalize(), 'f').rstrip('0').rstrip('.')
+        return f'{normalized.replace(".", ",")}%'
+    return f'R$ {decimal_value.quantize(Decimal("0.01")):,.2f}'.replace(',', 'X').replace('.', ',').replace('X', '.')
 
 
 def export_label(value):

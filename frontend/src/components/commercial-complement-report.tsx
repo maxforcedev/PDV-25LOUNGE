@@ -24,7 +24,7 @@ const configs: Record<Kind, { title: string; description: string; endpoint: stri
   modifiers: { title: "Modificadores", description: "Adoção e receita adicional preservando grupo e opção históricos.", endpoint: "modifiers", scope: "modifiers", tabs: ["records", "products", "impact"] },
   customers: { title: "Clientes", description: "Recorrência, consumo e comandas relacionadas no período.", endpoint: "customers", scope: "customers", tabs: ["records", "sales", "products", "commands"] },
 };
-const tabLabels: Record<string, string> = { records: "Resumo", products: "Produtos", impact: "Impacto", sales: "Compras", commands: "Comandas" };
+const tabLabels: Record<string, string> = { records: "Resumo", products: "Produtos", impact: "Impacto", sales: "Vendas", commands: "Comandas" };
 function initialPeriod(): PeriodValue { return businessMonthToDate(); }
 function text(value: unknown) { return value == null || value === "" ? "-" : String(value); }
 function money(value: unknown) { return formatBRL(typeof value === "string" ? value : "0"); }

@@ -16,7 +16,10 @@ from rest_framework.views import APIView
 
 from apps.accounts.models import User
 from apps.base.datetimes import canonical_datetime_range, parse_datetime_range
-from apps.base.export_labels import export_label, export_value
+from apps.base.export_labels import (
+    export_label, export_value, promotion_discount_type_label,
+    promotion_discount_value_label,
+)
 from apps.base.audit import audit_log
 from apps.base.models import AuditLog
 from apps.base.report_exports import render_report_export, report_key_value_rows
@@ -3695,6 +3698,30 @@ def _phase_five_customer_name(sale):
     )
 
 
+def _human_quantity(value):
+    value = Decimal(value or 0)
+    normalized = format(value.normalize(), 'f')
+    if '.' not in normalized:
+        return normalized
+    integer, fraction = normalized.split('.', 1)
+    return f'{integer},{fraction.rstrip("0")}'
+
+
+def _redact_phase_five_impact(request, rows):
+    can_view_sales = user_has_code(request, 'sales.view')
+    can_view_team = user_has_code(request, 'reports.view_team')
+    redacted = []
+    for row in rows:
+        row = dict(row)
+        if not can_view_sales:
+            row.pop('sale_id', None)
+            row.pop('sale_number', None)
+        if not can_view_team:
+            row.pop('operator_name', None)
+        redacted.append(row)
+    return redacted
+
+
 def _phase_five_promotion_data(events, filters):
     promotions = {}
     products = {}
@@ -3709,8 +3736,11 @@ def _phase_five_promotion_data(events, filters):
             row = promotions.setdefault(key, {
                 'promotion_id': item.promotion_id,
                 'promotion_name': item.promotion_name or 'Promoção sem nome',
-                'promotion_type': item.promotion_discount_type,
-                'promotion_value': item.promotion_discount_value,
+                'promotion_type': promotion_discount_type_label(item.promotion_discount_type),
+                'promotion_value': promotion_discount_value_label(
+                    item.promotion_discount_type, item.promotion_discount_value,
+                ),
+                'promotion_value_raw': decimal_string(item.promotion_discount_value),
                 'uses': 0,
                 'affected_quantity': Decimal('0.000'),
                 'gross_value': Decimal('0.00'),
@@ -3750,7 +3780,7 @@ def _phase_five_promotion_data(events, filters):
                 'sale_number': sale.sale_number, 'event_type': 'inflow' if sign > 0 else 'reversal',
                 'event_at': event_at, 'promotion_id': item.promotion_id,
                 'promotion_name': item.promotion_name or 'Promoção sem nome',
-                'product_name': item.product_name, 'quantity': decimal_string(sign * item.quantity, 3),
+                'product_name': item.product_name, 'quantity': _human_quantity(sign * item.quantity),
                 'gross_value': decimal_string(sign * item.subtotal),
                 'discount': decimal_string(sign * item.promotion_benefit),
                 'net_revenue': decimal_string(sign * item.net_subtotal),
@@ -3760,7 +3790,7 @@ def _phase_five_promotion_data(events, filters):
     for row in promotions.values():
         rows.append({
             **{key: value for key, value in row.items() if key not in ('product_ids', 'sale_ids', 'operator_ids')},
-            'affected_quantity': decimal_string(row['affected_quantity'], 3),
+            'affected_quantity': _human_quantity(row['affected_quantity']),
             'gross_value': decimal_string(row['gross_value']),
             'discount': decimal_string(row['discount']),
             'net_revenue': decimal_string(row['net_revenue']),
@@ -3769,7 +3799,7 @@ def _phase_five_promotion_data(events, filters):
         })
     product_rows = [{
         **{key: value for key, value in row.items() if key not in ('quantity', 'gross_value', 'discount', 'net_revenue')},
-        'quantity': decimal_string(row['quantity'], 3), 'gross_value': decimal_string(row['gross_value']),
+        'quantity': _human_quantity(row['quantity']), 'gross_value': decimal_string(row['gross_value']),
         'discount': decimal_string(row['discount']), 'net_revenue': decimal_string(row['net_revenue']),
     } for row in products.values()]
     return sorted(rows, key=lambda row: (-row['uses'], row['promotion_name'])), sorted(
@@ -3814,19 +3844,19 @@ def _phase_five_modifier_data(events, filters):
                     'id': f'{sale.pk}-{item.pk}-{key[0]}-{key[1]}-{sign}', 'sale_id': sale.pk,
                     'sale_number': sale.sale_number, 'event_type': 'inflow' if sign > 0 else 'reversal',
                     'event_at': event_at, 'group_name': group_name, 'option_name': option_name,
-                    'product_name': item.product_name, 'quantity': decimal_string(sign * selected_quantity, 3),
+                    'product_name': item.product_name, 'quantity': _human_quantity(sign * selected_quantity),
                     'additional_revenue': decimal_string(sign * contribution),
                     'operator_name': readable_user_name(sale.created_by),
                 })
     rows = [{
         **{key: value for key, value in row.items() if key not in ('quantity', 'additional_revenue', 'product_ids', 'sale_ids')},
-        'quantity': decimal_string(row['quantity'], 3),
+        'quantity': _human_quantity(row['quantity']),
         'additional_revenue': decimal_string(row['additional_revenue']),
         'product_count': len(row['product_ids']), 'sale_count': len(row['sale_ids']),
     } for row in modifiers.values()]
     product_rows = [{
         **{key: value for key, value in row.items() if key not in ('quantity', 'additional_revenue')},
-        'quantity': decimal_string(row['quantity'], 3),
+        'quantity': _human_quantity(row['quantity']),
         'additional_revenue': decimal_string(row['additional_revenue']),
     } for row in products.values()]
     return sorted(rows, key=lambda row: (-Decimal(row['quantity']), row['group_name'], row['option_name'])), sorted(
@@ -3906,7 +3936,7 @@ class CommercialComplementReportView(BaseReportView):
         headers = {
             'promotions': {
                 'records': (
-                    'promotion_name', 'promotion_type', 'promotion_value', 'uses',
+                    'promotion_name', 'promotion_type', 'promotion_value_raw', 'uses',
                     'affected_quantity', 'gross_value', 'discount', 'net_revenue',
                     'product_count', 'sale_count', 'operator_count',
                 ),
@@ -3934,7 +3964,13 @@ class CommercialComplementReportView(BaseReportView):
                 ),
             },
         }
-        return headers[self.report_kind][request.query_params.get('section', 'records')]
+        headers = headers[self.report_kind][request.query_params.get('section', 'records')]
+        if request.query_params.get('section') == 'impact':
+            if not user_has_code(request, 'sales.view'):
+                headers = tuple(header for header in headers if header != 'sale_number')
+            if not user_has_code(request, 'reports.view_team'):
+                headers = tuple(header for header in headers if header != 'operator_name')
+        return headers
 
     def get(self, request):
         filters, start, end = self.parse_query(request)
@@ -3948,7 +3984,9 @@ class CommercialComplementReportView(BaseReportView):
             records, products, impact = _phase_five_promotion_data(events, filters)
             summary = {
                 'uses': sum((row['uses'] for row in records), 0),
-                'affected_quantity': decimal_string(sum((Decimal(row['affected_quantity']) for row in records), Decimal('0.000')), 3),
+                'affected_quantity': _human_quantity(sum((
+                    Decimal(row['affected_quantity'].replace(',', '.')) for row in records
+                ), Decimal('0.000'))),
                 'gross_value': decimal_string(sum((Decimal(row['gross_value']) for row in records), Decimal('0.00'))),
                 'discount': decimal_string(sum((Decimal(row['discount']) for row in records), Decimal('0.00'))),
                 'net_revenue': decimal_string(sum((Decimal(row['net_revenue']) for row in records), Decimal('0.00'))),
@@ -3963,7 +4001,9 @@ class CommercialComplementReportView(BaseReportView):
                     if total_revenue else Decimal('0.00')
                 )
             summary = {
-                'quantity': decimal_string(sum((Decimal(row['quantity']) for row in records), Decimal('0.000')), 3),
+                'quantity': _human_quantity(sum((
+                    Decimal(row['quantity'].replace(',', '.')) for row in records
+                ), Decimal('0.000'))),
                 'additional_revenue': decimal_string(sum((Decimal(row['additional_revenue']) for row in records), Decimal('0.00'))),
                 'modifier_count': len(records), 'group_count': len({row['group_name'] for row in records}),
                 'product_count': len({row['product_id'] for row in products}),
@@ -3973,6 +4013,8 @@ class CommercialComplementReportView(BaseReportView):
                 ),
             }
         rows = {'records': records, 'products': products, 'impact': impact}[section]
+        if section == 'impact':
+            rows = _redact_phase_five_impact(request, rows)
         return self.respond(
             request, rows=rows, period=canonical_datetime_range(start, end), summary=summary,
         )
@@ -4001,7 +4043,7 @@ def _phase_five_customer_data(events, filters):
             continue
         customer = customers.setdefault(sale.customer_id, {
             'customer_id': sale.customer_id, 'customer_name': _phase_five_customer_name(sale),
-            'customer_status': sale.customer.status if sale.customer_id else '', 'sales_count': 0,
+            'customer_status': export_value(sale.customer.status) if sale.customer_id else '', 'sales_count': 0,
             'total_purchased': Decimal('0.00'), 'last_purchase_at': None, 'sale_ids': set(),
         })
         customer['sales_count'] += sign
@@ -4040,7 +4082,7 @@ def _phase_five_customer_data(events, filters):
         })
     product_rows = [{
         **{key: value for key, value in row.items() if key not in ('quantity', 'net_revenue')},
-        'quantity': decimal_string(row['quantity'], 3), 'net_revenue': decimal_string(row['net_revenue']),
+        'quantity': _human_quantity(row['quantity']), 'net_revenue': decimal_string(row['net_revenue']),
     } for row in products.values()]
     return (
         sorted(customer_rows, key=lambda row: (-Decimal(row['total_purchased']), row['customer_name'])),
