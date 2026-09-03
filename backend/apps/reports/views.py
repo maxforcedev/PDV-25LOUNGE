@@ -3833,6 +3833,7 @@ def _phase_five_modifier_data(events, filters):
                 row['sale_ids'].add(sale.pk)
                 product_key = (*key, item.product_id)
                 product_row = products.setdefault(product_key, {
+                    'group_id': snapshot.get('group_id'), 'option_id': snapshot.get('option_id'),
                     'group_name': group_name, 'option_name': option_name, 'product_id': item.product_id,
                     'product_name': item.product_name, 'internal_code': item.internal_code,
                     'category_name': item.category_name_snapshot, 'quantity': Decimal('0.000'),
