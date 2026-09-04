@@ -66,6 +66,7 @@ const blank = (): UserPayload => ({
   email: null,
   password: null,
   can_login: false,
+  can_access_pos: false,
   user_type: "employee",
   first_name: "",
   last_name: "",
@@ -189,6 +190,7 @@ function UsersAdministration() {
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
   const [sendingPasswordReset, setSendingPasswordReset] = useState(false);
+  const [sendingPosPinReset, setSendingPosPinReset] = useState(false);
   const [confirming, setConfirming] = useState<User | null>(null);
   const [archiving, setArchiving] = useState<User | null>(null);
   const [editorTab, setEditorTab] = useState<EditorTab>("personal");
@@ -408,6 +410,7 @@ function UsersAdministration() {
             email: target.email,
             password: null,
             can_login: target.can_login,
+            can_access_pos: target.can_access_pos,
             user_type: target.user_type,
             first_name: target.first_name,
             last_name: target.last_name,
@@ -460,6 +463,22 @@ function UsersAdministration() {
       setError(caught instanceof ApiError ? caught.message : "Não foi possível enviar a redefinição de senha.");
     } finally {
       setSendingPasswordReset(false);
+    }
+  }
+  async function sendPosPinReset() {
+    if (!editing || !currentCompany) return;
+    setSendingPosPinReset(true);
+    setError("");
+    setSuccess("");
+    try {
+      const response = await http.post<{ detail: string }>(
+        `users/${editing.id}/send-pos-pin-reset/?company=${currentCompany.id}`,
+      );
+      setSuccess(response.detail);
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Não foi possível enviar as instruções do PIN do POS.");
+    } finally {
+      setSendingPosPinReset(false);
     }
   }
   function updateAccess(
@@ -1156,6 +1175,18 @@ function UsersAdministration() {
                     </small>
                   </span>
                 </label>
+                <label className="flex items-center gap-3 rounded-lg border border-subtle p-4 text-xs font-semibold">
+                  <input
+                    type="checkbox"
+                    className="size-4 accent-primary"
+                    checked={form.can_access_pos}
+                    onChange={(event) => update("can_access_pos", event.target.checked)}
+                  />
+                  <span>
+                    <strong className="block">Pode operar no POS?</strong>
+                    <small className="font-normal text-muted">Exige um PIN próprio; não concede acesso ao Backoffice.</small>
+                  </span>
+                </label>
                 <Field label="E-mail" error={fieldError(fields, "email")}>
                   <Input
                     type="email"
@@ -1387,6 +1418,18 @@ function UsersAdministration() {
                         </small>
                       </span>
                     </label>
+                    <label className="flex items-center gap-3 rounded-lg border border-subtle p-4 text-xs font-semibold">
+                      <input
+                        type="checkbox"
+                        className="size-4 accent-primary"
+                        checked={form.can_access_pos}
+                        onChange={(event) => update("can_access_pos", event.target.checked)}
+                      />
+                      <span>
+                        <strong className="block">Pode operar no POS?</strong>
+                        <small className="font-normal text-muted">Libera a autenticação por PIN no aplicativo POS, sem acesso ao Backoffice.</small>
+                      </span>
+                    </label>
                     <div className="grid gap-5 sm:grid-cols-2">
                       <Field label="Cargo/Função">
                         <Select
@@ -1520,11 +1563,29 @@ function UsersAdministration() {
                       A senha é uma credencial CORE global e só pode ser alterada
                       pelo próprio titular em Minha conta.
                     </p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-lg border border-subtle p-4 text-xs">
+                        <strong className="block">Acesso ao POS</strong>
+                        <span className="mt-2 inline-block"><StatusBadge active={editing.can_access_pos} /></span>
+                      </div>
+                      <div className="rounded-lg border border-subtle p-4 text-xs">
+                        <strong className="block">PIN do POS</strong>
+                        <p className="mt-2 font-semibold text-muted">
+                          {editing.pos_pin_configured === undefined ? "Status não informado" : editing.pos_pin_configured ? "Configurado" : "Não configurado"}
+                        </p>
+                      </div>
+                    </div>
                     <div className="flex flex-wrap gap-2">
                       {editing.email && editing.login_credential_available && (
                         <Button variant="secondary" loading={sendingPasswordReset} onClick={() => void sendPasswordReset()}>
                           <Send className="size-4" />
                           Enviar redefinição de senha
+                        </Button>
+                      )}
+                      {editing.email && editing.can_access_pos && (
+                        <Button variant="secondary" loading={sendingPosPinReset} onClick={() => void sendPosPinReset()}>
+                          <Send className="size-4" />
+                          Enviar link do PIN do POS
                         </Button>
                       )}
                       <Link

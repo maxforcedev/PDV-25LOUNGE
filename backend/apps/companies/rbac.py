@@ -9,6 +9,8 @@ PERMISSION_CATALOG = (
     ('branches.add', 'companies', 'Cadastrar filiais', 'Cadastrar filiais em empresas autorizadas.'),
     ('branches.change', 'companies', 'Editar filiais', 'Editar e alterar o status de filiais.'),
     ('branches.change_settings', 'companies', 'Alterar configurações da filial', 'Alterar regras operacionais, taxa de serviço, comissão e custo fixo.'),
+    ('pos_devices.view', 'pos_devices', 'Visualizar dispositivos POS', 'Visualizar dispositivos POS autorizados da empresa.'),
+    ('pos_devices.manage', 'pos_devices', 'Administrar dispositivos POS', 'Bloquear, revogar e configurar dispositivos POS da empresa.'),
     ('users.view', 'accounts', 'Visualizar usuários', 'Visualizar usuários autorizados.'),
     ('users.add', 'accounts', 'Cadastrar usuários', 'Cadastrar usuários e seus acessos.'),
     ('users.change', 'accounts', 'Editar usuários', 'Editar usuários e seus acessos.'),

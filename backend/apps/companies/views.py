@@ -337,6 +337,9 @@ class BranchViewSet(viewsets.ModelViewSet):
         'activate': 'branches.change',
         'deactivate': 'branches.change',
         'branch_settings': 'branches.change_settings',
+        'pos_settings': 'pos_devices.manage',
+        'licensing_code': 'pos_devices.manage',
+        'rotate_licensing_code': 'pos_devices.manage',
     }
     http_method_names = ('get', 'post', 'patch', 'put', 'head', 'options')
 
@@ -499,6 +502,46 @@ class BranchViewSet(viewsets.ModelViewSet):
             after=model_snapshot(instance, fields),
         )
         return Response(BranchSettingsSerializer(instance, context={'request': request}).data)
+
+    @action(detail=True, methods=['get', 'patch'], url_path='pos-settings')
+    @transaction.atomic
+    def pos_settings(self, request, pk=None):
+        from apps.pos.models import BranchPOSSettings
+        from apps.pos.serializers import BranchPOSSettingsSerializer
+
+        branch = self.get_object()
+        instance = BranchPOSSettings.objects.filter(branch=branch).first()
+        if request.method == 'GET':
+            return Response(BranchPOSSettingsSerializer(
+                instance or BranchPOSSettings(branch=branch), context={'branch': branch}
+            ).data)
+        branch = Branch.objects.select_for_update().get(pk=branch.pk)
+        instance, _ = BranchPOSSettings.objects.select_for_update().get_or_create(branch=branch)
+        fields = tuple(field for field in BranchPOSSettingsSerializer.Meta.fields if field not in {'id', 'branch', 'created_at', 'updated_at'})
+        before = model_snapshot(instance, fields)
+        serializer = BranchPOSSettingsSerializer(
+            instance, data=request.data, partial=True, context={'branch': branch},
+        )
+        serializer.is_valid(raise_exception=True)
+        instance = serializer.save()
+        audit_log(
+            actor=request.user, action='pos.branch.settings.update', obj=instance,
+            company=branch.company, branch=branch, before=before,
+            after=model_snapshot(instance, fields),
+        )
+        return Response(BranchPOSSettingsSerializer(instance, context={'branch': branch}).data)
+
+    @action(detail=True, methods=['get'], url_path='licensing-code')
+    def licensing_code(self, request, pk=None):
+        branch = self.get_object()
+        return Response({'licensing_code': branch.licensing_code})
+
+    @action(detail=True, methods=['post'], url_path='rotate-licensing-code')
+    def rotate_licensing_code(self, request, pk=None):
+        from apps.pos.services import rotate_licensing_code
+
+        branch = rotate_licensing_code(self.get_object(), actor=request.user)
+        return Response({'licensing_code': branch.licensing_code})
 
     @action(detail=True, methods=['get'], url_path='features')
     def branch_features(self, request, pk=None):

@@ -28,6 +28,7 @@ const routes: Array<{
   { href: "/usuarios", permissions: [permissions.viewUser] },
   { href: "/perfis", permissions: [permissions.viewAccessProfile] },
   { href: "/filiais", permissions: [permissions.viewBranch, permissions.addBranch, permissions.changeBranch] },
+  { href: "/pos-dispositivos", permissions: [permissions.viewPosDevices, permissions.managePosDevices] },
   { href: "/relatorios", permissions: reportMenuPermissions },
 ];
 

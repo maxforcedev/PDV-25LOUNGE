@@ -42,6 +42,8 @@ export interface User {
   id: number;
   email: string | null;
   can_login: boolean;
+  can_access_pos: boolean;
+  pos_pin_configured?: boolean;
   login_credential_available?: boolean;
   user_type: UserType;
   first_name: string;
@@ -355,6 +357,7 @@ export interface UserPayload {
   email: string | null;
   password?: string | null;
   can_login: boolean;
+  can_access_pos: boolean;
   user_type: UserType;
   first_name: string;
   last_name: string;
@@ -376,6 +379,55 @@ export interface UserPayload {
       access_profile_id: number | null;
     }>;
   }>;
+}
+
+export type PosDeviceStatus = "PENDING" | "ACTIVE" | "BLOCKED" | "REVOKED" | "REPLACED";
+
+export interface PosDevice {
+  id: string;
+  branch: number;
+  branch_name?: string;
+  name: string;
+  device_type: "POS" | "STONE_POS" | "TABLET_POS" | "MOBILE_POS";
+  status: PosDeviceStatus;
+  app_version: string;
+  os_version: string;
+  device_model: string;
+  capabilities: Record<string, unknown>;
+  paired_at: string | null;
+  last_seen_at: string | null;
+  blocked_at: string | null;
+  revoked_at: string | null;
+  replaced_at: string | null;
+  replaced_by: string | null;
+  online?: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PosSettings {
+  cash_binding_mode: "FIXED" | "FLEXIBLE" | null;
+  default_cash_register: number | null;
+  receipt_printer: string | null;
+  sale_confirmation_print: boolean | null;
+  receipt_print_mode: "automatic" | "manual" | null;
+  receipt_format: "detailed" | "simplified" | null;
+  paper_width: number | null;
+  copies: number | null;
+  sound_enabled: boolean | null;
+  screen_timeout_seconds: number | null;
+  cash_register_options?: Array<{ id: number; name: string }>;
+}
+
+export interface BranchPosSettings extends PosSettings {
+  cash_binding_mode: "FIXED" | "FLEXIBLE";
+  receipt_printer: string;
+  sale_confirmation_print: boolean;
+  receipt_print_mode: "automatic" | "manual";
+  receipt_format: "detailed" | "simplified";
+  paper_width: number;
+  copies: number;
+  sound_enabled: boolean;
 }
 
 export type UserType = "employee" | "promoter" | "dj" | "artist" | "other";

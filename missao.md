@@ -233,6 +233,104 @@ Exemplo:
 
 ---
 
+## 0.8 Economia de execução, testes e créditos
+
+O OpenCode deve trabalhar com **validação incremental e focada durante a implementação**.
+
+O objetivo é evitar gastar tempo, recursos e créditos executando repetidamente migrations, builds, containers e suítes completas quando a alteração não exige isso.
+
+### Durante a implementação
+
+Executar somente validações diretamente relacionadas ao código alterado.
+
+Exemplos:
+
+```text
+backend POS alterado
+→ manage.py check
+→ testes focados de apps.pos
+→ testes do service/view/model diretamente alterado
+```
+
+```text
+frontend Backoffice alterado
+→ lint/typecheck focado quando disponível
+→ testes do módulo alterado
+→ build completo somente no checkpoint final
+```
+
+```text
+Flutter alterado
+→ flutter analyze
+→ flutter test focado
+→ não rebuildar Android repetidamente sem necessidade
+```
+
+### Migrations
+
+NÃO executar migrations de todo o projeto repetidamente.
+
+Se não houve alteração de schema desde a última validação:
+
+```text
+NÃO rodar migrate novamente
+NÃO recriar banco de testes
+NÃO reconstruir toda a base apenas por segurança
+```
+
+Se houve alteração de schema em um app específico:
+
+```text
+validar a migration nova
+→ validar dependências diretamente afetadas
+→ rodar testes focados
+```
+
+A validação integral das migrations fica para o checkpoint final da sprint ou para quando uma alteração de schema realmente exigir isso.
+
+### Comandos caros
+
+Não executar repetidamente durante cada pequena alteração:
+
+```text
+full backend test suite
+migrate completo
+recriação integral do banco de testes
+frontend build completo
+platform-admin build completo
+docker compose rebuild
+docker image rebuild
+flutter build apk
+```
+
+Esses comandos devem ser executados **uma vez no checkpoint final**, quando aplicáveis.
+
+### Timeout
+
+Se um comando caro der timeout:
+
+```text
+PARAR
+→ identificar por que falhou
+→ decidir se o comando é realmente necessário
+```
+
+É PROIBIDO simplesmente repetir automaticamente o mesmo comando com timeout maior sem justificar a necessidade.
+
+### Regra de execução
+
+```text
+FASE DE IMPLEMENTAÇÃO
+→ validações pequenas, rápidas e direcionadas
+
+CHECKPOINT FINAL
+→ gates completos aplicáveis, uma única vez
+```
+
+Qualidade não deve ser reduzida. O que deve ser eliminado é execução redundante.
+
+---
+
 # 1. PRINCÍPIOS INEGOCIÁVEIS
 
 ## 1.1 Uma única fonte de verdade
@@ -4041,6 +4139,8 @@ POS-0 — Backend Foundation
   ↓
 POS-1 — Flutter / Pairing / Operator
   ↓
+POS-1.5 — Administração do POS no Backoffice
+  ↓
 POS-2 — Home + Caixa + Sync Center
   ↓
 POS-3 — Venda Rápida
@@ -4154,7 +4254,13 @@ Não:
 - duplicar `Ticket`;
 - duplicar `PrinterDevice`;
 - duplicar `CashSession`;
-- duplicar `Sale`.
+- duplicar `Sale`;
+- rodar migrations completas repetidamente sem mudança de schema;
+- recriar banco de testes completo a cada alteração pequena;
+- rodar full backend suite repetidamente durante implementação;
+- rodar builds completos de frontend/Platform Admin a cada pequena mudança;
+- repetir comando caro que deu timeout apenas aumentando o timeout;
+- rebuildar containers/imagens sem alteração que exija rebuild.
 
 ---
 
@@ -4180,6 +4286,27 @@ Ao terminar:
 E PARAR.
 
 Não iniciar sprint seguinte sem autorização.
+
+No checkpoint final, executar os gates completos **somente quando aplicáveis à sprint** e apenas uma vez, salvo se uma correção posterior exigir revalidação.
+
+Exemplo:
+
+```text
+backend alterado
+→ check
+→ migrations check se schema mudou
+→ testes focados
+→ full suite somente se realmente necessária ao gate da sprint
+
+frontend alterado
+→ lint/typecheck
+→ build final uma vez
+
+Flutter alterado
+→ flutter analyze
+→ flutter test
+→ build/emulador quando o SDK estiver disponível e a sprint exigir
+```
 
 ---
 
@@ -4377,29 +4504,73 @@ um banco paralelo.
 
 ---
 
-# 108. PRIMEIRA INSTRUÇÃO A SER DADA AO OPENCODE
+# 108. INSTRUÇÃO ATUAL AO OPENCODE — POS-1.5
 
 > Leia integralmente `missao.md`.
 >
 > Considere este documento a fonte de verdade funcional e técnica do CORE POS.
 >
-> Antes de implementar, faça uma auditoria de compatibilidade do código atual com a seção POS-0.
+> O POS-0 e o POS-1 já foram implementados.
 >
-> Não reescreva services de domínio existentes.
+> Execute SOMENTE o **POS-1.5 — Administração do POS no Backoffice**.
 >
-> Não implemente Flutter ainda.
+> Objetivo:
 >
-> Não use configuração de máquina como sistema de permissões.
+> criar no Backoffice a interface administrativa mínima necessária para configurar, operar e testar o CORE POS já implementado.
 >
-> Não misture sincronização geral com impressão.
+> Reutilize os models, services, endpoints, RBAC, entitlements e settings existentes.
 >
-> Reutilize os códigos reais de RBAC presentes em `backend/apps/companies/rbac.py`.
+> Implemente no Backoffice:
 >
-> Reutilize `Product.emits_ticket`, `Ticket`, `ProductionJob`, `PrintJob`, `CashSession`, `Sale`, `Command` e seus services existentes.
+> 1. **Usuários**
+>    - `can_access_pos`;
+>    - status do PIN: configurado / não configurado;
+>    - ação para enviar link de criação/reset de PIN;
+>    - nunca exibir PIN ou hash.
 >
-> Execute SOMENTE o POS-0.
+> 2. **Filial**
+>    - exibir código de licenciamento;
+>    - ação de copiar;
+>    - editar defaults do POS via `BranchPOSSettings`;
+>    - `cash_binding_mode`;
+>    - caixa padrão quando aplicável;
+>    - configuração básica de recibo.
 >
-> Ao finalizar, entregue o checkpoint técnico descrito neste documento e PARE.
+> 3. **Dispositivos POS**
+>    - listar `POSDevice`;
+>    - nome;
+>    - tipo;
+>    - filial;
+>    - status;
+>    - versão;
+>    - modelo;
+>    - `paired_at`;
+>    - `last_seen_at`;
+>    - online/offline derivado de heartbeat.
+>
+> 4. **Lifecycle do device**
+>    - bloquear;
+>    - reativar;
+>    - revogar;
+>    - replacement somente se já houver suporte correto;
+>    - confirmação para ações sensíveis;
+>    - auditoria.
+>
+> 5. **Configuração por device**
+>    - editar somente overrides permitidos em `POSDeviceSettings`;
+>    - mostrar herança filial → device;
+>    - mostrar configuração efetiva quando possível;
+>    - nunca usar settings de device como sistema de permissões.
+>
+> Não implemente POS-2.
+>
+> Não implemente Venda Rápida, Caixa no Flutter, Sync Center completo, Stone, impressão avançada, mesas/comandas, tickets, estoque ou relatórios.
+>
+> Durante a implementação, siga obrigatoriamente a seção **0.8 Economia de execução, testes e créditos**.
+>
+> Não execute migrations completas, full suite, builds completos ou rebuilds repetidamente.
+>
+> Ao finalizar, execute somente os gates finais aplicáveis, entregue o checkpoint técnico da seção 100 e PARE.
 
 ---
 
@@ -4415,6 +4586,8 @@ Sempre que uma decisão do CORE POS for alterada:
 6. manter este arquivo autocontido.
 
 O objetivo é permitir que qualquer agente de código leia apenas este documento e tenha contexto suficiente para implementar corretamente.
+
+A seção 108 representa a **instrução operacional atual** e deve ser atualizada quando uma sprint for oficialmente encerrada e a próxima for autorizada.
 
 ---
 

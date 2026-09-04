@@ -455,7 +455,7 @@ def effective_settings(device):
     if override:
         for field in fields:
             value = getattr(override, field)
-            if value not in (None, ''):
+            if value not in (None, '', {}):
                 result[field] = value
     if result['receipt_printer'] == 'stone_integrated' and not device.capabilities.get('integrated_printer'):
         result['receipt_printer'] = 'none'

@@ -55,6 +55,7 @@ class UserSerializer(serializers.ModelSerializer):
     permission_blocks = serializers.SerializerMethodField()
     permission_scopes = serializers.SerializerMethodField()
     profile_photo_url = serializers.SerializerMethodField()
+    pos_pin_configured = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -63,6 +64,7 @@ class UserSerializer(serializers.ModelSerializer):
             'email',
             'can_login',
             'can_access_pos',
+            'pos_pin_configured',
             'user_type',
             'first_name',
             'last_name',
@@ -106,6 +108,9 @@ class UserSerializer(serializers.ModelSerializer):
     def get_profile_photo_url(self, user):
         request = self.context.get('request')
         return '/api/v1/auth/me/photo/' if request and request.user.pk == user.pk and user.profile_photo else None
+
+    def get_pos_pin_configured(self, user):
+        return bool(user.pos_pin_hash)
 
     def get_permission_scopes(self, user):
         return PERMISSION_SCOPE_BY_CODE

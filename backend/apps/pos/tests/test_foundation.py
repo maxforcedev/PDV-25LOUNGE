@@ -246,3 +246,39 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertIsNotNone(second.consumed_at)
         with self.assertRaises(DomainValidationError):
             set_pos_pin(second_token, '654321')
+
+    def test_backoffice_device_administration_keeps_credentials_private(self):
+        paired, _ = self.pair_device()
+        device_id = paired.data['device']['id']
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get(
+            reverse('pos:pos-admin-device-list'), {'company': self.company.pk},
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['results'][0]['id'], str(device_id))
+        self.assertNotIn('credential_hash', response.data['results'][0])
+        self.assertNotIn(paired.data['device_credential'], str(response.data))
+
+        blocked = self.client.post(
+            reverse('pos:pos-admin-device-block', args=[device_id]),
+            {'company': self.company.pk}, format='json',
+        )
+        self.assertEqual(blocked.status_code, 200, blocked.data)
+        self.assertEqual(blocked.data['status'], POSDevice.Status.BLOCKED)
+
+    def test_backoffice_pos_settings_are_scoped_to_branch(self):
+        paired, _ = self.pair_device()
+        device_id = paired.data['device']['id']
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.patch(
+            f"{reverse('pos:pos-admin-device-settings', args=[device_id])}?company={self.company.pk}",
+            {'receipt_print_mode': 'automatic', 'paper_width': 58},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['receipt_print_mode'], 'automatic')
+        self.assertEqual(response.data['effective_settings']['paper_width'], 58)

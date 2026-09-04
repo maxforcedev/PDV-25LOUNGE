@@ -1,8 +1,10 @@
 from django.urls import path
+from rest_framework.routers import SimpleRouter
 
 from .views import (
     BootstrapView, HeartbeatView, OperatorLoginView, OperatorLogoutView, OperatorsView,
     PairingConfirmView, PairingIdentifyView, PairingRequestOtpView, PinConfirmView,
+    POSAdminDeviceViewSet,
 )
 
 app_name = 'pos'
@@ -18,3 +20,7 @@ urlpatterns = [
     path('heartbeat/', HeartbeatView.as_view(), name='heartbeat'),
     path('pin/confirm/', PinConfirmView.as_view(), name='pin-confirm'),
 ]
+
+router = SimpleRouter()
+router.register('admin/devices', POSAdminDeviceViewSet, basename='pos-admin-device')
+urlpatterns += router.urls
