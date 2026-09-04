@@ -1,0 +1,22 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'dev.flutter.flutter-gradle-plugin'
+}
+
+android {
+    namespace 'com.corepdv.pos'
+    compileSdk flutter.compileSdkVersion
+
+    defaultConfig {
+        applicationId 'com.corepdv.pos'
+        minSdk flutter.minSdkVersion
+        targetSdk flutter.targetSdkVersion
+        versionCode flutter.versionCode
+        versionName flutter.versionName
+    }
+}
+
+flutter {
+    source '../..'
+}
