@@ -1,1296 +1,2058 @@
-# CORE PDV — PLANO CANÔNICO DE RELATÓRIOS POR FASES — V5
-**Data:** 02/09/2026  
-**Objetivo:** concluir funcionalmente os relatórios necessários antes do POS, preservando padrões reutilizáveis e deixando a reformulação visual completa para uma rodada final.
+# CORE PLATFORM ADMIN — MVP FUNCIONAL
+
+**Projeto:** CORE PDV  
+**Produto:** CORE Platform Admin  
+**Objetivo:** deixar o painel administrativo da CORE simples, confiável e suficiente para administrar os primeiros clientes sem depender de banco, shell ou Django Admin.
+
+> Este documento é a fonte de verdade do **MVP do Platform Admin**.
+>
+> O OpenCode deve implementar somente o necessário para tornar o painel funcional para os primeiros clientes.
+>
+> Não adicionar funcionalidades avançadas que não estejam neste documento.
+>
+> Prioridade:
+>
+> 1. corrigir o que já existe;
+> 2. tornar os fluxos principais confiáveis;
+> 3. permitir administrar clientes, planos, módulos, assinaturas e cobrança;
+> 4. manter auditoria mínima;
+> 5. parar quando o MVP estiver funcional.
 
 ---
 
-# 0. STATUS ATUAL
+# 1. OBJETIVO DO MVP
 
-## FASE 1 — IMPLEMENTADA ✅
+O critério principal é:
 
-Relatórios-base já implementados, incluindo:
+> **Se amanhã entrarem 10 clientes pagando, eu consigo administrar todos pelo Platform Admin sem abrir o banco e sem usar Django Admin?**
 
-- Visão geral;
-- Vendas;
-- Recebimentos;
-- Cancelamentos/estornos;
-- Descontos/autorizações;
-- Produtos;
-- Atendentes;
-- Operadores;
-- Consumação;
-- Resultado estimado;
-- Comissões;
-- Caixa;
-- Sangrias;
-- Preços por filial;
-- Movimentações de estoque.
-
-Não reimplementar.
+Se a resposta for sim, o MVP está pronto.
 
 ---
 
-## FASE 2 — IMPLEMENTADA ✅
+# 2. O QUE O PLATFORM ADMIN MVP PRECISA FAZER
 
-Relatórios avançados de estoque/inventário já implementados, incluindo:
+O MVP deve permitir:
 
-- Posição de estoque;
-- Inventários realizados;
-- Transferências;
-- recebimentos;
-- mercadoria em trânsito;
-- divergências;
-- perdas;
-- impactos;
-- drill-down operacional.
-
-Não reimplementar.
+- login seguro;
+- visualizar o estado geral do SaaS;
+- listar clientes;
+- criar cliente manualmente;
+- abrir detalhes de um cliente;
+- aprovar/rejeitar cadastro;
+- visualizar Owner;
+- transferir Owner;
+- visualizar filiais;
+- visualizar usuários;
+- suspender/reativar tenant;
+- arquivar tenant;
+- criar planos;
+- criar versões de plano;
+- definir preço;
+- definir trial;
+- selecionar módulos do plano;
+- definir limites básicos;
+- atribuir plano a cliente;
+- trocar plano;
+- definir billing mode;
+- registrar pagamento manual;
+- visualizar pagamentos;
+- identificar inadimplência;
+- restringir/suspender financeiramente;
+- reativar após regularização;
+- configurar dados básicos da plataforma;
+- usar Support Session existente;
+- consultar auditoria básica.
 
 ---
 
-## FASE 3 — IMPLEMENTADA ✅
+# 3. O QUE NÃO ENTRA AGORA
 
-Já implementados:
-
-- Compras;
-- Fornecedores;
-- Contas a pagar.
-
-### Estado atual
-
-A Fase 3 está em validação manual e correções pontuais.
-
-Não reimplementar.
-
-Correções funcionais encontradas durante a validação devem ser tratadas como ajustes da própria Fase 3, sem reabrir o escopo inteiro.
-
----
-
-## PRÓXIMA FASE
+Não implementar neste MVP:
 
 ```text
-FASE 4 — MESAS E COMANDAS
+CRM
+Leads
+Pipeline comercial
+Health Score
+Churn Risk
+Acompanhamento crítico
+Automações
+Campaigns
+Notification Hub
+Feature Flags avançadas
+Rollout percentual
+Kill Switch avançado
+Inventário global de Devices
+Integrações globais
+Equipe CORE complexa
+Papéis customizados avançados
+Add-ons comerciais
+Overage
+Overrides complexos
+Analytics SaaS avançado
+Status Page
+Observabilidade avançada
+LGPD workflow completo
+Break Glass
+Bulk Actions
+Sandbox
 ```
 
-Somente iniciar após o usuário concluir a validação manual/correções pendentes da Fase 3.
+Esses recursos podem vir depois conforme a base de clientes crescer.
 
 ---
 
-# 1. REGRA DE EXECUÇÃO
-
-## NÃO EXECUTAR TESTES AUTOMATIZADOS
-
-Para economizar créditos, o OpenCode NÃO deve executar:
-
-- suíte completa backend;
-- Django tests;
-- testes frontend;
-- Jest;
-- Vitest;
-- Playwright;
-- `npm test`;
-- `npm run build`;
-- CI;
-- GitHub Actions;
-- `npm audit`;
-- `pip-audit`;
-- Docker build;
-- scans extensos;
-- auditoria geral do projeto.
-
-Pode realizar somente:
-
-- leitura dos módulos necessários;
-- implementação;
-- verificações estáticas pontuais;
-- `py_compile`, TypeScript check pontual ou equivalente quando realmente necessário.
-
-Ao finalizar uma fase:
+# 4. MENU DO PLATFORM ADMIN MVP
 
 ```text
-1. O que foi implementado
-2. Arquivos alterados
-3. Endpoints criados/alterados
-4. Migrations, se houver
-5. Permissões utilizadas/criadas
-6. Decisões arquiteturais
-7. Pendências reais
-8. Testes MANUAIS que o usuário deve executar
-```
+CORE PLATFORM
 
-Nunca avançar automaticamente para a fase seguinte.
+Dashboard
 
----
+CLIENTES
+├── Clientes
+└── Assinaturas
 
-# 2. PRIORIDADE ATUAL
+PRODUTO
+├── Planos
+└── Módulos
 
-Nesta etapa do CORE, priorizar:
+FINANCEIRO
+└── Cobrança
 
-1. corretude dos dados;
-2. regras de negócio;
-3. multiempresa;
-4. multifilial;
-5. RBAC;
-6. histórico/snapshots;
-7. drill-down;
-8. consistência financeira;
-9. filtros;
-10. exportação funcional.
+OPERAÇÃO
+├── Suporte
+└── Auditoria
 
-## NÃO priorizar agora
-
-- redesign completo dos relatórios;
-- refinamento visual excessivo;
-- animações;
-- reconstrução estética página a página.
-
-A aparência final dos relatórios será tratada em uma rodada única depois das fases funcionais.
-
----
-
-# 3. PADRÃO GLOBAL DE RELATÓRIO
-
-Todos os relatórios devem seguir conceitualmente:
-
-```text
-FILTROS
-
-KPIs
-
-MENUS / ABAS
-
-CONTEÚDO
-```
-
-## Ordem obrigatória
-
-1. filtros;
-2. KPIs;
-3. navegação interna;
-4. conteúdo da aba.
-
-KPIs não devem ficar abaixo das abas.
-
----
-
-# 4. FILTROS PRINCIPAIS + FILTROS AVANÇADOS
-
-Relatórios com muitos filtros não devem exibir tudo aberto inicialmente.
-
-## Estado inicial
-
-Mostrar principalmente:
-
-```text
-Período
-Atalhos rápidos
-```
-
-e apenas filtros adicionais realmente essenciais para aquele relatório.
-
-Exemplo:
-
-```text
-Hoje | 7 dias | 30 dias | Personalizado
-
-[ + Filtros ]
-```
-
-## `+ Filtros`
-
-Ao clicar:
-
-- expandir filtros avançados;
-- preservar valores;
-- permitir recolher;
-- exibir quantidade de filtros avançados ativos.
-
-Exemplo:
-
-```text
-+ Filtros (3)
-```
-
-Pode mostrar chips quando útil:
-
-```text
-Fornecedor: Coca-Cola ×
-Status: Recebido ×
-Produto: Coca ×
-```
-
-Ação:
-
-```text
-Limpar filtros
+SISTEMA
+└── Configurações
 ```
 
 ---
 
-# 5. REGRA GLOBAL — ATALHOS RÁPIDOS SÃO AUTOAPLICÁVEIS
+# 5. DASHBOARD
 
-**Regra obrigatória para todos os relatórios existentes e futuros.**
+O dashboard deve ser simples.
 
-Ao clicar em um preset:
-
-```text
-Hoje
-7 dias
-30 dias
-Outro atalho rápido
-```
-
-o relatório deve atualizar **imediatamente**.
-
-Não exigir:
+## Cards principais
 
 ```text
-clicar no atalho
-→ depois clicar em Aplicar
+Clientes totais
+Clientes ativos
+Trials ativos
+Inadimplentes
+Suspensos
+MRR
+Novos clientes no mês
 ```
 
-## Comportamento correto
-
-```text
-clicou em Hoje → consulta/aplica imediatamente
-
-clicou em 7 dias → consulta/aplica imediatamente
-
-clicou em 30 dias → consulta/aplica imediatamente
-```
-
-## Botão `Aplicar`
-
-Reservar para:
-
-- período personalizado;
-- combinação de filtros avançados;
-- cenários em que múltiplas escolhas precisam ser confirmadas de uma vez.
-
-## Regra de reutilização
-
-Não implementar esse comportamento separadamente em cada fase.
-
-Usar componente/hook/helper compartilhado sempre que tecnicamente adequado.
-
-As Fases 4, 5 e 6 devem nascer com esse comportamento.
+Não criar gráficos complexos agora.
 
 ---
 
-# 6. LOADING
+# 6. CLIENTES / TENANTS
 
-Quando uma consulta demorar:
-
-- skeleton de KPI;
-- skeleton de tabela;
-- skeleton de gráfico;
-- shimmer/pulse discreto;
-- overlay sutil ao atualizar filtro;
-- manter layout estável.
-
-Não usar:
-
-- porcentagem falsa;
-- progresso inventado;
-- tela inteira piscando;
-- loading diferente em cada relatório.
-
-O padrão deve ser reutilizável.
-
----
-
-# 7. FILTROS HISTÓRICOS
-
-Relatório histórico não pode depender somente do cadastro ativo atual.
-
-## Regra
+Tela principal:
 
 ```text
-Opções do filtro
-=
-entidades atuais relevantes
-+
-entidades históricas presentes no período consultado
+Clientes
 ```
 
-Exemplo:
+## Lista
+
+Colunas:
 
 ```text
-Rayara vendeu em agosto
-Rayara foi arquivada em setembro
-```
-
-Ao consultar agosto:
-
-```text
-Rayara (Arquivada)
-```
-
-deve continuar disponível.
-
-Aplicar a:
-
-- atendentes;
-- operadores;
-- produtos;
-- categorias;
-- formas de pagamento;
-- clientes;
-- promoções;
-- modificadores;
-- fornecedores;
-- demais dimensões históricas relevantes.
-
-Não carregar indiscriminadamente todos os arquivados de toda a história.
-
----
-
-# 8. SNAPSHOTS HISTÓRICOS
-
-Sempre usar snapshot quando disponível.
-
-Exemplos:
-
-```text
-product_name
-internal_code
-category_id_snapshot
-category_name_snapshot
-payment_method_name
-payment_method_code
-modifier_snapshot
-promotion snapshot
-component_cost_snapshot
-```
-
-Não reconstruir passado usando apenas cadastro atual.
-
----
-
-# 9. LINKS / DRILL-DOWN
-
-Toda referência concreta deve ser clicável quando:
-
-- existir página de detalhe;
-- usuário possuir permissão.
-
-Exemplos:
-
-```text
-Venda V00047
-Compra C00012
-Inventário I00004
-Transferência T00009
-Comanda #1042
-Mesa 12
-```
-
-## Sem permissão
-
-Mostrar texto simples, não link quebrado.
-
-## Padrão
-
-Não criar implementação diferente por relatório.
-
-Usar padrão reutilizável de referência/link protegido.
-
----
-
-# 10. MOTIVOS E TEXTOS LONGOS
-
-Para:
-
-- motivo de estorno;
-- cancelamento;
-- divergência;
-- justificativa;
-- observação crítica;
-
-usar quando necessário:
-
-```text
-Ver motivo
-```
-
-→ modal responsivo.
-
-Especialmente importante em mobile.
-
-Se não houver conteúdo, não exibir ação vazia.
-
----
-
-# 11. EXPORTAÇÃO — REGRA FUNCIONAL
-
-Todos os relatórios devem poder reutilizar a infraestrutura compartilhada.
-
-Formatos:
-
-```text
-Excel (.xlsx)
-PDF
-CSV
-```
-
-Exportação deve respeitar:
-
-- empresa;
-- filial;
-- período;
-- filtros;
-- RBAC;
-- snapshots históricos;
-- aba/escopo quando aplicável.
-
-Exportação nunca é bypass de permissão.
-
----
-
-# 12. PDF — FUNCIONAL AGORA, REDESIGN DEPOIS
-
-Durante as fases funcionais, o PDF precisa:
-
-- abrir sem 500;
-- conter dados corretos;
-- preservar filtros/contexto;
-- suportar tabelas grandes;
-- respeitar RBAC;
-- preservar histórico.
-
-## Aparência final
-
-A reformulação visual completa dos PDFs será feita na rodada final de UX dos relatórios.
-
-Não gastar tempo agora redesenhando PDF relatório por relatório.
-
----
-
-# 13. EXCEL
-
-Excel deve preservar tipos corretamente:
-
-- dinheiro → número formatado;
-- data → data;
-- datetime → datetime;
-- percentual → percentual;
-- quantidade → número.
-
-Relatórios complexos podem usar múltiplas sheets quando fizer sentido.
-
----
-
-# 14. PADRÕES TRANSVERSAIS DEVEM SER REUTILIZÁVEIS
-
-As seguintes melhorias não devem ser duplicadas em cada relatório:
-
-- filtros colapsáveis;
-- atalhos autoaplicáveis;
-- KPIs;
-- loading;
-- tabs;
-- links protegidos;
-- modais de motivo;
-- filtros históricos;
-- exportação PDF/XLSX/CSV;
-- formatação monetária;
-- empty states;
-- paginação.
-
-As fases futuras devem reutilizar esses padrões.
-
----
-
-# 15. CORREÇÕES DA FASE 3 — REGRA DE COMPRA PARCIAL ENCERRADA
-
-A Fase 3 já foi implementada, mas durante a validação foi identificada a necessidade de diferenciar:
-
-```text
-Valor pedido
-Valor recebido
-Valor não recebido
-```
-
-## Exemplo
-
-Pedido:
-
-```text
-R$ 34,00
-```
-
-Recebido:
-
-```text
-R$ 17,00
-```
-
-Encerramento:
-
-```text
-PARCIAL ENCERRADA
-```
-
-Relatório deve mostrar:
-
-```text
-Valor pedido:     R$ 34,00
-Valor recebido:   R$ 17,00
-Não recebido:     R$ 17,00
-```
-
-## Regras
-
-Valor pedido:
-- valor originalmente solicitado.
-
-Valor recebido:
-- valor correspondente somente à quantidade efetivamente recebida.
-
-Não recebido:
-- diferença referente à parte não recebida.
-
-Ao encerrar parcialmente:
-
-- não recebido permanece como informação histórica;
-- não entra em estoque;
-- não deve inflar quantidade recebida;
-- não deve inflar métrica de compra efetivamente realizada;
-- preservar pedido original para auditoria.
-
-## Contas a pagar
-
-Não reduzir automaticamente obrigação financeira sem consultar a regra real/documento financeiro.
-
-Relatório de Compras e Contas a pagar não devem misturar:
-
-```text
-mercadoria pedida
-mercadoria recebida
-obrigação financeira
-```
-
-São conceitos relacionados, mas diferentes.
-
----
-
-# 16. CENTRAL FINAL DE RELATÓRIOS
-
-Estrutura desejada ao final:
-
-## Vendas
-
-- Visão geral;
-- Vendas;
-- Recebimentos;
-- Produtos e desempenho;
-- Atendentes;
-- Operadores;
-- Cancelamentos/estornos;
-- Consumação.
-
-## Financeiro — SOMENTE RELATÓRIOS EXISTENTES NO ESCOPO ATUAL
-
-- Resultado estimado;
-- Comissões;
-- Descontos/autorizações;
-- Caixa;
-- Sangrias;
-- Contas a pagar.
-
-## Estoque
-
-- Posição de estoque;
-- Movimentações;
-- Consumo/custos;
-- Preços por filial;
-- Transferências.
-
-## Inventários
-
-- Inventários realizados.
-
-## Compras
-
-- Compras;
-- Fornecedores.
-
-## Operação
-
-- Mesas e comandas;
-- Promoções;
-- Modificadores;
-- Clientes.
-
-## Auditoria
-
-- Auditoria.
-
----
-
-# 17. MÓDULO FINANCEIRO COMPLETO — ADIADO
-
-Não criar/reformular agora um módulo financeiro completo.
-
-A estrutura futura pode contemplar:
-
-```text
-Financeiro
-├── Visão geral
-├── Contas a receber
-├── Contas a pagar
-├── Fluxo de caixa
-├── Conciliação
-├── Recebíveis Stone/PagBank
-├── Taxas
-├── Previsões
-├── Chargebacks
-└── Resultado
-```
-
-Porém isso está **fora do escopo atual pré-POS**.
-
-## Motivo
-
-Não é necessário bloquear as fases funcionais atuais nem o início do POS.
-
-Stone/PagBank futuramente poderão exigir evolução desse módulo.
-
-Portanto:
-
-```text
-NÃO implementar agora.
-NÃO refatorar a estrutura atual por causa disso.
-```
-
----
-
-# 18. FASE 4 — MESAS E COMANDAS — PRÓXIMA
-
-## Objetivo
-
-Criar relatórios operacionais completos de mesas e comandas usando a infraestrutura já existente.
-
-## Estrutura recomendada
-
-```text
-Resumo
-Comandas
-Itens
-Pagamentos
-Cancelamentos
-Transferências
-```
-
-Pode ajustar nomes se a arquitetura real indicar opção melhor, sem perder os conceitos.
-
----
-
-## 18.1. Resumo
-
-KPIs funcionais:
-
-- mesas abertas no período;
-- comandas abertas;
-- comandas encerradas;
-- faturamento associado;
-- ticket médio por comanda;
-- permanência média, se houver dados confiáveis;
-- cancelamentos;
-- transferências/merge/split quando existentes.
-
-Não fazer redesign avançado agora.
-
----
-
-## 18.2. Comandas
-
-Tabela:
-
-```text
-Comanda
-Mesa
-Abertura
-Encerramento
-Operador/atendente
-Cliente, quando houver
-Itens
-Subtotal
-Descontos
-Taxa de serviço
-Total
+Cliente
+CNPJ
+Owner
+Plano
+Billing mode
 Status
+Filiais
+Usuários
+Criado em
 ```
 
-Referência da comanda deve permitir drill-down quando existir tela e permissão.
+## Busca
+
+Pesquisar por:
+
+```text
+Nome fantasia
+Razão social
+CNPJ
+E-mail
+Owner
+ID
+```
+
+## Filtros
+
+```text
+Ativo
+Trial
+Inadimplente
+Restrito
+Suspenso
+Arquivado
+FREE
+PAID
+INTERNAL
+Plano
+```
 
 ---
 
-## 18.3. Itens
+# 7. CRIAR CLIENTE
+
+A equipe CORE deve poder criar um tenant manualmente.
+
+## Campos mínimos
+
+```text
+Nome fantasia
+Razão social
+CNPJ
+E-mail
+Telefone
+
+Owner
+- Nome
+- E-mail
+
+Plano
+Billing mode
+Trial quando aplicável
+```
+
+## Ao criar
+
+O backend deve criar automaticamente:
+
+```text
+Company
+Filial principal
+Owner
+Membership do Owner
+Subscription
+TenantSaaSState
+```
+
+Tudo deve ocorrer de forma transacional.
+
+Não deixar tenant parcialmente criado.
+
+---
+
+# 8. TENANT 360 — MVP
+
+A rota atual pode continuar:
+
+```text
+/tenants/{id}
+```
+
+O Tenant 360 do MVP terá apenas:
+
+```text
+Visão geral
+Assinatura
+Filiais
+Usuários
+Pagamentos
+Suporte
+Auditoria
+```
+
+---
+
+# 9. TENANT 360 — VISÃO GERAL
 
 Mostrar:
 
 ```text
-Comanda
-Mesa
-Produto histórico
-Categoria histórica
-Quantidade
-Modificadores
-Promoção
-Desconto
-Subtotal
-Cancelamento, quando houver
+Nome fantasia
+Razão social
+CNPJ
+Tenant ID
+Owner
+E-mail
+Telefone
+
+Status efetivo
+Operação liberada/bloqueada
+
+Plano atual
+Billing mode
+Trial
+Renovação
+MRR
+
+Quantidade de filiais
+Quantidade de usuários
 ```
 
-Usar snapshots históricos.
+## Ações
+
+```text
+Aprovar
+Rejeitar
+Suspender administrativamente
+Reativar
+Transferir Owner
+Arquivar
+```
+
+Ações críticas exigem:
+
+```text
+Motivo
++
+Reautenticação
++
+Auditoria
+```
 
 ---
 
-## 18.4. Pagamentos
+# 10. OWNER
 
-Mostrar:
+O Owner é especial.
 
-- forma;
-- valor;
-- parcial;
-- total;
-- estorno;
-- status/situação real;
-- vínculo com comanda;
-- venda gerada, quando aplicável.
+Regras:
 
-Não inventar status.
+- tenant deve possuir Owner;
+- Owner não pode ser removido acidentalmente;
+- transferência precisa ser atômica;
+- novo Owner deve pertencer à empresa ou ser criado pelo fluxo correto;
+- transferência exige motivo;
+- auditoria obrigatória.
 
 ---
 
-## 18.5. Cancelamentos
+# 11. FILIAIS
 
-Mostrar:
+No Tenant 360:
 
-- comanda;
-- item;
-- quantidade;
-- valor;
-- responsável;
-- autorizador;
-- motivo;
-- data/hora.
+```text
+Nome
+CNPJ
+Matriz?
+Status
+Usuários
+```
 
-`Ver motivo` em modal quando necessário.
+O Platform Admin não precisa duplicar toda a tela operacional do Backoffice.
 
----
-
-## 18.6. Transferências / Merge / Split
-
-Quando já existirem no domínio:
-
-- transferência entre mesas;
-- transferência de item;
-- merge;
-- split;
-- origem;
-- destino;
-- responsável;
-- data/hora.
-
-Preservar histórico/auditoria.
+Objetivo aqui é visão administrativa.
 
 ---
 
-## 18.7. Filtros
+# 12. USUÁRIOS
 
-Incluir apenas os necessários:
+No Tenant 360:
 
-- período;
-- atalhos autoaplicáveis;
-- status;
-- mesa;
-- comanda;
-- atendente;
-- operador;
-- cliente;
-- forma de pagamento.
+```text
+Nome
+E-mail
+Status
+Owner?
+Perfil
+Filiais
+```
 
-Filtros avançados ficam em `+ Filtros`.
+O Platform Admin não deve virar o painel normal de gestão de usuários do cliente.
 
----
-
-## 18.8. Multiempresa/multifilial
-
-Obrigatório:
-
-- contexto da empresa;
-- contexto da filial;
-- nenhum vazamento;
-- histórico por filial correto.
+É apenas visão e ações administrativas críticas quando necessário.
 
 ---
 
-# 19. FASE 5 — RELATÓRIOS COMERCIAIS COMPLEMENTARES
+# 13. PLANOS
 
-Implementar somente depois da Fase 4 validada.
+O modelo comercial continua:
+
+```text
+Plan
+→ PlanVersion
+```
+
+## Plan
+
+Representa o nome comercial.
+
+Exemplo:
+
+```text
+Essencial
+Gestão
+Food
+Enterprise
+```
+
+## PlanVersion
+
+Representa uma versão contratual.
+
+Exemplo:
+
+```text
+Food v1
+Food v2
+```
+
+Mudança relevante cria nova versão.
+
+---
+
+# 14. PLAN VERSION É IMUTÁVEL QUANDO USADA
+
+Se uma versão já possui assinaturas:
+
+```text
+não editar preço
+não editar módulos
+não editar limites
+não editar trial
+```
+
+Criar nova versão.
+
+Exemplo:
+
+```text
+Food v1 = R$ 199
+Food v2 = R$ 249
+```
+
+Clientes antigos podem permanecer na v1.
+
+---
+
+# 15. TELA DE PLANOS
+
+Lista:
+
+```text
+Plano
+Status
+Versão atual
+Preço
+Clientes
+```
+
+Ações:
+
+```text
+Criar plano
+Criar nova versão
+Visualizar versões
+Desativar para novos clientes
+```
+
+---
+
+# 16. EDIÇÃO DA VERSÃO DO PLANO
+
+A tela deve ser visual e simples.
+
+Exemplo:
+
+```text
+CORE FOOD — v2
+
+Preço mensal
+R$ 249,00
+
+Trial
+7 dias
+
+MÓDULOS
+
+[✓] Cadastros
+[✓] Venda Rápida
+[✓] Caixa
+[✓] Mesas & Comandas
+[✓] Estoque
+[✓] Compras
+[✓] Produção
+[✓] Financeiro
+[✓] Relatórios
+[✓] CORE POS
+[ ] Fiscal
+[ ] WhatsApp
+[ ] Integrações
+[ ] IA CORE
+
+LIMITES
+
+Usuários: 10
+Filiais: 2
+CORE POS: 3
+```
+
+---
+
+# 17. PRINCÍPIO DOS MÓDULOS
+
+Tudo que aparece como funcionalidade relevante para o cliente deve poder ser controlado pelo plano.
+
+Não considerar que:
+
+```text
+“é básico, então sempre aparece”
+```
+
+Se o cliente não contratou/não usa, não deve poluir a interface.
+
+---
+
+# 18. REGRA DE VISIBILIDADE
+
+```text
+Plano
+  ↓
+Módulos habilitados
+  ↓
+Capabilities internas
+  ↓
+Permissões do usuário
+  ↓
+Menu e ações disponíveis
+```
+
+Se o plano não possui o módulo:
+
+```text
+o módulo não aparece
+```
+
+Não mostrar desabilitado/cinza por padrão.
+
+---
+
+# 19. INFRAESTRUTURA INVISÍVEL
+
+Alguns elementos são obrigatórios para o sistema existir, mas não precisam ser tratados como módulo comercial visível.
+
+Exemplos:
+
+```text
+Company
+Branch
+Usuários
+RBAC
+Assinatura
+Auditoria mínima
+Configurações básicas
+Segurança
+```
+
+Esses são infraestrutura da plataforma.
+
+---
+
+# 20. CATÁLOGO COMERCIAL DE MÓDULOS
+
+O MVP terá os seguintes módulos comerciais.
+
+---
+
+# 21. MÓDULO — CADASTROS
+
+Código conceitual:
+
+```text
+catalog
+```
 
 Inclui:
 
+- produtos;
+- categorias;
+- clientes;
+- formas de pagamento básicas;
+- configurações comerciais relacionadas.
+
+Este módulo serve como base funcional para outros módulos.
+
+---
+
+# 22. MÓDULO — VENDA RÁPIDA
+
+Código conceitual:
+
 ```text
-Promoções
-Modificadores
-Clientes
+quick_sale
+```
+
+Inclui:
+
+- venda direta;
+- balcão;
+- carrinho;
+- pagamentos;
+- descontos;
+- cancelamentos;
+- promoções quando disponíveis;
+- taxa de serviço quando aplicável.
+
+Backend continua usando:
+
+```text
+counter
+```
+
+quando esse for o canal técnico.
+
+---
+
+# 23. MÓDULO — CAIXA
+
+Código conceitual:
+
+```text
+cash
+```
+
+Inclui:
+
+- caixas;
+- abertura;
+- fechamento;
+- sangria;
+- suprimento;
+- sessões;
+- conferência.
+
+---
+
+# 24. MÓDULO — MESAS & COMANDAS
+
+Código conceitual:
+
+```text
+tables_commands
+```
+
+Inclui:
+
+- mesas;
+- comandas;
+- pedidos;
+- itens;
+- transferência;
+- merge;
+- split;
+- pagamentos parciais;
+- fechamento.
+
+---
+
+# 25. MÓDULO — ESTOQUE
+
+Código conceitual:
+
+```text
+inventory
+```
+
+Inclui:
+
+- posição de estoque;
+- entrada;
+- saída;
+- ajustes;
+- perdas;
+- inventário;
+- histórico;
+- estoque mínimo;
+- transferências entre filiais.
+
+---
+
+# 26. MÓDULO — COMPRAS
+
+Código conceitual:
+
+```text
+purchases
+```
+
+Inclui:
+
+- fornecedores;
+- pedidos de compra;
+- entrada direta;
+- recebimento parcial;
+- custos;
+- rateios;
+- contas a pagar originadas de compra.
+
+---
+
+# 27. MÓDULO — PRODUÇÃO
+
+Código conceitual:
+
+```text
+production
+```
+
+Inclui:
+
+- setores;
+- destinos de produção;
+- impressoras;
+- tickets de cozinha/bar/copa;
+- ProductionJob;
+- PrintJob;
+- fila de impressão;
+- reimpressão;
+- tickets operacionais relacionados.
+
+---
+
+# 28. MÓDULO — FINANCEIRO
+
+Código conceitual:
+
+```text
+financial
+```
+
+Inclui futuramente/gradualmente:
+
+- contas a pagar;
+- contas a receber;
+- despesas;
+- receitas;
+- fluxo financeiro;
+- visão de resultado;
+- conciliação quando implementada.
+
+No MVP do Platform Admin, o módulo pode existir no catálogo mesmo que parte das funcionalidades do Backoffice ainda esteja em desenvolvimento.
+
+---
+
+# 29. MÓDULO — RELATÓRIOS
+
+Código conceitual:
+
+```text
+reports
+```
+
+Inclui:
+
+- relatórios de vendas;
+- caixa;
+- estoque;
+- produtos;
+- equipe;
+- descontos;
+- cancelamentos;
+- resultado operacional;
+- indicadores.
+
+Pode haver relatórios básicos sempre necessários para funcionamento interno, mas a área de relatórios do cliente deve respeitar o módulo comercial.
+
+---
+
+# 30. MÓDULO — CORE POS
+
+Código conceitual:
+
+```text
+core_pos
+```
+
+Inclui:
+
+- app CORE POS;
+- Android;
+- Stone;
+- tablets;
+- devices licenciados;
+- operação dos módulos disponíveis no plano.
+
+O CORE POS não concede outros módulos sozinho.
+
+Exemplo:
+
+```text
+Plano possui CORE POS
++
+Venda Rápida
++
+Caixa
+```
+
+No app aparecem:
+
+```text
+Venda Rápida
+Caixa
+```
+
+Se também possuir:
+
+```text
+Mesas & Comandas
+```
+
+o POS passa a exibir esse recurso.
+
+---
+
+# 31. MÓDULO — FISCAL
+
+Código conceitual:
+
+```text
+fiscal
+```
+
+Status inicial:
+
+```text
+EM BREVE
+```
+
+Inclui futuramente:
+
+- NFC-e;
+- NF-e;
+- documentos fiscais;
+- contingência;
+- configurações fiscais.
+
+Não implementar fiscal agora.
+
+---
+
+# 32. MÓDULO — WHATSAPP
+
+Código conceitual:
+
+```text
+whatsapp
+```
+
+Status inicial:
+
+```text
+EM BREVE
+```
+
+Inclui futuramente:
+
+- atendimento;
+- reservas;
+- comunicação;
+- campanhas;
+- automações;
+- promoções.
+
+---
+
+# 33. MÓDULO — INTEGRAÇÕES
+
+Código conceitual:
+
+```text
+integrations
+```
+
+Status inicial:
+
+```text
+EM BREVE
+```
+
+Inclui futuramente:
+
+- iFood;
+- Anota AI;
+- API pública;
+- webhooks;
+- providers externos.
+
+---
+
+# 34. MÓDULO — IA CORE
+
+Código conceitual:
+
+```text
+core_ai
+```
+
+Status inicial:
+
+```text
+EM BREVE
+```
+
+Inclui futuramente:
+
+- assistente;
+- análise;
+- automações inteligentes;
+- criação de conteúdo;
+- flyers;
+- insights.
+
+---
+
+# 35. STATUS DO MÓDULO
+
+Cada módulo comercial deve possuir:
+
+```text
+ACTIVE
+COMING_SOON
+INACTIVE
+```
+
+## ACTIVE
+
+Pode ser usado em planos.
+
+## COMING_SOON
+
+Aparece no Platform Admin como futuro, mas não pode ser habilitado em plano comercial ativo sem autorização explícita.
+
+## INACTIVE
+
+Não disponível para novas versões.
+
+Histórico de planos antigos deve continuar resolvível.
+
+---
+
+# 36. TELA DE MÓDULOS
+
+Rota conceitual:
+
+```text
+/modules
+```
+
+Mostrar:
+
+```text
+Nome
+Código
+Descrição
+Status
+Dependências
+Quantidade de planos usando
 ```
 
 ---
 
-## 19.1. Promoções
+# 37. CADASTRAR MÓDULO
 
-Estrutura sugerida:
+Campos:
 
 ```text
-Resumo
-Promoções
-Produtos
-Impacto
+Nome
+Código
+Descrição
+Status
+Ordem
+Ícone opcional
 ```
 
-Métricas:
+Código deve ser estável.
 
-- utilizações;
-- quantidade afetada;
-- valor bruto;
-- desconto;
-- receita líquida;
-- produtos envolvidos;
-- período;
-- usuários/vendas relacionadas.
-
-Preservar snapshot.
+Não permitir mudar código de módulo usado sem migration/fluxo específico.
 
 ---
 
-## 19.2. Modificadores
+# 38. DEPENDÊNCIAS DE MÓDULOS
 
-Mostrar sempre contexto completo:
+O sistema deve suportar dependências simples.
+
+---
+
+# 39. DEPENDÊNCIAS INICIAIS
 
 ```text
-GRUPO — MODIFICADOR
+Venda Rápida
+→ requer Cadastros
+
+Caixa
+→ pode ser usado junto de Venda Rápida
+→ pode ser requerido por canais financeiros
+
+Mesas & Comandas
+→ requer Cadastros
+→ requer Caixa quando houver fechamento financeiro
+
+Estoque
+→ requer Cadastros
+
+Compras
+→ requer Estoque
+
+Produção
+→ requer Cadastros
+→ requer ao menos um canal que gere pedidos
+
+CORE POS
+→ não libera regra de negócio sozinho
+→ consome os módulos habilitados no mesmo plano
+
+Fiscal
+→ requer Venda Rápida ou outro canal de venda
+
+Financeiro
+→ pode consumir dados de Venda/Compras
+```
+
+---
+
+# 40. UX DE DEPENDÊNCIA
+
+Se marcar:
+
+```text
+Compras
+```
+
+e Estoque estiver desligado:
+
+```text
+Compras requer Estoque.
+
+[ Ativar Estoque também ]
+[ Cancelar ]
+```
+
+Não ativar silenciosamente.
+
+---
+
+# 41. CAPABILITIES INTERNAS
+
+Módulo é linguagem comercial.
+
+Capability é linguagem técnica.
+
+Exemplo:
+
+```text
+Módulo: Estoque
+
+Capabilities:
+inventory.enabled
+inventory.transfers
+inventory.counts
+inventory.losses
+```
+
+O Platform Admin deve mostrar principalmente:
+
+```text
+Estoque
+```
+
+e não obrigar o administrador a gerenciar cada capability técnica no MVP.
+
+---
+
+# 42. COMPATIBILIDADE COM CAPABILITIES ATUAIS
+
+Já existem conceitos como:
+
+```text
+core.enabled
+users.max
+branches.max
+feature.tables
+feature.commands
+feature.counter
+feature.consumption
+feature.cash_register
+feature.production
+```
+
+O OpenCode deve mapear os módulos comerciais sobre essas capabilities sempre que possível.
+
+Não duplicar capability sem necessidade.
+
+---
+
+# 43. MAPA INICIAL DE MÓDULO → CAPABILITY
+
+Conceitualmente:
+
+```text
+Cadastros
+→ core.enabled
+
+Venda Rápida
+→ feature.counter
+
+Caixa
+→ feature.cash_register
+
+Mesas & Comandas
+→ feature.tables
+→ feature.commands
+
+Produção
+→ feature.production
+
+CORE POS
+→ nova capability específica quando necessário
+```
+
+Estoque, Compras, Financeiro e Relatórios devem ser mapeados para capabilities existentes ou novas somente após auditoria.
+
+---
+
+# 44. LIMITES BÁSICOS DO PLANO
+
+No MVP, controlar somente limites realmente importantes:
+
+```text
+users.max
+branches.max
+core_pos.devices.max
+```
+
+Outros limites podem entrar depois.
+
+---
+
+# 45. LIMITE ILIMITADO
+
+Suportar:
+
+```text
+unlimited = true
+```
+
+Não usar números mágicos como:
+
+```text
+999999
+```
+
+---
+
+# 46. EXEMPLO — PLANO BALCÃO
+
+```text
+CORE BALCÃO
+
+✓ Cadastros
+✓ Venda Rápida
+✓ Caixa
+✓ Estoque
+✓ Relatórios
+
+✗ Mesas & Comandas
+✗ Compras
+✗ Produção
+✗ Financeiro
+✗ CORE POS
+✗ Fiscal
+✗ WhatsApp
+✗ Integrações
+✗ IA CORE
+
+Usuários: 3
+Filiais: 1
+```
+
+O cliente não vê Mesas/Comandas.
+
+---
+
+# 47. EXEMPLO — PLANO FOOD
+
+```text
+CORE FOOD
+
+✓ Cadastros
+✓ Venda Rápida
+✓ Caixa
+✓ Mesas & Comandas
+✓ Estoque
+✓ Compras
+✓ Produção
+✓ Relatórios
+✓ CORE POS
+
+✗ Fiscal
+✗ WhatsApp
+✗ Integrações
+✗ IA CORE
+
+Usuários: 10
+Filiais: 2
+CORE POS: 3
+```
+
+---
+
+# 48. EXEMPLO — CASA DE EVENTOS
+
+```text
+CORE EVENTOS
+
+✓ Cadastros
+✓ Venda Rápida
+✓ Caixa
+✓ Estoque
+✓ Produção
+✓ CORE POS
+✓ Relatórios
+
+✗ Mesas & Comandas
+✗ Compras
+✗ Financeiro
+```
+
+Pode utilizar:
+
+```text
+Product.emits_ticket
++
+Validador de Ticket
+```
+
+sem precisar contratar Mesas & Comandas.
+
+---
+
+# 49. BACKOFFICE DEVE RESPEITAR MÓDULOS
+
+Exemplo:
+
+Plano sem Compras:
+
+```text
+não mostrar Compras
+não mostrar Fornecedores se fornecedor estiver exclusivamente dentro do módulo Compras
+```
+
+Plano sem Mesas & Comandas:
+
+```text
+não mostrar Mesas
+não mostrar Comandas
+```
+
+Plano sem Produção:
+
+```text
+não mostrar Produção
+não mostrar Impressoras de produção
+```
+
+---
+
+# 50. RBAC CONTINUA EXISTINDO
+
+Módulo habilitado não significa que todos os usuários podem usar.
+
+Regra:
+
+```text
+Módulo contratado
+        ∩
+Permissão do usuário
+        =
+Ação disponível
+```
+
+Exemplo:
+
+Plano possui Estoque.
+
+Usuário sem:
+
+```text
+inventory.view
+```
+
+não vê Estoque.
+
+---
+
+# 51. MÓDULO DESABILITADO SUPERA PERMISSÃO
+
+Se usuário possui:
+
+```text
+inventory.view
+```
+
+mas plano não possui Estoque:
+
+```text
+não pode acessar
+```
+
+---
+
+# 52. ASSINATURAS
+
+Tela:
+
+```text
+Assinaturas
+```
+
+Filtros:
+
+```text
+Trial
+Ativa
+Inadimplente
+Restrita
+Suspensa
+Cancelada
+PAID
+FREE
+INTERNAL
+```
+
+Colunas:
+
+```text
+Cliente
+Plano
+Versão
+Billing mode
+Status
+Início do período
+Fim do período
+Valor
+```
+
+---
+
+# 53. BILLING MODE
+
+Manter:
+
+```text
+PAID
+FREE
+INTERNAL
+```
+
+---
+
+# 54. PAID
+
+Cliente pagante.
+
+Entra em MRR.
+
+---
+
+# 55. FREE
+
+Cortesia/parceiro.
+
+Não entra em MRR.
+
+---
+
+# 56. INTERNAL
+
+Uso interno/teste.
+
+Não entra em MRR.
+
+---
+
+# 57. STATUS DE ASSINATURA
+
+Manter os estados existentes:
+
+```text
+TRIALING
+ACTIVE
+PAST_DUE
+RESTRICTED
+SUSPENDED_FINANCIAL
+TRIAL_EXPIRED
+CANCELLED
+SUPERSEDED
+```
+
+Não criar estados equivalentes.
+
+---
+
+# 58. TROCAR PLANO
+
+No MVP:
+
+```text
+admin CORE escolhe nova PlanVersion
+→ preview
+→ confirma
+→ assinatura nova/substituição conforme domínio atual
+```
+
+Preservar histórico.
+
+---
+
+# 59. DOWNGRADE
+
+No MVP, antes de confirmar mostrar:
+
+```text
+Plano atual
+Plano novo
+
+Módulos perdidos
+Limites reduzidos
+Usuários acima do limite
+Filiais acima do limite
+CORE POS acima do limite
+```
+
+Não apagar nada automaticamente.
+
+---
+
+# 60. COBRANÇA
+
+Tela:
+
+```text
+Cobrança
+```
+
+Resumo:
+
+```text
+MRR
+Recebido no mês
+Inadimplentes
+Restritos
+Suspensos
+```
+
+---
+
+# 61. PAGAMENTOS
+
+Registrar manualmente:
+
+```text
+Cliente
+Assinatura
+Valor
+Data
+Forma de pagamento
+Competência
+Observação
+Comprovante/referência
+```
+
+---
+
+# 62. PAGAMENTO É APPEND-ONLY
+
+Não editar nem apagar pagamento registrado.
+
+Se houver erro, criar processo corretivo depois.
+
+---
+
+# 63. MRR
+
+No MVP:
+
+```text
+soma do valor mensal normalizado das assinaturas PAID ativas
+```
+
+FREE e INTERNAL:
+
+```text
+R$ 0 no MRR
+```
+
+Annual futuramente:
+
+```text
+valor / 12
+```
+
+---
+
+# 64. INADIMPLÊNCIA
+
+Usar política global existente.
+
+Fluxo:
+
+```text
+ACTIVE
+→ PAST_DUE
+→ RESTRICTED
+→ SUSPENDED_FINANCIAL
+```
+
+---
+
+# 65. SUSPENSÃO ADMINISTRATIVA
+
+Separada da financeira.
+
+Pagamento não remove suspensão administrativa.
+
+---
+
+# 66. REATIVAÇÃO FINANCEIRA
+
+Pagamento válido pode reativar conforme regra atual.
+
+Não reativar se houver:
+
+```text
+admin suspension
+archive
+ou outra restrição
+```
+
+---
+
+# 67. SUPORTE
+
+Manter Support Session existente.
+
+Tela:
+
+```text
+Suporte
+```
+
+Mostrar:
+
+```text
+Cliente
+Ator
+Modo
+Motivo
+Usuário impersonado
+Criada em
+Expira em
+Status
+```
+
+---
+
+# 68. MODOS
+
+```text
+READ_ONLY
+READ_WRITE
+```
+
+---
+
+# 69. INICIAR SUPPORT SESSION
+
+Exigir:
+
+```text
+Cliente
+Modo
+Motivo
+Reautenticação
+Usuário impersonado opcional
+```
+
+---
+
+# 70. AUDITORIA
+
+Tela simples:
+
+```text
+Auditoria
+```
+
+Filtros:
+
+```text
+Data
+Cliente
+Usuário CORE
+Ação
+```
+
+---
+
+# 71. AÇÕES QUE DEVEM SER AUDITADAS
+
+No mínimo:
+
+```text
+tenant criado
+tenant aprovado
+tenant rejeitado
+tenant suspenso
+tenant reativado
+tenant arquivado
+
+Owner transferido
+
+plano criado
+versão criada
+plano atribuído
+plano alterado
+
+pagamento registrado
+
+Support Session iniciada
+Support Session encerrada
+
+configuração global alterada
+```
+
+---
+
+# 72. CONFIGURAÇÕES
+
+Tela:
+
+```text
+Configurações
+```
+
+Separar em:
+
+```text
+Plataforma
+Suporte
+Regras SaaS
+```
+
+---
+
+# 73. PLATAFORMA
+
+```text
+Nome
+Logo
+Logo compacta
+Favicon
+Cor principal
+```
+
+---
+
+# 74. SUPORTE
+
+```text
+E-mail
+Telefone
+WhatsApp
+Duração padrão Support Session
+```
+
+---
+
+# 75. REGRAS SAAS
+
+```text
+Autoaprovar cadastro
+Dias para PAST_DUE
+Dias para RESTRICTED
+Billing mode do signup público
+```
+
+Não adicionar políticas complexas agora.
+
+---
+
+# 76. LOGIN
+
+O login atual precisa estar estável.
+
+Prioridades:
+
+- autenticação;
+- sessão;
+- logout;
+- mensagens de erro;
+- proteção de rotas;
+- permission guard.
+
+MFA pode vir depois se ainda for somente um administrador interno.
+
+Não bloquear o MVP por MFA.
+
+---
+
+# 77. PERMISSÕES DA PLATAFORMA
+
+No MVP, manter as existentes:
+
+```text
+platform.dashboard.view
+platform.tenants.manage
+platform.plans.manage
+platform.settings.manage
+platform.billing.manage
+platform.support.manage
+```
+
+Criar novas somente se a separação for realmente necessária.
+
+---
+
+# 78. ERROS ATUAIS
+
+Antes de adicionar novas funções, o OpenCode deve auditar o Platform Admin atual.
+
+Verificar:
+
+```text
+login
+sessão
+dashboard
+tenants
+tenant detail
+plans
+billing
+support
+settings
+
+API errors
+loading states
+empty states
+double submit
+dados incorretos
+ações que quebram
+permissions
+responsive
+build
+lint
+```
+
+---
+
+# 79. PRIMEIRA ETAPA — PA-MVP-0
+
+## Objetivo
+
+Corrigir e estabilizar tudo que já existe.
+
+## Escopo
+
+```text
+Login
+Navegação
+Dashboard
+Tenants
+Tenant detail
+Plans
+Billing
+Support
+Settings
+API client
+Types
+Loading/error states
+Permissions
+Build
+Tests focados
+```
+
+## Não adicionar grandes módulos novos ainda.
+
+---
+
+# 80. CRITÉRIOS PA-MVP-0
+
+- [ ] Login funciona.
+- [ ] Logout funciona.
+- [ ] Rotas privadas protegidas.
+- [ ] Dashboard carrega.
+- [ ] Lista de tenants funciona.
+- [ ] Tenant detail funciona.
+- [ ] Planos funcionam.
+- [ ] Billing funciona.
+- [ ] Support funciona.
+- [ ] Settings funciona.
+- [ ] Não há erro fatal de UI.
+- [ ] Build verde.
+- [ ] Backend relacionado verde.
+
+---
+
+# 81. SEGUNDA ETAPA — PA-MVP-1
+
+## Objetivo
+
+Administrar cliente e produto comercial.
+
+## Escopo
+
+```text
+Criar tenant
+Tenant 360 básico
+Owner
+Filiais
+Usuários
+Planos
+PlanVersion
+Módulos comerciais
+Dependências
+Limites
+Atribuir/trocar plano
+```
+
+---
+
+# 82. CRITÉRIOS PA-MVP-1
+
+- [ ] Criar tenant completo.
+- [ ] Criar filial principal automaticamente.
+- [ ] Criar Owner.
+- [ ] Criar assinatura.
+- [ ] Tenant 360 funcional.
+- [ ] Criar plano.
+- [ ] Criar versão.
+- [ ] Selecionar módulos.
+- [ ] Dependências validadas.
+- [ ] Limites salvos.
+- [ ] Versão usada imutável.
+- [ ] Trocar plano.
+- [ ] Preview de downgrade.
+
+---
+
+# 83. TERCEIRA ETAPA — PA-MVP-2
+
+## Objetivo
+
+Dinheiro e controle.
+
+## Escopo
+
+```text
+Cobrança manual
+Pagamentos
+MRR básico
+Inadimplência
+Suspensão/restrição
+Reativação
+Auditoria básica
+```
+
+---
+
+# 84. CRITÉRIOS PA-MVP-2
+
+- [ ] Registrar pagamento.
+- [ ] Histórico de pagamentos.
+- [ ] Append-only.
+- [ ] MRR.
+- [ ] PAID/FREE/INTERNAL corretos.
+- [ ] PAST_DUE.
+- [ ] RESTRICTED.
+- [ ] SUSPENDED_FINANCIAL.
+- [ ] Reativação.
+- [ ] Admin suspension preservada.
+- [ ] Auditoria.
+
+---
+
+# 85. ORDEM OFICIAL
+
+```text
+PA-MVP-0
+Corrigir o que já existe
+        ↓
+PA-MVP-1
+Clientes + Planos + Módulos
+        ↓
+PA-MVP-2
+Cobrança + Auditoria
+        ↓
+PLATFORM ADMIN MVP PRONTO
+```
+
+Depois disso:
+
+```text
+voltar para CORE POS
+```
+
+Novas funções do Platform Admin entram conforme clientes e necessidades reais crescerem.
+
+---
+
+# 86. REGRAS PARA O OPENCODE
+
+Não:
+
+- reescrever o SaaS;
+- apagar models existentes;
+- quebrar PlanVersion;
+- criar catálogo paralelo de capabilities;
+- misturar módulo comercial com permission;
+- hardcodar menu por plano;
+- criar CRM;
+- criar Health Score;
+- criar Feature Flags;
+- criar Devices;
+- criar Integrações;
+- criar add-ons;
+- criar overrides;
+- adicionar arquitetura desnecessária;
+- usar Redis/Kafka apenas “para preparar futuro”;
+- criar microserviços.
+
+---
+
+# 87. MÓDULO COMERCIAL X CAPABILITY X PERMISSION
+
+Reforço final:
+
+```text
+MÓDULO
+= produto comercial que o cliente contrata
+```
+
+```text
+CAPABILITY
+= chave técnica que habilita comportamento/limite
+```
+
+```text
+PERMISSION
+= o que aquele usuário pode fazer
 ```
 
 Exemplo:
 
 ```text
-REDBULL — melancia
-NARGUILÉ — melancia
+Plano possui Estoque
+        ↓
+capability inventory habilitada
+        ↓
+usuário possui inventory.view
+        ↓
+Estoque aparece
 ```
-
-Métricas:
-
-- quantidade;
-- receita adicional;
-- produtos relacionados;
-- grupos;
-- participação.
-
-Não confiar apenas no nome atual.
 
 ---
 
-## 19.3. Clientes
+# 88. VISIBILIDADE FINAL
 
-Estrutura:
+Para uma entrada de menu aparecer:
 
 ```text
-Resumo
-Clientes
-Compras
-Produtos
-Comandas
+Módulo/Capability habilitado no tenant
+        ∩
+Permissão do usuário
+        =
+Menu disponível
 ```
 
-quando os dados existirem.
-
-Métricas:
-
-- clientes atendidos;
-- recorrência;
-- ticket;
-- total comprado;
-- última compra;
-- produtos mais consumidos;
-- comandas relacionadas.
-
-Respeitar LGPD e permissões.
-
----
-
-# 20. FASE 6 — RODADA FINAL DE RELATÓRIOS / UX
-
-**Somente depois das Fases 4 e 5 funcionarem corretamente.**
-
-Esta será a etapa de reformulação visual global.
-
-Não fazer redesign isolado antes dela, salvo correção crítica de usabilidade.
-
----
-
-## 20.1. Objetivo
-
-Transformar os relatórios atualmente funcionais em uma experiência visual consistente e premium do CORE.
-
-Aplicar a TODOS os relatórios de uma vez.
-
----
-
-## 20.2. Redesign dos KPIs
-
-Criar padrão visual final:
-
-- ícones;
-- hierarquia;
-- delta;
-- semântica;
-- light/dark;
-- responsividade;
-- hover/drill-down quando útil.
-
-Sem “cards mortos”.
-
----
-
-## 20.3. Filtros finais
-
-Padronizar:
+Se módulo não está no plano:
 
 ```text
-Período + atalhos
-+ Filtros
-chips ativos
-limpar filtros
+não mostrar
 ```
 
-Atalhos continuam autoaplicáveis.
-
-Mobile:
-
-- drawer;
-- bottom sheet;
-- modal responsivo.
-
 ---
 
-## 20.4. Gráficos
+# 89. RESULTADO ESPERADO DO MVP
 
-Revisar cada relatório e escolher gráficos realmente úteis.
-
-Exemplos:
-
-- linha;
-- barras;
-- donut;
-- heatmap;
-- distribuição;
-- evolução;
-- ranking.
-
-Não colocar gráfico por decoração.
-
----
-
-## 20.5. Tabelas
-
-Padronizar:
-
-- densidade;
-- alinhamento;
-- moeda;
-- quantidade;
-- data/hora;
-- badges;
-- links;
-- ações;
-- sticky headers;
-- paginação;
-- mobile;
-- colunas opcionais.
-
----
-
-## 20.6. Loading
-
-Aplicar skeletons finais consistentes.
-
----
-
-## 20.7. Empty states
-
-Estados vazios úteis:
+Ao final:
 
 ```text
-Nenhuma venda encontrada neste período.
-Nenhuma transferência corresponde aos filtros.
+CORE PLATFORM
+│
+├── Dashboard
+├── Clientes
+│   └── Tenant 360
+├── Assinaturas
+├── Planos
+├── Módulos
+├── Cobrança
+├── Suporte
+├── Auditoria
+└── Configurações
 ```
 
-Com orientação quando fizer sentido.
-
----
-
-## 20.8. PDF FINAL
-
-Depois de todos os relatórios existirem, reformular o PDF para representar melhor a página.
-
-Suportar:
-
-- identidade CORE;
-- KPIs;
-- gráficos;
-- seções;
-- tabelas;
-- filtros;
-- período;
-- empresa;
-- filial;
-- cabeçalho;
-- rodapé;
-- paginação;
-- landscape quando necessário.
-
-Não precisa copiar HTML pixel a pixel.
-
----
-
-## 20.9. Excel final
-
-Aprimorar:
-
-- sheets;
-- títulos;
-- filtros;
-- freeze pane;
-- widths;
-- formatação;
-- tipos;
-- resumo;
-- dados.
-
----
-
-## 20.10. Central de Relatórios
-
-Revisar a Central:
-
-- nomes;
-- agrupamentos;
-- descrições;
-- permissões;
-- links;
-- duplicidades;
-- ordem;
-- atalhos;
-- relatórios sem implementação.
-
----
-
-# 21. FASE 7 — GATE PRÉ-POS
-
-Não implementar POS dentro desta fase.
-
-Objetivo: confirmar que o Backoffice fornece base suficiente para o POS.
-
-Validar:
-
-- vendas;
-- produtos;
-- preços;
-- estoque;
-- modificadores;
-- promoções;
-- mesas;
-- comandas;
-- usuários;
-- permissões;
-- filial;
-- caixa;
-- impressão/produção;
-- tickets quando aplicável;
-- histórico;
-- auditoria.
-
-Somente depois:
+E você consegue:
 
 ```text
-INICIAR CORE POS
+criar cliente
+atribuir plano
+escolher módulos
+controlar limites
+acompanhar assinatura
+registrar pagamento
+suspender
+reativar
+prestar suporte
+ver histórico
 ```
+
+Sem entrar no banco.
 
 ---
 
-# 22. INVENTÁRIO — SITUAÇÃO
+# 90. PRIMEIRA INSTRUÇÃO PARA O OPENCODE
 
-Relatórios e estrutura de inventário da Fase 2 já existem.
-
-Não criar uma nova fase de reformulação de inventário apenas por estética.
-
-Se durante testes operacionais aparecerem problemas reais de:
-
-- contagem;
-- recontagem;
-- aplicação de ajuste;
-- divergência;
-- encerramento;
-- auditoria;
-- permissões;
-
-corrigir como requisito operacional antes do POS.
-
-Não fazer uma reescrita preventiva sem evidência de necessidade.
-
----
-
-# 23. ROADMAP ATUAL
-
-```text
-FASE 1 ✅
-Relatórios-base
-
-FASE 2 ✅
-Estoque e inventários
-
-FASE 3 ✅
-Compras, Fornecedores e Contas a pagar
-→ validação/correções pontuais atuais
-
-FASE 4 ⏭️
-Mesas e Comandas
-
-FASE 5
-Promoções, Modificadores e Clientes
-
-FASE 6
-Redesign final + UX + Central + PDF/Excel
-
-FASE 7
-Gate pré-POS
-
-DEPOIS
-CORE POS
-```
-
-## Fora do escopo atual
-
-```text
-Reformulação completa do módulo Financeiro
-```
-
-fica para uma etapa futura.
+> Leia integralmente `CORE_PLATFORM_ADMIN_MVP.md`.
+>
+> Este documento define somente o MVP funcional do Platform Admin.
+>
+> Não implemente funcionalidades futuras.
+>
+> Antes de alterar qualquer arquivo:
+>
+> 1. audite o `platform-admin`;
+> 2. audite `/api/v1/platform/`;
+> 3. audite `apps.saas`;
+> 4. liste bugs e inconsistências atuais;
+> 5. liste quais partes do PA-MVP-0 já funcionam;
+> 6. liste o que precisa ser corrigido.
+>
+> Execute SOMENTE o **PA-MVP-0 — Corrigir o que já existe**.
+>
+> Não inicie PA-MVP-1.
+>
+> Não crie ainda catálogo de módulos se PA-MVP-0 ainda não estiver estável.
+>
+> Corrija backend/frontend relacionados sem enfraquecer regras de domínio existentes.
+>
+> Use testes focados.
+>
+> Ao terminar, entregue:
+>
+> - resumo;
+> - bugs corrigidos;
+> - arquivos alterados;
+> - endpoints alterados;
+> - testes;
+> - build;
+> - pendências.
+>
+> E PARE.
 
 ---
 
-# 24. COMANDO-PADRÃO PARA AS PRÓXIMAS FASES
-
-Ao executar qualquer fase futura:
-
-```text
-Leia integralmente este .md para entender arquitetura, padrões e dependências.
-
-Execute SOMENTE a fase solicitada.
-
-Não reimplemente fases concluídas.
-
-Não faça redesign geral dos relatórios antes da Fase 6.
-
-Reutilize:
-- filtros colapsáveis;
-- atalhos rápidos autoaplicáveis;
-- KPIs;
-- loading;
-- links protegidos;
-- filtros históricos;
-- snapshots;
-- exportação compartilhada;
-- RBAC.
-
-Preserve:
-- multiempresa;
-- multifilial;
-- auditoria;
-- histórico;
-- regras financeiras;
-- permissões.
-
-Não faça auditoria geral do projeto.
-
-Não execute testes automatizados, builds, CI, Docker build ou scans extensos.
-
-Ao terminar, pare e entregue testes manuais.
-
-Não avance automaticamente para a próxima fase.
-```
-
----
-
-# 25. COMANDO DA FASE 4
-
-Quando a Fase 3 estiver validada:
-
-```text
-Leia integralmente:
-CORE_PDV_PLANO_RELATORIOS_POR_FASES_V5_2026-09-02.md
-
-Execute SOMENTE a FASE 4 — MESAS E COMANDAS.
-
-As Fases 1, 2 e 3 já estão implementadas.
-NÃO reimplemente nenhuma delas.
-NÃO inicie a Fase 5.
-
-IMPORTANTE:
-
-O redesign completo dos relatórios está adiado para a Fase 6.
-
-Nesta fase priorize:
-- dados corretos;
-- regras de negócio;
-- histórico;
-- snapshots;
-- RBAC;
-- multiempresa;
-- multifilial;
-- drill-down;
-- filtros;
-- exportação funcional.
-
-Reutilize os padrões compartilhados já existentes.
-
-ATALHOS RÁPIDOS:
-Hoje / 7 dias / 30 dias e demais presets devem aplicar imediatamente ao clicar.
-Não exigir botão Aplicar depois de selecionar um preset.
-Aplicar fica para período personalizado/filtros avançados quando necessário.
-
-NÃO execute testes automatizados.
-NÃO execute build.
-NÃO execute CI.
-NÃO execute Docker build.
-NÃO faça auditoria geral.
-
-Ao terminar, PARE.
-
-Retorne:
-1. Implementado
-2. Arquivos alterados
-3. Endpoints
-4. Migrations
-5. Permissões
-6. Decisões
-7. Pendências
-8. Testes MANUAIS
-
-NÃO inicie a Fase 5.
-```
-
----
-
-# 26. REGRA FINAL
-
-A prioridade até o POS é:
-
-> primeiro fazer todas as funções corretas; depois fazer todos os relatórios bonitos de uma vez.
-
-Evitar retrabalho visual enquanto ainda existem novos tipos de relatório entrando no sistema.
-
+**FIM — CORE PLATFORM ADMIN MVP**
