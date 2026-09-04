@@ -12,6 +12,7 @@ type Editor = "plan-create" | "plan-edit" | "version-create" | "version-edit" | 
 
 export default function PlansPage() {
   const { can } = useAuth();
+  const allowed = can("platform.plans.manage");
   const [plans, setPlans] = useState<Plan[] | null>(null);
   const [capabilities, setCapabilities] = useState<Capability[]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState<number | null>(null);
@@ -28,12 +29,13 @@ export default function PlansPage() {
   const [reload, setReload] = useState(0);
 
   useEffect(() => {
+    if (!allowed) return;
     let active = true;
     Promise.all([api.list<Plan>("platform/plans/"), api.list<Capability>("platform/capabilities/")])
       .then(([planRows, capabilityRows]) => { if (active) { setPlans(planRows); setCapabilities(capabilityRows); setSelectedPlanId((current) => current ?? planRows[0]?.id ?? null); } })
       .catch((value) => { if (active) setError(value); });
     return () => { active = false; };
-  }, [reload]);
+  }, [allowed, reload]);
 
   const selectedPlan = plans?.find((plan) => plan.id === selectedPlanId) || null;
   const selectedVersion = selectedPlan?.versions.find((version) => version.id === selectedVersionId) || selectedPlan?.versions[0] || null;
@@ -62,7 +64,7 @@ export default function PlansPage() {
     } catch (value) { setActionError(value); } finally { setSaving(false); }
   }
 
-  if (!can("platform.plans.manage")) return <ErrorBlock error={new Error("Seu perfil nao possui acesso ao catalogo de planos.")} />;
+  if (!allowed) return <ErrorBlock error={new Error("Seu perfil nao possui acesso ao catalogo de planos.")} />;
   if (error) return <ErrorBlock error={error} retry={() => setReload((value) => value + 1)} />;
   if (!plans) return <LoadingBlock label="Carregando catalogo comercial" />;
   return <div className="enter space-y-6"><div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="eyebrow">Catalogo e enforcement</p><h1 className="mt-2 text-3xl font-black tracking-tight sm:text-4xl">Planos e limites</h1><p className="mt-2 text-sm text-steel/65">Versoes historicas e capacidades aplicadas aos tenants.</p></div><button className="btn btn-signal" onClick={() => open("plan-create")}><Plus size={16} />Novo plano</button></div>{notice && <Notice message={notice} />}

@@ -10,7 +10,7 @@ import type { SupportSession } from "@/lib/types";
 import { useAuth } from "@/providers/auth-provider";
 
 export default function SupportPage() {
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   const allowed = can("platform.support.manage");
   const [sessions, setSessions] = useState<SupportSession[] | null>(null);
   const [creating, setCreating] = useState(false);
@@ -48,6 +48,11 @@ export default function SupportPage() {
   }
 
   async function end(sessionId: number) {
+    const session = sessions?.find((item) => item.id === sessionId);
+    if (!session || session.actor !== user?.id) {
+      setNotice("Somente o operador que iniciou a sessao pode encerra-la.");
+      return;
+    }
     try { await api.post(`platform/support-sessions/${sessionId}/end/`); setNotice(`Support Session #${sessionId} encerrada.`); setReload((value) => value + 1); } catch (value) { setError(value); }
   }
 

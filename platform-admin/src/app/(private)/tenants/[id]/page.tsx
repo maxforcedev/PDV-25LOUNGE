@@ -19,7 +19,7 @@ const billingActions: Action[] = ["map-subscription", "billing-mode", "financial
 
 export default function TenantDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   const canTenants = can("platform.tenants.manage");
   const canPlans = can("platform.plans.manage");
   const canBill = can("platform.billing.manage");
@@ -121,6 +121,11 @@ export default function TenantDetailPage() {
   }
 
   async function endSupport(sessionId: number) {
+    const session = tenant?.support_sessions.find((item) => item.id === sessionId);
+    if (!session || session.actor !== user?.id) {
+      setNotice("Somente o operador que iniciou a sessao pode encerra-la.");
+      return;
+    }
     try { await api.post(`platform/support-sessions/${sessionId}/end/`); setNotice("Support Session encerrada."); setSupportError(null); setReload((value) => value + 1); } catch (value) { setSupportError(value); }
   }
 

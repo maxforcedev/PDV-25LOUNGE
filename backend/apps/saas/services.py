@@ -1070,7 +1070,7 @@ def create_support_session(*, actor, company, mode, reason, current_password='',
         raise ValidationError({'reason': 'Informe o motivo do acesso de suporte.'})
     if not user_has_platform_permission(actor, 'platform.support.manage'):
         raise ValidationError({'actor': 'A permissao de suporte nao esta ativa.'})
-    if mode == SupportSession.Mode.READ_WRITE and not actor.check_password(current_password or ''):
+    if not actor.check_password(current_password or ''):
         raise ValidationError({'current_password': 'Senha atual invalida.'})
     if impersonated_user and not UserCompanyAccess.objects.filter(
         company=company, user=impersonated_user, is_active=True,

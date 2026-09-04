@@ -1,6 +1,14 @@
 import type { NextConfig } from "next";
 
 const isProduction = process.env.NODE_ENV === "production";
+const apiOrigin = (() => {
+  try {
+    return new URL(process.env.NEXT_PUBLIC_API_URL || "http://localhost:18000/api/v1").origin;
+  } catch {
+    return null;
+  }
+})();
+
 const contentSecurityPolicy = [
   "default-src 'self'",
   "base-uri 'self'",
@@ -11,7 +19,7 @@ const contentSecurityPolicy = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  "connect-src 'self' https: ws: wss:",
+  `connect-src 'self' ${[apiOrigin, !isProduction && "ws:", !isProduction && "wss:"].filter(Boolean).join(" ")}`,
 ].join("; ");
 
 const nextConfig: NextConfig = {

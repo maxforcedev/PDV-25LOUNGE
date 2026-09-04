@@ -11,16 +11,20 @@ import { useAuth } from "@/providers/auth-provider";
 
 export default function DashboardPage() {
   const { can } = useAuth();
+  const allowed = can("platform.dashboard.view");
   const [data, setData] = useState<DashboardMetrics | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [reload, setReload] = useState(0);
-  useEffect(() => { let active = true; api.get<DashboardMetrics>("platform/dashboard/").then((value) => { if (active) setData(value); }).catch((value) => { if (active) setError(value); }); return () => { active = false; }; }, [reload]);
-  if (!can("platform.dashboard.view")) return <ErrorBlock error={new Error("Seu perfil nao possui acesso ao painel operacional.")} />;
+  useEffect(() => { if (!allowed) return; let active = true; api.get<DashboardMetrics>("platform/dashboard/").then((value) => { if (active) setData(value); }).catch((value) => { if (active) setError(value); }); return () => { active = false; }; }, [allowed, reload]);
+  if (!allowed) return <ErrorBlock error={new Error("Seu perfil nao possui acesso ao painel operacional.")} />;
   if (error) return <ErrorBlock error={error} retry={() => { setError(null); setReload((value) => value + 1); }} />;
   if (!data) return <LoadingBlock label="Consolidando indicadores da plataforma" />;
   const cards = [
-    { label: "Tenants ativos", value: data.active_tenants, icon: Building2, tone: "bg-ink text-white" },
-    { label: "Clientes pagantes", value: data.paying_customers, icon: Users },
+    { label: "Clientes totais", value: data.total_tenants, icon: Building2, tone: "bg-ink text-white" },
+    { label: "Clientes ativos", value: data.active_tenants, icon: Users },
+    { label: "Trials ativos", value: data.active_trials, icon: FlaskConical },
+    { label: "Inadimplentes", value: data.past_due, icon: ClockAlert },
+    { label: "Suspensos", value: data.suspended_tenants, icon: ShieldAlert },
     { label: "MRR contratado", value: money(data.contracted_mrr), icon: CircleDollarSign, wide: true },
     { label: "Novos no mes", value: data.new_tenants, icon: ArrowUpRight },
   ];

@@ -163,6 +163,7 @@ class PlatformLoginView(APIView):
             not authenticated.can_login
             or not hasattr(authenticated, 'platform_access')
             or not authenticated.platform_access.is_active
+            or not user_has_platform_permission(authenticated, 'platform.access')
         ):
             return Response(
                 {'detail': INVALID_LOGIN_MESSAGE},
@@ -232,8 +233,9 @@ class PlatformDashboardView(APIView):
     required_platform_permission = 'platform.dashboard.view'
 
     def get(self, request):
+        companies = Company.objects.all()
         subscriptions = Subscription.objects.filter(is_current=True).select_related('company', 'plan_version')
-        effective_statuses = [resolve_effective_status(item.company)['status'] for item in subscriptions]
+        effective_statuses = [resolve_effective_status(company)['status'] for company in companies]
         paid = subscriptions.filter(billing_mode=Subscription.BillingMode.PAID)
         mrr_subscriptions = paid.filter(status__in=(
             Subscription.Status.ACTIVE,
@@ -247,6 +249,7 @@ class PlatformDashboardView(APIView):
         )
         month_start = timezone.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         return Response({
+            'total_tenants': len(effective_statuses),
             'active_tenants': sum(status_value in (Subscription.Status.ACTIVE, Subscription.Status.TRIALING) for status_value in effective_statuses),
             'paying_customers': paid.count(),
             'free': subscriptions.filter(billing_mode=Subscription.BillingMode.FREE).count(),
@@ -254,8 +257,9 @@ class PlatformDashboardView(APIView):
             'active_trials': effective_statuses.count(Subscription.Status.TRIALING),
             'expired_trials': effective_statuses.count(Subscription.Status.TRIAL_EXPIRED),
             'past_due': sum(value in (Subscription.Status.PAST_DUE, Subscription.Status.RESTRICTED, Subscription.Status.SUSPENDED_FINANCIAL) for value in effective_statuses),
+            'suspended_tenants': sum(value in ('SUSPENDED_ADMIN', Subscription.Status.SUSPENDED_FINANCIAL) for value in effective_statuses),
             'contracted_mrr': str(mrr),
-            'new_tenants': subscriptions.filter(created_at__gte=month_start).count(),
+            'new_tenants': companies.filter(created_at__gte=month_start).count(),
             'scheduled_cancellations': subscriptions.filter(cancel_at_period_end=True).count(),
         })
 

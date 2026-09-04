@@ -8,6 +8,7 @@ export interface PlatformUser {
 }
 
 export interface DashboardMetrics {
+  total_tenants: number;
   active_tenants: number;
   paying_customers: number;
   free: number;
@@ -15,6 +16,7 @@ export interface DashboardMetrics {
   active_trials: number;
   expired_trials: number;
   past_due: number;
+  suspended_tenants: number;
   contracted_mrr: string;
   new_tenants: number;
   scheduled_cancellations: number;
@@ -169,5 +171,6 @@ export interface GlobalSettings {
   primary_color: string;
   support_email: string;
   support_phone: string;
+  support_whatsapp: string;
   institutional_links: Record<string, string>;
 }

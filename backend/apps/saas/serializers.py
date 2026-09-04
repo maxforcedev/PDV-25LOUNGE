@@ -288,7 +288,7 @@ class SupportSessionCreateSerializer(serializers.Serializer):
     impersonated_user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False, allow_null=True)
     mode = serializers.ChoiceField(choices=SupportSession.Mode.choices)
     reason = serializers.CharField()
-    current_password = serializers.CharField(required=False, write_only=True, trim_whitespace=False)
+    current_password = serializers.CharField(write_only=True, trim_whitespace=False)
     expires_at = serializers.DateTimeField(required=False)
 
     def create(self, validated_data):
