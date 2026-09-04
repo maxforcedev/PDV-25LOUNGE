@@ -1,5 +1,6 @@
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from decimal import Decimal
 from rest_framework import serializers
 
@@ -63,9 +64,18 @@ class PlanEntitlementSerializer(serializers.ModelSerializer):
         read_only_fields = ('id', 'capability_code', 'created_at', 'updated_at')
 
 
+class PlanVersionEntitlementInputSerializer(serializers.Serializer):
+    capability = serializers.PrimaryKeyRelatedField(
+        queryset=Capability.objects.filter(is_active=True)
+    )
+    enabled = serializers.BooleanField(default=False)
+    unlimited = serializers.BooleanField(default=False)
+    limit_value = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+
+
 class PlanVersionSerializer(serializers.ModelSerializer):
     plan_name = serializers.CharField(source='plan.name', read_only=True)
-    entitlements = PlanEntitlementSerializer(many=True, read_only=True)
+    entitlements = PlanVersionEntitlementInputSerializer(many=True, write_only=True)
     is_used = serializers.BooleanField(read_only=True)
 
     class Meta:
@@ -75,7 +85,94 @@ class PlanVersionSerializer(serializers.ModelSerializer):
             'billing_period_months', 'trial_days', 'is_public', 'is_active',
             'is_used', 'entitlements', 'created_at', 'updated_at',
         )
-        read_only_fields = ('id', 'plan_name', 'is_used', 'entitlements', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'plan_name', 'is_used', 'created_at', 'updated_at')
+
+    def validate(self, attrs):
+        entitlements = attrs.get('entitlements')
+        if entitlements is None:
+            raise serializers.ValidationError({'entitlements': 'Informe todas as capabilities da versao.'})
+
+        available = {
+            capability.pk: capability
+            for capability in Capability.objects.filter(is_active=True)
+        }
+        received_ids = [item['capability'].pk for item in entitlements]
+        if len(received_ids) != len(set(received_ids)):
+            raise serializers.ValidationError({'entitlements': 'Cada capability pode aparecer apenas uma vez.'})
+
+        core = next((item for item in available.values() if item.code == 'core.enabled'), None)
+        if core is None:
+            raise serializers.ValidationError({'entitlements': 'A capability obrigatoria core.enabled nao esta disponivel.'})
+
+        expected_ids = set(available) - {core.pk}
+        if set(received_ids) - {core.pk} != expected_ids:
+            raise serializers.ValidationError({'entitlements': 'Informe todas as capabilities ativas da plataforma.'})
+
+        normalized = []
+        for item in entitlements:
+            capability = item['capability']
+            enabled = item.get('enabled', False)
+            unlimited = item.get('unlimited', False) if enabled else False
+            limit_value = item.get('limit_value') if enabled and not unlimited else None
+
+            if capability.value_type == Capability.ValueType.BOOLEAN:
+                unlimited = enabled
+                limit_value = None
+            elif enabled and not unlimited and limit_value is None:
+                raise serializers.ValidationError({
+                    'entitlements': f'Informe um limite ou marque ilimitado para {capability.code}.'
+                })
+            if capability.code in ('users.max', 'branches.max') and (
+                not enabled or (not unlimited and (limit_value is None or limit_value < 1))
+            ):
+                raise serializers.ValidationError({
+                    'entitlements': f'{capability.code} exige limite maior que zero ou ilimitado.'
+                })
+            normalized.append({
+                'capability': capability,
+                'enabled': enabled,
+                'unlimited': unlimited,
+                'limit_value': limit_value,
+            })
+
+        normalized_by_capability = {item['capability'].pk: item for item in normalized}
+        normalized_by_capability[core.pk] = {
+            'capability': core,
+            'enabled': True,
+            'unlimited': True,
+            'limit_value': None,
+        }
+        attrs['entitlements'] = list(normalized_by_capability.values())
+        return attrs
+
+    @staticmethod
+    def _replace_entitlements(version, entitlements):
+        PlanEntitlement.objects.filter(plan_version=version).delete()
+        PlanEntitlement.objects.bulk_create([
+            PlanEntitlement(plan_version=version, **item)
+            for item in entitlements
+        ])
+
+    @transaction.atomic
+    def create(self, validated_data):
+        entitlements = validated_data.pop('entitlements')
+        version = PlanVersion.objects.create(**validated_data)
+        self._replace_entitlements(version, entitlements)
+        return version
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        entitlements = validated_data.pop('entitlements')
+        version = super().update(instance, validated_data)
+        self._replace_entitlements(version, entitlements)
+        return version
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['entitlements'] = PlanEntitlementSerializer(
+            instance.entitlements.select_related('capability').all(), many=True
+        ).data
+        return data
 
 
 class PublicPlanVersionSerializer(serializers.ModelSerializer):
