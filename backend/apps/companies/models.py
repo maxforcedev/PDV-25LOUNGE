@@ -1,5 +1,6 @@
 from decimal import Decimal
 import re
+import secrets
 
 from django.db import models, transaction
 from django.db.models import Q
@@ -221,6 +222,7 @@ class Branch(BaseModel):
     address_pending = models.BooleanField(default=False)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
     is_matrix = models.BooleanField(default=False)
+    licensing_code = models.CharField(max_length=32, unique=True, db_index=True, editable=False)
 
     class Meta:
         ordering = ('company__trade_name', 'name')
@@ -266,8 +268,17 @@ class Branch(BaseModel):
 
                 company = Company.objects.select_for_update().get(pk=self.company_id)
                 assert_resource_limit(company, 'branches.max', company_locked=True)
+            if not self.licensing_code:
+                self.licensing_code = self.generate_licensing_code()
             self.full_clean()
             return super().save(*args, **kwargs)
+
+    @classmethod
+    def generate_licensing_code(cls):
+        while True:
+            code = f'CORE-{secrets.token_urlsafe(12).upper()}'
+            if not cls.objects.filter(licensing_code=code).exists():
+                return code
 
     def __str__(self):
         return f'{self.company.trade_name} - {self.name}'

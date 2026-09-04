@@ -285,7 +285,7 @@ class UserViewSet(viewsets.ModelViewSet):
             'profiles': profile_options,
         })
 
-    audit_fields = ('email', 'can_login', 'user_type', 'first_name', 'last_name', 'is_active')
+    audit_fields = ('email', 'can_login', 'can_access_pos', 'user_type', 'first_name', 'last_name', 'is_active')
 
     @staticmethod
     def access_snapshot(user, company_id=None):
@@ -382,6 +382,19 @@ class UserViewSet(viewsets.ModelViewSet):
             source='company_admin',
         )
         return Response({'detail': 'Instruções de redefinição enviadas ao e-mail global do titular.'})
+
+    @action(detail=True, methods=['post'], url_path='send-pos-pin-reset')
+    def send_pos_pin_reset(self, request, pk=None):
+        user = self.get_object()
+        company_id = self.context_company_id()
+        if not company_id or not user.company_accesses.filter(
+            company_id=company_id, archived_at__isnull=True,
+        ).exists():
+            raise PermissionDenied('O usuário não pertence à empresa informada.')
+        from apps.pos.services import send_pos_pin_setup
+
+        send_pos_pin_setup(user, Company.objects.get(pk=company_id), request.user)
+        return Response({'detail': 'Instruções para configurar o PIN do POS foram enviadas.'})
 
     @action(detail=True, methods=['post'])
     @transaction.atomic

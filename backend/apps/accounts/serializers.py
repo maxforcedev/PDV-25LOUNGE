@@ -62,6 +62,7 @@ class UserSerializer(serializers.ModelSerializer):
             'id',
             'email',
             'can_login',
+            'can_access_pos',
             'user_type',
             'first_name',
             'last_name',

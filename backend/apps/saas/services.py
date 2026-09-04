@@ -41,6 +41,8 @@ CAPABILITY_CATALOG = (
     ('feature.consumption', 'Consumacao interna', Capability.ValueType.BOOLEAN),
     ('feature.cash_register', 'Caixa', Capability.ValueType.BOOLEAN),
     ('feature.production', 'Producao e impressao', Capability.ValueType.BOOLEAN),
+    ('pos.enabled', 'CORE POS', Capability.ValueType.BOOLEAN),
+    ('pos.devices.max', 'Dispositivos CORE POS', Capability.ValueType.INTEGER),
 )
 FEATURE_CAPABILITY_CODES = frozenset(
     code for code, _, _ in CAPABILITY_CATALOG if code.startswith('feature.')
@@ -222,6 +224,13 @@ def resource_usage(company, code):
         ).count()
     if code == 'branches.max':
         return Branch.objects.filter(company=company, status='active').count()
+    if code == 'pos.devices.max':
+        from apps.pos.models import POSDevice
+
+        return POSDevice.objects.filter(
+            branch__company=company,
+            status=POSDevice.Status.ACTIVE,
+        ).count()
     raise ValidationError({'capability': 'Capacidade sem medicao implementada.'})
 
 

@@ -21,6 +21,8 @@ class User(AbstractUser, BaseModel):
     username = None
     email = models.EmailField(blank=True, null=True)
     can_login = models.BooleanField(default=True, db_default=True)
+    can_access_pos = models.BooleanField(default=False, db_default=False)
+    pos_pin_hash = models.CharField(max_length=256, blank=True, default='', editable=False)
     user_type = models.CharField(
         max_length=20,
         choices=UserType.choices,

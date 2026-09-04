@@ -108,6 +108,7 @@ INSTALLED_APPS = [
     'apps.production',
     'apps.reports',
     'apps.saas',
+    'apps.pos',
 ]
 
 MIDDLEWARE = [
@@ -256,6 +257,8 @@ CORS_ALLOW_HEADERS = (
     'x-correlation-id',
     'x-request-id',
     'x-support-session-id',
+    'x-pos-device-credential',
+    'x-pos-operator-session',
 )
 CORS_EXPOSE_HEADERS = ['X-CSRFToken', 'X-Request-ID', 'X-Correlation-ID']
 
@@ -280,6 +283,11 @@ MAILERS = {
         },
     },
 }
+
+POS_CURRENT_VERSION = env('POS_CURRENT_VERSION', default='1.0.0')
+POS_LATEST_VERSION = env('POS_LATEST_VERSION', default=POS_CURRENT_VERSION)
+POS_MINIMUM_SUPPORTED_VERSION = env('POS_MINIMUM_SUPPORTED_VERSION', default=POS_CURRENT_VERSION)
+POS_OPERATOR_SESSION_MINUTES = env.int('POS_OPERATOR_SESSION_MINUTES', default=480)
 
 DEFAULT_FROM_EMAIL = env(
     'DEFAULT_FROM_EMAIL',
