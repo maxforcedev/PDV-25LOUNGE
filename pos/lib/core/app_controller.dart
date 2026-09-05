@@ -196,7 +196,14 @@ class AppController extends ChangeNotifier {
   }
 
   void _handleApiError(PosApiException error) {
-    errorMessage = error.message;
+    errorMessage = switch (error.statusCode) {
+      400 => 'Confira o CNPJ ou o código de licenciamento e tente novamente.',
+      403 => 'Esta filial não está disponível para pareamento no momento.',
+      404 => 'Não encontramos uma filial com estes dados.',
+      429 => 'Muitas tentativas. Aguarde alguns instantes e tente novamente.',
+      >= 500 => 'O CORE PDV está indisponível no momento. Tente novamente em breve.',
+      _ => error.message,
+    };
     if (error.code == 'pos_update_required') {
       phase = AppPhase.updateRequired;
       return;

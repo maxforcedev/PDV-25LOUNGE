@@ -36,7 +36,7 @@ class HomePage extends StatelessWidget {
               Text('Ola, ${snapshot.operatorName}', style: Theme.of(context).textTheme.headlineSmall),
               if (snapshot.release.updateAvailable) ...[
                 const SizedBox(height: 8),
-                const Text('Uma atualizacao do CORE POS esta disponivel.'),
+                const Text('Uma atualização do CORE PDV está disponível.'),
               ],
               const SizedBox(height: 24),
               Expanded(

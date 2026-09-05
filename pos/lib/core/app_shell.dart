@@ -85,7 +85,7 @@ class _UpdateRequiredPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) => const _StatusPage(
         title: 'Atualizacao obrigatoria',
-        message: 'Esta versao do CORE POS nao e mais suportada. Atualize o aplicativo para continuar.',
+        message: 'Esta versão do CORE PDV não é mais suportada. Atualize o aplicativo para continuar.',
       );
 }
 

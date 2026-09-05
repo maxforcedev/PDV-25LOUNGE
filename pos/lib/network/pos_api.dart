@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -59,12 +60,14 @@ class HttpPosApi implements PosApi {
       final headers = await _headers();
       final uri = _uri(path);
       response = switch (method) {
-        'GET' => await _client.get(uri, headers: headers),
-        'POST' => await _client.post(uri, headers: headers, body: jsonEncode(body ?? const {})),
+        'GET' => await _client.get(uri, headers: headers).timeout(const Duration(seconds: 15)),
+        'POST' => await _client.post(uri, headers: headers, body: jsonEncode(body ?? const {})).timeout(const Duration(seconds: 15)),
         _ => throw ArgumentError.value(method, 'method'),
       };
     } on http.ClientException catch (error) {
       throw PosNetworkException(error.message);
+    } on TimeoutException {
+      throw const PosNetworkException('A conexão demorou demais. Verifique a internet e tente novamente.');
     }
     final decoded = response.body.isEmpty ? <String, dynamic>{} : jsonDecode(response.body);
     final payload = decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};

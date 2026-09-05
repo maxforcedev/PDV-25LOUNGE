@@ -1,0 +1,62 @@
+warning: in the working copy of 'pos/android/app/build.gradle', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'pos/android/gradle/wrapper/gradle-wrapper.properties', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'pos/android/settings.gradle', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/pos/android/app/build.gradle b/pos/android/app/build.gradle[m
+[1mindex c030165..22d316b 100644[m
+[1m--- a/pos/android/app/build.gradle[m
+[1m+++ b/pos/android/app/build.gradle[m
+[36m@@ -8,6 +8,13 @@[m [mandroid {[m
+     namespace 'com.corepdv.pos'[m
+     compileSdk flutter.compileSdkVersion[m
+ [m
+[32m+[m[32m    ndkVersion "28.2.13676358"[m
+[32m+[m
+[32m+[m[32m    compileOptions {[m
+[32m+[m[32m        sourceCompatibility JavaVersion.VERSION_17[m
+[32m+[m[32m        targetCompatibility JavaVersion.VERSION_17[m
+[32m+[m[32m    }[m
+[32m+[m
+     defaultConfig {[m
+         applicationId 'com.corepdv.pos'[m
+         minSdk flutter.minSdkVersion[m
+[36m@@ -17,6 +24,12 @@[m [mandroid {[m
+     }[m
+ }[m
+ [m
+[32m+[m[32mkotlin {[m
+[32m+[m[32m    compilerOptions {[m
+[32m+[m[32m        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17[m
+[32m+[m[32m    }[m
+[32m+[m[32m}[m
+[32m+[m
+ flutter {[m
+     source '../..'[m
+[31m-}[m
+[32m+[m[32m}[m
+\ No newline at end of file[m
+[1mdiff --git a/pos/android/gradle/wrapper/gradle-wrapper.properties b/pos/android/gradle/wrapper/gradle-wrapper.properties[m
+[1mindex 348c409..9470727 100644[m
+[1m--- a/pos/android/gradle/wrapper/gradle-wrapper.properties[m
+[1m+++ b/pos/android/gradle/wrapper/gradle-wrapper.properties[m
+[36m@@ -2,4 +2,4 @@[m [mdistributionBase=GRADLE_USER_HOME[m
+ distributionPath=wrapper/dists[m
+ zipStoreBase=GRADLE_USER_HOME[m
+ zipStorePath=wrapper/dists[m
+[31m-distributionUrl=https\://services.gradle.org/distributions/gradle-8.9-all.zip[m
+[32m+[m[32mdistributionUrl=https\://services.gradle.org/distributions/gradle-8.14-all.zip[m
+\ No newline at end of file[m
+[1mdiff --git a/pos/android/settings.gradle b/pos/android/settings.gradle[m
+[1mindex 07df8b5..76f23c8 100644[m
+[1m--- a/pos/android/settings.gradle[m
+[1m+++ b/pos/android/settings.gradle[m
+[36m@@ -17,8 +17,8 @@[m [mpluginManagement {[m
+ [m
+ plugins {[m
+     id 'dev.flutter.flutter-plugin-loader' version '1.0.0'[m
+[31m-    id 'com.android.application' version '8.7.3' apply false[m
+[31m-    id 'org.jetbrains.kotlin.android' version '2.1.0' apply false[m
+[32m+[m[32m    id 'com.android.application' version '8.11.1' apply false[m
+[32m+[m[32m    id 'org.jetbrains.kotlin.android' version '2.2.20' apply false[m
+ }[m
+ [m
+ include ':app'[m
