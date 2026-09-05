@@ -11,7 +11,7 @@ from django.test import TestCase
 from apps.accounts.models import User
 from apps.base.exceptions import DomainValidationError
 from apps.cash.models import CashRegister
-from apps.companies.models import UserBranchAccess, UserCompanyAccess
+from apps.companies.models import Branch, UserBranchAccess, UserCompanyAccess
 from apps.companies.services import create_branch_with_access, create_company_with_matrix
 from apps.pos.models import (
     AuthenticationChallenge, BranchPOSSettings, POSDevice, POSDeviceSettings,
@@ -24,6 +24,13 @@ from apps.pos.services import (
 
 
 class POSFoundationContractTests(SimpleTestCase):
+    def test_licensing_code_normalizes_short_or_case_insensitive_input(self):
+        code = 'CORE-7K9P2M'
+
+        self.assertEqual(Branch.normalize_licensing_code(code.lower()), code)
+        self.assertEqual(Branch.normalize_licensing_code(code.removeprefix('CORE-')), code)
+        self.assertIsNone(Branch.normalize_licensing_code('CORE-O0IL1X'))
+
     def test_pairing_contacts_are_masked_and_do_not_expose_phone(self):
         branch = SimpleNamespace(
             email='loja@example.com',
@@ -110,6 +117,12 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(confirmation.status_code, 201, confirmation.data)
         return confirmation, otp.data['challenge_id']
 
+    def test_generated_licensing_code_is_short_and_unambiguous(self):
+        self.assertRegex(
+            Branch.generate_licensing_code(),
+            r'^CORE-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}$',
+        )
+
     def test_pairing_uses_opaque_contact_and_otp_can_only_be_consumed_once(self):
         confirmation, challenge_id = self.pair_device()
 
@@ -137,6 +150,20 @@ class POSFoundationIntegrationTests(TestCase):
 
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data['branch']['display_name'], self.branch.name)
+
+    def test_pairing_accepts_short_or_case_insensitive_licensing_code(self):
+        self.branch.licensing_code = 'CORE-7K9P2M'
+        self.branch.save(update_fields=['licensing_code', 'updated_at'])
+
+        short = self.client.post(
+            reverse('pos:pairing-identify'), {'identifier': '7k9p2m'}, format='json',
+        )
+        prefixed = self.client.post(
+            reverse('pos:pairing-identify'), {'identifier': 'core-7k9p2m'}, format='json',
+        )
+
+        self.assertEqual(short.status_code, 200, short.data)
+        self.assertEqual(prefixed.status_code, 200, prefixed.data)
 
     def test_wrong_otp_attempts_are_persisted_and_consume_the_challenge(self):
         identify = self.client.post(
@@ -274,7 +301,7 @@ class POSFoundationIntegrationTests(TestCase):
         self.client.force_authenticate(self.owner)
 
         response = self.client.patch(
-            f"{reverse('pos:pos-admin-device-settings', args=[device_id])}?company={self.company.pk}",
+            f"{reverse('pos:pos-admin-device-device-settings', args=[device_id])}?company={self.company.pk}",
             {'receipt_print_mode': 'automatic', 'paper_width': 58},
             format='json',
         )

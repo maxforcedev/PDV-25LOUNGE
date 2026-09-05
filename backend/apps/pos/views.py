@@ -173,7 +173,7 @@ class POSAdminDeviceViewSet(viewsets.ModelViewSet):
         'unblock': 'pos_devices.manage',
         'revoke': 'pos_devices.manage',
         'replace': 'pos_devices.manage',
-        'settings': 'pos_devices.manage',
+        'device_settings': 'pos_devices.manage',
     }
     audit_fields = ('name', 'status', 'app_version', 'os_version', 'device_model', 'last_seen_at')
 
@@ -248,8 +248,8 @@ class POSAdminDeviceViewSet(viewsets.ModelViewSet):
         device = set_device_status(device, POSDevice.Status.REPLACED, actor=request.user, replacement=replacement)
         return Response(self.get_serializer(device).data)
 
-    @action(detail=True, methods=('get', 'patch', 'delete'))
-    def settings(self, request, pk=None):
+    @action(detail=True, methods=('get', 'patch', 'delete'), url_path='settings')
+    def device_settings(self, request, pk=None):
         device = self.get_object()
         instance = POSDeviceSettings.objects.filter(device=device).first()
         if request.method == 'GET':
@@ -266,7 +266,7 @@ class POSAdminDeviceViewSet(viewsets.ModelViewSet):
                 )
             return Response(status=status.HTTP_204_NO_CONTENT)
         instance, _ = POSDeviceSettings.objects.get_or_create(device=device)
-        fields = tuple(field for field in POSDeviceSettingsSerializer.Meta.fields if field not in {'id', 'device', 'effective_settings', 'created_at', 'updated_at'})
+        fields = tuple(field for field in POSDeviceSettingsSerializer.Meta.fields if field not in {'id', 'device', 'effective_settings', 'cash_register_options', 'created_at', 'updated_at'})
         before = model_snapshot(instance, fields)
         serializer = POSDeviceSettingsSerializer(instance, data=request.data, partial=True, context={'device': device})
         serializer.is_valid(raise_exception=True)

@@ -266,21 +266,24 @@ CORS_EXPOSE_HEADERS = ['X-CSRFToken', 'X-Request-ID', 'X-Correlation-ID']
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
 
+_email_backend = env(
+    'EMAIL_BACKEND',
+    default='django.core.mail.backends.console.EmailBackend',
+)
+SMTP_MAILER_OPTIONS = {
+    'host': env('EMAIL_HOST', default='localhost'),
+    'port': env.int('EMAIL_PORT', default=587),
+    'username': env('EMAIL_HOST_USER', default=''),
+    'password': env('EMAIL_HOST_PASSWORD', default=''),
+    'use_tls': env.bool('EMAIL_USE_TLS', default=True),
+    'use_ssl': env.bool('EMAIL_USE_SSL', default=False),
+    'timeout': env.int('EMAIL_TIMEOUT', default=10),
+}
 MAILERS = {
     'default': {
-        'BACKEND': env(
-            'EMAIL_BACKEND',
-            default='django.core.mail.backends.console.EmailBackend',
-        ),
-        'OPTIONS': {
-            'host': env('EMAIL_HOST', default='localhost'),
-            'port': env.int('EMAIL_PORT', default=587),
-            'username': env('EMAIL_HOST_USER', default=''),
-            'password': env('EMAIL_HOST_PASSWORD', default=''),
-            'use_tls': env.bool('EMAIL_USE_TLS', default=True),
-            'use_ssl': env.bool('EMAIL_USE_SSL', default=False),
-            'timeout': env.int('EMAIL_TIMEOUT', default=10),
-        },
+        'BACKEND': _email_backend,
+        # Console, file and in-memory backends reject SMTP connection options.
+        'OPTIONS': SMTP_MAILER_OPTIONS if _email_backend == 'django.core.mail.backends.smtp.EmailBackend' else {},
     },
 }
 

@@ -206,6 +206,8 @@ class Customer(BaseModel):
 
 class Branch(BaseModel):
     objects = BranchQuerySet.as_manager()
+    LICENSING_CODE_PREFIX = 'CORE-'
+    LICENSING_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
 
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='branches')
     name = models.CharField(max_length=150)
@@ -276,9 +278,19 @@ class Branch(BaseModel):
     @classmethod
     def generate_licensing_code(cls):
         while True:
-            code = f'CORE-{secrets.token_urlsafe(12).upper()}'
+            code = cls.LICENSING_CODE_PREFIX + ''.join(
+                secrets.choice(cls.LICENSING_CODE_ALPHABET) for _ in range(6)
+            )
             if not cls.objects.filter(licensing_code=code).exists():
                 return code
+
+    @classmethod
+    def normalize_licensing_code(cls, value):
+        value = str(value or '').strip().upper()
+        suffix = value.removeprefix(cls.LICENSING_CODE_PREFIX) if value.startswith(cls.LICENSING_CODE_PREFIX) else value
+        if re.fullmatch(f'[{cls.LICENSING_CODE_ALPHABET}]{{6}}', suffix):
+            return cls.LICENSING_CODE_PREFIX + suffix
+        return None
 
     def __str__(self):
         return f'{self.company.trade_name} - {self.name}'

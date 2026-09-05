@@ -162,14 +162,16 @@ def pairing_channels(branch):
 def identify_branch(identifier, request):
     cleaned = re.sub(r'\D', '', str(identifier or ''))
     identifier = str(identifier or '').strip()
-    key = _request_key(request, 'pairing-identify', identifier)
+    licensing_code = Branch.normalize_licensing_code(identifier)
+    key = _request_key(request, 'pairing-identify', licensing_code or identifier)
     if _limited(key):
         _error('pairing_rate_limited', 'Tente novamente mais tarde.', status_code=429)
     branch = None
     if len(cleaned) == 14:
         branch = Branch.objects.select_related('company').filter(cnpj=cleaned).first()
     if branch is None:
-        branch = Branch.objects.select_related('company').filter(licensing_code__iexact=identifier).first()
+        lookup = licensing_code or identifier
+        branch = Branch.objects.select_related('company').filter(licensing_code__iexact=lookup).first()
     if not branch:
         _record_limit_failure(key)
         _error('branch_not_found', 'Filial nao encontrada.', status_code=404)
