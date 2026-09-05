@@ -124,7 +124,6 @@ class AppController extends ChangeNotifier {
   void selectOperator(PosOperator operator) {
     selectedOperator = operator;
     errorMessage = null;
-    phase = AppPhase.operatorPin;
     notifyListeners();
   }
 

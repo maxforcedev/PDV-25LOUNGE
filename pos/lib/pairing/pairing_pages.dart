@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../core/app_controller.dart';
+import '../core/core_branding.dart';
 import 'pairing_models.dart';
 
 const _primary = Color(0xff3454d1);
@@ -223,12 +224,12 @@ class _PairingFrame extends StatelessWidget {
             child: LayoutBuilder(
               builder: (context, constraints) {
                 final isTablet = constraints.maxWidth >= 600;
-                final padding = isTablet ? 44.0 : 24.0;
+                final padding = isTablet ? 32.0 : 20.0;
                 return Center(
                   child: SingleChildScrollView(
                     padding: EdgeInsets.all(padding),
                     child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 520),
+                      constraints: const BoxConstraints(maxWidth: 440),
                       child: TweenAnimationBuilder<double>(
                         duration: const Duration(milliseconds: 650),
                         curve: Curves.easeOutCubic,
@@ -245,9 +246,9 @@ class _PairingFrame extends StatelessWidget {
                           children: [
                             Center(
                               child: Container(
-                                width: isInitialPage ? 188 : 132,
-                                height: isInitialPage ? 116 : 82,
-                                padding: const EdgeInsets.all(12),
+                                width: isInitialPage ? 220 : 184,
+                                height: isInitialPage ? 82 : 68,
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                                 decoration: BoxDecoration(
                                   color: Colors.white,
                                   borderRadius: BorderRadius.circular(22),
@@ -255,11 +256,7 @@ class _PairingFrame extends StatelessWidget {
                                     BoxShadow(color: Color(0x143454d1), blurRadius: 28, offset: Offset(0, 12)),
                                   ],
                                 ),
-                                child: Image.asset(
-                                  'assets/branding/core-logo.png',
-                                  fit: BoxFit.contain,
-                                  semanticLabel: 'CORE PDV',
-                                ),
+                                child: CoreWordmark(width: isInitialPage ? 196 : 160),
                               ),
                             ),
                             const SizedBox(height: 28),
@@ -276,8 +273,6 @@ class _PairingFrame extends StatelessWidget {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
-                                  const Text('CORE PDV', style: TextStyle(color: _primary, fontSize: 12, fontWeight: FontWeight.w800, letterSpacing: 1.4)),
-                                  const SizedBox(height: 10),
                                   Text(title, style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800, color: _ink)),
                                   const SizedBox(height: 8),
                                   Text(subtitle, style: const TextStyle(color: _muted, fontSize: 15, height: 1.45)),

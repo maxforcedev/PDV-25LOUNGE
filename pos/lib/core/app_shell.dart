@@ -4,6 +4,7 @@ import '../auth/operator_pages.dart';
 import '../home/home_page.dart';
 import '../pairing/pairing_pages.dart';
 import 'app_controller.dart';
+import 'core_branding.dart';
 
 class AppShell extends StatelessWidget {
   const AppShell({required this.controller, super.key});
@@ -13,27 +14,76 @@ class AppShell extends StatelessWidget {
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
         animation: controller,
-        builder: (context, _) => switch (controller.phase) {
-          AppPhase.loading => const _LoadingPage(),
-          AppPhase.pairingIdentifier => PairingIdentifierPage(controller: controller),
-          AppPhase.pairingChannel => PairingChannelPage(controller: controller),
-          AppPhase.pairingOtp => PairingOtpPage(controller: controller),
-          AppPhase.operatorSelection => OperatorSelectionPage(controller: controller),
-          AppPhase.operatorPin => OperatorPinPage(controller: controller),
-          AppPhase.home => HomePage(controller: controller),
-          AppPhase.deviceUnavailable => _DeviceUnavailablePage(controller: controller),
-          AppPhase.updateRequired => const _UpdateRequiredPage(),
-          AppPhase.error => _ErrorPage(controller: controller),
+        builder: (context, _) {
+          final page = switch (controller.phase) {
+            AppPhase.loading => const _LoadingPage(),
+            AppPhase.pairingIdentifier => PairingIdentifierPage(controller: controller),
+            AppPhase.pairingChannel => PairingChannelPage(controller: controller),
+            AppPhase.pairingOtp => PairingOtpPage(controller: controller),
+            AppPhase.operatorSelection || AppPhase.operatorPin => OperatorAccessPage(controller: controller),
+            AppPhase.home => HomePage(controller: controller),
+            AppPhase.deviceUnavailable => _DeviceUnavailablePage(controller: controller),
+            AppPhase.updateRequired => const _UpdateRequiredPage(),
+            AppPhase.error => _ErrorPage(controller: controller),
+          };
+          return AnimatedSwitcher(
+            duration: const Duration(milliseconds: 260),
+            reverseDuration: const Duration(milliseconds: 180),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            transitionBuilder: (child, animation) => FadeTransition(
+              opacity: animation,
+              child: SlideTransition(
+                position: Tween<Offset>(begin: const Offset(0, 0.025), end: Offset.zero).animate(animation),
+                child: ScaleTransition(scale: Tween<double>(begin: 0.985, end: 1).animate(animation), child: child),
+              ),
+            ),
+            child: KeyedSubtree(key: ValueKey(controller.phase), child: page),
+          );
         },
       );
 }
 
-class _LoadingPage extends StatelessWidget {
+class _LoadingPage extends StatefulWidget {
   const _LoadingPage();
 
   @override
-  Widget build(BuildContext context) => const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
+  State<_LoadingPage> createState() => _LoadingPageState();
+}
+
+class _LoadingPageState extends State<_LoadingPage> with SingleTickerProviderStateMixin {
+  late final AnimationController _animation = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  )..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _animation.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        body: DecoratedBox(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Color(0xffe8edff), Color(0xfff0f2f8)],
+            ),
+          ),
+          child: Center(
+            child: AnimatedBuilder(
+              animation: _animation,
+              builder: (context, child) => Opacity(
+                opacity: 0.72 + (_animation.value * 0.28),
+                child: Transform.scale(scale: 0.94 + (_animation.value * 0.06), child: child),
+              ),
+              child: const CoreSymbol(size: 112),
+            ),
+          ),
+        ),
       );
 }
 
