@@ -51,15 +51,29 @@ class _LoadingPage extends StatefulWidget {
   State<_LoadingPage> createState() => _LoadingPageState();
 }
 
-class _LoadingPageState extends State<_LoadingPage> with SingleTickerProviderStateMixin {
-  late final AnimationController _animation = AnimationController(
+class _LoadingPageState extends State<_LoadingPage> with TickerProviderStateMixin {
+  late final AnimationController _entrance = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 900),
-  )..repeat(reverse: true);
+    duration: const Duration(milliseconds: 480),
+  );
+  late final AnimationController _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1600),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _entrance.addStatusListener((status) {
+      if (status == AnimationStatus.completed) _pulse.repeat(reverse: true);
+    });
+    _entrance.forward();
+  }
 
   @override
   void dispose() {
-    _animation.dispose();
+    _entrance.dispose();
+    _pulse.dispose();
     super.dispose();
   }
 
@@ -75,12 +89,34 @@ class _LoadingPageState extends State<_LoadingPage> with SingleTickerProviderSta
           ),
           child: Center(
             child: AnimatedBuilder(
-              animation: _animation,
-              builder: (context, child) => Opacity(
-                opacity: 0.72 + (_animation.value * 0.28),
-                child: Transform.scale(scale: 0.94 + (_animation.value * 0.06), child: child),
+              animation: Listenable.merge([_entrance, _pulse]),
+              builder: (context, child) {
+                final entry = Curves.easeOutCubic.transform(_entrance.value);
+                final breathing = Curves.easeInOutSine.transform(_pulse.value);
+                return Opacity(
+                  opacity: entry,
+                  child: Transform.translate(
+                    offset: Offset(0, 14 * (1 - entry)),
+                    child: Transform.scale(
+                      scale: (0.9 + (entry * 0.1)) + (breathing * 0.018),
+                      child: child,
+                    ),
+                  ),
+                );
+              },
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(30),
+                  boxShadow: const [
+                    BoxShadow(color: Color(0x263454d1), blurRadius: 28, offset: Offset(0, 14)),
+                  ],
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(30),
+                  clipBehavior: Clip.antiAlias,
+                  child: const CoreSymbol(size: 112),
+                ),
               ),
-              child: const CoreSymbol(size: 112),
             ),
           ),
         ),

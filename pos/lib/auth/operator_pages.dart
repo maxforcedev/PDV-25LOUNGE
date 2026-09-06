@@ -45,7 +45,7 @@ class _OperatorAccessPageState extends State<OperatorAccessPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Center(child: CoreWordmark(width: 196)),
+                    const Center(child: CoreWordmark(width: 224)),
                     const SizedBox(height: 32),
                     Container(
                       padding: const EdgeInsets.all(24),
@@ -99,8 +99,6 @@ class _OperatorAccessPageState extends State<OperatorAccessPage> {
                               style: TextStyle(color: Color(0xff64748b)),
                             ),
                           ],
-                          const SizedBox(height: 20),
-                          _OperatorIdentity(operator: operator),
                           const SizedBox(height: 20),
                           TextField(
                             controller: _pin,
@@ -168,38 +166,6 @@ class _OperatorAccessPageState extends State<OperatorAccessPage> {
       if (mounted) setState(_pin.clear);
     }
   }
-}
-
-class _OperatorIdentity extends StatelessWidget {
-  const _OperatorIdentity({required this.operator});
-
-  final PosOperator? operator;
-
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: const Color(0xfff0f2f8),
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Row(
-          children: [
-            CircleAvatar(
-              radius: 24,
-              backgroundColor: const Color(0xffdce4ff),
-              foregroundColor: const Color(0xff2945b6),
-              child: Text(operator?.initials ?? '?'),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Text(
-                operator?.displayName ?? 'Selecione um operador',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
-              ),
-            ),
-          ],
-        ),
-      );
 }
 
 class _ErrorNotice extends StatelessWidget {
