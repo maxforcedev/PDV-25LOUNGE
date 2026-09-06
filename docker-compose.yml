@@ -29,7 +29,7 @@ services:
     environment:
       DEBUG: 'True'
       SECRET_KEY: ${SECRET_KEY:-local-compose-key-change-before-production}
-      ALLOWED_HOSTS: localhost,127.0.0.1,backend
+      ALLOWED_HOSTS: localhost,127.0.0.1,backend,192.168.1.80
       CSRF_TRUSTED_ORIGINS: http://localhost:${FRONTEND_PORT:-3000},http://127.0.0.1:${FRONTEND_PORT:-3000},http://localhost:${PLATFORM_ADMIN_PORT:-3001},http://127.0.0.1:${PLATFORM_ADMIN_PORT:-3001}
       CORS_ALLOWED_ORIGINS: http://localhost:${FRONTEND_PORT:-3000},http://127.0.0.1:${FRONTEND_PORT:-3000},http://localhost:${PLATFORM_ADMIN_PORT:-3001},http://127.0.0.1:${PLATFORM_ADMIN_PORT:-3001}
       TIME_ZONE: America/Sao_Paulo
@@ -58,7 +58,7 @@ services:
     volumes:
       - ./backend:/app
     ports:
-      - '127.0.0.1:${BACKEND_PORT:-18000}:8000'
+      - '${BACKEND_PORT:-18000}:8000'
     healthcheck:
       test:
         [
