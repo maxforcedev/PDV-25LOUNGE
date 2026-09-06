@@ -1,3 +1,5 @@
+import '../cash/cash_models.dart';
+
 class ReleaseInfo {
   const ReleaseInfo({
     required this.currentVersion,
@@ -23,13 +25,15 @@ class ReleaseInfo {
 }
 
 class HeartbeatResult {
-  const HeartbeatResult({required this.release});
+  const HeartbeatResult({required this.release, this.deviceStatus = ''});
 
   factory HeartbeatResult.fromJson(Map<String, dynamic> json) => HeartbeatResult(
         release: ReleaseInfo.fromJson(json['release'] as Map<String, dynamic>),
+        deviceStatus: (json['device'] as Map<String, dynamic>?)?['status'] as String? ?? '',
       );
 
   final ReleaseInfo release;
+  final String deviceStatus;
 }
 
 class HomeModule {
@@ -45,9 +49,12 @@ class BootstrapSnapshot {
     required this.companyName,
     required this.branchName,
     required this.deviceName,
+    this.deviceStatus = '',
     required this.operatorName,
     required this.release,
     required this.modules,
+    this.permissions = const {},
+    this.cash = const CashOverview(mode: 'FLEXIBLE', enabled: false),
   });
 
   factory BootstrapSnapshot.fromJson(Map<String, dynamic> json) {
@@ -70,18 +77,36 @@ class BootstrapSnapshot {
       companyName: company['trade_name'] as String,
       branchName: branch['name'] as String,
       deviceName: device['name'] as String,
+      deviceStatus: device['status'] as String? ?? '',
       operatorName: operator['display_name'] as String,
       release: ReleaseInfo.fromJson(json['release'] as Map<String, dynamic>),
       modules: modules,
+      permissions: (json['permissions'] as List<dynamic>? ?? const []).cast<String>().toSet(),
+      cash: CashOverview.fromJson(json['cash'] as Map<String, dynamic>? ?? const {}),
     );
   }
 
   final String companyName;
   final String branchName;
   final String deviceName;
+  final String deviceStatus;
   final String operatorName;
   final ReleaseInfo release;
   final List<HomeModule> modules;
+  final Set<String> permissions;
+  final CashOverview cash;
 
   Iterable<HomeModule> get enabledModules => modules.where((module) => module.enabled);
+
+  BootstrapSnapshot withCash(CashOverview nextCash) => BootstrapSnapshot(
+        companyName: companyName,
+        branchName: branchName,
+        deviceName: deviceName,
+        deviceStatus: deviceStatus,
+        operatorName: operatorName,
+        release: release,
+        modules: modules,
+        permissions: permissions,
+        cash: nextCash,
+      );
 }

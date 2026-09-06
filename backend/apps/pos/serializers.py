@@ -1,4 +1,8 @@
+from decimal import Decimal
+
 from rest_framework import serializers
+
+from apps.cash.serializers import StrictMoneyField
 
 from .models import BranchPOSSettings, POSDevice, POSDeviceSettings
 from .services import effective_cash_settings, effective_settings
@@ -104,3 +108,10 @@ class POSDeviceSettingsSerializer(serializers.ModelSerializer):
         return list(CashRegister.objects.filter(
             branch_id=settings.device.branch_id, status='active'
         ).values('id', 'name'))
+
+
+class POSOpenCashSessionSerializer(serializers.Serializer):
+    register = serializers.IntegerField(min_value=1, required=False)
+    opening_amount = StrictMoneyField(
+        max_digits=14, decimal_places=2, min_value=Decimal('0.00')
+    )

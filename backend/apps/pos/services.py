@@ -7,12 +7,14 @@ from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.core.mail import send_mail
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 from django.utils import timezone
 from rest_framework.exceptions import AuthenticationFailed
 
 from apps.base.audit import audit_log
 from apps.base.exceptions import DomainValidationError
+from apps.cash.models import CashRegister, CashRegisterStatus, CashSession, CashSessionStatus
+from apps.companies.features import branch_feature_enabled
 from apps.companies.models import Branch, Status, UserBranchAccess, UserCompanyAccess, UserPermissionBlock
 from apps.companies.rbac import OPERATING_PERMISSION_CODES
 from apps.saas.services import effective_entitlement, resolve_effective_status
@@ -470,6 +472,73 @@ def effective_cash_settings(device):
     mode = (override.cash_binding_mode if override and override.cash_binding_mode else None) or getattr(defaults, 'cash_binding_mode', 'FLEXIBLE')
     register = (override.default_cash_register if override and override.default_cash_register_id else None) or getattr(defaults, 'default_cash_register', None)
     return mode, register
+
+
+def _cash_session_data(session, *, include_opening_amount):
+    if not session:
+        return None
+    data = {
+        'id': session.pk,
+        'register': {
+            'id': session.cash_register_id,
+            'name': session.cash_register.name,
+        },
+        'status': session.status,
+        'opened_by_name': session.opened_by.get_full_name().strip() or session.opened_by.email,
+        'opened_at': session.opened_at,
+    }
+    if include_opening_amount:
+        data['opening_amount'] = f'{session.opening_amount:.2f}'
+    return data
+
+
+def _cash_register_data(register, *, include_opening_amount):
+    sessions = getattr(register, 'pos_open_sessions', ())
+    return {
+        'id': register.pk,
+        'name': register.name,
+        'status': register.status,
+        'session': _cash_session_data(
+            sessions[0] if sessions else None,
+            include_opening_amount=include_opening_amount,
+        ),
+    }
+
+
+def cash_state_for_device(device, permission_codes):
+    """Build the POS cash state without inferring a selected flexible register."""
+    mode, configured_register = effective_cash_settings(device)
+    open_sessions = CashSession.objects.filter(
+        status=CashSessionStatus.OPEN,
+    ).select_related('cash_register', 'opened_by')
+    registers = CashRegister.objects.filter(
+        branch=device.branch,
+    ).prefetch_related(Prefetch(
+        'sessions', queryset=open_sessions, to_attr='pos_open_sessions',
+    ))
+    include_opening_amount = 'cash_registers.view' in permission_codes
+    state = {
+        'mode': mode,
+        'enabled': branch_feature_enabled(device.branch, 'cash_register'),
+    }
+    if mode == 'FIXED':
+        register = registers.filter(pk=getattr(configured_register, 'pk', None)).first()
+        state['register'] = ({
+            'id': register.pk,
+            'name': register.name,
+            'status': register.status,
+        } if register else None)
+        sessions = getattr(register, 'pos_open_sessions', ()) if register else ()
+        state['session'] = _cash_session_data(
+            sessions[0] if sessions else None,
+            include_opening_amount=include_opening_amount,
+        )
+        return state
+    state['registers'] = [
+        _cash_register_data(register, include_opening_amount=include_opening_amount)
+        for register in registers.filter(status=CashRegisterStatus.ACTIVE).order_by('name', 'pk')
+    ]
+    return state
 
 
 def modules_for(operator, device):

@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from unittest.mock import patch
+from uuid import uuid4
 
 from django.contrib.auth.hashers import make_password
 from django.core.exceptions import ValidationError
@@ -10,8 +11,12 @@ from django.test import TestCase
 
 from apps.accounts.models import User
 from apps.base.exceptions import DomainValidationError
-from apps.cash.models import CashRegister
-from apps.companies.models import Branch, UserBranchAccess, UserCompanyAccess
+from apps.cash.models import CashMovement, CashRegister
+from apps.cash.services import open_session
+from apps.companies.models import (
+    Branch, FunctionalPermission, UserBranchAccess, UserCompanyAccess,
+    UserPermissionBlock,
+)
 from apps.companies.services import create_branch_with_access, create_company_with_matrix
 from apps.pos.models import (
     AuthenticationChallenge, BranchPOSSettings, POSDevice, POSDeviceSettings,
@@ -116,6 +121,45 @@ class POSFoundationIntegrationTests(TestCase):
         )
         self.assertEqual(confirmation.status_code, 201, confirmation.data)
         return confirmation, otp.data['challenge_id']
+
+    def create_pos_operator(self):
+        operator = User.objects.create_user(
+            email=f'operator-{uuid4()}@example.com',
+            password='Strong-operator-password-123!',
+            can_login=False,
+            can_access_pos=True,
+        )
+        operator.pos_pin_hash = make_password('123456')
+        operator.save(update_fields=['pos_pin_hash', 'updated_at'])
+        profile = self.owner.company_accesses.get(company=self.company).access_profile
+        UserCompanyAccess.objects.create(
+            user=operator,
+            company=self.company,
+            access_profile=profile,
+            can_login=False,
+        )
+        UserBranchAccess.objects.create(
+            user=operator,
+            branch=self.branch,
+            access_profile=profile,
+        )
+        return operator
+
+    def login_pos_operator(self):
+        paired, _ = self.pair_device()
+        operator = self.create_pos_operator()
+        self.client.credentials(HTTP_X_POS_DEVICE_CREDENTIAL=paired.data['device_credential'])
+        login = self.client.post(
+            reverse('pos:operator-login'),
+            {'operator_id': operator.pk, 'pin': '123456'},
+            format='json',
+        )
+        self.assertEqual(login.status_code, 200, login.data)
+        self.client.credentials(
+            HTTP_X_POS_DEVICE_CREDENTIAL=paired.data['device_credential'],
+            HTTP_X_POS_OPERATOR_SESSION=login.data['operator_session']['token'],
+        )
+        return operator, paired
 
     def test_generated_licensing_code_is_short_and_unambiguous(self):
         self.assertRegex(
@@ -309,3 +353,131 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data['receipt_print_mode'], 'automatic')
         self.assertEqual(response.data['effective_settings']['paper_width'], 58)
+
+    def test_bootstrap_reports_fixed_and_flexible_cash_state_without_fake_selection(self):
+        operator, _ = self.login_pos_operator()
+        fixed_register = CashRegister.objects.create(branch=self.branch, name='Bar')
+        fixed_session = open_session(
+            fixed_register, '25.00', operator, self.branch, allow_pos_only=True,
+        )
+        BranchPOSSettings.objects.create(
+            branch=self.branch,
+            cash_binding_mode='FIXED',
+            default_cash_register=fixed_register,
+        )
+
+        fixed = self.client.get(reverse('pos:bootstrap'))
+
+        self.assertEqual(fixed.status_code, 200, fixed.data)
+        self.assertEqual(fixed.data['cash']['mode'], 'FIXED')
+        self.assertEqual(fixed.data['cash']['register']['id'], fixed_register.pk)
+        self.assertEqual(fixed.data['cash']['session']['id'], fixed_session.pk)
+        self.assertEqual(fixed.data['cash']['session']['opening_amount'], '25.00')
+        UserPermissionBlock.objects.create(
+            company=self.company,
+            branch=self.branch,
+            user=operator,
+            permission=FunctionalPermission.objects.get(code='cash_registers.view'),
+            created_by=self.owner,
+        )
+        redacted = self.client.get(reverse('pos:bootstrap'))
+        self.assertEqual(redacted.status_code, 200, redacted.data)
+        self.assertNotIn('opening_amount', redacted.data['cash']['session'])
+        operator.permission_blocks.filter(permission__code='cash_registers.view').delete()
+
+        flexible_register = CashRegister.objects.create(branch=self.branch, name='Pista')
+        open_session(
+            flexible_register, '10.00', operator, self.branch, allow_pos_only=True,
+        )
+        settings = self.branch.pos_settings
+        settings.cash_binding_mode = 'FLEXIBLE'
+        settings.save(update_fields=['cash_binding_mode', 'updated_at'])
+
+        flexible = self.client.get(reverse('pos:bootstrap'))
+
+        self.assertEqual(flexible.status_code, 200, flexible.data)
+        self.assertEqual(flexible.data['cash']['mode'], 'FLEXIBLE')
+        self.assertNotIn('register', flexible.data['cash'])
+        self.assertNotIn('session', flexible.data['cash'])
+        self.assertEqual(
+            {item['id'] for item in flexible.data['cash']['registers']},
+            {fixed_register.pk, flexible_register.pk},
+        )
+
+    def test_pos_cash_requires_operator_scope_and_uses_pos_only_operator_rbac(self):
+        operator, paired = self.login_pos_operator()
+        register = CashRegister.objects.create(branch=self.branch, name='Bar')
+        BranchPOSSettings.objects.create(
+            branch=self.branch,
+            cash_binding_mode='FLEXIBLE',
+        )
+
+        self.client.credentials(HTTP_X_POS_DEVICE_CREDENTIAL=paired.data['device_credential'])
+        without_operator = self.client.get(reverse('pos:cash-overview'))
+        self.assertEqual(without_operator.status_code, 401, without_operator.data)
+
+        self.client.credentials(
+            HTTP_X_POS_DEVICE_CREDENTIAL=paired.data['device_credential'],
+            HTTP_X_POS_OPERATOR_SESSION=self.client.post(
+                reverse('pos:operator-login'),
+                {'operator_id': operator.pk, 'pin': '123456'}, format='json',
+            ).data['operator_session']['token'],
+        )
+        opened = self.client.post(
+            reverse('pos:cash-session-open'),
+            {'register': register.pk, 'opening_amount': '5.00'},
+            format='json',
+        )
+        self.assertEqual(opened.status_code, 201, opened.data)
+        session_id = opened.data['id']
+
+        other_branch = create_branch_with_access(
+            creator=self.owner, company=self.company, name='Outra filial', address_pending=True,
+        )
+        foreign_register = CashRegister.objects.create(branch=other_branch, name='Externo')
+        foreign_session = open_session(foreign_register, '0.00', self.owner, other_branch)
+        foreign_entry = self.client.post(
+            reverse('pos:cash-session-entry', args=[foreign_session.pk]),
+            {'idempotency_key': str(uuid4()), 'amount': '1.00', 'reason': 'Fora do escopo'},
+            format='json',
+        )
+        self.assertEqual(foreign_entry.status_code, 404, foreign_entry.data)
+
+        UserPermissionBlock.objects.create(
+            company=self.company,
+            branch=self.branch,
+            user=operator,
+            permission=FunctionalPermission.objects.get(code='cash_registers.manual_entry'),
+            created_by=self.owner,
+        )
+        blocked_entry = self.client.post(
+            reverse('pos:cash-session-entry', args=[session_id]),
+            {'idempotency_key': str(uuid4()), 'amount': '1.00', 'reason': 'Sem permissao'},
+            format='json',
+        )
+        self.assertEqual(blocked_entry.status_code, 403, blocked_entry.data)
+
+    def test_pos_cash_movement_replays_idempotently(self):
+        _, _ = self.login_pos_operator()
+        register = CashRegister.objects.create(branch=self.branch, name='Bar')
+        BranchPOSSettings.objects.create(branch=self.branch, cash_binding_mode='FLEXIBLE')
+        opened = self.client.post(
+            reverse('pos:cash-session-open'),
+            {'register': register.pk, 'opening_amount': '0.00'},
+            format='json',
+        )
+        self.assertEqual(opened.status_code, 201, opened.data)
+        key = str(uuid4())
+        payload = {'idempotency_key': key, 'amount': '12.00', 'reason': 'Troco inicial'}
+
+        created = self.client.post(
+            reverse('pos:cash-session-entry', args=[opened.data['id']]), payload, format='json',
+        )
+        replayed = self.client.post(
+            reverse('pos:cash-session-entry', args=[opened.data['id']]), payload, format='json',
+        )
+
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(replayed.status_code, 200, replayed.data)
+        self.assertEqual(created.data['id'], replayed.data['id'])
+        self.assertEqual(CashMovement.objects.filter(cash_session_id=opened.data['id']).count(), 1)

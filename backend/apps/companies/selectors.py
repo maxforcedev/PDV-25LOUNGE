@@ -198,24 +198,32 @@ def user_has_company_permission(user, company_id, code):
     ).exists()
 
 
-def user_has_branch_permission(user, branch_id, code):
-    if not user.is_authenticated or not user.can_login or not user.is_active:
+def user_has_branch_permission(user, branch_id, code, *, allow_pos_only=False):
+    if not user.is_authenticated or not user.is_active:
+        return False
+    if not user.can_login and not (allow_pos_only and user.can_access_pos):
+        return False
+    if allow_pos_only and not user.can_access_pos:
         return False
     if user.is_superuser:
         return True
     if _permission_blocked(user, branch_id=branch_id, code=code):
         return False
+    filters = {
+        'user': user,
+        'branch_id': branch_id,
+        'is_active': True,
+        'access_profile__status': 'active',
+        'access_profile__permissions__status': 'active',
+        'access_profile__permissions__code': code,
+        'branch__company__user_accesses__user': user,
+        'branch__company__user_accesses__is_active': True,
+        'branch__company__user_accesses__saas_status': UserCompanyAccess.SaaSStatus.ACTIVE,
+    }
+    if not allow_pos_only:
+        filters['branch__company__user_accesses__can_login'] = True
     return UserBranchAccess.objects.filter(
-        user=user,
-        branch_id=branch_id,
-        is_active=True,
-        access_profile__status='active',
-        access_profile__permissions__status='active',
-        access_profile__permissions__code=code,
-        branch__company__user_accesses__user=user,
-        branch__company__user_accesses__is_active=True,
-        branch__company__user_accesses__can_login=True,
-        branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
+        **filters,
     ).exists()
 
 

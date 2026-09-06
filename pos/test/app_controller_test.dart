@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:core_pos/auth/auth_models.dart';
 import 'package:core_pos/bootstrap/bootstrap_models.dart';
+import 'package:core_pos/cash/cash_models.dart';
 import 'package:core_pos/core/app_controller.dart';
 import 'package:core_pos/network/pos_api.dart';
 import 'package:core_pos/network/pos_api_error.dart';
@@ -124,6 +125,23 @@ class FakePosApi implements PosApi {
         operatorName: operator.displayName,
         release: release,
         modules: const [HomeModule(key: 'quick_sale', enabled: true)],
+        cash: const CashOverview(mode: 'FLEXIBLE', enabled: true),
+      );
+
+  @override
+  Future<CashOverview> cashOverview() async => const CashOverview(mode: 'FLEXIBLE', enabled: true);
+
+  @override
+  Future<void> closeCashSession({required int sessionId, required String closingAmount}) async {}
+
+  @override
+  Future<CashSessionSummary> cashSessionSummary(int sessionId) async => const CashSessionSummary(
+        status: 'open',
+        openingAmount: '0.00',
+        manualEntries: '0.00',
+        withdrawals: '0.00',
+        cashPayments: '0.00',
+        expectedAmount: '0.00',
       );
 
   @override
@@ -148,6 +166,16 @@ class FakePosApi implements PosApi {
       OperatorSession(token: 'operator-secret', operator: operator);
 
   @override
+  Future<CashSessionInfo> openCashSession({required String openingAmount, int? registerId}) async => const CashSessionInfo(
+        id: 1,
+        registerId: 1,
+        registerName: 'Caixa',
+        status: 'open',
+        openedByName: 'Joao',
+        openedAt: null,
+      );
+
+  @override
   Future<void> logout() async {}
 
   @override
@@ -156,4 +184,10 @@ class FakePosApi implements PosApi {
   @override
   Future<OtpChallenge> requestOtp(String flowId, String channelId) async =>
       const OtpChallenge(id: 'challenge', destination: 'a***@core.com');
+
+  @override
+  Future<void> recordCashEntry({required int sessionId, required String amount, required String reason, required String idempotencyKey}) async {}
+
+  @override
+  Future<void> recordCashWithdrawal({required int sessionId, required String amount, required String reason, required String category, required String resultEffect, required String idempotencyKey}) async {}
 }

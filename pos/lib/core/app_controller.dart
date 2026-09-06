@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../auth/auth_models.dart';
 import '../bootstrap/bootstrap_models.dart';
+import '../cash/cash_models.dart';
 import '../network/pos_api.dart';
 import '../network/pos_api_error.dart';
 import '../pairing/pairing_models.dart';
@@ -99,8 +100,9 @@ class AppController extends ChangeNotifier {
       notifyListeners();
     }
     try {
-      syncStatus = const SyncStatus(phase: SyncPhase.syncing);
+      syncStatus = syncStatus.begin();
       final heartbeat = await _api.heartbeat(_device);
+      syncStatus = syncStatus.heartbeat(DateTime.now());
       if (heartbeat.release.updateRequired) {
         phase = AppPhase.updateRequired;
         return;
@@ -108,7 +110,7 @@ class AppController extends ChangeNotifier {
       operators = await _api.operators();
       selectedOperator = null;
       phase = AppPhase.operatorSelection;
-      syncStatus = SyncStatus(phase: SyncPhase.synced, lastSyncedAt: DateTime.now());
+      syncStatus = syncStatus.succeeded('Dispositivo e operadores atualizados.');
     } on PosApiException catch (error) {
       _handleApiError(error, persistent: true);
       if (phase == AppPhase.loading || phase == AppPhase.operatorSelection) {
@@ -116,7 +118,7 @@ class AppController extends ChangeNotifier {
       }
     } on PosNetworkException catch (error) {
       errorMessage = error.message;
-      syncStatus = SyncStatus(phase: SyncPhase.error, error: error.message);
+      syncStatus = syncStatus.failed(error.message);
       phase = AppPhase.error;
     } finally {
       busy = false;
@@ -149,7 +151,7 @@ class AppController extends ChangeNotifier {
         phase = AppPhase.updateRequired;
         return;
       }
-      syncStatus = SyncStatus(phase: SyncPhase.synced, lastSyncedAt: DateTime.now());
+      syncStatus = syncStatus.succeeded('Dados operacionais atualizados.');
       phase = AppPhase.home;
     });
   }
@@ -163,6 +165,98 @@ class AppController extends ChangeNotifier {
       await _secrets.clearOperatorSession();
     }
     await recoverPairedDevice();
+  }
+
+  Future<void> synchronize() async {
+    if (busy || bootstrapSnapshot == null) return;
+    busy = true;
+    _clearTransientMessage();
+    syncStatus = syncStatus.begin();
+    notifyListeners();
+    try {
+      final heartbeat = await _api.heartbeat(_device);
+      syncStatus = syncStatus.heartbeat(DateTime.now());
+      if (heartbeat.release.updateRequired) {
+        phase = AppPhase.updateRequired;
+        return;
+      }
+      bootstrapSnapshot = await _api.bootstrap();
+      if (bootstrapSnapshot!.release.updateRequired) {
+        phase = AppPhase.updateRequired;
+        return;
+      }
+      syncStatus = syncStatus.succeeded('Dados operacionais atualizados.');
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+      syncStatus = syncStatus.failed(error.message);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message, notify: false);
+      syncStatus = syncStatus.failed(error.message);
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> refreshCashOverview() async {
+    final snapshot = bootstrapSnapshot;
+    if (busy || snapshot == null) return;
+    busy = true;
+    _clearTransientMessage();
+    notifyListeners();
+    try {
+      bootstrapSnapshot = snapshot.withCash(await _api.cashOverview());
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message, notify: false);
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> openCashSession({required String openingAmount, int? registerId}) => _runCashAction(
+        () => _api.openCashSession(openingAmount: openingAmount, registerId: registerId),
+        'Caixa aberto com sucesso.',
+      );
+
+  Future<void> recordCashEntry({required int sessionId, required String amount, required String reason}) => _runCashAction(
+        () => _api.recordCashEntry(
+          sessionId: sessionId,
+          amount: amount,
+          reason: reason,
+          idempotencyKey: createIdempotencyKey(),
+        ),
+        'Suprimento registrado com sucesso.',
+      );
+
+  Future<void> recordCashWithdrawal({required int sessionId, required String amount, required String reason, required String category}) => _runCashAction(
+        () => _api.recordCashWithdrawal(
+          sessionId: sessionId,
+          amount: amount,
+          reason: reason,
+          category: category,
+          resultEffect: 'operating_expense',
+          idempotencyKey: createIdempotencyKey(),
+        ),
+        'Sangria registrada com sucesso.',
+      );
+
+  Future<void> closeCashSession({required int sessionId, required String closingAmount}) => _runCashAction(
+        () => _api.closeCashSession(sessionId: sessionId, closingAmount: closingAmount),
+        'Caixa fechado com sucesso.',
+      );
+
+  Future<CashSessionSummary?> cashSessionSummary(int sessionId) async {
+    try {
+      return await _api.cashSessionSummary(sessionId);
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
   }
 
   Future<void> forgetDevice() async {
@@ -190,7 +284,7 @@ class AppController extends ChangeNotifier {
       _handleApiError(error);
     } on PosNetworkException catch (error) {
       _showTransientMessage(error.message, notify: false);
-      syncStatus = SyncStatus(phase: SyncPhase.error, error: error.message);
+      syncStatus = syncStatus.failed(error.message);
     } finally {
       busy = false;
       notifyListeners();
@@ -199,9 +293,6 @@ class AppController extends ChangeNotifier {
 
   void _handleApiError(PosApiException error, {bool persistent = false}) {
     final message = switch (error.statusCode) {
-      400 => 'Confira o CNPJ ou o código de licenciamento e tente novamente.',
-      403 => 'Esta filial não está disponível para pareamento no momento.',
-      404 => 'Não encontramos uma filial com estes dados.',
       429 => 'Muitas tentativas. Aguarde alguns instantes e tente novamente.',
       >= 500 => 'O CORE PDV está indisponível no momento. Tente novamente em breve.',
       _ => error.message,
@@ -243,6 +334,27 @@ class AppController extends ChangeNotifier {
 
   void _clearTransientMessage() {
     _transientFeedback.clear();
+  }
+
+  Future<void> _runCashAction(Future<void> Function() action, String successMessage) async {
+    final snapshot = bootstrapSnapshot;
+    if (busy || snapshot == null) return;
+    busy = true;
+    _clearTransientMessage();
+    notifyListeners();
+    try {
+      await action();
+      bootstrapSnapshot = snapshot.withCash(await _api.cashOverview());
+      syncStatus = syncStatus.succeeded('Caixa atualizado.');
+      _showTransientMessage(successMessage, tone: TransientAlertTone.success, notify: false);
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message, notify: false);
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
   }
 
   @override

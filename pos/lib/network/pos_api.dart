@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 
 import '../auth/auth_models.dart';
 import '../bootstrap/bootstrap_models.dart';
+import '../cash/cash_models.dart';
 import '../pairing/pairing_models.dart';
 import '../storage/secret_store.dart';
 import 'pos_api_error.dart';
@@ -22,6 +23,12 @@ abstract class PosApi {
   Future<OperatorSession> login(String operatorId, String pin);
   Future<void> logout();
   Future<BootstrapSnapshot> bootstrap();
+  Future<CashOverview> cashOverview();
+  Future<CashSessionInfo> openCashSession({required String openingAmount, int? registerId});
+  Future<CashSessionSummary> cashSessionSummary(int sessionId);
+  Future<void> recordCashEntry({required int sessionId, required String amount, required String reason, required String idempotencyKey});
+  Future<void> recordCashWithdrawal({required int sessionId, required String amount, required String reason, required String category, required String resultEffect, required String idempotencyKey});
+  Future<void> closeCashSession({required int sessionId, required String closingAmount});
 }
 
 class HttpPosApi implements PosApi {
@@ -140,4 +147,46 @@ class HttpPosApi implements PosApi {
   @override
   Future<BootstrapSnapshot> bootstrap() async =>
       BootstrapSnapshot.fromJson(await _request('GET', 'bootstrap/'));
+
+  @override
+  Future<CashOverview> cashOverview() async =>
+      CashOverview.fromJson(await _request('GET', 'cash/overview/'));
+
+  @override
+  Future<CashSessionInfo> openCashSession({required String openingAmount, int? registerId}) async =>
+      CashSessionInfo.fromJson(await _request('POST', 'cash/sessions/open/', body: {
+        'opening_amount': openingAmount,
+        if (registerId != null) 'register': registerId,
+      }));
+
+  @override
+  Future<CashSessionSummary> cashSessionSummary(int sessionId) async =>
+      CashSessionSummary.fromJson(await _request('GET', 'cash/sessions/$sessionId/summary/'));
+
+  @override
+  Future<void> recordCashEntry({required int sessionId, required String amount, required String reason, required String idempotencyKey}) async {
+    await _request('POST', 'cash/sessions/$sessionId/entry/', body: {
+      'amount': amount,
+      'reason': reason,
+      'idempotency_key': idempotencyKey,
+    });
+  }
+
+  @override
+  Future<void> recordCashWithdrawal({required int sessionId, required String amount, required String reason, required String category, required String resultEffect, required String idempotencyKey}) async {
+    await _request('POST', 'cash/sessions/$sessionId/withdrawal/', body: {
+      'amount': amount,
+      'reason': reason,
+      'category': category,
+      'result_effect': resultEffect,
+      'idempotency_key': idempotencyKey,
+    });
+  }
+
+  @override
+  Future<void> closeCashSession({required int sessionId, required String closingAmount}) async {
+    await _request('POST', 'cash/sessions/$sessionId/close/', body: {
+      'closing_amount_informed': closingAmount,
+    });
+  }
 }

@@ -1,7 +1,10 @@
+from decimal import Decimal
+
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -9,16 +12,29 @@ from rest_framework.views import APIView
 from apps.base.audit import audit_log, model_snapshot
 from apps.base.exceptions import DomainValidationError
 from apps.base.pagination import StandardPagination
+from apps.cash.models import CashMovement, CashRegister, CashRegisterStatus, CashSession
+from apps.cash.serializers import (
+    CashMovementSerializer, CashSessionSerializer, CloseSessionSerializer,
+    ManualEntryRequestSerializer, WithdrawalRequestSerializer,
+)
+from apps.cash.services import (
+    close_session, open_session, record_manual_entry, record_withdrawal,
+    redact_operational_summary, session_operational_summary,
+)
 from apps.companies.permissions import FunctionalCompanyPermission
 from apps.companies.selectors import accessible_branches
+from apps.companies.features import require_branch_feature
 
 from .authentication import POSDeviceAuthentication, require_device, require_operator_session
 from .models import POSDevice, POSDeviceSettings
-from .serializers import POSAdminDeviceSerializer, POSDeviceSettingsSerializer
+from .serializers import (
+    POSAdminDeviceSerializer, POSDeviceSettingsSerializer, POSOpenCashSessionSerializer,
+)
 from .services import (
-    assert_branch_device_limit, authenticate_operator, confirm_pairing, effective_cash_settings,
-    effective_settings, identify_branch, logout_operator, modules_for, pos_operator_queryset,
-    request_otp, set_device_status, set_pos_pin, validate_device_operational, version_gate,
+    assert_branch_device_limit, authenticate_operator, cash_state_for_device, confirm_pairing,
+    effective_cash_settings, effective_settings, identify_branch, logout_operator, modules_for,
+    operator_permission_codes, pos_operator_queryset, request_otp, set_device_status,
+    set_pos_pin, validate_device_operational, version_gate,
 )
 
 
@@ -115,7 +131,6 @@ class BootstrapView(POSDeviceView):
         device = self.device(request, check_version=True)
         session = require_operator_session(request, device)
         permissions, modules = modules_for(session.operator, device)
-        cash_mode, cash_register = effective_cash_settings(device)
         return Response({
             'server_time': timezone.now(),
             'release': version_gate(device.app_version),
@@ -128,11 +143,7 @@ class BootstrapView(POSDeviceView):
             'operator': _operator_data(session.operator),
             'permissions': sorted(permissions),
             'modules': modules,
-            'cash': {
-                'mode': cash_mode,
-                'register': ({'id': cash_register.pk, 'name': cash_register.name} if cash_register else None),
-                'session': None,
-            },
+            'cash': cash_state_for_device(device, permissions),
             'settings': {'receipt': effective_settings(device)},
         })
 
@@ -155,6 +166,159 @@ class PinConfirmView(POSPublicView):
     def post(self, request):
         set_pos_pin(_required(request.data, 'token'), _required(request.data, 'pin'))
         return Response({'detail': 'PIN configurado com sucesso.'})
+
+
+class POSCashView(POSDeviceView):
+    def context(self, request):
+        device = self.device(request, check_version=True)
+        operator_session = require_operator_session(request, device)
+        permissions = operator_permission_codes(operator_session.operator, device.branch)
+        return device, operator_session.operator, permissions
+
+    @staticmethod
+    def require_read_permission(permissions):
+        if 'cash_registers.view' not in permissions:
+            raise PermissionDenied('Você não possui permissão para visualizar caixas nesta filial.')
+
+    @staticmethod
+    def session_for_device(session_id, device):
+        return get_object_or_404(
+            CashSession.objects.select_related(
+                'cash_register', 'branch', 'branch__company', 'opened_by', 'closed_by',
+            ),
+            pk=session_id,
+            branch=device.branch,
+        )
+
+
+class POSCashOverviewView(POSCashView):
+    def get(self, request):
+        device, _, permissions = self.context(request)
+        self.require_read_permission(permissions)
+        return Response(cash_state_for_device(device, permissions))
+
+
+class POSCashSessionOpenView(POSCashView):
+    def post(self, request):
+        device, operator, _ = self.context(request)
+        require_branch_feature(device.branch, 'cash_register')
+        serializer = POSOpenCashSessionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        mode, configured_register = effective_cash_settings(device)
+        requested_register = serializer.validated_data.get('register')
+        if mode == 'FIXED':
+            if requested_register is not None:
+                raise DomainValidationError(
+                    code='fixed_cash_register',
+                    message='Este dispositivo usa o caixa configurado para ele.',
+                )
+            register = CashRegister.objects.filter(
+                pk=getattr(configured_register, 'pk', None), branch=device.branch,
+                status=CashRegisterStatus.ACTIVE,
+            ).first()
+            if not register:
+                error = DomainValidationError(
+                    code='cash_register_unavailable',
+                    message='O caixa configurado para este dispositivo não está ativo.',
+                )
+                error.status_code = status.HTTP_409_CONFLICT
+                raise error
+        else:
+            if requested_register is None:
+                raise DomainValidationError(
+                    code='cash_register_required',
+                    message='Selecione um caixa para abrir a sessão.',
+                    details={'register': ['Este campo é obrigatório.']},
+                )
+            register = get_object_or_404(
+                CashRegister, pk=requested_register, branch=device.branch,
+                status=CashRegisterStatus.ACTIVE,
+            )
+        session = open_session(
+            cash_register=register,
+            opening_amount=serializer.validated_data['opening_amount'],
+            user=operator,
+            current_branch=device.branch,
+            allow_pos_only=True,
+        )
+        return Response(CashSessionSerializer(session).data, status=status.HTTP_201_CREATED)
+
+
+class POSCashSessionSummaryView(POSCashView):
+    def get(self, request, session_id):
+        device, _, permissions = self.context(request)
+        self.require_read_permission(permissions)
+        session = self.session_for_device(session_id, device)
+        summary = redact_operational_summary(
+            session_operational_summary(session),
+            include_costs=False,
+            include_commission=False,
+        )
+        return Response(self.serialize(summary))
+
+    @staticmethod
+    def serialize(value):
+        if isinstance(value, Decimal):
+            return f'{value:.2f}'
+        if isinstance(value, dict):
+            return {key: POSCashSessionSummaryView.serialize(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [POSCashSessionSummaryView.serialize(item) for item in value]
+        return value
+
+
+class POSCashSessionMovementView(POSCashView):
+    serializer_class = None
+    service = None
+
+    def post(self, request, session_id):
+        device, operator, _ = self.context(request)
+        require_branch_feature(device.branch, 'cash_register')
+        session = self.session_for_device(session_id, device)
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        movement = self.service(
+            cash_session=session,
+            **serializer.validated_data,
+            user=operator,
+            current_branch=device.branch,
+            allow_pos_only=True,
+        )
+        replayed = bool(getattr(movement, '_idempotency_replayed', False))
+        movement = CashMovement.objects.select_related(
+            'cash_session', 'cash_session__cash_register', 'cash_session__branch', 'user',
+            'beneficiary_user',
+        ).get(pk=movement.pk)
+        return Response(
+            CashMovementSerializer(movement).data,
+            status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED,
+        )
+
+
+class POSCashSessionEntryView(POSCashSessionMovementView):
+    serializer_class = ManualEntryRequestSerializer
+    service = staticmethod(record_manual_entry)
+
+
+class POSCashSessionWithdrawalView(POSCashSessionMovementView):
+    serializer_class = WithdrawalRequestSerializer
+    service = staticmethod(record_withdrawal)
+
+
+class POSCashSessionCloseView(POSCashView):
+    def post(self, request, session_id):
+        device, operator, _ = self.context(request)
+        session = self.session_for_device(session_id, device)
+        serializer = CloseSessionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        session = close_session(
+            cash_session=session,
+            **serializer.validated_data,
+            user=operator,
+            current_branch=device.branch,
+            allow_pos_only=True,
+        )
+        return Response(CashSessionSerializer(session).data)
 
 
 class POSAdminDeviceViewSet(viewsets.ModelViewSet):

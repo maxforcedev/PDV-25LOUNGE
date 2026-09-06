@@ -48,7 +48,9 @@ def _pk(value):
     return value.pk if hasattr(value, 'pk') else value
 
 
-def _validate_current_branch(current_branch, object_branch, user, permission_code):
+def _validate_current_branch(
+    current_branch, object_branch, user, permission_code, *, allow_pos_only=False,
+):
     if current_branch is None:
         if not user.is_superuser:
             raise PermissionDenied('Informe a filial atual em X-Branch-ID.')
@@ -59,7 +61,9 @@ def _validate_current_branch(current_branch, object_branch, user, permission_cod
         raise PermissionDenied('Filial atual inválida.')
     if str(current_branch_id) != str(object_branch.pk):
         raise PermissionDenied('Objeto fora da filial atual.')
-    if not user_has_branch_permission(user, object_branch.pk, permission_code):
+    if not user_has_branch_permission(
+        user, object_branch.pk, permission_code, allow_pos_only=allow_pos_only,
+    ):
         raise PermissionDenied('Você não possui permissão nesta filial.')
 
 
@@ -72,7 +76,9 @@ def _validate_operational(register):
         raise ValidationError({'cash_register': 'O caixa deve estar ativo.'})
 
 
-def open_session(cash_register, opening_amount, user, current_branch):
+def open_session(
+    cash_register, opening_amount, user, current_branch, *, allow_pos_only=False,
+):
     opening_amount = parse_money(
         opening_amount, 'opening_amount', nonnegative=True
     )
@@ -85,7 +91,8 @@ def open_session(cash_register, opening_amount, user, current_branch):
             except (CashRegister.DoesNotExist, TypeError, ValueError):
                 raise ValidationError({'cash_register': 'Caixa inválido.'})
             _validate_current_branch(
-                current_branch, register.branch, user, 'cash_registers.open'
+                current_branch, register.branch, user, 'cash_registers.open',
+                allow_pos_only=allow_pos_only,
             )
             _validate_operational(register)
             if CashSession.objects.filter(
@@ -115,6 +122,7 @@ def open_session(cash_register, opening_amount, user, current_branch):
 def _record_movement(
     *, cash_session, amount, user, reason, current_branch, movement_type, permission_code,
     operation_reference, withdrawal_category=None, beneficiary_user=None, result_effect=None,
+    allow_pos_only=False,
 ):
     amount = parse_money(amount, 'amount', positive=True)
     reason = (reason or '').strip()
@@ -127,9 +135,13 @@ def _record_movement(
             ).get(pk=_pk(cash_session))
         except (CashSession.DoesNotExist, TypeError, ValueError):
             raise ValidationError({'cash_session': 'Sessão de caixa inválida.'})
-        _validate_current_branch(current_branch, session.branch, user, permission_code)
+        _validate_current_branch(
+            current_branch, session.branch, user, permission_code,
+            allow_pos_only=allow_pos_only,
+        )
         if session.opened_by_id != user.pk and not user_has_branch_permission(
-            user, session.branch_id, 'cash_registers.administer_others'
+            user, session.branch_id, 'cash_registers.administer_others',
+            allow_pos_only=allow_pos_only,
         ):
             raise PermissionDenied('Você não pode operar uma sessão aberta por outro usuário.')
         effective_result = result_effect or 'neutral'
@@ -211,7 +223,10 @@ def _record_movement(
         return movement
 
 
-def record_manual_entry(cash_session, amount, user, reason, current_branch, idempotency_key):
+def record_manual_entry(
+    cash_session, amount, user, reason, current_branch, idempotency_key,
+    *, allow_pos_only=False,
+):
     return _record_movement(
         cash_session=cash_session,
         amount=amount,
@@ -221,12 +236,13 @@ def record_manual_entry(cash_session, amount, user, reason, current_branch, idem
         movement_type=CashMovementType.MANUAL_ENTRY,
         permission_code='cash_registers.manual_entry',
         operation_reference=idempotency_key,
+        allow_pos_only=allow_pos_only,
     )
 
 
 def record_withdrawal(
     cash_session, amount, user, reason, current_branch, category, result_effect,
-    idempotency_key, beneficiary_user=None,
+    idempotency_key, beneficiary_user=None, *, allow_pos_only=False,
 ):
     return _record_movement(
         cash_session=cash_session,
@@ -240,6 +256,7 @@ def record_withdrawal(
         beneficiary_user=beneficiary_user,
         result_effect=result_effect,
         operation_reference=idempotency_key,
+        allow_pos_only=allow_pos_only,
     )
 
 
@@ -445,7 +462,9 @@ def redact_operational_summary(summary, *, include_costs, include_commission):
     return summary
 
 
-def close_session(cash_session, closing_amount_informed, user, current_branch):
+def close_session(
+    cash_session, closing_amount_informed, user, current_branch, *, allow_pos_only=False,
+):
     informed = parse_money(
         closing_amount_informed, 'closing_amount_informed', nonnegative=True
     )
@@ -458,10 +477,12 @@ def close_session(cash_session, closing_amount_informed, user, current_branch):
         except (CashSession.DoesNotExist, TypeError, ValueError):
             raise ValidationError({'cash_session': 'Sessão de caixa inválida.'})
         _validate_current_branch(
-            current_branch, session.branch, user, 'cash_registers.close'
+            current_branch, session.branch, user, 'cash_registers.close',
+            allow_pos_only=allow_pos_only,
         )
         if session.opened_by_id != user.pk and not user_has_branch_permission(
-            user, session.branch_id, 'cash_registers.administer_others'
+            user, session.branch_id, 'cash_registers.administer_others',
+            allow_pos_only=allow_pos_only,
         ):
             raise PermissionDenied('Você não pode fechar uma sessão aberta por outro usuário.')
         if session.status != CashSessionStatus.OPEN:
