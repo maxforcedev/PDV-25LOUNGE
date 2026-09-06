@@ -33,8 +33,6 @@ class _PairingIdentifierPageState extends State<PairingIdentifierPage> {
   Widget build(BuildContext context) => _PairingFrame(
         title: 'Parear este dispositivo',
         subtitle: 'Informe os dados da filial para começar a configurar este terminal.',
-        errorMessage: widget.controller.errorMessage,
-        isInitialPage: true,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -86,8 +84,8 @@ class _PairingIdentifierPageState extends State<PairingIdentifierPage> {
       mode: LaunchMode.externalApplication,
     );
     if (!opened && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Não foi possível abrir o site do CORE PDV.')),
+      widget.controller.showTransientMessage(
+        'Não foi possível abrir o site do CORE PDV.',
       );
     }
   }
@@ -104,7 +102,6 @@ class PairingChannelPage extends StatelessWidget {
     return _PairingFrame(
       title: discovery.branchName,
       subtitle: 'Escolha onde deseja receber o código de verificação.',
-      errorMessage: controller.errorMessage,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: discovery.channels
@@ -156,7 +153,6 @@ class _PairingOtpPageState extends State<PairingOtpPage> {
   Widget build(BuildContext context) => _PairingFrame(
         title: 'Confirme o código',
         subtitle: 'Enviamos um código para ${widget.controller.challenge!.destination}.',
-        errorMessage: widget.controller.errorMessage,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -200,14 +196,10 @@ class _PairingFrame extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.child,
-    this.errorMessage,
-    this.isInitialPage = false,
   });
 
   final String title;
   final String subtitle;
-  final String? errorMessage;
-  final bool isInitialPage;
   final Widget child;
 
   @override
@@ -227,7 +219,7 @@ class _PairingFrame extends StatelessWidget {
                 final padding = isTablet ? 32.0 : 20.0;
                 return Center(
                   child: SingleChildScrollView(
-                    padding: EdgeInsets.all(padding),
+                    padding: EdgeInsets.symmetric(horizontal: padding, vertical: 24),
                     child: ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 440),
                       child: TweenAnimationBuilder<double>(
@@ -244,22 +236,8 @@ class _PairingFrame extends StatelessWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            Center(
-                              child: Container(
-                                width: isInitialPage ? 220 : 184,
-                                height: isInitialPage ? 82 : 68,
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(22),
-                                  boxShadow: const [
-                                    BoxShadow(color: Color(0x143454d1), blurRadius: 28, offset: Offset(0, 12)),
-                                  ],
-                                ),
-                                child: CoreWordmark(width: isInitialPage ? 196 : 160),
-                              ),
-                            ),
-                            const SizedBox(height: 28),
+                            const CoreWordmarkHeader(),
+                            const SizedBox(height: 32),
                             Container(
                               padding: EdgeInsets.all(isTablet ? 36 : 24),
                               decoration: BoxDecoration(
@@ -276,10 +254,6 @@ class _PairingFrame extends StatelessWidget {
                                   Text(title, style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800, color: _ink)),
                                   const SizedBox(height: 8),
                                   Text(subtitle, style: const TextStyle(color: _muted, fontSize: 15, height: 1.45)),
-                                  if (errorMessage != null) ...[
-                                    const SizedBox(height: 20),
-                                    _ErrorNotice(message: errorMessage!),
-                                  ],
                                   const SizedBox(height: 28),
                                   child,
                                 ],
@@ -312,29 +286,5 @@ class _PrimaryAction extends StatelessWidget {
         child: loading
             ? const SizedBox(height: 22, width: 22, child: CircularProgressIndicator(strokeWidth: 2.4, color: Colors.white))
             : Text(label),
-      );
-}
-
-class _ErrorNotice extends StatelessWidget {
-  const _ErrorNotice({required this.message});
-
-  final String message;
-
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: const Color(0xfffff4f2),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: const Color(0xfffecaca)),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Icon(Icons.info_outline_rounded, color: Color(0xffb42318), size: 20),
-            const SizedBox(width: 10),
-            Expanded(child: Text(message, style: const TextStyle(color: Color(0xff8f1d14), height: 1.35))),
-          ],
-        ),
       );
 }

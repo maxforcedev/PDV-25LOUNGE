@@ -7,6 +7,7 @@ import '../network/pos_api_error.dart';
 import '../pairing/pairing_models.dart';
 import '../storage/secret_store.dart';
 import '../sync/sync_status.dart';
+import 'transient_feedback.dart';
 
 enum AppPhase {
   loading,
@@ -33,10 +34,12 @@ class AppController extends ChangeNotifier {
   final PosApi _api;
   final SecretStore _secrets;
   final DeviceDescriptor _device;
+  final _transientFeedback = TransientFeedback();
 
   AppPhase phase = AppPhase.loading;
   bool busy = false;
   String? errorMessage;
+  TransientAlert? get transientAlert => _transientFeedback.alert;
   PairingDiscovery? discovery;
   OtpChallenge? challenge;
   List<PosOperator> operators = const [];
@@ -74,8 +77,7 @@ class AppController extends ChangeNotifier {
   Future<void> confirmOtp(String code) async {
     final currentChallenge = challenge;
     if (currentChallenge == null || !RegExp(r'^\d{6}$').hasMatch(code)) {
-      errorMessage = 'Informe o codigo de seis digitos.';
-      notifyListeners();
+      _showTransientMessage('Informe o codigo de seis digitos.');
       return;
     }
     await _run(() async {
@@ -92,6 +94,7 @@ class AppController extends ChangeNotifier {
   Future<void> recoverPairedDevice({bool notify = true}) async {
     if (notify) {
       busy = true;
+      _clearTransientMessage();
       errorMessage = null;
       notifyListeners();
     }
@@ -107,7 +110,7 @@ class AppController extends ChangeNotifier {
       phase = AppPhase.operatorSelection;
       syncStatus = SyncStatus(phase: SyncPhase.synced, lastSyncedAt: DateTime.now());
     } on PosApiException catch (error) {
-      _handleApiError(error);
+      _handleApiError(error, persistent: true);
       if (phase == AppPhase.loading || phase == AppPhase.operatorSelection) {
         phase = AppPhase.error;
       }
@@ -123,15 +126,14 @@ class AppController extends ChangeNotifier {
 
   void selectOperator(PosOperator operator) {
     selectedOperator = operator;
-    errorMessage = null;
+    _clearTransientMessage();
     notifyListeners();
   }
 
   Future<void> login(String pin) async {
     final operator = selectedOperator;
     if (operator == null || !RegExp(r'^\d{6}$').hasMatch(pin)) {
-      errorMessage = 'Informe o PIN de seis digitos.';
-      notifyListeners();
+      _showTransientMessage('Informe o PIN de seis digitos.');
       return;
     }
     await _run(() async {
@@ -173,20 +175,21 @@ class AppController extends ChangeNotifier {
     bootstrapSnapshot = null;
     deviceError = null;
     errorMessage = null;
+    _clearTransientMessage();
     phase = AppPhase.pairingIdentifier;
     notifyListeners();
   }
 
   Future<void> _run(Future<void> Function() action) async {
     busy = true;
-    errorMessage = null;
+    _clearTransientMessage();
     notifyListeners();
     try {
       await action();
     } on PosApiException catch (error) {
       _handleApiError(error);
     } on PosNetworkException catch (error) {
-      errorMessage = error.message;
+      _showTransientMessage(error.message, notify: false);
       syncStatus = SyncStatus(phase: SyncPhase.error, error: error.message);
     } finally {
       busy = false;
@@ -194,8 +197,8 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  void _handleApiError(PosApiException error) {
-    errorMessage = switch (error.statusCode) {
+  void _handleApiError(PosApiException error, {bool persistent = false}) {
+    final message = switch (error.statusCode) {
       400 => 'Confira o CNPJ ou o código de licenciamento e tente novamente.',
       403 => 'Esta filial não está disponível para pareamento no momento.',
       404 => 'Não encontramos uma filial com estes dados.',
@@ -204,13 +207,47 @@ class AppController extends ChangeNotifier {
       _ => error.message,
     };
     if (error.code == 'pos_update_required') {
+      errorMessage = message;
+      _clearTransientMessage();
       phase = AppPhase.updateRequired;
       return;
     }
     if (error.isDeviceAccessFailure) {
+      errorMessage = message;
+      _clearTransientMessage();
       deviceError = error;
       phase = AppPhase.deviceUnavailable;
       return;
     }
+    if (persistent) {
+      errorMessage = message;
+      _clearTransientMessage();
+      return;
+    }
+    _showTransientMessage(message, notify: false);
+  }
+
+  void showTransientMessage(
+    String message, {
+    TransientAlertTone tone = TransientAlertTone.error,
+  }) => _showTransientMessage(message, tone: tone);
+
+  void _showTransientMessage(
+    String message, {
+    TransientAlertTone tone = TransientAlertTone.error,
+    bool notify = true,
+  }) {
+    _transientFeedback.show(message, notifyListeners, tone: tone);
+    if (notify) notifyListeners();
+  }
+
+  void _clearTransientMessage() {
+    _transientFeedback.clear();
+  }
+
+  @override
+  void dispose() {
+    _transientFeedback.dispose();
+    super.dispose();
   }
 }

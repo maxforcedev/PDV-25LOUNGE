@@ -28,3 +28,14 @@ class CoreWordmark extends StatelessWidget {
         semanticLabel: 'CORE PDV',
       );
 }
+
+class CoreWordmarkHeader extends StatelessWidget {
+  const CoreWordmarkHeader({super.key});
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+        builder: (context, constraints) => Center(
+          child: CoreWordmark(width: constraints.maxWidth < 320 ? 196 : 224),
+        ),
+      );
+}

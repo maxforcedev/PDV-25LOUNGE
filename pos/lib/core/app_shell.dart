@@ -5,6 +5,7 @@ import '../home/home_page.dart';
 import '../pairing/pairing_pages.dart';
 import 'app_controller.dart';
 import 'core_branding.dart';
+import 'transient_feedback.dart';
 
 class AppShell extends StatelessWidget {
   const AppShell({required this.controller, super.key});
@@ -26,19 +27,25 @@ class AppShell extends StatelessWidget {
             AppPhase.updateRequired => const _UpdateRequiredPage(),
             AppPhase.error => _ErrorPage(controller: controller),
           };
-          return AnimatedSwitcher(
-            duration: const Duration(milliseconds: 260),
-            reverseDuration: const Duration(milliseconds: 180),
-            switchInCurve: Curves.easeOutCubic,
-            switchOutCurve: Curves.easeInCubic,
-            transitionBuilder: (child, animation) => FadeTransition(
-              opacity: animation,
-              child: SlideTransition(
-                position: Tween<Offset>(begin: const Offset(0, 0.025), end: Offset.zero).animate(animation),
-                child: ScaleTransition(scale: Tween<double>(begin: 0.985, end: 1).animate(animation), child: child),
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 260),
+                reverseDuration: const Duration(milliseconds: 180),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                transitionBuilder: (child, animation) => FadeTransition(
+                  opacity: animation,
+                  child: SlideTransition(
+                    position: Tween<Offset>(begin: const Offset(0, 0.025), end: Offset.zero).animate(animation),
+                    child: ScaleTransition(scale: Tween<double>(begin: 0.985, end: 1).animate(animation), child: child),
+                  ),
+                ),
+                child: KeyedSubtree(key: ValueKey(controller.phase), child: page),
               ),
-            ),
-            child: KeyedSubtree(key: ValueKey(controller.phase), child: page),
+              TransientAlertOverlay(alert: controller.transientAlert),
+            ],
           );
         },
       );

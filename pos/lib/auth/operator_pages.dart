@@ -45,7 +45,7 @@ class _OperatorAccessPageState extends State<OperatorAccessPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Center(child: CoreWordmark(width: 224)),
+                    const CoreWordmarkHeader(),
                     const SizedBox(height: 32),
                     Container(
                       padding: const EdgeInsets.all(24),
@@ -117,10 +117,6 @@ class _OperatorAccessPageState extends State<OperatorAccessPage> {
                             onChanged: (_) => setState(() {}),
                             onSubmitted: (_) => _login(),
                           ),
-                          if (controller.errorMessage != null) ...[
-                            const SizedBox(height: 16),
-                            _ErrorNotice(message: controller.errorMessage!),
-                          ],
                           const SizedBox(height: 20),
                           FilledButton(
                             onPressed: canEnter ? _login : null,
@@ -166,28 +162,4 @@ class _OperatorAccessPageState extends State<OperatorAccessPage> {
       if (mounted) setState(_pin.clear);
     }
   }
-}
-
-class _ErrorNotice extends StatelessWidget {
-  const _ErrorNotice({required this.message});
-
-  final String message;
-
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: const Color(0xfffff4f2),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: const Color(0xfffecaca)),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Icon(Icons.info_outline_rounded, color: Color(0xffb42318), size: 20),
-            const SizedBox(width: 10),
-            Expanded(child: Text(message, style: const TextStyle(color: Color(0xff8f1d14), height: 1.35))),
-          ],
-        ),
-      );
 }
