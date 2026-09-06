@@ -114,6 +114,7 @@ def _sale_idempotency_payload(*, actor, operation_type, cash_session, beneficiar
             'quantity': _idempotency_decimal(item.get('quantity')),
             'discount': _idempotency_decimal(item.get('discount', '0')),
             'modifiers': canonical_modifiers,
+            'notes': str(item.get('notes') or '').strip(),
         })
     canonical_payments = []
     for payment in payments or []:
@@ -262,12 +263,13 @@ def _eligible_sale_user(branch, user, permission_code, field):
 
 
 def _discount_approver(
-    branch, operator, discount, authorization, *, permission_code, authorization_field
+    branch, operator, discount, authorization, *, permission_code, authorization_field,
+    allow_pos_only=False,
 ):
     if not discount:
         return None
     if operator.is_superuser or user_has_branch_permission(
-        operator, branch.pk, permission_code
+        operator, branch.pk, permission_code, allow_pos_only=allow_pos_only,
     ):
         return operator
     if not authorization or authorization.get('method') != 'password':
@@ -280,11 +282,11 @@ def _discount_approver(
     return approver
 
 
-def _service_fee_waiver(branch, operator, waived, authorization):
+def _service_fee_waiver(branch, operator, waived, authorization, *, allow_pos_only=False):
     if not waived:
         return None
     if operator.is_superuser or user_has_branch_permission(
-        operator, branch.pk, 'sales.waive_service_fee'
+        operator, branch.pk, 'sales.waive_service_fee', allow_pos_only=allow_pos_only,
     ):
         return operator
     if not authorization or authorization.get('method') != 'password':
@@ -595,12 +597,13 @@ def _consolidate_items(raw_items, products, *, price_overrides=None, cost_overri
         if product.unit == Unit.UNIT and quantity != quantity.to_integral_value():
             raise ValidationError({'items': f'Item {index + 1}: produto UN exige quantidade inteira.'})
         raw_modifiers = raw_item.get('modifiers') or []
+        notes = str(raw_item.get('notes') or '').strip()
         modifier_total, modifier_snapshot = _resolve_modifiers(
             product, raw_modifiers, product.company_id,
             branch=branch, item_quantity=quantity,
         )
         sig = _modifier_signature(raw_modifiers)
-        line_key = (product.pk, sig)
+        line_key = (product.pk, sig, notes)
         if line_key not in line_keys:
             ordered_keys.append(line_key)
             line_keys[line_key] = {
@@ -609,6 +612,7 @@ def _consolidate_items(raw_items, products, *, price_overrides=None, cost_overri
                 'base_unit_price': price_overrides.get(product.pk, product.sale_price),
                 'modifier_unit_total': modifier_total,
                 'modifier_snapshot': modifier_snapshot,
+                'notes': notes,
             }
         entry = line_keys[line_key]
         if entry['quantity']:
@@ -647,7 +651,7 @@ def _consolidate_items(raw_items, products, *, price_overrides=None, cost_overri
         ).select_related('category')
     } if branch else {}
     for line_key in ordered_keys:
-        product_id, _sig = line_key
+        product_id, _sig, _notes = line_key
         product = products_by_id[product_id]
         branch_config = branch_configs.get(product_id)
         category = (
@@ -683,6 +687,7 @@ def _consolidate_items(raw_items, products, *, price_overrides=None, cost_overri
             'base_unit_price': base_unit_price,
             'modifier_unit_total': modifier_unit_total,
             'modifier_snapshot': entry['modifier_snapshot'],
+            'notes': entry['notes'],
             'unit_price': unit_price,
             'subtotal': item_subtotal,
             'manual_discount_requested': entry['discount'],
@@ -1116,14 +1121,16 @@ def _pk(value):
     return value.pk if hasattr(value, 'pk') else value
 
 
-def _active_branch(branch, user, permission_code):
+def _active_branch(branch, user, permission_code, *, allow_pos_only=False):
     try:
         branch = Branch.objects.select_related('company').get(
             pk=_pk(branch), status=Status.ACTIVE, company__status=Status.ACTIVE,
         )
     except (Branch.DoesNotExist, TypeError, ValueError):
         raise ValidationError({'branch': 'Filial ou empresa inativa ou inválida.'})
-    if not user.is_superuser and not user_has_branch_permission(user, branch.pk, permission_code):
+    if not user.is_superuser and not user_has_branch_permission(
+        user, branch.pk, permission_code, allow_pos_only=allow_pos_only,
+    ):
         raise PermissionDenied('Você não possui permissão para esta operação nesta filial.')
     return branch
 
@@ -1586,8 +1593,9 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
                   charged_amount=None, payments=None, service_fee_waived=False,
                    service_fee_authorization=None, item_discount_authorization=None,
                      idempotency_key=None, channel=SalesChannel.COUNTER,
-                      confirmed_order_items=None, internal_permission_code=None,
-                      precomputed_financials=None, payment_sources=None):
+                       confirmed_order_items=None, internal_permission_code=None,
+                       precomputed_financials=None, payment_sources=None, pos_device=None,
+                       allow_pos_only=False, audit_metadata=None):
     permission = 'sales.create_consumption' if operation_type == OperationType.CONSUMPTION else 'sales.create'
     if operation_type not in OperationType.values:
         raise ValidationError({'operation_type': 'Tipo de operação inválido.'})
@@ -1600,9 +1608,11 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         ):
             raise ValidationError({'operation': 'Bypass interno de venda inválido.'})
         permission = internal_permission_code
-    branch = _active_branch(branch, user, permission)
+    branch = _active_branch(branch, user, permission, allow_pos_only=allow_pos_only)
     company = Company.objects.select_for_update().get(pk=branch.company_id)
     branch = Branch.objects.select_for_update().select_related('company').get(pk=branch.pk)
+    if pos_device is not None and pos_device.branch_id != branch.pk:
+        raise ValidationError({'pos_device': 'O dispositivo deve pertencer à filial da venda.'})
     _require_sale_features(branch, operation_type, channel, charged_amount)
     if not idempotency_key:
         raise ValidationError({'idempotency_key': 'Informe a chave de idempotência.'})
@@ -1748,14 +1758,17 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             branch, user, discount_value, discount_authorization,
             permission_code='sales.apply_discount',
             authorization_field='discount_authorization',
+            allow_pos_only=allow_pos_only,
         )
         item_discount_approved_by = _discount_approver(
             branch, user, item_discount_total, item_discount_authorization,
             permission_code='sales.apply_item_discount',
             authorization_field='item_discount_authorization',
+            allow_pos_only=allow_pos_only,
         )
         service_fee_waived_by = _service_fee_waiver(
-            branch, user, bool(service_fee_waived), service_fee_authorization
+            branch, user, bool(service_fee_waived), service_fee_authorization,
+            allow_pos_only=allow_pos_only,
         )
         service_fee_rate = financials['service_fee_rate']
         service_fee_amount = financials['service_fee_amount']
@@ -1768,7 +1781,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         free_consumption=(operation_type == OperationType.CONSUMPTION and total == 0),
     )
     sale = Sale.objects.create(
-        company=company, branch=branch, cash_session=session,
+        company=company, branch=branch, cash_session=session, pos_device=pos_device,
         sale_number=next_sale_number(company), operation_type=operation_type,
         channel=channel,
         idempotency_key=idempotency_key, idempotency_fingerprint=fingerprint,
@@ -1794,6 +1807,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             base_unit_price=snapshot.get('base_unit_price', snapshot.get('unit_price')),
             modifier_unit_total=snapshot.get('modifier_unit_total', Decimal('0.00')),
             modifier_snapshot=snapshot.get('modifier_snapshot', []),
+            notes=snapshot.get('notes', ''),
             unit_price=snapshot.get('unit_price'),
             promotion=promotion,
             promotion_name=snapshot['promotion_name'],
@@ -1854,6 +1868,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             'base_unit_price': f'{snapshot.get("base_unit_price", snapshot["unit_price"]):.2f}',
             'modifier_unit_total': f'{snapshot.get("modifier_unit_total", Decimal("0.00")):.2f}',
             'modifier_snapshot': snapshot.get('modifier_snapshot', []),
+            'notes': snapshot.get('notes', ''),
             'unit_price': f'{snapshot["unit_price"]:.2f}',
             'promotion_discount': f'{snapshot["promotion_benefit"]:.2f}',
             'manual_item_discount': f'{snapshot["manual_discount"]:.2f}',
@@ -1877,10 +1892,11 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
              'promotion_discount_total', 'item_discount_total', 'discount',
              'service_fee_rate', 'service_fee_amount', 'service_fee_waived', 'commission_rate',
              'commission_amount', 'total', 'seller_user_id', 'discount_approved_by_id',
-              'service_fee_waived_by_id', 'beneficiary_user_id', 'customer_id', 'charged_amount',
-             'cash_session_id'),
+               'service_fee_waived_by_id', 'beneficiary_user_id', 'customer_id', 'charged_amount',
+              'cash_session_id', 'pos_device_id'),
         ),
         metadata={
+            **(audit_metadata or {}),
             'items': item_snapshots,
             'payments': [
                 {

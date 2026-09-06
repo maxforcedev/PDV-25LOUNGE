@@ -1,5 +1,7 @@
 from decimal import Decimal
 
+from django.db.models import DecimalField, OuterRef, Prefetch, Q, Subquery
+from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -25,11 +27,23 @@ from apps.cash.services import (
 from apps.companies.permissions import FunctionalCompanyPermission
 from apps.companies.selectors import accessible_branches
 from apps.companies.features import require_branch_feature
+from apps.companies.models import Status
+from apps.products.models import (
+    BranchProductPrice, ModifierOption, Product, ProductBranchConfig,
+    ProductModifierGroup,
+)
+from apps.products.models import SalesChannel
+from apps.sales.models import OperationType, Sale
+from apps.sales.serializers import (
+    CalculationOutputSerializer, SaleCatalogProductSerializer, SaleSerializer,
+)
+from apps.sales.services import calculate_preview, finalize_sale
 
 from .authentication import POSDeviceAuthentication, require_device, require_operator_session
 from .models import POSDevice, POSDeviceSettings
 from .serializers import (
     POSAdminDeviceSerializer, POSDeviceSettingsSerializer, POSOpenCashSessionSerializer,
+    POSFinalizeSaleSerializer, POSSalePreviewSerializer,
 )
 from .services import (
     assert_branch_device_limit, authenticate_operator, cash_state_for_device, confirm_pairing,
@@ -227,6 +241,252 @@ class POSCashOverviewView(POSCashView):
         device, _, permissions, _ = self.context(request)
         self.require_operational_permission(permissions)
         return Response(cash_state_for_device(device, permissions))
+
+
+def _pos_catalog_queryset(branch, *, search=None, barcode=None):
+    branch_price = BranchProductPrice.objects.filter(
+        branch=branch, product_id=OuterRef('pk')
+    ).values('sale_price')[:1]
+    branch_config = ProductBranchConfig.objects.filter(
+        branch=branch, product_id=OuterRef('pk')
+    )
+    queryset = Product.objects.select_related('company', 'category').prefetch_related(
+        'components__component_product',
+        Prefetch(
+            'modifier_groups',
+            queryset=ProductModifierGroup.objects.filter(
+                status=Status.ACTIVE,
+                modifier_group__status=Status.ACTIVE,
+                modifier_group__deleted_at__isnull=True,
+                modifier_group__branch=branch,
+            ).select_related('modifier_group').prefetch_related(
+                Prefetch(
+                    'modifier_group__options',
+                    queryset=ModifierOption.objects.filter(status=Status.ACTIVE),
+                    to_attr='operational_options',
+                )
+            ).order_by('sort_order', 'id'),
+            to_attr='operational_modifier_group_links',
+        ),
+        Prefetch(
+            'components__component_product__modifier_groups',
+            queryset=ProductModifierGroup.objects.filter(
+                status=Status.ACTIVE,
+                modifier_group__status=Status.ACTIVE,
+                modifier_group__deleted_at__isnull=True,
+                modifier_group__branch=branch,
+            ).select_related('modifier_group').prefetch_related(
+                Prefetch(
+                    'modifier_group__options',
+                    queryset=ModifierOption.objects.filter(status=Status.ACTIVE),
+                    to_attr='operational_options',
+                )
+            ).order_by('sort_order', 'id'),
+            to_attr='operational_modifier_group_links',
+        ),
+    ).annotate(
+        effective_sale_price=Coalesce(
+            Subquery(branch_price), 'sale_price', output_field=DecimalField()
+        ),
+        branch_available=Subquery(branch_config.values('is_available')[:1]),
+        branch_counter=Coalesce(
+            Subquery(branch_config.values('available_counter')[:1]), 'available_counter',
+        ),
+    ).filter(
+        company_id=branch.company_id,
+        status=Status.ACTIVE,
+        archived_at__isnull=True,
+        is_sellable=True,
+        branch_available=True,
+        branch_counter=True,
+    )
+    if barcode is not None:
+        queryset = queryset.filter(barcode=barcode)
+    elif search:
+        queryset = queryset.filter(
+            Q(name__icontains=search)
+            | Q(internal_code__icontains=search)
+            | Q(barcode__icontains=search)
+        )
+    return queryset.order_by('-is_favorite', 'name', 'id')
+
+
+class POSQuickSaleView(POSCashView):
+    @staticmethod
+    def _catalog_payload(request, products):
+        request.branch_context = request._pos_branch
+        rows = SaleCatalogProductSerializer(
+            products, many=True, context={'request': request},
+        ).data
+        return [
+            {
+                'id': product['id'],
+                'name': product['name'],
+                'internal_code': product['internal_code'],
+                'barcode': product['barcode'],
+                'category': {
+                    'id': product['category'],
+                    'name': product['category_name'],
+                } if product['category'] else None,
+                'price': product['sale_price'],
+                'image': product['image'],
+                'favorite': product['is_favorite'],
+                'emits_ticket': product['emits_ticket'],
+                'modifier_groups': product['modifier_groups'],
+            }
+            for product in rows
+        ]
+
+    @staticmethod
+    def _items(items):
+        return [
+            {
+                'product': item['product'],
+                'quantity': item['quantity'],
+                'discount': item.get('discount', '0.00'),
+                'modifiers': item.get('modifiers', []),
+                'notes': item.get('notes', ''),
+            }
+            for item in items
+        ]
+
+
+class POSCatalogView(POSQuickSaleView):
+    def get(self, request):
+        device, _, permissions, _ = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        request._pos_branch = device.branch
+        queryset = _pos_catalog_queryset(
+            device.branch, search=request.query_params.get('search'),
+        )
+        category = request.query_params.get('category')
+        if category:
+            queryset = queryset.filter(branch_configs__branch=device.branch, branch_configs__category_id=category)
+        if request.query_params.get('favorites') == 'true':
+            queryset = queryset.filter(is_favorite=True)
+        return Response({'products': self._catalog_payload(request, queryset)})
+
+
+class POSBarcodeProductView(POSQuickSaleView):
+    def get(self, request, barcode):
+        device, _, permissions, _ = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        request._pos_branch = device.branch
+        product = get_object_or_404(_pos_catalog_queryset(device.branch, barcode=barcode))
+        return Response(self._catalog_payload(request, [product])[0])
+
+
+class POSSalePreviewView(POSQuickSaleView):
+    def post(self, request):
+        device, operator, permissions, _ = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        serializer = POSSalePreviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        if data['discount'] not in (None, '', '0', '0.00', 0, Decimal('0.00')) and 'sales.apply_discount' not in permissions:
+            raise PermissionDenied('Você não possui permissão para aplicar desconto.')
+        if data['service_fee_waived'] and 'sales.waive_service_fee' not in permissions:
+            raise PermissionDenied('Você não possui permissão para isentar taxa de serviço.')
+        result = calculate_preview(
+            company=device.branch.company,
+            operation_type=OperationType.SALE,
+            raw_items=self._items(data['items']),
+            discount=data['discount'],
+            charged_amount=None,
+            beneficiary_user=None,
+            branch=device.branch,
+            channel=SalesChannel.COUNTER,
+            service_fee_waived=data['service_fee_waived'],
+        )
+        output = CalculationOutputSerializer(data=result)
+        output.is_valid(raise_exception=True)
+        return Response(output.data)
+
+
+class POSSaleCheckoutOptionsView(POSQuickSaleView):
+    def get(self, request):
+        device, _, permissions, _ = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        from apps.sales.models import PaymentMethod
+
+        sessions = CashSession.objects.filter(
+            branch=device.branch, status='open',
+        ).select_related('cash_register', 'opened_by').order_by('id')
+        methods = PaymentMethod.objects.filter(
+            company_id=device.branch.company_id, status=Status.ACTIVE,
+        ).order_by('name', 'id').values('id', 'code', 'name')
+        return Response({
+            'payment_methods': list(methods),
+            'cash_sessions': [
+                {
+                    'id': session.pk,
+                    'register_name': session.cash_register.name,
+                    'opened_by_name': session.opened_by.get_full_name().strip() or session.opened_by.email,
+                }
+                for session in sessions
+            ],
+        })
+
+
+class POSFinalizeSaleView(POSQuickSaleView):
+    def post(self, request):
+        device, operator, permissions, operator_session = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        serializer = POSFinalizeSaleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        session = get_object_or_404(
+            CashSession, pk=data['cash_session'], branch=device.branch, status='open',
+        )
+        sale = finalize_sale(
+            branch=device.branch,
+            user=operator,
+            operation_type=OperationType.SALE,
+            cash_session=session,
+            seller_user=operator,
+            items=self._items(data['items']),
+            payments=data['payments'],
+            discount=data['discount'],
+            service_fee_waived=data['service_fee_waived'],
+            discount_authorization=data.get('discount_authorization'),
+            item_discount_authorization=data.get('item_discount_authorization'),
+            service_fee_authorization=data.get('service_fee_authorization'),
+            idempotency_key=data['idempotency_key'],
+            channel=SalesChannel.COUNTER,
+            pos_device=device,
+            allow_pos_only=True,
+            audit_metadata=self.audit_metadata(device, operator_session),
+        )
+        replayed = bool(getattr(sale, '_idempotency_replayed', False))
+        request.branch_context = device.branch
+        sale = Sale.objects.select_related(
+            'company', 'branch', 'cash_session', 'created_by', 'seller_user', 'pos_device',
+        ).prefetch_related('items__product', 'payments__payment_method').get(pk=sale.pk)
+        response = Response(
+            {
+                'sale': SaleSerializer(sale, context={'request': request}).data,
+                'cash_state': cash_state_for_device(device, permissions),
+                'effects': {
+                    'tickets': list(sale.items.filter(
+                        product__emits_ticket=True,
+                    ).values_list('sale_ticket__number', flat=True)),
+                    'production_job_count': sum(
+                        item.production_jobs.filter(event='new').count()
+                        for item in sale.items.all()
+                    ),
+                },
+            },
+            status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED,
+        )
+        if replayed:
+            request.audit_fallback_suppressed = True
+            response['Idempotency-Replayed'] = 'true'
+        return response
 
 
 class POSCashBeneficiariesView(POSCashView):

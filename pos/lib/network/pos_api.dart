@@ -7,6 +7,7 @@ import '../auth/auth_models.dart';
 import '../bootstrap/bootstrap_models.dart';
 import '../cash/cash_models.dart';
 import '../pairing/pairing_models.dart';
+import '../sales/sale_models.dart';
 import '../storage/secret_store.dart';
 import 'pos_api_error.dart';
 
@@ -44,6 +45,22 @@ abstract class PosApi {
        required String idempotencyKey});
   Future<CashOverview> closeCashSession(
       {required int sessionId, required String closingAmount});
+  Future<List<QuickSaleProduct>> quickSaleCatalog({String? search});
+  Future<QuickSaleProduct> quickSaleBarcode(String barcode);
+  Future<QuickSalePreview> quickSalePreview({
+    required List<Map<String, dynamic>> items,
+    required String discount,
+    required bool serviceFeeWaived,
+  });
+  Future<QuickSaleCheckoutOptions> quickSaleCheckoutOptions();
+  Future<QuickSaleResult> finalizeQuickSale({
+    required String idempotencyKey,
+    required List<Map<String, dynamic>> items,
+    required int cashSessionId,
+    required List<Map<String, dynamic>> payments,
+    required String discount,
+    required bool serviceFeeWaived,
+  });
 }
 
 class HttpPosApi implements PosApi {
@@ -261,4 +278,56 @@ class HttpPosApi implements PosApi {
       'closing_amount_informed': closingAmount,
     }));
   }
+
+  @override
+  Future<List<QuickSaleProduct>> quickSaleCatalog({String? search}) async {
+    final suffix = search == null || search.trim().isEmpty
+        ? ''
+        : '?search=${Uri.encodeQueryComponent(search.trim())}';
+    final payload = await _request('GET', 'catalog/$suffix');
+    return (payload['products'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(QuickSaleProduct.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<QuickSaleProduct> quickSaleBarcode(String barcode) async =>
+      QuickSaleProduct.fromJson(
+          await _request('GET', 'products/barcode/${Uri.encodeComponent(barcode)}/'));
+
+  @override
+  Future<QuickSalePreview> quickSalePreview({
+    required List<Map<String, dynamic>> items,
+    required String discount,
+    required bool serviceFeeWaived,
+  }) async =>
+      QuickSalePreview.fromJson(await _request('POST', 'sales/preview/', body: {
+        'items': items,
+        'discount': discount,
+        'service_fee_waived': serviceFeeWaived,
+      }));
+
+  @override
+  Future<QuickSaleCheckoutOptions> quickSaleCheckoutOptions() async =>
+      QuickSaleCheckoutOptions.fromJson(
+          await _request('GET', 'sales/checkout-options/'));
+
+  @override
+  Future<QuickSaleResult> finalizeQuickSale({
+    required String idempotencyKey,
+    required List<Map<String, dynamic>> items,
+    required int cashSessionId,
+    required List<Map<String, dynamic>> payments,
+    required String discount,
+    required bool serviceFeeWaived,
+  }) async =>
+      QuickSaleResult.fromJson(await _request('POST', 'sales/', body: {
+        'idempotency_key': idempotencyKey,
+        'items': items,
+        'cash_session': cashSessionId,
+        'payments': payments,
+        'discount': discount,
+        'service_fee_waived': serviceFeeWaived,
+      }));
 }

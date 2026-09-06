@@ -3,6 +3,7 @@ from decimal import Decimal
 from rest_framework import serializers
 
 from apps.cash.serializers import StrictMoneyField
+from apps.sales.serializers import ItemInputSerializer, PaymentInputSerializer
 
 from .models import BranchPOSSettings, POSDevice, POSDeviceSettings
 from .services import effective_cash_settings, effective_settings
@@ -115,3 +116,25 @@ class POSOpenCashSessionSerializer(serializers.Serializer):
     opening_amount = StrictMoneyField(
         max_digits=14, decimal_places=2, min_value=Decimal('0.00')
     )
+
+
+class POSCartItemSerializer(ItemInputSerializer):
+    client_item_id = serializers.UUIDField()
+    notes = serializers.CharField(
+        required=False, allow_blank=True, default='', max_length=1000,
+    )
+
+
+class POSSalePreviewSerializer(serializers.Serializer):
+    items = POSCartItemSerializer(many=True, allow_empty=False)
+    discount = serializers.JSONField(required=False, default='0.00')
+    service_fee_waived = serializers.BooleanField(required=False, default=False)
+
+
+class POSFinalizeSaleSerializer(POSSalePreviewSerializer):
+    idempotency_key = serializers.UUIDField()
+    cash_session = serializers.IntegerField(min_value=1)
+    payments = PaymentInputSerializer(many=True, allow_empty=False)
+    discount_authorization = serializers.DictField(required=False)
+    item_discount_authorization = serializers.DictField(required=False)
+    service_fee_authorization = serializers.DictField(required=False)

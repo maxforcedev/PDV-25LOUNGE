@@ -8,6 +8,7 @@ import '../cash/cash_models.dart';
 import '../network/pos_api.dart';
 import '../network/pos_api_error.dart';
 import '../pairing/pairing_models.dart';
+import '../sales/sale_models.dart';
 import '../storage/secret_store.dart';
 import '../sync/sync_status.dart';
 import 'transient_feedback.dart';
@@ -39,6 +40,7 @@ class AppController extends ChangeNotifier {
   final DeviceDescriptor _device;
   final _transientFeedback = TransientFeedback();
   final Map<String, String> _uncertainCashOperationKeys = {};
+  final Map<String, String> _uncertainSaleKeys = {};
 
   AppPhase phase = AppPhase.loading;
   bool busy = false;
@@ -335,6 +337,109 @@ class AppController extends ChangeNotifier {
       _handleApiError(error);
     } on PosNetworkException catch (error) {
       _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<List<QuickSaleProduct>?> quickSaleCatalog({String? search}) async {
+    try {
+      return await _api.quickSaleCatalog(search: search);
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<QuickSaleProduct?> quickSaleBarcode(String barcode) async {
+    try {
+      return await _api.quickSaleBarcode(barcode);
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<QuickSalePreview?> previewQuickSale({
+    required List<Map<String, dynamic>> items,
+    required String discount,
+    required bool serviceFeeWaived,
+  }) async {
+    try {
+      return await _api.quickSalePreview(
+        items: items,
+        discount: discount,
+        serviceFeeWaived: serviceFeeWaived,
+      );
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<QuickSaleCheckoutOptions?> quickSaleCheckoutOptions() async {
+    try {
+      return await _api.quickSaleCheckoutOptions();
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<QuickSaleResult?> finalizeQuickSale({
+    required List<Map<String, dynamic>> items,
+    required int cashSessionId,
+    required List<Map<String, dynamic>> payments,
+    required String discount,
+    required bool serviceFeeWaived,
+  }) async {
+    final snapshot = bootstrapSnapshot;
+    if (busy || snapshot == null) return null;
+    final payload = jsonEncode({
+      'items': items,
+      'cash_session': cashSessionId,
+      'payments': payments,
+      'discount': discount,
+      'service_fee_waived': serviceFeeWaived,
+    });
+    final key = _uncertainSaleKeys.putIfAbsent(payload, createIdempotencyKey);
+    busy = true;
+    _clearTransientMessage();
+    notifyListeners();
+    try {
+      final result = await _api.finalizeQuickSale(
+        idempotencyKey: key,
+        items: items,
+        cashSessionId: cashSessionId,
+        payments: payments,
+        discount: discount,
+        serviceFeeWaived: serviceFeeWaived,
+      );
+      bootstrapSnapshot = snapshot.withCash(result.cash);
+      _uncertainSaleKeys.remove(payload);
+      syncStatus = syncStatus.succeeded();
+      final tickets = result.ticketNumbers.isEmpty
+          ? ''
+          : ' Tickets: ${result.ticketNumbers.join(', ')}.';
+      _showTransientMessage('Venda ${result.saleNumber} concluida com sucesso.$tickets',
+          tone: TransientAlertTone.success, notify: false);
+      return result;
+    } on PosApiException catch (error) {
+      if (error.statusCode < 500) _uncertainSaleKeys.remove(payload);
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      syncStatus = syncStatus.failed(error.message);
+      _showTransientMessage(error.message, notify: false);
+    } finally {
+      busy = false;
+      notifyListeners();
     }
     return null;
   }

@@ -212,6 +212,10 @@ class Sale(BaseModel):
     cash_session = models.ForeignKey(
         CashSession, on_delete=models.PROTECT, related_name='sales', blank=True, null=True
     )
+    pos_device = models.ForeignKey(
+        'pos.POSDevice', on_delete=models.PROTECT, related_name='sales',
+        blank=True, null=True,
+    )
     sale_number = models.CharField(max_length=20)
     idempotency_key = models.UUIDField(blank=True, null=True, editable=False)
     idempotency_fingerprint = models.CharField(max_length=64, blank=True, default='', editable=False)
@@ -559,6 +563,7 @@ class SaleItem(ImmutableHistoricalModel):
         max_digits=14, decimal_places=2, default=Decimal('0.00'), editable=False
     )
     modifier_snapshot = models.JSONField(default=list, blank=True, editable=False)
+    notes = models.TextField(blank=True, default='')
     unit_price = models.DecimalField(max_digits=14, decimal_places=2)
     subtotal = models.DecimalField(max_digits=14, decimal_places=2)
     promotion = models.ForeignKey(

@@ -6,6 +6,7 @@ import '../core/app_controller.dart';
 import '../core/transient_feedback.dart';
 import '../sync/sync_center_page.dart';
 import '../sync/sync_status_button.dart';
+import '../sales/quick_sale_page.dart';
 
 class HomePage extends StatelessWidget {
   const HomePage({required this.controller, super.key});
@@ -183,9 +184,16 @@ class _ModuleCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) => InkWell(
         borderRadius: BorderRadius.circular(18),
-        onTap: () => controller.showTransientMessage(
-            'Este módulo estará disponível em uma próxima etapa.',
-            tone: TransientAlertTone.info),
+        onTap: () {
+          if (module.key == 'quick_sale') {
+            Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => QuickSalePage(controller: controller)));
+            return;
+          }
+          controller.showTransientMessage(
+              'Este módulo estará disponível em uma próxima etapa.',
+              tone: TransientAlertTone.info);
+        },
         child: Ink(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
@@ -203,8 +211,8 @@ class _ModuleCard extends StatelessWidget {
                     .titleMedium
                     ?.copyWith(fontWeight: FontWeight.w700)),
             const SizedBox(height: 4),
-            const Text('Em breve',
-                style: TextStyle(color: Color(0xff64748b), fontSize: 12)),
+            Text(module.key == 'quick_sale' ? 'Catálogo e checkout' : 'Em breve',
+                style: const TextStyle(color: Color(0xff64748b), fontSize: 12)),
           ]),
         ),
       );

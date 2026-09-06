@@ -29,6 +29,7 @@ def _payload(item, destination, event, reason='', command=None):
         'source_item': {
             'id': item.pk, 'product_name': item.product_name, 'internal_code': item.internal_code,
             'quantity': str(item.quantity), 'unit': item.unit, 'modifiers': item.modifier_snapshot,
+            'notes': getattr(item, 'notes', ''),
         },
         'cancellation_reason': reason,
     }
@@ -126,6 +127,7 @@ def _ticket_snapshot(item):
         'product_id': item.product_id, 'product_name': item.product_name,
         'internal_code': item.internal_code, 'unit': item.unit,
         'quantity': str(item.quantity), 'modifiers': item.modifier_snapshot,
+        'notes': getattr(item, 'notes', ''),
     }
 
 

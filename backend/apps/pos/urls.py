@@ -7,6 +7,8 @@ from .views import (
     POSAdminDeviceViewSet, POSCashBeneficiariesView, POSCashOverviewView, POSCashSessionCloseView,
     POSCashSessionEntryView, POSCashSessionOpenView, POSCashSessionSummaryView,
     POSCashSessionWithdrawalView,
+    POSBarcodeProductView, POSCatalogView, POSFinalizeSaleView,
+    POSSaleCheckoutOptionsView, POSSalePreviewView,
 )
 
 app_name = 'pos'
@@ -27,6 +29,11 @@ urlpatterns = [
     path('cash/sessions/<int:session_id>/entry/', POSCashSessionEntryView.as_view(), name='cash-session-entry'),
     path('cash/sessions/<int:session_id>/withdrawal/', POSCashSessionWithdrawalView.as_view(), name='cash-session-withdrawal'),
     path('cash/sessions/<int:session_id>/close/', POSCashSessionCloseView.as_view(), name='cash-session-close'),
+    path('catalog/', POSCatalogView.as_view(), name='catalog'),
+    path('products/barcode/<str:barcode>/', POSBarcodeProductView.as_view(), name='product-barcode'),
+    path('sales/preview/', POSSalePreviewView.as_view(), name='sale-preview'),
+    path('sales/checkout-options/', POSSaleCheckoutOptionsView.as_view(), name='sale-checkout-options'),
+    path('sales/', POSFinalizeSaleView.as_view(), name='sale-finalize'),
     path('heartbeat/', HeartbeatView.as_view(), name='heartbeat'),
     path('pin/confirm/', PinConfirmView.as_view(), name='pin-confirm'),
 ]

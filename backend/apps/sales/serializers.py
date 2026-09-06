@@ -289,6 +289,7 @@ class SaleItemSerializer(serializers.ModelSerializer):
             'id', 'product', 'quantity', 'product_name', 'internal_code', 'unit',
             'category_id_snapshot', 'category_name_snapshot',
             'unit_cost', 'base_unit_price', 'modifier_unit_total', 'modifier_snapshot',
+            'notes',
             'unit_price', 'subtotal', 'promotion', 'promotion_name',
             'promotion_discount_type', 'promotion_discount_value', 'promotion_benefit',
             'manual_discount', 'discount_approved_by', 'discount_approved_by_name',
@@ -549,6 +550,7 @@ class ItemInputSerializer(serializers.Serializer):
     )
     discount = serializers.JSONField(required=False, default='0.00')
     modifiers = serializers.JSONField(required=False, default=list)
+    notes = serializers.CharField(required=False, allow_blank=True, default='', max_length=1000)
 
 
 class PaymentInputSerializer(serializers.Serializer):
