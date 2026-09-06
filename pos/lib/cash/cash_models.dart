@@ -117,6 +117,36 @@ class CashSessionSummary {
   final String expectedAmount;
 }
 
+class CashBeneficiary {
+  const CashBeneficiary({required this.id, required this.name, required this.userType});
+
+  factory CashBeneficiary.fromJson(Map<String, dynamic> json) => CashBeneficiary(
+        id: json['id'] as int,
+        name: json['name'] as String? ?? '',
+        userType: json['user_type'] as String? ?? '',
+      );
+
+  final int id;
+  final String name;
+  final String userType;
+}
+
+const withdrawalCategories = {
+  'dj': 'DJ',
+  'artist': 'Pagode / Artista',
+  'advance': 'Vale / Adiantamento',
+  'promoter': 'Promoter',
+  'supplier': 'Fornecedor',
+  'other': 'Outros',
+};
+
+const withdrawalResultEffects = {
+  'operating_expense': 'Despesa operacional',
+  'neutral': 'Neutro',
+};
+
+bool withdrawalRequiresBeneficiary(String category) => const {'dj', 'artist', 'advance', 'promoter'}.contains(category);
+
 String formatMoney(String? value) => 'R\$ ${(value ?? '0.00').replaceAll('.', ',')}';
 
 String createIdempotencyKey() {

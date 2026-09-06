@@ -181,53 +181,116 @@ class _CashPageState extends State<CashPage> {
     final amount = TextEditingController();
     final reason = TextEditingController();
     var category = 'other';
+    String? resultEffect;
+    int? beneficiaryId;
+    var beneficiaries = const <CashBeneficiary>[];
+    var loadingBeneficiaries = false;
     await showDialog<void>(
       context: context,
       builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: Text(withdrawal ? 'Registrar sangria' : 'Registrar suprimento'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: amount,
-                autofocus: true,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(labelText: 'Valor', prefixText: 'R\$ '),
-              ),
-              const SizedBox(height: 12),
-              TextField(controller: reason, maxLines: 2, decoration: const InputDecoration(labelText: 'Motivo')),
-              if (withdrawal) ...[
-                const SizedBox(height: 12),
-                DropdownButtonFormField<String>(
-                  initialValue: category,
-                  decoration: const InputDecoration(labelText: 'Categoria'),
-                  items: const [
-                    DropdownMenuItem(value: 'supplier', child: Text('Fornecedor')),
-                    DropdownMenuItem(value: 'other', child: Text('Outros')),
+        builder: (context, setDialogState) {
+          Future<void> loadBeneficiaries(String nextCategory) async {
+            if (!withdrawalRequiresBeneficiary(nextCategory)) return;
+            setDialogState(() => loadingBeneficiaries = true);
+            final result = await widget.controller.cashWithdrawalBeneficiaries(nextCategory);
+            if (context.mounted) {
+              setDialogState(() {
+                beneficiaries = result ?? const [];
+                loadingBeneficiaries = false;
+              });
+            }
+          }
+
+          return AlertDialog(
+            title: Text(withdrawal ? 'Registrar sangria' : 'Registrar suprimento'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: amount,
+                    autofocus: true,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(labelText: 'Valor', prefixText: 'R\$ '),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(controller: reason, maxLines: 2, decoration: const InputDecoration(labelText: 'Motivo')),
+                  if (withdrawal) ...[
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      initialValue: category,
+                      decoration: const InputDecoration(labelText: 'Categoria'),
+                      items: withdrawalCategories.entries
+                          .map((item) => DropdownMenuItem(value: item.key, child: Text(item.value)))
+                          .toList(growable: false),
+                      onChanged: (value) {
+                        if (value == null) return;
+                        setDialogState(() {
+                          category = value;
+                          beneficiaryId = null;
+                          beneficiaries = const [];
+                        });
+                        loadBeneficiaries(value);
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      initialValue: resultEffect,
+                      decoration: const InputDecoration(labelText: 'Efeito financeiro'),
+                      hint: const Text('Selecione o efeito'),
+                      items: withdrawalResultEffects.entries
+                          .map((item) => DropdownMenuItem(value: item.key, child: Text(item.value)))
+                          .toList(growable: false),
+                      onChanged: (value) => setDialogState(() => resultEffect = value),
+                    ),
+                    if (withdrawalRequiresBeneficiary(category)) ...[
+                      const SizedBox(height: 12),
+                      if (loadingBeneficiaries)
+                        const Padding(padding: EdgeInsets.all(12), child: CircularProgressIndicator())
+                      else
+                        DropdownButtonFormField<int>(
+                          initialValue: beneficiaryId,
+                          decoration: const InputDecoration(labelText: 'Beneficiário'),
+                          hint: const Text('Selecione o beneficiário'),
+                          items: beneficiaries
+                              .map((item) => DropdownMenuItem(value: item.id, child: Text(item.name)))
+                              .toList(growable: false),
+                          onChanged: (value) => setDialogState(() => beneficiaryId = value),
+                        ),
+                    ],
                   ],
-                  onChanged: (value) => setDialogState(() => category = value ?? category),
-                ),
-              ],
-            ],
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCELAR')),
-            FilledButton(
-              onPressed: () async {
-                final value = _moneyInput(amount.text);
-                if (value == null || reason.text.trim().isEmpty) return;
-                if (withdrawal) {
-                  await widget.controller.recordCashWithdrawal(sessionId: session.id, amount: value, reason: reason.text.trim(), category: category);
-                } else {
-                  await widget.controller.recordCashEntry(sessionId: session.id, amount: value, reason: reason.text.trim());
-                }
-                if (context.mounted) Navigator.pop(context);
-              },
-              child: const Text('CONFIRMAR'),
+                ],
+              ),
             ),
-          ],
-        ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCELAR')),
+              FilledButton(
+                onPressed: () async {
+                  final value = _moneyInput(amount.text);
+                  if (value == null || reason.text.trim().isEmpty) return;
+                  if (withdrawal && (resultEffect == null || (withdrawalRequiresBeneficiary(category) && beneficiaryId == null))) {
+                    widget.controller.showTransientMessage('Preencha os campos obrigatórios da sangria.');
+                    return;
+                  }
+                  if (withdrawal) {
+                    await widget.controller.recordCashWithdrawal(
+                      sessionId: session.id,
+                      amount: value,
+                      reason: reason.text.trim(),
+                      category: category,
+                      resultEffect: resultEffect!,
+                      beneficiaryId: beneficiaryId,
+                    );
+                  } else {
+                    await widget.controller.recordCashEntry(sessionId: session.id, amount: value, reason: reason.text.trim());
+                  }
+                  if (context.mounted) Navigator.pop(context);
+                },
+                child: const Text('CONFIRMAR'),
+              ),
+            ],
+          );
+        },
       ),
     );
     amount.dispose();

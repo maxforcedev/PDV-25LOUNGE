@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from django.contrib.auth.hashers import make_password
 from django.core.exceptions import ValidationError
+from django.core import mail
 from django.test import SimpleTestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
@@ -11,6 +12,7 @@ from django.test import TestCase
 
 from apps.accounts.models import User
 from apps.base.exceptions import DomainValidationError
+from apps.base.models import AuditLog
 from apps.cash.models import CashMovement, CashRegister
 from apps.cash.services import open_session
 from apps.companies.models import (
@@ -318,6 +320,46 @@ class POSFoundationIntegrationTests(TestCase):
         with self.assertRaises(DomainValidationError):
             set_pos_pin(second_token, '654321')
 
+    @override_settings(POS_PIN_RESET_DELIVERY_LIMIT=1)
+    def test_device_can_request_eligible_operator_pin_reset_without_leaking_delivery_data(self):
+        paired, _ = self.pair_device()
+        mail.outbox.clear()
+        operator = self.create_pos_operator()
+        other_operator = self.create_pos_operator()
+        self.client.credentials(HTTP_X_POS_DEVICE_CREDENTIAL=paired.data['device_credential'])
+
+        response = self.client.post(
+            reverse('pos:operator-pin-reset', args=[operator.pk]),
+            {'company': 999999, 'branch': 999999}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 202, response.data)
+        self.assertNotIn('token', response.data)
+        self.assertNotIn(operator.email, str(response.data))
+        self.assertEqual(len(mail.outbox), 1)
+        audit = AuditLog.objects.get(action='pos.operator.pin_reset_requested')
+        self.assertEqual(audit.actor, operator)
+        self.assertEqual(audit.branch, self.branch)
+        self.assertEqual(audit.metadata['source'], 'pos')
+        self.assertEqual(audit.metadata['device_id'], paired.data['device']['id'])
+        self.assertEqual(audit.metadata['target_user_id'], operator.pk)
+
+        rate_limited = self.client.post(
+            reverse('pos:operator-pin-reset', args=[other_operator.pk]), format='json',
+        )
+        self.assertEqual(rate_limited.status_code, 429, rate_limited.data)
+        self.assertEqual(len(mail.outbox), 1)
+
+        ineligible = User.objects.create_user(
+            email='ineligible-reset@example.com', password='Strong-password-123!',
+            can_login=False, can_access_pos=False,
+        )
+        denied = self.client.post(
+            reverse('pos:operator-pin-reset', args=[ineligible.pk]), format='json',
+        )
+        self.assertEqual(denied.status_code, 403, denied.data)
+        self.assertEqual(len(mail.outbox), 1)
+
     def test_backoffice_device_administration_keeps_credentials_private(self):
         paired, _ = self.pair_device()
         device_id = paired.data['device']['id']
@@ -457,6 +499,101 @@ class POSFoundationIntegrationTests(TestCase):
         )
         self.assertEqual(blocked_entry.status_code, 403, blocked_entry.data)
 
+    def test_pos_cash_overview_allows_operational_permissions_but_redacts_opening_amount(self):
+        operator, _ = self.login_pos_operator()
+        register = CashRegister.objects.create(branch=self.branch, name='Bar')
+        BranchPOSSettings.objects.create(
+            branch=self.branch, cash_binding_mode='FIXED', default_cash_register=register,
+        )
+        open_session(register, '30.00', operator, self.branch, allow_pos_only=True)
+        view_permission = FunctionalPermission.objects.get(code='cash_registers.view')
+        UserPermissionBlock.objects.create(
+            company=self.company, branch=self.branch, user=operator,
+            permission=view_permission, created_by=self.owner,
+        )
+
+        overview = self.client.get(reverse('pos:cash-overview'))
+
+        self.assertEqual(overview.status_code, 200, overview.data)
+        self.assertNotIn('opening_amount', overview.data['session'])
+        summary = self.client.get(reverse('pos:cash-session-summary', args=[overview.data['session']['id']]))
+        self.assertEqual(summary.status_code, 403, summary.data)
+        for code in (
+            'cash_registers.open', 'cash_registers.manual_entry',
+            'cash_registers.withdraw', 'cash_registers.close',
+            'cash_registers.administer_others',
+        ):
+            UserPermissionBlock.objects.create(
+                company=self.company, branch=self.branch, user=operator,
+                permission=FunctionalPermission.objects.get(code=code), created_by=self.owner,
+            )
+
+        denied = self.client.get(reverse('pos:cash-overview'))
+        self.assertEqual(denied.status_code, 403, denied.data)
+
+    def test_pos_cash_beneficiaries_filter_category_and_device_company_scope(self):
+        _, _ = self.login_pos_operator()
+        profile = self.owner.company_accesses.get(company=self.company).access_profile
+        dj = User.objects.create_user(
+            email='dj-beneficiary@example.com', password='Strong-password-123!',
+            can_login=False, user_type=User.UserType.DJ,
+        )
+        UserCompanyAccess.objects.create(
+            user=dj, company=self.company, access_profile=profile, can_login=False,
+        )
+        foreign = User.objects.create_user(
+            email='foreign-beneficiary@example.com', password='Strong-password-123!',
+            can_login=False, user_type=User.UserType.DJ,
+        )
+
+        djs = self.client.get(
+            f"{reverse('pos:cash-beneficiaries')}?category=dj&company=999999&branch=999999",
+        )
+        advance = self.client.get(f"{reverse('pos:cash-beneficiaries')}?category=advance")
+
+        self.assertEqual(djs.status_code, 200, djs.data)
+        self.assertEqual(djs.data['beneficiaries'], [{
+            'id': dj.pk, 'name': dj.email, 'user_type': User.UserType.DJ,
+        }])
+        self.assertEqual(advance.status_code, 200, advance.data)
+        self.assertIn(dj.pk, {item['id'] for item in advance.data['beneficiaries']})
+        self.assertNotIn(foreign.pk, {item['id'] for item in advance.data['beneficiaries']})
+        self.assertEqual(
+            self.client.get(f"{reverse('pos:cash-beneficiaries')}?category=invalid").status_code,
+            400,
+        )
+
+    def test_pos_withdrawal_accepts_company_beneficiary(self):
+        operator, _ = self.login_pos_operator()
+        register = CashRegister.objects.create(branch=self.branch, name='Bar')
+        BranchPOSSettings.objects.create(branch=self.branch, cash_binding_mode='FLEXIBLE')
+        opened = self.client.post(
+            reverse('pos:cash-session-open'),
+            {'register': register.pk, 'opening_amount': '0.00'}, format='json',
+        )
+        self.assertEqual(opened.status_code, 201, opened.data)
+        profile = self.owner.company_accesses.get(company=self.company).access_profile
+        dj = User.objects.create_user(
+            email='withdrawal-dj@example.com', password='Strong-password-123!',
+            can_login=False, user_type=User.UserType.DJ,
+        )
+        UserCompanyAccess.objects.create(
+            user=dj, company=self.company, access_profile=profile, can_login=False,
+        )
+
+        withdrawal = self.client.post(
+            reverse('pos:cash-session-withdrawal', args=[opened.data['id']]),
+            {
+                'idempotency_key': str(uuid4()), 'amount': '25.00', 'reason': 'Cache DJ',
+                'category': 'dj', 'result_effect': 'operating_expense', 'beneficiary_user': dj.pk,
+            },
+            format='json',
+        )
+
+        self.assertEqual(withdrawal.status_code, 201, withdrawal.data)
+        self.assertEqual(withdrawal.data['beneficiary']['id'], dj.pk)
+        self.assertEqual(CashMovement.objects.get(pk=withdrawal.data['id']).beneficiary_user, dj)
+
     def test_pos_cash_movement_replays_idempotently(self):
         _, _ = self.login_pos_operator()
         register = CashRegister.objects.create(branch=self.branch, name='Bar')
@@ -481,3 +618,12 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(replayed.status_code, 200, replayed.data)
         self.assertEqual(created.data['id'], replayed.data['id'])
         self.assertEqual(CashMovement.objects.filter(cash_session_id=opened.data['id']).count(), 1)
+        audit = AuditLog.objects.get(action='cash_movement.manual_entry')
+        self.assertEqual(audit.metadata['source'], 'pos')
+        self.assertEqual(audit.metadata['device_name'], 'Stone Bar 01')
+        self.assertEqual(audit.metadata['operation_reference'], key)
+        audit_count = AuditLog.objects.count()
+        self.client.post(
+            reverse('pos:cash-session-entry', args=[opened.data['id']]), payload, format='json',
+        )
+        self.assertEqual(AuditLog.objects.count(), audit_count)

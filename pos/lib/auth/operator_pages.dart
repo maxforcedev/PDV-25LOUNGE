@@ -134,6 +134,11 @@ class _OperatorAccessPageState extends State<OperatorAccessPage> {
                             icon: const Icon(Icons.sync_rounded, size: 18),
                             label: const Text('Atualizar operadores'),
                           ),
+                          TextButton.icon(
+                            onPressed: operator == null || controller.busy ? null : controller.requestSelectedOperatorPinReset,
+                            icon: const Icon(Icons.lock_reset_rounded, size: 18),
+                            label: const Text('Redefinir PIN'),
+                          ),
                         ],
                       ),
                     ),

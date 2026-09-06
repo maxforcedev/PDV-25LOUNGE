@@ -20,6 +20,7 @@ abstract class PosApi {
   });
   Future<HeartbeatResult> heartbeat(DeviceDescriptor device);
   Future<List<PosOperator>> operators();
+  Future<void> requestOperatorPinReset(String operatorId);
   Future<OperatorSession> login(String operatorId, String pin);
   Future<void> logout();
   Future<BootstrapSnapshot> bootstrap();
@@ -27,7 +28,8 @@ abstract class PosApi {
   Future<CashSessionInfo> openCashSession({required String openingAmount, int? registerId});
   Future<CashSessionSummary> cashSessionSummary(int sessionId);
   Future<void> recordCashEntry({required int sessionId, required String amount, required String reason, required String idempotencyKey});
-  Future<void> recordCashWithdrawal({required int sessionId, required String amount, required String reason, required String category, required String resultEffect, required String idempotencyKey});
+  Future<List<CashBeneficiary>> cashWithdrawalBeneficiaries(String category);
+  Future<void> recordCashWithdrawal({required int sessionId, required String amount, required String reason, required String category, required String resultEffect, int? beneficiaryId, required String idempotencyKey});
   Future<void> closeCashSession({required int sessionId, required String closingAmount});
 }
 
@@ -132,6 +134,11 @@ class HttpPosApi implements PosApi {
   }
 
   @override
+  Future<void> requestOperatorPinReset(String operatorId) async {
+    await _request('POST', 'operators/$operatorId/pin-reset/');
+  }
+
+  @override
   Future<OperatorSession> login(String operatorId, String pin) async => OperatorSession.fromJson(
         await _request('POST', 'auth/operator/', body: {
           'operator_id': operatorId,
@@ -173,12 +180,22 @@ class HttpPosApi implements PosApi {
   }
 
   @override
-  Future<void> recordCashWithdrawal({required int sessionId, required String amount, required String reason, required String category, required String resultEffect, required String idempotencyKey}) async {
+  Future<List<CashBeneficiary>> cashWithdrawalBeneficiaries(String category) async {
+    final payload = await _request('GET', 'cash/beneficiaries/?category=$category');
+    return (payload['beneficiaries'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(CashBeneficiary.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<void> recordCashWithdrawal({required int sessionId, required String amount, required String reason, required String category, required String resultEffect, int? beneficiaryId, required String idempotencyKey}) async {
     await _request('POST', 'cash/sessions/$sessionId/withdrawal/', body: {
       'amount': amount,
       'reason': reason,
       'category': category,
       'result_effect': resultEffect,
+      if (beneficiaryId != null) 'beneficiary_user': beneficiaryId,
       'idempotency_key': idempotencyKey,
     });
   }

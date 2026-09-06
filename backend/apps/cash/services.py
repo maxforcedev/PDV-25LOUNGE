@@ -10,7 +10,7 @@ from rest_framework.exceptions import PermissionDenied
 
 from apps.accounts.models import User
 from apps.base.audit import audit_log, model_snapshot
-from apps.companies.models import Branch, Status, UserCompanyAccess
+from apps.companies.models import Branch, Status
 from apps.companies.selectors import user_has_branch_permission
 
 from .models import (
@@ -78,6 +78,7 @@ def _validate_operational(register):
 
 def open_session(
     cash_register, opening_amount, user, current_branch, *, allow_pos_only=False,
+    audit_metadata=None,
 ):
     opening_amount = parse_money(
         opening_amount, 'opening_amount', nonnegative=True
@@ -108,7 +109,12 @@ def open_session(
                 opened_at=timezone.now(),
                 opening_amount=opening_amount,
             )
-            audit_log(actor=user, action='cash_session.open', obj=session, company=register.branch.company, branch=register.branch, after=model_snapshot(session, ('cash_register_id', 'opening_amount', 'status')))
+            audit_log(
+                actor=user, action='cash_session.open', obj=session,
+                company=register.branch.company, branch=register.branch,
+                after=model_snapshot(session, ('cash_register_id', 'opening_amount', 'status')),
+                metadata=audit_metadata,
+            )
             return session
     except IntegrityError as error:
         constraint = getattr(getattr(error.__cause__, 'diag', None), 'constraint_name', None)
@@ -122,7 +128,7 @@ def open_session(
 def _record_movement(
     *, cash_session, amount, user, reason, current_branch, movement_type, permission_code,
     operation_reference, withdrawal_category=None, beneficiary_user=None, result_effect=None,
-    allow_pos_only=False,
+    allow_pos_only=False, audit_metadata=None,
 ):
     amount = parse_money(amount, 'amount', positive=True)
     reason = (reason or '').strip()
@@ -174,17 +180,13 @@ def _record_movement(
             raise ValidationError({'cash_session': 'A sessão de caixa está fechada.'})
         beneficiary = None
         if beneficiary_user is not None:
-            access = UserCompanyAccess.objects.select_related('user').filter(
-                user_id=beneficiary_id,
-                user__is_active=True,
-                company_id=session.branch.company_id,
-                is_active=True,
-            ).first()
-            if not access:
+            beneficiary = cash_beneficiary_queryset(
+                session.branch, withdrawal_category,
+            ).filter(pk=beneficiary_id).first()
+            if not beneficiary:
                 raise ValidationError(
                     {'beneficiary_user': 'Beneficiário sem acesso ativo a esta empresa.'}
                 )
-            beneficiary = access.user
         required_types = {
             WithdrawalCategory.DJ: User.UserType.DJ,
             WithdrawalCategory.ARTIST: User.UserType.ARTIST,
@@ -218,14 +220,14 @@ def _record_movement(
             actor=user, action=f'cash_movement.{movement_type}', obj=movement,
             company=session.branch.company, branch=session.branch,
             after=model_snapshot(movement, ('movement_type', 'amount', 'reason', 'withdrawal_category', 'beneficiary_user_id', 'result_effect')),
-            metadata={'operation_reference': str(operation_reference)},
+            metadata={**(audit_metadata or {}), 'operation_reference': str(operation_reference)},
         )
         return movement
 
 
 def record_manual_entry(
     cash_session, amount, user, reason, current_branch, idempotency_key,
-    *, allow_pos_only=False,
+    *, allow_pos_only=False, audit_metadata=None,
 ):
     return _record_movement(
         cash_session=cash_session,
@@ -237,12 +239,14 @@ def record_manual_entry(
         permission_code='cash_registers.manual_entry',
         operation_reference=idempotency_key,
         allow_pos_only=allow_pos_only,
+        audit_metadata=audit_metadata,
     )
 
 
 def record_withdrawal(
     cash_session, amount, user, reason, current_branch, category, result_effect,
     idempotency_key, beneficiary_user=None, *, allow_pos_only=False,
+    audit_metadata=None,
 ):
     return _record_movement(
         cash_session=cash_session,
@@ -257,6 +261,7 @@ def record_withdrawal(
         result_effect=result_effect,
         operation_reference=idempotency_key,
         allow_pos_only=allow_pos_only,
+        audit_metadata=audit_metadata,
     )
 
 
@@ -462,8 +467,27 @@ def redact_operational_summary(summary, *, include_costs, include_commission):
     return summary
 
 
+def cash_beneficiary_queryset(branch, category=None):
+    """Return active company beneficiaries valid for the withdrawal category."""
+    queryset = User.objects.filter(
+        is_active=True,
+        archived_at__isnull=True,
+        company_accesses__company_id=branch.company_id,
+        company_accesses__is_active=True,
+    )
+    required_types = {
+        WithdrawalCategory.DJ: User.UserType.DJ,
+        WithdrawalCategory.ARTIST: User.UserType.ARTIST,
+        WithdrawalCategory.PROMOTER: User.UserType.PROMOTER,
+    }
+    if category in required_types:
+        queryset = queryset.filter(user_type=required_types[category])
+    return queryset.distinct().order_by('first_name', 'last_name', 'email', 'pk')
+
+
 def close_session(
     cash_session, closing_amount_informed, user, current_branch, *, allow_pos_only=False,
+    audit_metadata=None,
 ):
     informed = parse_money(
         closing_amount_informed, 'closing_amount_informed', nonnegative=True
@@ -523,12 +547,18 @@ def close_session(
                     'updated_at',
                 )
             )
-            audit_log(actor=user, action='cash_session.close', obj=session, company=session.branch.company, branch=session.branch, before=before, after=model_snapshot(session, ('status', 'closing_expected_amount', 'closing_amount_informed', 'closing_difference')))
+            audit_log(
+                actor=user, action='cash_session.close', obj=session,
+                company=session.branch.company, branch=session.branch, before=before,
+                after=model_snapshot(session, ('status', 'closing_expected_amount', 'closing_amount_informed', 'closing_difference')),
+                metadata=audit_metadata,
+            )
             return session
     audit_log(actor=user, action='cash_session.close_blocked', obj=session,
                company=session.branch.company, branch=session.branch,
-               metadata={
-                   'reason': 'open_command_partial_payments',
+                metadata={
+                    **(audit_metadata or {}),
+                    'reason': 'open_command_partial_payments',
                    'command_payment_count': len(blocked_payment_ids),
                    'command_payment_ids': blocked_payment_ids,
                })

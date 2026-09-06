@@ -7,7 +7,6 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from apps.companies.selectors import accessible_branches, user_has_branch_permission
-from apps.accounts.models import User
 from apps.base.datetimes import (
     filter_datetime_range,
     inclusive_end_exclusive,
@@ -37,6 +36,7 @@ from .serializers import (
 )
 from .services import (
     calculate_expected_amount,
+    cash_beneficiary_queryset,
     close_session,
     cancel_session,
     movement_totals,
@@ -457,9 +457,4 @@ class CashBeneficiaryViewSet(
 
     def get_queryset(self):
         branch = self.request.branch_context
-        return User.objects.filter(
-            is_active=True,
-            archived_at__isnull=True,
-            company_accesses__company_id=branch.company_id,
-            company_accesses__is_active=True,
-        ).distinct().order_by('first_name', 'last_name', 'email', 'pk')
+        return cash_beneficiary_queryset(branch)

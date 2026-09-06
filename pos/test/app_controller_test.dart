@@ -77,6 +77,22 @@ void main() {
     expect(controller.phase, AppPhase.deviceUnavailable);
     expect(controller.deviceError!.code, 'device_blocked');
   });
+
+  test('requests a PIN reset for the selected operator through device auth', () async {
+    final api = FakePosApi();
+    final controller = AppController(
+      api: api,
+      secrets: MemorySecretStore(deviceCredential: 'device-secret'),
+      device: device,
+    );
+
+    await controller.initialize();
+    controller.selectOperator(api.operator);
+    await controller.requestSelectedOperatorPinReset();
+
+    expect(api.pinResetOperatorId, api.operator.id);
+    expect(controller.transientAlert!.message, 'Enviamos as instruções para redefinir seu PIN.');
+  });
 }
 
 class MemorySecretStore implements SecretStore {
@@ -116,6 +132,7 @@ class FakePosApi implements PosApi {
   final ReleaseInfo release;
   final PosApiException? heartbeatError;
   final operator = const PosOperator(id: '1', displayName: 'Joao', initials: 'J');
+  String? pinResetOperatorId;
 
   @override
   Future<BootstrapSnapshot> bootstrap() async => BootstrapSnapshot(
@@ -130,6 +147,9 @@ class FakePosApi implements PosApi {
 
   @override
   Future<CashOverview> cashOverview() async => const CashOverview(mode: 'FLEXIBLE', enabled: true);
+
+  @override
+  Future<List<CashBeneficiary>> cashWithdrawalBeneficiaries(String category) async => const [];
 
   @override
   Future<void> closeCashSession({required int sessionId, required String closingAmount}) async {}
@@ -182,6 +202,9 @@ class FakePosApi implements PosApi {
   Future<List<PosOperator>> operators() async => [operator];
 
   @override
+  Future<void> requestOperatorPinReset(String operatorId) async => pinResetOperatorId = operatorId;
+
+  @override
   Future<OtpChallenge> requestOtp(String flowId, String channelId) async =>
       const OtpChallenge(id: 'challenge', destination: 'a***@core.com');
 
@@ -189,5 +212,5 @@ class FakePosApi implements PosApi {
   Future<void> recordCashEntry({required int sessionId, required String amount, required String reason, required String idempotencyKey}) async {}
 
   @override
-  Future<void> recordCashWithdrawal({required int sessionId, required String amount, required String reason, required String category, required String resultEffect, required String idempotencyKey}) async {}
+  Future<void> recordCashWithdrawal({required int sessionId, required String amount, required String reason, required String category, required String resultEffect, int? beneficiaryId, required String idempotencyKey}) async {}
 }

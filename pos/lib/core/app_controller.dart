@@ -156,6 +156,29 @@ class AppController extends ChangeNotifier {
     });
   }
 
+  Future<void> requestSelectedOperatorPinReset() async {
+    final operator = selectedOperator;
+    if (operator == null || busy) return;
+    busy = true;
+    _clearTransientMessage();
+    notifyListeners();
+    try {
+      await _api.requestOperatorPinReset(operator.id);
+      _showTransientMessage(
+        'Enviamos as instruções para redefinir seu PIN.',
+        tone: TransientAlertTone.success,
+        notify: false,
+      );
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message, notify: false);
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
   Future<void> logout() async {
     try {
       await _api.logout();
@@ -231,13 +254,25 @@ class AppController extends ChangeNotifier {
         'Suprimento registrado com sucesso.',
       );
 
-  Future<void> recordCashWithdrawal({required int sessionId, required String amount, required String reason, required String category}) => _runCashAction(
+  Future<List<CashBeneficiary>?> cashWithdrawalBeneficiaries(String category) async {
+    try {
+      return await _api.cashWithdrawalBeneficiaries(category);
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<void> recordCashWithdrawal({required int sessionId, required String amount, required String reason, required String category, required String resultEffect, int? beneficiaryId}) => _runCashAction(
         () => _api.recordCashWithdrawal(
           sessionId: sessionId,
           amount: amount,
           reason: reason,
           category: category,
-          resultEffect: 'operating_expense',
+          resultEffect: resultEffect,
+          beneficiaryId: beneficiaryId,
           idempotencyKey: createIdempotencyKey(),
         ),
         'Sangria registrada com sucesso.',

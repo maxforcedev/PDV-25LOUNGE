@@ -70,6 +70,34 @@ def _clear_limit(key):
     POSRequestRateLimit.objects.filter(key=key).update(failures=0, locked_until=None)
 
 
+def _delivery_limit_keys(device, operator):
+    return (
+        _fingerprint(f'pin-reset-delivery:device:{device.pk}'),
+        _fingerprint(f'pin-reset-delivery:device:{device.pk}:operator:{operator.pk}'),
+    )
+
+
+def _consume_delivery_limit(keys):
+    """Consume the existing POS limiter only after a reset e-mail is delivered."""
+    limit = getattr(settings, 'POS_PIN_RESET_DELIVERY_LIMIT', PIN_FAILURE_LIMIT)
+    for key in sorted(keys):
+        POSRequestRateLimit.objects.get_or_create(key=key)
+    rows = list(POSRequestRateLimit.objects.select_for_update().filter(key__in=keys).order_by('key'))
+    if any(row.locked_until and row.locked_until > timezone.now() for row in rows):
+        _error('pin_reset_rate_limited', 'Tente novamente mais tarde.', status_code=429)
+    return rows, limit
+
+
+def _record_delivery_limit(rows, limit):
+    now = timezone.now()
+    for row in rows:
+        row.failures += 1
+        if row.failures >= limit:
+            row.failures = 0
+            row.locked_until = now + PIN_LOCK_TTL
+        row.save(update_fields=['failures', 'locked_until', 'updated_at'])
+
+
 def _version_parts(version):
     match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)(?:[-+].*)?', (version or '').strip())
     return tuple(int(part) for part in match.groups()) if match else None
@@ -352,7 +380,7 @@ def logout_operator(session):
         audit_log(actor=session.operator, action='pos.operator.logout', obj=session, company=session.device.branch.company, branch=session.device.branch, metadata={'device_id': str(session.device_id)})
 
 
-def create_pin_reset_token(user, company, actor=None):
+def create_pin_reset_token(user, company, actor=None, audit_metadata=None):
     token = _token()
     row = POSPinResetToken.objects.create(
         user=user,
@@ -366,21 +394,41 @@ def create_pin_reset_token(user, company, actor=None):
         action='pos.operator.pin_reset_requested',
         obj=row,
         company=company,
-        metadata={'user_id': user.pk},
+        metadata={**(audit_metadata or {}), 'user_id': user.pk},
     )
     return row, token
 
 
-def send_pos_pin_setup(user, company, actor=None):
+def send_pos_pin_setup(user, company, actor=None, audit_metadata=None):
     if not user.can_access_pos:
         _error('pos_access_required', 'O operador precisa ter acesso ao POS habilitado.', status_code=409)
     if not user.email:
         _error('pos_pin_email_unavailable', 'O operador precisa de e-mail para receber o link de PIN.', status_code=409)
-    _, token = create_pin_reset_token(user, company, actor)
+    _, token = create_pin_reset_token(user, company, actor, audit_metadata)
     from urllib.parse import urlencode
 
     url = f'{settings.FRONTEND_URL.rstrip("/")}/pos/pin?{urlencode({"token": token})}'
     send_mail('Configure seu PIN do CORE POS', f'Use este link de uso unico para configurar seu PIN: {url}', settings.DEFAULT_FROM_EMAIL, [user.email], fail_silently=False)
+
+
+@transaction.atomic
+def request_pos_pin_reset(device, operator_id):
+    device = validate_device_operational(device)
+    operator = eligible_operator(device.branch, operator_id)
+    if not operator:
+        _error('operator_not_eligible', 'Operador indisponivel para este dispositivo.', status_code=403)
+    rows, limit = _consume_delivery_limit(_delivery_limit_keys(device, operator))
+    metadata = {
+        'source': 'pos',
+        'device_id': str(device.pk),
+        'device_name': device.name,
+        'device_branch_id': device.branch_id,
+        'target_user_id': operator.pk,
+    }
+    send_pos_pin_setup(
+        operator, device.branch.company, audit_metadata=metadata,
+    )
+    _record_delivery_limit(rows, limit)
 
 
 @transaction.atomic
