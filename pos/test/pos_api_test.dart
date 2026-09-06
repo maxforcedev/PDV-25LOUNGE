@@ -40,7 +40,9 @@ void main() {
           'category': 'other',
           'idempotency_key': 'key',
         });
-        return http.Response('', 204);
+        return http.Response(
+            jsonEncode({'mode': 'FLEXIBLE', 'enabled': true, 'registers': []}),
+            201);
       }),
     );
 

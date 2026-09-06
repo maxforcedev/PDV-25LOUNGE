@@ -971,7 +971,7 @@ class TransferDivergenceResolution(ImmutableInventoryRecord):
     payload_fingerprint = models.CharField(max_length=64, editable=False)
     resolution_type = models.CharField(max_length=32, choices=TransferResolutionType.choices)
     quantity = models.DecimalField(max_digits=14, decimal_places=3)
-    observation = models.TextField()
+    observation = models.TextField(blank=True)
     resolved_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -994,8 +994,6 @@ class TransferDivergenceResolution(ImmutableInventoryRecord):
     def clean(self):
         super().clean()
         self.observation = (self.observation or '').strip()
-        if len(self.observation) < 3:
-            raise ValidationError({'observation': 'Informe a observacao da resolucao.'})
 
 
 class LossReason(models.TextChoices):
@@ -1069,8 +1067,6 @@ class LossRecord(ImmutableInventoryRecord):
     def clean(self):
         super().clean()
         self.observation = (self.observation or '').strip()
-        if self.reason == LossReason.OTHER and len(self.observation) < 3:
-            raise ValidationError({'observation': 'Descreva a perda quando o motivo for Outro.'})
         if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
             raise ValidationError({'branch': 'A filial deve pertencer a empresa da perda.'})
         if self.product_id and self.company_id and self.product.company_id != self.company_id:

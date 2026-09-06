@@ -216,7 +216,10 @@ class RecordCommandPaymentSerializer(serializers.Serializer):
 
 class ReverseCommandPaymentSerializer(serializers.Serializer):
     idempotency_key = serializers.UUIDField()
-    reason = serializers.CharField(min_length=3, max_length=500)
+    reason = serializers.CharField(
+        required=False, allow_blank=True, default='', max_length=500,
+        trim_whitespace=True,
+    )
 
 
 class CommandCalculationSerializer(serializers.Serializer):

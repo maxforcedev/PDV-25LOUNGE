@@ -19,7 +19,8 @@ from apps.cash.serializers import (
 )
 from apps.cash.services import (
     close_session, open_session, record_manual_entry, record_withdrawal,
-    cash_beneficiary_queryset, redact_operational_summary, session_operational_summary,
+    cash_beneficiaries, redact_operational_summary, session_cash_state,
+    session_operational_summary,
 )
 from apps.companies.permissions import FunctionalCompanyPermission
 from apps.companies.selectors import accessible_branches
@@ -214,6 +215,12 @@ class POSCashView(POSDeviceView):
             branch=device.branch,
         )
 
+    @staticmethod
+    def mutation_state(device, permissions, session):
+        state = cash_state_for_device(device, permissions)
+        state['session_cash'] = session_cash_state(session)
+        return state
+
 
 class POSCashOverviewView(POSCashView):
     def get(self, request):
@@ -230,13 +237,13 @@ class POSCashBeneficiariesView(POSCashView):
         category = request.query_params.get('category')
         if category not in WithdrawalCategory.values:
             raise ValidationError({'category': 'Informe uma categoria de sangria válida.'})
-        beneficiaries = cash_beneficiary_queryset(device.branch, category)
+        beneficiaries = cash_beneficiaries(device.branch, category)
         return Response({'beneficiaries': CashBeneficiarySerializer(beneficiaries, many=True).data})
 
 
 class POSCashSessionOpenView(POSCashView):
     def post(self, request):
-        device, operator, _, operator_session = self.context(request)
+        device, operator, permissions, operator_session = self.context(request)
         require_branch_feature(device.branch, 'cash_register')
         serializer = POSOpenCashSessionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -278,7 +285,9 @@ class POSCashSessionOpenView(POSCashView):
             allow_pos_only=True,
             audit_metadata=self.audit_metadata(device, operator_session),
         )
-        return Response(CashSessionSerializer(session).data, status=status.HTTP_201_CREATED)
+        data = CashSessionSerializer(session).data
+        data['cash_state'] = self.mutation_state(device, permissions, session)
+        return Response(data, status=status.HTTP_201_CREATED)
 
 
 class POSCashSessionSummaryView(POSCashView):
@@ -307,12 +316,38 @@ class POSCashSessionSummaryView(POSCashView):
 class POSCashSessionMovementView(POSCashView):
     serializer_class = None
     service = None
+    is_withdrawal = False
 
     def post(self, request, session_id):
-        device, operator, _, operator_session = self.context(request)
+        device, operator, permissions, operator_session = self.context(request)
         require_branch_feature(device.branch, 'cash_register')
         session = self.session_for_device(session_id, device)
-        serializer = self.serializer_class(data=request.data)
+        payload = request.data.copy()
+        if self.is_withdrawal:
+            if (
+                'beneficiary_user' in payload
+                or 'beneficiary_supplier' in payload
+            ):
+                raise ValidationError({
+                    'beneficiary': 'Use beneficiary_type e beneficiary_id no POS.'
+                })
+            beneficiary_type = payload.pop('beneficiary_type', None)
+            beneficiary_id = payload.pop('beneficiary_id', None)
+            if beneficiary_type is not None:
+                if beneficiary_type not in ('user', 'supplier'):
+                    raise ValidationError({
+                        'beneficiary_type': 'Tipo de beneficiário inválido.'
+                    })
+                if beneficiary_id is None:
+                    raise ValidationError({
+                        'beneficiary_id': 'Informe o beneficiário da sangria.'
+                    })
+                payload[f'beneficiary_{beneficiary_type}'] = beneficiary_id
+            elif beneficiary_id is not None:
+                raise ValidationError({
+                    'beneficiary_type': 'Informe o tipo do beneficiário.'
+                })
+        serializer = self.serializer_class(data=payload)
         serializer.is_valid(raise_exception=True)
         movement = self.service(
             cash_session=session,
@@ -326,10 +361,14 @@ class POSCashSessionMovementView(POSCashView):
         request.audit_fallback_suppressed = replayed
         movement = CashMovement.objects.select_related(
             'cash_session', 'cash_session__cash_register', 'cash_session__branch', 'user',
-            'beneficiary_user',
+            'beneficiary_user', 'beneficiary_supplier',
         ).get(pk=movement.pk)
+        data = CashMovementSerializer(movement).data
+        data['cash_state'] = self.mutation_state(
+            device, permissions, movement.cash_session
+        )
         return Response(
-            CashMovementSerializer(movement).data,
+            data,
             status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED,
         )
 
@@ -342,11 +381,12 @@ class POSCashSessionEntryView(POSCashSessionMovementView):
 class POSCashSessionWithdrawalView(POSCashSessionMovementView):
     serializer_class = WithdrawalRequestSerializer
     service = staticmethod(record_withdrawal)
+    is_withdrawal = True
 
 
 class POSCashSessionCloseView(POSCashView):
     def post(self, request, session_id):
-        device, operator, _, operator_session = self.context(request)
+        device, operator, permissions, operator_session = self.context(request)
         session = self.session_for_device(session_id, device)
         serializer = CloseSessionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -358,7 +398,9 @@ class POSCashSessionCloseView(POSCashView):
             allow_pos_only=True,
             audit_metadata=self.audit_metadata(device, operator_session),
         )
-        return Response(CashSessionSerializer(session).data)
+        data = CashSessionSerializer(session).data
+        data['cash_state'] = self.mutation_state(device, permissions, session)
+        return Response(data)
 
 
 class POSAdminDeviceViewSet(viewsets.ModelViewSet):

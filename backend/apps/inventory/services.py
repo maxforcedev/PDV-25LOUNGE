@@ -682,8 +682,6 @@ def adjustment(product, branch, user, final_quantity=None, final_content=None, r
 @transaction.atomic
 def write_off_archived_stock(*, stock, user, reason):
     reason = (reason or '').strip()
-    if len(reason) < 3:
-        raise ValidationError({'reason': 'Informe o motivo da baixa residual.'})
     stock = Stock.objects.select_related(
         'product', 'branch', 'branch__company', 'product__fraction_config',
     ).select_for_update(of=('self',)).get(pk=_pk(stock))
@@ -1491,8 +1489,6 @@ def resolve_transfer_divergence(*, divergence, idempotency_key, resolution_type,
         raise ValidationError({'idempotency_key': 'Informe um UUID valido.'}) from error
     quantity = _decimal(quantity, 'quantity', positive=True)
     observation = (observation or '').strip()
-    if len(observation) < 3:
-        raise ValidationError({'observation': 'Informe a observacao da resolucao.'})
     if resolution_type not in TransferResolutionType.values:
         raise ValidationError({'resolution_type': 'Tipo de resolucao invalido.'})
     _validate_whole_unit_quantity(product, quantity, 'quantity')
@@ -1606,8 +1602,6 @@ def record_loss(*, branch, product, idempotency_key, quantity=None, reason,
     observation = (observation or '').strip()
     if reason not in LossReason.values:
         raise ValidationError({'reason': 'Motivo de perda invalido.'})
-    if reason == LossReason.OTHER and len(observation) < 3:
-        raise ValidationError({'observation': 'Descreva a perda quando o motivo for Outro.'})
     try:
         product = Product.objects.select_for_update().get(pk=_pk(product))
     except Product.DoesNotExist as error:

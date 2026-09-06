@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 
 import '../auth/auth_models.dart';
@@ -36,6 +38,7 @@ class AppController extends ChangeNotifier {
   final SecretStore _secrets;
   final DeviceDescriptor _device;
   final _transientFeedback = TransientFeedback();
+  final Map<String, String> _uncertainCashOperationKeys = {};
 
   AppPhase phase = AppPhase.loading;
   bool busy = false;
@@ -234,6 +237,7 @@ class AppController extends ChangeNotifier {
       _handleApiError(error);
     } on PosNetworkException catch (error) {
       _showTransientMessage(error.message, notify: false);
+      syncStatus = syncStatus.failed(error.message);
     } finally {
       busy = false;
       notifyListeners();
@@ -249,19 +253,23 @@ class AppController extends ChangeNotifier {
         'Caixa aberto com sucesso.',
       );
 
-  Future<bool> recordCashEntry(
-          {required int sessionId,
-          required String amount,
-          required String reason}) =>
-      _runCashAction(
+  Future<bool> recordCashEntry({
+    required int sessionId,
+    required String amount,
+    required String reason,
+  }) {
+    final payload = jsonEncode(['entry', sessionId, amount, reason]);
+    return _runCashAction(
         () => _api.recordCashEntry(
           sessionId: sessionId,
           amount: amount,
           reason: reason,
-          idempotencyKey: createIdempotencyKey(),
+          idempotencyKey: _idempotencyKeyFor(payload),
         ),
         'Suprimento registrado com sucesso.',
+        idempotencyPayload: payload,
       );
+  }
 
   Future<List<CashBeneficiary>?> cashWithdrawalBeneficiaries(
       String category) async {
@@ -275,23 +283,37 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
-  Future<bool> recordCashWithdrawal(
-          {required int sessionId,
-          required String amount,
-          required String reason,
-          required String category,
-          int? beneficiaryId}) =>
-      _runCashAction(
+  Future<bool> recordCashWithdrawal({
+    required int sessionId,
+    required String amount,
+    required String reason,
+    required String category,
+    String? beneficiaryType,
+    int? beneficiaryId,
+  }) {
+    final payload = jsonEncode([
+      'withdrawal',
+      sessionId,
+      amount,
+      reason,
+      category,
+      beneficiaryType,
+      beneficiaryId,
+    ]);
+    return _runCashAction(
         () => _api.recordCashWithdrawal(
           sessionId: sessionId,
           amount: amount,
           reason: reason,
           category: category,
+          beneficiaryType: beneficiaryType,
           beneficiaryId: beneficiaryId,
-          idempotencyKey: createIdempotencyKey(),
+          idempotencyKey: _idempotencyKeyFor(payload),
         ),
         'Sangria registrada com sucesso.',
+        idempotencyPayload: payload,
       );
+  }
 
   Future<bool> closeCashSession(
           {required int sessionId, required String closingAmount}) =>
@@ -396,42 +418,36 @@ class AppController extends ChangeNotifier {
     _transientFeedback.clear();
   }
 
+  String _idempotencyKeyFor(String payload) =>
+      _uncertainCashOperationKeys.putIfAbsent(payload, createIdempotencyKey);
+
   Future<bool> _runCashAction(
-      Future<void> Function() action, String successMessage) async {
+    Future<CashOverview> Function() action,
+    String successMessage, {
+    String? idempotencyPayload,
+  }) async {
     final snapshot = bootstrapSnapshot;
     if (busy || snapshot == null) return false;
     busy = true;
     _clearTransientMessage();
     notifyListeners();
     try {
-      await action();
-      try {
-        bootstrapSnapshot = snapshot.withCash(await _api.cashOverview());
-      } on PosApiException catch (error) {
-        syncStatus = syncStatus.failed(error.message);
-        _showTransientMessage(
-          'Operacao concluida, mas nao foi possivel atualizar o caixa.',
-          tone: TransientAlertTone.warning,
-          notify: false,
-        );
-        return true;
-      } on PosNetworkException catch (error) {
-        syncStatus = syncStatus.failed(error.message);
-        _showTransientMessage(
-          'Operacao concluida, mas nao foi possivel atualizar o caixa.',
-          tone: TransientAlertTone.warning,
-          notify: false,
-        );
-        return true;
+      bootstrapSnapshot = snapshot.withCash(await action());
+      if (idempotencyPayload != null) {
+        _uncertainCashOperationKeys.remove(idempotencyPayload);
       }
       syncStatus = syncStatus.succeeded();
       _showTransientMessage(successMessage,
           tone: TransientAlertTone.success, notify: false);
       return true;
     } on PosApiException catch (error) {
+      if (idempotencyPayload != null && error.statusCode < 500) {
+        _uncertainCashOperationKeys.remove(idempotencyPayload);
+      }
       _handleApiError(error);
     } on PosNetworkException catch (error) {
       _showTransientMessage(error.message, notify: false);
+      syncStatus = syncStatus.failed(error.message);
     } finally {
       busy = false;
       notifyListeners();

@@ -482,7 +482,9 @@ class RegularizationItemSerializer(serializers.Serializer):
 
 class RegularizeNegativesSerializer(serializers.Serializer):
     branch = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
-    reason = serializers.CharField(min_length=3, max_length=500)
+    reason = serializers.CharField(
+        required=False, allow_blank=True, default='', max_length=500,
+    )
     items = RegularizationItemSerializer(many=True, allow_empty=False)
 
     def validate_items(self, items):
@@ -862,7 +864,9 @@ class TransferResolutionCreateSerializer(serializers.Serializer):
     quantity = serializers.DecimalField(
         max_digits=14, decimal_places=3, min_value=Decimal('0.001')
     )
-    observation = serializers.CharField(min_length=3, max_length=2000)
+    observation = serializers.CharField(
+        required=False, allow_blank=True, default='', max_length=2000,
+    )
 
 
 class LossRecordCreateSerializer(serializers.Serializer):
@@ -889,10 +893,6 @@ class LossRecordCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 'Informe somente quantity ou content_quantity.'
             )
-        if attrs['reason'] == LossReason.OTHER and len(attrs['observation'].strip()) < 3:
-            raise serializers.ValidationError({
-                'observation': 'Descreva a perda quando o motivo for Outro.'
-            })
         return attrs
 
     def validate_attachment(self, value):

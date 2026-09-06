@@ -318,13 +318,6 @@ function PurchaseDetail() {
       setError("Informe quantidade positiva para ao menos um item.");
       return;
     }
-    if (
-      rows.some((row) => row.divergence !== BigInt(0)) &&
-      receiptReason.trim().length < 3
-    ) {
-      setError("Informe o motivo do recebimento parcial ou divergente.");
-      return;
-    }
     const payload = receiptPayload(order);
     const fingerprint = receiptPayloadFingerprint(payload);
     const idempotencyKey = ensureReceiptKey(order.id, fingerprint, "pending");
@@ -1253,17 +1246,12 @@ function PurchaseDetail() {
                 </tbody>
               </table>
             </div>
-            <Field
-              label="Motivo da divergência"
-              optional={!rows.some((row) => row.divergence !== BigInt(0))}
-            >
+            <Field label="Motivo da divergência" optional>
               <Textarea
-                minLength={3}
-                required={rows.some((row) => row.divergence !== BigInt(0))}
                 value={receiptReason}
                 onChange={(event) => setReceiptReason(event.target.value)}
                 disabled={acting || reconcilingReceipt || receiptUncertain}
-                placeholder="Obrigatório para recebimento parcial ou divergente"
+                placeholder="Opcional para recebimento parcial ou divergente"
               />
             </Field>
             <Field label="Observações" optional>

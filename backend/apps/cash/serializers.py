@@ -9,7 +9,10 @@ from .models import (
     CashSessionStatus,
     WithdrawalCategory,
 )
-from .services import calculate_expected_amount, movement_totals
+from .services import (
+    expected_amount_from_components,
+    movement_totals,
+)
 
 
 class StrictMoneyField(serializers.DecimalField):
@@ -106,10 +109,17 @@ class CashSessionSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def _totals(self, obj):
+        cached = getattr(obj, '_cash_movement_totals', None)
+        if cached is not None:
+            return cached
         if hasattr(obj, 'manual_entries_total'):
-            return obj.manual_entries_total, obj.withdrawals_total
+            obj._cash_movement_totals = (
+                obj.manual_entries_total, obj.withdrawals_total
+            )
+            return obj._cash_movement_totals
         totals = movement_totals(obj)
-        return totals['manual_entries'], totals['withdrawals']
+        obj._cash_movement_totals = totals['manual_entries'], totals['withdrawals']
+        return obj._cash_movement_totals
 
     def get_opened_by_name(self, obj):
         return obj.opened_by.get_full_name().strip() or obj.opened_by.email
@@ -121,7 +131,13 @@ class CashSessionSerializer(serializers.ModelSerializer):
 
     def get_expected_amount(self, obj):
         value = (
-            calculate_expected_amount(obj)
+            expected_amount_from_components(
+                obj,
+                totals={
+                    'manual_entries': self._totals(obj)[0],
+                    'withdrawals': self._totals(obj)[1],
+                },
+            )
             if obj.status == CashSessionStatus.OPEN
             else obj.closing_expected_amount
         )
@@ -166,11 +182,21 @@ class CashMovementSerializer(serializers.ModelSerializer):
         return obj.user.get_full_name().strip() or obj.user.email
 
     def get_beneficiary(self, obj):
+        supplier = obj.beneficiary_supplier
+        if supplier:
+            return {
+                'id': supplier.pk,
+                'kind': 'supplier',
+                'name': supplier.trade_name,
+                'user_type': None,
+                'can_login': False,
+            }
         user = obj.beneficiary_user
         if not user:
             return None
         return {
             'id': user.pk,
+            'kind': 'user',
             'name': user.get_full_name().strip() or user.email or f'Usuario {user.pk}',
             'user_type': user.user_type,
             'can_login': user.can_login,
@@ -199,15 +225,35 @@ class WithdrawalRequestSerializer(ManualEntryRequestSerializer):
     beneficiary_user = serializers.IntegerField(
         min_value=1, required=False, allow_null=True
     )
+    beneficiary_supplier = serializers.IntegerField(
+        min_value=1, required=False, allow_null=True
+    )
 
 
 class CashBeneficiarySerializer(serializers.Serializer):
     id = serializers.IntegerField(read_only=True)
+    kind = serializers.SerializerMethodField()
     name = serializers.SerializerMethodField()
-    user_type = serializers.CharField(read_only=True)
+    user_type = serializers.SerializerMethodField()
+    can_login = serializers.SerializerMethodField()
 
-    def get_name(self, user):
-        return user.get_full_name().strip() or user.email or f'Usuario {user.pk}'
+    def get_kind(self, beneficiary):
+        return 'supplier' if hasattr(beneficiary, 'trade_name') else 'user'
+
+    def get_name(self, beneficiary):
+        if hasattr(beneficiary, 'trade_name'):
+            return beneficiary.trade_name
+        return (
+            beneficiary.get_full_name().strip()
+            or beneficiary.email
+            or f'Usuario {beneficiary.pk}'
+        )
+
+    def get_user_type(self, beneficiary):
+        return None if hasattr(beneficiary, 'trade_name') else beneficiary.user_type
+
+    def get_can_login(self, beneficiary):
+        return False if hasattr(beneficiary, 'trade_name') else beneficiary.can_login
 
 
 class CloseSessionSerializer(serializers.Serializer):
@@ -217,4 +263,7 @@ class CloseSessionSerializer(serializers.Serializer):
 
 
 class CancelSessionSerializer(serializers.Serializer):
-    reason = serializers.CharField(min_length=3, max_length=2000, trim_whitespace=True)
+    reason = serializers.CharField(
+        required=False, allow_blank=True, default='', max_length=2000,
+        trim_whitespace=True,
+    )

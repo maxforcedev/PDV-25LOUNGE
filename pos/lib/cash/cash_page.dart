@@ -4,7 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../core/app_controller.dart';
-import '../sync/sync_status_badge.dart';
+import '../sync/sync_status_button.dart';
 import '../sync/sync_center_page.dart';
 import 'cash_models.dart';
 
@@ -52,7 +52,7 @@ class _CashPageState extends State<CashPage> {
             appBar: AppBar(
               title: const Text('Caixa'),
               actions: [
-                SyncStatusBadge(
+                SyncStatusButton(
                   status: widget.controller.syncStatus,
                   onPressed: () => Navigator.of(context).push(
                     MaterialPageRoute(
@@ -242,6 +242,7 @@ class _CashPageState extends State<CashPage> {
             amount: request.amount,
             reason: request.reason,
             category: request.category!,
+            beneficiaryType: request.beneficiaryType,
             beneficiaryId: request.beneficiaryId,
           )
         : await widget.controller.recordCashEntry(
@@ -277,12 +278,14 @@ class _CashMovementRequest {
     required this.amount,
     required this.reason,
     this.category,
+    this.beneficiaryType,
     this.beneficiaryId,
   });
 
   final String amount;
   final String reason;
   final String? category;
+  final String? beneficiaryType;
   final int? beneficiaryId;
 }
 
@@ -446,6 +449,7 @@ class _CashMovementDialogState extends State<_CashMovementDialog> {
   final _amount = TextEditingController();
   final _reason = TextEditingController();
   String _category = 'other';
+  String? _beneficiaryType;
   int? _beneficiaryId;
   List<CashBeneficiary> _beneficiaries = const [];
   int _beneficiaryRequest = 0;
@@ -480,6 +484,7 @@ class _CashMovementDialogState extends State<_CashMovementDialog> {
     _beneficiaryRequest++;
     setState(() {
       _category = value;
+      _beneficiaryType = null;
       _beneficiaryId = null;
       _beneficiaries = const [];
       _loadingBeneficiaries = false;
@@ -498,7 +503,7 @@ class _CashMovementDialogState extends State<_CashMovementDialog> {
     }
     if (widget.withdrawal &&
         withdrawalRequiresBeneficiary(_category) &&
-        _beneficiaryId == null) {
+        (_beneficiaryId == null || _beneficiaryType == null)) {
       setState(() => _error = 'Preencha os campos obrigatórios da sangria.');
       return;
     }
@@ -507,6 +512,7 @@ class _CashMovementDialogState extends State<_CashMovementDialog> {
       amount: amount,
       reason: _reason.text.trim(),
       category: widget.withdrawal ? _category : null,
+      beneficiaryType: _beneficiaryType,
       beneficiaryId: _beneficiaryId,
     ));
   }
@@ -562,7 +568,13 @@ class _CashMovementDialogState extends State<_CashMovementDialog> {
                         .toList(growable: false),
                     onChanged: _submitting
                         ? null
-                        : (value) => setState(() => _beneficiaryId = value),
+                        : (value) => setState(() {
+                              _beneficiaryId = value;
+                              _beneficiaryType = _beneficiaries
+                                  .where((item) => item.id == value)
+                                  .firstOrNull
+                                  ?.type;
+                            }),
                   ),
               ],
             ],

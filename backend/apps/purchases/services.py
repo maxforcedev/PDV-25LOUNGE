@@ -1067,14 +1067,6 @@ def receive_purchase_order(*, purchase_order, idempotency_key, items, user,
             order_item, previous[item_id], received_now, accumulated, pending_after,
             divergence, reason, received_stock_quantity,
         ))
-    missing_lines = supplied_ids != set(order_items)
-    unexplained_lines = any(not row[6] for row in prepared if row[5] != 0)
-    if any_divergence and not payload['divergence_reason'] and (
-        missing_lines or unexplained_lines
-    ):
-        raise ValidationError({
-            'divergence_reason': 'Informe o motivo do recebimento parcial ou divergente.'
-        })
     if order.order_type == PurchaseOrderType.DIRECT and not resulting_complete:
         raise ValidationError({'items': 'Entrada direta deve ser recebida integralmente.'})
 

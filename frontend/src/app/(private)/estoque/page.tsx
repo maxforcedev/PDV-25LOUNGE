@@ -355,11 +355,6 @@ function Inventory() {
       setError("Revise os limites de estoque.");
       return;
     }
-    if (isLoss && lossReason === "OTHER" && reason.trim().length < 3) {
-      setFields({ observation: ["Descreva a perda quando o motivo for Outro."] });
-      setError("Revise a descrição da perda.");
-      return;
-    }
     setSaving(true);
     setError("");
     setFields({});

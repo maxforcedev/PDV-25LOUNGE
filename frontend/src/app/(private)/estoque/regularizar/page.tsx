@@ -144,10 +144,8 @@ function RegularizeStock() {
         ) : stocks.length ? (
           <>
             <section className="card p-5">
-              <Field label="Justificativa da regularização">
+              <Field label="Justificativa da regularização" optional>
                 <Textarea
-                  required
-                  minLength={3}
                   value={reason}
                   onChange={(event) => setReason(event.target.value)}
                 />
@@ -227,7 +225,6 @@ function RegularizeStock() {
               <div className="flex justify-end border-t border-slate-100 p-4">
                 <Button
                   loading={saving}
-                  disabled={reason.trim().length < 3}
                   onClick={() => void submit()}
                 >
                   Regularizar {stocks.length} produtos

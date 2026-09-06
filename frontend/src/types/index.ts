@@ -1311,7 +1311,8 @@ export type WithdrawalCategory =
 export interface CashBeneficiary {
   id: number;
   name: string;
-  user_type: UserType;
+  kind: "user" | "supplier";
+  user_type: UserType | null;
   can_login?: boolean;
 }
 

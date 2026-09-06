@@ -126,7 +126,7 @@ void main() {
     expect(api.cashSummaryCalls, 1);
   });
 
-  test('refreshes cash state only when a cash action succeeds', () async {
+  test('uses the cash state returned by a successful cash action', () async {
     final failingApi = FakePosApi(
       cashEntryError: const PosApiException(
           statusCode: 400, code: 'invalid_entry', message: 'Entrada inválida.'),
@@ -150,27 +150,7 @@ void main() {
         await controller.recordCashEntry(
             sessionId: 1, amount: '10.00', reason: 'Troco'),
         isTrue);
-    expect(api.cashOverviewCalls, 1);
-  });
-
-  test('keeps a confirmed cash action successful when overview refresh fails',
-      () async {
-    final api = FakePosApi(
-      cashOverviewError: const PosNetworkException('Sem conexao.'),
-    );
-    final controller =
-        AppController(api: api, secrets: MemorySecretStore(), device: device);
-    controller.bootstrapSnapshot = await api.bootstrap();
-
-    expect(
-      await controller.recordCashEntry(
-          sessionId: 1, amount: '10.00', reason: 'Troco'),
-      isTrue,
-    );
-    expect(api.cashOverviewCalls, 1);
-    expect(controller.transientAlert!.message,
-        'Operacao concluida, mas nao foi possivel atualizar o caixa.');
-    expect(controller.transientAlert!.tone, TransientAlertTone.warning);
+    expect(api.cashOverviewCalls, 0);
   });
 
   testWidgets(
@@ -291,8 +271,9 @@ class FakePosApi implements PosApi {
       const [];
 
   @override
-  Future<void> closeCashSession(
-      {required int sessionId, required String closingAmount}) async {}
+  Future<CashOverview> closeCashSession(
+          {required int sessionId, required String closingAmount}) async =>
+      _cashMutationResponse;
 
   @override
   Future<CashSessionSummary> cashSessionSummary(int sessionId) async {
@@ -335,16 +316,9 @@ class FakePosApi implements PosApi {
       OperatorSession(token: 'operator-secret', operator: operator);
 
   @override
-  Future<CashSessionInfo> openCashSession(
+  Future<CashOverview> openCashSession(
           {required String openingAmount, int? registerId}) async =>
-      const CashSessionInfo(
-        id: 1,
-        registerId: 1,
-        registerName: 'Caixa',
-        status: 'open',
-        openedByName: 'Joao',
-        openedAt: null,
-      );
+      _cashMutationResponse;
 
   @override
   Future<void> logout() async {}
@@ -361,20 +335,26 @@ class FakePosApi implements PosApi {
       const OtpChallenge(id: 'challenge', destination: 'a***@core.com');
 
   @override
-  Future<void> recordCashEntry(
+  Future<CashOverview> recordCashEntry(
       {required int sessionId,
       required String amount,
       required String reason,
       required String idempotencyKey}) async {
     if (cashEntryError != null) throw cashEntryError!;
+    return _cashMutationResponse;
   }
 
   @override
-  Future<void> recordCashWithdrawal(
+  Future<CashOverview> recordCashWithdrawal(
       {required int sessionId,
       required String amount,
       required String reason,
       required String category,
+      String? beneficiaryType,
       int? beneficiaryId,
-      required String idempotencyKey}) async {}
+      required String idempotencyKey}) async =>
+      _cashMutationResponse;
+
+  CashOverview get _cashMutationResponse =>
+      cashOverviewResponse ?? const CashOverview(mode: 'FLEXIBLE', enabled: true);
 }

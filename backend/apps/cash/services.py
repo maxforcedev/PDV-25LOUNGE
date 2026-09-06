@@ -12,6 +12,7 @@ from rest_framework.exceptions import PermissionDenied
 from apps.accounts.models import User
 from apps.base.audit import audit_log, model_snapshot
 from apps.companies.models import Branch, Status
+from apps.suppliers.models import Supplier
 from apps.companies.selectors import user_has_branch_permission
 
 from .models import (
@@ -21,8 +22,8 @@ from .models import (
     CashRegisterStatus,
     CashSession,
     CashSessionStatus,
+    ResultEffect,
     WithdrawalCategory,
-    withdrawal_result_effect,
 )
 
 
@@ -130,6 +131,7 @@ def open_session(
 def _record_movement(
     *, cash_session, amount, user, reason, current_branch, movement_type, permission_code,
     operation_reference, withdrawal_category=None, beneficiary_user=None,
+    beneficiary_supplier=None,
     allow_pos_only=False, audit_metadata=None,
 ):
     amount = parse_money(amount, 'amount', positive=True)
@@ -160,11 +162,14 @@ def _record_movement(
         ):
             raise PermissionDenied('Você não pode operar uma sessão aberta por outro usuário.')
         effective_result = (
-            withdrawal_result_effect(withdrawal_category)
+            ResultEffect.UNCLASSIFIED
             if movement_type == CashMovementType.WITHDRAWAL
-            else 'neutral'
+            else ResultEffect.NEUTRAL
         )
-        beneficiary_id = _pk(beneficiary_user) if beneficiary_user is not None else None
+        beneficiary_user_id = _pk(beneficiary_user) if beneficiary_user is not None else None
+        beneficiary_supplier_id = (
+            _pk(beneficiary_supplier) if beneficiary_supplier is not None else None
+        )
         existing = CashMovement.objects.filter(
             cash_session=session,
             movement_type=movement_type,
@@ -175,7 +180,8 @@ def _record_movement(
                 existing.amount == amount
                 and existing.reason == reason
                 and existing.withdrawal_category == withdrawal_category
-                and existing.beneficiary_user_id == beneficiary_id
+                and existing.beneficiary_user_id == beneficiary_user_id
+                and existing.beneficiary_supplier_id == beneficiary_supplier_id
                 and existing.result_effect == effective_result
                 and existing.user_id == user.pk
             )
@@ -192,10 +198,33 @@ def _record_movement(
         if session.status != CashSessionStatus.OPEN:
             raise ValidationError({'cash_session': 'A sessão de caixa está fechada.'})
         beneficiary = None
-        if beneficiary_user is not None:
+        supplier = None
+        if withdrawal_category == WithdrawalCategory.SUPPLIER:
+            if beneficiary_user is not None:
+                raise ValidationError({
+                    'beneficiary_user': 'Fornecedor deve usar beneficiary_supplier.'
+                })
+            if beneficiary_supplier is None:
+                raise ValidationError({
+                    'beneficiary_supplier': 'Informe o fornecedor desta sangria.'
+                })
+            supplier = cash_beneficiaries(
+                session.branch, withdrawal_category,
+            ).filter(pk=beneficiary_supplier_id).first()
+            if not supplier:
+                raise ValidationError({
+                    'beneficiary_supplier': (
+                        'Fornecedor inativo ou fora da empresa e filial da sessão.'
+                    )
+                })
+        elif beneficiary_supplier is not None:
+            raise ValidationError({
+                'beneficiary_supplier': 'Fornecedor só pode ser usado na categoria Fornecedor.'
+            })
+        elif beneficiary_user is not None:
             beneficiary = cash_beneficiary_queryset(
                 session.branch, withdrawal_category,
-            ).filter(pk=beneficiary_id).first()
+            ).filter(pk=beneficiary_user_id).first()
             if not beneficiary:
                 raise ValidationError(
                     {'beneficiary_user': 'Beneficiário sem acesso ativo a esta empresa.'}
@@ -226,13 +255,14 @@ def _record_movement(
             reason=reason,
             withdrawal_category=withdrawal_category,
             beneficiary_user=beneficiary,
+            beneficiary_supplier=supplier,
             result_effect=effective_result,
             operation_reference=operation_reference,
         )
         audit_log(
             actor=user, action=f'cash_movement.{movement_type}', obj=movement,
             company=session.branch.company, branch=session.branch,
-            after=model_snapshot(movement, ('movement_type', 'amount', 'reason', 'withdrawal_category', 'beneficiary_user_id', 'result_effect')),
+            after=model_snapshot(movement, ('movement_type', 'amount', 'reason', 'withdrawal_category', 'beneficiary_user_id', 'beneficiary_supplier_id', 'result_effect')),
             metadata={**(audit_metadata or {}), 'operation_reference': str(operation_reference)},
         )
         return movement
@@ -258,7 +288,7 @@ def record_manual_entry(
 
 def record_withdrawal(
     cash_session, amount, user, reason=None, *, current_branch, category,
-    idempotency_key, beneficiary_user=None, allow_pos_only=False,
+    idempotency_key, beneficiary_user=None, beneficiary_supplier=None, allow_pos_only=False,
     audit_metadata=None,
 ):
     return _record_movement(
@@ -271,6 +301,7 @@ def record_withdrawal(
         permission_code='cash_registers.withdraw',
         withdrawal_category=category,
         beneficiary_user=beneficiary_user,
+        beneficiary_supplier=beneficiary_supplier,
         operation_reference=idempotency_key,
         allow_pos_only=allow_pos_only,
         audit_metadata=audit_metadata,
@@ -297,8 +328,13 @@ def calculate_expected_amount(session):
     """Calculate drawer cash from original cash events and their reversals."""
     if not isinstance(session, CashSession):
         session = CashSession.objects.get(pk=_pk(session))
-    totals = movement_totals(session)
-    cash = cash_payment_components(session)
+    return expected_amount_from_components(session)
+
+
+def expected_amount_from_components(session, *, totals=None, cash=None):
+    """Calculate expected drawer cash from the canonical aggregate selectors."""
+    totals = totals if totals is not None else movement_totals(session)
+    cash = cash if cash is not None else cash_payment_components(session)
     return (
         session.opening_amount
         + totals['manual_entries']
@@ -481,6 +517,8 @@ def redact_operational_summary(summary, *, include_costs, include_commission):
 
 def cash_beneficiary_queryset(branch, category=None):
     """Return active company beneficiaries valid for the withdrawal category."""
+    if category == WithdrawalCategory.SUPPLIER:
+        return User.objects.none()
     queryset = User.objects.filter(
         is_active=True,
         archived_at__isnull=True,
@@ -495,6 +533,57 @@ def cash_beneficiary_queryset(branch, category=None):
     if category in required_types:
         queryset = queryset.filter(user_type=required_types[category])
     return queryset.distinct().order_by('first_name', 'last_name', 'email', 'pk')
+
+
+def cash_beneficiaries(branch, category=None):
+    """Return the canonical beneficiary model for a withdrawal category."""
+    if category == WithdrawalCategory.SUPPLIER:
+        return Supplier.objects.filter(
+            company_id=branch.company_id,
+            branch_id=branch.pk,
+            status=Status.ACTIVE,
+            deleted_at__isnull=True,
+        ).order_by('trade_name', 'pk')
+    return cash_beneficiary_queryset(branch, category)
+
+
+def session_cash_state(session):
+    """Return the authoritative drawer state for a POS mutation response."""
+    if not isinstance(session, CashSession):
+        session = CashSession.objects.select_related(
+            'cash_register', 'branch', 'opened_by', 'closed_by'
+        ).get(pk=_pk(session))
+    totals = movement_totals(session)
+    cash = cash_payment_components(session)
+    expected = (
+        expected_amount_from_components(session, totals=totals, cash=cash)
+        if session.status == CashSessionStatus.OPEN
+        else session.closing_expected_amount
+    )
+    return {
+        'id': session.pk,
+        'cash_register': session.cash_register_id,
+        'register_name': session.cash_register.name,
+        'branch': session.branch_id,
+        'status': session.status,
+        'opening_amount': f'{session.opening_amount:.2f}',
+        'manual_entries': f'{totals["manual_entries"]:.2f}',
+        'withdrawals': f'{totals["withdrawals"]:.2f}',
+        'sale_cash': f'{cash["sale_cash"]:.2f}',
+        'consumption_cash': f'{cash["consumption_cash"]:.2f}',
+        'cash_reversals': f'{cash["cash_reversals"]:.2f}',
+        'command_cash': f'{cash["command_cash"]:.2f}',
+        'cash_payments': f'{cash["cash_payments"]:.2f}',
+        'expected_amount': f'{expected:.2f}',
+        'closing_amount_informed': (
+            f'{session.closing_amount_informed:.2f}'
+            if session.closing_amount_informed is not None else None
+        ),
+        'closing_difference': (
+            f'{session.closing_difference:.2f}'
+            if session.closing_difference is not None else None
+        ),
+    }
 
 
 def close_session(
@@ -594,7 +683,7 @@ def cancel_session(cash_session, reason, user, current_branch):
     session.status = CashSessionStatus.CANCELLED
     session.cancelled_by = user
     session.cancelled_at = timezone.now()
-    session.cancellation_reason = reason.strip()
+    session.cancellation_reason = (reason or '').strip()
     session.save(update_fields=(
         'status', 'cancelled_by', 'cancelled_at', 'cancellation_reason', 'updated_at',
     ))

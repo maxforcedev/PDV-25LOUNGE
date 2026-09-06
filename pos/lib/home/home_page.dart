@@ -5,7 +5,7 @@ import '../cash/cash_page.dart';
 import '../core/app_controller.dart';
 import '../core/transient_feedback.dart';
 import '../sync/sync_center_page.dart';
-import '../sync/sync_status_badge.dart';
+import '../sync/sync_status_button.dart';
 
 class HomePage extends StatelessWidget {
   const HomePage({required this.controller, super.key});
@@ -84,7 +84,7 @@ class _SyncButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final status = controller.syncStatus;
-    return SyncStatusBadge(
+    return SyncStatusButton(
       status: status,
       onPressed: () => Navigator.of(context).push(MaterialPageRoute(
           builder: (_) => SyncCenterPage(controller: controller))),

@@ -518,7 +518,7 @@ function CommandDetail() {
       </Modal>
 
       <Modal open={!!reversePayment} title="Estornar pagamento" onClose={() => setReversePayment(null)}>
-        <div className="space-y-4 p-5"><p className="text-sm text-muted">{reversePayment ? `${reversePayment.payment_method_name} · ${formatDecimalBRL(reversePayment.amount)}` : ""}</p><Field label="Motivo do estorno" error={fieldError(fields, "reason")}><Input required minLength={3} value={reverseReason} onChange={(event) => setReverseReason(event.target.value)} disabled={saving} /></Field>{error && <Alert message={error} />}<div className="flex justify-end gap-2 border-t border-subtle pt-4"><Button variant="secondary" onClick={() => setReversePayment(null)} disabled={saving}>Cancelar</Button><Button loading={saving} onClick={() => void doReversePayment()}>Estornar pagamento</Button></div></div>
+        <div className="space-y-4 p-5"><p className="text-sm text-muted">{reversePayment ? `${reversePayment.payment_method_name} · ${formatDecimalBRL(reversePayment.amount)}` : ""}</p><Field label="Motivo do estorno" optional error={fieldError(fields, "reason")}><Input value={reverseReason} onChange={(event) => setReverseReason(event.target.value)} disabled={saving} /></Field>{error && <Alert message={error} />}<div className="flex justify-end gap-2 border-t border-subtle pt-4"><Button variant="secondary" onClick={() => setReversePayment(null)} disabled={saving}>Cancelar</Button><Button loading={saving} onClick={() => void doReversePayment()}>Estornar pagamento</Button></div></div>
       </Modal>
 
       <Modal open={finalizeOpen} title="Fechar comanda" onClose={() => setFinalizeOpen(false)}>

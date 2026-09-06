@@ -33,12 +33,17 @@ class CashSessionAdmin(admin.ModelAdmin):
 class CashMovementAdmin(admin.ModelAdmin):
     list_display = (
         'cash_session', 'movement_type', 'withdrawal_category', 'beneficiary_user',
+        'beneficiary_supplier',
         'amount', 'user', 'created_at',
     )
     list_filter = ('movement_type', 'withdrawal_category', 'cash_session__branch')
-    search_fields = ('reason', 'cash_session__cash_register__name', 'user__email')
+    search_fields = (
+        'reason', 'cash_session__cash_register__name', 'user__email',
+        'beneficiary_supplier__trade_name',
+    )
     readonly_fields = (
         'cash_session', 'movement_type', 'withdrawal_category', 'beneficiary_user',
+        'beneficiary_supplier',
         'amount', 'user', 'reason',
         'created_at', 'updated_at',
     )

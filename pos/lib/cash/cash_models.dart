@@ -125,19 +125,22 @@ class CashSessionSummary {
 }
 
 class CashBeneficiary {
-  const CashBeneficiary(
-      {required this.id, required this.name, required this.userType});
+  const CashBeneficiary({
+    required this.id,
+    required this.name,
+    required this.type,
+  });
 
   factory CashBeneficiary.fromJson(Map<String, dynamic> json) =>
       CashBeneficiary(
-        id: json['id'] as int,
+        id: (json['id'] ?? json['beneficiary_id']) as int,
         name: json['name'] as String? ?? '',
-        userType: json['user_type'] as String? ?? '',
+        type: (json['kind'] ?? json['beneficiary_type']) as String? ?? '',
       );
 
   final int id;
   final String name;
-  final String userType;
+  final String type;
 }
 
 const withdrawalCategories = {
@@ -150,7 +153,8 @@ const withdrawalCategories = {
 };
 
 bool withdrawalRequiresBeneficiary(String category) =>
-    const {'dj', 'artist', 'advance', 'promoter'}.contains(category);
+    const {'dj', 'artist', 'advance', 'promoter', 'supplier'}
+        .contains(category);
 
 String formatMoney(String? value) =>
     'R\$ ${(value ?? '0.00').replaceAll('.', ',')}';

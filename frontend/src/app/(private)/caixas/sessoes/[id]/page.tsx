@@ -56,6 +56,7 @@ const beneficiaryRequired = new Set<WithdrawalCategory>([
   "artist",
   "advance",
   "promoter",
+  "supplier",
 ]);
 
 type CanonicalCashSummary = CashSummary & {
@@ -314,18 +315,7 @@ function SessionDetail() {
     setError("");
     movementIdempotencyKey.current = crypto.randomUUID();
     if (next === "withdrawal") {
-      setBeneficiariesLoading(true);
-      http
-        .getAll<CashBeneficiary>("cash-beneficiaries/")
-        .then(setBeneficiaries)
-        .catch((caught) =>
-          setError(
-            caught instanceof ApiError
-              ? caught.message
-              : "Não foi possível carregar os beneficiários.",
-          ),
-        )
-        .finally(() => setBeneficiariesLoading(false));
+      setBeneficiaries([]);
     }
   }
 
@@ -366,7 +356,9 @@ function SessionDetail() {
               idempotency_key: movementIdempotencyKey.current,
               category,
               ...(beneficiaryId
-                ? { beneficiary_user: Number(beneficiaryId) }
+                ? category === "supplier"
+                  ? { beneficiary_supplier: Number(beneficiaryId) }
+                  : { beneficiary_user: Number(beneficiaryId) }
                 : {}),
             },
       );
@@ -750,8 +742,25 @@ function SessionDetail() {
                     required
                     value={category}
                     onChange={(event) => {
-                      setCategory(event.target.value as WithdrawalCategory);
+                      const nextCategory = event.target.value as WithdrawalCategory;
+                      setCategory(nextCategory);
                       setBeneficiaryId("");
+                      setBeneficiaries([]);
+                      if (!nextCategory) return;
+                      setBeneficiariesLoading(true);
+                      http
+                        .getAll<CashBeneficiary>(
+                          `cash-beneficiaries/?category=${nextCategory}`,
+                        )
+                        .then(setBeneficiaries)
+                        .catch((caught) =>
+                          setError(
+                            caught instanceof ApiError
+                              ? caught.message
+                              : "Não foi possível carregar os beneficiários.",
+                          ),
+                        )
+                        .finally(() => setBeneficiariesLoading(false));
                     }}
                   >
                     <option value="">Selecione</option>
@@ -777,13 +786,6 @@ function SessionDetail() {
                       {beneficiariesLoading ? "Carregando..." : "Selecione"}
                     </option>
                     {beneficiaries
-                      .filter(
-                        (item) =>
-                          !category ||
-                          category === "advance" ||
-                          ["supplier", "other"].includes(category) ||
-                          item.user_type === category,
-                      )
                       .map((item) => (
                         <option key={item.id} value={item.id}>
                           {item.name}

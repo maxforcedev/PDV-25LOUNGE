@@ -21,6 +21,7 @@ from .models import (
     CashRegisterStatus,
     CashSession,
     CashSessionStatus,
+    WithdrawalCategory,
 )
 from .permissions import CashFunctionalPermission
 from .serializers import (
@@ -36,7 +37,7 @@ from .serializers import (
 )
 from .services import (
     calculate_expected_amount,
-    cash_beneficiary_queryset,
+    cash_beneficiaries,
     close_session,
     cancel_session,
     movement_totals,
@@ -212,7 +213,7 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
         replayed = bool(getattr(movement, '_idempotency_replayed', False))
         movement = CashMovement.objects.select_related(
             'cash_session', 'cash_session__cash_register', 'cash_session__branch', 'user',
-            'beneficiary_user',
+            'beneficiary_user', 'beneficiary_supplier',
         ).get(pk=movement.pk)
         request.audit_fallback_suppressed = replayed
         return Response(
@@ -305,7 +306,7 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
             'details': f'Aberta por {session.opened_by.get_full_name().strip() or session.opened_by.email}',
         })
         for movement in CashMovement.objects.filter(cash_session=session).select_related(
-            'user', 'beneficiary_user'
+            'user', 'beneficiary_user', 'beneficiary_supplier'
         ).order_by('created_at', 'pk'):
             is_entry = movement.movement_type == CashMovementType.MANUAL_ENTRY
             events.append({
@@ -318,8 +319,12 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
                 'details': movement.reason,
                 'reason': movement.reason,
                 'beneficiary_name': (
-                    movement.beneficiary_user.get_full_name().strip() or movement.beneficiary_user.email
-                    if movement.beneficiary_user_id else None
+                    movement.beneficiary_supplier.trade_name
+                    if movement.beneficiary_supplier_id else (
+                        movement.beneficiary_user.get_full_name().strip()
+                        or movement.beneficiary_user.email
+                        if movement.beneficiary_user_id else None
+                    )
                 ),
                 'registered_by_name': movement.user.get_full_name().strip() or movement.user.email,
                 'category_label': movement.get_withdrawal_category_display() if not is_entry else None,
@@ -429,7 +434,7 @@ class CashMovementViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelView
         queryset = CashMovement.objects.select_related(
             'cash_session', 'cash_session__cash_register', 'cash_session__branch',
             'cash_session__branch__company', 'user',
-            'beneficiary_user',
+            'beneficiary_user', 'beneficiary_supplier',
         ).filter(
             cash_session__branch__in=self.allowed_branches('cash_registers.view')
         )
@@ -457,4 +462,7 @@ class CashBeneficiaryViewSet(
 
     def get_queryset(self):
         branch = self.request.branch_context
-        return cash_beneficiary_queryset(branch)
+        category = self.request.query_params.get('category')
+        if category and category not in WithdrawalCategory.values:
+            raise ValidationError({'category': 'Informe uma categoria de sangria válida.'})
+        return cash_beneficiaries(branch, category)

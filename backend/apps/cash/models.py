@@ -8,7 +8,7 @@ from django.db.models import F, Q
 from django.db.models.functions import Lower
 
 from apps.base.models import BaseModel
-from apps.companies.models import Branch
+from apps.companies.models import Branch, Status
 
 
 class CashRegisterStatus(models.TextChoices):
@@ -40,24 +40,6 @@ class ResultEffect(models.TextChoices):
     UNCLASSIFIED = 'unclassified', 'Não classificado'
     OPERATING_EXPENSE = 'operating_expense', 'Despesa operacional'
     NEUTRAL = 'neutral', 'Não afeta o resultado'
-
-
-OPERATING_EXPENSE_WITHDRAWAL_CATEGORIES = (
-    WithdrawalCategory.DJ,
-    WithdrawalCategory.ARTIST,
-    WithdrawalCategory.ADVANCE,
-    WithdrawalCategory.PROMOTER,
-    WithdrawalCategory.SUPPLIER,
-)
-
-
-def withdrawal_result_effect(category):
-    """Classify a withdrawal from its canonical category."""
-    return (
-        ResultEffect.OPERATING_EXPENSE
-        if category in OPERATING_EXPENSE_WITHDRAWAL_CATEGORIES
-        else ResultEffect.NEUTRAL
-    )
 
 
 class CashRegister(BaseModel):
@@ -213,7 +195,7 @@ class CashSession(BaseModel):
         ):
             raise ValidationError({'status': 'O fechamento da sessão está incompleto.'})
         if self.status == CashSessionStatus.CANCELLED and (
-            not self.cancelled_by_id or not self.cancelled_at or not self.cancellation_reason.strip()
+            not self.cancelled_by_id or not self.cancelled_at
         ):
             raise ValidationError({'status': 'A anulação da sessão está incompleta.'})
         if self.opening_amount is not None and self.opening_amount < Decimal('0'):
@@ -263,6 +245,13 @@ class CashMovement(BaseModel):
         blank=True,
         null=True,
     )
+    beneficiary_supplier = models.ForeignKey(
+        'suppliers.Supplier',
+        on_delete=models.PROTECT,
+        related_name='cash_withdrawals',
+        blank=True,
+        null=True,
+    )
     result_effect = models.CharField(
         max_length=24,
         choices=ResultEffect.choices,
@@ -284,32 +273,37 @@ class CashMovement(BaseModel):
                         movement_type=CashMovementType.MANUAL_ENTRY,
                         withdrawal_category__isnull=True,
                         beneficiary_user__isnull=True,
-                        result_effect=ResultEffect.NEUTRAL,
+                        beneficiary_supplier__isnull=True,
                     )
                     | Q(
                         movement_type=CashMovementType.WITHDRAWAL,
-                        withdrawal_category__in=OPERATING_EXPENSE_WITHDRAWAL_CATEGORIES,
-                        result_effect=ResultEffect.OPERATING_EXPENSE,
+                        withdrawal_category=WithdrawalCategory.SUPPLIER,
+                        # Historical rows predate the supplier FK. New writes are
+                        # constrained by clean() and the canonical service.
+                        beneficiary_supplier__isnull=True,
                     )
                     | Q(
                         movement_type=CashMovementType.WITHDRAWAL,
-                        withdrawal_category=WithdrawalCategory.OTHER,
-                        result_effect=ResultEffect.NEUTRAL,
+                        withdrawal_category=WithdrawalCategory.SUPPLIER,
+                        beneficiary_user__isnull=True,
+                        beneficiary_supplier__isnull=False,
                     )
-                ),
-                name='cash_movement_withdrawal_classification_coherent',
-            ),
-            models.CheckConstraint(
-                condition=(
-                    ~Q(
+                    | Q(
+                        movement_type=CashMovementType.WITHDRAWAL,
                         withdrawal_category__in=(
                             WithdrawalCategory.DJ,
                             WithdrawalCategory.ARTIST,
                             WithdrawalCategory.ADVANCE,
                             WithdrawalCategory.PROMOTER,
-                        )
+                        ),
+                        beneficiary_user__isnull=False,
+                        beneficiary_supplier__isnull=True,
                     )
-                    | Q(beneficiary_user__isnull=False)
+                    | Q(
+                        movement_type=CashMovementType.WITHDRAWAL,
+                        withdrawal_category=WithdrawalCategory.OTHER,
+                        beneficiary_supplier__isnull=True,
+                    )
                 ),
                 name='cash_movement_required_beneficiary_coherent',
             ),
@@ -337,7 +331,11 @@ class CashMovement(BaseModel):
             WithdrawalCategory.PROMOTER,
         }
         if self.movement_type == CashMovementType.MANUAL_ENTRY:
-            if self.withdrawal_category or self.beneficiary_user_id:
+            if (
+                self.withdrawal_category
+                or self.beneficiary_user_id
+                or self.beneficiary_supplier_id
+            ):
                 raise ValidationError(
                     {'withdrawal_category': 'Entradas não aceitam classificação de sangria.'}
                 )
@@ -347,14 +345,42 @@ class CashMovement(BaseModel):
                 raise ValidationError(
                     {'withdrawal_category': 'Informe a categoria da sangria.'}
                 )
-            self.result_effect = withdrawal_result_effect(self.withdrawal_category)
-            if (
-                self.withdrawal_category in required_beneficiary_categories
-                and not self.beneficiary_user_id
-            ):
-                raise ValidationError(
-                    {'beneficiary_user': 'Informe o beneficiário desta sangria.'}
-                )
+            # New withdrawals deliberately remain outside DRE classification.
+            self.result_effect = ResultEffect.UNCLASSIFIED
+            errors = {}
+            if self.withdrawal_category == WithdrawalCategory.SUPPLIER:
+                if self.beneficiary_user_id:
+                    errors['beneficiary_user'] = 'Fornecedor deve usar o beneficiário fornecedor.'
+                if not self.beneficiary_supplier_id:
+                    errors['beneficiary_supplier'] = 'Informe o fornecedor desta sangria.'
+                elif not self.cash_session_id:
+                    errors['cash_session'] = 'Informe a sessão de caixa do fornecedor.'
+                else:
+                    from apps.suppliers.models import Supplier
+
+                    session = self.cash_session
+                    if not Supplier.objects.filter(
+                        pk=self.beneficiary_supplier_id,
+                        company_id=session.branch.company_id,
+                        branch_id=session.branch_id,
+                        status=Status.ACTIVE,
+                        deleted_at__isnull=True,
+                    ).exists():
+                        errors['beneficiary_supplier'] = (
+                            'Fornecedor inativo ou fora da empresa e filial da sessão.'
+                        )
+            else:
+                if self.beneficiary_supplier_id:
+                    errors['beneficiary_supplier'] = (
+                        'Fornecedor só pode ser usado na categoria Fornecedor.'
+                    )
+                if (
+                    self.withdrawal_category in required_beneficiary_categories
+                    and not self.beneficiary_user_id
+                ):
+                    errors['beneficiary_user'] = 'Informe o beneficiário desta sangria.'
+            if errors:
+                raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
         if self.pk:

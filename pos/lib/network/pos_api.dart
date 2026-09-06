@@ -25,23 +25,24 @@ abstract class PosApi {
   Future<void> logout();
   Future<BootstrapSnapshot> bootstrap();
   Future<CashOverview> cashOverview();
-  Future<CashSessionInfo> openCashSession(
+  Future<CashOverview> openCashSession(
       {required String openingAmount, int? registerId});
   Future<CashSessionSummary> cashSessionSummary(int sessionId);
-  Future<void> recordCashEntry(
+  Future<CashOverview> recordCashEntry(
       {required int sessionId,
-      required String amount,
-      required String reason,
-      required String idempotencyKey});
+       required String amount,
+       required String reason,
+       required String idempotencyKey});
   Future<List<CashBeneficiary>> cashWithdrawalBeneficiaries(String category);
-  Future<void> recordCashWithdrawal(
+  Future<CashOverview> recordCashWithdrawal(
       {required int sessionId,
-      required String amount,
-      required String reason,
-      required String category,
-      int? beneficiaryId,
-      required String idempotencyKey});
-  Future<void> closeCashSession(
+       required String amount,
+       required String reason,
+       required String category,
+       String? beneficiaryType,
+       int? beneficiaryId,
+       required String idempotencyKey});
+  Future<CashOverview> closeCashSession(
       {required int sessionId, required String closingAmount});
 }
 
@@ -59,6 +60,14 @@ class HttpPosApi implements PosApi {
   final http.Client _client;
 
   Uri _uri(String path) => _baseUri.resolve('api/v1/pos/$path');
+
+  CashOverview _cashState(Map<String, dynamic> payload) {
+    final state = payload['cash_state'];
+    if (state is! Map<String, dynamic>) {
+      throw const FormatException('A resposta de caixa não contém o estado atualizado.');
+    }
+    return CashOverview.fromJson(state);
+  }
 
   Future<Map<String, String>> _headers({bool json = true}) async {
     final deviceCredential = await _secrets.readDeviceCredential();
@@ -187,10 +196,9 @@ class HttpPosApi implements PosApi {
       CashOverview.fromJson(await _request('GET', 'cash/overview/'));
 
   @override
-  Future<CashSessionInfo> openCashSession(
+  Future<CashOverview> openCashSession(
           {required String openingAmount, int? registerId}) async =>
-      CashSessionInfo.fromJson(
-          await _request('POST', 'cash/sessions/open/', body: {
+      _cashState(await _request('POST', 'cash/sessions/open/', body: {
         'opening_amount': openingAmount,
         if (registerId != null) 'register': registerId,
       }));
@@ -201,16 +209,17 @@ class HttpPosApi implements PosApi {
           await _request('GET', 'cash/sessions/$sessionId/summary/'));
 
   @override
-  Future<void> recordCashEntry(
+  Future<CashOverview> recordCashEntry(
       {required int sessionId,
       required String amount,
       required String reason,
       required String idempotencyKey}) async {
-    await _request('POST', 'cash/sessions/$sessionId/entry/', body: {
+    return _cashState(
+        await _request('POST', 'cash/sessions/$sessionId/entry/', body: {
       'amount': amount,
       'reason': reason,
       'idempotency_key': idempotencyKey,
-    });
+    }));
   }
 
   @override
@@ -225,27 +234,31 @@ class HttpPosApi implements PosApi {
   }
 
   @override
-  Future<void> recordCashWithdrawal(
+  Future<CashOverview> recordCashWithdrawal(
       {required int sessionId,
       required String amount,
       required String reason,
       required String category,
+      String? beneficiaryType,
       int? beneficiaryId,
       required String idempotencyKey}) async {
-    await _request('POST', 'cash/sessions/$sessionId/withdrawal/', body: {
+    return _cashState(await _request(
+        'POST', 'cash/sessions/$sessionId/withdrawal/', body: {
       'amount': amount,
       'reason': reason,
       'category': category,
-      if (beneficiaryId != null) 'beneficiary_user': beneficiaryId,
+      if (beneficiaryType != null) 'beneficiary_type': beneficiaryType,
+      if (beneficiaryId != null) 'beneficiary_id': beneficiaryId,
       'idempotency_key': idempotencyKey,
-    });
+    }));
   }
 
   @override
-  Future<void> closeCashSession(
+  Future<CashOverview> closeCashSession(
       {required int sessionId, required String closingAmount}) async {
-    await _request('POST', 'cash/sessions/$sessionId/close/', body: {
+    return _cashState(
+        await _request('POST', 'cash/sessions/$sessionId/close/', body: {
       'closing_amount_informed': closingAmount,
-    });
+    }));
   }
 }

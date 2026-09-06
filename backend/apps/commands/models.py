@@ -209,8 +209,6 @@ class CommandPayment(BaseModel):
                 errors['cash_session'] = 'Dinheiro exige sessão de caixa.'
         elif self.received_amount is not None or self.change_amount is not None or self.cash_session_id:
             errors['payment_method'] = 'Somente dinheiro aceita recebido, troco ou sessão de caixa.'
-        if self.status == CommandPaymentStatus.REVERSED and not self.reversal_reason.strip():
-            errors['reversal_reason'] = 'Informe o motivo do estorno.'
         if errors:
             raise ValidationError(errors)
 
