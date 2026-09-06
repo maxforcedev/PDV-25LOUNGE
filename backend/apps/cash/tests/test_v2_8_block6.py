@@ -23,9 +23,13 @@ from apps.companies.features import branch_feature_states, branch_feature_enable
 from apps.companies.services import (
     create_company_with_matrix, ensure_permission_catalog,
 )
-from apps.cash.models import CashMovement, CashRegister, CashSession, CashSessionStatus
+from apps.cash.models import (
+    CashMovement, CashRegister, CashSession, CashSessionStatus, ResultEffect,
+)
 from apps.cash.serializers import ManualEntryRequestSerializer, WithdrawalRequestSerializer
-from apps.cash.services import open_session, record_manual_entry, record_withdrawal
+from apps.cash.services import (
+    open_session, record_manual_entry, record_withdrawal,
+)
 from apps.commands.services import create_table, open_command
 from apps.products.models import Category, Product, Unit, InventoryBehavior, SalesChannel
 from apps.sales.models import OperationType
@@ -150,7 +154,7 @@ class FeatureGateTests(TestCase):
         withdrawal = record_withdrawal(
             cash_session=session, amount='5.00', user=self.owner,
             current_branch=self.branch, idempotency_key=uuid.uuid4(),
-            category='other', result_effect='neutral',
+            category='other',
         )
 
         self.assertEqual(entry.reason, '')
@@ -167,13 +171,34 @@ class FeatureGateTests(TestCase):
         })
         withdrawal = WithdrawalRequestSerializer(data={
             'idempotency_key': str(uuid.uuid4()), 'amount': '1.00',
-            'category': 'other', 'result_effect': 'neutral',
+            'category': 'other', 'result_effect': 'operating_expense',
         })
 
         self.assertTrue(entry.is_valid(), entry.errors)
         self.assertTrue(withdrawal.is_valid(), withdrawal.errors)
         self.assertEqual(entry.validated_data['reason'], '')
         self.assertEqual(withdrawal.validated_data['reason'], '')
+        self.assertNotIn('result_effect', withdrawal.validated_data)
+
+    def test_withdrawal_result_effect_is_derived_from_category(self):
+        register = CashRegister.objects.create(branch=self.branch, name='Canonical effect')
+        session = open_session(
+            cash_register=register, opening_amount=Decimal('0.00'),
+            user=self.owner, current_branch=self.branch,
+        )
+        supplier = record_withdrawal(
+            cash_session=session, amount='5.00', user=self.owner,
+            current_branch=self.branch, idempotency_key=uuid.uuid4(),
+            category='supplier',
+        )
+        other = record_withdrawal(
+            cash_session=session, amount='1.00', user=self.owner,
+            current_branch=self.branch, idempotency_key=uuid.uuid4(),
+            category='other',
+        )
+
+        self.assertEqual(supplier.result_effect, ResultEffect.OPERATING_EXPENSE)
+        self.assertEqual(other.result_effect, ResultEffect.NEUTRAL)
 
     def test_cash_entry_api_accepts_an_omitted_reason(self):
         register = CashRegister.objects.create(branch=self.branch, name='API blank reason')

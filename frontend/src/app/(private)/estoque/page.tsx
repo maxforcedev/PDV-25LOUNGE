@@ -285,10 +285,7 @@ function Inventory() {
   }
   async function submitWriteOff(event: React.FormEvent) {
     event.preventDefault();
-    if (!writeOffStock || writeOffReason.trim().length < 3) {
-      setError("Informe um motivo com pelo menos 3 caracteres.");
-      return;
-    }
+    if (!writeOffStock) return;
     setSaving(true);
     setError("");
     try {
@@ -1053,10 +1050,8 @@ function Inventory() {
           <div className="space-y-4 p-5">
             {error && <Alert message={error} />}
             <Alert message="Esta operação é auditada e não pode ser usada para adicionar estoque ao produto excluído." />
-            <Field label="Motivo da baixa">
+            <Field label="Motivo da baixa" optional>
               <Textarea
-                required
-                minLength={3}
                 value={writeOffReason}
                 onChange={(event) => setWriteOffReason(event.target.value)}
               />

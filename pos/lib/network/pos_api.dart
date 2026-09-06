@@ -25,12 +25,24 @@ abstract class PosApi {
   Future<void> logout();
   Future<BootstrapSnapshot> bootstrap();
   Future<CashOverview> cashOverview();
-  Future<CashSessionInfo> openCashSession({required String openingAmount, int? registerId});
+  Future<CashSessionInfo> openCashSession(
+      {required String openingAmount, int? registerId});
   Future<CashSessionSummary> cashSessionSummary(int sessionId);
-  Future<void> recordCashEntry({required int sessionId, required String amount, required String reason, required String idempotencyKey});
+  Future<void> recordCashEntry(
+      {required int sessionId,
+      required String amount,
+      required String reason,
+      required String idempotencyKey});
   Future<List<CashBeneficiary>> cashWithdrawalBeneficiaries(String category);
-  Future<void> recordCashWithdrawal({required int sessionId, required String amount, required String reason, required String category, required String resultEffect, int? beneficiaryId, required String idempotencyKey});
-  Future<void> closeCashSession({required int sessionId, required String closingAmount});
+  Future<void> recordCashWithdrawal(
+      {required int sessionId,
+      required String amount,
+      required String reason,
+      required String category,
+      int? beneficiaryId,
+      required String idempotencyKey});
+  Future<void> closeCashSession(
+      {required int sessionId, required String closingAmount});
 }
 
 class HttpPosApi implements PosApi {
@@ -69,33 +81,46 @@ class HttpPosApi implements PosApi {
       final headers = await _headers();
       final uri = _uri(path);
       response = switch (method) {
-        'GET' => await _client.get(uri, headers: headers).timeout(const Duration(seconds: 15)),
-        'POST' => await _client.post(uri, headers: headers, body: jsonEncode(body ?? const {})).timeout(const Duration(seconds: 15)),
+        'GET' => await _client
+            .get(uri, headers: headers)
+            .timeout(const Duration(seconds: 15)),
+        'POST' => await _client
+            .post(uri, headers: headers, body: jsonEncode(body ?? const {}))
+            .timeout(const Duration(seconds: 15)),
         _ => throw ArgumentError.value(method, 'method'),
       };
     } on http.ClientException catch (error) {
       throw PosNetworkException(error.message);
     } on TimeoutException {
-      throw const PosNetworkException('A conexão demorou demais. Verifique a internet e tente novamente.');
+      throw const PosNetworkException(
+          'A conexão demorou demais. Verifique a internet e tente novamente.');
     }
-    final decoded = response.body.isEmpty ? <String, dynamic>{} : jsonDecode(response.body);
-    final payload = decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+    final decoded =
+        response.body.isEmpty ? <String, dynamic>{} : jsonDecode(response.body);
+    final payload =
+        decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
     if (response.statusCode >= 200 && response.statusCode < 300) return payload;
     final code = payload['code'] as String? ??
-        (response.statusCode == 401 ? 'authentication_failed' : 'request_failed');
+        (response.statusCode == 401
+            ? 'authentication_failed'
+            : 'request_failed');
     throw PosApiException(
       statusCode: response.statusCode,
       code: code,
-      message: payload['message'] as String? ?? payload['detail'] as String? ?? 'Falha ao comunicar com o CORE.',
+      message: payload['message'] as String? ??
+          payload['detail'] as String? ??
+          'Falha ao comunicar com o CORE.',
     );
   }
 
   @override
   Future<PairingDiscovery> identifyBranch(String identifier) async =>
-      PairingDiscovery.fromJson(await _request('POST', 'pairing/identify/', body: {'identifier': identifier}));
+      PairingDiscovery.fromJson(await _request('POST', 'pairing/identify/',
+          body: {'identifier': identifier}));
 
   @override
-  Future<OtpChallenge> requestOtp(String flowId, String channelId) async => OtpChallenge.fromJson(
+  Future<OtpChallenge> requestOtp(String flowId, String channelId) async =>
+      OtpChallenge.fromJson(
         await _request('POST', 'pairing/request-otp/', body: {
           'pairing_flow_id': flowId,
           'channel_id': channelId,
@@ -117,7 +142,8 @@ class HttpPosApi implements PosApi {
   }
 
   @override
-  Future<HeartbeatResult> heartbeat(DeviceDescriptor device) async => HeartbeatResult.fromJson(
+  Future<HeartbeatResult> heartbeat(DeviceDescriptor device) async =>
+      HeartbeatResult.fromJson(
         await _request('POST', 'heartbeat/', body: {
           'app_version': device.appVersion,
           'capabilities': device.capabilities,
@@ -139,7 +165,8 @@ class HttpPosApi implements PosApi {
   }
 
   @override
-  Future<OperatorSession> login(String operatorId, String pin) async => OperatorSession.fromJson(
+  Future<OperatorSession> login(String operatorId, String pin) async =>
+      OperatorSession.fromJson(
         await _request('POST', 'auth/operator/', body: {
           'operator_id': operatorId,
           'pin': pin,
@@ -160,18 +187,25 @@ class HttpPosApi implements PosApi {
       CashOverview.fromJson(await _request('GET', 'cash/overview/'));
 
   @override
-  Future<CashSessionInfo> openCashSession({required String openingAmount, int? registerId}) async =>
-      CashSessionInfo.fromJson(await _request('POST', 'cash/sessions/open/', body: {
+  Future<CashSessionInfo> openCashSession(
+          {required String openingAmount, int? registerId}) async =>
+      CashSessionInfo.fromJson(
+          await _request('POST', 'cash/sessions/open/', body: {
         'opening_amount': openingAmount,
         if (registerId != null) 'register': registerId,
       }));
 
   @override
   Future<CashSessionSummary> cashSessionSummary(int sessionId) async =>
-      CashSessionSummary.fromJson(await _request('GET', 'cash/sessions/$sessionId/summary/'));
+      CashSessionSummary.fromJson(
+          await _request('GET', 'cash/sessions/$sessionId/summary/'));
 
   @override
-  Future<void> recordCashEntry({required int sessionId, required String amount, required String reason, required String idempotencyKey}) async {
+  Future<void> recordCashEntry(
+      {required int sessionId,
+      required String amount,
+      required String reason,
+      required String idempotencyKey}) async {
     await _request('POST', 'cash/sessions/$sessionId/entry/', body: {
       'amount': amount,
       'reason': reason,
@@ -180,8 +214,10 @@ class HttpPosApi implements PosApi {
   }
 
   @override
-  Future<List<CashBeneficiary>> cashWithdrawalBeneficiaries(String category) async {
-    final payload = await _request('GET', 'cash/beneficiaries/?category=$category');
+  Future<List<CashBeneficiary>> cashWithdrawalBeneficiaries(
+      String category) async {
+    final payload =
+        await _request('GET', 'cash/beneficiaries/?category=$category');
     return (payload['beneficiaries'] as List<dynamic>? ?? const [])
         .cast<Map<String, dynamic>>()
         .map(CashBeneficiary.fromJson)
@@ -189,19 +225,25 @@ class HttpPosApi implements PosApi {
   }
 
   @override
-  Future<void> recordCashWithdrawal({required int sessionId, required String amount, required String reason, required String category, required String resultEffect, int? beneficiaryId, required String idempotencyKey}) async {
+  Future<void> recordCashWithdrawal(
+      {required int sessionId,
+      required String amount,
+      required String reason,
+      required String category,
+      int? beneficiaryId,
+      required String idempotencyKey}) async {
     await _request('POST', 'cash/sessions/$sessionId/withdrawal/', body: {
       'amount': amount,
       'reason': reason,
       'category': category,
-      'result_effect': resultEffect,
       if (beneficiaryId != null) 'beneficiary_user': beneficiaryId,
       'idempotency_key': idempotencyKey,
     });
   }
 
   @override
-  Future<void> closeCashSession({required int sessionId, required String closingAmount}) async {
+  Future<void> closeCashSession(
+      {required int sessionId, required String closingAmount}) async {
     await _request('POST', 'cash/sessions/$sessionId/close/', body: {
       'closing_amount_informed': closingAmount,
     });

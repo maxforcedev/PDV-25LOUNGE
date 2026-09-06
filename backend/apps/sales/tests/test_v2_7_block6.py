@@ -384,7 +384,7 @@ class CashSessionTests(SalesFixture, TestCase):
             cash_session=session, amount=Decimal('30.00'),
             user=self.owner, reason='Test withdrawal',
             current_branch=self.branch, idempotency_key=uuid.uuid4(),
-            category='supplier', result_effect='operating_expense',
+            category='supplier',
         )
 
     def test_close_session(self):
@@ -480,10 +480,11 @@ class CommandCashSessionTests(SalesFixture, TestCase):
         command = self.command_with_confirmed_item()
         payment = self.record_cash(command, session)
         reversal = reverse_command_payment(
-            command=command, payment_id=payment.pk, user=self.owner, reason='Erro',
+            command=command, payment_id=payment.pk, user=self.owner, reason='',
             idempotency_key=uuid.uuid4(),
         )
         self.assertEqual(reversal.reversal_of_id, payment.pk)
+        self.assertEqual(reversal.reversal_reason, '')
         self.assertEqual(calculate_expected_amount(session), Decimal('100.00'))
 
     def test_reverse_partial_cash_payment_is_blocked_after_session_closed(self):

@@ -1,9 +1,12 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:core_pos/auth/auth_models.dart';
 import 'package:core_pos/bootstrap/bootstrap_models.dart';
+import 'package:core_pos/cash/cash_page.dart';
 import 'package:core_pos/cash/cash_models.dart';
 import 'package:core_pos/core/app_controller.dart';
+import 'package:core_pos/core/transient_feedback.dart';
 import 'package:core_pos/network/pos_api.dart';
 import 'package:core_pos/network/pos_api_error.dart';
 import 'package:core_pos/pairing/pairing_models.dart';
@@ -149,6 +152,66 @@ void main() {
         isTrue);
     expect(api.cashOverviewCalls, 1);
   });
+
+  test('keeps a confirmed cash action successful when overview refresh fails',
+      () async {
+    final api = FakePosApi(
+      cashOverviewError: const PosNetworkException('Sem conexao.'),
+    );
+    final controller =
+        AppController(api: api, secrets: MemorySecretStore(), device: device);
+    controller.bootstrapSnapshot = await api.bootstrap();
+
+    expect(
+      await controller.recordCashEntry(
+          sessionId: 1, amount: '10.00', reason: 'Troco'),
+      isTrue,
+    );
+    expect(api.cashOverviewCalls, 1);
+    expect(controller.transientAlert!.message,
+        'Operacao concluida, mas nao foi possivel atualizar o caixa.');
+    expect(controller.transientAlert!.tone, TransientAlertTone.warning);
+  });
+
+  testWidgets(
+      'requests one summary when a cash overview refresh changes the session',
+      (tester) async {
+    final api = FakePosApi(
+      cashOverviewResponse: const CashOverview(
+        mode: 'FIXED',
+        enabled: true,
+        session: CashSessionInfo(
+          id: 1,
+          registerId: 1,
+          registerName: 'Caixa',
+          status: 'open',
+          openedByName: 'Joao',
+          openedAt: null,
+        ),
+      ),
+    );
+    final controller =
+        AppController(api: api, secrets: MemorySecretStore(), device: device);
+    controller.bootstrapSnapshot = BootstrapSnapshot(
+      companyName: 'Empresa',
+      branchName: 'Centro',
+      deviceName: 'Terminal 01',
+      operatorName: 'Joao',
+      release: api.release,
+      modules: const [],
+      permissions: const {'cash_registers.view'},
+      cash: const CashOverview(mode: 'FIXED', enabled: true),
+    );
+
+    await tester.pumpWidget(MaterialApp(home: CashPage(controller: controller)));
+    await tester.pump();
+    expect(api.cashSummaryCalls, 0);
+
+    await tester.tap(find.byTooltip('Atualizar caixa'));
+    await tester.pumpAndSettle();
+
+    expect(api.cashSummaryCalls, 1);
+  });
 }
 
 class MemorySecretStore implements SecretStore {
@@ -188,11 +251,15 @@ class FakePosApi implements PosApi {
         updateRequired: false,
       ),
       this.heartbeatError,
-      this.cashEntryError});
+      this.cashEntryError,
+      this.cashOverviewError,
+      this.cashOverviewResponse});
 
   final ReleaseInfo release;
   final PosApiException? heartbeatError;
   final PosApiException? cashEntryError;
+  final PosNetworkException? cashOverviewError;
+  final CashOverview? cashOverviewResponse;
   final operator =
       const PosOperator(id: '1', displayName: 'Joao', initials: 'J');
   String? pinResetOperatorId;
@@ -213,7 +280,9 @@ class FakePosApi implements PosApi {
   @override
   Future<CashOverview> cashOverview() async {
     cashOverviewCalls++;
-    return const CashOverview(mode: 'FLEXIBLE', enabled: true);
+    if (cashOverviewError != null) throw cashOverviewError!;
+    return cashOverviewResponse ??
+        const CashOverview(mode: 'FLEXIBLE', enabled: true);
   }
 
   @override
@@ -306,7 +375,6 @@ class FakePosApi implements PosApi {
       required String amount,
       required String reason,
       required String category,
-      required String resultEffect,
       int? beneficiaryId,
       required String idempotencyKey}) async {}
 }

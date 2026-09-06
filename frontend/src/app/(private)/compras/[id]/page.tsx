@@ -410,7 +410,7 @@ function PurchaseDetail() {
 
   async function submitReason(event: React.FormEvent) {
     event.preventDefault();
-    if (!order || !reasonAction || !canClose || reason.trim().length < 3)
+    if (!order || !reasonAction || !canClose)
       return;
     setActing(true);
     setError("");
@@ -1305,17 +1305,15 @@ function PurchaseDetail() {
             ? "Cancelar compra"
             : "Encerrar recebimento parcial"
         }
-        description="A ação será auditada e exige justificativa."
+        description="A ação será auditada."
         onClose={() => !acting && setReasonAction(null)}
         size="md"
       >
         <form onSubmit={submitReason}>
           <div className="space-y-4 p-5">
             {error && <Alert message={error} />}
-            <Field label="Motivo">
+            <Field label="Motivo" optional>
               <Textarea
-                required
-                minLength={3}
                 maxLength={2000}
                 value={reason}
                 onChange={(event) => setReason(event.target.value)}

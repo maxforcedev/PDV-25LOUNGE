@@ -157,7 +157,6 @@ function SessionDetail() {
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
   const [category, setCategory] = useState<WithdrawalCategory | "">("");
-  const [resultEffect, setResultEffect] = useState<"operating_expense" | "neutral" | "">("");
   const [beneficiaryId, setBeneficiaryId] = useState("");
   const [beneficiaries, setBeneficiaries] = useState<CashBeneficiary[]>([]);
   const [beneficiariesLoading, setBeneficiariesLoading] = useState(false);
@@ -311,7 +310,6 @@ function SessionDetail() {
     setAmount("");
     setReason("");
     setCategory("");
-    setResultEffect("");
     setBeneficiaryId("");
     setError("");
     movementIdempotencyKey.current = crypto.randomUUID();
@@ -347,10 +345,10 @@ function SessionDetail() {
     }
     if (
       action === "withdrawal" &&
-      (!category || !resultEffect || (beneficiaryRequired.has(category) && !beneficiaryId))
+      (!category || (beneficiaryRequired.has(category) && !beneficiaryId))
     ) {
       setError(
-        "Informe a categoria, o impacto no resultado e o beneficiário obrigatório desta sangria.",
+        "Informe a categoria e o beneficiário obrigatório desta sangria.",
       );
       return;
     }
@@ -367,7 +365,6 @@ function SessionDetail() {
               reason: reason.trim(),
               idempotency_key: movementIdempotencyKey.current,
               category,
-              result_effect: resultEffect,
               ...(beneficiaryId
                 ? { beneficiary_user: Number(beneficiaryId) }
                 : {}),
@@ -395,10 +392,6 @@ function SessionDetail() {
 
   async function cancelSession(event: React.FormEvent) {
     event.preventDefault();
-    if (!cancellationReason.trim()) {
-      setError("Informe o motivo da anulação.");
-      return;
-    }
     setSaving(true);
     try {
       await http.post(`cash-sessions/${id}/cancel/`, { reason: cancellationReason.trim() });
@@ -665,8 +658,7 @@ function SessionDetail() {
                           <th>Tipo</th>
                           <th>Categoria</th>
                           <th>Beneficiário</th>
-                          <th>Impacto no resultado</th>
-                          <th>Valor</th>
+                           <th>Valor</th>
                           <th>Motivo</th>
                           <th>Responsável</th>
                         </tr>
@@ -688,7 +680,6 @@ function SessionDetail() {
                             </td>
                             <td>{movement.category_label || "-"}</td>
                             <td>{movement.beneficiary?.name || "-"}</td>
-                            <td>{movement.result_effect === "operating_expense" ? "Despesa operacional" : movement.result_effect === "neutral" ? "Não afeta" : "Não classificado"}</td>
                             <td className="font-bold">
                               {formatBRL(movement.amount)}
                             </td>
@@ -771,13 +762,6 @@ function SessionDetail() {
                     ))}
                   </select>
                 </Field>
-                <Field label="Impacto no resultado">
-                  <select className="input" required value={resultEffect} onChange={(event) => setResultEffect(event.target.value as "operating_expense" | "neutral")}>
-                    <option value="">Selecione</option>
-                    <option value="operating_expense">Despesa operacional</option>
-                    <option value="neutral">Não afeta · transferência/cofre</option>
-                  </select>
-                </Field>
                 <Field
                   label="Beneficiário"
                   optional={!!category && !beneficiaryRequired.has(category)}
@@ -845,7 +829,7 @@ function SessionDetail() {
       <Modal open={cancelOpen} title="Anular sessão" description="A sessão deixará a listagem padrão, mas seus movimentos e auditoria serão preservados." onClose={() => !saving && setCancelOpen(false)}>
         <form onSubmit={cancelSession}>
           <div className="space-y-4 p-5">
-            <Field label="Motivo"><Textarea required value={cancellationReason} onChange={(event) => setCancellationReason(event.target.value)} disabled={saving} /></Field>
+            <Field label="Motivo" optional><Textarea value={cancellationReason} onChange={(event) => setCancellationReason(event.target.value)} disabled={saving} /></Field>
           </div>
           <div className="flex justify-end gap-2 border-t border-subtle px-5 py-4">
             <Button type="button" variant="secondary" onClick={() => setCancelOpen(false)} disabled={saving}>Cancelar</Button>

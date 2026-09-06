@@ -1,5 +1,6 @@
 from copy import deepcopy
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+import uuid
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
@@ -21,6 +22,7 @@ from .models import (
     CashSession,
     CashSessionStatus,
     WithdrawalCategory,
+    withdrawal_result_effect,
 )
 
 
@@ -127,11 +129,20 @@ def open_session(
 
 def _record_movement(
     *, cash_session, amount, user, reason, current_branch, movement_type, permission_code,
-    operation_reference, withdrawal_category=None, beneficiary_user=None, result_effect=None,
+    operation_reference, withdrawal_category=None, beneficiary_user=None,
     allow_pos_only=False, audit_metadata=None,
 ):
     amount = parse_money(amount, 'amount', positive=True)
     reason = (reason or '').strip()
+    try:
+        operation_reference = uuid.UUID(str(operation_reference))
+    except (TypeError, ValueError, AttributeError) as error:
+        raise ValidationError({'idempotency_key': 'Informe um UUID válido.'}) from error
+    if (
+        movement_type == CashMovementType.WITHDRAWAL
+        and withdrawal_category not in WithdrawalCategory.values
+    ):
+        raise ValidationError({'category': 'Informe uma categoria de sangria válida.'})
     with transaction.atomic():
         try:
             session = CashSession.objects.select_for_update().select_related(
@@ -148,7 +159,11 @@ def _record_movement(
             allow_pos_only=allow_pos_only,
         ):
             raise PermissionDenied('Você não pode operar uma sessão aberta por outro usuário.')
-        effective_result = result_effect or 'neutral'
+        effective_result = (
+            withdrawal_result_effect(withdrawal_category)
+            if movement_type == CashMovementType.WITHDRAWAL
+            else 'neutral'
+        )
         beneficiary_id = _pk(beneficiary_user) if beneficiary_user is not None else None
         existing = CashMovement.objects.filter(
             cash_session=session,
@@ -211,7 +226,7 @@ def _record_movement(
             reason=reason,
             withdrawal_category=withdrawal_category,
             beneficiary_user=beneficiary,
-            result_effect=result_effect or 'neutral',
+            result_effect=effective_result,
             operation_reference=operation_reference,
         )
         audit_log(
@@ -224,8 +239,8 @@ def _record_movement(
 
 
 def record_manual_entry(
-    cash_session, amount, user, reason=None, current_branch=None, idempotency_key=None,
-    *, allow_pos_only=False, audit_metadata=None,
+    cash_session, amount, user, reason=None, *, current_branch, idempotency_key,
+    allow_pos_only=False, audit_metadata=None,
 ):
     return _record_movement(
         cash_session=cash_session,
@@ -242,8 +257,8 @@ def record_manual_entry(
 
 
 def record_withdrawal(
-    cash_session, amount, user, reason=None, current_branch=None, category=None,
-    result_effect=None, idempotency_key=None, beneficiary_user=None, *, allow_pos_only=False,
+    cash_session, amount, user, reason=None, *, current_branch, category,
+    idempotency_key, beneficiary_user=None, allow_pos_only=False,
     audit_metadata=None,
 ):
     return _record_movement(
@@ -256,7 +271,6 @@ def record_withdrawal(
         permission_code='cash_registers.withdraw',
         withdrawal_category=category,
         beneficiary_user=beneficiary_user,
-        result_effect=result_effect,
         operation_reference=idempotency_key,
         allow_pos_only=allow_pos_only,
         audit_metadata=audit_metadata,

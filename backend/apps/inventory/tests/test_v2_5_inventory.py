@@ -253,9 +253,10 @@ class TransferFlowTests(TestCase):
                 idempotency_key=uuid.uuid4(),
                 resolution_type=resolution_type,
                 quantity='0.5',
-                observation=f'Resolucao confirmada {resolution_type}',
+                observation='Conferencia da divergencia',
                 user=self.user,
             )
+            self.assertEqual(resolution.observation, 'Conferencia da divergencia')
             if resolution_type == TransferResolutionType.LOSS_IN_TRANSIT:
                 self.assertFalse(resolution.stock_movements.exists())
             else:

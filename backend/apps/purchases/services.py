@@ -1177,7 +1177,7 @@ def receive_purchase_order(*, purchase_order, idempotency_key, items, user,
 
 
 @transaction.atomic
-def close_partial_purchase_order(*, purchase_order, user, reason, support_session=None):
+def close_partial_purchase_order(*, purchase_order, user, reason='', support_session=None):
     order = PurchaseOrder.objects.select_for_update().select_related(
         'branch', 'company'
     ).get(pk=_pk(purchase_order))
@@ -1187,8 +1187,6 @@ def close_partial_purchase_order(*, purchase_order, user, reason, support_sessio
     reason = (reason or '').strip()
     if order.status != PurchaseOrderStatus.PARTIALLY_RECEIVED:
         raise ValidationError({'status': 'Somente compra parcialmente recebida pode ser encerrada.'})
-    if len(reason) < 3:
-        raise ValidationError({'reason': 'Informe o motivo do encerramento parcial.'})
     order.status = PurchaseOrderStatus.CLOSED_PARTIAL
     order.closed_by = user
     order.closed_at = timezone.now()
@@ -1208,7 +1206,7 @@ def close_partial_purchase_order(*, purchase_order, user, reason, support_sessio
 
 
 @transaction.atomic
-def cancel_purchase_order(*, purchase_order, user, reason, support_session=None):
+def cancel_purchase_order(*, purchase_order, user, reason='', support_session=None):
     order = PurchaseOrder.objects.select_for_update().select_related(
         'branch', 'company'
     ).get(pk=_pk(purchase_order))
@@ -1220,8 +1218,6 @@ def cancel_purchase_order(*, purchase_order, user, reason, support_session=None)
         raise ValidationError({'status': 'Somente compra sem recebimento pode ser cancelada.'})
     if order.receipts.exists():
         raise ValidationError({'status': 'Compra com recebimento confirmado nao pode ser cancelada.'})
-    if len(reason) < 3:
-        raise ValidationError({'reason': 'Informe o motivo do cancelamento.'})
     paid = order.installments.filter(status=PayableInstallmentStatus.PAID).exists()
     if paid:
         raise ValidationError({'installments': 'A compra possui parcela paga e nao pode ser cancelada.'})
@@ -1235,7 +1231,7 @@ def cancel_purchase_order(*, purchase_order, user, reason, support_session=None)
         installment.status = PayableInstallmentStatus.CANCELLED
         installment.cancelled_at = now
         installment.cancelled_by = user
-        installment.cancellation_reason = f'Compra cancelada: {reason}'
+        installment.cancellation_reason = reason
         installment._allow_status_transition = True
         installment.save(update_fields=(
             'status', 'cancelled_at', 'cancelled_by', 'cancellation_reason', 'updated_at'
@@ -1322,7 +1318,7 @@ def pay_installment(*, installment, user, payment_method='MANUAL', paid_amount=N
 
 
 @transaction.atomic
-def cancel_installment(*, installment, user, reason, support_session=None):
+def cancel_installment(*, installment, user, reason='', support_session=None):
     item = PayableInstallment.objects.select_for_update().select_related(
         'purchase_order__branch', 'purchase_order__company'
     ).get(pk=_pk(installment))
@@ -1333,8 +1329,6 @@ def cancel_installment(*, installment, user, reason, support_session=None):
     reason = (reason or '').strip()
     if item.status != PayableInstallmentStatus.PENDING:
         raise ValidationError({'status': 'Somente parcela pendente pode ser cancelada.'})
-    if len(reason) < 3:
-        raise ValidationError({'reason': 'Informe o motivo do cancelamento.'})
     before = _installment_snapshot(item)
     item.status = PayableInstallmentStatus.CANCELLED
     item.cancelled_at = timezone.now()

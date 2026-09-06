@@ -42,6 +42,24 @@ class ResultEffect(models.TextChoices):
     NEUTRAL = 'neutral', 'Não afeta o resultado'
 
 
+OPERATING_EXPENSE_WITHDRAWAL_CATEGORIES = (
+    WithdrawalCategory.DJ,
+    WithdrawalCategory.ARTIST,
+    WithdrawalCategory.ADVANCE,
+    WithdrawalCategory.PROMOTER,
+    WithdrawalCategory.SUPPLIER,
+)
+
+
+def withdrawal_result_effect(category):
+    """Classify a withdrawal from its canonical category."""
+    return (
+        ResultEffect.OPERATING_EXPENSE
+        if category in OPERATING_EXPENSE_WITHDRAWAL_CATEGORIES
+        else ResultEffect.NEUTRAL
+    )
+
+
 class CashRegister(BaseModel):
     branch = models.ForeignKey(
         Branch, on_delete=models.PROTECT, related_name='cash_registers'
@@ -270,7 +288,13 @@ class CashMovement(BaseModel):
                     )
                     | Q(
                         movement_type=CashMovementType.WITHDRAWAL,
-                        withdrawal_category__isnull=False,
+                        withdrawal_category__in=OPERATING_EXPENSE_WITHDRAWAL_CATEGORIES,
+                        result_effect=ResultEffect.OPERATING_EXPENSE,
+                    )
+                    | Q(
+                        movement_type=CashMovementType.WITHDRAWAL,
+                        withdrawal_category=WithdrawalCategory.OTHER,
+                        result_effect=ResultEffect.NEUTRAL,
                     )
                 ),
                 name='cash_movement_withdrawal_classification_coherent',
@@ -323,6 +347,7 @@ class CashMovement(BaseModel):
                 raise ValidationError(
                     {'withdrawal_category': 'Informe a categoria da sangria.'}
                 )
+            self.result_effect = withdrawal_result_effect(self.withdrawal_category)
             if (
                 self.withdrawal_category in required_beneficiary_categories
                 and not self.beneficiary_user_id

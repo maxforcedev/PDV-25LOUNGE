@@ -7,7 +7,6 @@ from .models import (
     CashRegister,
     CashSession,
     CashSessionStatus,
-    ResultEffect,
     WithdrawalCategory,
 )
 from .services import calculate_expected_amount, movement_totals
@@ -197,9 +196,6 @@ class ManualEntryRequestSerializer(serializers.Serializer):
 
 class WithdrawalRequestSerializer(ManualEntryRequestSerializer):
     category = serializers.ChoiceField(choices=WithdrawalCategory.choices)
-    result_effect = serializers.ChoiceField(choices=(
-        ResultEffect.OPERATING_EXPENSE, ResultEffect.NEUTRAL,
-    ))
     beneficiary_user = serializers.IntegerField(
         min_value=1, required=False, allow_null=True
     )

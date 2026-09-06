@@ -280,7 +280,6 @@ class AppController extends ChangeNotifier {
           required String amount,
           required String reason,
           required String category,
-          required String resultEffect,
           int? beneficiaryId}) =>
       _runCashAction(
         () => _api.recordCashWithdrawal(
@@ -288,7 +287,6 @@ class AppController extends ChangeNotifier {
           amount: amount,
           reason: reason,
           category: category,
-          resultEffect: resultEffect,
           beneficiaryId: beneficiaryId,
           idempotencyKey: createIdempotencyKey(),
         ),
@@ -407,7 +405,25 @@ class AppController extends ChangeNotifier {
     notifyListeners();
     try {
       await action();
-      bootstrapSnapshot = snapshot.withCash(await _api.cashOverview());
+      try {
+        bootstrapSnapshot = snapshot.withCash(await _api.cashOverview());
+      } on PosApiException catch (error) {
+        syncStatus = syncStatus.failed(error.message);
+        _showTransientMessage(
+          'Operacao concluida, mas nao foi possivel atualizar o caixa.',
+          tone: TransientAlertTone.warning,
+          notify: false,
+        );
+        return true;
+      } on PosNetworkException catch (error) {
+        syncStatus = syncStatus.failed(error.message);
+        _showTransientMessage(
+          'Operacao concluida, mas nao foi possivel atualizar o caixa.',
+          tone: TransientAlertTone.warning,
+          notify: false,
+        );
+        return true;
+      }
       syncStatus = syncStatus.succeeded();
       _showTransientMessage(successMessage,
           tone: TransientAlertTone.success, notify: false);

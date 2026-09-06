@@ -4,6 +4,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../core/app_controller.dart';
+import '../sync/sync_status_badge.dart';
+import '../sync/sync_center_page.dart';
 import 'cash_models.dart';
 
 class CashPage extends StatefulWidget {
@@ -50,6 +52,14 @@ class _CashPageState extends State<CashPage> {
             appBar: AppBar(
               title: const Text('Caixa'),
               actions: [
+                SyncStatusBadge(
+                  status: widget.controller.syncStatus,
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                        builder: (_) =>
+                            SyncCenterPage(controller: widget.controller)),
+                  ),
+                ),
                 IconButton(
                   onPressed:
                       widget.controller.busy ? null : _refreshCashOverview,
@@ -65,9 +75,6 @@ class _CashPageState extends State<CashPage> {
                   child: ListView(
                     padding: const EdgeInsets.all(20),
                     children: [
-                      Text('${snapshot.companyName} - ${snapshot.branchName}',
-                          style: const TextStyle(color: Color(0xff64748b))),
-                      const SizedBox(height: 8),
                       Text('Operação de caixa',
                           style: Theme.of(context)
                               .textTheme
@@ -198,10 +205,6 @@ class _CashPageState extends State<CashPage> {
     final refreshed = await widget.controller.refreshCashOverview();
     if (!mounted || !refreshed) return;
     _synchronizeSummary();
-    final snapshot = widget.controller.bootstrapSnapshot;
-    final sessionId =
-        snapshot == null ? null : _currentSession(snapshot.cash)?.id;
-    if (sessionId != null) unawaited(_loadSummary(sessionId));
   }
 
   Future<void> _openSession() async {
@@ -239,7 +242,6 @@ class _CashPageState extends State<CashPage> {
             amount: request.amount,
             reason: request.reason,
             category: request.category!,
-            resultEffect: request.resultEffect!,
             beneficiaryId: request.beneficiaryId,
           )
         : await widget.controller.recordCashEntry(
@@ -275,14 +277,12 @@ class _CashMovementRequest {
     required this.amount,
     required this.reason,
     this.category,
-    this.resultEffect,
     this.beneficiaryId,
   });
 
   final String amount;
   final String reason;
   final String? category;
-  final String? resultEffect;
   final int? beneficiaryId;
 }
 
@@ -446,7 +446,6 @@ class _CashMovementDialogState extends State<_CashMovementDialog> {
   final _amount = TextEditingController();
   final _reason = TextEditingController();
   String _category = 'other';
-  String? _resultEffect;
   int? _beneficiaryId;
   List<CashBeneficiary> _beneficiaries = const [];
   int _beneficiaryRequest = 0;
@@ -498,9 +497,8 @@ class _CashMovementDialogState extends State<_CashMovementDialog> {
       return;
     }
     if (widget.withdrawal &&
-        (_resultEffect == null ||
-            (withdrawalRequiresBeneficiary(_category) &&
-                _beneficiaryId == null))) {
+        withdrawalRequiresBeneficiary(_category) &&
+        _beneficiaryId == null) {
       setState(() => _error = 'Preencha os campos obrigatórios da sangria.');
       return;
     }
@@ -509,7 +507,6 @@ class _CashMovementDialogState extends State<_CashMovementDialog> {
       amount: amount,
       reason: _reason.text.trim(),
       category: widget.withdrawal ? _category : null,
-      resultEffect: _resultEffect,
       beneficiaryId: _beneficiaryId,
     ));
   }
@@ -534,7 +531,8 @@ class _CashMovementDialogState extends State<_CashMovementDialog> {
                 controller: _reason,
                 enabled: !_submitting,
                 maxLines: 2,
-                decoration: const InputDecoration(labelText: 'Motivo (opcional)')),
+                decoration:
+                    const InputDecoration(labelText: 'Motivo (opcional)')),
             if (widget.withdrawal) ...[
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
@@ -545,20 +543,6 @@ class _CashMovementDialogState extends State<_CashMovementDialog> {
                         value: item.key, child: Text(item.value)))
                     .toList(growable: false),
                 onChanged: _submitting ? null : _changeCategory,
-              ),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                initialValue: _resultEffect,
-                decoration:
-                    const InputDecoration(labelText: 'Efeito financeiro'),
-                hint: const Text('Selecione o efeito'),
-                items: withdrawalResultEffects.entries
-                    .map((item) => DropdownMenuItem(
-                        value: item.key, child: Text(item.value)))
-                    .toList(growable: false),
-                onChanged: _submitting
-                    ? null
-                    : (value) => setState(() => _resultEffect = value),
               ),
               if (withdrawalRequiresBeneficiary(_category)) ...[
                 const SizedBox(height: 12),
@@ -868,13 +852,21 @@ class _SummaryLine extends StatelessWidget {
   Widget build(BuildContext context) => Padding(
         padding: const EdgeInsets.only(bottom: 8),
         child:
-            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          Text(label,
-              style: TextStyle(
-                  fontWeight: emphasized ? FontWeight.w700 : FontWeight.w400)),
-          Text(value,
-              style: TextStyle(
-                  fontWeight: emphasized ? FontWeight.w800 : FontWeight.w600)),
+            Row(children: [
+          Expanded(
+            child: Text(label,
+                style: TextStyle(
+                    fontWeight:
+                        emphasized ? FontWeight.w700 : FontWeight.w400)),
+          ),
+          const SizedBox(width: 12),
+          Flexible(
+            child: Text(value,
+                textAlign: TextAlign.end,
+                style: TextStyle(
+                    fontWeight:
+                        emphasized ? FontWeight.w800 : FontWeight.w600)),
+          ),
         ]),
       );
 }

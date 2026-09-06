@@ -28,6 +28,30 @@ void main() {
     expect(request.headers['x-pos-device-credential'], 'device-secret');
     expect(request.headers['x-pos-operator-session'], 'operator-secret');
   });
+
+  test('does not send a result effect when recording a withdrawal', () async {
+    final api = HttpPosApi(
+      baseUrl: 'https://core.example',
+      secrets: _MemorySecretStore(),
+      client: MockClient((request) async {
+        expect(jsonDecode(request.body), {
+          'amount': '10.00',
+          'reason': 'Troco',
+          'category': 'other',
+          'idempotency_key': 'key',
+        });
+        return http.Response('', 204);
+      }),
+    );
+
+    await api.recordCashWithdrawal(
+      sessionId: 1,
+      amount: '10.00',
+      reason: 'Troco',
+      category: 'other',
+      idempotencyKey: 'key',
+    );
+  });
 }
 
 class _MemorySecretStore implements SecretStore {
@@ -49,8 +73,10 @@ class _MemorySecretStore implements SecretStore {
   Future<String?> readOperatorSession() async => operatorSession;
 
   @override
-  Future<void> writeDeviceCredential(String credential) async => deviceCredential = credential;
+  Future<void> writeDeviceCredential(String credential) async =>
+      deviceCredential = credential;
 
   @override
-  Future<void> writeOperatorSession(String token) async => operatorSession = token;
+  Future<void> writeOperatorSession(String token) async =>
+      operatorSession = token;
 }

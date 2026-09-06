@@ -8,7 +8,8 @@ class CashRegisterInfo {
     this.session,
   });
 
-  factory CashRegisterInfo.fromJson(Map<String, dynamic> json) => CashRegisterInfo(
+  factory CashRegisterInfo.fromJson(Map<String, dynamic> json) =>
+      CashRegisterInfo(
         id: json['id'] as int,
         name: json['name'] as String? ?? '',
         status: json['status'] as String? ?? 'inactive',
@@ -39,7 +40,10 @@ class CashSessionInfo {
     return CashSessionInfo(
       id: json['id'] as int,
       registerId: (register?['id'] ?? json['cash_register']) as int,
-      registerName: (register?['name'] ?? json['register_name'] ?? json['cash_register_name']) as String? ?? '',
+      registerName: (register?['name'] ??
+              json['register_name'] ??
+              json['cash_register_name']) as String? ??
+          '',
       status: json['status'] as String? ?? 'open',
       openedByName: json['opened_by_name'] as String? ?? '',
       openedAt: DateTime.tryParse(json['opened_at'] as String? ?? ''),
@@ -69,7 +73,8 @@ class CashOverview {
         mode: json['mode'] as String? ?? 'FLEXIBLE',
         enabled: json['enabled'] as bool? ?? false,
         register: json['register'] is Map<String, dynamic>
-            ? CashRegisterInfo.fromJson(json['register'] as Map<String, dynamic>)
+            ? CashRegisterInfo.fromJson(
+                json['register'] as Map<String, dynamic>)
             : null,
         session: json['session'] is Map<String, dynamic>
             ? CashSessionInfo.fromJson(json['session'] as Map<String, dynamic>)
@@ -87,7 +92,8 @@ class CashOverview {
   final List<CashRegisterInfo> registers;
 
   bool get isFixed => mode == 'FIXED';
-  List<CashRegisterInfo> get openRegisters => registers.where((item) => item.session != null).toList(growable: false);
+  List<CashRegisterInfo> get openRegisters =>
+      registers.where((item) => item.session != null).toList(growable: false);
 }
 
 class CashSessionSummary {
@@ -100,7 +106,8 @@ class CashSessionSummary {
     required this.expectedAmount,
   });
 
-  factory CashSessionSummary.fromJson(Map<String, dynamic> json) => CashSessionSummary(
+  factory CashSessionSummary.fromJson(Map<String, dynamic> json) =>
+      CashSessionSummary(
         status: json['status'] as String? ?? 'open',
         openingAmount: json['opening_amount'] as String? ?? '0.00',
         manualEntries: json['manual_entries'] as String? ?? '0.00',
@@ -118,9 +125,11 @@ class CashSessionSummary {
 }
 
 class CashBeneficiary {
-  const CashBeneficiary({required this.id, required this.name, required this.userType});
+  const CashBeneficiary(
+      {required this.id, required this.name, required this.userType});
 
-  factory CashBeneficiary.fromJson(Map<String, dynamic> json) => CashBeneficiary(
+  factory CashBeneficiary.fromJson(Map<String, dynamic> json) =>
+      CashBeneficiary(
         id: json['id'] as int,
         name: json['name'] as String? ?? '',
         userType: json['user_type'] as String? ?? '',
@@ -140,20 +149,18 @@ const withdrawalCategories = {
   'other': 'Outros',
 };
 
-const withdrawalResultEffects = {
-  'operating_expense': 'Despesa operacional',
-  'neutral': 'Neutro',
-};
+bool withdrawalRequiresBeneficiary(String category) =>
+    const {'dj', 'artist', 'advance', 'promoter'}.contains(category);
 
-bool withdrawalRequiresBeneficiary(String category) => const {'dj', 'artist', 'advance', 'promoter'}.contains(category);
-
-String formatMoney(String? value) => 'R\$ ${(value ?? '0.00').replaceAll('.', ',')}';
+String formatMoney(String? value) =>
+    'R\$ ${(value ?? '0.00').replaceAll('.', ',')}';
 
 String createIdempotencyKey() {
   final random = Random.secure();
   final bytes = List<int>.generate(16, (_) => random.nextInt(256));
   bytes[6] = (bytes[6] & 0x0f) | 0x40;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  final hex = bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
+  final hex =
+      bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
   return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
 }

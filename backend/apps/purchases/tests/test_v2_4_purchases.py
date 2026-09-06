@@ -260,32 +260,25 @@ class PurchaseFlowTests(TestCase):
         item.refresh_from_db()
         self.assertEqual(item.conversion_factor, Decimal('24.000000'))
 
-    def test_partial_receipt_requires_reason_is_idempotent_and_can_finish(self):
+    def test_partial_receipt_is_idempotent_and_can_finish(self):
         order = create_order(
             self.branch, self.supplier, self.unit, self.user, quantity='2', price='120'
         )
         place_purchase_order(purchase_order=order, user=self.user)
         item = order.items.get()
         key = uuid.uuid4()
-        with self.assertRaises(ValidationError):
-            receive_purchase_order(
-                purchase_order=order,
-                idempotency_key=key,
-                items=[{'purchase_order_item': item.pk, 'received_quantity': '1'}],
-                user=self.user,
-            )
         receipt = receive_purchase_order(
             purchase_order=order,
             idempotency_key=key,
             items=[{'purchase_order_item': item.pk, 'received_quantity': '1'}],
-            divergence_reason='Entrega parcial do fornecedor',
+            divergence_reason='Recebimento parcial',
             user=self.user,
         )
         replay = receive_purchase_order(
             purchase_order=order,
             idempotency_key=key,
             items=[{'purchase_order_item': item.pk, 'received_quantity': '1'}],
-            divergence_reason='Entrega parcial do fornecedor',
+            divergence_reason='Recebimento parcial',
             user=self.user,
         )
         self.assertEqual(replay.pk, receipt.pk)
@@ -296,6 +289,7 @@ class PurchaseFlowTests(TestCase):
                 purchase_order=order,
                 idempotency_key=key,
                 items=[{'purchase_order_item': item.pk, 'received_quantity': '2'}],
+                divergence_reason='Recebimento parcial',
                 user=self.user,
             )
 
@@ -303,6 +297,7 @@ class PurchaseFlowTests(TestCase):
             purchase_order=order,
             idempotency_key=uuid.uuid4(),
             items=[{'purchase_order_item': item.pk, 'received_quantity': '1'}],
+            divergence_reason='Recebimento parcial',
             user=self.user,
         )
         order.refresh_from_db()
@@ -323,10 +318,11 @@ class PurchaseFlowTests(TestCase):
             user=self.user,
         )
         close_partial_purchase_order(
-            purchase_order=order, user=self.user, reason='Saldo cancelado pelo fornecedor'
+            purchase_order=order, user=self.user,
         )
         order.refresh_from_db()
         self.assertEqual(order.status, PurchaseOrderStatus.CLOSED_PARTIAL)
+        self.assertEqual(order.closure_reason, '')
         self.assertTrue(PurchaseReceipt.objects.filter(pk=receipt.pk).exists())
         with self.assertRaises(ValidationError):
             receipt.delete()
@@ -458,13 +454,12 @@ class PurchaseFlowTests(TestCase):
         place_purchase_order(purchase_order=order, user=self.user)
         first, second = list(order.installments.all())
         pay_installment(installment=first, user=self.user, notes='PIX manual')
-        cancel_installment(
-            installment=second, user=self.user, reason='Renegociada fora desta compra'
-        )
+        cancel_installment(installment=second, user=self.user)
         first.refresh_from_db()
         second.refresh_from_db()
         self.assertEqual(first.status, PayableInstallmentStatus.PAID)
         self.assertEqual(second.status, PayableInstallmentStatus.CANCELLED)
+        self.assertEqual(second.cancellation_reason, '')
         self.assertTrue(AuditLog.objects.filter(action='purchase.payable.pay').exists())
         self.assertTrue(AuditLog.objects.filter(action='purchase.payable.cancel').exists())
         creation_logs = AuditLog.objects.filter(
