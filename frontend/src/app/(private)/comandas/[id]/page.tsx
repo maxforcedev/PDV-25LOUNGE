@@ -501,7 +501,7 @@ function CommandDetail() {
       <Modal open={!!cancelItem} title="Cancelar item" onClose={() => setCancelItem(null)}>
         <div className="space-y-4 p-5">
           <p className="text-sm text-muted">{cancelItem ? `${cancelItem.product_name} × ${formatQuantity(cancelItem.quantity)}` : ""}</p>
-          <Field label="Motivo do cancelamento" error={fieldError(fields, "reason")}><Input value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} disabled={saving} /></Field>
+          <Field label="Motivo do cancelamento" optional error={fieldError(fields, "reason")}><Input value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} disabled={saving} /></Field>
           {error && <Alert message={error} />}
           <div className="flex justify-end gap-2 border-t border-subtle pt-4"><Button variant="secondary" onClick={() => setCancelItem(null)}>Voltar</Button><Button loading={saving} onClick={() => void doCancel()}>Cancelar item</Button></div>
         </div>

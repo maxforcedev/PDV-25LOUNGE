@@ -5,7 +5,6 @@ import '../home/home_page.dart';
 import '../pairing/pairing_pages.dart';
 import 'app_controller.dart';
 import 'core_branding.dart';
-import 'transient_feedback.dart';
 
 class AppShell extends StatelessWidget {
   const AppShell({required this.controller, super.key});
@@ -18,34 +17,38 @@ class AppShell extends StatelessWidget {
         builder: (context, _) {
           final page = switch (controller.phase) {
             AppPhase.loading => const _LoadingPage(),
-            AppPhase.pairingIdentifier => PairingIdentifierPage(controller: controller),
-            AppPhase.pairingChannel => PairingChannelPage(controller: controller),
+            AppPhase.pairingIdentifier =>
+              PairingIdentifierPage(controller: controller),
+            AppPhase.pairingChannel =>
+              PairingChannelPage(controller: controller),
             AppPhase.pairingOtp => PairingOtpPage(controller: controller),
-            AppPhase.operatorSelection || AppPhase.operatorPin => OperatorAccessPage(controller: controller),
+            AppPhase.operatorSelection ||
+            AppPhase.operatorPin =>
+              OperatorAccessPage(controller: controller),
             AppPhase.home => HomePage(controller: controller),
-            AppPhase.deviceUnavailable => _DeviceUnavailablePage(controller: controller),
+            AppPhase.deviceUnavailable =>
+              _DeviceUnavailablePage(controller: controller),
             AppPhase.updateRequired => const _UpdateRequiredPage(),
             AppPhase.error => _ErrorPage(controller: controller),
           };
-          return Stack(
-            fit: StackFit.expand,
-            children: [
-              AnimatedSwitcher(
-                duration: const Duration(milliseconds: 260),
-                reverseDuration: const Duration(milliseconds: 180),
-                switchInCurve: Curves.easeOutCubic,
-                switchOutCurve: Curves.easeInCubic,
-                transitionBuilder: (child, animation) => FadeTransition(
-                  opacity: animation,
-                  child: SlideTransition(
-                    position: Tween<Offset>(begin: const Offset(0, 0.025), end: Offset.zero).animate(animation),
-                    child: ScaleTransition(scale: Tween<double>(begin: 0.985, end: 1).animate(animation), child: child),
-                  ),
-                ),
-                child: KeyedSubtree(key: ValueKey(controller.phase), child: page),
+          return AnimatedSwitcher(
+            duration: const Duration(milliseconds: 260),
+            reverseDuration: const Duration(milliseconds: 180),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            transitionBuilder: (child, animation) => FadeTransition(
+              opacity: animation,
+              child: SlideTransition(
+                position: Tween<Offset>(
+                        begin: const Offset(0, 0.025), end: Offset.zero)
+                    .animate(animation),
+                child: ScaleTransition(
+                    scale:
+                        Tween<double>(begin: 0.985, end: 1).animate(animation),
+                    child: child),
               ),
-              TransientAlertOverlay(alert: controller.transientAlert),
-            ],
+            ),
+            child: KeyedSubtree(key: ValueKey(controller.phase), child: page),
           );
         },
       );
@@ -58,7 +61,8 @@ class _LoadingPage extends StatefulWidget {
   State<_LoadingPage> createState() => _LoadingPageState();
 }
 
-class _LoadingPageState extends State<_LoadingPage> with TickerProviderStateMixin {
+class _LoadingPageState extends State<_LoadingPage>
+    with TickerProviderStateMixin {
   late final AnimationController _entrance = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 480),
@@ -115,7 +119,10 @@ class _LoadingPageState extends State<_LoadingPage> with TickerProviderStateMixi
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(30),
                   boxShadow: const [
-                    BoxShadow(color: Color(0x263454d1), blurRadius: 28, offset: Offset(0, 14)),
+                    BoxShadow(
+                        color: Color(0x263454d1),
+                        blurRadius: 28,
+                        offset: Offset(0, 14)),
                   ],
                 ),
                 child: ClipRRect(
@@ -138,7 +145,8 @@ class _ErrorPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) => _StatusPage(
         title: 'Nao foi possivel sincronizar',
-        message: controller.errorMessage ?? 'Verifique sua conexao e tente novamente.',
+        message: controller.errorMessage ??
+            'Verifique sua conexao e tente novamente.',
         actionLabel: 'TENTAR NOVAMENTE',
         onPressed: controller.busy ? null : controller.recoverPairedDevice,
       );
@@ -161,7 +169,8 @@ class _DeviceUnavailablePage extends StatelessWidget {
     final canPairAgain = code == 'device_revoked' || code == 'device_replaced';
     return _StatusPage(
       title: title,
-      message: controller.errorMessage ?? 'Este dispositivo nao esta autorizado a operar.',
+      message: controller.errorMessage ??
+          'Este dispositivo nao esta autorizado a operar.',
       actionLabel: canPairAgain ? 'PAREAR NOVAMENTE' : 'TENTAR NOVAMENTE',
       onPressed: controller.busy
           ? null
@@ -178,7 +187,8 @@ class _UpdateRequiredPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) => const _StatusPage(
         title: 'Atualizacao obrigatoria',
-        message: 'Esta versão do CORE PDV não é mais suportada. Atualize o aplicativo para continuar.',
+        message:
+            'Esta versão do CORE PDV não é mais suportada. Atualize o aplicativo para continuar.',
       );
 }
 
@@ -211,7 +221,8 @@ class _StatusPage extends StatelessWidget {
                   Text(message, textAlign: TextAlign.center),
                   if (actionLabel != null) ...[
                     const SizedBox(height: 20),
-                    FilledButton(onPressed: onPressed, child: Text(actionLabel!)),
+                    FilledButton(
+                        onPressed: onPressed, child: Text(actionLabel!)),
                   ],
                 ],
               ),

@@ -43,6 +43,7 @@ from ..services import (
     confirm_inventory_count,
     create_inventory_count,
     create_stock_transfer,
+    cancel_stock_transfer,
     dispatch_stock_transfer,
     entry,
     exit,
@@ -299,6 +300,18 @@ class TransferFlowTests(TestCase):
                 self.product, self.origin, '1', self.user,
                 nature=MovementNature.LOSS,
             )
+
+    def test_undispatched_transfer_cancellation_accepts_blank_reason(self):
+        transfer = transfer_fixture(
+            self.origin, self.destination, self.product, self.user,
+        )
+
+        transfer = cancel_stock_transfer(
+            transfer=transfer, user=self.user, reason='',
+        )
+
+        self.assertEqual(transfer.status, StockTransferStatus.CANCELLED)
+        self.assertEqual(transfer.cancellation_reason, '')
 
     def test_unit_products_reject_fractional_workflow_quantities(self):
         unit_product = Product.objects.create(

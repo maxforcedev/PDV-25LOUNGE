@@ -1,17 +1,5 @@
 enum SyncPhase { idle, syncing, synced, pending, error }
 
-class SyncHistoryItem {
-  const SyncHistoryItem({
-    required this.occurredAt,
-    required this.message,
-    required this.succeeded,
-  });
-
-  final DateTime occurredAt;
-  final String message;
-  final bool succeeded;
-}
-
 class SyncStatus {
   const SyncStatus({
     this.phase = SyncPhase.idle,
@@ -21,7 +9,6 @@ class SyncStatus {
     this.pendingCount = 0,
     this.errorCount = 0,
     this.error,
-    this.history = const [],
   });
 
   final SyncPhase phase;
@@ -31,30 +18,30 @@ class SyncStatus {
   final int pendingCount;
   final int errorCount;
   final String? error;
-  final List<SyncHistoryItem> history;
 
-  SyncStatus begin() => _copyWith(phase: SyncPhase.syncing, lastAttemptAt: DateTime.now(), error: null, errorCount: 0);
+  SyncStatus begin() => _copyWith(
+      phase: SyncPhase.syncing,
+      lastAttemptAt: DateTime.now(),
+      error: null,
+      errorCount: 0);
 
   SyncStatus heartbeat(DateTime when) => _copyWith(lastHeartbeatAt: when);
 
-  SyncStatus succeeded(String message) {
+  SyncStatus succeeded() {
     final now = DateTime.now();
     return _copyWith(
       phase: pendingCount > 0 ? SyncPhase.pending : SyncPhase.synced,
       lastSyncedAt: now,
       error: null,
       errorCount: 0,
-      history: _withHistory(SyncHistoryItem(occurredAt: now, message: message, succeeded: true)),
     );
   }
 
   SyncStatus failed(String message) {
-    final now = DateTime.now();
     return _copyWith(
       phase: SyncPhase.error,
       error: message,
       errorCount: 1,
-      history: _withHistory(SyncHistoryItem(occurredAt: now, message: message, succeeded: false)),
     );
   }
 
@@ -66,8 +53,8 @@ class SyncStatus {
     int? pendingCount,
     int? errorCount,
     String? error,
-    List<SyncHistoryItem>? history,
-  }) => SyncStatus(
+  }) =>
+      SyncStatus(
         phase: phase ?? this.phase,
         lastSyncedAt: lastSyncedAt ?? this.lastSyncedAt,
         lastHeartbeatAt: lastHeartbeatAt ?? this.lastHeartbeatAt,
@@ -75,10 +62,7 @@ class SyncStatus {
         pendingCount: pendingCount ?? this.pendingCount,
         errorCount: errorCount ?? this.errorCount,
         error: error,
-        history: history ?? this.history,
       );
-
-  List<SyncHistoryItem> _withHistory(SyncHistoryItem item) => [item, ...history].take(12).toList(growable: false);
 
   String get label => switch (phase) {
         SyncPhase.idle => 'Aguardando sincronizacao',

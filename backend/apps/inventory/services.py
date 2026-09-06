@@ -1238,8 +1238,6 @@ def cancel_stock_transfer(*, transfer, user, reason, support_session=None):
     reason = (reason or '').strip()
     if transfer.status != StockTransferStatus.DRAFT or transfer.dispatched_at:
         raise ValidationError({'status': 'Somente transferencia ainda nao despachada pode ser cancelada.'})
-    if len(reason) < 3:
-        raise ValidationError({'reason': 'Informe o motivo do cancelamento.'})
     now = timezone.now()
     transfer.status = StockTransferStatus.CANCELLED
     transfer.cancelled_by = user

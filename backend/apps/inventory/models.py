@@ -655,8 +655,9 @@ class StockTransfer(ProtectedInventoryModel):
         if self.status not in dispatched_states and any(dispatch_metadata):
             errors['dispatch_idempotency_key'] = 'Metadados de despacho so existem apos o despacho.'
         if self.status == StockTransferStatus.CANCELLED:
-            if not (self.cancelled_by_id and self.cancelled_at and self.cancellation_reason.strip()):
-                errors['cancellation_reason'] = 'Cancelamento exige ator, data e motivo.'
+            self.cancellation_reason = (self.cancellation_reason or '').strip()
+            if not (self.cancelled_by_id and self.cancelled_at):
+                errors['cancellation_reason'] = 'Cancelamento exige ator e data.'
             if self.dispatched_at:
                 errors['status'] = 'Transferencia despachada nao pode ser cancelada.'
         if errors:

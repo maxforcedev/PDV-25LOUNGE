@@ -231,7 +231,7 @@ class CashMovement(BaseModel):
         on_delete=models.PROTECT,
         related_name='cash_movements',
     )
-    reason = models.TextField()
+    reason = models.TextField(blank=True)
     withdrawal_category = models.CharField(
         max_length=20,
         choices=WithdrawalCategory.choices,
@@ -259,9 +259,6 @@ class CashMovement(BaseModel):
         constraints = [
             models.CheckConstraint(
                 condition=Q(amount__gt=0), name='cash_movement_amount_positive'
-            ),
-            models.CheckConstraint(
-                condition=~Q(reason=''), name='cash_movement_reason_not_empty'
             ),
             models.CheckConstraint(
                 condition=(
@@ -301,8 +298,6 @@ class CashMovement(BaseModel):
     def clean(self):
         super().clean()
         self.reason = (self.reason or '').strip()
-        if not self.reason:
-            raise ValidationError({'reason': 'Informe o motivo da movimentação.'})
         if self.amount is not None and self.amount <= Decimal('0'):
             raise ValidationError({'amount': 'O valor deve ser maior que zero.'})
         if self.cash_session_id and CashSession.objects.filter(

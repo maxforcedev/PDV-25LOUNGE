@@ -311,8 +311,7 @@ class OrderItem(BaseModel):
 
     def clean(self):
         super().clean()
-        if self.status == OrderItemStatus.CANCELLED and not (self.cancellation_reason or '').strip():
-            raise ValidationError({'cancellation_reason': 'Informe o motivo do cancelamento.'})
+        self.cancellation_reason = (self.cancellation_reason or '').strip()
 
     def save(self, *args, **kwargs):
         self.full_clean()

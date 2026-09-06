@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
+import 'package:flutter/services.dart';
 import 'core/app_config.dart';
 import 'core/app_controller.dart';
 import 'core/app_shell.dart';
+import 'core/transient_feedback.dart';
 import 'network/pos_api.dart';
 import 'storage/secret_store.dart';
 
@@ -41,7 +43,8 @@ class CorePosApp extends StatelessWidget {
           inputDecorationTheme: InputDecorationTheme(
             filled: true,
             fillColor: const Color(0xffffffff),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(14),
               borderSide: const BorderSide(color: Color(0xffe2e8f0)),
@@ -56,11 +59,30 @@ class CorePosApp extends StatelessWidget {
               backgroundColor: const Color(0xff3454d1),
               foregroundColor: Colors.white,
               minimumSize: const Size.fromHeight(54),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14)),
               textStyle: const TextStyle(fontWeight: FontWeight.w700),
             ),
           ),
+          appBarTheme: const AppBarTheme(
+            backgroundColor: Color(0xff3454d1),
+            foregroundColor: Colors.white,
+            iconTheme: IconThemeData(color: Colors.white),
+            actionsIconTheme: IconThemeData(color: Colors.white),
+            surfaceTintColor: Colors.transparent,
+            systemOverlayStyle: SystemUiOverlayStyle.light,
+          ),
           useMaterial3: true,
+        ),
+        builder: (context, child) => AnimatedBuilder(
+          animation: controller,
+          builder: (context, _) => Stack(
+            fit: StackFit.expand,
+            children: [
+              child ?? const SizedBox.shrink(),
+              TransientAlertOverlay(alert: controller.transientAlert),
+            ],
+          ),
         ),
         home: AppShell(controller: controller),
       );

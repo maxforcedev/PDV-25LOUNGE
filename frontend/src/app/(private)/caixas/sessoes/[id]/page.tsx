@@ -338,11 +338,10 @@ function SessionDetail() {
       !action ||
       !allowed ||
       moneyToCents(amount) === null ||
-      moneyToCents(amount) === BigInt(0) ||
-      !reason.trim()
+      moneyToCents(amount) === BigInt(0)
     ) {
       setError(
-        "Informe um valor maior que zero, com no máximo duas casas decimais, e o motivo.",
+        "Informe um valor maior que zero, com no máximo duas casas decimais.",
       );
       return;
     }
@@ -810,9 +809,8 @@ function SessionDetail() {
                 </Field>
               </>
             )}
-            <Field label="Motivo">
+            <Field label="Motivo" optional>
               <Textarea
-                required
                 maxLength={500}
                 value={reason}
                 onChange={(event) => setReason(event.target.value)}

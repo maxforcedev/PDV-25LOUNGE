@@ -132,8 +132,6 @@ def _record_movement(
 ):
     amount = parse_money(amount, 'amount', positive=True)
     reason = (reason or '').strip()
-    if not reason:
-        raise ValidationError({'reason': 'Informe o motivo da movimentação.'})
     with transaction.atomic():
         try:
             session = CashSession.objects.select_for_update().select_related(
@@ -226,7 +224,7 @@ def _record_movement(
 
 
 def record_manual_entry(
-    cash_session, amount, user, reason, current_branch, idempotency_key,
+    cash_session, amount, user, reason=None, current_branch=None, idempotency_key=None,
     *, allow_pos_only=False, audit_metadata=None,
 ):
     return _record_movement(
@@ -244,8 +242,8 @@ def record_manual_entry(
 
 
 def record_withdrawal(
-    cash_session, amount, user, reason, current_branch, category, result_effect,
-    idempotency_key, beneficiary_user=None, *, allow_pos_only=False,
+    cash_session, amount, user, reason=None, current_branch=None, category=None,
+    result_effect=None, idempotency_key=None, beneficiary_user=None, *, allow_pos_only=False,
     audit_metadata=None,
 ):
     return _record_movement(

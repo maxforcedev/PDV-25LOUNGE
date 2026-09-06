@@ -988,6 +988,7 @@ def cancel_order_item(*, item, user, idempotency_key, reason, support_session=No
         'order__command', 'product'
     ).get(pk=item.pk)
     command = item.order.command
+    reason = (reason or '').strip()
     require_branch_feature(command.branch, 'commands')
     if command.status != CommandStatus.OPEN:
         raise ValidationError({'command': 'A comanda deve estar aberta.'})
@@ -1004,7 +1005,9 @@ def cancel_order_item(*, item, user, idempotency_key, reason, support_session=No
         audit_log(
             actor=user, action='order_item.cancel', obj=item,
             company=command.company, branch=command.branch,
-            after=model_snapshot(item, ('status', 'cancelled_at', 'cancelled_by_id')),
+            after=model_snapshot(item, (
+                'status', 'cancelled_at', 'cancelled_by_id', 'cancellation_reason',
+            )),
             metadata={
                 'idempotency_key': str(idempotency_key),
                 'support_session': str(support_session.pk) if support_session else None,
@@ -1060,7 +1063,9 @@ def cancel_order_item(*, item, user, idempotency_key, reason, support_session=No
     audit_log(
         actor=user, action='order_item.cancel', obj=item,
         company=command.company, branch=command.branch,
-        after=model_snapshot(item, ('status', 'cancelled_at', 'cancelled_by_id')),
+        after=model_snapshot(item, (
+            'status', 'cancelled_at', 'cancelled_by_id', 'cancellation_reason',
+        )),
         metadata={
             'idempotency_key': str(idempotency_key),
             'support_session': str(support_session.pk) if support_session else None,

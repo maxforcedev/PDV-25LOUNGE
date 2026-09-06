@@ -190,7 +190,9 @@ class ManualEntryRequestSerializer(serializers.Serializer):
     amount = StrictMoneyField(
         max_digits=14, decimal_places=2, min_value=Decimal('0.01')
     )
-    reason = serializers.CharField(trim_whitespace=True, allow_blank=False)
+    reason = serializers.CharField(
+        required=False, allow_blank=True, default='', trim_whitespace=True
+    )
 
 
 class WithdrawalRequestSerializer(ManualEntryRequestSerializer):

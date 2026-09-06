@@ -110,7 +110,7 @@ class AppController extends ChangeNotifier {
       operators = await _api.operators();
       selectedOperator = null;
       phase = AppPhase.operatorSelection;
-      syncStatus = syncStatus.succeeded('Dispositivo e operadores atualizados.');
+      syncStatus = syncStatus.succeeded();
     } on PosApiException catch (error) {
       _handleApiError(error, persistent: true);
       if (phase == AppPhase.loading || phase == AppPhase.operatorSelection) {
@@ -151,7 +151,7 @@ class AppController extends ChangeNotifier {
         phase = AppPhase.updateRequired;
         return;
       }
-      syncStatus = syncStatus.succeeded('Dados operacionais atualizados.');
+      syncStatus = syncStatus.succeeded();
       phase = AppPhase.home;
     });
   }
@@ -208,7 +208,7 @@ class AppController extends ChangeNotifier {
         phase = AppPhase.updateRequired;
         return;
       }
-      syncStatus = syncStatus.succeeded('Dados operacionais atualizados.');
+      syncStatus = syncStatus.succeeded();
     } on PosApiException catch (error) {
       _handleApiError(error);
       syncStatus = syncStatus.failed(error.message);
@@ -221,14 +221,15 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  Future<void> refreshCashOverview() async {
+  Future<bool> refreshCashOverview() async {
     final snapshot = bootstrapSnapshot;
-    if (busy || snapshot == null) return;
+    if (busy || snapshot == null) return false;
     busy = true;
     _clearTransientMessage();
     notifyListeners();
     try {
       bootstrapSnapshot = snapshot.withCash(await _api.cashOverview());
+      return true;
     } on PosApiException catch (error) {
       _handleApiError(error);
     } on PosNetworkException catch (error) {
@@ -237,14 +238,22 @@ class AppController extends ChangeNotifier {
       busy = false;
       notifyListeners();
     }
+    return false;
   }
 
-  Future<void> openCashSession({required String openingAmount, int? registerId}) => _runCashAction(
-        () => _api.openCashSession(openingAmount: openingAmount, registerId: registerId),
+  Future<bool> openCashSession(
+          {required String openingAmount, int? registerId}) =>
+      _runCashAction(
+        () => _api.openCashSession(
+            openingAmount: openingAmount, registerId: registerId),
         'Caixa aberto com sucesso.',
       );
 
-  Future<void> recordCashEntry({required int sessionId, required String amount, required String reason}) => _runCashAction(
+  Future<bool> recordCashEntry(
+          {required int sessionId,
+          required String amount,
+          required String reason}) =>
+      _runCashAction(
         () => _api.recordCashEntry(
           sessionId: sessionId,
           amount: amount,
@@ -254,7 +263,8 @@ class AppController extends ChangeNotifier {
         'Suprimento registrado com sucesso.',
       );
 
-  Future<List<CashBeneficiary>?> cashWithdrawalBeneficiaries(String category) async {
+  Future<List<CashBeneficiary>?> cashWithdrawalBeneficiaries(
+      String category) async {
     try {
       return await _api.cashWithdrawalBeneficiaries(category);
     } on PosApiException catch (error) {
@@ -265,7 +275,14 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
-  Future<void> recordCashWithdrawal({required int sessionId, required String amount, required String reason, required String category, required String resultEffect, int? beneficiaryId}) => _runCashAction(
+  Future<bool> recordCashWithdrawal(
+          {required int sessionId,
+          required String amount,
+          required String reason,
+          required String category,
+          required String resultEffect,
+          int? beneficiaryId}) =>
+      _runCashAction(
         () => _api.recordCashWithdrawal(
           sessionId: sessionId,
           amount: amount,
@@ -278,12 +295,20 @@ class AppController extends ChangeNotifier {
         'Sangria registrada com sucesso.',
       );
 
-  Future<void> closeCashSession({required int sessionId, required String closingAmount}) => _runCashAction(
-        () => _api.closeCashSession(sessionId: sessionId, closingAmount: closingAmount),
+  Future<bool> closeCashSession(
+          {required int sessionId, required String closingAmount}) =>
+      _runCashAction(
+        () => _api.closeCashSession(
+            sessionId: sessionId, closingAmount: closingAmount),
         'Caixa fechado com sucesso.',
       );
 
   Future<CashSessionSummary?> cashSessionSummary(int sessionId) async {
+    final snapshot = bootstrapSnapshot;
+    if (snapshot == null ||
+        !snapshot.permissions.contains('cash_registers.view')) {
+      return null;
+    }
     try {
       return await _api.cashSessionSummary(sessionId);
     } on PosApiException catch (error) {
@@ -329,7 +354,8 @@ class AppController extends ChangeNotifier {
   void _handleApiError(PosApiException error, {bool persistent = false}) {
     final message = switch (error.statusCode) {
       429 => 'Muitas tentativas. Aguarde alguns instantes e tente novamente.',
-      >= 500 => 'O CORE PDV está indisponível no momento. Tente novamente em breve.',
+      >= 500 =>
+        'O CORE PDV está indisponível no momento. Tente novamente em breve.',
       _ => error.message,
     };
     if (error.code == 'pos_update_required') {
@@ -356,7 +382,8 @@ class AppController extends ChangeNotifier {
   void showTransientMessage(
     String message, {
     TransientAlertTone tone = TransientAlertTone.error,
-  }) => _showTransientMessage(message, tone: tone);
+  }) =>
+      _showTransientMessage(message, tone: tone);
 
   void _showTransientMessage(
     String message, {
@@ -371,17 +398,20 @@ class AppController extends ChangeNotifier {
     _transientFeedback.clear();
   }
 
-  Future<void> _runCashAction(Future<void> Function() action, String successMessage) async {
+  Future<bool> _runCashAction(
+      Future<void> Function() action, String successMessage) async {
     final snapshot = bootstrapSnapshot;
-    if (busy || snapshot == null) return;
+    if (busy || snapshot == null) return false;
     busy = true;
     _clearTransientMessage();
     notifyListeners();
     try {
       await action();
       bootstrapSnapshot = snapshot.withCash(await _api.cashOverview());
-      syncStatus = syncStatus.succeeded('Caixa atualizado.');
-      _showTransientMessage(successMessage, tone: TransientAlertTone.success, notify: false);
+      syncStatus = syncStatus.succeeded();
+      _showTransientMessage(successMessage,
+          tone: TransientAlertTone.success, notify: false);
+      return true;
     } on PosApiException catch (error) {
       _handleApiError(error);
     } on PosNetworkException catch (error) {
@@ -390,6 +420,7 @@ class AppController extends ChangeNotifier {
       busy = false;
       notifyListeners();
     }
+    return false;
   }
 
   @override

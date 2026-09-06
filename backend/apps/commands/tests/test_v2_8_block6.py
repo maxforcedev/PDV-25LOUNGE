@@ -533,6 +533,24 @@ class CommandInventoryTests(Block6Fixture, TestCase):
 
 
 class CommandCancellationTests(Block6Fixture, TestCase):
+    def test_cancel_item_accepts_blank_reason(self):
+        cmd = open_command(branch=self.branch, user=self.owner, identifier='CancelBlank')
+        order = Order.objects.create(
+            command=cmd, created_by=self.owner, status=OrderStatus.DRAFT,
+        )
+        item = OrderItem.objects.create(
+            order=order, product=self.product, quantity=Decimal('1'),
+            product_name=self.product.name, internal_code=self.product.internal_code,
+            unit=self.product.unit, unit_price=Decimal('10.00'),
+        )
+
+        item = cancel_order_item(
+            item=item, user=self.owner, idempotency_key=uuid.uuid4(), reason='',
+        )
+
+        self.assertEqual(item.status, OrderItemStatus.CANCELLED)
+        self.assertEqual(item.cancellation_reason, '')
+
     def test_scenario_a_cancel_confirmed_before_finalize(self):
         cmd = open_command(branch=self.branch, user=self.owner, identifier='CancelA')
         item = add_order_item(command=cmd, user=self.owner, product_id=self.product.pk, quantity=Decimal('2'))

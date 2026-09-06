@@ -943,7 +943,10 @@ class IdempotencySerializer(serializers.Serializer):
 
 
 class ReasonSerializer(serializers.Serializer):
-    reason = serializers.CharField(min_length=3, max_length=2000)
+    reason = serializers.CharField(
+        required=False, allow_blank=True, default='', max_length=2000,
+        trim_whitespace=True,
+    )
 
 
 class AdvancedInventoryReportQuerySerializer(serializers.Serializer):

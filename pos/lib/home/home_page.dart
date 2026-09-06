@@ -5,7 +5,6 @@ import '../cash/cash_page.dart';
 import '../core/app_controller.dart';
 import '../core/transient_feedback.dart';
 import '../sync/sync_center_page.dart';
-import '../sync/sync_status.dart';
 
 class HomePage extends StatelessWidget {
   const HomePage({required this.controller, super.key});
@@ -35,17 +34,17 @@ class HomePage extends StatelessWidget {
               builder: (context, constraints) => ListView(
                 padding: EdgeInsets.all(constraints.maxWidth >= 600 ? 28 : 20),
                 children: [
-                  Text('Olá, ${snapshot.operatorName}', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800)),
-                  const SizedBox(height: 6),
-                  Text('${snapshot.companyName} - ${snapshot.branchName}', style: const TextStyle(color: Color(0xff64748b))),
                   if (snapshot.release.updateAvailable) ...[
-                    const SizedBox(height: 12),
                     const _UpdateNotice(),
                   ],
                   const SizedBox(height: 24),
                   _CashHomeCard(snapshot: snapshot, controller: controller),
                   const SizedBox(height: 28),
-                  Text('Módulos disponíveis', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+                  Text('Módulos disponíveis',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleLarge
+                          ?.copyWith(fontWeight: FontWeight.w800)),
                   const SizedBox(height: 12),
                   if (snapshot.enabledModules.isEmpty)
                     const _EmptyModules()
@@ -54,15 +53,18 @@ class HomePage extends StatelessWidget {
                       crossAxisCount: constraints.maxWidth >= 620 ? 3 : 2,
                       crossAxisSpacing: 12,
                       mainAxisSpacing: 12,
-                      childAspectRatio: constraints.maxWidth >= 620 ? 1.35 : 1.12,
+                      childAspectRatio:
+                          constraints.maxWidth >= 620 ? 1.35 : 1.12,
                       shrinkWrap: true,
                       physics: const NeverScrollableScrollPhysics(),
                       children: snapshot.enabledModules
-                          .map((module) => _ModuleCard(module: module, controller: controller))
+                          .map((module) => _ModuleCard(
+                              module: module, controller: controller))
                           .toList(growable: false),
                     ),
                   const SizedBox(height: 24),
-                  Text('Dispositivo: ${snapshot.deviceName}', style: const TextStyle(color: Color(0xff64748b))),
+                  Text('Dispositivo: ${snapshot.deviceName}',
+                      style: const TextStyle(color: Color(0xff64748b))),
                 ],
               ),
             ),
@@ -81,16 +83,10 @@ class _SyncButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final status = controller.syncStatus;
-    final color = switch (status.phase) {
-      SyncPhase.synced => const Color(0xff087443),
-      SyncPhase.syncing => const Color(0xff2945b6),
-      SyncPhase.pending => const Color(0xffa15c00),
-      SyncPhase.error => const Color(0xffb42318),
-      SyncPhase.idle => const Color(0xff64748b),
-    };
     return IconButton(
-      onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => SyncCenterPage(controller: controller))),
-      icon: Icon(Icons.sync_rounded, color: color),
+      onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+          builder: (_) => SyncCenterPage(controller: controller))),
+      icon: const Icon(Icons.sync_rounded),
       tooltip: status.label,
     );
   }
@@ -105,7 +101,9 @@ class _CashHomeCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cash = snapshot.cash;
-    final openCount = cash.isFixed ? (cash.session == null ? 0 : 1) : cash.openRegisters.length;
+    final openCount = cash.isFixed
+        ? (cash.session == null ? 0 : 1)
+        : cash.openRegisters.length;
     final title = !cash.enabled
         ? 'Caixa indisponível'
         : openCount == 0
@@ -120,23 +118,40 @@ class _CashHomeCard extends StatelessWidget {
             : 'Selecione o caixa para operar';
     return InkWell(
       borderRadius: BorderRadius.circular(20),
-      onTap: cash.enabled ? () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => CashPage(controller: controller))) : null,
+      onTap: cash.enabled
+          ? () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => CashPage(controller: controller)))
+          : null,
       child: Ink(
         padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20), border: Border.all(color: const Color(0xffe2e8f0))),
+        decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: const Color(0xffe2e8f0))),
         child: Row(children: [
           Container(
             width: 46,
             height: 46,
-            decoration: BoxDecoration(color: const Color(0xffe8edff), borderRadius: BorderRadius.circular(14)),
-            child: const Icon(Icons.point_of_sale_outlined, color: Color(0xff2945b6)),
+            decoration: BoxDecoration(
+                color: const Color(0xffe8edff),
+                borderRadius: BorderRadius.circular(14)),
+            child: const Icon(Icons.point_of_sale_outlined,
+                color: Color(0xff2945b6)),
           ),
           const SizedBox(width: 14),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(title, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
-            const SizedBox(height: 3),
-            Text(subtitle, style: const TextStyle(color: Color(0xff64748b))),
-          ])),
+          Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                Text(title,
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleLarge
+                        ?.copyWith(fontWeight: FontWeight.w800)),
+                const SizedBox(height: 3),
+                Text(subtitle,
+                    style: const TextStyle(color: Color(0xff64748b))),
+              ])),
           const Icon(Icons.chevron_right_rounded),
         ]),
       ),
@@ -168,16 +183,28 @@ class _ModuleCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) => InkWell(
         borderRadius: BorderRadius.circular(18),
-        onTap: () => controller.showTransientMessage('Este módulo estará disponível em uma próxima etapa.', tone: TransientAlertTone.info),
+        onTap: () => controller.showTransientMessage(
+            'Este módulo estará disponível em uma próxima etapa.',
+            tone: TransientAlertTone.info),
         child: Ink(
           padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(18), border: Border.all(color: const Color(0xffe2e8f0))),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Icon(_icons[module.key] ?? Icons.dashboard_outlined, color: const Color(0xff2945b6)),
+          decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: const Color(0xffe2e8f0))),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Icon(_icons[module.key] ?? Icons.dashboard_outlined,
+                color: const Color(0xff2945b6)),
             const Spacer(),
-            Text(_labels[module.key] ?? module.key, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+            Text(_labels[module.key] ?? module.key,
+                style: Theme.of(context)
+                    .textTheme
+                    .titleMedium
+                    ?.copyWith(fontWeight: FontWeight.w700)),
             const SizedBox(height: 4),
-            const Text('Em breve', style: TextStyle(color: Color(0xff64748b), fontSize: 12)),
+            const Text('Em breve',
+                style: TextStyle(color: Color(0xff64748b), fontSize: 12)),
           ]),
         ),
       );
@@ -189,8 +216,11 @@ class _UpdateNotice extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
         padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(color: const Color(0xfffffaeb), borderRadius: BorderRadius.circular(14)),
-        child: const Text('Uma atualização do CORE PDV está disponível.', style: TextStyle(color: Color(0xffa15c00))),
+        decoration: BoxDecoration(
+            color: const Color(0xfffffaeb),
+            borderRadius: BorderRadius.circular(14)),
+        child: const Text('Uma atualização do CORE PDV está disponível.',
+            style: TextStyle(color: Color(0xffa15c00))),
       );
 }
 
@@ -200,6 +230,7 @@ class _EmptyModules extends StatelessWidget {
   @override
   Widget build(BuildContext context) => const Padding(
         padding: EdgeInsets.all(20),
-        child: Text('Nenhum módulo está habilitado para este operador.', style: TextStyle(color: Color(0xff64748b))),
+        child: Text('Nenhum módulo está habilitado para este operador.',
+            style: TextStyle(color: Color(0xff64748b))),
       );
 }

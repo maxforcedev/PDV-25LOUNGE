@@ -7,20 +7,25 @@ Covers mandatory test area 3:
   - backend prevents API bypass
   - FEATURE CAIXA enabled != CASH SESSION open
 """
+import uuid
+
 from decimal import Decimal
 
 from django.test import TestCase
+from django.urls import reverse
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
+from apps.base.models import AuditLog
 from apps.companies.models import BranchSettings, Status
 from apps.companies.features import branch_feature_states, branch_feature_enabled
 from apps.companies.services import (
     create_company_with_matrix, ensure_permission_catalog,
 )
-from apps.cash.models import CashRegister, CashSession, CashSessionStatus
-from apps.cash.services import open_session
+from apps.cash.models import CashMovement, CashRegister, CashSession, CashSessionStatus
+from apps.cash.serializers import ManualEntryRequestSerializer, WithdrawalRequestSerializer
+from apps.cash.services import open_session, record_manual_entry, record_withdrawal
 from apps.commands.services import create_table, open_command
 from apps.products.models import Category, Product, Unit, InventoryBehavior, SalesChannel
 from apps.sales.models import OperationType
@@ -126,3 +131,64 @@ class FeatureGateTests(TestCase):
         )
         self.assertEqual(session.status, CashSessionStatus.OPEN)
         self.assertTrue(branch_feature_enabled(self.branch, 'cash_register'))
+
+    def test_cash_movements_accept_blank_reasons_and_replay_them_idempotently(self):
+        register = CashRegister.objects.create(branch=self.branch, name='Blank reason')
+        session = open_session(
+            cash_register=register, opening_amount=Decimal('0.00'),
+            user=self.owner, current_branch=self.branch,
+        )
+        entry_key = uuid.uuid4()
+        entry = record_manual_entry(
+            cash_session=session, amount='10.00', user=self.owner,
+            current_branch=self.branch, idempotency_key=entry_key,
+        )
+        replay = record_manual_entry(
+            cash_session=session, amount='10.00', user=self.owner,
+            current_branch=self.branch, idempotency_key=entry_key,
+        )
+        withdrawal = record_withdrawal(
+            cash_session=session, amount='5.00', user=self.owner,
+            current_branch=self.branch, idempotency_key=uuid.uuid4(),
+            category='other', result_effect='neutral',
+        )
+
+        self.assertEqual(entry.reason, '')
+        self.assertEqual(replay.pk, entry.pk)
+        self.assertEqual(withdrawal.reason, '')
+        self.assertEqual(CashMovement.objects.filter(cash_session=session).count(), 2)
+        self.assertEqual(
+            AuditLog.objects.get(action='cash_movement.manual_entry').after['reason'], ''
+        )
+
+    def test_cash_movement_request_serializers_default_reason_to_blank(self):
+        entry = ManualEntryRequestSerializer(data={
+            'idempotency_key': str(uuid.uuid4()), 'amount': '1.00',
+        })
+        withdrawal = WithdrawalRequestSerializer(data={
+            'idempotency_key': str(uuid.uuid4()), 'amount': '1.00',
+            'category': 'other', 'result_effect': 'neutral',
+        })
+
+        self.assertTrue(entry.is_valid(), entry.errors)
+        self.assertTrue(withdrawal.is_valid(), withdrawal.errors)
+        self.assertEqual(entry.validated_data['reason'], '')
+        self.assertEqual(withdrawal.validated_data['reason'], '')
+
+    def test_cash_entry_api_accepts_an_omitted_reason(self):
+        register = CashRegister.objects.create(branch=self.branch, name='API blank reason')
+        session = open_session(
+            cash_register=register, opening_amount=Decimal('0.00'),
+            user=self.owner, current_branch=self.branch,
+        )
+        client = APIClient()
+        client.force_authenticate(self.owner)
+
+        response = client.post(
+            reverse('cash-session-entry', args=[session.pk]),
+            {'idempotency_key': str(uuid.uuid4()), 'amount': '10.00'},
+            format='json', HTTP_X_BRANCH_ID=str(self.branch.pk),
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['reason'], '')

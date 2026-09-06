@@ -380,7 +380,7 @@ def logout_operator(session):
         audit_log(actor=session.operator, action='pos.operator.logout', obj=session, company=session.device.branch.company, branch=session.device.branch, metadata={'device_id': str(session.device_id)})
 
 
-def create_pin_reset_token(user, company, actor=None, audit_metadata=None):
+def create_pin_reset_token(user, company, actor=None, audit_metadata=None, branch=None):
     token = _token()
     row = POSPinResetToken.objects.create(
         user=user,
@@ -394,17 +394,18 @@ def create_pin_reset_token(user, company, actor=None, audit_metadata=None):
         action='pos.operator.pin_reset_requested',
         obj=row,
         company=company,
+        branch=branch,
         metadata={**(audit_metadata or {}), 'user_id': user.pk},
     )
     return row, token
 
 
-def send_pos_pin_setup(user, company, actor=None, audit_metadata=None):
+def send_pos_pin_setup(user, company, actor=None, audit_metadata=None, branch=None):
     if not user.can_access_pos:
         _error('pos_access_required', 'O operador precisa ter acesso ao POS habilitado.', status_code=409)
     if not user.email:
         _error('pos_pin_email_unavailable', 'O operador precisa de e-mail para receber o link de PIN.', status_code=409)
-    _, token = create_pin_reset_token(user, company, actor, audit_metadata)
+    _, token = create_pin_reset_token(user, company, actor, audit_metadata, branch)
     from urllib.parse import urlencode
 
     url = f'{settings.FRONTEND_URL.rstrip("/")}/pos/pin?{urlencode({"token": token})}'
@@ -426,7 +427,7 @@ def request_pos_pin_reset(device, operator_id):
         'target_user_id': operator.pk,
     }
     send_pos_pin_setup(
-        operator, device.branch.company, audit_metadata=metadata,
+        operator, device.branch.company, audit_metadata=metadata, branch=device.branch,
     )
     _record_delivery_limit(rows, limit)
 
