@@ -9,6 +9,20 @@ import '../sync/sync_center_page.dart';
 import '../sync/sync_status_button.dart';
 import 'sale_models.dart';
 
+class _PreviewIntent {
+  const _PreviewIntent({
+    required this.generation,
+    required this.items,
+    required this.discount,
+    required this.serviceFeeWaived,
+  });
+
+  final int generation;
+  final List<Map<String, dynamic>> items;
+  final String discount;
+  final bool serviceFeeWaived;
+}
+
 class QuickSalePage extends StatefulWidget {
   const QuickSalePage({required this.controller, super.key});
 
@@ -35,6 +49,8 @@ class _QuickSalePageState extends State<QuickSalePage> {
   int _previewGeneration = 0;
   Timer? _previewDebounce;
   Timer? _searchDebounce;
+  bool _previewInFlight = false;
+  _PreviewIntent? _pendingPreview;
 
   bool get _canDiscount =>
       widget.controller.bootstrapSnapshot?.permissions
@@ -74,8 +90,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
   }
 
   Future<void> _loadInitial() async {
-    await Future.wait(
-        [_loadCatalog(), _loadCategories(), _loadCheckoutOptions()]);
+    await Future.wait([_loadCatalog(), _loadCheckoutOptions()]);
   }
 
   Future<void> _loadCatalog() async {
@@ -84,9 +99,25 @@ class _QuickSalePageState extends State<QuickSalePage> {
     if (!mounted) return;
     setState(() {
       _allCatalog = products ?? const [];
+      _categories = _categoriesFromCatalog(_allCatalog);
       _loading = false;
       _applyCatalogFilter();
     });
+  }
+
+  List<QuickSaleCategory> _categoriesFromCatalog(
+      List<QuickSaleProduct> products) {
+    final categories = <int, QuickSaleCategory>{};
+    for (final product in products) {
+      final id = product.categoryId;
+      final name = product.categoryName;
+      if (id != null && name != null && name.isNotEmpty) {
+        categories[id] = QuickSaleCategory(id: id, name: name);
+      }
+    }
+    final result = categories.values.toList()
+      ..sort((left, right) => left.name.compareTo(right.name));
+    return result;
   }
 
   void _onSearchChanged() {
@@ -110,11 +141,6 @@ class _QuickSalePageState extends State<QuickSalePage> {
           (product.barcode?.toLowerCase().contains(search) ?? false);
       return matchesCategory && matchesFavorite && matchesSearch;
     }).toList(growable: false);
-  }
-
-  Future<void> _loadCategories() async {
-    final categories = await widget.controller.quickSaleCategories();
-    if (mounted && categories != null) setState(() => _categories = categories);
   }
 
   Future<void> _loadCheckoutOptions() async {
@@ -225,6 +251,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
     final generation = ++_previewGeneration;
     _previewDebounce?.cancel();
     if (_cart.isEmpty) {
+      _pendingPreview = null;
       setState(() {
         _preview = null;
         _loadingPreview = false;
@@ -235,33 +262,44 @@ class _QuickSalePageState extends State<QuickSalePage> {
     final items = _cart.map((item) => item.toJson()).toList(growable: false);
     final discount = _discount;
     final serviceFeeWaived = _serviceFeeWaived;
-    _previewDebounce = Timer(const Duration(milliseconds: 120), () {
-      unawaited(_requestPreview(
-        generation,
+    _previewDebounce = Timer(
+      const Duration(milliseconds: 120),
+      () => _enqueuePreview(_PreviewIntent(
+        generation: generation,
         items: items,
         discount: discount,
         serviceFeeWaived: serviceFeeWaived,
-      ));
-    });
+      )),
+    );
   }
 
-  Future<void> _requestPreview(
-    int generation, {
-    required List<Map<String, dynamic>> items,
-    required String discount,
-    required bool serviceFeeWaived,
-  }) async {
+  void _enqueuePreview(_PreviewIntent intent) {
+    if (_previewInFlight) {
+      _pendingPreview = intent;
+      return;
+    }
+    unawaited(_requestPreview(intent));
+  }
+
+  Future<void> _requestPreview(_PreviewIntent intent) async {
+    _previewInFlight = true;
     widget.controller.logPosAction('preview_dispatch');
     final preview = await widget.controller.previewQuickSale(
-      items: items,
-      discount: discount,
-      serviceFeeWaived: serviceFeeWaived,
+      items: intent.items,
+      discount: intent.discount,
+      serviceFeeWaived: intent.serviceFeeWaived,
     );
-    if (!mounted || generation != _previewGeneration) return;
-    setState(() {
-      _preview = preview;
-      _loadingPreview = false;
-    });
+    _previewInFlight = false;
+    if (!mounted) return;
+    if (intent.generation == _previewGeneration) {
+      setState(() {
+        _preview = preview;
+        _loadingPreview = false;
+      });
+    }
+    final pending = _pendingPreview;
+    _pendingPreview = null;
+    if (pending != null) _enqueuePreview(pending);
   }
 
   Future<void> _checkout() async {
@@ -500,20 +538,27 @@ class _MobileCartBar extends StatelessWidget {
               child: Row(children: [
                 const Icon(Icons.shopping_cart_rounded, color: Colors.white),
                 const SizedBox(width: 8),
-                Text(
-                  '$itemCount ${itemCount == 1 ? 'item' : 'itens'}',
-                  style: const TextStyle(
-                      color: Colors.white, fontWeight: FontWeight.w700),
+                Expanded(
+                  child: Text(
+                    '$itemCount ${itemCount == 1 ? 'item' : 'itens'}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.w700),
+                  ),
                 ),
-                const Spacer(),
-                Text(
-                  updating
-                      ? 'Atualizando total...'
-                      : formatMoney(preview?.total ?? '0.00'),
-                  style: const TextStyle(
-                      color: Colors.white, fontWeight: FontWeight.w800),
+                Flexible(
+                  child: Text(
+                    updating
+                        ? 'Atualizando...'
+                        : formatMoney(preview?.total ?? '0.00'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.w800),
+                  ),
                 ),
-                const SizedBox(width: 14),
+                const SizedBox(width: 8),
                 const Text(
                   'VER CARRINHO',
                   style: TextStyle(
@@ -636,40 +681,69 @@ class _CatalogPanel extends StatelessWidget {
       );
 }
 
-class _ProductCard extends StatelessWidget {
+class _ProductCard extends StatefulWidget {
   const _ProductCard({required this.product, required this.onTap});
   final QuickSaleProduct product;
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => InkWell(
-        borderRadius: BorderRadius.circular(18),
-        onTap: onTap,
-        child: Ink(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: const Color(0xffe2e8f0))),
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Expanded(child: _ProductImage(url: product.imageUrl)),
-            const SizedBox(height: 8),
-            Row(children: [
-              Expanded(
-                  child: Text(product.name,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.w700))),
-              if (product.favorite)
-                const Icon(Icons.star_rounded,
-                    color: Color(0xffffb020), size: 19),
+  State<_ProductCard> createState() => _ProductCardState();
+}
+
+class _ProductCardState extends State<_ProductCard>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _feedback = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 200),
+  );
+  late final Animation<double> _scale = TweenSequence<double>([
+    TweenSequenceItem(tween: Tween(begin: 1, end: 1.035), weight: 45),
+    TweenSequenceItem(tween: Tween(begin: 1.035, end: 1), weight: 55),
+  ]).animate(_feedback);
+
+  @override
+  void dispose() {
+    _feedback.dispose();
+    super.dispose();
+  }
+
+  void _add() {
+    _feedback.forward(from: 0);
+    widget.onTap();
+  }
+
+  @override
+  Widget build(BuildContext context) => ScaleTransition(
+        scale: _scale,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(18),
+          onTap: _add,
+          child: Ink(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: const Color(0xffe2e8f0))),
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Expanded(child: _ProductImage(url: widget.product.imageUrl)),
+              const SizedBox(height: 8),
+              Row(children: [
+                Expanded(
+                    child: Text(widget.product.name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w700))),
+                if (widget.product.favorite)
+                  const Icon(Icons.star_rounded,
+                      color: Color(0xffffb020), size: 19),
+              ]),
+              const SizedBox(height: 4),
+              Text(formatMoney(widget.product.price),
+                  style: const TextStyle(
+                      color: Color(0xff3454d1), fontWeight: FontWeight.w800)),
             ]),
-            const SizedBox(height: 4),
-            Text(formatMoney(product.price),
-                style: const TextStyle(
-                    color: Color(0xff3454d1), fontWeight: FontWeight.w800)),
-          ]),
+          ),
         ),
       );
 }
@@ -730,6 +804,28 @@ class _CartPanel extends StatelessWidget {
   final ValueChanged<bool> onServiceFeeWaived;
   final VoidCallback onCheckout;
 
+  String _itemDetails(QuickSaleCartItem item) {
+    final modifiers = <String>[];
+    for (final selected in item.modifiers) {
+      final optionId = int.tryParse('${selected['option']}');
+      if (optionId == null) continue;
+      QuickSaleModifierOption? option;
+      for (final group in item.product.modifierGroups) {
+        for (final candidate in group.options) {
+          if (candidate.id == optionId) option = candidate;
+        }
+      }
+      if (option != null) {
+        modifiers.add('${selected['quantity'] ?? '1'}x ${option.name}');
+      }
+    }
+    return [
+      if (modifiers.isNotEmpty) modifiers.join(' • '),
+      if (item.notes.isNotEmpty) 'Obs: ${item.notes}',
+      if (item.discount != '0.00') 'Desconto: ${formatMoney(item.discount)}',
+    ].join('\n');
+  }
+
   @override
   Widget build(BuildContext context) => Material(
         color: Colors.white,
@@ -755,41 +851,74 @@ class _CartPanel extends StatelessWidget {
                               separatorBuilder: (_, __) => const Divider(),
                               itemBuilder: (context, index) {
                                 final item = cart[index];
-                                return ListTile(
-                                  contentPadding: EdgeInsets.zero,
-                                  title: Text(item.product.name,
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis),
-                                  subtitle: Text(
-                                      [
-                                        if (item.modifiers.isNotEmpty)
-                                          '${item.modifiers.length} modificador(es)',
-                                        if (item.notes.isNotEmpty) item.notes,
-                                        if (item.discount != '0.00')
-                                          'Desconto: ${formatMoney(item.discount)}',
-                                      ].join(' · '),
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis),
+                                final details = _itemDetails(item);
+                                return InkWell(
                                   onTap: () => onEdit(index),
-                                  trailing: Row(
-                                      mainAxisSize: MainAxisSize.min,
+                                  child: Padding(
+                                    padding:
+                                        const EdgeInsets.symmetric(vertical: 8),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
-                                        IconButton(
-                                            onPressed: () =>
-                                                onQuantity(index, -1),
-                                            icon: const Icon(
-                                                Icons.remove_circle_outline)),
-                                        Text(item.quantity),
-                                        IconButton(
-                                            onPressed: () =>
-                                                onQuantity(index, 1),
-                                            icon: const Icon(
-                                                Icons.add_circle_outline)),
-                                        IconButton(
-                                            onPressed: () => onRemove(index),
-                                            icon: const Icon(
-                                                Icons.delete_outline)),
-                                      ]),
+                                        Row(children: [
+                                          Expanded(
+                                            child: Text(item.product.name,
+                                                maxLines: 2,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: const TextStyle(
+                                                    fontWeight:
+                                                        FontWeight.w700)),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Text(formatMoney(item.product.price),
+                                              style: const TextStyle(
+                                                  color: Color(0xff3454d1),
+                                                  fontWeight: FontWeight.w800)),
+                                        ]),
+                                        if (details.isNotEmpty)
+                                          Padding(
+                                            padding:
+                                                const EdgeInsets.only(top: 3),
+                                            child: Text(details,
+                                                maxLines: 3,
+                                                overflow:
+                                                    TextOverflow.ellipsis),
+                                          ),
+                                        Align(
+                                          alignment: Alignment.centerRight,
+                                          child: Wrap(
+                                            crossAxisAlignment:
+                                                WrapCrossAlignment.center,
+                                            children: [
+                                              IconButton(
+                                                  visualDensity:
+                                                      VisualDensity.compact,
+                                                  onPressed: () =>
+                                                      onQuantity(index, -1),
+                                                  icon: const Icon(Icons
+                                                      .remove_circle_outline)),
+                                              Text(item.quantity),
+                                              IconButton(
+                                                  visualDensity:
+                                                      VisualDensity.compact,
+                                                  onPressed: () =>
+                                                      onQuantity(index, 1),
+                                                  icon: const Icon(Icons
+                                                      .add_circle_outline)),
+                                              IconButton(
+                                                  visualDensity:
+                                                      VisualDensity.compact,
+                                                  onPressed: () =>
+                                                      onRemove(index),
+                                                  icon: const Icon(
+                                                      Icons.delete_outline)),
+                                            ],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
                                 );
                               },
                             )),
@@ -950,6 +1079,30 @@ class _ItemEditorDialogState extends State<_ItemEditorDialog> {
     });
   }
 
+  void _increase(QuickSaleModifierGroup group, QuickSaleModifierOption option) {
+    setState(() {
+      if (group.maxSelections == 1) {
+        for (final candidate in group.options) {
+          _quantities.remove(candidate.id);
+        }
+      }
+      _quantities[option.id] = (_quantities[option.id] ?? 0) + 1;
+      _validation = null;
+    });
+  }
+
+  void _decrease(QuickSaleModifierOption option) {
+    setState(() {
+      final current = _quantities[option.id] ?? 0;
+      if (current <= 1) {
+        _quantities.remove(option.id);
+      } else {
+        _quantities[option.id] = current - 1;
+      }
+      _validation = null;
+    });
+  }
+
   int? _selectedOptionFor(QuickSaleModifierGroup group) {
     for (final option in group.options) {
       if (_quantities.containsKey(option.id)) return option.id;
@@ -1044,40 +1197,48 @@ class _ItemEditorDialogState extends State<_ItemEditorDialog> {
                 for (final option in group.options)
                   Row(children: [
                     Expanded(
-                        child: group.maxSelections == 1
-                            ? RadioListTile<int>(
+                        child: group.allowOptionQuantity
+                            ? ListTile(
                                 contentPadding: EdgeInsets.zero,
-                                value: option.id,
-                                groupValue: _selectedOptionFor(group),
-                                onChanged: (value) =>
-                                    _toggle(group, option, value != null),
+                                onTap: () => _increase(group, option),
+                                leading: Icon(
+                                  _quantities.containsKey(option.id)
+                                      ? Icons.add_circle
+                                      : Icons.add_circle_outline,
+                                  color: const Color(0xff3454d1),
+                                ),
                                 title: Text(option.name),
                                 subtitle:
                                     Text(formatMoney(option.additionalPrice)),
                               )
-                            : CheckboxListTile(
-                                contentPadding: EdgeInsets.zero,
-                                value: _quantities.containsKey(option.id),
-                                onChanged: (value) =>
-                                    _toggle(group, option, value ?? false),
-                                title: Text(option.name),
-                                subtitle:
-                                    Text(formatMoney(option.additionalPrice)),
-                              )),
+                            : group.maxSelections == 1
+                                ? RadioListTile<int>(
+                                    contentPadding: EdgeInsets.zero,
+                                    value: option.id,
+                                    groupValue: _selectedOptionFor(group),
+                                    onChanged: (value) =>
+                                        _toggle(group, option, value != null),
+                                    title: Text(option.name),
+                                    subtitle: Text(
+                                        formatMoney(option.additionalPrice)),
+                                  )
+                                : CheckboxListTile(
+                                    contentPadding: EdgeInsets.zero,
+                                    value: _quantities.containsKey(option.id),
+                                    onChanged: (value) =>
+                                        _toggle(group, option, value ?? false),
+                                    title: Text(option.name),
+                                    subtitle: Text(
+                                        formatMoney(option.additionalPrice)),
+                                  )),
                     if (group.allowOptionQuantity &&
                         _quantities.containsKey(option.id)) ...[
                       IconButton(
-                          onPressed: () => setState(() =>
-                              _quantities[option.id] =
-                                  (_quantities[option.id]! - 1)
-                                      .clamp(1, 999)
-                                      .toInt()),
+                          onPressed: () => _decrease(option),
                           icon: const Icon(Icons.remove)),
                       Text('${_quantities[option.id]}'),
                       IconButton(
-                          onPressed: () => setState(() =>
-                              _quantities[option.id] =
-                                  _quantities[option.id]! + 1),
+                          onPressed: () => _increase(group, option),
                           icon: const Icon(Icons.add)),
                     ],
                   ]),
