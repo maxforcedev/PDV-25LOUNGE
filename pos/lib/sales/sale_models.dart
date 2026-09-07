@@ -27,6 +27,9 @@ class QuickSaleModifierGroup {
     required this.minSelections,
     this.maxSelections,
     required this.allowOptionQuantity,
+    required this.minTotalQuantity,
+    this.maxTotalQuantity,
+    this.requiredQuantity,
     required this.options,
   });
 
@@ -38,6 +41,9 @@ class QuickSaleModifierGroup {
         minSelections: json['min_selections'] as int? ?? 0,
         maxSelections: json['max_selections'] as int?,
         allowOptionQuantity: json['allow_option_quantity'] as bool? ?? false,
+        minTotalQuantity: json['min_total_quantity'] as String? ?? '0',
+        maxTotalQuantity: json['max_total_quantity'] as String?,
+        requiredQuantity: json['required_quantity'] as String?,
         options: (json['options'] as List<dynamic>? ?? const [])
             .cast<Map<String, dynamic>>()
             .map(QuickSaleModifierOption.fromJson)
@@ -50,6 +56,9 @@ class QuickSaleModifierGroup {
   final int minSelections;
   final int? maxSelections;
   final bool allowOptionQuantity;
+  final String minTotalQuantity;
+  final String? maxTotalQuantity;
+  final String? requiredQuantity;
   final List<QuickSaleModifierOption> options;
 }
 

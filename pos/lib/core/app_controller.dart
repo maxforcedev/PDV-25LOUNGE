@@ -57,6 +57,9 @@ class AppController extends ChangeNotifier {
   PosCredentialCache? get _credentialCache =>
       _api is PosCredentialCache ? _api as PosCredentialCache : null;
 
+  void logPosAction(String action) =>
+      logPosDebugTiming('action_triggered $action');
+
   Future<void> initialize() async {
     final credentialCache = _credentialCache;
     await credentialCache?.warmCredentials();

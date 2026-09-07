@@ -12,6 +12,14 @@ import '../sales/sale_models.dart';
 import '../storage/secret_store.dart';
 import 'pos_api_error.dart';
 
+final _posDebugClock = Stopwatch()..start();
+
+void logPosDebugTiming(String event) {
+  if (kDebugMode) {
+    debugPrint('[POS PERF] ${_posDebugClock.elapsedMilliseconds}ms $event');
+  }
+}
+
 abstract class PosApi {
   Future<PairingDiscovery> identifyBranch(String identifier);
   Future<OtpChallenge> requestOtp(String flowId, String channelId);
@@ -140,25 +148,18 @@ class HttpPosApi implements PosApi, PosCredentialCache {
     };
   }
 
-  void _debugTiming(Stopwatch stopwatch, String method, String event) {
-    if (kDebugMode)
-      debugPrint(
-          '[POS HTTP] $method $event ${stopwatch.elapsedMilliseconds}ms');
-  }
-
   Future<Map<String, dynamic>> _request(
     String method,
     String path, {
     Map<String, dynamic>? body,
   }) async {
     http.Response response;
-    final stopwatch = Stopwatch()..start();
-    _debugTiming(stopwatch, method, 'request_started');
+    logPosDebugTiming('$method request_started');
     try {
       final headers = _headers();
-      _debugTiming(stopwatch, method, 'headers_ready');
+      logPosDebugTiming('$method headers_ready');
       final uri = _uri(path);
-      _debugTiming(stopwatch, method, 'http_sent');
+      logPosDebugTiming('$method http_sent');
       response = switch (method) {
         'GET' => await _client
             .get(uri, headers: headers)
@@ -168,7 +169,7 @@ class HttpPosApi implements PosApi, PosCredentialCache {
             .timeout(const Duration(seconds: 15)),
         _ => throw ArgumentError.value(method, 'method'),
       };
-      _debugTiming(stopwatch, method, 'http_received');
+      logPosDebugTiming('$method http_received');
     } on http.ClientException catch (error) {
       throw PosNetworkException(error.message);
     } on TimeoutException {
