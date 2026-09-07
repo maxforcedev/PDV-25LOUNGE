@@ -6,7 +6,7 @@ logger = logging.getLogger('pos.performance')
 
 
 class POSRequestTimingMiddleware:
-    """Temporarily report full Django processing time for POS requests only."""
+    """Report full Django processing time for POS requests without request data."""
 
     def __init__(self, get_response):
         self.get_response = get_response
@@ -24,7 +24,7 @@ class POSRequestTimingMiddleware:
         finally:
             duration_ms = round((perf_counter() - started) * 1000)
             logger.info(
-                'POS response_finished method=%s status=%s duration_ms=%s',
+                'POS response_finished method=%s status=%s total_ms=%s',
                 request.method,
                 getattr(response, 'status_code', 'error'),
                 duration_ms,

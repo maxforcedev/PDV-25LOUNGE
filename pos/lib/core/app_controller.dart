@@ -44,6 +44,7 @@ class AppController extends ChangeNotifier {
 
   AppPhase phase = AppPhase.loading;
   bool busy = false;
+  bool finalizingSale = false;
   String? errorMessage;
   TransientAlert? get transientAlert => _transientFeedback.alert;
   PairingDiscovery? discovery;
@@ -427,25 +428,63 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
+  Future<List<QuickSaleCustomer>?> quickSaleCustomers(String query) async {
+    try {
+      return await _api.quickSaleCustomers(query);
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<QuickSaleCustomer?> createQuickSaleCustomer({
+    required String name,
+    String phone = '',
+    String document = '',
+    String email = '',
+  }) async {
+    try {
+      return await _api.createQuickSaleCustomer(
+        name: name,
+        phone: phone,
+        document: document,
+        email: email,
+      );
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
   Future<QuickSaleResult?> finalizeQuickSale({
     required List<Map<String, dynamic>> items,
     required int cashSessionId,
     required List<Map<String, dynamic>> payments,
     required String discount,
     required bool serviceFeeWaived,
+    QuickSaleCustomer? customer,
   }) async {
     final snapshot = bootstrapSnapshot;
-    if (busy || snapshot == null) return null;
+    if (finalizingSale) {
+      _showTransientMessage('A venda já está sendo finalizada. Aguarde.');
+      return null;
+    }
+    if (snapshot == null) return null;
     final payload = jsonEncode({
       'items': items,
       'cash_session': cashSessionId,
       'payments': payments,
       'discount': discount,
       'service_fee_waived': serviceFeeWaived,
+      'customer': customer?.id,
     });
     final key = _uncertainSaleKeys.putIfAbsent(payload, createIdempotencyKey);
     await _persistUncertainSaleIntents();
-    busy = true;
+    finalizingSale = true;
     _clearTransientMessage();
     notifyListeners();
     try {
@@ -456,6 +495,7 @@ class AppController extends ChangeNotifier {
         payments: payments,
         discount: discount,
         serviceFeeWaived: serviceFeeWaived,
+        customerId: customer?.id,
       );
       bootstrapSnapshot = snapshot.withCash(result.cash);
       _uncertainSaleKeys.remove(payload);
@@ -479,7 +519,7 @@ class AppController extends ChangeNotifier {
       syncStatus = syncStatus.failed(error.message);
       _showTransientMessage(error.message, notify: false);
     } finally {
-      busy = false;
+      finalizingSale = false;
       notifyListeners();
     }
     return null;

@@ -22,10 +22,11 @@ from apps.companies.models import (
 from apps.companies.services import create_branch_with_access, create_company_with_matrix
 from apps.pos.models import (
     AuthenticationChallenge, BranchPOSSettings, POSDevice, POSDeviceSettings,
-    POSOperatorPinAttempt,
+    POSOperatorPinAttempt, POSOperatorSession,
 )
 from apps.pos.services import (
-    _mask_email, create_pin_reset_token, pairing_channels, set_pos_pin,
+    _mask_email, authenticate_device, authenticate_operator_session,
+    create_pin_reset_token, effective_settings, pairing_channels, set_pos_pin,
     version_gate,
 )
 
@@ -175,6 +176,37 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(confirmation.data['device']['status'], POSDevice.Status.ACTIVE)
         device = POSDevice.objects.get(pk=confirmation.data['device']['id'])
         self.assertNotEqual(device.credential_hash, confirmation.data['device_credential'])
+        self.assertTrue(device.credential_fingerprint)
+
+    def test_device_credential_fingerprint_authenticates_and_upgrades_legacy_device(self):
+        confirmation, _ = self.pair_device()
+        credential = confirmation.data['device_credential']
+        device = POSDevice.objects.get(pk=confirmation.data['device']['id'])
+
+        self.assertEqual(authenticate_device(credential).pk, device.pk)
+        device.credential_fingerprint = ''
+        device.save(update_fields=['credential_fingerprint', 'updated_at'])
+
+        self.assertEqual(authenticate_device(credential).pk, device.pk)
+        device.refresh_from_db()
+        self.assertTrue(device.credential_fingerprint)
+
+    def test_operator_session_fingerprint_authenticates_and_upgrades_legacy_session(self):
+        operator, paired = self.login_pos_operator()
+        device = POSDevice.objects.get(pk=paired.data['device']['id'])
+        token = self.client.post(
+            reverse('pos:operator-login'),
+            {'operator_id': operator.pk, 'pin': '123456'}, format='json',
+        ).data['operator_session']['token']
+        session = POSOperatorSession.objects.filter(device=device, operator=operator).latest('created_at')
+
+        self.assertEqual(authenticate_operator_session(device, token).pk, session.pk)
+        session.token_fingerprint = ''
+        session.save(update_fields=['token_fingerprint', 'updated_at'])
+
+        self.assertEqual(authenticate_operator_session(device, token).pk, session.pk)
+        session.refresh_from_db()
+        self.assertTrue(session.token_fingerprint)
 
         replay = self.client.post(
             reverse('pos:pairing-confirm'),
@@ -396,6 +428,32 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data['receipt_print_mode'], 'automatic')
         self.assertEqual(response.data['effective_settings']['paper_width'], 58)
+
+    def test_stock_visibility_setting_inherits_branch_and_accepts_device_override(self):
+        paired, _ = self.pair_device()
+        device = POSDevice.objects.get(pk=paired.data['device']['id'])
+        BranchPOSSettings.objects.create(
+            branch=self.branch, show_out_of_stock_products=False,
+        )
+
+        self.assertFalse(effective_settings(device)['show_out_of_stock_products'])
+        POSDeviceSettings.objects.create(
+            device=device, show_out_of_stock_products=True,
+        )
+        self.assertTrue(effective_settings(device)['show_out_of_stock_products'])
+
+    def test_pos_customer_search_and_creation_are_scoped_to_device_company(self):
+        _, _ = self.login_pos_operator()
+
+        created = self.client.post(
+            reverse('pos:customers'), {'name': 'Cliente POS', 'phone': '11999999999'},
+            format='json',
+        )
+        found = self.client.get(reverse('pos:customers'), {'q': 'Cliente POS'})
+
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(found.status_code, 200, found.data)
+        self.assertEqual(found.data['customers'], [created.data])
 
     def test_bootstrap_reports_fixed_and_flexible_cash_state_without_fake_selection(self):
         operator, _ = self.login_pos_operator()

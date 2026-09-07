@@ -1371,6 +1371,72 @@ def _lock_required_stocks(branch, requirements, content_requirements=None):
     return stocks
 
 
+def catalog_products_with_available_stock(branch, products):
+    """Return products that can satisfy one base catalog unit at the current balance.
+
+    Finalization remains the transactional authority, including modifier consumption.
+    """
+    products = list(products)
+    if not products:
+        return products
+    branch_settings = BranchSettings.objects.filter(branch=branch).only(
+        'allow_negative_stock',
+    ).first()
+    if branch_settings and branch_settings.allow_negative_stock:
+        return products
+
+    direct_ids = {
+        product.pk for product in products
+        if product.inventory_behavior == InventoryBehavior.DIRECT
+    }
+    for product in products:
+        if product.inventory_behavior == InventoryBehavior.COMPONENTS:
+            direct_ids.update(row.component_product_id for row in product.components.all())
+            direct_ids.update(
+                row.component_product_id for row in product.fraction_components.all()
+            )
+    stocks = {
+        stock.product_id: stock
+        for stock in Stock.objects.filter(
+            branch=branch, product_id__in=direct_ids,
+        ).only('product_id', 'current_quantity', 'current_content')
+    }
+    fractions = {
+        config.product_id: config
+        for config in FractionableProductConfig.objects.filter(
+            product_id__in=direct_ids,
+        ).only('product_id', 'tracking_active')
+    }
+
+    def has_quantity(product_id, required, *, content=False):
+        stock = stocks.get(product_id)
+        if stock is None:
+            return False
+        if content:
+            return stock.current_content is not None and stock.current_content >= required
+        return stock.current_quantity >= required
+
+    available = []
+    for product in products:
+        if product.inventory_behavior == InventoryBehavior.NONE:
+            available.append(product)
+        elif product.inventory_behavior == InventoryBehavior.DIRECT:
+            if has_quantity(product.pk, Decimal('1')):
+                available.append(product)
+        elif (
+            all(has_quantity(row.component_product_id, row.quantity) for row in product.components.all())
+            and all(
+                fractions.get(row.component_product_id)
+                and fractions[row.component_product_id].tracking_active
+                and has_quantity(row.component_product_id, row.content_quantity, content=True)
+                for row in product.fraction_components.all()
+            )
+            and (product.components.exists() or product.fraction_components.exists())
+        ):
+            available.append(product)
+    return available
+
+
 def _reconcile_modifier_component_costs(snapshots, stocks):
     """Make compound snapshots describe the components actually consumed after substitutions."""
     for snapshot in snapshots:

@@ -41,6 +41,7 @@ class POSDevice(BaseModel):
     device_type = models.CharField(max_length=20, choices=DeviceType.choices, default=DeviceType.POS)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING, db_index=True)
     credential_hash = models.CharField(max_length=256, blank=True, default='')
+    credential_fingerprint = models.CharField(max_length=64, blank=True, default='', db_index=True)
     app_version = models.CharField(max_length=50, blank=True)
     os_version = models.CharField(max_length=100, blank=True)
     device_model = models.CharField(max_length=100, blank=True)
@@ -112,6 +113,7 @@ class POSOperatorSession(BaseModel):
     device = models.ForeignKey(POSDevice, on_delete=models.PROTECT, related_name='operator_sessions')
     operator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='pos_operator_sessions')
     token_hash = models.CharField(max_length=256)
+    token_fingerprint = models.CharField(max_length=64, blank=True, default='', db_index=True)
     expires_at = models.DateTimeField()
     ended_at = models.DateTimeField(blank=True, null=True)
 
@@ -149,6 +151,7 @@ class BranchPOSSettings(BaseModel):
     sound_enabled = models.BooleanField(default=True)
     screen_timeout_seconds = models.PositiveIntegerField(blank=True, null=True)
     peripherals = models.JSONField(default=dict, blank=True)
+    show_out_of_stock_products = models.BooleanField(default=True)
 
     def clean(self):
         super().clean()
@@ -176,6 +179,7 @@ class POSDeviceSettings(BaseModel):
     sound_enabled = models.BooleanField(blank=True, null=True)
     screen_timeout_seconds = models.PositiveIntegerField(blank=True, null=True)
     peripherals = models.JSONField(default=dict, blank=True)
+    show_out_of_stock_products = models.BooleanField(blank=True, null=True)
 
     def clean(self):
         super().clean()

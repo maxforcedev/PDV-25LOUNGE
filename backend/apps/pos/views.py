@@ -1,7 +1,9 @@
 from decimal import Decimal, InvalidOperation
+from time import perf_counter
 
 from django.db.models import CharField, DecimalField, OuterRef, Prefetch, Q, Subquery
 from django.db.models.functions import Coalesce
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -27,7 +29,7 @@ from apps.cash.services import (
 from apps.companies.permissions import FunctionalCompanyPermission
 from apps.companies.selectors import accessible_branches
 from apps.companies.features import require_branch_feature
-from apps.companies.models import Status
+from apps.companies.models import Customer, Status
 from apps.products.models import (
     BranchProductPrice, ModifierOption, Product, ProductBranchConfig,
     ProductModifierGroup,
@@ -37,13 +39,13 @@ from apps.sales.models import OperationType, Sale
 from apps.sales.serializers import (
     CalculationOutputSerializer, SaleCatalogProductSerializer, SaleSerializer,
 )
-from apps.sales.services import calculate_preview, finalize_sale
+from apps.sales.services import catalog_products_with_available_stock, calculate_preview, finalize_sale
 
 from .authentication import POSDeviceAuthentication, require_device, require_operator_session
 from .models import POSDevice, POSDeviceSettings
 from .serializers import (
     POSAdminDeviceSerializer, POSDeviceSettingsSerializer, POSOpenCashSessionSerializer,
-    POSFinalizeSaleSerializer, POSSalePreviewSerializer,
+    POSCustomerSerializer, POSFinalizeSaleSerializer, POSSalePreviewSerializer,
 )
 from .services import (
     assert_branch_device_limit, authenticate_operator, cash_state_for_device, confirm_pairing,
@@ -60,18 +62,32 @@ def _required(data, field):
     return value
 
 
+class POSTimedAPIView(APIView):
+    def dispatch(self, request, *args, **kwargs):
+        started = perf_counter()
+        try:
+            return super().dispatch(request, *args, **kwargs)
+        finally:
+            import logging
+
+            logging.getLogger('pos.performance').info(
+                'POS view_ms=%s view=%s',
+                round((perf_counter() - started) * 1000), type(self).__name__,
+            )
+
+
 def _operator_data(user):
     name = user.get_full_name().strip() or user.email or f'Usuario {user.pk}'
     initials = ''.join(part[0] for part in name.split()[:2]).upper()
     return {'id': user.pk, 'display_name': name, 'initials': initials, 'avatar_url': None}
 
 
-class POSPublicView(APIView):
+class POSPublicView(POSTimedAPIView):
     authentication_classes = []
     permission_classes = [AllowAny]
 
 
-class POSDeviceView(APIView):
+class POSDeviceView(POSTimedAPIView):
     authentication_classes = [POSDeviceAuthentication]
     permission_classes = [AllowAny]
 
@@ -149,9 +165,15 @@ class OperatorPinResetView(POSDeviceView):
 
 class BootstrapView(POSDeviceView):
     def get(self, request):
+        started = perf_counter()
         device = self.device(request, check_version=True)
         session = require_operator_session(request, device)
         permissions, modules = modules_for(session.operator, device)
+        import logging
+
+        logging.getLogger('pos.performance').info(
+            'POS permission_context_ms=%s', round((perf_counter() - started) * 1000),
+        )
         return Response({
             'server_time': timezone.now(),
             'release': version_gate(device.app_version),
@@ -191,9 +213,15 @@ class PinConfirmView(POSPublicView):
 
 class POSCashView(POSDeviceView):
     def context(self, request):
+        started = perf_counter()
         device = self.device(request, check_version=True)
         operator_session = require_operator_session(request, device)
         permissions = operator_permission_codes(operator_session.operator, device.branch)
+        import logging
+
+        logging.getLogger('pos.performance').info(
+            'POS permission_context_ms=%s', round((perf_counter() - started) * 1000),
+        )
         return device, operator_session.operator, permissions, operator_session
 
     @staticmethod
@@ -252,6 +280,7 @@ def _pos_catalog_queryset(branch, *, search=None, barcode=None):
     )
     queryset = Product.objects.select_related('company', 'category').prefetch_related(
         'components__component_product',
+        'fraction_components__component_product',
         Prefetch(
             'modifier_groups',
             queryset=ProductModifierGroup.objects.filter(
@@ -317,6 +346,13 @@ def _pos_catalog_queryset(branch, *, search=None, barcode=None):
             | Q(barcode__icontains=search)
         )
     return queryset.order_by('-is_favorite', 'name', 'id')
+
+
+def _visible_pos_catalog(device, queryset):
+    products = list(queryset)
+    if effective_settings(device).get('show_out_of_stock_products', True):
+        return products
+    return catalog_products_with_available_stock(device.branch, products)
 
 
 def _has_item_discount(items):
@@ -407,7 +443,11 @@ class POSCatalogView(POSQuickSaleView):
             queryset = queryset.filter(effective_category_id=category)
         if request.query_params.get('favorites') == 'true':
             queryset = queryset.filter(is_favorite=True)
-        return Response({'products': self._catalog_payload(request, queryset)})
+        return Response({
+            'products': self._catalog_payload(
+                request, _visible_pos_catalog(device, queryset),
+            ),
+        })
 
 
 class POSCatalogCategoriesView(POSQuickSaleView):
@@ -415,14 +455,16 @@ class POSCatalogCategoriesView(POSQuickSaleView):
         device, _, permissions, _ = self.context(request)
         if 'sales.create' not in permissions:
             raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
-        categories = _pos_catalog_queryset(device.branch).values(
-            'effective_category_id', 'effective_category_name',
-        ).exclude(effective_category_id__isnull=True).distinct().order_by(
-            'effective_category_name', 'effective_category_id',
-        )
+        categories = {
+            (product.effective_category_id, product.effective_category_name)
+            for product in _visible_pos_catalog(device, _pos_catalog_queryset(device.branch))
+            if product.effective_category_id
+        }
         return Response({'categories': [
-            {'id': row['effective_category_id'], 'name': row['effective_category_name']}
-            for row in categories
+            {'id': category_id, 'name': category_name}
+            for category_id, category_name in sorted(
+                categories, key=lambda item: (item[1], item[0]),
+            )
         ]})
 
 
@@ -433,7 +475,41 @@ class POSBarcodeProductView(POSQuickSaleView):
             raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
         request._pos_branch = device.branch
         product = get_object_or_404(_pos_catalog_queryset(device.branch, barcode=barcode))
+        if not _visible_pos_catalog(device, [product]):
+            raise Http404
         return Response(self._catalog_payload(request, [product])[0])
+
+
+class POSCustomersView(POSQuickSaleView):
+    def get(self, request):
+        device, _, permissions, _ = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        term = request.query_params.get('q', '').strip()
+        customers = Customer.objects.filter(
+            company_id=device.branch.company_id, status=Status.ACTIVE,
+        )
+        if term:
+            customers = customers.filter(
+                Q(name__icontains=term) | Q(phone__icontains=term)
+                | Q(email__icontains=term) | Q(document__icontains=term)
+            )
+        return Response({'customers': POSCustomerSerializer(
+            customers.order_by('name', 'id')[:20], many=True,
+        ).data})
+
+    def post(self, request):
+        device, operator, permissions, _ = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        serializer = POSCustomerSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        customer = serializer.save(company=device.branch.company)
+        audit_log(
+            actor=operator, action='pos.customer.created', obj=customer,
+            company=device.branch.company, branch=device.branch,
+        )
+        return Response(POSCustomerSerializer(customer).data, status=status.HTTP_201_CREATED)
 
 
 class POSSalePreviewView(POSQuickSaleView):
@@ -517,12 +593,21 @@ class POSFinalizeSaleView(POSQuickSaleView):
         if _has_item_discount(data['items']) and 'sales.apply_item_discount' not in permissions:
             raise PermissionDenied('Você não possui permissão para aplicar desconto por item.')
         session = _pos_sale_session(device, data['cash_session'])
+        customer = None
+        if data.get('customer') is not None:
+            customer = Customer.objects.filter(
+                pk=data['customer'], company_id=device.branch.company_id,
+                status=Status.ACTIVE,
+            ).first()
+            if customer is None:
+                raise ValidationError({'customer': 'Cliente inválido, inativo ou fora da empresa.'})
         sale = finalize_sale(
             branch=device.branch,
             user=operator,
             operation_type=OperationType.SALE,
             cash_session=session,
             seller_user=operator,
+            customer=customer,
             items=self._items(data['items']),
             payments=data['payments'],
             discount=data['discount'],

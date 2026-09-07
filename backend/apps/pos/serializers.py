@@ -3,6 +3,7 @@ from decimal import Decimal
 from rest_framework import serializers
 
 from apps.cash.serializers import StrictMoneyField
+from apps.companies.models import Customer
 from apps.sales.serializers import ItemInputSerializer, PaymentInputSerializer
 
 from .models import BranchPOSSettings, POSDevice, POSDeviceSettings
@@ -40,7 +41,7 @@ class BranchPOSSettingsSerializer(serializers.ModelSerializer):
             'id', 'branch', 'cash_binding_mode', 'default_cash_register', 'receipt_printer',
             'sale_confirmation_print', 'receipt_print_mode', 'receipt_format', 'paper_width',
             'copies', 'local_report_print_preferences', 'sound_enabled',
-            'screen_timeout_seconds', 'peripherals', 'cash_register_options', 'created_at', 'updated_at',
+            'screen_timeout_seconds', 'peripherals', 'show_out_of_stock_products', 'cash_register_options', 'created_at', 'updated_at',
         )
         read_only_fields = ('id', 'branch', 'cash_register_options', 'created_at', 'updated_at')
 
@@ -67,7 +68,7 @@ class POSDeviceSettingsSerializer(serializers.ModelSerializer):
             'id', 'device', 'cash_binding_mode', 'default_cash_register', 'receipt_printer',
             'sale_confirmation_print', 'receipt_print_mode', 'receipt_format', 'paper_width',
             'copies', 'local_report_print_preferences', 'sound_enabled',
-            'screen_timeout_seconds', 'peripherals', 'effective_settings', 'cash_register_options', 'created_at', 'updated_at',
+            'screen_timeout_seconds', 'peripherals', 'show_out_of_stock_products', 'effective_settings', 'cash_register_options', 'created_at', 'updated_at',
         )
         read_only_fields = ('id', 'device', 'effective_settings', 'cash_register_options', 'created_at', 'updated_at')
 
@@ -132,9 +133,17 @@ class POSSalePreviewSerializer(serializers.Serializer):
 
 
 class POSFinalizeSaleSerializer(POSSalePreviewSerializer):
+    customer = serializers.IntegerField(required=False, allow_null=True)
     idempotency_key = serializers.UUIDField()
     cash_session = serializers.IntegerField(min_value=1)
     payments = PaymentInputSerializer(many=True, allow_empty=False)
     discount_authorization = serializers.DictField(required=False)
     item_discount_authorization = serializers.DictField(required=False)
     service_fee_authorization = serializers.DictField(required=False)
+
+
+class POSCustomerSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Customer
+        fields = ('id', 'name', 'phone', 'document', 'email')
+        read_only_fields = ('id',)

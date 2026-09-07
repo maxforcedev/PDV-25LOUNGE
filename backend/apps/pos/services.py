@@ -1,7 +1,10 @@
 import hashlib
+import hmac
+import logging
 import re
 import secrets
 from datetime import timedelta
+from time import perf_counter
 
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
@@ -30,6 +33,7 @@ PAIRING_TTL = timedelta(minutes=10)
 RESEND_COOLDOWN = timedelta(minutes=1)
 PIN_LOCK_TTL = timedelta(minutes=15)
 PIN_FAILURE_LIMIT = 5
+performance_logger = logging.getLogger('pos.performance')
 
 
 def _error(code, message, details=None, status_code=400):
@@ -44,6 +48,17 @@ def _token():
 
 def _fingerprint(value):
     return hashlib.sha256(value.strip().lower().encode()).hexdigest()
+
+
+def _secret_fingerprint(value):
+    """Create a deterministic lookup key without weakening password-hash validation."""
+    return hmac.new(
+        settings.SECRET_KEY.encode(), value.encode(), hashlib.sha256,
+    ).hexdigest()
+
+
+def _log_timing(metric, started):
+    performance_logger.info('POS %s=%s', metric, round((perf_counter() - started) * 1000))
 
 
 def _request_key(request, prefix, supplied=''):
@@ -160,15 +175,35 @@ def validate_device_operational(device, *, check_version=True):
 
 
 def authenticate_device(credential):
+    started = perf_counter()
     if not credential or len(credential) > 512:
         raise AuthenticationFailed('Credencial de dispositivo invalida.')
-    for device in POSDevice.objects.exclude(credential_hash='').only('id', 'credential_hash'):
-        if check_password(credential, device.credential_hash):
-            try:
-                return validate_device_operational(device, check_version=False)
-            except DomainValidationError as error:
-                raise AuthenticationFailed(error.payload['message']) from error
-    raise AuthenticationFailed('Credencial de dispositivo invalida.')
+    try:
+        fingerprint = _secret_fingerprint(credential)
+        candidates = POSDevice.objects.filter(
+            credential_fingerprint=fingerprint,
+        ).only('id', 'credential_hash')
+        for device in candidates:
+            if check_password(credential, device.credential_hash):
+                try:
+                    return validate_device_operational(device, check_version=False)
+                except DomainValidationError as error:
+                    raise AuthenticationFailed(error.payload['message']) from error
+        # Existing paired devices are upgraded only after their hash validates.
+        for device in POSDevice.objects.filter(
+            credential_fingerprint='',
+        ).exclude(credential_hash='').only('id', 'credential_hash'):
+            if check_password(credential, device.credential_hash):
+                POSDevice.objects.filter(pk=device.pk, credential_fingerprint='').update(
+                    credential_fingerprint=fingerprint,
+                )
+                try:
+                    return validate_device_operational(device, check_version=False)
+                except DomainValidationError as error:
+                    raise AuthenticationFailed(error.payload['message']) from error
+        raise AuthenticationFailed('Credencial de dispositivo invalida.')
+    finally:
+        _log_timing('device_auth_ms', started)
 
 
 def _mask_email(value):
@@ -277,7 +312,7 @@ def confirm_pairing(challenge_id, code, device_data, request):
             now = timezone.now()
             device = POSDevice.objects.create(
                 branch=branch, name=str(device_data['name']).strip(), device_type=device_data.get('device_type', POSDevice.DeviceType.POS),
-                status=POSDevice.Status.ACTIVE, credential_hash=make_password(credential), app_version=str(device_data.get('app_version', '')).strip(),
+                status=POSDevice.Status.ACTIVE, credential_hash=make_password(credential), credential_fingerprint=_secret_fingerprint(credential), app_version=str(device_data.get('app_version', '')).strip(),
                 os_version=str(device_data.get('os_version', '')).strip(), device_model=str(device_data.get('device_model', '')).strip(),
                 hardware_identifier_hash=_fingerprint(str(device_data.get('hardware_identifier', ''))) if device_data.get('hardware_identifier') else '',
                 capabilities=device_data.get('capabilities') if isinstance(device_data.get('capabilities'), dict) else {}, paired_at=now,
@@ -352,7 +387,7 @@ def authenticate_operator(device, operator_id, pin):
             attempt.locked_until = None
             attempt.save(update_fields=['failures', 'locked_until', 'updated_at'])
             token = _token()
-            session = POSOperatorSession.objects.create(device=device, operator=operator, token_hash=make_password(token), expires_at=now + timedelta(minutes=settings.POS_OPERATOR_SESSION_MINUTES))
+            session = POSOperatorSession.objects.create(device=device, operator=operator, token_hash=make_password(token), token_fingerprint=_secret_fingerprint(token), expires_at=now + timedelta(minutes=settings.POS_OPERATOR_SESSION_MINUTES))
             audit_log(actor=operator, action='pos.operator.login', obj=session, company=device.branch.company, branch=device.branch, metadata={'device_id': str(device.id)})
     if rate_limited:
         _error('pin_rate_limited', 'PIN temporariamente bloqueado.', status_code=429)
@@ -362,13 +397,37 @@ def authenticate_operator(device, operator_id, pin):
 
 
 def authenticate_operator_session(device, token):
+    started = perf_counter()
     now = timezone.now()
-    for session in POSOperatorSession.objects.filter(device=device, ended_at__isnull=True, expires_at__gt=now).select_related('operator'):
-        if check_password(token, session.token_hash):
-            if not eligible_operator(device.branch, session.operator_id):
-                raise AuthenticationFailed('Operador nao esta mais elegivel.')
-            return session
-    raise AuthenticationFailed('Sessao do operador ausente ou invalida.')
+    try:
+        fingerprint = _secret_fingerprint(token)
+        candidates = POSOperatorSession.objects.filter(
+            device=device,
+            token_fingerprint=fingerprint,
+            ended_at__isnull=True,
+            expires_at__gt=now,
+        ).select_related('operator')
+        for session in candidates:
+            if check_password(token, session.token_hash):
+                if not eligible_operator(device.branch, session.operator_id):
+                    raise AuthenticationFailed('Operador nao esta mais elegivel.')
+                return session
+        for session in POSOperatorSession.objects.filter(
+            device=device,
+            token_fingerprint='',
+            ended_at__isnull=True,
+            expires_at__gt=now,
+        ).select_related('operator'):
+            if check_password(token, session.token_hash):
+                POSOperatorSession.objects.filter(pk=session.pk, token_fingerprint='').update(
+                    token_fingerprint=fingerprint,
+                )
+                if not eligible_operator(device.branch, session.operator_id):
+                    raise AuthenticationFailed('Operador nao esta mais elegivel.')
+                return session
+        raise AuthenticationFailed('Sessao do operador ausente ou invalida.')
+    finally:
+        _log_timing('operator_session_auth_ms', started)
 
 
 @transaction.atomic
@@ -439,7 +498,8 @@ def rotate_device_credential(device, actor=None):
         _error('device_not_active', 'A credencial so pode ser rotacionada para dispositivo ativo.', status_code=409)
     credential = _token()
     device.credential_hash = make_password(credential)
-    device.save(update_fields=['credential_hash', 'updated_at'])
+    device.credential_fingerprint = _secret_fingerprint(credential)
+    device.save(update_fields=['credential_hash', 'credential_fingerprint', 'updated_at'])
     POSOperatorSession.objects.filter(device=device, ended_at__isnull=True).update(ended_at=timezone.now())
     audit_log(actor=actor, action='pos.device.credential_rotated', obj=device, company=device.branch.company, branch=device.branch)
     return credential
@@ -457,12 +517,14 @@ def set_device_status(device, status, actor=None, replacement=None):
     elif status == POSDevice.Status.REVOKED:
         device.revoked_at = now
         device.credential_hash = ''
+        device.credential_fingerprint = ''
     elif status == POSDevice.Status.REPLACED:
         if not replacement or replacement.branch_id != device.branch_id:
             _error('device_replacement_invalid', 'A substituicao deve pertencer a mesma filial.')
         device.replaced_at = now
         device.replaced_by = replacement
         device.credential_hash = ''
+        device.credential_fingerprint = ''
     device.save()
     if status in {POSDevice.Status.REVOKED, POSDevice.Status.REPLACED}:
         POSOperatorSession.objects.filter(device=device, ended_at__isnull=True).update(ended_at=now)
@@ -503,7 +565,7 @@ def set_pos_pin(token, pin):
 def effective_settings(device):
     defaults = BranchPOSSettings.objects.filter(branch=device.branch).first()
     override = POSDeviceSettings.objects.filter(device=device).first()
-    fields = ('receipt_printer', 'sale_confirmation_print', 'receipt_print_mode', 'receipt_format', 'paper_width', 'copies', 'local_report_print_preferences', 'sound_enabled', 'screen_timeout_seconds', 'peripherals')
+    fields = ('receipt_printer', 'sale_confirmation_print', 'receipt_print_mode', 'receipt_format', 'paper_width', 'copies', 'local_report_print_preferences', 'sound_enabled', 'screen_timeout_seconds', 'peripherals', 'show_out_of_stock_products')
     result = {field: getattr(defaults, field) if defaults else None for field in fields}
     if override:
         for field in fields:

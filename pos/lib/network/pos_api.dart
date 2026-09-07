@@ -61,6 +61,13 @@ abstract class PosApi {
   });
   Future<List<QuickSaleCategory>> quickSaleCategories();
   Future<QuickSaleProduct> quickSaleBarcode(String barcode);
+  Future<List<QuickSaleCustomer>> quickSaleCustomers(String query);
+  Future<QuickSaleCustomer> createQuickSaleCustomer({
+    required String name,
+    String phone,
+    String document,
+    String email,
+  });
   Future<QuickSalePreview> quickSalePreview({
     required List<Map<String, dynamic>> items,
     required String discount,
@@ -74,6 +81,7 @@ abstract class PosApi {
     required List<Map<String, dynamic>> payments,
     required String discount,
     required bool serviceFeeWaived,
+    int? customerId,
   });
 }
 
@@ -365,6 +373,32 @@ class HttpPosApi implements PosApi, PosCredentialCache {
           'GET', 'products/barcode/${Uri.encodeComponent(barcode)}/'));
 
   @override
+  Future<List<QuickSaleCustomer>> quickSaleCustomers(String query) async {
+    final suffix = query.trim().isEmpty
+        ? ''
+        : '?${Uri(queryParameters: {'q': query.trim()}).query}';
+    final payload = await _request('GET', 'customers/$suffix');
+    return (payload['customers'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(QuickSaleCustomer.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<QuickSaleCustomer> createQuickSaleCustomer({
+    required String name,
+    String phone = '',
+    String document = '',
+    String email = '',
+  }) async =>
+      QuickSaleCustomer.fromJson(await _request('POST', 'customers/', body: {
+        'name': name,
+        'phone': phone,
+        'document': document,
+        'email': email,
+      }));
+
+  @override
   Future<QuickSalePreview> quickSalePreview({
     required List<Map<String, dynamic>> items,
     required String discount,
@@ -389,6 +423,7 @@ class HttpPosApi implements PosApi, PosCredentialCache {
     required List<Map<String, dynamic>> payments,
     required String discount,
     required bool serviceFeeWaived,
+    int? customerId,
   }) async =>
       QuickSaleResult.fromJson(await _request('POST', 'sales/', body: {
         'idempotency_key': idempotencyKey,
@@ -397,5 +432,6 @@ class HttpPosApi implements PosApi, PosCredentialCache {
         'payments': payments,
         'discount': discount,
         'service_fee_waived': serviceFeeWaived,
+        if (customerId != null) 'customer': customerId,
       }));
 }

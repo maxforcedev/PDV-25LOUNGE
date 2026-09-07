@@ -8,7 +8,7 @@ from .views import (
     POSCashSessionEntryView, POSCashSessionOpenView, POSCashSessionSummaryView,
     POSCashSessionWithdrawalView,
     POSBarcodeProductView, POSCatalogCategoriesView, POSCatalogView, POSFinalizeSaleView,
-    POSSaleCheckoutOptionsView, POSSalePreviewView,
+    POSCustomersView, POSSaleCheckoutOptionsView, POSSalePreviewView,
 )
 
 app_name = 'pos'
@@ -32,6 +32,7 @@ urlpatterns = [
     path('catalog/', POSCatalogView.as_view(), name='catalog'),
     path('catalog/categories/', POSCatalogCategoriesView.as_view(), name='catalog-categories'),
     path('products/barcode/<str:barcode>/', POSBarcodeProductView.as_view(), name='product-barcode'),
+    path('customers/', POSCustomersView.as_view(), name='customers'),
     path('sales/preview/', POSSalePreviewView.as_view(), name='sale-preview'),
     path('sales/checkout-options/', POSSaleCheckoutOptionsView.as_view(), name='sale-checkout-options'),
     path('sales/', POSFinalizeSaleView.as_view(), name='sale-finalize'),

@@ -1,4 +1,51 @@
 import '../cash/cash_models.dart';
+import 'package:flutter/foundation.dart';
+
+class QuickSaleCustomer {
+  const QuickSaleCustomer({
+    required this.id,
+    required this.name,
+    this.phone = '',
+    this.document = '',
+    this.email = '',
+  });
+
+  factory QuickSaleCustomer.fromJson(Map<String, dynamic> json) =>
+      QuickSaleCustomer(
+        id: json['id'] as int,
+        name: json['name'] as String? ?? '',
+        phone: json['phone'] as String? ?? '',
+        document: json['document'] as String? ?? '',
+        email: json['email'] as String? ?? '',
+      );
+
+  final int id;
+  final String name;
+  final String phone;
+  final String document;
+  final String email;
+}
+
+class QuickSaleDraft extends ChangeNotifier {
+  final List<QuickSaleCartItem> cart = [];
+  QuickSalePreview? preview;
+  QuickSaleCustomer? customer;
+  String discount = '0.00';
+  bool serviceFeeWaived = false;
+  bool loadingPreview = false;
+
+  void changed() => notifyListeners();
+
+  void clearAfterSale() {
+    cart.clear();
+    preview = null;
+    customer = null;
+    discount = '0.00';
+    serviceFeeWaived = false;
+    loadingPreview = false;
+    notifyListeners();
+  }
+}
 
 class QuickSaleModifierOption {
   const QuickSaleModifierOption({
