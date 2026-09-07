@@ -112,7 +112,7 @@ def _sale_idempotency_payload(*, actor, operation_type, cash_session, beneficiar
         canonical_items.append({
             'product': identity(item.get('product')),
             'quantity': _idempotency_decimal(item.get('quantity')),
-            'discount': _idempotency_decimal(item.get('discount', '0')),
+            'discount': _idempotency_discount(item.get('discount', '0')),
             'modifiers': canonical_modifiers,
             'notes': str(item.get('notes') or '').strip(),
         })
@@ -137,7 +137,7 @@ def _sale_idempotency_payload(*, actor, operation_type, cash_session, beneficiar
         'seller_user': identity(seller_user),
         'discount_authorization': _authorization_identity(discount_authorization),
         'items': canonical_items,
-        'discount': _idempotency_decimal(discount, default='0'),
+        'discount': _idempotency_discount(discount, default='0'),
         'charged_amount': (
             None if charged_amount in (None, '')
             else _idempotency_decimal(charged_amount)
@@ -317,6 +317,54 @@ def strict_decimal(value, *, field, decimal_places, max_digits, allow_none=False
     if places > decimal_places or integer_digits + places > max_digits:
         raise ValidationError({field: f'Use no máximo {decimal_places} casas decimais.'})
     return result.quantize(Decimal(1).scaleb(-decimal_places))
+
+
+def normalize_discount_intent(value, *, field, default='0'):
+    """Normalize a legacy amount or typed manual-discount request."""
+    value = default if value in (None, '') else value
+    if isinstance(value, dict):
+        if set(value) != {'type', 'value'} or value.get('type') not in {
+            'amount', 'percentage',
+        }:
+            raise ValidationError({field: 'Tipo de desconto inválido.'})
+        discount_type = value['type']
+        discount_value = strict_decimal(
+            value.get('value'), field=field, decimal_places=2, max_digits=14,
+        )
+    else:
+        discount_type = 'amount'
+        discount_value = strict_decimal(
+            value, field=field, decimal_places=2, max_digits=14,
+        )
+    if discount_value < 0:
+        raise ValidationError({field: 'O desconto não pode ser negativo.'})
+    if discount_type == 'percentage' and discount_value > Decimal('100.00'):
+        raise ValidationError({field: 'O percentual deve estar entre zero e 100.'})
+    return {'type': discount_type, 'value': discount_value}
+
+
+def _idempotency_discount(value, *, default=None):
+    if value in (None, '') and default is not None:
+        value = default
+    if isinstance(value, dict):
+        intent = normalize_discount_intent(value, field='discount')
+        return {'type': intent['type'], 'value': intent['value']}
+    return _idempotency_decimal(value, default=default)
+
+
+def discount_intent_is_nonzero(value):
+    return normalize_discount_intent(value, field='discount')['value'] != 0
+
+
+def resolve_discount_intent(intent, base, *, field):
+    intent = normalize_discount_intent(intent, field=field)
+    value = (
+        _percentage_amount(base, intent['value'], field)
+        if intent['type'] == 'percentage' else intent['value']
+    )
+    if value > base:
+        raise ValidationError({field: 'O desconto excede o saldo disponível.'})
+    return intent, value
 
 
 def ensure_money_fits(value, field):
@@ -581,7 +629,6 @@ def _consolidate_items(raw_items, products, *, price_overrides=None, cost_overri
     if not isinstance(raw_items, list) or not raw_items:
         raise ValidationError({'items': 'Informe ao menos um item.'})
     line_keys = {}
-    discounts = {}
     ordered_keys = []
     for index, raw_item in enumerate(raw_items):
         if not isinstance(raw_item, dict) or raw_item.get('product') in ('', None):
@@ -602,13 +649,23 @@ def _consolidate_items(raw_items, products, *, price_overrides=None, cost_overri
             product, raw_modifiers, product.company_id,
             branch=branch, item_quantity=quantity,
         )
+        item_discount_intent = normalize_discount_intent(
+            raw_item.get('discount', '0'), field=f'items.{index}.discount',
+        )
+        typed_discount = isinstance(raw_item.get('discount'), dict)
         sig = _modifier_signature(raw_modifiers)
-        line_key = (product.pk, sig, notes)
+        # Percentage requests resolve against a line after promotions, so do not
+        # merge them and accidentally alter their rounding base.
+        line_key = (product.pk, sig, notes, index if typed_discount else None)
         if line_key not in line_keys:
             ordered_keys.append(line_key)
             line_keys[line_key] = {
                 'quantity': Decimal('0.000'),
-                'discount': Decimal('0.00'),
+                'manual_discount_intent': (
+                    item_discount_intent
+                    if typed_discount else {'type': 'amount', 'value': Decimal('0.00')}
+                ),
+                'client_item_id': raw_item.get('client_item_id'),
                 'base_unit_price': price_overrides.get(product.pk, product.sale_price),
                 'modifier_unit_total': modifier_total,
                 'modifier_snapshot': modifier_snapshot,
@@ -628,16 +685,9 @@ def _consolidate_items(raw_items, products, *, price_overrides=None, cost_overri
                 )
                 existing['required_quantity'] = existing['selected_quantity']
         entry['quantity'] += quantity
-        item_discount = strict_decimal(
-            raw_item.get('discount', '0'),
-            field=f'items.{index}.discount', decimal_places=2, max_digits=14,
-        )
-        if item_discount < 0:
-            raise ValidationError(
-                {'items': f'Item {index + 1}: o desconto não pode ser negativo.'}
-            )
-        entry['discount'] += item_discount
-        ensure_money_fits(entry['discount'], 'items')
+        if not typed_discount:
+            entry['manual_discount_intent']['value'] += item_discount_intent['value']
+            ensure_money_fits(entry['manual_discount_intent']['value'], 'items')
         if entry['quantity'] > Decimal('99999999999.999'):
             raise ValidationError({'items': 'A quantidade consolidada excede o limite permitido.'})
 
@@ -651,7 +701,7 @@ def _consolidate_items(raw_items, products, *, price_overrides=None, cost_overri
         ).select_related('category')
     } if branch else {}
     for line_key in ordered_keys:
-        product_id, _sig, _notes = line_key
+        product_id, _sig, _notes, _line_index = line_key
         product = products_by_id[product_id]
         branch_config = branch_configs.get(product_id)
         category = (
@@ -674,6 +724,7 @@ def _consolidate_items(raw_items, products, *, price_overrides=None, cost_overri
         ensure_money_fits(subtotal, 'subtotal')
         provisional.append({
             'product_object': product,
+            'client_item_id': entry['client_item_id'],
             'product': product_id,
             'quantity': quantity,
             'product_name': product.name,
@@ -690,7 +741,7 @@ def _consolidate_items(raw_items, products, *, price_overrides=None, cost_overri
             'notes': entry['notes'],
             'unit_price': unit_price,
             'subtotal': item_subtotal,
-            'manual_discount_requested': entry['discount'],
+            'manual_discount_intent': entry['manual_discount_intent'],
             'participates_in_service_fee': (
                 branch_config.effective_participation('participates_in_service_fee')
                 if branch_config else product.participates_in_service_fee
@@ -728,19 +779,19 @@ def _allocate_money(total, weighted_rows):
 def _eligible_financial_bases(items, account_discount):
     discounts = _allocate_money(
         account_discount,
-        [(item['product'], item['net_subtotal']) for item in items],
+        list(enumerate(item['net_subtotal'] for item in items)),
     )
     revenues = {
-        item['product']: item['net_subtotal'] - discounts[item['product']]
-        for item in items
+        index: item['net_subtotal'] - discounts[index]
+        for index, item in enumerate(items)
     }
     service_base = sum((
-        revenues[item['product']]
-        for item in items if item['participates_in_service_fee']
+        revenues[index]
+        for index, item in enumerate(items) if item['participates_in_service_fee']
     ), Decimal('0.00'))
     commission_base = sum((
-        revenues[item['product']]
-        for item in items if item['participates_in_commission']
+        revenues[index]
+        for index, item in enumerate(items) if item['participates_in_commission']
     ), Decimal('0.00'))
     return service_base, commission_base
 
@@ -840,7 +891,10 @@ def _apply_promotions(operation_type, items, promotions):
                 )
 
         promotion, benefit, _direct = selected or (None, Decimal('0.00'), False)
-        manual_discount = item['manual_discount_requested']
+        manual_discount_intent, manual_discount = resolve_discount_intent(
+            item['manual_discount_intent'], item['subtotal'] - benefit,
+            field='items.discount',
+        )
         if operation_type == OperationType.CONSUMPTION and manual_discount:
             raise ValidationError({'items': 'Consumação não aceita desconto por item.'})
         if manual_discount > item['subtotal'] - benefit:
@@ -854,6 +908,7 @@ def _apply_promotions(operation_type, items, promotions):
             'promotion_discount_type': promotion.discount_type if promotion else None,
             'promotion_discount_value': promotion.discount_value if promotion else None,
             'promotion_benefit': benefit,
+            'manual_discount_intent': manual_discount_intent,
             'manual_discount': manual_discount,
             'net_subtotal': item['subtotal'] - benefit - manual_discount,
         })
@@ -875,7 +930,7 @@ def _calculate_sale_financials(*, company, branch, operation_type, snapshots, su
         operation_type, snapshots, promotions
     )
     if operation_type == OperationType.CONSUMPTION:
-        if discount not in (None, '', 0, '0', '0.00'):
+        if discount_intent_is_nonzero(discount):
             raise ValidationError({'discount': 'Consumação não aceita desconto.'})
         if not beneficiary_user or not UserCompanyAccess.objects.filter(
             user=beneficiary_user, user__is_active=True, company=company, is_active=True
@@ -890,6 +945,7 @@ def _calculate_sale_financials(*, company, branch, operation_type, snapshots, su
             'promotion_discount_total': Decimal('0.00'),
             'item_discount_total': Decimal('0.00'),
             'discount': Decimal('0.00'),
+            'discount_intent': {'type': 'amount', 'value': Decimal('0.00')},
             'service_fee_rate': Decimal('0.00'),
             'service_fee_amount': Decimal('0.00'),
             'commission_rate': Decimal('0.00'),
@@ -898,9 +954,9 @@ def _calculate_sale_financials(*, company, branch, operation_type, snapshots, su
             'total': charged,
         }
 
-    discount_value = strict_decimal(
-        discount if discount not in (None, '') else '0',
-        field='discount', decimal_places=2, max_digits=14,
+    discount_intent, discount_value = resolve_discount_intent(
+        discount, subtotal - promotion_discount_total - item_discount_total,
+        field='discount',
     )
     remaining = subtotal - promotion_discount_total - item_discount_total
     if discount_value < 0 or discount_value > remaining:
@@ -921,6 +977,7 @@ def _calculate_sale_financials(*, company, branch, operation_type, snapshots, su
         'promotion_discount_total': promotion_discount_total,
         'item_discount_total': item_discount_total,
         'discount': discount_value,
+        'discount_intent': discount_intent,
         'service_fee_rate': service_fee_rate,
         'service_fee_amount': service_fee_amount,
         'commission_rate': commission_rate,
@@ -931,8 +988,20 @@ def _calculate_sale_financials(*, company, branch, operation_type, snapshots, su
 
 
 def _preview_items(snapshots):
-    excluded = {'product_object', 'promotion_object', 'manual_discount_requested'}
-    return [{key: value for key, value in item.items() if key not in excluded} for item in snapshots]
+    excluded = {'product_object', 'promotion_object', 'manual_discount_intent'}
+    items = []
+    for item in snapshots:
+        preview_item = {key: value for key, value in item.items() if key not in excluded}
+        preview_item.update({
+            'modifiers_total': (item['modifier_unit_total'] * item['quantity']).quantize(
+                CENT, rounding=ROUND_HALF_UP,
+            ),
+            'gross_total': item['subtotal'],
+            'item_discount': item['promotion_benefit'] + item['manual_discount'],
+            'line_total': item['net_subtotal'],
+        })
+        items.append(preview_item)
+    return items
 
 
 def calculate_preview(*, company, operation_type, raw_items, discount, charged_amount,
@@ -1614,7 +1683,7 @@ def _frozen_command_snapshots(order_items, branch):
             'modifier_snapshot': item.modifier_snapshot or [],
             'unit_price': item.unit_price,
             'subtotal': item_subtotal,
-            'manual_discount_requested': Decimal('0.00'),
+            'manual_discount_intent': {'type': 'amount', 'value': Decimal('0.00')},
             'participates_in_service_fee': (
                 config.effective_participation('participates_in_service_fee')
                 if config else item.product.participates_in_service_fee
@@ -1856,7 +1925,10 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         customer_name_snapshot=customer.name if customer else '',
         subtotal=subtotal, promotion_discount_total=promotion_discount_total,
         item_discount_total=item_discount_total,
-        discount=discount_value, service_fee_rate=service_fee_rate,
+        discount=discount_value,
+        discount_intent_type=financials['discount_intent']['type'],
+        discount_intent_value=financials['discount_intent']['value'],
+        service_fee_rate=service_fee_rate,
         service_fee_amount=service_fee_amount, commission_rate=commission_rate,
         commission_amount=commission_amount, charged_amount=charged, total=total,
         service_fee_waived=bool(service_fee_waived), service_fee_waived_by=service_fee_waived_by,
@@ -1881,6 +1953,8 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             promotion_discount_value=snapshot['promotion_discount_value'],
             promotion_benefit=snapshot['promotion_benefit'],
             manual_discount=snapshot['manual_discount'],
+            manual_discount_intent_type=snapshot['manual_discount_intent']['type'],
+            manual_discount_intent_value=snapshot['manual_discount_intent']['value'],
             discount_approved_by=(
                 item_discount_approved_by if snapshot['manual_discount'] else None
             ),
@@ -1938,6 +2012,10 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             'unit_price': f'{snapshot["unit_price"]:.2f}',
             'promotion_discount': f'{snapshot["promotion_benefit"]:.2f}',
             'manual_item_discount': f'{snapshot["manual_discount"]:.2f}',
+            'manual_item_discount_intent': {
+                'type': snapshot['manual_discount_intent']['type'],
+                'value': f'{snapshot["manual_discount_intent"]["value"]:.2f}',
+            },
             'item_discount_approved_by': (
                 item_discount_approved_by.pk
                 if snapshot['manual_discount'] and item_discount_approved_by else None
@@ -1955,8 +2033,9 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         after=model_snapshot(
             sale,
             ('sale_number', 'operation_type', 'channel', 'idempotency_key', 'subtotal',
-             'promotion_discount_total', 'item_discount_total', 'discount',
-             'service_fee_rate', 'service_fee_amount', 'service_fee_waived', 'commission_rate',
+              'promotion_discount_total', 'item_discount_total', 'discount',
+              'discount_intent_type', 'discount_intent_value',
+              'service_fee_rate', 'service_fee_amount', 'service_fee_waived', 'commission_rate',
              'commission_amount', 'total', 'seller_user_id', 'discount_approved_by_id',
                'service_fee_waived_by_id', 'beneficiary_user_id', 'customer_id', 'charged_amount',
               'cash_session_id', 'pos_device_id'),
@@ -1977,6 +2056,11 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
                 'method': (discount_authorization or {}).get('method'),
                 'approved_by': discount_approved_by.pk if discount_approved_by else None,
             } if discount_value else None,
+            'discount_intent': {
+                'type': financials['discount_intent']['type'],
+                'value': f'{financials["discount_intent"]["value"]:.2f}',
+                'resolved_amount': f'{discount_value:.2f}',
+            },
             'item_discount_authorization': {
                 'method': (item_discount_authorization or {}).get('method'),
                 'approved_by': item_discount_approved_by.pk if item_discount_approved_by else None,

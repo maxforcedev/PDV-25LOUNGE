@@ -4,7 +4,7 @@ from rest_framework import serializers
 
 from apps.cash.serializers import StrictMoneyField
 from apps.companies.models import Customer
-from apps.sales.serializers import ItemInputSerializer, PaymentInputSerializer
+from apps.sales.serializers import DiscountIntentField, ItemInputSerializer, PaymentInputSerializer
 
 from .models import BranchPOSSettings, POSDevice, POSDeviceSettings
 from .services import effective_cash_settings, effective_settings
@@ -128,8 +128,14 @@ class POSCartItemSerializer(ItemInputSerializer):
 
 class POSSalePreviewSerializer(serializers.Serializer):
     items = POSCartItemSerializer(many=True, allow_empty=False)
-    discount = serializers.JSONField(required=False, default='0.00')
+    discount = DiscountIntentField(required=False, default='0.00')
     service_fee_waived = serializers.BooleanField(required=False, default=False)
+
+    def validate_items(self, items):
+        client_item_ids = [item['client_item_id'] for item in items]
+        if len(client_item_ids) != len(set(client_item_ids)):
+            raise serializers.ValidationError('Cada item do carrinho deve ter um identificador único.')
+        return items
 
 
 class POSFinalizeSaleSerializer(POSSalePreviewSerializer):

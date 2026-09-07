@@ -3,6 +3,7 @@ from time import perf_counter
 
 from django.db.models import CharField, DecimalField, OuterRef, Prefetch, Q, Subquery
 from django.db.models.functions import Coalesce
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -39,7 +40,10 @@ from apps.sales.models import OperationType, Sale
 from apps.sales.serializers import (
     CalculationOutputSerializer, SaleCatalogProductSerializer, SaleSerializer,
 )
-from apps.sales.services import catalog_products_with_available_stock, calculate_preview, finalize_sale
+from apps.sales.services import (
+    catalog_products_with_available_stock, calculate_preview, discount_intent_is_nonzero,
+    finalize_sale,
+)
 
 from .authentication import POSDeviceAuthentication, require_device, require_operator_session
 from .models import POSDevice, POSDeviceSettings
@@ -358,9 +362,9 @@ def _visible_pos_catalog(device, queryset):
 def _has_item_discount(items):
     for item in items:
         try:
-            if Decimal(str(item.get('discount', '0.00'))) != Decimal('0.00'):
+            if discount_intent_is_nonzero(item.get('discount', '0.00')):
                 return True
-        except (InvalidOperation, TypeError, ValueError):
+        except (DjangoValidationError, TypeError, ValueError):
             # Let the canonical calculator report an invalid monetary input.
             return True
     return False
@@ -419,6 +423,7 @@ class POSQuickSaleView(POSCashView):
     def _items(items):
         return [
             {
+                'client_item_id': item['client_item_id'],
                 'product': item['product'],
                 'quantity': item['quantity'],
                 'discount': item.get('discount', '0.00'),
@@ -520,7 +525,7 @@ class POSSalePreviewView(POSQuickSaleView):
         serializer = POSSalePreviewSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        if data['discount'] not in (None, '', '0', '0.00', 0, Decimal('0.00')) and 'sales.apply_discount' not in permissions:
+        if discount_intent_is_nonzero(data['discount']) and 'sales.apply_discount' not in permissions:
             raise PermissionDenied('Você não possui permissão para aplicar desconto.')
         if _has_item_discount(data['items']) and 'sales.apply_item_discount' not in permissions:
             raise PermissionDenied('Você não possui permissão para aplicar desconto por item.')

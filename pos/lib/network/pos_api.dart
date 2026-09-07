@@ -70,7 +70,7 @@ abstract class PosApi {
   });
   Future<QuickSalePreview> quickSalePreview({
     required List<Map<String, dynamic>> items,
-    required String discount,
+    required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
   });
   Future<QuickSaleCheckoutOptions> quickSaleCheckoutOptions();
@@ -79,7 +79,7 @@ abstract class PosApi {
     required List<Map<String, dynamic>> items,
     required int cashSessionId,
     required List<Map<String, dynamic>> payments,
-    required String discount,
+    required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
     int? customerId,
   });
@@ -401,7 +401,7 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   @override
   Future<QuickSalePreview> quickSalePreview({
     required List<Map<String, dynamic>> items,
-    required String discount,
+    required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
   }) async =>
       QuickSalePreview.fromJson(await _request('POST', 'sales/preview/', body: {
@@ -421,7 +421,7 @@ class HttpPosApi implements PosApi, PosCredentialCache {
     required List<Map<String, dynamic>> items,
     required int cashSessionId,
     required List<Map<String, dynamic>> payments,
-    required String discount,
+    required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
     int? customerId,
   }) async =>

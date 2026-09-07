@@ -45,6 +45,7 @@ class AppController extends ChangeNotifier {
   AppPhase phase = AppPhase.loading;
   bool busy = false;
   bool finalizingSale = false;
+  String? saleFinalizationError;
   String? errorMessage;
   TransientAlert? get transientAlert => _transientFeedback.alert;
   PairingDiscovery? discovery;
@@ -400,7 +401,7 @@ class AppController extends ChangeNotifier {
 
   Future<QuickSalePreview?> previewQuickSale({
     required List<Map<String, dynamic>> items,
-    required String discount,
+    required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
   }) async {
     try {
@@ -464,7 +465,7 @@ class AppController extends ChangeNotifier {
     required List<Map<String, dynamic>> items,
     required int cashSessionId,
     required List<Map<String, dynamic>> payments,
-    required String discount,
+    required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
     QuickSaleCustomer? customer,
   }) async {
@@ -473,7 +474,12 @@ class AppController extends ChangeNotifier {
       _showTransientMessage('A venda já está sendo finalizada. Aguarde.');
       return null;
     }
-    if (snapshot == null) return null;
+    if (snapshot == null) {
+      saleFinalizationError =
+          'A sessão do POS não está disponível. Entre novamente.';
+      _showTransientMessage(saleFinalizationError!);
+      return null;
+    }
     final payload = jsonEncode({
       'items': items,
       'cash_session': cashSessionId,
@@ -485,6 +491,7 @@ class AppController extends ChangeNotifier {
     final key = _uncertainSaleKeys.putIfAbsent(payload, createIdempotencyKey);
     await _persistUncertainSaleIntents();
     finalizingSale = true;
+    saleFinalizationError = null;
     _clearTransientMessage();
     notifyListeners();
     try {
@@ -515,9 +522,11 @@ class AppController extends ChangeNotifier {
         await _persistUncertainSaleIntents();
       }
       _handleApiError(error);
+      saleFinalizationError = error.message;
     } on PosNetworkException catch (error) {
       syncStatus = syncStatus.failed(error.message);
       _showTransientMessage(error.message, notify: false);
+      saleFinalizationError = error.message;
     } finally {
       finalizingSale = false;
       notifyListeners();

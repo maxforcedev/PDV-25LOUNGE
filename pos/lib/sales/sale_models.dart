@@ -1,6 +1,25 @@
 import '../cash/cash_models.dart';
 import 'package:flutter/foundation.dart';
 
+class QuickSaleDiscountIntent {
+  const QuickSaleDiscountIntent({
+    this.type = 'amount',
+    this.value = '0.00',
+  });
+
+  final String type;
+  final String value;
+
+  bool get isZero => double.tryParse(value.replaceAll(',', '.')) == 0;
+  bool get isPercentage => type == 'percentage';
+
+  QuickSaleDiscountIntent copyWith({String? type, String? value}) =>
+      QuickSaleDiscountIntent(
+          type: type ?? this.type, value: value ?? this.value);
+
+  Map<String, dynamic> toJson() => {'type': type, 'value': value};
+}
+
 class QuickSaleCustomer {
   const QuickSaleCustomer({
     required this.id,
@@ -30,7 +49,7 @@ class QuickSaleDraft extends ChangeNotifier {
   final List<QuickSaleCartItem> cart = [];
   QuickSalePreview? preview;
   QuickSaleCustomer? customer;
-  String discount = '0.00';
+  QuickSaleDiscountIntent discount = const QuickSaleDiscountIntent();
   bool serviceFeeWaived = false;
   bool loadingPreview = false;
 
@@ -40,7 +59,7 @@ class QuickSaleDraft extends ChangeNotifier {
     cart.clear();
     preview = null;
     customer = null;
-    discount = '0.00';
+    discount = const QuickSaleDiscountIntent();
     serviceFeeWaived = false;
     loadingPreview = false;
     notifyListeners();
@@ -163,7 +182,7 @@ class QuickSaleCartItem {
     required this.quantity,
     this.modifiers = const [],
     this.notes = '',
-    this.discount = '0.00',
+    this.discount = const QuickSaleDiscountIntent(),
   });
 
   final String clientItemId;
@@ -171,13 +190,13 @@ class QuickSaleCartItem {
   final String quantity;
   final List<Map<String, dynamic>> modifiers;
   final String notes;
-  final String discount;
+  final QuickSaleDiscountIntent discount;
 
   QuickSaleCartItem copyWith({
     String? quantity,
     List<Map<String, dynamic>>? modifiers,
     String? notes,
-    String? discount,
+    QuickSaleDiscountIntent? discount,
   }) =>
       QuickSaleCartItem(
         clientItemId: clientItemId,
@@ -194,7 +213,7 @@ class QuickSaleCartItem {
         'quantity': quantity,
         'modifiers': modifiers,
         'notes': notes,
-        'discount': discount,
+        'discount': discount.toJson(),
       };
 }
 
@@ -211,6 +230,7 @@ class QuickSaleCategory {
 
 class QuickSalePreview {
   const QuickSalePreview({
+    required this.items,
     required this.subtotal,
     required this.promotionDiscountTotal,
     required this.itemDiscountTotal,
@@ -222,6 +242,10 @@ class QuickSalePreview {
 
   factory QuickSalePreview.fromJson(Map<String, dynamic> json) =>
       QuickSalePreview(
+        items: (json['items'] as List<dynamic>? ?? const [])
+            .cast<Map<String, dynamic>>()
+            .map(QuickSalePreviewItem.fromJson)
+            .toList(growable: false),
         subtotal: json['subtotal'] as String? ?? '0.00',
         promotionDiscountTotal:
             json['promotion_discount_total'] as String? ?? '0.00',
@@ -232,6 +256,7 @@ class QuickSalePreview {
         total: json['total'] as String? ?? '0.00',
       );
 
+  final List<QuickSalePreviewItem> items;
   final String subtotal;
   final String promotionDiscountTotal;
   final String itemDiscountTotal;
@@ -239,6 +264,41 @@ class QuickSalePreview {
   final String serviceFeeRate;
   final String serviceFeeAmount;
   final String total;
+
+  QuickSalePreviewItem? itemFor(String clientItemId) {
+    for (final item in items) {
+      if (item.clientItemId == clientItemId) return item;
+    }
+    return null;
+  }
+}
+
+class QuickSalePreviewItem {
+  const QuickSalePreviewItem({
+    required this.clientItemId,
+    required this.unitPrice,
+    required this.modifiersTotal,
+    required this.grossTotal,
+    required this.itemDiscount,
+    required this.lineTotal,
+  });
+
+  factory QuickSalePreviewItem.fromJson(Map<String, dynamic> json) =>
+      QuickSalePreviewItem(
+        clientItemId: json['client_item_id'] as String? ?? '',
+        unitPrice: json['unit_price'] as String? ?? '0.00',
+        modifiersTotal: json['modifiers_total'] as String? ?? '0.00',
+        grossTotal: json['gross_total'] as String? ?? '0.00',
+        itemDiscount: json['item_discount'] as String? ?? '0.00',
+        lineTotal: json['line_total'] as String? ?? '0.00',
+      );
+
+  final String clientItemId;
+  final String unitPrice;
+  final String modifiersTotal;
+  final String grossTotal;
+  final String itemDiscount;
+  final String lineTotal;
 }
 
 class QuickSalePaymentMethod {

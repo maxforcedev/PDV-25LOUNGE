@@ -292,7 +292,8 @@ class SaleItemSerializer(serializers.ModelSerializer):
             'notes',
             'unit_price', 'subtotal', 'promotion', 'promotion_name',
             'promotion_discount_type', 'promotion_discount_value', 'promotion_benefit',
-            'manual_discount', 'discount_approved_by', 'discount_approved_by_name',
+            'manual_discount', 'manual_discount_intent_type', 'manual_discount_intent_value',
+            'discount_approved_by', 'discount_approved_by_name',
             'component_cost_snapshot', 'net_subtotal', 'created_at',
             'participates_in_service_fee', 'participates_in_commission',
         )
@@ -378,6 +379,7 @@ class SaleSerializer(serializers.ModelSerializer):
             'beneficiary_user', 'beneficiary_user_name',
             'customer', 'customer_name',
             'subtotal', 'promotion_discount_total', 'item_discount_total', 'discount',
+            'discount_intent_type', 'discount_intent_value',
             'service_fee_rate', 'service_fee_amount',
             'commission_rate', 'commission_amount',
             'charged_amount', 'total', 'sales_revenue', 'consumption_charged',
@@ -536,6 +538,23 @@ class StrictDecimalField(serializers.DecimalField):
         return super().to_internal_value(data)
 
 
+class DiscountIntentField(serializers.JSONField):
+    """Accept the legacy money scalar or an explicit manual-discount intent."""
+
+    def to_internal_value(self, data):
+        if isinstance(data, (float, bool)):
+            self.fail('invalid')
+        if isinstance(data, dict):
+            if set(data) != {'type', 'value'}:
+                self.fail('invalid')
+            if data.get('type') not in ('amount', 'percentage'):
+                self.fail('invalid')
+            value = data.get('value')
+            if isinstance(value, (float, bool)) or value in (None, ''):
+                self.fail('invalid')
+        return super().to_internal_value(data)
+
+
 class InternalDecimalField(serializers.DecimalField):
     def to_internal_value(self, data):
         if not isinstance(data, Decimal):
@@ -548,7 +567,7 @@ class ItemInputSerializer(serializers.Serializer):
     quantity = StrictDecimalField(
         max_digits=14, decimal_places=3, min_value=Decimal('0.001')
     )
-    discount = serializers.JSONField(required=False, default='0.00')
+    discount = DiscountIntentField(required=False, default='0.00')
     modifiers = serializers.JSONField(required=False, default=list)
     notes = serializers.CharField(required=False, allow_blank=True, default='', max_length=1000)
 
@@ -568,7 +587,7 @@ class CalculationSerializer(serializers.Serializer):
         choices=SalesChannel.values, required=False, default=SalesChannel.COUNTER
     )
     items = ItemInputSerializer(many=True, allow_empty=False)
-    discount = serializers.JSONField(required=False)
+    discount = DiscountIntentField(required=False)
     charged_amount = serializers.JSONField(required=False)
     beneficiary_user = serializers.PrimaryKeyRelatedField(
         queryset=Sale._meta.get_field('beneficiary_user').remote_field.model.objects.all(),
@@ -602,6 +621,7 @@ class CalculationSerializer(serializers.Serializer):
 
 
 class CalculationItemOutputSerializer(serializers.Serializer):
+    client_item_id = serializers.UUIDField(required=False, allow_null=True)
     product = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT)
     quantity = InternalDecimalField(
         max_digits=14, decimal_places=3, coerce_to_string=True
@@ -615,7 +635,13 @@ class CalculationItemOutputSerializer(serializers.Serializer):
     unit_price = InternalDecimalField(
         max_digits=14, decimal_places=2, coerce_to_string=True
     )
+    modifiers_total = InternalDecimalField(
+        max_digits=14, decimal_places=2, coerce_to_string=True
+    )
     subtotal = InternalDecimalField(
+        max_digits=14, decimal_places=2, coerce_to_string=True
+    )
+    gross_total = InternalDecimalField(
         max_digits=14, decimal_places=2, coerce_to_string=True
     )
     promotion = serializers.IntegerField(
@@ -634,7 +660,13 @@ class CalculationItemOutputSerializer(serializers.Serializer):
     manual_discount = InternalDecimalField(
         max_digits=14, decimal_places=2, coerce_to_string=True
     )
+    item_discount = InternalDecimalField(
+        max_digits=14, decimal_places=2, coerce_to_string=True
+    )
     net_subtotal = InternalDecimalField(
+        max_digits=14, decimal_places=2, coerce_to_string=True
+    )
+    line_total = InternalDecimalField(
         max_digits=14, decimal_places=2, coerce_to_string=True
     )
     participates_in_service_fee = serializers.BooleanField()

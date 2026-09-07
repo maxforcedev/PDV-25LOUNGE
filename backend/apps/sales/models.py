@@ -34,6 +34,11 @@ class PromotionDiscountType(models.TextChoices):
     FIXED_AMOUNT = 'fixed_amount', 'Valor fixo'
 
 
+class ManualDiscountType(models.TextChoices):
+    AMOUNT = 'amount', 'Valor'
+    PERCENTAGE = 'percentage', 'Percentual'
+
+
 class Promotion(BaseModel):
     company = models.ForeignKey(
         Company, on_delete=models.PROTECT, related_name='promotions'
@@ -272,6 +277,12 @@ class Sale(BaseModel):
         max_digits=14, decimal_places=2, default=Decimal('0.00')
     )
     discount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
+    discount_intent_type = models.CharField(
+        max_length=12, choices=ManualDiscountType.choices, blank=True, null=True,
+    )
+    discount_intent_value = models.DecimalField(
+        max_digits=14, decimal_places=2, blank=True, null=True,
+    )
     service_fee_rate = models.DecimalField(
         max_digits=5, decimal_places=2, default=Decimal('0.00')
     )
@@ -503,6 +514,8 @@ class Sale(BaseModel):
                 errors['service_fee_amount'] = 'Taxa retirada deve possuir valor zero.'
         if self.discount == 0 and self.discount_approved_by_id:
             errors['discount_approved_by'] = 'Venda sem desconto não possui aprovador.'
+        if bool(self.discount_intent_type) != bool(self.discount_intent_value is not None):
+            errors['discount_intent_type'] = 'Tipo e valor da intenção de desconto devem ser informados juntos.'
         if not self.service_fee_waived and self.service_fee_waived_by_id:
             errors['service_fee_waived_by'] = 'Taxa não retirada não possui autorizador.'
         if self.status == SaleStatus.FINALIZED and any(
@@ -585,6 +598,12 @@ class SaleItem(ImmutableHistoricalModel):
     )
     manual_discount = models.DecimalField(
         max_digits=14, decimal_places=2, default=Decimal('0.00')
+    )
+    manual_discount_intent_type = models.CharField(
+        max_length=12, choices=ManualDiscountType.choices, blank=True, null=True,
+    )
+    manual_discount_intent_value = models.DecimalField(
+        max_digits=14, decimal_places=2, blank=True, null=True,
     )
     discount_approved_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -683,6 +702,12 @@ class SaleItem(ImmutableHistoricalModel):
             errors['discount_approved_by'] = 'Informe quem autorizou o desconto do item.'
         if not self.manual_discount and self.discount_approved_by_id:
             errors['discount_approved_by'] = 'Item sem desconto não possui autorizador.'
+        if bool(self.manual_discount_intent_type) != bool(
+            self.manual_discount_intent_value is not None
+        ):
+            errors['manual_discount_intent_type'] = (
+                'Tipo e valor da intenção de desconto devem ser informados juntos.'
+            )
         if self.net_subtotal != remaining - self.manual_discount:
             errors['net_subtotal'] = 'O subtotal líquido deve descontar promoção e desconto do item.'
         if self.unit == Unit.UNIT and self.quantity != self.quantity.to_integral_value():
