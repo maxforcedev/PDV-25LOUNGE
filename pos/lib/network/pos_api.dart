@@ -31,21 +31,26 @@ abstract class PosApi {
   Future<CashSessionSummary> cashSessionSummary(int sessionId);
   Future<CashOverview> recordCashEntry(
       {required int sessionId,
-       required String amount,
-       required String reason,
-       required String idempotencyKey});
+      required String amount,
+      required String reason,
+      required String idempotencyKey});
   Future<List<CashBeneficiary>> cashWithdrawalBeneficiaries(String category);
   Future<CashOverview> recordCashWithdrawal(
       {required int sessionId,
-       required String amount,
-       required String reason,
-       required String category,
-       String? beneficiaryType,
-       int? beneficiaryId,
-       required String idempotencyKey});
+      required String amount,
+      required String reason,
+      required String category,
+      String? beneficiaryType,
+      int? beneficiaryId,
+      required String idempotencyKey});
   Future<CashOverview> closeCashSession(
       {required int sessionId, required String closingAmount});
-  Future<List<QuickSaleProduct>> quickSaleCatalog({String? search});
+  Future<List<QuickSaleProduct>> quickSaleCatalog({
+    String? search,
+    int? categoryId,
+    bool favorites = false,
+  });
+  Future<List<QuickSaleCategory>> quickSaleCategories();
   Future<QuickSaleProduct> quickSaleBarcode(String barcode);
   Future<QuickSalePreview> quickSalePreview({
     required List<Map<String, dynamic>> items,
@@ -81,7 +86,8 @@ class HttpPosApi implements PosApi {
   CashOverview _cashState(Map<String, dynamic> payload) {
     final state = payload['cash_state'];
     if (state is! Map<String, dynamic>) {
-      throw const FormatException('A resposta de caixa não contém o estado atualizado.');
+      throw const FormatException(
+          'A resposta de caixa não contém o estado atualizado.');
     }
     return CashOverview.fromJson(state);
   }
@@ -259,8 +265,8 @@ class HttpPosApi implements PosApi {
       String? beneficiaryType,
       int? beneficiaryId,
       required String idempotencyKey}) async {
-    return _cashState(await _request(
-        'POST', 'cash/sessions/$sessionId/withdrawal/', body: {
+    return _cashState(
+        await _request('POST', 'cash/sessions/$sessionId/withdrawal/', body: {
       'amount': amount,
       'reason': reason,
       'category': category,
@@ -280,10 +286,14 @@ class HttpPosApi implements PosApi {
   }
 
   @override
-  Future<List<QuickSaleProduct>> quickSaleCatalog({String? search}) async {
-    final suffix = search == null || search.trim().isEmpty
-        ? ''
-        : '?search=${Uri.encodeQueryComponent(search.trim())}';
+  Future<List<QuickSaleProduct>> quickSaleCatalog(
+      {String? search, int? categoryId, bool favorites = false}) async {
+    final query = <String, String>{
+      if (search != null && search.trim().isNotEmpty) 'search': search.trim(),
+      if (categoryId != null) 'category': '$categoryId',
+      if (favorites) 'favorites': 'true',
+    };
+    final suffix = query.isEmpty ? '' : '?${Uri(queryParameters: query).query}';
     final payload = await _request('GET', 'catalog/$suffix');
     return (payload['products'] as List<dynamic>? ?? const [])
         .cast<Map<String, dynamic>>()
@@ -292,9 +302,18 @@ class HttpPosApi implements PosApi {
   }
 
   @override
+  Future<List<QuickSaleCategory>> quickSaleCategories() async {
+    final payload = await _request('GET', 'catalog/categories/');
+    return (payload['categories'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(QuickSaleCategory.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
   Future<QuickSaleProduct> quickSaleBarcode(String barcode) async =>
-      QuickSaleProduct.fromJson(
-          await _request('GET', 'products/barcode/${Uri.encodeComponent(barcode)}/'));
+      QuickSaleProduct.fromJson(await _request(
+          'GET', 'products/barcode/${Uri.encodeComponent(barcode)}/'));
 
   @override
   Future<QuickSalePreview> quickSalePreview({

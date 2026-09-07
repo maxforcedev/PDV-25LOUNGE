@@ -1,6 +1,6 @@
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
-from django.db.models import DecimalField, OuterRef, Prefetch, Q, Subquery
+from django.db.models import CharField, DecimalField, OuterRef, Prefetch, Q, Subquery
 from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -292,6 +292,13 @@ def _pos_catalog_queryset(branch, *, search=None, barcode=None):
         branch_counter=Coalesce(
             Subquery(branch_config.values('available_counter')[:1]), 'available_counter',
         ),
+        effective_category_id=Coalesce(
+            Subquery(branch_config.values('category_id')[:1]), 'category_id',
+        ),
+        effective_category_name=Coalesce(
+            Subquery(branch_config.values('category__name')[:1]), 'category__name',
+            output_field=CharField(),
+        ),
     ).filter(
         company_id=branch.company_id,
         status=Status.ACTIVE,
@@ -311,6 +318,40 @@ def _pos_catalog_queryset(branch, *, search=None, barcode=None):
     return queryset.order_by('-is_favorite', 'name', 'id')
 
 
+def _has_item_discount(items):
+    for item in items:
+        try:
+            if Decimal(str(item.get('discount', '0.00'))) != Decimal('0.00'):
+                return True
+        except (InvalidOperation, TypeError, ValueError):
+            # Let the canonical calculator report an invalid monetary input.
+            return True
+    return False
+
+
+def _pos_sale_session(device, session_id):
+    """Resolve an open session while enforcing the device cash binding."""
+    session = get_object_or_404(
+        CashSession.objects.select_related('cash_register'),
+        pk=session_id,
+        branch=device.branch,
+        status='open',
+    )
+    mode, fixed_register = effective_cash_settings(device)
+    if mode == 'FIXED':
+        if fixed_register is None or fixed_register.status != CashRegisterStatus.ACTIVE:
+            raise DomainValidationError(
+                code='pos_fixed_cash_unconfigured',
+                message='O caixa fixo deste dispositivo não está configurado ou ativo.',
+            )
+        if session.cash_register_id != fixed_register.pk:
+            raise DomainValidationError(
+                code='pos_fixed_cash_required',
+                message='Este dispositivo só pode vender no caixa fixo configurado.',
+            )
+    return session
+
+
 class POSQuickSaleView(POSCashView):
     @staticmethod
     def _catalog_payload(request, products):
@@ -325,16 +366,16 @@ class POSQuickSaleView(POSCashView):
                 'internal_code': product['internal_code'],
                 'barcode': product['barcode'],
                 'category': {
-                    'id': product['category'],
-                    'name': product['category_name'],
-                } if product['category'] else None,
+                    'id': product_object.effective_category_id,
+                    'name': product_object.effective_category_name,
+                } if product_object.effective_category_id else None,
                 'price': product['sale_price'],
                 'image': product['image'],
                 'favorite': product['is_favorite'],
                 'emits_ticket': product['emits_ticket'],
                 'modifier_groups': product['modifier_groups'],
             }
-            for product in rows
+            for product_object, product in zip(products, rows)
         ]
 
     @staticmethod
@@ -362,10 +403,26 @@ class POSCatalogView(POSQuickSaleView):
         )
         category = request.query_params.get('category')
         if category:
-            queryset = queryset.filter(branch_configs__branch=device.branch, branch_configs__category_id=category)
+            queryset = queryset.filter(effective_category_id=category)
         if request.query_params.get('favorites') == 'true':
             queryset = queryset.filter(is_favorite=True)
         return Response({'products': self._catalog_payload(request, queryset)})
+
+
+class POSCatalogCategoriesView(POSQuickSaleView):
+    def get(self, request):
+        device, _, permissions, _ = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        categories = _pos_catalog_queryset(device.branch).values(
+            'effective_category_id', 'effective_category_name',
+        ).exclude(effective_category_id__isnull=True).distinct().order_by(
+            'effective_category_name', 'effective_category_id',
+        )
+        return Response({'categories': [
+            {'id': row['effective_category_id'], 'name': row['effective_category_name']}
+            for row in categories
+        ]})
 
 
 class POSBarcodeProductView(POSQuickSaleView):
@@ -388,6 +445,8 @@ class POSSalePreviewView(POSQuickSaleView):
         data = serializer.validated_data
         if data['discount'] not in (None, '', '0', '0.00', 0, Decimal('0.00')) and 'sales.apply_discount' not in permissions:
             raise PermissionDenied('Você não possui permissão para aplicar desconto.')
+        if _has_item_discount(data['items']) and 'sales.apply_item_discount' not in permissions:
+            raise PermissionDenied('Você não possui permissão para aplicar desconto por item.')
         if data['service_fee_waived'] and 'sales.waive_service_fee' not in permissions:
             raise PermissionDenied('Você não possui permissão para isentar taxa de serviço.')
         result = calculate_preview(
@@ -413,14 +472,28 @@ class POSSaleCheckoutOptionsView(POSQuickSaleView):
             raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
         from apps.sales.models import PaymentMethod
 
+        mode, fixed_register = effective_cash_settings(device)
         sessions = CashSession.objects.filter(
             branch=device.branch, status='open',
         ).select_related('cash_register', 'opened_by').order_by('id')
+        fixed_cash_available = True
+        if mode == 'FIXED':
+            fixed_cash_available = bool(
+                fixed_register and fixed_register.status == CashRegisterStatus.ACTIVE
+            )
+            sessions = sessions.filter(cash_register=fixed_register) if fixed_cash_available else sessions.none()
         methods = PaymentMethod.objects.filter(
             company_id=device.branch.company_id, status=Status.ACTIVE,
         ).order_by('name', 'id').values('id', 'code', 'name')
         return Response({
             'payment_methods': list(methods),
+            'cash_binding_mode': mode,
+            'fixed_register': (
+                {'id': fixed_register.pk, 'name': fixed_register.name}
+                if mode == 'FIXED' and fixed_register else None
+            ),
+            'cash_required': True,
+            'fixed_cash_available': fixed_cash_available,
             'cash_sessions': [
                 {
                     'id': session.pk,
@@ -440,9 +513,9 @@ class POSFinalizeSaleView(POSQuickSaleView):
         serializer = POSFinalizeSaleSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        session = get_object_or_404(
-            CashSession, pk=data['cash_session'], branch=device.branch, status='open',
-        )
+        if _has_item_discount(data['items']) and 'sales.apply_item_discount' not in permissions:
+            raise PermissionDenied('Você não possui permissão para aplicar desconto por item.')
+        session = _pos_sale_session(device, data['cash_session'])
         sale = finalize_sale(
             branch=device.branch,
             user=operator,

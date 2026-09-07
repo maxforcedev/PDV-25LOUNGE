@@ -24,6 +24,9 @@ class QuickSaleModifierGroup {
     required this.id,
     required this.name,
     required this.required,
+    required this.minSelections,
+    this.maxSelections,
+    required this.allowOptionQuantity,
     required this.options,
   });
 
@@ -32,6 +35,9 @@ class QuickSaleModifierGroup {
         id: json['id'] as int,
         name: json['name'] as String? ?? '',
         required: json['is_required'] as bool? ?? false,
+        minSelections: json['min_selections'] as int? ?? 0,
+        maxSelections: json['max_selections'] as int?,
+        allowOptionQuantity: json['allow_option_quantity'] as bool? ?? false,
         options: (json['options'] as List<dynamic>? ?? const [])
             .cast<Map<String, dynamic>>()
             .map(QuickSaleModifierOption.fromJson)
@@ -41,6 +47,9 @@ class QuickSaleModifierGroup {
   final int id;
   final String name;
   final bool required;
+  final int minSelections;
+  final int? maxSelections;
+  final bool allowOptionQuantity;
   final List<QuickSaleModifierOption> options;
 }
 
@@ -54,6 +63,9 @@ class QuickSaleProduct {
     required this.emitsTicket,
     required this.modifierGroups,
     this.barcode,
+    this.categoryId,
+    this.categoryName,
+    this.imageUrl,
   });
 
   factory QuickSaleProduct.fromJson(Map<String, dynamic> json) =>
@@ -62,6 +74,10 @@ class QuickSaleProduct {
         name: json['name'] as String? ?? '',
         internalCode: json['internal_code'] as String? ?? '',
         barcode: json['barcode'] as String?,
+        categoryId: (json['category'] as Map<String, dynamic>?)?['id'] as int?,
+        categoryName:
+            (json['category'] as Map<String, dynamic>?)?['name'] as String?,
+        imageUrl: json['image'] as String?,
         price: json['price'] as String? ?? '0.00',
         favorite: json['favorite'] as bool? ?? false,
         emitsTicket: json['emits_ticket'] as bool? ?? false,
@@ -75,6 +91,9 @@ class QuickSaleProduct {
   final String name;
   final String internalCode;
   final String? barcode;
+  final int? categoryId;
+  final String? categoryName;
+  final String? imageUrl;
   final String price;
   final bool favorite;
   final bool emitsTicket;
@@ -88,6 +107,7 @@ class QuickSaleCartItem {
     required this.quantity,
     this.modifiers = const [],
     this.notes = '',
+    this.discount = '0.00',
   });
 
   final String clientItemId;
@@ -95,13 +115,21 @@ class QuickSaleCartItem {
   final String quantity;
   final List<Map<String, dynamic>> modifiers;
   final String notes;
+  final String discount;
 
-  QuickSaleCartItem copyWith({String? quantity}) => QuickSaleCartItem(
+  QuickSaleCartItem copyWith({
+    String? quantity,
+    List<Map<String, dynamic>>? modifiers,
+    String? notes,
+    String? discount,
+  }) =>
+      QuickSaleCartItem(
         clientItemId: clientItemId,
         product: product,
         quantity: quantity ?? this.quantity,
-        modifiers: modifiers,
-        notes: notes,
+        modifiers: modifiers ?? this.modifiers,
+        notes: notes ?? this.notes,
+        discount: discount ?? this.discount,
       );
 
   Map<String, dynamic> toJson() => {
@@ -110,7 +138,19 @@ class QuickSaleCartItem {
         'quantity': quantity,
         'modifiers': modifiers,
         'notes': notes,
+        'discount': discount,
       };
+}
+
+class QuickSaleCategory {
+  const QuickSaleCategory({required this.id, required this.name});
+
+  factory QuickSaleCategory.fromJson(Map<String, dynamic> json) =>
+      QuickSaleCategory(
+          id: json['id'] as int, name: json['name'] as String? ?? '');
+
+  final int id;
+  final String name;
 }
 
 class QuickSalePreview {
@@ -181,6 +221,10 @@ class QuickSaleCheckoutOptions {
   const QuickSaleCheckoutOptions({
     required this.paymentMethods,
     required this.cashSessions,
+    required this.cashBindingMode,
+    required this.cashRequired,
+    required this.fixedCashAvailable,
+    this.fixedRegisterName,
   });
 
   factory QuickSaleCheckoutOptions.fromJson(Map<String, dynamic> json) =>
@@ -193,10 +237,19 @@ class QuickSaleCheckoutOptions {
             .cast<Map<String, dynamic>>()
             .map(QuickSaleCashSession.fromJson)
             .toList(growable: false),
+        cashBindingMode: json['cash_binding_mode'] as String? ?? 'FLEXIBLE',
+        cashRequired: json['cash_required'] as bool? ?? true,
+        fixedCashAvailable: json['fixed_cash_available'] as bool? ?? true,
+        fixedRegisterName: (json['fixed_register']
+            as Map<String, dynamic>?)?['name'] as String?,
       );
 
   final List<QuickSalePaymentMethod> paymentMethods;
   final List<QuickSaleCashSession> cashSessions;
+  final String cashBindingMode;
+  final bool cashRequired;
+  final bool fixedCashAvailable;
+  final String? fixedRegisterName;
 }
 
 class QuickSaleResult {
@@ -214,8 +267,10 @@ class QuickSaleResult {
     return QuickSaleResult(
       saleNumber: sale['sale_number'] as String? ?? '',
       total: sale['total'] as String? ?? '0.00',
-      cash: CashOverview.fromJson(json['cash_state'] as Map<String, dynamic>? ?? const {}),
-      ticketNumbers: (effects['tickets'] as List<dynamic>? ?? const []).cast<int>(),
+      cash: CashOverview.fromJson(
+          json['cash_state'] as Map<String, dynamic>? ?? const {}),
+      ticketNumbers:
+          (effects['tickets'] as List<dynamic>? ?? const []).cast<int>(),
       productionJobCount: effects['production_job_count'] as int? ?? 0,
     );
   }

@@ -56,6 +56,7 @@ class AppController extends ChangeNotifier {
 
   Future<void> initialize() async {
     await _secrets.clearOperatorSession();
+    await _restoreUncertainSaleIntents();
     if (await _secrets.readDeviceCredential() == null) {
       phase = AppPhase.pairingIdentifier;
       notifyListeners();
@@ -262,15 +263,15 @@ class AppController extends ChangeNotifier {
   }) {
     final payload = jsonEncode(['entry', sessionId, amount, reason]);
     return _runCashAction(
-        () => _api.recordCashEntry(
-          sessionId: sessionId,
-          amount: amount,
-          reason: reason,
-          idempotencyKey: _idempotencyKeyFor(payload),
-        ),
-        'Suprimento registrado com sucesso.',
-        idempotencyPayload: payload,
-      );
+      () => _api.recordCashEntry(
+        sessionId: sessionId,
+        amount: amount,
+        reason: reason,
+        idempotencyKey: _idempotencyKeyFor(payload),
+      ),
+      'Suprimento registrado com sucesso.',
+      idempotencyPayload: payload,
+    );
   }
 
   Future<List<CashBeneficiary>?> cashWithdrawalBeneficiaries(
@@ -303,18 +304,18 @@ class AppController extends ChangeNotifier {
       beneficiaryId,
     ]);
     return _runCashAction(
-        () => _api.recordCashWithdrawal(
-          sessionId: sessionId,
-          amount: amount,
-          reason: reason,
-          category: category,
-          beneficiaryType: beneficiaryType,
-          beneficiaryId: beneficiaryId,
-          idempotencyKey: _idempotencyKeyFor(payload),
-        ),
-        'Sangria registrada com sucesso.',
-        idempotencyPayload: payload,
-      );
+      () => _api.recordCashWithdrawal(
+        sessionId: sessionId,
+        amount: amount,
+        reason: reason,
+        category: category,
+        beneficiaryType: beneficiaryType,
+        beneficiaryId: beneficiaryId,
+        idempotencyKey: _idempotencyKeyFor(payload),
+      ),
+      'Sangria registrada com sucesso.',
+      idempotencyPayload: payload,
+    );
   }
 
   Future<bool> closeCashSession(
@@ -341,9 +342,28 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
-  Future<List<QuickSaleProduct>?> quickSaleCatalog({String? search}) async {
+  Future<List<QuickSaleProduct>?> quickSaleCatalog({
+    String? search,
+    int? categoryId,
+    bool favorites = false,
+  }) async {
     try {
-      return await _api.quickSaleCatalog(search: search);
+      return await _api.quickSaleCatalog(
+        search: search,
+        categoryId: categoryId,
+        favorites: favorites,
+      );
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<List<QuickSaleCategory>?> quickSaleCategories() async {
+    try {
+      return await _api.quickSaleCategories();
     } on PosApiException catch (error) {
       _handleApiError(error);
     } on PosNetworkException catch (error) {
@@ -410,6 +430,7 @@ class AppController extends ChangeNotifier {
       'service_fee_waived': serviceFeeWaived,
     });
     final key = _uncertainSaleKeys.putIfAbsent(payload, createIdempotencyKey);
+    await _persistUncertainSaleIntents();
     busy = true;
     _clearTransientMessage();
     notifyListeners();
@@ -424,15 +445,21 @@ class AppController extends ChangeNotifier {
       );
       bootstrapSnapshot = snapshot.withCash(result.cash);
       _uncertainSaleKeys.remove(payload);
+      await _persistUncertainSaleIntents();
       syncStatus = syncStatus.succeeded();
       final tickets = result.ticketNumbers.isEmpty
           ? ''
           : ' Tickets: ${result.ticketNumbers.join(', ')}.';
-      _showTransientMessage('Venda ${result.saleNumber} concluida com sucesso.$tickets',
-          tone: TransientAlertTone.success, notify: false);
+      _showTransientMessage(
+          'Venda ${result.saleNumber} concluida com sucesso.$tickets',
+          tone: TransientAlertTone.success,
+          notify: false);
       return result;
     } on PosApiException catch (error) {
-      if (error.statusCode < 500) _uncertainSaleKeys.remove(payload);
+      if (error.statusCode < 500) {
+        _uncertainSaleKeys.remove(payload);
+        await _persistUncertainSaleIntents();
+      }
       _handleApiError(error);
     } on PosNetworkException catch (error) {
       syncStatus = syncStatus.failed(error.message);
@@ -443,6 +470,37 @@ class AppController extends ChangeNotifier {
     }
     return null;
   }
+
+  Future<void> _restoreUncertainSaleIntents() async {
+    final encoded = await _secrets.readPendingSaleIntents();
+    if (encoded == null || encoded.isEmpty) return;
+    try {
+      final payload = jsonDecode(encoded) as Map<String, dynamic>;
+      final intents = payload['intents'] as List<dynamic>? ?? const [];
+      for (final raw in intents) {
+        final intent = raw as Map<String, dynamic>;
+        final body = intent['payload'];
+        final key = intent['idempotency_key'] as String?;
+        if (body is Map<String, dynamic> && key != null) {
+          _uncertainSaleKeys[jsonEncode(body)] = key;
+        }
+      }
+    } catch (_) {
+      // Corrupt local state must not prevent an operator from opening the POS.
+      await _secrets.writePendingSaleIntents('');
+    }
+  }
+
+  Future<void> _persistUncertainSaleIntents() =>
+      _secrets.writePendingSaleIntents(
+        jsonEncode({
+          'intents': _uncertainSaleKeys.entries.map((entry) => {
+                'fingerprint': base64UrlEncode(utf8.encode(entry.key)),
+                'payload': jsonDecode(entry.key),
+                'idempotency_key': entry.value,
+              }),
+        }),
+      );
 
   Future<void> forgetDevice() async {
     await _secrets.clearOperatorSession();

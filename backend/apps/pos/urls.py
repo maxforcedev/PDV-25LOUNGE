@@ -7,7 +7,7 @@ from .views import (
     POSAdminDeviceViewSet, POSCashBeneficiariesView, POSCashOverviewView, POSCashSessionCloseView,
     POSCashSessionEntryView, POSCashSessionOpenView, POSCashSessionSummaryView,
     POSCashSessionWithdrawalView,
-    POSBarcodeProductView, POSCatalogView, POSFinalizeSaleView,
+    POSBarcodeProductView, POSCatalogCategoriesView, POSCatalogView, POSFinalizeSaleView,
     POSSaleCheckoutOptionsView, POSSalePreviewView,
 )
 
@@ -30,6 +30,7 @@ urlpatterns = [
     path('cash/sessions/<int:session_id>/withdrawal/', POSCashSessionWithdrawalView.as_view(), name='cash-session-withdrawal'),
     path('cash/sessions/<int:session_id>/close/', POSCashSessionCloseView.as_view(), name='cash-session-close'),
     path('catalog/', POSCatalogView.as_view(), name='catalog'),
+    path('catalog/categories/', POSCatalogCategoriesView.as_view(), name='catalog-categories'),
     path('products/barcode/<str:barcode>/', POSBarcodeProductView.as_view(), name='product-barcode'),
     path('sales/preview/', POSSalePreviewView.as_view(), name='sale-preview'),
     path('sales/checkout-options/', POSSaleCheckoutOptionsView.as_view(), name='sale-checkout-options'),
