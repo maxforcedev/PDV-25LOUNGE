@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../auth/auth_models.dart';
@@ -68,7 +69,14 @@ abstract class PosApi {
   });
 }
 
-class HttpPosApi implements PosApi {
+abstract interface class PosCredentialCache {
+  Future<void> warmCredentials();
+  bool get hasDeviceCredential;
+  void cacheDeviceCredential(String? credential);
+  void cacheOperatorSession(String? session);
+}
+
+class HttpPosApi implements PosApi, PosCredentialCache {
   HttpPosApi({
     required String baseUrl,
     required SecretStore secrets,
@@ -80,6 +88,9 @@ class HttpPosApi implements PosApi {
   final Uri _baseUri;
   final SecretStore _secrets;
   final http.Client _client;
+  String? _deviceCredential;
+  String? _operatorSession;
+  bool _credentialsWarmed = false;
 
   Uri _uri(String path) => _baseUri.resolve('api/v1/pos/$path');
 
@@ -92,15 +103,47 @@ class HttpPosApi implements PosApi {
     return CashOverview.fromJson(state);
   }
 
-  Future<Map<String, String>> _headers({bool json = true}) async {
-    final deviceCredential = await _secrets.readDeviceCredential();
-    final operatorSession = await _secrets.readOperatorSession();
+  @override
+  Future<void> warmCredentials() async {
+    if (_credentialsWarmed) return;
+    final values = await Future.wait<String?>([
+      _secrets.readDeviceCredential(),
+      _secrets.readOperatorSession(),
+    ]);
+    _deviceCredential = values[0];
+    _operatorSession = values[1];
+    _credentialsWarmed = true;
+  }
+
+  @override
+  bool get hasDeviceCredential => _deviceCredential != null;
+
+  @override
+  void cacheDeviceCredential(String? credential) {
+    _deviceCredential = credential;
+    _credentialsWarmed = true;
+  }
+
+  @override
+  void cacheOperatorSession(String? session) {
+    _operatorSession = session;
+    _credentialsWarmed = true;
+  }
+
+  Map<String, String> _headers({bool json = true}) {
     return {
       if (json) 'Content-Type': 'application/json',
       'Accept': 'application/json',
-      if (deviceCredential != null) 'X-POS-Device-Credential': deviceCredential,
-      if (operatorSession != null) 'X-POS-Operator-Session': operatorSession,
+      if (_deviceCredential != null)
+        'X-POS-Device-Credential': _deviceCredential!,
+      if (_operatorSession != null) 'X-POS-Operator-Session': _operatorSession!,
     };
+  }
+
+  void _debugTiming(Stopwatch stopwatch, String method, String event) {
+    if (kDebugMode)
+      debugPrint(
+          '[POS HTTP] $method $event ${stopwatch.elapsedMilliseconds}ms');
   }
 
   Future<Map<String, dynamic>> _request(
@@ -109,9 +152,13 @@ class HttpPosApi implements PosApi {
     Map<String, dynamic>? body,
   }) async {
     http.Response response;
+    final stopwatch = Stopwatch()..start();
+    _debugTiming(stopwatch, method, 'request_started');
     try {
-      final headers = await _headers();
+      final headers = _headers();
+      _debugTiming(stopwatch, method, 'headers_ready');
       final uri = _uri(path);
+      _debugTiming(stopwatch, method, 'http_sent');
       response = switch (method) {
         'GET' => await _client
             .get(uri, headers: headers)
@@ -121,6 +168,7 @@ class HttpPosApi implements PosApi {
             .timeout(const Duration(seconds: 15)),
         _ => throw ArgumentError.value(method, 'method'),
       };
+      _debugTiming(stopwatch, method, 'http_received');
     } on http.ClientException catch (error) {
       throw PosNetworkException(error.message);
     } on TimeoutException {

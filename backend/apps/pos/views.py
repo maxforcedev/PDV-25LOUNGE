@@ -294,6 +294,7 @@ def _pos_catalog_queryset(branch, *, search=None, barcode=None):
         ),
         effective_category_id=Coalesce(
             Subquery(branch_config.values('category_id')[:1]), 'category_id',
+            output_field=Product._meta.get_field('category').target_field,
         ),
         effective_category_name=Coalesce(
             Subquery(branch_config.values('category__name')[:1]), 'category__name',

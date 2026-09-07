@@ -54,10 +54,17 @@ class AppController extends ChangeNotifier {
   SyncStatus syncStatus = const SyncStatus();
   PosApiException? deviceError;
 
+  PosCredentialCache? get _credentialCache =>
+      _api is PosCredentialCache ? _api as PosCredentialCache : null;
+
   Future<void> initialize() async {
-    await _secrets.clearOperatorSession();
+    final credentialCache = _credentialCache;
+    await credentialCache?.warmCredentials();
     await _restoreUncertainSaleIntents();
-    if (await _secrets.readDeviceCredential() == null) {
+    final hasDeviceCredential = credentialCache != null
+        ? credentialCache.hasDeviceCredential
+        : await _secrets.readDeviceCredential() != null;
+    if (!hasDeviceCredential) {
       phase = AppPhase.pairingIdentifier;
       notifyListeners();
       return;
@@ -94,6 +101,7 @@ class AppController extends ChangeNotifier {
         device: _device,
       );
       await _secrets.writeDeviceCredential(credential);
+      _credentialCache?.cacheDeviceCredential(credential);
       await recoverPairedDevice(notify: false);
     });
   }
@@ -147,10 +155,12 @@ class AppController extends ChangeNotifier {
     await _run(() async {
       final session = await _api.login(operator.id, pin);
       await _secrets.writeOperatorSession(session.token);
+      _credentialCache?.cacheOperatorSession(session.token);
       try {
         bootstrapSnapshot = await _api.bootstrap();
       } catch (_) {
         await _secrets.clearOperatorSession();
+        _credentialCache?.cacheOperatorSession(null);
         rethrow;
       }
       if (bootstrapSnapshot!.release.updateRequired) {
@@ -192,6 +202,7 @@ class AppController extends ChangeNotifier {
       // The local operator session must still be removed on a failed logout request.
     } finally {
       await _secrets.clearOperatorSession();
+      _credentialCache?.cacheOperatorSession(null);
     }
     await recoverPairedDevice();
   }
@@ -505,6 +516,8 @@ class AppController extends ChangeNotifier {
   Future<void> forgetDevice() async {
     await _secrets.clearOperatorSession();
     await _secrets.clearDeviceCredential();
+    _credentialCache?.cacheOperatorSession(null);
+    _credentialCache?.cacheDeviceCredential(null);
     discovery = null;
     challenge = null;
     operators = const [];
