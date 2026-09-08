@@ -45,8 +45,12 @@ class _QuickSalePageState extends State<QuickSalePage> {
   int _previewGeneration = 0;
   Timer? _previewDebounce;
   Timer? _searchDebounce;
+  Timer? _availabilityDebounce;
   bool _previewInFlight = false;
+  bool _availabilityInFlight = false;
   _PreviewIntent? _pendingPreview;
+  int _availabilityGeneration = 0;
+  int? _pendingAvailabilityGeneration;
 
   List<QuickSaleCartItem> get _cart => _draft.cart;
   QuickSalePreview? get _preview => _draft.preview;
@@ -112,8 +116,10 @@ class _QuickSalePageState extends State<QuickSalePage> {
   @override
   void dispose() {
     _previewGeneration++;
+    _availabilityGeneration++;
     _previewDebounce?.cancel();
     _searchDebounce?.cancel();
+    _availabilityDebounce?.cancel();
     _search.dispose();
     _draft.dispose();
     super.dispose();
@@ -230,6 +236,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
     setState(() {
       _cart.add(item);
     });
+    _scheduleCartAvailability();
     _schedulePreview();
   }
 
@@ -262,6 +269,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
     }
     widget.controller.logPosAction('cart_add_batch');
     setState(() => _cart.add(item));
+    _invalidateCartAvailability();
     _schedulePreview();
   }
 
@@ -306,6 +314,11 @@ class _QuickSalePageState extends State<QuickSalePage> {
         _cart[index] = item;
       }
     });
+    if (checkBatchAvailability) {
+      _invalidateCartAvailability();
+    } else {
+      _scheduleCartAvailability();
+    }
     _schedulePreview();
   }
 
@@ -335,7 +348,86 @@ class _QuickSalePageState extends State<QuickSalePage> {
         _draft.itemDiscountAuthorization = null;
       }
     });
+    _scheduleCartAvailability();
     _schedulePreview();
+  }
+
+  void _invalidateCartAvailability() {
+    _availabilityGeneration++;
+    _availabilityDebounce?.cancel();
+    _pendingAvailabilityGeneration = null;
+  }
+
+  void _scheduleCartAvailability() {
+    _invalidateCartAvailability();
+    if (_cart.isEmpty) return;
+    final generation = _availabilityGeneration;
+    _availabilityDebounce = Timer(
+      const Duration(milliseconds: 100),
+      () => _enqueueCartAvailability(generation),
+    );
+  }
+
+  void _enqueueCartAvailability(int generation) {
+    if (_availabilityInFlight) {
+      _pendingAvailabilityGeneration = generation;
+      return;
+    }
+    unawaited(_validateCartAvailability(generation));
+  }
+
+  Future<void> _validateCartAvailability(int generation) async {
+    _availabilityInFlight = true;
+    final candidates = List<QuickSaleCartItem>.of(_cart);
+    final availability = await widget.controller.quickSaleStockAvailability(
+      items: candidates.map((item) => item.toJson()).toList(growable: false),
+    );
+    if (mounted &&
+        generation == _availabilityGeneration &&
+        availability != null &&
+        !availability.available &&
+        availability.enforced) {
+      var low = 0;
+      var high = candidates.length - 1;
+      var validCount = 0;
+      while (low <= high) {
+        final count = (low + high) ~/ 2;
+        if (count == 0) {
+          low = 1;
+          continue;
+        }
+        final result = await widget.controller.quickSaleStockAvailability(
+          items: candidates
+              .take(count)
+              .map((item) => item.toJson())
+              .toList(growable: false),
+        );
+        if (!mounted ||
+            generation != _availabilityGeneration ||
+            result == null) {
+          break;
+        }
+        if (result.available || !result.enforced) {
+          validCount = count;
+          low = count + 1;
+        } else {
+          high = count - 1;
+        }
+      }
+      if (mounted && generation == _availabilityGeneration) {
+        setState(() {
+          _cart
+            ..clear()
+            ..addAll(candidates.take(validCount));
+        });
+        _showStockUnavailable(availability.availableQuantity);
+        _schedulePreview();
+      }
+    }
+    _availabilityInFlight = false;
+    final pending = _pendingAvailabilityGeneration;
+    _pendingAvailabilityGeneration = null;
+    if (pending != null && mounted) _enqueueCartAvailability(pending);
   }
 
   void _schedulePreview() {
@@ -469,7 +561,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
 
   Future<QuickSaleAuthorization?> _requestDiscountAuthorizationFor(
       {required String type}) async {
-    // A new approval attempt must not retain a prior approver password.
+    // A new approval attempt must not retain a prior approver PIN.
     if (type == 'item') {
       _draft.itemDiscountAuthorization = null;
     } else if (type == 'service_fee') {
@@ -537,6 +629,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
     );
     if (confirmed != true || !mounted) return;
     _previewGeneration++;
+    _invalidateCartAvailability();
     _previewDebounce?.cancel();
     _pendingPreview = null;
     setState(_draft.clearAfterSale);
@@ -1778,22 +1871,27 @@ class _DiscountAuthorizationDialog extends StatefulWidget {
 
 class _DiscountAuthorizationDialogState
     extends State<_DiscountAuthorizationDialog> {
-  final _password = TextEditingController();
+  final _pin = TextEditingController();
   int? _authorizerId;
   bool _validating = false;
   String? _error;
 
   Future<void> _authorize() async {
-    if (_authorizerId == null || _password.text.isEmpty || _validating) return;
+    if (_authorizerId == null || _pin.text.length != 6 || _validating) return;
     setState(() {
       _validating = true;
       _error = null;
     });
     final authorization = QuickSaleAuthorization(
       userId: _authorizerId!,
-      credential: _password.text,
+      credential: _pin.text,
     );
-    final error = await widget.onAuthorize(authorization);
+    String? error;
+    try {
+      error = await widget.onAuthorize(authorization);
+    } finally {
+      _pin.clear();
+    }
     if (!mounted) return;
     if (error == null) {
       Navigator.of(context).pop(authorization);
@@ -1807,7 +1905,7 @@ class _DiscountAuthorizationDialogState
 
   @override
   void dispose() {
-    _password.dispose();
+    _pin.dispose();
     super.dispose();
   }
 
@@ -1830,20 +1928,25 @@ class _DiscountAuthorizationDialogState
                   .toList(growable: false),
               onChanged: (value) => setState(() {
                 _authorizerId = value;
-                _password.clear();
+                _pin.clear();
                 _error = null;
               }),
             ),
             const SizedBox(height: 12),
             TextField(
-              controller: _password,
+              controller: _pin,
               autofocus: true,
               obscureText: true,
+              keyboardType: TextInputType.number,
+              maxLength: 6,
               enableSuggestions: false,
               autocorrect: false,
-              onChanged: (_) => setState(() {}),
-              decoration:
-                  InputDecoration(labelText: 'Senha', errorText: _error),
+              onChanged: (value) {
+                if (!RegExp(r'^\d{0,6}$').hasMatch(value)) _pin.clear();
+                setState(() {});
+              },
+              decoration: InputDecoration(
+                  labelText: 'PIN do autorizador', errorText: _error),
             ),
           ]),
         ),
@@ -1854,7 +1957,7 @@ class _DiscountAuthorizationDialogState
           ),
           FilledButton(
             onPressed:
-                _authorizerId == null || _password.text.isEmpty || _validating
+                _authorizerId == null || _pin.text.length != 6 || _validating
                     ? null
                     : _authorize,
             child: Text(_validating ? 'VALIDANDO...' : 'AUTORIZAR'),

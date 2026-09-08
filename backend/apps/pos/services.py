@@ -8,6 +8,7 @@ from time import perf_counter
 
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
+from django.core.exceptions import ValidationError
 from django.core.mail import send_mail
 from django.db import transaction
 from django.db.models import Prefetch
@@ -22,7 +23,7 @@ from apps.companies.models import Branch, Status, UserBranchAccess, UserCompanyA
 from apps.companies.rbac import OPERATING_PERMISSION_CODES
 from apps.companies.selectors import (
     branch_blocked_permission_codes, branch_permission_codes,
-    company_permission_codes,
+    company_permission_codes, eligible_pos_branch_users,
 )
 from apps.saas.services import effective_entitlement, resolve_effective_status
 
@@ -396,6 +397,38 @@ def authenticate_operator(device, operator_id, pin):
     if pin_invalid:
         _error('pin_invalid', 'PIN invalido.', status_code=401)
     return session, token
+
+
+def eligible_pos_authorizers(branch, permission_code):
+    return eligible_pos_branch_users(branch, permission_code)
+
+
+def validate_pos_authorization(device, branch, authorization, *, permission_code,
+                               authorization_field):
+    """Validate a delegated POS approval with the approver's operational PIN."""
+    if device is None:
+        raise ValidationError({authorization_field: 'Dispositivo POS obrigatório.'})
+    device = validate_device_operational(device)
+    if device.branch_id != branch.pk:
+        raise ValidationError({authorization_field: 'Autorização fora da filial do dispositivo.'})
+    if not authorization or authorization.get('method') != 'pin':
+        raise ValidationError({authorization_field: 'Autorização por PIN inválida.'})
+    approver = eligible_pos_authorizers(
+        branch, permission_code,
+    ).filter(pk=authorization.get('user')).first()
+    if not approver:
+        raise ValidationError({authorization_field: 'Autorizador indisponível nesta filial.'})
+    key = _fingerprint(
+        f'authorization-pin:device:{device.pk}:authorizer:{approver.pk}:purpose:{permission_code}'
+    )
+    if _limited(key):
+        _error('authorization_pin_rate_limited', 'PIN temporariamente bloqueado.', status_code=429)
+    pin = str(authorization.get('credential') or '')
+    if not re.fullmatch(r'\d{6}', pin) or not check_password(pin, approver.pos_pin_hash):
+        _record_limit_failure(key)
+        raise ValidationError({authorization_field: 'PIN inválido.'})
+    _clear_limit(key)
+    return approver
 
 
 def authenticate_operator_session(device, token):

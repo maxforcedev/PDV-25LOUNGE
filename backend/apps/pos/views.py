@@ -28,7 +28,7 @@ from apps.cash.services import (
     session_operational_summary,
 )
 from apps.companies.permissions import FunctionalCompanyPermission
-from apps.companies.selectors import accessible_branches, eligible_branch_users
+from apps.companies.selectors import accessible_branches
 from apps.companies.features import require_branch_feature
 from apps.companies.models import Customer, Status
 from apps.products.models import (
@@ -56,6 +56,7 @@ from .services import (
     assert_branch_device_limit, authenticate_operator, cash_state_for_device, confirm_pairing,
     effective_cash_settings, effective_settings, identify_branch, logout_operator, modules_for,
     operator_permission_codes, pos_operator_queryset, request_otp, set_device_status,
+    eligible_pos_authorizers,
     request_pos_pin_reset, set_pos_pin, validate_device_operational, version_gate,
 )
 
@@ -556,7 +557,7 @@ def _authorizer_options(branch, permission_code):
             'id': user.pk,
             'display_name': user.get_full_name().strip() or user.email,
         }
-        for user in eligible_branch_users(branch, permission_code)
+        for user in eligible_pos_authorizers(branch, permission_code)
     ]
 
 
@@ -607,6 +608,7 @@ class POSDiscountAuthorizationValidationView(POSQuickSaleView):
             validate_discount_authorization(
                 device.branch, data, permission_code=permission_code,
                 authorization_field='authorization',
+                allow_pos_only=True, pos_device=device,
             )
         except DjangoValidationError as error:
             messages = error.message_dict.get('authorization', error.messages)

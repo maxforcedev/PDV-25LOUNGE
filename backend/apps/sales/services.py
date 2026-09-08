@@ -263,8 +263,16 @@ def _eligible_sale_user(branch, user, permission_code, field):
 
 
 def validate_discount_authorization(branch, authorization, *, permission_code,
-                                    authorization_field):
+                                    authorization_field, allow_pos_only=False,
+                                    pos_device=None):
     """Validate a delegated discount approval without storing its credential."""
+    if allow_pos_only:
+        from apps.pos.services import validate_pos_authorization
+
+        return validate_pos_authorization(
+            pos_device, branch, authorization, permission_code=permission_code,
+            authorization_field=authorization_field,
+        )
     if not authorization or authorization.get('method') != 'password':
         raise ValidationError({authorization_field: 'Autorização de desconto inválida.'})
     approver = _eligible_sale_user(
@@ -277,7 +285,7 @@ def validate_discount_authorization(branch, authorization, *, permission_code,
 
 def _discount_approver(
     branch, operator, discount, authorization, *, permission_code, authorization_field,
-    allow_pos_only=False,
+    allow_pos_only=False, pos_device=None,
 ):
     if not discount:
         return None
@@ -289,10 +297,12 @@ def _discount_approver(
     return validate_discount_authorization(
         branch, authorization, permission_code=permission_code,
         authorization_field=authorization_field,
+        allow_pos_only=allow_pos_only, pos_device=pos_device,
     )
 
 
-def _service_fee_waiver(branch, operator, waived, authorization, *, allow_pos_only=False):
+def _service_fee_waiver(branch, operator, waived, authorization, *, allow_pos_only=False,
+                         pos_device=None):
     if not waived:
         return None
     if user_has_branch_permission(
@@ -300,15 +310,11 @@ def _service_fee_waiver(branch, operator, waived, authorization, *, allow_pos_on
         allow_superuser=not allow_pos_only,
     ):
         return operator
-    if not authorization or authorization.get('method') != 'password':
-        raise ValidationError({'service_fee_authorization': 'Autorização para retirar taxa inválida.'})
-    approver = _eligible_sale_user(
-        branch, authorization.get('user'), 'sales.waive_service_fee',
-        'service_fee_authorization',
+    return validate_discount_authorization(
+        branch, authorization, permission_code='sales.waive_service_fee',
+        authorization_field='service_fee_authorization',
+        allow_pos_only=allow_pos_only, pos_device=pos_device,
     )
-    if not approver.check_password(authorization.get('credential') or ''):
-        raise ValidationError({'service_fee_authorization': 'Autorização para retirar taxa inválida.'})
-    return approver
 
 
 def strict_decimal(value, *, field, decimal_places, max_digits, allow_none=False):
@@ -1208,8 +1214,9 @@ def _active_branch(branch, user, permission_code, *, allow_pos_only=False):
         )
     except (Branch.DoesNotExist, TypeError, ValueError):
         raise ValidationError({'branch': 'Filial ou empresa inativa ou inválida.'})
-    if not user.is_superuser and not user_has_branch_permission(
+    if not user_has_branch_permission(
         user, branch.pk, permission_code, allow_pos_only=allow_pos_only,
+        allow_superuser=not allow_pos_only,
     ):
         raise PermissionDenied('Você não possui permissão para esta operação nesta filial.')
     return branch
@@ -1466,7 +1473,10 @@ def catalog_products_with_available_stock(branch, products):
     """
     products = list(products)
     states = catalog_product_operational_states(branch, products)
-    return [product for product in products if states[product.pk]['can_sell']]
+    return [
+        product for product in products
+        if not states[product.pk]['stock_applicable'] or states[product.pk]['stock_available']
+    ]
 
 
 def catalog_product_operational_states(branch, products):
@@ -1977,16 +1987,19 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             permission_code='sales.apply_discount',
             authorization_field='discount_authorization',
             allow_pos_only=allow_pos_only,
+            pos_device=pos_device,
         )
         item_discount_approved_by = _discount_approver(
             branch, user, item_discount_total, item_discount_authorization,
             permission_code='sales.apply_item_discount',
             authorization_field='item_discount_authorization',
             allow_pos_only=allow_pos_only,
+            pos_device=pos_device,
         )
         service_fee_waived_by = _service_fee_waiver(
             branch, user, bool(service_fee_waived), service_fee_authorization,
             allow_pos_only=allow_pos_only,
+            pos_device=pos_device,
         )
         service_fee_rate = financials['service_fee_rate']
         service_fee_amount = financials['service_fee_amount']

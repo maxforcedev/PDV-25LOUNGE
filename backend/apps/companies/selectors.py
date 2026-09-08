@@ -273,6 +273,14 @@ def eligible_branch_users(branch, permission_code):
     ).exclude(id__in=blocked_users).exclude(id__in=company_blocked_users).distinct().order_by('first_name', 'last_name', 'email', 'id')
 
 
+def eligible_pos_branch_users(branch, permission_code):
+    """Eligible delegated approvers for an operational POS device."""
+    return eligible_branch_users(branch, permission_code).filter(
+        can_access_pos=True,
+        pos_pin_hash__gt='',
+    )
+
+
 def branch_permission_codes(user, branch_id, *, allow_pos_only=False,
                             allow_superuser=True):
     if not user.is_authenticated or not user.is_active:

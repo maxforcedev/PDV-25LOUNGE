@@ -46,7 +46,9 @@ from apps.sales.models import (
     OperationType, Payment, Promotion, PromotionDiscountType, Sale, SaleStatus,
 )
 from apps.sales.services import (
-    calculate_preview, finalize_sale, cancel_sale,
+    assess_sale_stock_availability, calculate_preview,
+    catalog_product_operational_states, catalog_products_with_available_stock,
+    finalize_sale, cancel_sale,
     ensure_default_payment_methods,
 )
 from apps.reports.selectors import filtered_cash_sessions, sale_rankings
@@ -630,3 +632,61 @@ class SalesCrossTenantTests(SalesFixture, TestCase):
                 idempotency_key=uuid.uuid4(),
                 channel=SalesChannel.COUNTER,
             )
+
+
+class POSCatalogStockContractTests(SalesFixture, TestCase):
+    def test_visibility_uses_physical_stock_while_sale_capability_uses_negative_setting(self):
+        set_stock(self.branch, self.product, '0', '10.00')
+        settings = self.branch.settings
+
+        settings.allow_negative_stock = False
+        settings.save(update_fields=['allow_negative_stock', 'updated_at'])
+        blocked = catalog_product_operational_states(self.branch, [self.product])[self.product.pk]
+        self.assertFalse(blocked['stock_available'])
+        self.assertFalse(blocked['can_sell'])
+        self.assertEqual(catalog_products_with_available_stock(self.branch, [self.product]), [])
+
+        settings.allow_negative_stock = True
+        settings.save(update_fields=['allow_negative_stock', 'updated_at'])
+        negative = catalog_product_operational_states(self.branch, [self.product])[self.product.pk]
+        self.assertFalse(negative['stock_available'])
+        self.assertTrue(negative['can_sell'])
+        self.assertEqual(catalog_products_with_available_stock(self.branch, [self.product]), [])
+
+    def test_inventory_none_is_visible_and_always_sellable(self):
+        service = Product.objects.create(
+            company=self.company, category=self.category, name='Service',
+            internal_code='SERVICE', unit=Unit.UNIT, cost=Decimal('0.00'),
+            sale_price=Decimal('10.00'), inventory_behavior=InventoryBehavior.NONE,
+        )
+        ProductBranchConfig.objects.create(
+            product=service, branch=self.branch, category=self.category,
+        )
+
+        state = catalog_product_operational_states(self.branch, [service])[service.pk]
+
+        self.assertFalse(state['stock_applicable'])
+        self.assertTrue(state['stock_available'])
+        self.assertTrue(state['can_sell'])
+        self.assertEqual(catalog_products_with_available_stock(self.branch, [service]), [service])
+
+    def test_availability_enforces_shortages_only_without_negative_stock(self):
+        set_stock(self.branch, self.product, '2', '10.00')
+        settings = self.branch.settings
+        items = [{'product': self.product.pk, 'quantity': '3'}]
+
+        settings.allow_negative_stock = False
+        settings.save(update_fields=['allow_negative_stock', 'updated_at'])
+        blocked = assess_sale_stock_availability(
+            company=self.company, raw_items=items, branch=self.branch,
+        )
+        self.assertFalse(blocked['available'])
+        self.assertTrue(blocked['enforced'])
+
+        settings.allow_negative_stock = True
+        settings.save(update_fields=['allow_negative_stock', 'updated_at'])
+        allowed = assess_sale_stock_availability(
+            company=self.company, raw_items=items, branch=self.branch,
+        )
+        self.assertTrue(allowed['available'])
+        self.assertFalse(allowed['enforced'])

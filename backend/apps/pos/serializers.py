@@ -150,12 +150,12 @@ class POSStockAvailabilitySerializer(serializers.Serializer):
 
 class POSDiscountAuthorizationSerializer(serializers.Serializer):
     user = serializers.IntegerField(min_value=1)
-    method = serializers.ChoiceField(choices=('password',))
+    method = serializers.ChoiceField(choices=('pin',))
     credential = serializers.CharField(trim_whitespace=False, write_only=True)
 
     def to_internal_value(self, data):
         if not isinstance(data, dict) or set(data) != {'user', 'method', 'credential'}:
-            raise serializers.ValidationError('A autorização deve informar usuário e senha.')
+            raise serializers.ValidationError('A autorização deve informar usuário e PIN.')
         return super().to_internal_value(data)
 
 
@@ -165,7 +165,7 @@ class POSDiscountAuthorizationValidationSerializer(POSDiscountAuthorizationSeria
     def to_internal_value(self, data):
         expected = {'type', 'user', 'method', 'credential'}
         if not isinstance(data, dict) or set(data) != expected:
-            raise serializers.ValidationError('A autorização deve informar tipo, usuário e senha.')
+            raise serializers.ValidationError('A autorização deve informar tipo, usuário e PIN.')
         return serializers.Serializer.to_internal_value(self, data)
 
 

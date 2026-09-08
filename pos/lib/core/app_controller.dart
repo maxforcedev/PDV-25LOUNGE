@@ -74,6 +74,9 @@ class AppController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    // Operator sessions are intentionally not resumed after reopening the POS.
+    await _secrets.clearOperatorSession();
+    _credentialCache?.cacheOperatorSession(null);
     await recoverPairedDevice();
   }
 
@@ -342,14 +345,13 @@ class AppController extends ChangeNotifier {
         'Caixa fechado com sucesso.',
       );
 
-  Future<CashSessionSummary?> cashSessionSummary(int sessionId) async {
-    final snapshot = bootstrapSnapshot;
-    if (snapshot == null ||
-        !snapshot.permissions.contains('cash_registers.view')) {
+  Future<CashSessionSummary?> cashSessionSummary(
+      CashSessionInfo session) async {
+    if (!session.canView) {
       return null;
     }
     try {
-      return await _api.cashSessionSummary(sessionId);
+      return await _api.cashSessionSummary(session.id);
     } on PosApiException catch (error) {
       _handleApiError(error);
     } on PosNetworkException catch (error) {

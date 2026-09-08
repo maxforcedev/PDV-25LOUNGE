@@ -579,6 +579,20 @@ class POSFoundationIntegrationTests(TestCase):
         )
         self.assertEqual(blocked_entry.status_code, 403, blocked_entry.data)
 
+    def test_pos_superuser_without_effective_sales_create_cannot_start_sale(self):
+        operator, _ = self.login_pos_operator()
+        operator.is_superuser = True
+        operator.save(update_fields=['is_superuser', 'updated_at'])
+        UserPermissionBlock.objects.create(
+            company=self.company, branch=self.branch, user=operator,
+            permission=FunctionalPermission.objects.get(code='sales.create'),
+            created_by=self.owner,
+        )
+
+        response = self.client.post(reverse('pos:sale-finalize'), {}, format='json')
+
+        self.assertEqual(response.status_code, 403, response.data)
+
     def test_pos_cash_overview_allows_operational_permissions_but_redacts_opening_amount(self):
         operator, _ = self.login_pos_operator()
         register = CashRegister.objects.create(branch=self.branch, name='Bar')

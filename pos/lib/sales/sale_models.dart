@@ -218,14 +218,14 @@ class QuickSaleAuthorization {
 
   Map<String, dynamic> toJson() => {
         'user': userId,
-        'method': 'password',
+        'method': 'pin',
         'credential': credential,
       };
 
-  // The password must never become part of a persisted idempotency intent.
+  // The PIN must never become part of a persisted idempotency intent.
   Map<String, dynamic> get idempotencyIdentity => {
         'user': userId,
-        'method': 'password',
+        'method': 'pin',
       };
 }
 

@@ -168,9 +168,8 @@ class _CashPageState extends State<CashPage> {
 
   Future<void> _loadSummary(int sessionId) async {
     final snapshot = widget.controller.bootstrapSnapshot;
-    if (snapshot == null ||
-        !snapshot.permissions.contains('cash_registers.view') ||
-        _currentSession(snapshot.cash)?.id != sessionId) {
+    final session = snapshot == null ? null : _currentSession(snapshot.cash);
+    if (session == null || session.id != sessionId || !session.canView) {
       return;
     }
     final request = ++_summaryRequest;
@@ -179,7 +178,7 @@ class _CashPageState extends State<CashPage> {
       _summarySessionId = sessionId;
       _loadingSummary = true;
     });
-    final summary = await widget.controller.cashSessionSummary(sessionId);
+    final summary = await widget.controller.cashSessionSummary(session);
     final currentSessionId = _currentSession(
             widget.controller.bootstrapSnapshot?.cash ??
                 const CashOverview(mode: 'FLEXIBLE', enabled: false))

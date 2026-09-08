@@ -104,25 +104,32 @@ void main() {
         'Enviamos as instruções para redefinir seu PIN.');
   });
 
-  test('does not request a cash summary without the view permission', () async {
+  test('uses the backend-provided session summary capability', () async {
     final api = FakePosApi();
     final controller =
         AppController(api: api, secrets: MemorySecretStore(), device: device);
-    controller.bootstrapSnapshot = await api.bootstrap();
+    const denied = CashSessionInfo(
+      id: 1,
+      registerId: 1,
+      registerName: 'Caixa',
+      status: 'open',
+      openedByName: 'Joao',
+      openedAt: null,
+    );
+    const allowed = CashSessionInfo(
+      id: 1,
+      registerId: 1,
+      registerName: 'Caixa',
+      status: 'open',
+      openedByName: 'Joao',
+      openedAt: null,
+      canView: true,
+    );
 
-    expect(await controller.cashSessionSummary(1), isNull);
+    expect(await controller.cashSessionSummary(denied), isNull);
     expect(api.cashSummaryCalls, 0);
 
-    controller.bootstrapSnapshot = BootstrapSnapshot(
-      companyName: 'Empresa',
-      branchName: 'Centro',
-      deviceName: 'Terminal 01',
-      operatorName: 'Joao',
-      release: api.release,
-      modules: const [],
-      permissions: const {'cash_registers.view'},
-    );
-    expect(await controller.cashSessionSummary(1), isNotNull);
+    expect(await controller.cashSessionSummary(allowed), isNotNull);
     expect(api.cashSummaryCalls, 1);
   });
 
@@ -167,6 +174,7 @@ void main() {
           status: 'open',
           openedByName: 'Joao',
           openedAt: null,
+          canView: true,
         ),
       ),
     );
@@ -183,7 +191,8 @@ void main() {
       cash: const CashOverview(mode: 'FIXED', enabled: true),
     );
 
-    await tester.pumpWidget(MaterialApp(home: CashPage(controller: controller)));
+    await tester
+        .pumpWidget(MaterialApp(home: CashPage(controller: controller)));
     await tester.pump();
     expect(api.cashSummaryCalls, 0);
 
@@ -199,6 +208,7 @@ class MemorySecretStore implements SecretStore {
 
   String? deviceCredential;
   String? operatorSession;
+  String? pendingSaleIntents;
 
   @override
   Future<void> clearDeviceCredential() async => deviceCredential = null;
@@ -213,12 +223,19 @@ class MemorySecretStore implements SecretStore {
   Future<String?> readOperatorSession() async => operatorSession;
 
   @override
+  Future<String?> readPendingSaleIntents() async => pendingSaleIntents;
+
+  @override
   Future<void> writeDeviceCredential(String credential) async =>
       deviceCredential = credential;
 
   @override
   Future<void> writeOperatorSession(String token) async =>
       operatorSession = token;
+
+  @override
+  Future<void> writePendingSaleIntents(String value) async =>
+      pendingSaleIntents = value;
 }
 
 class FakePosApi implements PosApi {
@@ -245,6 +262,9 @@ class FakePosApi implements PosApi {
   String? pinResetOperatorId;
   int cashOverviewCalls = 0;
   int cashSummaryCalls = 0;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 
   @override
   Future<BootstrapSnapshot> bootstrap() async => BootstrapSnapshot(
@@ -346,15 +366,16 @@ class FakePosApi implements PosApi {
 
   @override
   Future<CashOverview> recordCashWithdrawal(
-      {required int sessionId,
-      required String amount,
-      required String reason,
-      required String category,
-      String? beneficiaryType,
-      int? beneficiaryId,
-      required String idempotencyKey}) async =>
+          {required int sessionId,
+          required String amount,
+          required String reason,
+          required String category,
+          String? beneficiaryType,
+          int? beneficiaryId,
+          required String idempotencyKey}) async =>
       _cashMutationResponse;
 
   CashOverview get _cashMutationResponse =>
-      cashOverviewResponse ?? const CashOverview(mode: 'FLEXIBLE', enabled: true);
+      cashOverviewResponse ??
+      const CashOverview(mode: 'FLEXIBLE', enabled: true);
 }
