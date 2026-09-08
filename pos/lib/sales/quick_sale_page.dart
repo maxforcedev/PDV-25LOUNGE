@@ -800,10 +800,15 @@ class _QuickSalePageState extends State<QuickSalePage> {
           loadingPreview: _loadingPreview,
           discount: _discount,
           cashReady: _checkoutReady,
-          serviceFeeWaived: _serviceFeeWaived,
-          showServiceFeeAction: _serviceFeeWaived ||
+          customer: _draft.customer,
+          allowCustomer: _canViewCustomers,
+          onCustomer: _selectCustomer,
+          onRemoveCustomer: _removeCustomer,
+          allowWaiveFee: _serviceFeeWaived ||
               (_preview != null && _preview!.serviceFeeRate != '0.00'),
+          serviceFeeWaived: _serviceFeeWaived,
           onServiceFee: _toggleServiceFee,
+          showServiceFeeMenu: false,
           onEdit: _editCartItem,
           onCheckout: _checkout,
         ),
@@ -879,11 +884,16 @@ class _QuickSalePageState extends State<QuickSalePage> {
                         loadingPreview: _loadingPreview,
                         discount: _discount,
                         cashReady: _checkoutReady,
-                        serviceFeeWaived: _serviceFeeWaived,
-                        showServiceFeeAction: _serviceFeeWaived ||
+                        customer: _draft.customer,
+                        allowCustomer: _canViewCustomers,
+                        onCustomer: _selectCustomer,
+                        onRemoveCustomer: _removeCustomer,
+                        allowWaiveFee: _serviceFeeWaived ||
                             (_preview != null &&
                                 _preview!.serviceFeeRate != '0.00'),
+                        serviceFeeWaived: _serviceFeeWaived,
                         onServiceFee: _toggleServiceFee,
+                        showServiceFeeMenu: true,
                         onEdit: _editCartItem,
                         onCheckout: _checkout,
                       ),
@@ -1418,9 +1428,14 @@ class _CartPanel extends StatelessWidget {
     required this.loadingPreview,
     required this.discount,
     required this.cashReady,
+    required this.customer,
+    required this.allowCustomer,
+    required this.onCustomer,
+    required this.onRemoveCustomer,
+    required this.allowWaiveFee,
     required this.serviceFeeWaived,
-    required this.showServiceFeeAction,
     required this.onServiceFee,
+    required this.showServiceFeeMenu,
     required this.onEdit,
     required this.onCheckout,
   });
@@ -1429,9 +1444,14 @@ class _CartPanel extends StatelessWidget {
   final bool loadingPreview;
   final QuickSaleDiscountIntent discount;
   final bool cashReady;
+  final QuickSaleCustomer? customer;
+  final bool allowCustomer;
+  final Future<void> Function() onCustomer;
+  final VoidCallback onRemoveCustomer;
+  final bool allowWaiveFee;
   final bool serviceFeeWaived;
-  final bool showServiceFeeAction;
   final Future<void> Function() onServiceFee;
+  final bool showServiceFeeMenu;
   final ValueChanged<int> onEdit;
   final VoidCallback onCheckout;
 
@@ -1596,18 +1616,47 @@ class _CartPanel extends StatelessWidget {
                         strong: true),
                   ],
                   const SizedBox(height: 12),
-                  if (showServiceFeeAction) ...[
-                    OutlinedButton.icon(
-                      onPressed: () => unawaited(onServiceFee()),
-                      icon: Icon(serviceFeeWaived
-                          ? Icons.add_circle_outline
-                          : Icons.remove_circle_outline),
-                      label: Text(serviceFeeWaived
-                          ? 'Restaurar taxa de serviço'
-                          : 'Isentar taxa de serviço'),
-                    ),
+                  if (allowCustomer) ...[
+                    if (customer == null)
+                      OutlinedButton.icon(
+                        onPressed: () => unawaited(onCustomer()),
+                        icon: const Icon(Icons.person_add_alt_1_outlined),
+                        label: const Text('ADICIONAR CLIENTE'),
+                      )
+                    else
+                      Row(children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () => unawaited(onCustomer()),
+                            icon: const Icon(Icons.person_outline),
+                            label: Text(customer!.name,
+                                maxLines: 1, overflow: TextOverflow.ellipsis),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Remover cliente',
+                          onPressed: onRemoveCustomer,
+                          icon: const Icon(Icons.close),
+                        ),
+                      ]),
                     const SizedBox(height: 8),
                   ],
+                  if (showServiceFeeMenu && allowWaiveFee)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: PopupMenuButton<String>(
+                        tooltip: 'Mais opções',
+                        onSelected: (_) => unawaited(onServiceFee()),
+                        itemBuilder: (_) => [
+                          PopupMenuItem(
+                            value: 'fee',
+                            child: Text(serviceFeeWaived
+                                ? 'Restaurar taxa de serviço'
+                                : 'Isentar taxa de serviço'),
+                          ),
+                        ],
+                      ),
+                    ),
                   FilledButton(
                       onPressed: cart.isEmpty ||
                               preview == null ||
@@ -2560,6 +2609,15 @@ class _PaymentDraft {
   }
 }
 
+String _paymentMethodName(QuickSalePaymentMethod method) =>
+    switch (method.code) {
+      'cash' => 'Dinheiro',
+      'pix' => 'PIX',
+      'debit_card' => 'Cartão de débito',
+      'credit_card' => 'Cartão de crédito',
+      _ => method.name,
+    };
+
 class _CheckoutDialog extends StatefulWidget {
   const _CheckoutDialog({
     required this.options,
@@ -2616,6 +2674,22 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
       (_total - _entered).clamp(0, double.infinity).toDouble();
   bool get _hasRemainingCash =>
       _payments.where((item) => item.useRemaining).length == 1;
+
+  double _paymentAmount(_PaymentDraft payment) => payment.useRemaining
+      ? _remaining
+      : double.tryParse(payment.amount.text.replaceAll(',', '.')) ?? 0;
+
+  List<int> _cashSuggestions(_PaymentDraft payment) {
+    final due = _paymentAmount(payment);
+    final suggestions = <int>[20, 50, 100, 200];
+    if (due > 100 && due <= 150) suggestions.insert(3, 150);
+    return suggestions.where((value) => value >= due).take(3).toList();
+  }
+
+  void _setCashReceived(_PaymentDraft payment, double value) {
+    setState(() => payment.received.text = value.toStringAsFixed(2));
+  }
+
   bool get _validPayments {
     if (_payments.any((item) =>
         item.method.code == 'cash' && item.received.text.trim().isEmpty)) {
@@ -2740,7 +2814,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
                                   _PaymentDraft(
                                       widget.options.paymentMethods.first))),
                           icon: const Icon(Icons.add),
-                          label: const Text('ADICIONAR PAGAMENTO'),
+                          label: const Text('DIVIDIR PAGAMENTO'),
                         ),
                       ],
                     ),
@@ -2810,7 +2884,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
                 children: [
                   for (final method in widget.options.paymentMethods)
                     ChoiceChip(
-                      label: Text(method.name.toUpperCase()),
+                      label: Text(_paymentMethodName(method)),
                       selected: payment.method.id == method.id,
                       selectedColor: const Color(0xff3454d1),
                       labelStyle: TextStyle(
@@ -2857,6 +2931,30 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
                         const TextInputType.numberWithOptions(decimal: true),
                     decoration: const InputDecoration(
                         labelText: 'Valor recebido', prefixText: 'R\$ ')),
+              if (payment.method.code == 'cash') ...[
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    ActionChip(
+                      label: const Text('VALOR EXATO'),
+                      onPressed:
+                          widget.finalizing || _paymentAmount(payment) <= 0
+                              ? null
+                              : () => _setCashReceived(
+                                  payment, _paymentAmount(payment)),
+                    ),
+                    for (final value in _cashSuggestions(payment))
+                      ActionChip(
+                        label: Text('R\$ $value'),
+                        onPressed: widget.finalizing
+                            ? null
+                            : () => _setCashReceived(payment, value.toDouble()),
+                      ),
+                  ],
+                ),
+              ],
               if (payment.method.code == 'cash' &&
                   payment.received.text.trim().isNotEmpty)
                 Align(
