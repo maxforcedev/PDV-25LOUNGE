@@ -264,7 +264,8 @@ def _eligible_sale_user(branch, user, permission_code, field):
 
 def validate_discount_authorization(branch, authorization, *, permission_code,
                                      authorization_field, allow_pos_only=False,
-                                     pos_device=None, requester=None):
+                                     pos_device=None, requester=None,
+                                     device_validated=False):
     """Validate a delegated discount approval without storing its credential."""
     if allow_pos_only:
         from apps.pos.services import validate_pos_authorization
@@ -272,7 +273,7 @@ def validate_discount_authorization(branch, authorization, *, permission_code,
         return validate_pos_authorization(
             pos_device, branch, authorization, permission_code=permission_code,
             authorization_field=authorization_field,
-            requester=requester, device_validated=allow_pos_only,
+            requester=requester, device_validated=device_validated,
         )
     if not authorization or authorization.get('method') != 'password':
         raise ValidationError({authorization_field: 'Autorização de desconto inválida.'})
@@ -287,6 +288,7 @@ def validate_discount_authorization(branch, authorization, *, permission_code,
 def _discount_approver(
     branch, operator, discount, authorization, *, permission_code, authorization_field,
     allow_pos_only=False, pos_device=None, permission_codes=None,
+    device_validated=False,
 ):
     if not discount:
         return None
@@ -304,11 +306,12 @@ def _discount_approver(
         branch, authorization, permission_code=permission_code,
         authorization_field=authorization_field,
         allow_pos_only=allow_pos_only, pos_device=pos_device, requester=operator,
+        device_validated=device_validated,
     )
 
 
 def _service_fee_waiver(branch, operator, waived, authorization, *, allow_pos_only=False,
-                          pos_device=None, permission_codes=None):
+                           pos_device=None, permission_codes=None, device_validated=False):
     if not waived:
         return None
     has_permission = (
@@ -325,6 +328,7 @@ def _service_fee_waiver(branch, operator, waived, authorization, *, allow_pos_on
         branch, authorization, permission_code='sales.waive_service_fee',
         authorization_field='service_fee_authorization',
         allow_pos_only=allow_pos_only, pos_device=pos_device, requester=operator,
+        device_validated=device_validated,
     )
 
 
@@ -1859,7 +1863,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
                        confirmed_order_items=None, internal_permission_code=None,
                        precomputed_financials=None, payment_sources=None, pos_device=None,
                         allow_pos_only=False, audit_metadata=None,
-                        pos_permission_codes=None):
+                        pos_permission_codes=None, pos_device_validated=False):
     permission = 'sales.create_consumption' if operation_type == OperationType.CONSUMPTION else 'sales.create'
     if operation_type not in OperationType.values:
         raise ValidationError({'operation_type': 'Tipo de operação inválido.'})
@@ -2035,6 +2039,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             allow_pos_only=allow_pos_only,
             pos_device=pos_device,
             permission_codes=pos_permission_codes,
+            device_validated=pos_device_validated,
         )
         item_discount_approved_by = _discount_approver(
             branch, user, item_discount_total, item_discount_authorization,
@@ -2043,12 +2048,14 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             allow_pos_only=allow_pos_only,
             pos_device=pos_device,
             permission_codes=pos_permission_codes,
+            device_validated=pos_device_validated,
         )
         service_fee_waived_by = _service_fee_waiver(
             branch, user, bool(service_fee_waived), service_fee_authorization,
             allow_pos_only=allow_pos_only,
             pos_device=pos_device,
             permission_codes=pos_permission_codes,
+            device_validated=pos_device_validated,
         )
         service_fee_rate = financials['service_fee_rate']
         service_fee_amount = financials['service_fee_amount']

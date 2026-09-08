@@ -637,6 +637,7 @@ class POSDiscountAuthorizationValidationView(POSQuickSaleView):
                 device.branch, data, permission_code=permission_code,
                 authorization_field='authorization',
                 allow_pos_only=True, pos_device=device, requester=operator,
+                device_validated=True,
             )
         except DjangoValidationError as error:
             messages = error.message_dict.get('authorization', error.messages)
@@ -723,6 +724,7 @@ class POSFinalizeSaleView(POSQuickSaleView):
             allow_pos_only=True,
             audit_metadata=self.audit_metadata(device, operator_session),
             pos_permission_codes=permissions,
+            pos_device_validated=True,
         )
         replayed = bool(getattr(sale, '_idempotency_replayed', False))
         request.branch_context = device.branch

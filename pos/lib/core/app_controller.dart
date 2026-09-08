@@ -414,9 +414,11 @@ class AppController extends ChangeNotifier {
       );
     } on PosApiException catch (error) {
       if (error.code == 'stock_unavailable') rethrow;
-      _handleApiError(error);
-    } on PosNetworkException catch (error) {
-      _showTransientMessage(error.message);
+      _showTransientMessage(
+          'Não foi possível atualizar a venda agora. Tente novamente.');
+    } on PosNetworkException {
+      _showTransientMessage(
+          'Não foi possível atualizar a venda agora. Tente novamente.');
     }
     return null;
   }

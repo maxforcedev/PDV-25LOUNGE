@@ -611,21 +611,22 @@ class _QuickSalePageState extends State<QuickSalePage> {
     } on PosApiException catch (error) {
       if (!mounted ||
           error.code != 'stock_unavailable' ||
-          intent.rollbackCart == null ||
           intent.generation != _previewGeneration ||
           intent.availabilityGeneration != _availabilityGeneration) {
         return;
       }
       final availability = QuickSaleStockAvailability.fromJson(error.details);
-      _lastValidatedCart = List<QuickSaleCartItem>.of(intent.rollbackCart!);
       setState(() {
-        _cart
-          ..clear()
-          ..addAll(intent.rollbackCart!);
+        if (intent.rollbackCart != null) {
+          _lastValidatedCart = List<QuickSaleCartItem>.of(intent.rollbackCart!);
+          _cart
+            ..clear()
+            ..addAll(intent.rollbackCart!);
+        }
         _preview = null;
         _loadingPreview = false;
       });
-      _draft.changed();
+      if (intent.rollbackCart != null) _draft.changed();
       _showStockUnavailable(availability, intent.stockMutation);
     } finally {
       _previewInFlight = false;
@@ -677,9 +678,26 @@ class _QuickSalePageState extends State<QuickSalePage> {
   }
 
   Future<void> _editSaleDiscount() async {
+    final preview = _preview;
+    if (preview == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text(
+            'Aguarde a atualização dos valores antes de aplicar desconto.'),
+      ));
+      return;
+    }
+    final maximumAmount = [
+      double.tryParse(preview.subtotal.replaceAll(',', '.')) ?? 0,
+      -(double.tryParse(preview.promotionDiscountTotal.replaceAll(',', '.')) ??
+          0),
+      -(double.tryParse(preview.itemDiscountTotal.replaceAll(',', '.')) ?? 0),
+    ].reduce((total, value) => total + value);
     final discount = await showDialog<QuickSaleDiscountIntent>(
       context: context,
-      builder: (_) => _DiscountDialog(initial: _discount),
+      builder: (_) => _DiscountDialog(
+        initial: _discount,
+        maximumAmount: maximumAmount < 0 ? 0 : maximumAmount,
+      ),
     );
     if (discount == null || !mounted) return;
     QuickSaleAuthorization? authorization;
@@ -1850,8 +1868,9 @@ class _CustomerCreateDialogState extends State<_CustomerCreateDialog> {
 }
 
 class _DiscountDialog extends StatefulWidget {
-  const _DiscountDialog({required this.initial});
+  const _DiscountDialog({required this.initial, this.maximumAmount});
   final QuickSaleDiscountIntent initial;
+  final double? maximumAmount;
 
   @override
   State<_DiscountDialog> createState() => _DiscountDialogState();
@@ -1871,7 +1890,9 @@ class _DiscountDialogState extends State<_DiscountDialog> {
     final value = double.tryParse(_value.text.trim().replaceAll(',', '.'));
     return value != null &&
         value > 0 &&
-        (_type == 'amount' ? value <= 999999999999.99 : value <= 100);
+        (_type == 'amount'
+            ? value <= (widget.maximumAmount ?? 999999999999.99)
+            : value <= 100);
   }
 
   void _setType(String type) {
@@ -1922,7 +1943,9 @@ class _DiscountDialogState extends State<_DiscountDialog> {
                 hintText: _type == 'percentage' ? 'Ex.: 10' : 'Ex.: 10,00',
                 suffixText: _type == 'percentage' ? '%' : null,
                 errorText: _value.text.isNotEmpty && !_valid
-                    ? 'Informe um valor válido.'
+                    ? _type == 'amount' && widget.maximumAmount != null
+                        ? 'O desconto não pode exceder o valor da venda.'
+                        : 'Informe um valor válido.'
                     : null,
               ),
             ),
@@ -2188,6 +2211,46 @@ class _DiscountAuthorizationDialogState
       );
 }
 
+class _ItemNotesDialog extends StatefulWidget {
+  const _ItemNotesDialog({required this.initial});
+
+  final String initial;
+
+  @override
+  State<_ItemNotesDialog> createState() => _ItemNotesDialogState();
+}
+
+class _ItemNotesDialogState extends State<_ItemNotesDialog> {
+  late final _notes = TextEditingController(text: widget.initial);
+
+  @override
+  void dispose() {
+    _notes.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('Observação do item'),
+        content: TextField(
+          controller: _notes,
+          maxLines: 3,
+          maxLength: 1000,
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('CANCELAR'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(_notes.text.trim()),
+            child: const Text('SALVAR'),
+          ),
+        ],
+      );
+}
+
 class _CartItemEditResult {
   const _CartItemEditResult.item(this.item, {this.itemDiscountAuthorization})
       : delete = false;
@@ -2227,24 +2290,10 @@ class _EditCartItemDialogState extends State<_EditCartItemDialog> {
   }
 
   Future<void> _editNotes() async {
-    final notes = TextEditingController(text: _item.notes);
     final value = await showDialog<String>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Observação do item'),
-        content: TextField(
-            controller: notes, maxLines: 3, maxLength: 1000, autofocus: true),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('CANCELAR')),
-          FilledButton(
-              onPressed: () => Navigator.of(context).pop(notes.text.trim()),
-              child: const Text('SALVAR')),
-        ],
-      ),
+      builder: (_) => _ItemNotesDialog(initial: _item.notes),
     );
-    notes.dispose();
     if (value != null && mounted) {
       setState(() => _item = _item.copyWith(notes: value));
     }
@@ -2638,6 +2687,8 @@ class _CheckoutDialog extends StatefulWidget {
 
 class _CheckoutDialogState extends State<_CheckoutDialog> {
   late int _sessionId = widget.options.cashSessions.first.id;
+  bool _splitting = false;
+  String? _paymentValidation;
   late final List<_PaymentDraft> _payments = [
     _PaymentDraft(
       widget.options.paymentMethods.first,
@@ -2687,31 +2738,52 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
   }
 
   void _setCashReceived(_PaymentDraft payment, double value) {
-    setState(() => payment.received.text = value.toStringAsFixed(2));
+    setState(() {
+      payment.received.text = value.toStringAsFixed(2);
+      _paymentValidation = null;
+    });
   }
 
-  bool get _validPayments {
+  String? get _paymentValidationMessage {
     if (_payments.any((item) =>
         item.method.code == 'cash' && item.received.text.trim().isEmpty)) {
-      return false;
+      return 'Informe o valor recebido em dinheiro.';
     }
     if (_payments.any((item) =>
         !item.useRemaining &&
         (double.tryParse(item.amount.text.replaceAll(',', '.')) ?? 0) <= 0)) {
-      return false;
+      return 'Informe um valor válido para cada pagamento.';
     }
     if (_hasRemainingCash) {
       final remainingCash = _payments.firstWhere((item) => item.useRemaining);
-      return _remaining > 0 &&
-          (double.tryParse(remainingCash.received.text.replaceAll(',', '.')) ??
-                  0) >=
-              _remaining;
+      if (_remaining <= 0) return 'A soma dos pagamentos excede o total.';
+      if ((double.tryParse(remainingCash.received.text.replaceAll(',', '.')) ??
+              0) <
+          _remaining) {
+        return 'O valor recebido é menor que o valor em dinheiro.';
+      }
+      return null;
     }
-    return (_entered - _total).abs() < .005;
+    for (final payment
+        in _payments.where((item) => item.method.code == 'cash')) {
+      if ((double.tryParse(payment.received.text.replaceAll(',', '.')) ?? 0) <
+          _paymentAmount(payment)) {
+        return 'O valor recebido é menor que o valor em dinheiro.';
+      }
+    }
+    if ((_entered - _total).abs() < .005) return null;
+    return _entered < _total
+        ? 'Faltam ${formatMoney((_total - _entered).toStringAsFixed(2))} para concluir.'
+        : 'A soma dos pagamentos excede o total.';
   }
 
   Future<void> _submit() async {
-    if (!_validPayments || widget.finalizing) return;
+    if (widget.finalizing) return;
+    final validation = _paymentValidationMessage;
+    if (validation != null) {
+      setState(() => _paymentValidation = validation);
+      return;
+    }
     final payload = _payments
         .map((item) => <String, dynamic>{
               'payment_method': item.method.id,
@@ -2731,7 +2803,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
     final previous = _payments[index];
     final next = _PaymentDraft(
       method,
-      useRemaining: method.code == 'cash' && previous.useRemaining,
+      useRemaining: !_splitting && method.code == 'cash',
     );
     next.amount.text = previous.amount.text;
     next.received.text = previous.received.text;
@@ -2743,8 +2815,27 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
     setState(() {
       _payments[index] = next;
       previous.dispose();
+      _paymentValidation = null;
     });
   }
+
+  void _enableSplit() {
+    setState(() {
+      final first = _payments.first;
+      if (first.useRemaining) {
+        first.useRemaining = false;
+        first.amount.text = _remaining.toStringAsFixed(2);
+      }
+      _payments.add(_PaymentDraft(widget.options.paymentMethods.first));
+      _splitting = true;
+      _paymentValidation = null;
+    });
+  }
+
+  void _addSplitPayment() => setState(() {
+        _payments.add(_PaymentDraft(widget.options.paymentMethods.first));
+        _paymentValidation = null;
+      });
 
   @override
   Widget build(BuildContext context) => Material(
@@ -2810,32 +2901,36 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
                         OutlinedButton.icon(
                           onPressed: widget.finalizing
                               ? null
-                              : () => setState(() => _payments.add(
-                                  _PaymentDraft(
-                                      widget.options.paymentMethods.first))),
+                              : _splitting
+                                  ? _addSplitPayment
+                                  : _enableSplit,
                           icon: const Icon(Icons.add),
-                          label: const Text('DIVIDIR PAGAMENTO'),
+                          label: Text(_splitting
+                              ? 'ADICIONAR FORMA DE PAGAMENTO'
+                              : 'DIVIDIR PAGAMENTO'),
                         ),
                       ],
                     ),
                   ),
                   const Divider(),
-                  _AmountRow(label: 'Pago', value: _entered.toStringAsFixed(2)),
-                  _AmountRow(
-                      label: 'Restante',
-                      value: _remaining.toStringAsFixed(2),
-                      strong: true),
+                  if (_splitting) ...[
+                    _AmountRow(
+                        label: 'Pago', value: _entered.toStringAsFixed(2)),
+                    _AmountRow(
+                        label: 'Restante',
+                        value: _remaining.toStringAsFixed(2),
+                        strong: true),
+                  ],
                   const SizedBox(height: 8),
-                  if (widget.error != null)
+                  if (widget.error != null || _paymentValidation != null)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 8),
-                      child: Text(widget.error!,
+                      child: Text(widget.error ?? _paymentValidation!,
                           textAlign: TextAlign.center,
                           style: const TextStyle(color: Colors.red)),
                     ),
                   FilledButton(
-                    onPressed:
-                        _validPayments && !widget.finalizing ? _submit : null,
+                    onPressed: widget.finalizing ? null : _submit,
                     child: widget.finalizing
                         ? const Row(
                             mainAxisSize: MainAxisSize.min,
@@ -2866,10 +2961,11 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
             padding: const EdgeInsets.all(8),
             child: Column(children: [
               Row(children: [
-                Text('Pagamento ${index + 1}',
-                    style: const TextStyle(fontWeight: FontWeight.w800)),
+                if (_splitting)
+                  Text('Pagamento ${index + 1}',
+                      style: const TextStyle(fontWeight: FontWeight.w800)),
                 const Spacer(),
-                if (_payments.length > 1)
+                if (_splitting && _payments.length > 1)
                   IconButton(
                       onPressed: widget.finalizing
                           ? null
@@ -2902,17 +2998,23 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
               Row(children: [
                 Expanded(
                     child: payment.useRemaining
-                        ? Text(
-                            'Usará o restante: ${formatMoney(_remaining.toStringAsFixed(2))}')
-                        : TextField(
-                            controller: payment.amount,
-                            enabled: !widget.finalizing,
-                            onChanged: (_) => setState(() {}),
-                            keyboardType: const TextInputType.numberWithOptions(
-                                decimal: true),
-                            decoration: const InputDecoration(
-                                labelText: 'Valor', prefixText: 'R\$ '))),
-                if (payment.method.code == 'cash')
+                        ? Text(_splitting
+                            ? 'Usará o restante: ${formatMoney(_remaining.toStringAsFixed(2))}'
+                            : 'Pagamento: ${formatMoney(_remaining.toStringAsFixed(2))}')
+                        : !_splitting
+                            ? Text(
+                                'Pagamento: ${formatMoney(_paymentAmount(payment).toStringAsFixed(2))}')
+                            : TextField(
+                                controller: payment.amount,
+                                enabled: !widget.finalizing,
+                                onChanged: (_) =>
+                                    setState(() => _paymentValidation = null),
+                                keyboardType:
+                                    const TextInputType.numberWithOptions(
+                                        decimal: true),
+                                decoration: const InputDecoration(
+                                    labelText: 'Valor', prefixText: 'R\$ '))),
+                if (_splitting && payment.method.code == 'cash')
                   TextButton(
                       onPressed: widget.finalizing
                           ? null
@@ -2926,7 +3028,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
                 TextField(
                     controller: payment.received,
                     enabled: !widget.finalizing,
-                    onChanged: (_) => setState(() {}),
+                    onChanged: (_) => setState(() => _paymentValidation = null),
                     keyboardType:
                         const TextInputType.numberWithOptions(decimal: true),
                     decoration: const InputDecoration(
