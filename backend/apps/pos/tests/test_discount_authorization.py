@@ -41,7 +41,8 @@ class POSDiscountAuthorizationTests(SimpleTestCase):
                 patch('apps.pos.services.eligible_pos_authorizers', return_value=self._authorizer_queryset(approver)), \
                 patch('apps.pos.services._limited', return_value=False), \
                 patch('apps.pos.services.check_password', return_value=True) as check_pin, \
-                patch('apps.pos.services._clear_limit'):
+                patch('apps.pos.services._clear_limit'), \
+                patch('apps.pos.services._authorization_audit'):
             self.assertIs(validate_pos_authorization(
                 device, branch, {'user': 7, 'method': 'pin', 'credential': '123456'},
                 permission_code='sales.apply_discount', authorization_field='authorization',
@@ -56,7 +57,8 @@ class POSDiscountAuthorizationTests(SimpleTestCase):
                 patch('apps.pos.services.eligible_pos_authorizers', return_value=self._authorizer_queryset(approver)), \
                 patch('apps.pos.services._limited', return_value=False), \
                 patch('apps.pos.services.check_password', return_value=False), \
-                patch('apps.pos.services._record_limit_failure') as limited:
+                patch('apps.pos.services._record_limit_failure', return_value=False) as limited, \
+                patch('apps.pos.services._authorization_audit'):
             with self.assertRaisesMessage(ValidationError, 'PIN inválido.'):
                 validate_pos_authorization(
                     device, branch, {'user': 7, 'method': 'pin', 'credential': '000000'},

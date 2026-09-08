@@ -84,6 +84,7 @@ def _record_limit_failure(key, *, limit=5):
         row.locked_until = timezone.now() + PIN_LOCK_TTL
         row.failures = 0
     row.save(update_fields=['failures', 'locked_until', 'updated_at'])
+    return bool(row.locked_until)
 
 
 def _clear_limit(key):
@@ -403,6 +404,23 @@ def eligible_pos_authorizers(branch, permission_code):
     return eligible_pos_branch_users(branch, permission_code)
 
 
+def _authorization_audit(device, branch, action, *, authorizer_user_id,
+                         permission_code, actor=None):
+    audit_log(
+        actor=actor,
+        action=action,
+        obj=device,
+        company=branch.company,
+        branch=branch,
+        metadata={
+            'source': 'pos',
+            'device_id': str(device.pk),
+            'authorizer_user_id': authorizer_user_id,
+            'permission_code': permission_code,
+        },
+    )
+
+
 def validate_pos_authorization(device, branch, authorization, *, permission_code,
                                authorization_field):
     """Validate a delegated POS approval with the approver's operational PIN."""
@@ -412,22 +430,47 @@ def validate_pos_authorization(device, branch, authorization, *, permission_code
     if device.branch_id != branch.pk:
         raise ValidationError({authorization_field: 'Autorização fora da filial do dispositivo.'})
     if not authorization or authorization.get('method') != 'pin':
+        _authorization_audit(
+            device, branch, 'pos.authorization.failed',
+            authorizer_user_id=(authorization or {}).get('user'),
+            permission_code=permission_code,
+        )
         raise ValidationError({authorization_field: 'Autorização por PIN inválida.'})
     approver = eligible_pos_authorizers(
         branch, permission_code,
     ).filter(pk=authorization.get('user')).first()
     if not approver:
+        _authorization_audit(
+            device, branch, 'pos.authorization.failed',
+            authorizer_user_id=authorization.get('user'), permission_code=permission_code,
+        )
         raise ValidationError({authorization_field: 'Autorizador indisponível nesta filial.'})
     key = _fingerprint(
         f'authorization-pin:device:{device.pk}:authorizer:{approver.pk}:purpose:{permission_code}'
     )
     if _limited(key):
+        _authorization_audit(
+            device, branch, 'pos.authorization.rate_limited',
+            authorizer_user_id=approver.pk, permission_code=permission_code,
+            actor=approver,
+        )
         _error('authorization_pin_rate_limited', 'PIN temporariamente bloqueado.', status_code=429)
     pin = str(authorization.get('credential') or '')
     if not re.fullmatch(r'\d{6}', pin) or not check_password(pin, approver.pos_pin_hash):
-        _record_limit_failure(key)
+        locked = _record_limit_failure(key)
+        _authorization_audit(
+            device, branch,
+            'pos.authorization.rate_limited' if locked else 'pos.authorization.failed',
+            authorizer_user_id=approver.pk, permission_code=permission_code,
+            actor=approver,
+        )
         raise ValidationError({authorization_field: 'PIN inválido.'})
     _clear_limit(key)
+    _authorization_audit(
+        device, branch, 'pos.authorization.succeeded',
+        authorizer_user_id=approver.pk, permission_code=permission_code,
+        actor=approver,
+    )
     return approver
 
 

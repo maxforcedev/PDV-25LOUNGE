@@ -1,3 +1,4 @@
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
@@ -16,19 +17,22 @@ from apps.base.models import AuditLog
 from apps.cash.models import CashMovement, CashRegister
 from apps.cash.services import open_session
 from apps.companies.models import (
-    Branch, FunctionalPermission, UserBranchAccess, UserCompanyAccess,
+    AccessProfile, Branch, FunctionalPermission, UserBranchAccess, UserCompanyAccess,
     UserPermissionBlock,
 )
 from apps.companies.services import create_branch_with_access, create_company_with_matrix
 from apps.pos.models import (
     AuthenticationChallenge, BranchPOSSettings, POSDevice, POSDeviceSettings,
-    POSOperatorPinAttempt, POSOperatorSession,
+    POSOperatorPinAttempt, POSOperatorSession, POSRequestRateLimit,
 )
 from apps.pos.services import (
     _mask_email, authenticate_device, authenticate_operator_session,
     create_pin_reset_token, effective_settings, pairing_channels, set_pos_pin,
     version_gate,
 )
+from apps.inventory.models import Stock
+from apps.products.models import Category, InventoryBehavior, Product, ProductBranchConfig, Unit
+from apps.sales.services import ensure_default_payment_methods
 
 
 class POSFoundationContractTests(SimpleTestCase):
@@ -148,6 +152,31 @@ class POSFoundationIntegrationTests(TestCase):
         )
         return operator
 
+    def create_pos_authorizer(self, codes, *, can_access_pos=True, with_pin=True,
+                              branch=None):
+        branch = branch or self.branch
+        profile = AccessProfile.objects.create(
+            company=self.company, name=f'POS auth {uuid4()}',
+            description='POS authorization test profile', is_system=False,
+        )
+        profile.permissions.set(FunctionalPermission.objects.filter(code__in=codes))
+        authorizer = User.objects.create_user(
+            email=f'authorizer-{uuid4()}@example.com',
+            password='Web-password-is-not-the-pin-123!', can_login=False,
+            can_access_pos=can_access_pos,
+        )
+        if with_pin:
+            authorizer.pos_pin_hash = make_password('654321')
+            authorizer.save(update_fields=['pos_pin_hash', 'updated_at'])
+        UserCompanyAccess.objects.create(
+            user=authorizer, company=self.company, access_profile=profile,
+            can_login=False,
+        )
+        UserBranchAccess.objects.create(
+            user=authorizer, branch=branch, access_profile=profile,
+        )
+        return authorizer
+
     def login_pos_operator(self):
         paired, _ = self.pair_device()
         operator = self.create_pos_operator()
@@ -163,6 +192,58 @@ class POSFoundationIntegrationTests(TestCase):
             HTTP_X_POS_OPERATOR_SESSION=login.data['operator_session']['token'],
         )
         return operator, paired
+
+    def validate_pos_authorization(self, authorizer, *, purpose='sale', pin='654321'):
+        return self.client.post(
+            reverse('pos:sale-discount-authorization-validate'),
+            {'type': purpose, 'user': authorizer.pk, 'method': 'pin', 'credential': pin},
+            format='json',
+        )
+
+    def login_existing_pos_operator(self, operator, paired):
+        self.client.credentials(HTTP_X_POS_DEVICE_CREDENTIAL=paired.data['device_credential'])
+        login = self.client.post(
+            reverse('pos:operator-login'),
+            {'operator_id': operator.pk, 'pin': '654321'}, format='json',
+        )
+        self.assertEqual(login.status_code, 200, login.data)
+        self.client.credentials(
+            HTTP_X_POS_DEVICE_CREDENTIAL=paired.data['device_credential'],
+            HTTP_X_POS_OPERATOR_SESSION=login.data['operator_session']['token'],
+        )
+
+    def pos_sale_payload(self, cash_session):
+        category = Category.objects.create(
+            company=self.company, branch=self.branch, name=f'POS category {uuid4()}',
+        )
+        product = Product.objects.create(
+            company=self.company, category=category, name=f'POS product {uuid4()}',
+            internal_code=f'POS{uuid4().hex[:8]}', unit=Unit.UNIT,
+            cost=Decimal('5.00'), sale_price=Decimal('20.00'),
+            inventory_behavior=InventoryBehavior.DIRECT,
+        )
+        ProductBranchConfig.objects.create(
+            product=product, branch=self.branch, category=category,
+        )
+        Stock.objects.create(
+            product=product, branch=self.branch, current_quantity=Decimal('10'),
+            average_unit_cost=Decimal('5.00'), last_unit_cost=Decimal('5.00'),
+        )
+        cash_method = next(
+            method for method in ensure_default_payment_methods(self.company)
+            if method.code == 'cash'
+        )
+        return {
+            'idempotency_key': str(uuid4()),
+            'cash_session': cash_session.pk,
+            'items': [{'client_item_id': str(uuid4()), 'product': product.pk, 'quantity': '1'}],
+            'discount': {'type': 'amount', 'value': '0.00'},
+            'service_fee_waived': True,
+            'payments': [{
+                'payment_method': cash_method.pk, 'amount': 'auto',
+                'received_amount': '100.00',
+            }],
+        }
 
     def test_generated_licensing_code_is_short_and_unambiguous(self):
         self.assertRegex(
@@ -473,6 +554,148 @@ class POSFoundationIntegrationTests(TestCase):
             self.client.post(reverse('pos:customers'), {'name': 'Sem cadastro'}, format='json').status_code,
             403,
         )
+
+    def test_pos_only_authorizer_uses_pin_and_permission_specific_lists(self):
+        _, _ = self.login_pos_operator()
+        authorizer = self.create_pos_authorizer({'sales.apply_discount'})
+        item_authorizer = self.create_pos_authorizer({'sales.apply_item_discount'})
+
+        discount = self.client.get(reverse('pos:sale-discount-authorizers'))
+        item = self.client.get(reverse('pos:sale-item-discount-authorizers'))
+        fee = self.client.get(reverse('pos:sale-service-fee-authorizers'))
+        valid = self.validate_pos_authorization(authorizer)
+        wrong_scope = self.validate_pos_authorization(authorizer, purpose='item')
+        wrong_pin = self.validate_pos_authorization(authorizer, pin='000000')
+        item_valid = self.validate_pos_authorization(item_authorizer, purpose='item')
+        item_wrong_pin = self.validate_pos_authorization(
+            item_authorizer, purpose='item', pin='000000',
+        )
+
+        self.assertEqual(discount.status_code, 200, discount.data)
+        self.assertIn(authorizer.pk, [row['id'] for row in discount.data['authorizers']])
+        self.assertNotIn(authorizer.pk, [row['id'] for row in item.data['authorizers']])
+        self.assertIn(item_authorizer.pk, [row['id'] for row in item.data['authorizers']])
+        self.assertNotIn(authorizer.pk, [row['id'] for row in fee.data['authorizers']])
+        self.assertEqual(valid.status_code, 200, valid.data)
+        self.assertEqual(wrong_scope.status_code, 400, wrong_scope.data)
+        self.assertEqual(wrong_pin.status_code, 400, wrong_pin.data)
+        self.assertEqual(item_valid.status_code, 200, item_valid.data)
+        self.assertEqual(item_wrong_pin.status_code, 400, item_wrong_pin.data)
+
+    def test_pos_authorizer_filters_access_pin_block_and_branch(self):
+        _, _ = self.login_pos_operator()
+        no_access = self.create_pos_authorizer(
+            {'sales.apply_discount'}, can_access_pos=False,
+        )
+        no_pin = self.create_pos_authorizer({'sales.apply_discount'}, with_pin=False)
+        blocked = self.create_pos_authorizer({'sales.apply_discount'})
+        UserPermissionBlock.objects.create(
+            company=self.company, branch=self.branch, user=blocked,
+            permission=FunctionalPermission.objects.get(code='sales.apply_discount'),
+            created_by=self.owner,
+        )
+        other_branch = create_branch_with_access(
+            creator=self.owner, company=self.company, name='Filial autorizador',
+            address_pending=True,
+        )
+        foreign = self.create_pos_authorizer(
+            {'sales.apply_discount'}, branch=other_branch,
+        )
+
+        response = self.client.get(reverse('pos:sale-discount-authorizers'))
+
+        self.assertEqual(response.status_code, 200, response.data)
+        ids = [row['id'] for row in response.data['authorizers']]
+        self.assertNotIn(no_access.pk, ids)
+        self.assertNotIn(no_pin.pk, ids)
+        self.assertNotIn(blocked.pk, ids)
+        self.assertNotIn(foreign.pk, ids)
+        for authorizer in (no_access, no_pin, blocked, foreign):
+            rejected = self.validate_pos_authorization(authorizer)
+            self.assertEqual(rejected.status_code, 400, rejected.data)
+
+    def test_pos_authorization_rate_limit_and_audit_never_store_pin(self):
+        _, paired = self.login_pos_operator()
+        authorizer = self.create_pos_authorizer({'sales.apply_discount'})
+        for _ in range(5):
+            response = self.validate_pos_authorization(authorizer, pin='000000')
+            self.assertEqual(response.status_code, 400, response.data)
+        limited = self.validate_pos_authorization(authorizer, pin='000000')
+
+        self.assertEqual(limited.status_code, 429, limited.data)
+        self.assertEqual(limited.data['code'], 'authorization_pin_rate_limited')
+        self.assertTrue(POSRequestRateLimit.objects.filter(locked_until__isnull=False).exists())
+        failed = AuditLog.objects.filter(
+            action='pos.authorization.failed', actor=authorizer,
+        ).latest('id')
+        rate_limited = AuditLog.objects.filter(
+            action='pos.authorization.rate_limited', actor=authorizer,
+        ).latest('id')
+        for audit in (failed, rate_limited):
+            self.assertEqual(audit.company_id, self.company.pk)
+            self.assertEqual(audit.branch_id, self.branch.pk)
+            self.assertEqual(audit.metadata['permission_code'], 'sales.apply_discount')
+            self.assertEqual(audit.metadata['authorizer_user_id'], authorizer.pk)
+            self.assertEqual(audit.metadata['device_id'], paired.data['device']['id'])
+            self.assertNotIn('000000', str(audit.metadata))
+            self.assertNotIn('654321', str(audit.metadata))
+            self.assertNotIn('000000', str(audit.before))
+            self.assertNotIn('654321', str(audit.after))
+            self.assertNotIn('000000', str(audit))
+            self.assertNotIn('654321', str(audit))
+        self.client.credentials(
+            HTTP_X_POS_DEVICE_CREDENTIAL=paired.data['device_credential'],
+        )
+        login = self.client.post(
+            reverse('pos:operator-login'),
+            {'operator_id': authorizer.pk, 'pin': '654321'},
+            format='json',
+        )
+        self.assertEqual(login.status_code, 200, login.data)
+        self.assertTrue(login.data['operator_session']['token'])
+
+    def test_pos_service_fee_finalization_requires_its_own_pin_authorization(self):
+        paired, _ = self.pair_device()
+        seller = self.create_pos_authorizer({'sales.create'})
+        self.login_existing_pos_operator(seller, paired)
+        register = CashRegister.objects.create(branch=self.branch, name='POS service fee')
+        cash_session = open_session(register, '0.00', self.owner, self.branch)
+        settings = self.branch.settings
+        settings.charges_service_fee = True
+        settings.service_fee_rate = Decimal('10.00')
+        settings.save(update_fields=['charges_service_fee', 'service_fee_rate', 'updated_at'])
+
+        missing = self.client.post(
+            reverse('pos:sale-finalize'), self.pos_sale_payload(cash_session), format='json',
+        )
+        discount_only = self.create_pos_authorizer({'sales.apply_discount'})
+        wrong_permission_payload = self.pos_sale_payload(cash_session)
+        wrong_permission_payload['service_fee_authorization'] = {
+            'user': discount_only.pk, 'method': 'pin', 'credential': '654321',
+        }
+        wrong_permission = self.client.post(
+            reverse('pos:sale-finalize'), wrong_permission_payload, format='json',
+        )
+        fee_authorizer = self.create_pos_authorizer({'sales.waive_service_fee'})
+        wrong_pin_payload = self.pos_sale_payload(cash_session)
+        wrong_pin_payload['service_fee_authorization'] = {
+            'user': fee_authorizer.pk, 'method': 'pin', 'credential': '000000',
+        }
+        wrong_pin = self.client.post(
+            reverse('pos:sale-finalize'), wrong_pin_payload, format='json',
+        )
+        accepted_payload = self.pos_sale_payload(cash_session)
+        accepted_payload['service_fee_authorization'] = {
+            'user': fee_authorizer.pk, 'method': 'pin', 'credential': '654321',
+        }
+        accepted = self.client.post(
+            reverse('pos:sale-finalize'), accepted_payload, format='json',
+        )
+
+        self.assertEqual(missing.status_code, 400, missing.data)
+        self.assertEqual(wrong_permission.status_code, 400, wrong_permission.data)
+        self.assertEqual(wrong_pin.status_code, 400, wrong_pin.data)
+        self.assertEqual(accepted.status_code, 201, accepted.data)
 
     def test_bootstrap_reports_fixed_and_flexible_cash_state_without_fake_selection(self):
         operator, _ = self.login_pos_operator()
