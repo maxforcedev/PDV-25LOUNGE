@@ -147,6 +147,7 @@ class QuickSaleProduct {
     this.categoryId,
     this.categoryName,
     this.imageUrl,
+    this.unit = 'un',
     this.inventoryBehavior = 'direct',
     this.stockApplicable = true,
     this.stockAvailable = true,
@@ -165,6 +166,7 @@ class QuickSaleProduct {
             (json['category'] as Map<String, dynamic>?)?['name'] as String?,
         imageUrl: json['image'] as String?,
         price: json['price'] as String? ?? '0.00',
+        unit: json['unit'] as String? ?? 'un',
         favorite: json['favorite'] as bool? ?? false,
         emitsTicket: json['emits_ticket'] as bool? ?? false,
         inventoryBehavior: json['inventory_behavior'] as String? ?? 'direct',
@@ -186,6 +188,7 @@ class QuickSaleProduct {
   final String? categoryName;
   final String? imageUrl;
   final String price;
+  final String unit;
   final bool favorite;
   final bool emitsTicket;
   final List<QuickSaleModifierGroup> modifierGroups;

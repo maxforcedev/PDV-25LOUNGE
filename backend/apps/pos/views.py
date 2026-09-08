@@ -404,6 +404,7 @@ class POSQuickSaleView(POSCashView):
                     'name': product_object.effective_category_name,
                 } if product_object.effective_category_id else None,
                 'price': product['sale_price'],
+                'unit': product['unit'],
                 'image': product['image'],
                 'favorite': product['is_favorite'],
                 'emits_ticket': product['emits_ticket'],

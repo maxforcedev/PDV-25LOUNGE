@@ -31,6 +31,7 @@ function PosSettingsFields<T extends PosSettings>({ value, onChange, disabled }:
   const update = <K extends keyof T>(key: K, next: T[K]) => onChange({ ...value, [key]: next });
   const cashRegisters = value.cash_register_options || [];
   const inheritsCash = value.cash_binding_mode === null;
+  const inherits = "effective_settings" in value;
 
   return <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
     <Field label="Vínculo de caixa"><Select value={value.cash_binding_mode || ""} disabled={disabled} onChange={(event) => update("cash_binding_mode", (event.target.value || null) as T["cash_binding_mode"])}><option value="">Usar padrão</option><option value="FLEXIBLE">Flexível</option><option value="FIXED">Fixo</option></Select></Field>
@@ -41,6 +42,7 @@ function PosSettingsFields<T extends PosSettings>({ value, onChange, disabled }:
     <Field label="Largura do papel (mm)"><Input type="number" min="40" max="120" value={value.paper_width ?? ""} disabled={disabled} onChange={(event) => update("paper_width", (event.target.value ? Number(event.target.value) : null) as T["paper_width"])} /></Field>
     <Field label="Cópias"><Input type="number" min="1" max="10" value={value.copies ?? ""} disabled={disabled} onChange={(event) => update("copies", (event.target.value ? Number(event.target.value) : null) as T["copies"])} /></Field>
     <Field label="Tempo de tela (segundos)" optional><Input type="number" min="0" value={value.screen_timeout_seconds ?? ""} disabled={disabled} onChange={(event) => update("screen_timeout_seconds", (event.target.value ? Number(event.target.value) : null) as T["screen_timeout_seconds"])} /></Field>
+    <Field label="Mostrar produtos sem estoque"><Select value={value.show_out_of_stock_products === null ? "" : String(value.show_out_of_stock_products)} disabled={disabled} onChange={(event) => update("show_out_of_stock_products", (event.target.value === "" ? null : event.target.value === "true") as T["show_out_of_stock_products"])}>{inherits && <option value="">Usar padrão da filial</option>}<option value="true">Sim</option><option value="false">Não</option></Select><span className="mt-1 block text-xs font-normal text-muted">Quando desativado, produtos controlados sem estoque disponível não aparecem no catálogo do POS.</span></Field>
     <label className="flex items-center gap-2 self-end pb-2 text-sm font-medium"><input type="checkbox" className="size-4 accent-primary" checked={value.sale_confirmation_print || false} disabled={disabled} onChange={(event) => update("sale_confirmation_print", event.target.checked as T["sale_confirmation_print"])} />Imprimir confirmação</label>
     <label className="flex items-center gap-2 self-end pb-2 text-sm font-medium"><input type="checkbox" className="size-4 accent-primary" checked={value.sound_enabled ?? true} disabled={disabled} onChange={(event) => update("sound_enabled", event.target.checked as T["sound_enabled"])} />Som habilitado</label>
   </div>;

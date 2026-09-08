@@ -416,6 +416,7 @@ export interface PosSettings {
   copies: number | null;
   sound_enabled: boolean | null;
   screen_timeout_seconds: number | null;
+  show_out_of_stock_products: boolean | null;
   cash_register_options?: Array<{ id: number; name: string }>;
 }
 
@@ -428,6 +429,7 @@ export interface BranchPosSettings extends PosSettings {
   paper_width: number;
   copies: number;
   sound_enabled: boolean;
+  show_out_of_stock_products: boolean;
 }
 
 export type UserType = "employee" | "promoter" | "dj" | "artist" | "other";

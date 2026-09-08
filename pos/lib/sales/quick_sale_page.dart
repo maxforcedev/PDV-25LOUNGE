@@ -240,21 +240,63 @@ class _QuickSalePageState extends State<QuickSalePage> {
             group.requiredQuantity != null,
       );
 
-  void _showStockUnavailable([String? available]) {
+  double? _stockNumber(Object? value) =>
+      double.tryParse('$value'.replaceAll(',', '.'));
+
+  String _formatStockNumber(Object? value) {
+    final number = _stockNumber(value);
+    if (number == null) return '$value';
+    var formatted = number.toStringAsFixed(3).replaceFirst(RegExp(r'0+$'), '');
+    if (formatted.endsWith('.')) {
+      formatted = formatted.substring(0, formatted.length - 1);
+    }
+    return formatted.replaceAll('.', ',');
+  }
+
+  String _formatStockQuantity(Object? quantity, String unit) {
+    final number = _stockNumber(quantity) ?? 0;
+    final value = _formatStockNumber(quantity);
+    return switch (unit.toLowerCase()) {
+      'un' => '$value ${number == 1 ? 'und' : 'unds'}',
+      'kg' => '$value kg',
+      'g' => '$value g',
+      'l' => '$value L',
+      'ml' => '$value ml',
+      _ => value,
+    };
+  }
+
+  void _showStockUnavailable(
+      [QuickSaleStockAvailability? availability, _CartMutation? mutation]) {
+    final item = mutation?.item;
+    final Map<String, dynamic>? shortage = item == null
+        ? null
+        : availability?.shortages.cast<Map<String, dynamic>>().firstWhere(
+              (row) =>
+                  row['product'] == item.product.id &&
+                  row['basis'] == 'quantity',
+              orElse: () => const <String, dynamic>{},
+            );
+    final available =
+        shortage == null ? null : _stockNumber(shortage['available_quantity']);
+    final requested = item == null ? null : _stockNumber(item.quantity);
+    final unit = item?.product.unit ?? 'un';
+    final message = available == null
+        ? 'Este produto não possui estoque suficiente para essa quantidade.'
+        : available <= 0
+            ? 'Este produto está sem estoque no momento.'
+            : requested != null && requested > available
+                ? 'Você tentou adicionar ${_formatStockQuantity(item!.quantity, unit)}, '
+                    'mas há somente ${_formatStockQuantity(shortage!['available_quantity'], unit)} disponíveis.'
+                : 'Só temos ${_formatStockQuantity(shortage!['available_quantity'], unit)} disponíveis deste produto.';
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(available == null
-          ? 'Produto sem estoque. Esta filial não permite venda com estoque negativo.'
-          : 'Quantidade indisponível. Disponível: $available'),
+      content: Text(message),
     ));
   }
 
   Future<void> _addProduct(QuickSaleProduct product,
       {String quantity = '1'}) async {
     widget.controller.logPosAction('cart_add');
-    if (!product.canSell) {
-      _showStockUnavailable();
-      return;
-    }
     final item = QuickSaleCartItem(
       clientItemId: createIdempotencyKey(),
       product: product,
@@ -268,10 +310,6 @@ class _QuickSalePageState extends State<QuickSalePage> {
   }
 
   Future<void> _addProductBatch(QuickSaleProduct product) async {
-    if (!product.canSell) {
-      _showStockUnavailable();
-      return;
-    }
     final quantity = await showDialog<String>(
       context: context,
       builder: (_) => _BatchQuantityDialog(productName: product.name),
@@ -342,18 +380,6 @@ class _QuickSalePageState extends State<QuickSalePage> {
 
   void _applyCartMutation(_CartMutation mutation) {
     _pendingCartMutations.add(mutation);
-    final candidate =
-        _replayCartMutations(_lastValidatedCart, _pendingCartMutations);
-    _previewGeneration++;
-    _previewDebounce?.cancel();
-    _pendingPreview = null;
-    setState(() {
-      _cart
-        ..clear()
-        ..addAll(candidate);
-      _loadingPreview = false;
-    });
-    _draft.changed();
     _scheduleCartAvailability();
   }
 
@@ -374,7 +400,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
 
   void _scheduleCartAvailability() {
     _invalidateCartAvailability();
-    if (_cart.isEmpty) return;
+    if (_cart.isEmpty && _pendingCartMutations.isEmpty) return;
     final generation = _availabilityGeneration;
     _availabilityDebounce = Timer(
       const Duration(milliseconds: 100),
@@ -396,77 +422,112 @@ class _QuickSalePageState extends State<QuickSalePage> {
         items: items.map((item) => item.toJson()).toList(growable: false),
       );
 
+  Future<List<_CartMutation>?> _acceptedCartMutations(
+    List<QuickSaleCartItem> base,
+    List<_CartMutation> mutations,
+    int generation,
+  ) async {
+    final accepted = <_CartMutation>[];
+    for (final mutation in mutations) {
+      final result = await _availabilityFor(
+        _replayCartMutations(base, [...accepted, mutation]),
+      );
+      if (!mounted || generation != _availabilityGeneration || result == null) {
+        return null;
+      }
+      if (result.available || !result.enforced) accepted.add(mutation);
+    }
+    return accepted;
+  }
+
   Future<void> _validateCartAvailability(int generation) async {
     _availabilityInFlight = true;
     var previewRequested = false;
     try {
       final mutations = List<_CartMutation>.of(_pendingCartMutations);
-      final candidates = _replayCartMutations(_lastValidatedCart, mutations);
-      final availability = await _availabilityFor(candidates);
-      if (mounted &&
-          generation == _availabilityGeneration &&
-          availability != null &&
-          (availability.available || !availability.enforced)) {
-        _lastValidatedCart = List<QuickSaleCartItem>.of(candidates);
+      if (mutations.isEmpty) return;
+      final previousCart = List<QuickSaleCartItem>.of(_lastValidatedCart);
+      final candidates = _replayCartMutations(previousCart, mutations);
+      if (!mounted || generation != _availabilityGeneration) return;
+      if (candidates.isEmpty) {
+        _lastValidatedCart = const [];
         _pendingCartMutations.clear();
+        setState(() {
+          _cart.clear();
+          _preview = null;
+          _loadingPreview = false;
+        });
+        _draft.changed();
         previewRequested = true;
-      } else if (mounted &&
-          generation == _availabilityGeneration &&
-          availability != null &&
-          availability.enforced) {
-        var low = 0;
-        var high = mutations.length;
-        var validMutationCount = 0;
-        while (low <= high) {
-          final count = (low + high + 1) ~/ 2;
-          if (count == 0) {
-            low = 1;
-            continue;
-          }
-          final result = await _availabilityFor(
-            _replayCartMutations(_lastValidatedCart, mutations.take(count)),
-          );
-          if (!mounted ||
-              generation != _availabilityGeneration ||
-              result == null) {
-            break;
-          }
-          if (result.available || !result.enforced) {
-            validMutationCount = count;
-            low = count + 1;
-          } else {
-            high = count - 1;
-          }
-        }
-        if (mounted && generation == _availabilityGeneration) {
-          var accepted = _replayCartMutations(
-              _lastValidatedCart, mutations.take(validMutationCount));
-          var rejected = validMutationCount != mutations.length;
-          for (final mutation in mutations.skip(validMutationCount)) {
-            final result = await _availabilityFor(mutation.apply(accepted));
-            if (!mounted ||
-                generation != _availabilityGeneration ||
-                result == null) {
-              break;
-            }
-            if (result.available || !result.enforced) {
-              accepted = mutation.apply(accepted);
-            } else {
-              rejected = true;
-            }
-          }
-          if (!mounted || generation != _availabilityGeneration) return;
-          _lastValidatedCart = List<QuickSaleCartItem>.of(accepted);
-          _pendingCartMutations.clear();
-          setState(() {
-            _cart
-              ..clear()
-              ..addAll(accepted);
-          });
-          if (rejected) _showStockUnavailable(availability.availableQuantity);
-          previewRequested = true;
-        }
+        return;
       }
+      final availability = await _availabilityFor(candidates);
+      if (!mounted ||
+          generation != _availabilityGeneration ||
+          availability == null) {
+        return;
+      }
+
+      final acceptedMutations = (availability.available ||
+              !availability.enforced)
+          ? mutations
+          : await _acceptedCartMutations(previousCart, mutations, generation);
+      if (!mounted ||
+          generation != _availabilityGeneration ||
+          acceptedMutations == null) {
+        return;
+      }
+      final committedCart =
+          _replayCartMutations(previousCart, acceptedMutations);
+      final rejected = acceptedMutations.length != mutations.length;
+      _pendingCartMutations
+        ..clear()
+        ..addAll(acceptedMutations);
+      if (acceptedMutations.isEmpty) {
+        if (rejected) _showStockUnavailable(availability, mutations.last);
+        return;
+      }
+
+      // The cart changes only after the complete candidate passes preflight.
+      _previewGeneration++;
+      _previewDebounce?.cancel();
+      _pendingPreview = null;
+      setState(() {
+        _cart
+          ..clear()
+          ..addAll(committedCart);
+        _preview = null;
+        _loadingPreview = false;
+      });
+      _draft.changed();
+      if (rejected) _showStockUnavailable(availability, mutations.last);
+
+      final revalidation = await _availabilityFor(committedCart);
+      if (!mounted || generation != _availabilityGeneration) return;
+      if (revalidation == null) {
+        _pendingCartMutations.clear();
+        setState(() {
+          _cart
+            ..clear()
+            ..addAll(previousCart);
+        });
+        _draft.changed();
+        return;
+      }
+      if (!revalidation.available && revalidation.enforced) {
+        _pendingCartMutations.clear();
+        setState(() {
+          _cart
+            ..clear()
+            ..addAll(previousCart);
+        });
+        _draft.changed();
+        _showStockUnavailable(revalidation, acceptedMutations.last);
+        return;
+      }
+      _lastValidatedCart = List<QuickSaleCartItem>.of(committedCart);
+      _pendingCartMutations.clear();
+      previewRequested = true;
     } finally {
       _availabilityInFlight = false;
       if (previewRequested &&

@@ -1275,9 +1275,12 @@ def _prepare_products(company, raw_items, *, branch=None, channel=SalesChannel.C
     component_ids = sorted({
         row.component_product_id for row in component_rows + fraction_rows
     })
+    component_queryset = Product.objects
+    if lock:
+        component_queryset = component_queryset.select_for_update()
     components = {
         product.pk: product
-        for product in Product.objects.select_for_update().filter(
+        for product in component_queryset.filter(
             pk__in=component_ids
         ).order_by('pk')
     }
@@ -1568,17 +1571,31 @@ def assess_sale_stock_availability(*, company, raw_items, branch,
             branch=branch, product_id__in=sorted(requirements),
         )
     }
+    products = {
+        product.pk: product
+        for product in Product.objects.filter(pk__in=sorted(requirements)).only(
+            'id', 'name', 'unit',
+        )
+    }
+    fraction_configs = {
+        config.product_id: config
+        for config in FractionableProductConfig.objects.filter(
+            product_id__in=content_requirements,
+        ).only('product_id', 'content_unit')
+    }
     shortages = []
     for product_id in sorted(requirements):
         stock = stocks.get(product_id)
+        product = stock.product if stock else products.get(product_id)
         required = requirements[product_id]
         if product_id in content_requirements:
             available = stock.current_content if stock and stock.current_content is not None else Decimal('0')
             if available < content_requirements[product_id]:
                 shortages.append({
                     'product': product_id,
-                    'product_name': stock.product.name if stock else '',
+                    'product_name': product.name if product else '',
                     'basis': 'content',
+                    'unit': getattr(fraction_configs.get(product_id), 'content_unit', None),
                     'required_content': content_requirements[product_id],
                     'available_content': available,
                 })
@@ -1587,8 +1604,9 @@ def assess_sale_stock_availability(*, company, raw_items, branch,
             if available < required:
                 shortages.append({
                     'product': product_id,
-                    'product_name': stock.product.name if stock else '',
+                    'product_name': product.name if product else '',
                     'basis': 'quantity',
+                    'unit': product.unit if product else None,
                     'required_quantity': required,
                     'available_quantity': available,
                 })

@@ -426,9 +426,15 @@ class AppController extends ChangeNotifier {
     try {
       return await _api.quickSaleStockAvailability(items: items);
     } on PosApiException catch (error) {
-      _handleApiError(error);
-    } on PosNetworkException catch (error) {
-      _showTransientMessage(error.message);
+      if (error.isDeviceAccessFailure) {
+        _handleApiError(error);
+      } else {
+        _showTransientMessage(
+            'Não foi possível verificar o estoque agora. Tente novamente.');
+      }
+    } on PosNetworkException {
+      _showTransientMessage(
+          'Não foi possível verificar o estoque agora. Tente novamente.');
     }
     return null;
   }
