@@ -198,14 +198,15 @@ def user_has_company_permission(user, company_id, code):
     ).exists()
 
 
-def user_has_branch_permission(user, branch_id, code, *, allow_pos_only=False):
+def user_has_branch_permission(user, branch_id, code, *, allow_pos_only=False,
+                               allow_superuser=True):
     if not user.is_authenticated or not user.is_active:
         return False
     if not user.can_login and not (allow_pos_only and user.can_access_pos):
         return False
     if allow_pos_only and not user.can_access_pos:
         return False
-    if user.is_superuser:
+    if user.is_superuser and allow_superuser:
         return True
     if _permission_blocked(user, branch_id=branch_id, code=code):
         return False

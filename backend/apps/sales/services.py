@@ -262,31 +262,42 @@ def _eligible_sale_user(branch, user, permission_code, field):
     return candidate
 
 
-def _discount_approver(
-    branch, operator, discount, authorization, *, permission_code, authorization_field,
-    allow_pos_only=False,
-):
-    if not discount:
-        return None
-    if operator.is_superuser or user_has_branch_permission(
-        operator, branch.pk, permission_code, allow_pos_only=allow_pos_only,
-    ):
-        return operator
+def validate_discount_authorization(branch, authorization, *, permission_code,
+                                    authorization_field):
+    """Validate a delegated discount approval without storing its credential."""
     if not authorization or authorization.get('method') != 'password':
         raise ValidationError({authorization_field: 'Autorização de desconto inválida.'})
     approver = _eligible_sale_user(
         branch, authorization.get('user'), permission_code, authorization_field,
     )
     if not approver.check_password(authorization.get('credential') or ''):
-        raise ValidationError({authorization_field: 'Autorização de desconto inválida.'})
+        raise ValidationError({authorization_field: 'Senha inválida.'})
     return approver
+
+
+def _discount_approver(
+    branch, operator, discount, authorization, *, permission_code, authorization_field,
+    allow_pos_only=False,
+):
+    if not discount:
+        return None
+    if user_has_branch_permission(
+        operator, branch.pk, permission_code, allow_pos_only=allow_pos_only,
+        allow_superuser=not allow_pos_only,
+    ):
+        return operator
+    return validate_discount_authorization(
+        branch, authorization, permission_code=permission_code,
+        authorization_field=authorization_field,
+    )
 
 
 def _service_fee_waiver(branch, operator, waived, authorization, *, allow_pos_only=False):
     if not waived:
         return None
-    if operator.is_superuser or user_has_branch_permission(
+    if user_has_branch_permission(
         operator, branch.pk, 'sales.waive_service_fee', allow_pos_only=allow_pos_only,
+        allow_superuser=not allow_pos_only,
     ):
         return operator
     if not authorization or authorization.get('method') != 'password':

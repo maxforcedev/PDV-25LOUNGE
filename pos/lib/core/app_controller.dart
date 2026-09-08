@@ -453,6 +453,23 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
+  Future<String?> validateQuickSaleDiscountAuthorization({
+    required bool item,
+    required QuickSaleAuthorization authorization,
+  }) async {
+    try {
+      await _api.validateQuickSaleDiscountAuthorization(
+        item: item,
+        authorization: authorization.toJson(),
+      );
+      return null;
+    } on PosApiException catch (error) {
+      return error.message;
+    } on PosNetworkException catch (error) {
+      return error.message;
+    }
+  }
+
   Future<QuickSaleCheckoutOptions?> quickSaleCheckoutOptions() async {
     try {
       return await _api.quickSaleCheckoutOptions();

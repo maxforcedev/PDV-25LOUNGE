@@ -477,7 +477,14 @@ class _QuickSalePageState extends State<QuickSalePage> {
     }
     return showDialog<QuickSaleAuthorization>(
       context: context,
-      builder: (_) => _DiscountAuthorizationDialog(authorizers: authorizers),
+      builder: (_) => _DiscountAuthorizationDialog(
+        authorizers: authorizers,
+        onAuthorize: (authorization) =>
+            widget.controller.validateQuickSaleDiscountAuthorization(
+          item: item,
+          authorization: authorization,
+        ),
+      ),
     );
   }
 
@@ -1694,9 +1701,14 @@ class _BatchQuantityDialogState extends State<_BatchQuantityDialog> {
 }
 
 class _DiscountAuthorizationDialog extends StatefulWidget {
-  const _DiscountAuthorizationDialog({required this.authorizers});
+  const _DiscountAuthorizationDialog({
+    required this.authorizers,
+    required this.onAuthorize,
+  });
 
   final List<QuickSaleAuthorizer> authorizers;
+  final Future<String?> Function(QuickSaleAuthorization authorization)
+      onAuthorize;
 
   @override
   State<_DiscountAuthorizationDialog> createState() =>
@@ -1707,6 +1719,30 @@ class _DiscountAuthorizationDialogState
     extends State<_DiscountAuthorizationDialog> {
   final _password = TextEditingController();
   int? _authorizerId;
+  bool _validating = false;
+  String? _error;
+
+  Future<void> _authorize() async {
+    if (_authorizerId == null || _password.text.isEmpty || _validating) return;
+    setState(() {
+      _validating = true;
+      _error = null;
+    });
+    final authorization = QuickSaleAuthorization(
+      userId: _authorizerId!,
+      credential: _password.text,
+    );
+    final error = await widget.onAuthorize(authorization);
+    if (!mounted) return;
+    if (error == null) {
+      Navigator.of(context).pop(authorization);
+      return;
+    }
+    setState(() {
+      _validating = false;
+      _error = error;
+    });
+  }
 
   @override
   void dispose() {
@@ -1734,6 +1770,7 @@ class _DiscountAuthorizationDialogState
               onChanged: (value) => setState(() {
                 _authorizerId = value;
                 _password.clear();
+                _error = null;
               }),
             ),
             const SizedBox(height: 12),
@@ -1744,23 +1781,22 @@ class _DiscountAuthorizationDialogState
               enableSuggestions: false,
               autocorrect: false,
               onChanged: (_) => setState(() {}),
-              decoration: const InputDecoration(labelText: 'Senha'),
+              decoration:
+                  InputDecoration(labelText: 'Senha', errorText: _error),
             ),
           ]),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: _validating ? null : () => Navigator.of(context).pop(),
             child: const Text('VOLTAR'),
           ),
           FilledButton(
-            onPressed: _authorizerId == null || _password.text.isEmpty
-                ? null
-                : () => Navigator.of(context).pop(QuickSaleAuthorization(
-                      userId: _authorizerId!,
-                      credential: _password.text,
-                    )),
-            child: const Text('AUTORIZAR'),
+            onPressed:
+                _authorizerId == null || _password.text.isEmpty || _validating
+                    ? null
+                    : _authorize,
+            child: Text(_validating ? 'VALIDANDO...' : 'AUTORIZAR'),
           ),
         ],
       );

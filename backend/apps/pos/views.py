@@ -3,6 +3,7 @@ from time import perf_counter
 
 from django.db.models import CharField, DecimalField, OuterRef, Prefetch, Q, Subquery
 from django.db.models.functions import Coalesce
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -41,15 +42,15 @@ from apps.sales.serializers import (
 )
 from apps.sales.services import (
     assess_sale_stock_availability, calculate_preview, catalog_product_operational_states,
-    catalog_products_with_available_stock, finalize_sale,
+    catalog_products_with_available_stock, finalize_sale, validate_discount_authorization,
 )
 
 from .authentication import POSDeviceAuthentication, require_device, require_operator_session
 from .models import POSDevice, POSDeviceSettings
 from .serializers import (
     POSAdminDeviceSerializer, POSDeviceSettingsSerializer, POSOpenCashSessionSerializer,
-    POSCustomerSerializer, POSFinalizeSaleSerializer, POSSalePreviewSerializer,
-    POSStockAvailabilitySerializer,
+    POSCustomerSerializer, POSDiscountAuthorizationValidationSerializer,
+    POSFinalizeSaleSerializer, POSSalePreviewSerializer, POSStockAvailabilitySerializer,
 )
 from .services import (
     assert_branch_device_limit, authenticate_operator, cash_state_for_device, confirm_pairing,
@@ -579,6 +580,31 @@ class POSItemDiscountAuthorizersView(POSQuickSaleView):
         return Response({
             'authorizers': _authorizer_options(device.branch, 'sales.apply_item_discount'),
         })
+
+
+class POSDiscountAuthorizationValidationView(POSQuickSaleView):
+    def post(self, request):
+        device, _, permissions, _ = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        serializer = POSDiscountAuthorizationValidationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        permission_code = (
+            'sales.apply_item_discount'
+            if data['type'] == 'item' else 'sales.apply_discount'
+        )
+        try:
+            validate_discount_authorization(
+                device.branch, data, permission_code=permission_code,
+                authorization_field='authorization',
+            )
+        except DjangoValidationError as error:
+            messages = error.message_dict.get('authorization', error.messages)
+            raise DomainValidationError(
+                code='discount_authorization_invalid', message=messages[0],
+            )
+        return Response({'valid': True})
 
 
 class POSSaleCheckoutOptionsView(POSQuickSaleView):

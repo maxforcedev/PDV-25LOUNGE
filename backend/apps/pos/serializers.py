@@ -159,6 +159,16 @@ class POSDiscountAuthorizationSerializer(serializers.Serializer):
         return super().to_internal_value(data)
 
 
+class POSDiscountAuthorizationValidationSerializer(POSDiscountAuthorizationSerializer):
+    type = serializers.ChoiceField(choices=('sale', 'item'))
+
+    def to_internal_value(self, data):
+        expected = {'type', 'user', 'method', 'credential'}
+        if not isinstance(data, dict) or set(data) != expected:
+            raise serializers.ValidationError('A autorização deve informar tipo, usuário e senha.')
+        return serializers.Serializer.to_internal_value(self, data)
+
+
 class POSFinalizeSaleSerializer(POSSalePreviewSerializer):
     customer = serializers.IntegerField(required=False, allow_null=True)
     idempotency_key = serializers.UUIDField()

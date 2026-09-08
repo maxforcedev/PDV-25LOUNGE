@@ -78,6 +78,10 @@ abstract class PosApi {
   });
   Future<List<QuickSaleAuthorizer>> quickSaleDiscountAuthorizers();
   Future<List<QuickSaleAuthorizer>> quickSaleItemDiscountAuthorizers();
+  Future<void> validateQuickSaleDiscountAuthorization({
+    required bool item,
+    required Map<String, dynamic> authorization,
+  });
   Future<QuickSaleCheckoutOptions> quickSaleCheckoutOptions();
   Future<QuickSaleResult> finalizeQuickSale({
     required String idempotencyKey,
@@ -441,6 +445,17 @@ class HttpPosApi implements PosApi, PosCredentialCache {
         .cast<Map<String, dynamic>>()
         .map(QuickSaleAuthorizer.fromJson)
         .toList(growable: false);
+  }
+
+  @override
+  Future<void> validateQuickSaleDiscountAuthorization({
+    required bool item,
+    required Map<String, dynamic> authorization,
+  }) async {
+    await _request('POST', 'sales/discount-authorizations/validate/', body: {
+      'type': item ? 'item' : 'sale',
+      ...authorization,
+    });
   }
 
   @override
