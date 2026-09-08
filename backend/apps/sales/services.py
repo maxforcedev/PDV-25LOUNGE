@@ -1220,7 +1220,8 @@ def _lock_cash_session(raw_session, branch, *, required):
     return session
 
 
-def _prepare_products(company, raw_items, *, branch=None, channel=SalesChannel.COUNTER):
+def _prepare_products(company, raw_items, *, branch=None, channel=SalesChannel.COUNTER,
+                      lock=True):
     if not isinstance(raw_items, list) or not raw_items:
         raise ValidationError({'items': 'Informe ao menos um item.'})
     parent_ids = []
@@ -1232,10 +1233,14 @@ def _prepare_products(company, raw_items, *, branch=None, channel=SalesChannel.C
         parent_ids = sorted({int(value) for value in parent_ids})
     except (TypeError, ValueError):
         raise ValidationError({'items': 'Produto inválido.'})
+    parent_queryset = Product.objects
+    if lock:
+        parent_queryset = parent_queryset.select_for_update()
     locked_parents = {
         product.pk: product
-        for product in Product.objects.select_for_update()
-        .filter(pk__in=parent_ids, company=company, archived_at__isnull=True).order_by('pk')
+        for product in parent_queryset.filter(
+            pk__in=parent_ids, company=company, archived_at__isnull=True,
+        ).order_by('pk')
     }
     parents = {str(pk): locked_parents[pk] for pk in parent_ids if pk in locked_parents}
     if len(parents) != len(parent_ids):
@@ -1265,9 +1270,12 @@ def _prepare_products(company, raw_items, *, branch=None, channel=SalesChannel.C
     for row in fraction_rows:
         fraction_rows_by_parent.setdefault(row.parent_product_id, []).append(row)
 
+    branch_config_queryset = ProductBranchConfig.objects
+    if lock:
+        branch_config_queryset = branch_config_queryset.select_for_update()
     branch_configs = {
         config.product_id: config
-        for config in ProductBranchConfig.objects.select_for_update().filter(
+        for config in branch_config_queryset.filter(
             branch=branch, product_id__in=parent_ids
         )
     } if branch else {}
@@ -1446,13 +1454,19 @@ def catalog_products_with_available_stock(branch, products):
     Finalization remains the transactional authority, including modifier consumption.
     """
     products = list(products)
+    states = catalog_product_operational_states(branch, products)
+    return [product for product in products if states[product.pk]['can_sell']]
+
+
+def catalog_product_operational_states(branch, products):
+    """Return base-item stock feedback; selected modifiers remain batch-validated."""
+    products = list(products)
     if not products:
-        return products
+        return {}
     branch_settings = BranchSettings.objects.filter(branch=branch).only(
         'allow_negative_stock',
     ).first()
-    if branch_settings and branch_settings.allow_negative_stock:
-        return products
+    allow_negative = bool(branch_settings and branch_settings.allow_negative_stock)
 
     direct_ids = {
         product.pk for product in products
@@ -1485,25 +1499,83 @@ def catalog_products_with_available_stock(branch, products):
             return stock.current_content is not None and stock.current_content >= required
         return stock.current_quantity >= required
 
-    available = []
+    states = {}
     for product in products:
         if product.inventory_behavior == InventoryBehavior.NONE:
-            available.append(product)
+            stock_available = True
+            stock_applicable = False
         elif product.inventory_behavior == InventoryBehavior.DIRECT:
-            if has_quantity(product.pk, Decimal('1')):
-                available.append(product)
-        elif (
-            all(has_quantity(row.component_product_id, row.quantity) for row in product.components.all())
-            and all(
+            stock_available = has_quantity(product.pk, Decimal('1'))
+            stock_applicable = True
+        else:
+            stock_available = bool(
+                (product.components.exists() or product.fraction_components.exists())
+                and all(has_quantity(row.component_product_id, row.quantity) for row in product.components.all())
+                and all(
                 fractions.get(row.component_product_id)
                 and fractions[row.component_product_id].tracking_active
                 and has_quantity(row.component_product_id, row.content_quantity, content=True)
                 for row in product.fraction_components.all()
+                )
             )
-            and (product.components.exists() or product.fraction_components.exists())
-        ):
-            available.append(product)
-    return available
+            stock_applicable = True
+        states[product.pk] = {
+            'inventory_behavior': product.inventory_behavior,
+            'stock_applicable': stock_applicable,
+            'stock_available': stock_available,
+            'can_sell': not stock_applicable or stock_available or allow_negative,
+            'availability_reason': (
+                None if not stock_applicable or stock_available else 'out_of_stock'
+            ),
+        }
+    return states
+
+
+def assess_sale_stock_availability(*, company, raw_items, branch,
+                                   channel=SalesChannel.COUNTER):
+    """Read the finalization requirement pipeline without locking or materializing stock."""
+    _snapshots, requirements, content_requirements, _subtotal = _prepare_products(
+        company, raw_items, branch=branch, channel=channel, lock=False,
+    )
+    branch_settings = BranchSettings.objects.filter(branch=branch).only(
+        'allow_negative_stock',
+    ).first()
+    allow_negative = bool(branch_settings and branch_settings.allow_negative_stock)
+    stocks = {
+        stock.product_id: stock
+        for stock in Stock.objects.select_related('product').filter(
+            branch=branch, product_id__in=sorted(requirements),
+        )
+    }
+    shortages = []
+    for product_id in sorted(requirements):
+        stock = stocks.get(product_id)
+        required = requirements[product_id]
+        if product_id in content_requirements:
+            available = stock.current_content if stock and stock.current_content is not None else Decimal('0')
+            if available < content_requirements[product_id]:
+                shortages.append({
+                    'product': product_id,
+                    'product_name': stock.product.name if stock else '',
+                    'basis': 'content',
+                    'required_content': content_requirements[product_id],
+                    'available_content': available,
+                })
+        else:
+            available = stock.current_quantity if stock else Decimal('0')
+            if available < required:
+                shortages.append({
+                    'product': product_id,
+                    'product_name': stock.product.name if stock else '',
+                    'basis': 'quantity',
+                    'required_quantity': required,
+                    'available_quantity': available,
+                })
+    return {
+        'available': allow_negative or not shortages,
+        'enforced': not allow_negative,
+        'shortages': shortages,
+    }
 
 
 def _reconcile_modifier_component_costs(snapshots, stocks):

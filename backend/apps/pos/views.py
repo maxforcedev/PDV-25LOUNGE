@@ -3,7 +3,6 @@ from time import perf_counter
 
 from django.db.models import CharField, DecimalField, OuterRef, Prefetch, Q, Subquery
 from django.db.models.functions import Coalesce
-from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -28,7 +27,7 @@ from apps.cash.services import (
     session_operational_summary,
 )
 from apps.companies.permissions import FunctionalCompanyPermission
-from apps.companies.selectors import accessible_branches
+from apps.companies.selectors import accessible_branches, eligible_branch_users
 from apps.companies.features import require_branch_feature
 from apps.companies.models import Customer, Status
 from apps.products.models import (
@@ -41,8 +40,8 @@ from apps.sales.serializers import (
     CalculationOutputSerializer, SaleCatalogProductSerializer, SaleSerializer,
 )
 from apps.sales.services import (
-    catalog_products_with_available_stock, calculate_preview, discount_intent_is_nonzero,
-    finalize_sale,
+    assess_sale_stock_availability, calculate_preview, catalog_product_operational_states,
+    catalog_products_with_available_stock, finalize_sale,
 )
 
 from .authentication import POSDeviceAuthentication, require_device, require_operator_session
@@ -50,6 +49,7 @@ from .models import POSDevice, POSDeviceSettings
 from .serializers import (
     POSAdminDeviceSerializer, POSDeviceSettingsSerializer, POSOpenCashSessionSerializer,
     POSCustomerSerializer, POSFinalizeSaleSerializer, POSSalePreviewSerializer,
+    POSStockAvailabilitySerializer,
 )
 from .services import (
     assert_branch_device_limit, authenticate_operator, cash_state_for_device, confirm_pairing,
@@ -359,17 +359,6 @@ def _visible_pos_catalog(device, queryset):
     return catalog_products_with_available_stock(device.branch, products)
 
 
-def _has_item_discount(items):
-    for item in items:
-        try:
-            if discount_intent_is_nonzero(item.get('discount', '0.00')):
-                return True
-        except (DjangoValidationError, TypeError, ValueError):
-            # Let the canonical calculator report an invalid monetary input.
-            return True
-    return False
-
-
 def _pos_sale_session(device, session_id):
     """Resolve an open session while enforcing the device cash binding."""
     session = get_object_or_404(
@@ -395,8 +384,10 @@ def _pos_sale_session(device, session_id):
 
 class POSQuickSaleView(POSCashView):
     @staticmethod
-    def _catalog_payload(request, products):
+    def _catalog_payload(request, products, branch):
         request.branch_context = request._pos_branch
+        products = list(products)
+        inventory_states = catalog_product_operational_states(branch, products)
         rows = SaleCatalogProductSerializer(
             products, many=True, context={'request': request},
         ).data
@@ -415,6 +406,7 @@ class POSQuickSaleView(POSCashView):
                 'favorite': product['is_favorite'],
                 'emits_ticket': product['emits_ticket'],
                 'modifier_groups': product['modifier_groups'],
+                **inventory_states[product_object.pk],
             }
             for product_object, product in zip(products, rows)
         ]
@@ -450,7 +442,7 @@ class POSCatalogView(POSQuickSaleView):
             queryset = queryset.filter(is_favorite=True)
         return Response({
             'products': self._catalog_payload(
-                request, _visible_pos_catalog(device, queryset),
+                request, _visible_pos_catalog(device, queryset), device.branch,
             ),
         })
 
@@ -482,7 +474,7 @@ class POSBarcodeProductView(POSQuickSaleView):
         product = get_object_or_404(_pos_catalog_queryset(device.branch, barcode=barcode))
         if not _visible_pos_catalog(device, [product]):
             raise Http404
-        return Response(self._catalog_payload(request, [product])[0])
+        return Response(self._catalog_payload(request, [product], device.branch)[0])
 
 
 class POSCustomersView(POSQuickSaleView):
@@ -525,10 +517,6 @@ class POSSalePreviewView(POSQuickSaleView):
         serializer = POSSalePreviewSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        if discount_intent_is_nonzero(data['discount']) and 'sales.apply_discount' not in permissions:
-            raise PermissionDenied('Você não possui permissão para aplicar desconto.')
-        if _has_item_discount(data['items']) and 'sales.apply_item_discount' not in permissions:
-            raise PermissionDenied('Você não possui permissão para aplicar desconto por item.')
         if data['service_fee_waived'] and 'sales.waive_service_fee' not in permissions:
             raise PermissionDenied('Você não possui permissão para isentar taxa de serviço.')
         result = calculate_preview(
@@ -545,6 +533,52 @@ class POSSalePreviewView(POSQuickSaleView):
         output = CalculationOutputSerializer(data=result)
         output.is_valid(raise_exception=True)
         return Response(output.data)
+
+
+class POSSaleAvailabilityView(POSQuickSaleView):
+    def post(self, request):
+        device, _, permissions, _ = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        serializer = POSStockAvailabilitySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = assess_sale_stock_availability(
+            company=device.branch.company,
+            raw_items=self._items(serializer.validated_data['items']),
+            branch=device.branch,
+            channel=SalesChannel.COUNTER,
+        )
+        return Response(result)
+
+
+def _authorizer_options(branch, permission_code):
+    return [
+        {
+            'id': user.pk,
+            'display_name': user.get_full_name().strip() or user.email,
+        }
+        for user in eligible_branch_users(branch, permission_code)
+    ]
+
+
+class POSDiscountAuthorizersView(POSQuickSaleView):
+    def get(self, request):
+        device, _, permissions, _ = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        return Response({
+            'authorizers': _authorizer_options(device.branch, 'sales.apply_discount'),
+        })
+
+
+class POSItemDiscountAuthorizersView(POSQuickSaleView):
+    def get(self, request):
+        device, _, permissions, _ = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        return Response({
+            'authorizers': _authorizer_options(device.branch, 'sales.apply_item_discount'),
+        })
 
 
 class POSSaleCheckoutOptionsView(POSQuickSaleView):
@@ -595,8 +629,6 @@ class POSFinalizeSaleView(POSQuickSaleView):
         serializer = POSFinalizeSaleSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        if _has_item_discount(data['items']) and 'sales.apply_item_discount' not in permissions:
-            raise PermissionDenied('Você não possui permissão para aplicar desconto por item.')
         session = _pos_sale_session(device, data['cash_session'])
         customer = None
         if data.get('customer') is not None:

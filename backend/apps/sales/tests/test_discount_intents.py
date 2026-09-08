@@ -3,6 +3,7 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase
 
+from apps.pos.serializers import POSDiscountAuthorizationSerializer
 from apps.sales.services import (
     _idempotency_discount, _preview_items, normalize_discount_intent, resolve_discount_intent,
 )
@@ -49,3 +50,19 @@ class ManualDiscountIntentTests(SimpleTestCase):
         self.assertEqual(item['gross_total'], Decimal('34.00'))
         self.assertEqual(item['item_discount'], Decimal('6.50'))
         self.assertEqual(item['line_total'], Decimal('27.50'))
+
+    def test_pos_authorization_accepts_only_the_canonical_password_payload(self):
+        serializer = POSDiscountAuthorizationSerializer(data={
+            'user': 10,
+            'method': 'password',
+            'credential': 'temporary-secret',
+        })
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+        serializer = POSDiscountAuthorizationSerializer(data={
+            'user': 10,
+            'method': 'password',
+            'credential': 'temporary-secret',
+            'unexpected': 'field',
+        })
+        self.assertFalse(serializer.is_valid())

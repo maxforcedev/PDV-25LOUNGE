@@ -8,7 +8,8 @@ from .views import (
     POSCashSessionEntryView, POSCashSessionOpenView, POSCashSessionSummaryView,
     POSCashSessionWithdrawalView,
     POSBarcodeProductView, POSCatalogCategoriesView, POSCatalogView, POSFinalizeSaleView,
-    POSCustomersView, POSSaleCheckoutOptionsView, POSSalePreviewView,
+    POSCustomersView, POSSaleAvailabilityView, POSSaleCheckoutOptionsView, POSSalePreviewView,
+    POSDiscountAuthorizersView, POSItemDiscountAuthorizersView,
 )
 
 app_name = 'pos'
@@ -34,6 +35,9 @@ urlpatterns = [
     path('products/barcode/<str:barcode>/', POSBarcodeProductView.as_view(), name='product-barcode'),
     path('customers/', POSCustomersView.as_view(), name='customers'),
     path('sales/preview/', POSSalePreviewView.as_view(), name='sale-preview'),
+    path('sales/availability/', POSSaleAvailabilityView.as_view(), name='sale-availability'),
+    path('sales/discount-authorizers/', POSDiscountAuthorizersView.as_view(), name='sale-discount-authorizers'),
+    path('sales/item-discount-authorizers/', POSItemDiscountAuthorizersView.as_view(), name='sale-item-discount-authorizers'),
     path('sales/checkout-options/', POSSaleCheckoutOptionsView.as_view(), name='sale-checkout-options'),
     path('sales/', POSFinalizeSaleView.as_view(), name='sale-finalize'),
     path('heartbeat/', HeartbeatView.as_view(), name='heartbeat'),

@@ -418,6 +418,41 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
+  Future<QuickSaleStockAvailability?> quickSaleStockAvailability({
+    required List<Map<String, dynamic>> items,
+  }) async {
+    try {
+      return await _api.quickSaleStockAvailability(items: items);
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<List<QuickSaleAuthorizer>?> quickSaleDiscountAuthorizers() async {
+    try {
+      return await _api.quickSaleDiscountAuthorizers();
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<List<QuickSaleAuthorizer>?> quickSaleItemDiscountAuthorizers() async {
+    try {
+      return await _api.quickSaleItemDiscountAuthorizers();
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
   Future<QuickSaleCheckoutOptions?> quickSaleCheckoutOptions() async {
     try {
       return await _api.quickSaleCheckoutOptions();
@@ -468,6 +503,8 @@ class AppController extends ChangeNotifier {
     required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
     QuickSaleCustomer? customer,
+    QuickSaleAuthorization? discountAuthorization,
+    QuickSaleAuthorization? itemDiscountAuthorization,
   }) async {
     final snapshot = bootstrapSnapshot;
     if (finalizingSale) {
@@ -487,6 +524,11 @@ class AppController extends ChangeNotifier {
       'discount': discount,
       'service_fee_waived': serviceFeeWaived,
       'customer': customer?.id,
+      if (discountAuthorization != null)
+        'discount_authorization': discountAuthorization.idempotencyIdentity,
+      if (itemDiscountAuthorization != null)
+        'item_discount_authorization':
+            itemDiscountAuthorization.idempotencyIdentity,
     });
     final key = _uncertainSaleKeys.putIfAbsent(payload, createIdempotencyKey);
     await _persistUncertainSaleIntents();
@@ -503,6 +545,8 @@ class AppController extends ChangeNotifier {
         discount: discount,
         serviceFeeWaived: serviceFeeWaived,
         customerId: customer?.id,
+        discountAuthorization: discountAuthorization?.toJson(),
+        itemDiscountAuthorization: itemDiscountAuthorization?.toJson(),
       );
       bootstrapSnapshot = snapshot.withCash(result.cash);
       _uncertainSaleKeys.remove(payload);

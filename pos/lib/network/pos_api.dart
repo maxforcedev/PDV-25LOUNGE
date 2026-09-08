@@ -73,6 +73,11 @@ abstract class PosApi {
     required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
   });
+  Future<QuickSaleStockAvailability> quickSaleStockAvailability({
+    required List<Map<String, dynamic>> items,
+  });
+  Future<List<QuickSaleAuthorizer>> quickSaleDiscountAuthorizers();
+  Future<List<QuickSaleAuthorizer>> quickSaleItemDiscountAuthorizers();
   Future<QuickSaleCheckoutOptions> quickSaleCheckoutOptions();
   Future<QuickSaleResult> finalizeQuickSale({
     required String idempotencyKey,
@@ -82,6 +87,8 @@ abstract class PosApi {
     required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
     int? customerId,
+    Map<String, dynamic>? discountAuthorization,
+    Map<String, dynamic>? itemDiscountAuthorization,
   });
 }
 
@@ -411,6 +418,32 @@ class HttpPosApi implements PosApi, PosCredentialCache {
       }));
 
   @override
+  Future<QuickSaleStockAvailability> quickSaleStockAvailability({
+    required List<Map<String, dynamic>> items,
+  }) async =>
+      QuickSaleStockAvailability.fromJson(await _request(
+          'POST', 'sales/availability/',
+          body: {'items': items}));
+
+  @override
+  Future<List<QuickSaleAuthorizer>> quickSaleDiscountAuthorizers() async {
+    final payload = await _request('GET', 'sales/discount-authorizers/');
+    return (payload['authorizers'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(QuickSaleAuthorizer.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<List<QuickSaleAuthorizer>> quickSaleItemDiscountAuthorizers() async {
+    final payload = await _request('GET', 'sales/item-discount-authorizers/');
+    return (payload['authorizers'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(QuickSaleAuthorizer.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
   Future<QuickSaleCheckoutOptions> quickSaleCheckoutOptions() async =>
       QuickSaleCheckoutOptions.fromJson(
           await _request('GET', 'sales/checkout-options/'));
@@ -424,6 +457,8 @@ class HttpPosApi implements PosApi, PosCredentialCache {
     required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
     int? customerId,
+    Map<String, dynamic>? discountAuthorization,
+    Map<String, dynamic>? itemDiscountAuthorization,
   }) async =>
       QuickSaleResult.fromJson(await _request('POST', 'sales/', body: {
         'idempotency_key': idempotencyKey,
@@ -433,5 +468,9 @@ class HttpPosApi implements PosApi, PosCredentialCache {
         'discount': discount,
         'service_fee_waived': serviceFeeWaived,
         if (customerId != null) 'customer': customerId,
+        if (discountAuthorization != null)
+          'discount_authorization': discountAuthorization,
+        if (itemDiscountAuthorization != null)
+          'item_discount_authorization': itemDiscountAuthorization,
       }));
 }

@@ -138,14 +138,35 @@ class POSSalePreviewSerializer(serializers.Serializer):
         return items
 
 
+class POSStockAvailabilitySerializer(serializers.Serializer):
+    items = POSCartItemSerializer(many=True, allow_empty=False)
+
+    def validate_items(self, items):
+        client_item_ids = [item['client_item_id'] for item in items]
+        if len(client_item_ids) != len(set(client_item_ids)):
+            raise serializers.ValidationError('Cada item do carrinho deve ter um identificador único.')
+        return items
+
+
+class POSDiscountAuthorizationSerializer(serializers.Serializer):
+    user = serializers.IntegerField(min_value=1)
+    method = serializers.ChoiceField(choices=('password',))
+    credential = serializers.CharField(trim_whitespace=False, write_only=True)
+
+    def to_internal_value(self, data):
+        if not isinstance(data, dict) or set(data) != {'user', 'method', 'credential'}:
+            raise serializers.ValidationError('A autorização deve informar usuário e senha.')
+        return super().to_internal_value(data)
+
+
 class POSFinalizeSaleSerializer(POSSalePreviewSerializer):
     customer = serializers.IntegerField(required=False, allow_null=True)
     idempotency_key = serializers.UUIDField()
     cash_session = serializers.IntegerField(min_value=1)
     payments = PaymentInputSerializer(many=True, allow_empty=False)
-    discount_authorization = serializers.DictField(required=False)
-    item_discount_authorization = serializers.DictField(required=False)
-    service_fee_authorization = serializers.DictField(required=False)
+    discount_authorization = POSDiscountAuthorizationSerializer(required=False)
+    item_discount_authorization = POSDiscountAuthorizationSerializer(required=False)
+    service_fee_authorization = POSDiscountAuthorizationSerializer(required=False)
 
 
 class POSCustomerSerializer(serializers.ModelSerializer):

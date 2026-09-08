@@ -195,19 +195,65 @@ class _QuickSalePageState extends State<QuickSalePage> {
             group.requiredQuantity != null,
       );
 
-  Future<void> _addProduct(QuickSaleProduct product) async {
+  void _showStockUnavailable([String? available]) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(available == null
+          ? 'Produto sem estoque. Esta filial não permite venda com estoque negativo.'
+          : 'Quantidade indisponível. Disponível: $available'),
+    ));
+  }
+
+  Future<void> _addProduct(QuickSaleProduct product,
+      {String quantity = '1'}) async {
     widget.controller.logPosAction('cart_add');
+    if (!product.canSell) {
+      _showStockUnavailable();
+      return;
+    }
+    final item = QuickSaleCartItem(
+      clientItemId: createIdempotencyKey(),
+      product: product,
+      quantity: quantity,
+    );
     if (_requiresConfiguration(product)) {
-      await _editProduct(product);
+      await _editProduct(product, initial: item);
       return;
     }
     setState(() {
-      _cart.add(QuickSaleCartItem(
-        clientItemId: createIdempotencyKey(),
-        product: product,
-        quantity: '1',
-      ));
+      _cart.add(item);
     });
+    _schedulePreview();
+  }
+
+  Future<void> _addProductBatch(QuickSaleProduct product) async {
+    if (!product.canSell) {
+      _showStockUnavailable();
+      return;
+    }
+    final quantity = await showDialog<String>(
+      context: context,
+      builder: (_) => _BatchQuantityDialog(productName: product.name),
+    );
+    if (quantity == null || !mounted) return;
+    final item = QuickSaleCartItem(
+      clientItemId: createIdempotencyKey(),
+      product: product,
+      quantity: quantity,
+    );
+    if (product.modifierGroups.isNotEmpty) {
+      await _editProduct(product, initial: item, checkBatchAvailability: true);
+      return;
+    }
+    final availability = await widget.controller.quickSaleStockAvailability(
+      items: [..._cart.map((item) => item.toJson()), item.toJson()],
+    );
+    if (!mounted || availability == null) return;
+    if (!availability.available && availability.enforced) {
+      _showStockUnavailable(availability.availableQuantity);
+      return;
+    }
+    widget.controller.logPosAction('cart_add_batch');
+    setState(() => _cart.add(item));
     _schedulePreview();
   }
 
@@ -215,6 +261,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
     QuickSaleProduct product, {
     int? index,
     QuickSaleCartItem? initial,
+    bool checkBatchAvailability = false,
   }) async {
     widget.controller.logPosAction('cart_edit');
     final current = initial ?? (index == null ? null : _cart[index]);
@@ -226,6 +273,24 @@ class _QuickSalePageState extends State<QuickSalePage> {
       ),
     );
     if (!mounted || item == null) return;
+    if (checkBatchAvailability) {
+      final candidates = [..._cart];
+      if (index == null) {
+        candidates.add(item);
+      } else {
+        candidates[index] = item;
+      }
+      final availability = await widget.controller.quickSaleStockAvailability(
+        items: candidates
+            .map((candidate) => candidate.toJson())
+            .toList(growable: false),
+      );
+      if (!mounted || availability == null) return;
+      if (!availability.available && availability.enforced) {
+        _showStockUnavailable(availability.availableQuantity);
+        return;
+      }
+    }
     setState(() {
       if (index == null) {
         _cart.add(item);
@@ -241,7 +306,8 @@ class _QuickSalePageState extends State<QuickSalePage> {
       context: context,
       builder: (_) => _EditCartItemDialog(
         item: _cart[index],
-        allowItemDiscount: _canItemDiscount,
+        requiresItemAuthorization: !_canItemDiscount,
+        requestItemAuthorization: _requestItemDiscountAuthorization,
       ),
     );
     if (result == null || !mounted) return;
@@ -250,6 +316,15 @@ class _QuickSalePageState extends State<QuickSalePage> {
         _cart.removeAt(index);
       } else {
         _cart[index] = result.item!;
+      }
+      if (result.itemDiscountAuthorization != null) {
+        _draft.itemDiscountAuthorization = result.itemDiscountAuthorization;
+      }
+      if (_canItemDiscount) {
+        _draft.itemDiscountAuthorization = null;
+      }
+      if (!_cart.any((item) => !item.discount.isZero)) {
+        _draft.itemDiscountAuthorization = null;
       }
     });
     _schedulePreview();
@@ -355,13 +430,55 @@ class _QuickSalePageState extends State<QuickSalePage> {
       builder: (_) => _DiscountDialog(initial: _discount),
     );
     if (discount == null || !mounted) return;
-    setState(() => _discount = discount);
+    QuickSaleAuthorization? authorization;
+    if (!_canDiscount) {
+      authorization = await _requestDiscountAuthorization();
+      if (authorization == null || !mounted) return;
+    }
+    setState(() {
+      _discount = discount;
+      _draft.discountAuthorization = authorization;
+    });
     _schedulePreview();
   }
 
   void _removeSaleDiscount() {
-    setState(() => _discount = const QuickSaleDiscountIntent());
+    setState(() {
+      _discount = const QuickSaleDiscountIntent();
+      _draft.discountAuthorization = null;
+    });
     _schedulePreview();
+  }
+
+  Future<QuickSaleAuthorization?> _requestDiscountAuthorization() =>
+      _requestDiscountAuthorizationFor(item: false);
+
+  Future<QuickSaleAuthorization?> _requestItemDiscountAuthorization() =>
+      _requestDiscountAuthorizationFor(item: true);
+
+  Future<QuickSaleAuthorization?> _requestDiscountAuthorizationFor(
+      {required bool item}) async {
+    // A new approval attempt must not retain a prior approver password.
+    if (item) {
+      _draft.itemDiscountAuthorization = null;
+    } else {
+      _draft.discountAuthorization = null;
+    }
+    final authorizers = item
+        ? await widget.controller.quickSaleItemDiscountAuthorizers()
+        : await widget.controller.quickSaleDiscountAuthorizers();
+    if (!mounted || authorizers == null) return null;
+    if (authorizers.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content:
+            Text('Nenhum autorizador elegível está disponível nesta filial.'),
+      ));
+      return null;
+    }
+    return showDialog<QuickSaleAuthorization>(
+      context: context,
+      builder: (_) => _DiscountAuthorizationDialog(authorizers: authorizers),
+    );
   }
 
   Future<void> _clearCart() async {
@@ -394,7 +511,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => _CartPage(
         draft: _draft,
-        allowDiscount: _canDiscount,
+        allowDiscount: true,
         allowWaiveFee: _canWaiveFee,
         onCustomer: _selectCustomer,
         onRemoveCustomer: _removeCustomer,
@@ -473,6 +590,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
                     },
                     onBarcode: _barcode,
                     onProduct: _addProduct,
+                    onProductLongPress: _addProductBatch,
                   );
                   if (constraints.maxWidth < 900) return catalog;
                   return Row(children: [
@@ -623,6 +741,8 @@ class _CheckoutPageState extends State<_CheckoutPage> {
       discount: widget.draft.discount.toJson(),
       serviceFeeWaived: widget.draft.serviceFeeWaived,
       customer: widget.draft.customer,
+      discountAuthorization: widget.draft.discountAuthorization,
+      itemDiscountAuthorization: widget.draft.itemDiscountAuthorization,
     );
     if (!mounted || result == null) return;
     await widget.onSaleCompleted();
@@ -776,6 +896,7 @@ class _CatalogPanel extends StatelessWidget {
     required this.onFavorites,
     required this.onBarcode,
     required this.onProduct,
+    required this.onProductLongPress,
   });
   final TextEditingController search;
   final bool loading;
@@ -787,6 +908,7 @@ class _CatalogPanel extends StatelessWidget {
   final VoidCallback onFavorites;
   final VoidCallback onBarcode;
   final ValueChanged<QuickSaleProduct> onProduct;
+  final ValueChanged<QuickSaleProduct> onProductLongPress;
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -875,6 +997,8 @@ class _CatalogPanel extends StatelessWidget {
                             itemBuilder: (context, index) => _ProductCard(
                               product: products[index],
                               onTap: () => onProduct(products[index]),
+                              onLongPress: () =>
+                                  onProductLongPress(products[index]),
                             ),
                           );
                         })),
@@ -883,9 +1007,14 @@ class _CatalogPanel extends StatelessWidget {
 }
 
 class _ProductCard extends StatefulWidget {
-  const _ProductCard({required this.product, required this.onTap});
+  const _ProductCard({
+    required this.product,
+    required this.onTap,
+    required this.onLongPress,
+  });
   final QuickSaleProduct product;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
   @override
   State<_ProductCard> createState() => _ProductCardState();
@@ -919,6 +1048,7 @@ class _ProductCardState extends State<_ProductCard>
         child: InkWell(
           borderRadius: BorderRadius.circular(18),
           onTap: _add,
+          onLongPress: widget.onLongPress,
           child: Ink(
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
@@ -927,7 +1057,38 @@ class _ProductCardState extends State<_ProductCard>
                 border: Border.all(color: const Color(0xffe2e8f0))),
             child:
                 Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Expanded(child: _ProductImage(url: widget.product.imageUrl)),
+              Expanded(
+                child: Stack(children: [
+                  Positioned.fill(
+                      child: _ProductImage(url: widget.product.imageUrl)),
+                  if (widget.product.stockApplicable &&
+                      !widget.product.stockAvailable)
+                    Positioned(
+                      right: 4,
+                      bottom: 4,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: widget.product.canSell
+                              ? const Color(0xff9a6700)
+                              : const Color(0xffb42318),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Padding(
+                          padding:
+                              EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                          child: Text(
+                            'SEM ESTOQUE',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 9,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                ]),
+              ),
               const SizedBox(height: 6),
               Text(widget.product.name,
                   maxLines: 2,
@@ -1443,20 +1604,189 @@ class _DiscountTypeButton extends StatelessWidget {
       );
 }
 
+class _BatchQuantityDialog extends StatefulWidget {
+  const _BatchQuantityDialog({required this.productName});
+
+  final String productName;
+
+  @override
+  State<_BatchQuantityDialog> createState() => _BatchQuantityDialogState();
+}
+
+class _BatchQuantityDialogState extends State<_BatchQuantityDialog> {
+  final _quantity = TextEditingController(text: '1');
+
+  bool get _valid =>
+      (double.tryParse(_quantity.text.trim().replaceAll(',', '.')) ?? 0) > 0;
+
+  void _adjust(int delta) {
+    final current = int.tryParse(_quantity.text.trim()) ?? 1;
+    final next = current + delta;
+    if (next > 0) setState(() => _quantity.text = '$next');
+  }
+
+  @override
+  void dispose() {
+    _quantity.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('ADICIONAR EM LOTE'),
+        content: SizedBox(
+          width: 320,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(widget.productName,
+                  style: const TextStyle(fontWeight: FontWeight.w800)),
+            ),
+            const SizedBox(height: 16),
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Text('Quantidade'),
+            ),
+            const SizedBox(height: 6),
+            Row(children: [
+              IconButton(
+                onPressed: () => _adjust(-1),
+                icon: const Icon(Icons.remove_circle_outline),
+                tooltip: 'Diminuir quantidade',
+              ),
+              Expanded(
+                child: TextField(
+                  controller: _quantity,
+                  autofocus: true,
+                  textAlign: TextAlign.center,
+                  onChanged: (_) => setState(() {}),
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: InputDecoration(
+                    errorText: _quantity.text.isNotEmpty && !_valid
+                        ? 'Informe uma quantidade válida.'
+                        : null,
+                  ),
+                ),
+              ),
+              IconButton(
+                onPressed: () => _adjust(1),
+                icon: const Icon(Icons.add_circle_outline),
+                tooltip: 'Aumentar quantidade',
+              ),
+            ]),
+          ]),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('CANCELAR'),
+          ),
+          FilledButton(
+            onPressed: !_valid
+                ? null
+                : () => Navigator.of(context)
+                    .pop(_quantity.text.trim().replaceAll(',', '.')),
+            child: Text('ADICIONAR ${_quantity.text.trim()}'),
+          ),
+        ],
+      );
+}
+
+class _DiscountAuthorizationDialog extends StatefulWidget {
+  const _DiscountAuthorizationDialog({required this.authorizers});
+
+  final List<QuickSaleAuthorizer> authorizers;
+
+  @override
+  State<_DiscountAuthorizationDialog> createState() =>
+      _DiscountAuthorizationDialogState();
+}
+
+class _DiscountAuthorizationDialogState
+    extends State<_DiscountAuthorizationDialog> {
+  final _password = TextEditingController();
+  int? _authorizerId;
+
+  @override
+  void dispose() {
+    _password.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('AUTORIZAÇÃO NECESSÁRIA'),
+        content: SizedBox(
+          width: 360,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            DropdownButtonFormField<int>(
+              initialValue: _authorizerId,
+              isExpanded: true,
+              decoration: const InputDecoration(labelText: 'Autorizador'),
+              items: widget.authorizers
+                  .map((authorizer) => DropdownMenuItem(
+                        value: authorizer.id,
+                        child: Text(authorizer.displayName,
+                            overflow: TextOverflow.ellipsis),
+                      ))
+                  .toList(growable: false),
+              onChanged: (value) => setState(() {
+                _authorizerId = value;
+                _password.clear();
+              }),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _password,
+              autofocus: true,
+              obscureText: true,
+              enableSuggestions: false,
+              autocorrect: false,
+              onChanged: (_) => setState(() {}),
+              decoration: const InputDecoration(labelText: 'Senha'),
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('VOLTAR'),
+          ),
+          FilledButton(
+            onPressed: _authorizerId == null || _password.text.isEmpty
+                ? null
+                : () => Navigator.of(context).pop(QuickSaleAuthorization(
+                      userId: _authorizerId!,
+                      credential: _password.text,
+                    )),
+            child: const Text('AUTORIZAR'),
+          ),
+        ],
+      );
+}
+
 class _CartItemEditResult {
-  const _CartItemEditResult.item(this.item) : delete = false;
+  const _CartItemEditResult.item(this.item, {this.itemDiscountAuthorization})
+      : delete = false;
   const _CartItemEditResult.delete()
       : item = null,
+        itemDiscountAuthorization = null,
         delete = true;
   final QuickSaleCartItem? item;
+  final QuickSaleAuthorization? itemDiscountAuthorization;
   final bool delete;
 }
 
 class _EditCartItemDialog extends StatefulWidget {
-  const _EditCartItemDialog(
-      {required this.item, required this.allowItemDiscount});
+  const _EditCartItemDialog({
+    required this.item,
+    required this.requiresItemAuthorization,
+    required this.requestItemAuthorization,
+  });
   final QuickSaleCartItem item;
-  final bool allowItemDiscount;
+  final bool requiresItemAuthorization;
+  final Future<QuickSaleAuthorization?> Function() requestItemAuthorization;
 
   @override
   State<_EditCartItemDialog> createState() => _EditCartItemDialogState();
@@ -1464,6 +1794,7 @@ class _EditCartItemDialog extends StatefulWidget {
 
 class _EditCartItemDialogState extends State<_EditCartItemDialog> {
   late QuickSaleCartItem _item = widget.item;
+  QuickSaleAuthorization? _itemDiscountAuthorization;
 
   Future<void> _editModifiers() async {
     final updated = await showDialog<QuickSaleCartItem>(
@@ -1502,9 +1833,16 @@ class _EditCartItemDialogState extends State<_EditCartItemDialog> {
       context: context,
       builder: (_) => _DiscountDialog(initial: _item.discount),
     );
-    if (discount != null && mounted) {
-      setState(() => _item = _item.copyWith(discount: discount));
+    if (discount == null || !mounted) return;
+    QuickSaleAuthorization? authorization;
+    if (widget.requiresItemAuthorization) {
+      authorization = await widget.requestItemAuthorization();
+      if (authorization == null || !mounted) return;
     }
+    setState(() {
+      _item = _item.copyWith(discount: discount);
+      _itemDiscountAuthorization = authorization;
+    });
   }
 
   Future<void> _delete() async {
@@ -1573,14 +1911,24 @@ class _EditCartItemDialogState extends State<_EditCartItemDialog> {
                 : 'Editar observação'),
             onTap: _editNotes,
           ),
-          if (widget.allowItemDiscount)
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.sell_outlined),
+            title: Text(_item.discount.isZero
+                ? 'Aplicar desconto no item'
+                : 'Alterar desconto no item'),
+            onTap: _editDiscount,
+          ),
+          if (!_item.discount.isZero)
             ListTile(
               contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.sell_outlined),
-              title: Text(_item.discount.isZero
-                  ? 'Aplicar desconto no item'
-                  : 'Alterar desconto no item'),
-              onTap: _editDiscount,
+              leading: const Icon(Icons.remove_circle_outline),
+              title: const Text('Remover desconto do item'),
+              onTap: () => setState(() {
+                _item =
+                    _item.copyWith(discount: const QuickSaleDiscountIntent());
+                _itemDiscountAuthorization = null;
+              }),
             ),
           ListTile(
             contentPadding: EdgeInsets.zero,
@@ -1595,8 +1943,12 @@ class _EditCartItemDialogState extends State<_EditCartItemDialog> {
               onPressed: () => Navigator.of(context).pop(),
               child: const Text('CANCELAR')),
           FilledButton(
-            onPressed: () =>
-                Navigator.of(context).pop(_CartItemEditResult.item(_item)),
+            onPressed: () => Navigator.of(context).pop(
+              _CartItemEditResult.item(
+                _item,
+                itemDiscountAuthorization: _itemDiscountAuthorization,
+              ),
+            ),
             child: const Text('SALVAR'),
           ),
         ],

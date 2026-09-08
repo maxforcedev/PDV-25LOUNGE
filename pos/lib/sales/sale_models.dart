@@ -50,6 +50,8 @@ class QuickSaleDraft extends ChangeNotifier {
   QuickSalePreview? preview;
   QuickSaleCustomer? customer;
   QuickSaleDiscountIntent discount = const QuickSaleDiscountIntent();
+  QuickSaleAuthorization? discountAuthorization;
+  QuickSaleAuthorization? itemDiscountAuthorization;
   bool serviceFeeWaived = false;
   bool loadingPreview = false;
 
@@ -60,6 +62,8 @@ class QuickSaleDraft extends ChangeNotifier {
     preview = null;
     customer = null;
     discount = const QuickSaleDiscountIntent();
+    discountAuthorization = null;
+    itemDiscountAuthorization = null;
     serviceFeeWaived = false;
     loadingPreview = false;
     notifyListeners();
@@ -141,6 +145,11 @@ class QuickSaleProduct {
     this.categoryId,
     this.categoryName,
     this.imageUrl,
+    this.inventoryBehavior = 'direct',
+    this.stockApplicable = true,
+    this.stockAvailable = true,
+    this.canSell = true,
+    this.availabilityReason,
   });
 
   factory QuickSaleProduct.fromJson(Map<String, dynamic> json) =>
@@ -156,6 +165,11 @@ class QuickSaleProduct {
         price: json['price'] as String? ?? '0.00',
         favorite: json['favorite'] as bool? ?? false,
         emitsTicket: json['emits_ticket'] as bool? ?? false,
+        inventoryBehavior: json['inventory_behavior'] as String? ?? 'direct',
+        stockApplicable: json['stock_applicable'] as bool? ?? true,
+        stockAvailable: json['stock_available'] as bool? ?? true,
+        canSell: json['can_sell'] as bool? ?? true,
+        availabilityReason: json['availability_reason'] as String?,
         modifierGroups: (json['modifier_groups'] as List<dynamic>? ?? const [])
             .cast<Map<String, dynamic>>()
             .map(QuickSaleModifierGroup.fromJson)
@@ -173,6 +187,72 @@ class QuickSaleProduct {
   final bool favorite;
   final bool emitsTicket;
   final List<QuickSaleModifierGroup> modifierGroups;
+  final String inventoryBehavior;
+  final bool stockApplicable;
+  final bool stockAvailable;
+  final bool canSell;
+  final String? availabilityReason;
+}
+
+class QuickSaleAuthorizer {
+  const QuickSaleAuthorizer({required this.id, required this.displayName});
+
+  factory QuickSaleAuthorizer.fromJson(Map<String, dynamic> json) =>
+      QuickSaleAuthorizer(
+        id: json['id'] as int,
+        displayName: json['display_name'] as String? ?? '',
+      );
+
+  final int id;
+  final String displayName;
+}
+
+class QuickSaleAuthorization {
+  const QuickSaleAuthorization(
+      {required this.userId, required this.credential});
+
+  final int userId;
+  final String credential;
+
+  Map<String, dynamic> toJson() => {
+        'user': userId,
+        'method': 'password',
+        'credential': credential,
+      };
+
+  // The password must never become part of a persisted idempotency intent.
+  Map<String, dynamic> get idempotencyIdentity => {
+        'user': userId,
+        'method': 'password',
+      };
+}
+
+class QuickSaleStockAvailability {
+  const QuickSaleStockAvailability({
+    required this.available,
+    required this.enforced,
+    required this.shortages,
+  });
+
+  factory QuickSaleStockAvailability.fromJson(Map<String, dynamic> json) =>
+      QuickSaleStockAvailability(
+        available: json['available'] as bool? ?? false,
+        enforced: json['enforced'] as bool? ?? true,
+        shortages: (json['shortages'] as List<dynamic>? ?? const [])
+            .cast<Map<String, dynamic>>(),
+      );
+
+  final bool available;
+  final bool enforced;
+  final List<Map<String, dynamic>> shortages;
+
+  String? get availableQuantity {
+    for (final shortage in shortages) {
+      final value = shortage['available_quantity'];
+      if (value != null) return '$value';
+    }
+    return null;
+  }
 }
 
 class QuickSaleCartItem {
