@@ -32,11 +32,17 @@ class CashSessionInfo {
     required this.status,
     required this.openedByName,
     required this.openedAt,
+    this.canView = false,
+    this.canEntry = false,
+    this.canWithdraw = false,
+    this.canClose = false,
     this.openingAmount,
   });
 
   factory CashSessionInfo.fromJson(Map<String, dynamic> json) {
     final register = json['register'] as Map<String, dynamic>?;
+    final capabilities =
+        json['capabilities'] as Map<String, dynamic>? ?? const {};
     return CashSessionInfo(
       id: json['id'] as int,
       registerId: (register?['id'] ?? json['cash_register']) as int,
@@ -47,6 +53,10 @@ class CashSessionInfo {
       status: json['status'] as String? ?? 'open',
       openedByName: json['opened_by_name'] as String? ?? '',
       openedAt: DateTime.tryParse(json['opened_at'] as String? ?? ''),
+      canView: capabilities['can_view'] as bool? ?? false,
+      canEntry: capabilities['can_entry'] as bool? ?? false,
+      canWithdraw: capabilities['can_withdraw'] as bool? ?? false,
+      canClose: capabilities['can_close'] as bool? ?? false,
       openingAmount: json['opening_amount'] as String?,
     );
   }
@@ -57,6 +67,10 @@ class CashSessionInfo {
   final String status;
   final String openedByName;
   final DateTime? openedAt;
+  final bool canView;
+  final bool canEntry;
+  final bool canWithdraw;
+  final bool canClose;
   final String? openingAmount;
 }
 
@@ -64,29 +78,38 @@ class CashOverview {
   const CashOverview({
     required this.mode,
     required this.enabled,
+    this.canOperate = false,
+    this.canOpen = false,
     this.register,
     this.session,
     this.registers = const [],
   });
 
-  factory CashOverview.fromJson(Map<String, dynamic> json) => CashOverview(
-        mode: json['mode'] as String? ?? 'FLEXIBLE',
-        enabled: json['enabled'] as bool? ?? false,
-        register: json['register'] is Map<String, dynamic>
-            ? CashRegisterInfo.fromJson(
-                json['register'] as Map<String, dynamic>)
-            : null,
-        session: json['session'] is Map<String, dynamic>
-            ? CashSessionInfo.fromJson(json['session'] as Map<String, dynamic>)
-            : null,
-        registers: (json['registers'] as List<dynamic>? ?? const [])
-            .cast<Map<String, dynamic>>()
-            .map(CashRegisterInfo.fromJson)
-            .toList(growable: false),
-      );
+  factory CashOverview.fromJson(Map<String, dynamic> json) {
+    final capabilities =
+        json['capabilities'] as Map<String, dynamic>? ?? const {};
+    return CashOverview(
+      mode: json['mode'] as String? ?? 'FLEXIBLE',
+      enabled: json['enabled'] as bool? ?? false,
+      canOperate: capabilities['can_operate'] as bool? ?? false,
+      canOpen: capabilities['can_open'] as bool? ?? false,
+      register: json['register'] is Map<String, dynamic>
+          ? CashRegisterInfo.fromJson(json['register'] as Map<String, dynamic>)
+          : null,
+      session: json['session'] is Map<String, dynamic>
+          ? CashSessionInfo.fromJson(json['session'] as Map<String, dynamic>)
+          : null,
+      registers: (json['registers'] as List<dynamic>? ?? const [])
+          .cast<Map<String, dynamic>>()
+          .map(CashRegisterInfo.fromJson)
+          .toList(growable: false),
+    );
+  }
 
   final String mode;
   final bool enabled;
+  final bool canOperate;
+  final bool canOpen;
   final CashRegisterInfo? register;
   final CashSessionInfo? session;
   final List<CashRegisterInfo> registers;
@@ -152,9 +175,13 @@ const withdrawalCategories = {
   'other': 'Outros',
 };
 
-bool withdrawalRequiresBeneficiary(String category) =>
-    const {'dj', 'artist', 'advance', 'promoter', 'supplier'}
-        .contains(category);
+bool withdrawalRequiresBeneficiary(String category) => const {
+      'dj',
+      'artist',
+      'advance',
+      'promoter',
+      'supplier'
+    }.contains(category);
 
 String formatMoney(String? value) =>
     'R\$ ${(value ?? '0.00').replaceAll('.', ',')}';

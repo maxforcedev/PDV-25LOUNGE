@@ -28,8 +28,14 @@ def _branch_blocked_codes(user, branch_id):
     ) | _company_blocked_codes(user, branch.company_id)
 
 
-def _permission_blocked(user, *, company_id=None, branch_id=None, code):
-    if user.is_superuser:
+def branch_blocked_permission_codes(user, branch_id):
+    """Return the canonical company and branch blocks effective at a branch."""
+    return _branch_blocked_codes(user, branch_id)
+
+
+def _permission_blocked(user, *, company_id=None, branch_id=None, code,
+                        allow_superuser=True):
+    if user.is_superuser and allow_superuser:
         return False
     if branch_id:
         return code in _branch_blocked_codes(user, branch_id)
@@ -154,13 +160,25 @@ def active_operational_branches(user):
     ).distinct()
 
 
-def company_permission_codes(user, company_id):
-    if not user.is_authenticated or not user.can_login or not user.is_active:
+def company_permission_codes(user, company_id, *, allow_pos_only=False,
+                             allow_superuser=True):
+    if not user.is_authenticated or not user.is_active:
         return set()
-    if user.is_superuser:
+    if not user.can_login and not (allow_pos_only and user.can_access_pos):
+        return set()
+    if allow_pos_only and not user.can_access_pos:
+        return set()
+    if user.is_superuser and allow_superuser:
         from .rbac import ALL_PERMISSION_CODES
 
         return set(ALL_PERMISSION_CODES)
+    membership_filters = {
+        'branch__company__user_accesses__user': user,
+        'branch__company__user_accesses__is_active': True,
+        'branch__company__user_accesses__saas_status': UserCompanyAccess.SaaSStatus.ACTIVE,
+    }
+    if not allow_pos_only:
+        membership_filters['branch__company__user_accesses__can_login'] = True
     codes = set(
         UserBranchAccess.objects.filter(
             user=user,
@@ -168,10 +186,7 @@ def company_permission_codes(user, company_id):
             is_active=True,
             access_profile__status='active',
             access_profile__permissions__status='active',
-            branch__company__user_accesses__user=user,
-            branch__company__user_accesses__is_active=True,
-            branch__company__user_accesses__can_login=True,
-            branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
+            **membership_filters,
         ).values_list('access_profile__permissions__code', flat=True)
     )
     return codes - _company_blocked_codes(user, company_id)
@@ -208,7 +223,10 @@ def user_has_branch_permission(user, branch_id, code, *, allow_pos_only=False,
         return False
     if user.is_superuser and allow_superuser:
         return True
-    if _permission_blocked(user, branch_id=branch_id, code=code):
+    if _permission_blocked(
+        user, branch_id=branch_id, code=code,
+        allow_superuser=allow_superuser,
+    ):
         return False
     filters = {
         'user': user,
@@ -255,13 +273,25 @@ def eligible_branch_users(branch, permission_code):
     ).exclude(id__in=blocked_users).exclude(id__in=company_blocked_users).distinct().order_by('first_name', 'last_name', 'email', 'id')
 
 
-def branch_permission_codes(user, branch_id):
-    if not user.is_authenticated or not user.can_login or not user.is_active:
+def branch_permission_codes(user, branch_id, *, allow_pos_only=False,
+                            allow_superuser=True):
+    if not user.is_authenticated or not user.is_active:
         return set()
-    if user.is_superuser:
+    if not user.can_login and not (allow_pos_only and user.can_access_pos):
+        return set()
+    if allow_pos_only and not user.can_access_pos:
+        return set()
+    if user.is_superuser and allow_superuser:
         from .rbac import ALL_PERMISSION_CODES
 
         return set(ALL_PERMISSION_CODES)
+    membership_filters = {
+        'branch__company__user_accesses__user': user,
+        'branch__company__user_accesses__is_active': True,
+        'branch__company__user_accesses__saas_status': UserCompanyAccess.SaaSStatus.ACTIVE,
+    }
+    if not allow_pos_only:
+        membership_filters['branch__company__user_accesses__can_login'] = True
     codes = set(
         UserBranchAccess.objects.filter(
             user=user,
@@ -269,10 +299,7 @@ def branch_permission_codes(user, branch_id):
             is_active=True,
             access_profile__status='active',
             access_profile__permissions__status='active',
-            branch__company__user_accesses__user=user,
-            branch__company__user_accesses__is_active=True,
-            branch__company__user_accesses__can_login=True,
-            branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
+            **membership_filters,
         ).values_list('access_profile__permissions__code', flat=True)
     )
     return codes - _branch_blocked_codes(user, branch_id)

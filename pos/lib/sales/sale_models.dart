@@ -52,6 +52,7 @@ class QuickSaleDraft extends ChangeNotifier {
   QuickSaleDiscountIntent discount = const QuickSaleDiscountIntent();
   QuickSaleAuthorization? discountAuthorization;
   QuickSaleAuthorization? itemDiscountAuthorization;
+  QuickSaleAuthorization? serviceFeeAuthorization;
   bool serviceFeeWaived = false;
   bool loadingPreview = false;
 
@@ -64,6 +65,7 @@ class QuickSaleDraft extends ChangeNotifier {
     discount = const QuickSaleDiscountIntent();
     discountAuthorization = null;
     itemDiscountAuthorization = null;
+    serviceFeeAuthorization = null;
     serviceFeeWaived = false;
     loadingPreview = false;
     notifyListeners();

@@ -191,7 +191,7 @@ class BootstrapView(POSDeviceView):
             'operator': _operator_data(session.operator),
             'permissions': sorted(permissions),
             'modules': modules,
-            'cash': cash_state_for_device(device, permissions),
+            'cash': cash_state_for_device(device, permissions, session.operator),
             'settings': {'receipt': effective_settings(device)},
         })
 
@@ -231,7 +231,7 @@ class POSCashView(POSDeviceView):
 
     @staticmethod
     def require_read_permission(permissions):
-        if 'cash_registers.view' not in permissions:
+        if not {'cash_registers.view', 'cash_registers.close'} & permissions:
             raise PermissionDenied('Você não possui permissão para visualizar caixas nesta filial.')
 
     @staticmethod
@@ -263,17 +263,17 @@ class POSCashView(POSDeviceView):
         )
 
     @staticmethod
-    def mutation_state(device, permissions, session):
-        state = cash_state_for_device(device, permissions)
+    def mutation_state(device, permissions, session, operator):
+        state = cash_state_for_device(device, permissions, operator)
         state['session_cash'] = session_cash_state(session)
         return state
 
 
 class POSCashOverviewView(POSCashView):
     def get(self, request):
-        device, _, permissions, _ = self.context(request)
+        device, operator, permissions, _ = self.context(request)
         self.require_operational_permission(permissions)
-        return Response(cash_state_for_device(device, permissions))
+        return Response(cash_state_for_device(device, permissions, operator))
 
 
 def _pos_catalog_queryset(branch, *, search=None, barcode=None):
@@ -481,8 +481,8 @@ class POSBarcodeProductView(POSQuickSaleView):
 class POSCustomersView(POSQuickSaleView):
     def get(self, request):
         device, _, permissions, _ = self.context(request)
-        if 'sales.create' not in permissions:
-            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        if 'sales.create' not in permissions or 'customers.view' not in permissions:
+            raise PermissionDenied('Você não possui permissão para consultar clientes nesta filial.')
         term = request.query_params.get('q', '').strip()
         customers = Customer.objects.filter(
             company_id=device.branch.company_id, status=Status.ACTIVE,
@@ -498,8 +498,8 @@ class POSCustomersView(POSQuickSaleView):
 
     def post(self, request):
         device, operator, permissions, _ = self.context(request)
-        if 'sales.create' not in permissions:
-            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        if 'sales.create' not in permissions or 'customers.add' not in permissions:
+            raise PermissionDenied('Você não possui permissão para cadastrar clientes nesta filial.')
         serializer = POSCustomerSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         customer = serializer.save(company=device.branch.company)
@@ -518,8 +518,6 @@ class POSSalePreviewView(POSQuickSaleView):
         serializer = POSSalePreviewSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        if data['service_fee_waived'] and 'sales.waive_service_fee' not in permissions:
-            raise PermissionDenied('Você não possui permissão para isentar taxa de serviço.')
         result = calculate_preview(
             company=device.branch.company,
             operation_type=OperationType.SALE,
@@ -582,6 +580,16 @@ class POSItemDiscountAuthorizersView(POSQuickSaleView):
         })
 
 
+class POSServiceFeeAuthorizersView(POSQuickSaleView):
+    def get(self, request):
+        device, _, permissions, _ = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        return Response({
+            'authorizers': _authorizer_options(device.branch, 'sales.waive_service_fee'),
+        })
+
+
 class POSDiscountAuthorizationValidationView(POSQuickSaleView):
     def post(self, request):
         device, _, permissions, _ = self.context(request)
@@ -590,10 +598,11 @@ class POSDiscountAuthorizationValidationView(POSQuickSaleView):
         serializer = POSDiscountAuthorizationValidationSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        permission_code = (
-            'sales.apply_item_discount'
-            if data['type'] == 'item' else 'sales.apply_discount'
-        )
+        permission_code = {
+            'sale': 'sales.apply_discount',
+            'item': 'sales.apply_item_discount',
+            'service_fee': 'sales.waive_service_fee',
+        }[data['type']]
         try:
             validate_discount_authorization(
                 device.branch, data, permission_code=permission_code,
@@ -692,7 +701,7 @@ class POSFinalizeSaleView(POSQuickSaleView):
         response = Response(
             {
                 'sale': SaleSerializer(sale, context={'request': request}).data,
-                'cash_state': cash_state_for_device(device, permissions),
+                'cash_state': cash_state_for_device(device, permissions, operator),
                 'effects': {
                     'tickets': list(sale.items.filter(
                         product__emits_ticket=True,
@@ -768,7 +777,7 @@ class POSCashSessionOpenView(POSCashView):
             audit_metadata=self.audit_metadata(device, operator_session),
         )
         data = CashSessionSerializer(session).data
-        data['cash_state'] = self.mutation_state(device, permissions, session)
+        data['cash_state'] = self.mutation_state(device, permissions, session, operator)
         return Response(data, status=status.HTTP_201_CREATED)
 
 
@@ -847,7 +856,7 @@ class POSCashSessionMovementView(POSCashView):
         ).get(pk=movement.pk)
         data = CashMovementSerializer(movement).data
         data['cash_state'] = self.mutation_state(
-            device, permissions, movement.cash_session
+            device, permissions, movement.cash_session, operator
         )
         return Response(
             data,
@@ -881,7 +890,7 @@ class POSCashSessionCloseView(POSCashView):
             audit_metadata=self.audit_metadata(device, operator_session),
         )
         data = CashSessionSerializer(session).data
-        data['cash_state'] = self.mutation_state(device, permissions, session)
+        data['cash_state'] = self.mutation_state(device, permissions, session, operator)
         return Response(data)
 
 

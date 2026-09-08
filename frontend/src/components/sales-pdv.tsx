@@ -211,6 +211,7 @@ export function SalesPdv() {
   const [sellers, setSellers] = useState<SaleUserOption[]>([]);
   const [authorizers, setAuthorizers] = useState<SaleUserOption[]>([]);
   const [itemAuthorizers, setItemAuthorizers] = useState<SaleUserOption[]>([]);
+  const [serviceFeeAuthorizers, setServiceFeeAuthorizers] = useState<SaleUserOption[]>([]);
   const [beneficiariesLoading, setBeneficiariesLoading] = useState(false);
   const [consumptionModal, setConsumptionModal] = useState(false);
   const [consumptionError, setConsumptionError] = useState("");
@@ -306,6 +307,7 @@ export function SalesPdv() {
     setSellers([]);
     setAuthorizers([]);
     setItemAuthorizers([]);
+    setServiceFeeAuthorizers([]);
     setCart([]);
     setPreview(null);
     setPreviewSignature(null);
@@ -405,12 +407,14 @@ export function SalesPdv() {
         http.getAll<SaleUserOption>("sales/sellers/"),
         http.getAll<SaleUserOption>("sales/discount-authorizers/"),
         http.getAll<SaleUserOption>("sales/item-discount-authorizers/"),
+        http.getAll<SaleUserOption>("sales/service-fee-authorizers/"),
       ])
-        .then(([sellerOptions, authorizerOptions, itemAuthorizerOptions]) => {
+        .then(([sellerOptions, authorizerOptions, itemAuthorizerOptions, serviceFeeOptions]) => {
           if (contextRef.current !== context) return;
           setSellers(sellerOptions);
           setAuthorizers(authorizerOptions);
           setItemAuthorizers(itemAuthorizerOptions);
+          setServiceFeeAuthorizers(serviceFeeOptions);
           const ownOption = sellerOptions.find((item) => item.id === user?.id);
           setSeller(ownOption ? String(ownOption.id) : "");
         })
@@ -1366,7 +1370,7 @@ export function SalesPdv() {
                     </Field>
                   </div>
                 )}
-                {false && !consumption && (
+                {serviceFeeEnabled && !consumption && (
                   <label className="flex items-center gap-3 rounded-lg border border-subtle p-4 text-xs font-semibold">
                     <input
                       id="pdv-fee"
@@ -1404,7 +1408,7 @@ export function SalesPdv() {
                         <option value="" disabled>
                           Selecione quem autoriza
                         </option>
-                        {authorizers.map((item) => (
+                        {serviceFeeAuthorizers.map((item) => (
                           <option key={item.id} value={item.id}>
                             {item.name}
                           </option>

@@ -40,8 +40,10 @@ class HomePage extends StatelessWidget {
                     const _UpdateNotice(),
                   ],
                   const SizedBox(height: 24),
-                  _CashHomeCard(snapshot: snapshot, controller: controller),
-                  const SizedBox(height: 28),
+                  if (snapshot.cash.enabled && snapshot.cash.canOperate) ...[
+                    _CashHomeCard(snapshot: snapshot, controller: controller),
+                    const SizedBox(height: 28),
+                  ],
                   Text('Módulos disponíveis',
                       style: Theme.of(context)
                           .textTheme
@@ -119,7 +121,7 @@ class _CashHomeCard extends StatelessWidget {
             : 'Selecione o caixa para operar';
     return InkWell(
       borderRadius: BorderRadius.circular(20),
-      onTap: cash.enabled
+      onTap: cash.enabled && cash.canOperate
           ? () => Navigator.of(context).push(MaterialPageRoute(
               builder: (_) => CashPage(controller: controller)))
           : null,
@@ -211,7 +213,8 @@ class _ModuleCard extends StatelessWidget {
                     .titleMedium
                     ?.copyWith(fontWeight: FontWeight.w700)),
             const SizedBox(height: 4),
-            Text(module.key == 'quick_sale' ? 'Catálogo e checkout' : 'Em breve',
+            Text(
+                module.key == 'quick_sale' ? 'Catálogo e checkout' : 'Em breve',
                 style: const TextStyle(color: Color(0xff64748b), fontSize: 12)),
           ]),
         ),

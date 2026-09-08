@@ -453,13 +453,24 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
+  Future<List<QuickSaleAuthorizer>?> quickSaleServiceFeeAuthorizers() async {
+    try {
+      return await _api.quickSaleServiceFeeAuthorizers();
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
   Future<String?> validateQuickSaleDiscountAuthorization({
-    required bool item,
+    required String type,
     required QuickSaleAuthorization authorization,
   }) async {
     try {
       await _api.validateQuickSaleDiscountAuthorization(
-        item: item,
+        type: type,
         authorization: authorization.toJson(),
       );
       return null;
@@ -522,6 +533,7 @@ class AppController extends ChangeNotifier {
     QuickSaleCustomer? customer,
     QuickSaleAuthorization? discountAuthorization,
     QuickSaleAuthorization? itemDiscountAuthorization,
+    QuickSaleAuthorization? serviceFeeAuthorization,
   }) async {
     final snapshot = bootstrapSnapshot;
     if (finalizingSale) {
@@ -546,6 +558,9 @@ class AppController extends ChangeNotifier {
       if (itemDiscountAuthorization != null)
         'item_discount_authorization':
             itemDiscountAuthorization.idempotencyIdentity,
+      if (serviceFeeAuthorization != null)
+        'service_fee_authorization':
+            serviceFeeAuthorization.idempotencyIdentity,
     });
     final key = _uncertainSaleKeys.putIfAbsent(payload, createIdempotencyKey);
     await _persistUncertainSaleIntents();
@@ -564,6 +579,7 @@ class AppController extends ChangeNotifier {
         customerId: customer?.id,
         discountAuthorization: discountAuthorization?.toJson(),
         itemDiscountAuthorization: itemDiscountAuthorization?.toJson(),
+        serviceFeeAuthorization: serviceFeeAuthorization?.toJson(),
       );
       bootstrapSnapshot = snapshot.withCash(result.cash);
       _uncertainSaleKeys.remove(payload);

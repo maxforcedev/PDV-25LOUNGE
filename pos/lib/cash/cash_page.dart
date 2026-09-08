@@ -96,16 +96,14 @@ class _CashPageState extends State<CashPage> {
                         const SizedBox(height: 16),
                         if (session == null)
                           _ClosedCashActions(
-                            canOpen: snapshot.permissions
-                                .contains('cash_registers.open'),
+                            canOpen: cash.canOpen,
                             canOpenHere: cash.isFixed
                                 ? cash.register != null
                                 : _selectedRegisterId != null,
                             onOpen: _openSession,
                           )
                         else ...[
-                          if (snapshot.permissions
-                              .contains('cash_registers.view')) ...[
+                          if (session.canView) ...[
                             _SummaryCard(
                                 summary: _summarySessionId == session.id
                                     ? _summary
@@ -115,12 +113,9 @@ class _CashPageState extends State<CashPage> {
                             const SizedBox(height: 16),
                           ],
                           _OpenCashActions(
-                            canEntry: snapshot.permissions
-                                .contains('cash_registers.manual_entry'),
-                            canWithdraw: snapshot.permissions
-                                .contains('cash_registers.withdraw'),
-                            canClose: snapshot.permissions
-                                .contains('cash_registers.close'),
+                            canEntry: session.canEntry,
+                            canWithdraw: session.canWithdraw,
+                            canClose: session.canClose,
                             onEntry: () =>
                                 _movement(session, withdrawal: false),
                             onWithdraw: () =>
@@ -166,8 +161,7 @@ class _CashPageState extends State<CashPage> {
       _summary = null;
       _loadingSummary = false;
     });
-    if (sessionId != null &&
-        snapshot!.permissions.contains('cash_registers.view')) {
+    if (sessionId != null && _currentSession(snapshot!.cash)!.canView) {
       unawaited(_loadSummary(sessionId));
     }
   }
@@ -863,8 +857,7 @@ class _SummaryLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Padding(
         padding: const EdgeInsets.only(bottom: 8),
-        child:
-            Row(children: [
+        child: Row(children: [
           Expanded(
             child: Text(label,
                 style: TextStyle(

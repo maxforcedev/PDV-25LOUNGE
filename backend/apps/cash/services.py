@@ -66,6 +66,7 @@ def _validate_current_branch(
         raise PermissionDenied('Objeto fora da filial atual.')
     if not user_has_branch_permission(
         user, object_branch.pk, permission_code, allow_pos_only=allow_pos_only,
+        allow_superuser=not allow_pos_only,
     ):
         raise PermissionDenied('Você não possui permissão nesta filial.')
 
@@ -159,6 +160,7 @@ def _record_movement(
         if session.opened_by_id != user.pk and not user_has_branch_permission(
             user, session.branch_id, 'cash_registers.administer_others',
             allow_pos_only=allow_pos_only,
+            allow_superuser=not allow_pos_only,
         ):
             raise PermissionDenied('Você não pode operar uma sessão aberta por outro usuário.')
         effective_result = (
@@ -608,6 +610,7 @@ def close_session(
         if session.opened_by_id != user.pk and not user_has_branch_permission(
             user, session.branch_id, 'cash_registers.administer_others',
             allow_pos_only=allow_pos_only,
+            allow_superuser=not allow_pos_only,
         ):
             raise PermissionDenied('Você não pode fechar uma sessão aberta por outro usuário.')
         if session.status != CashSessionStatus.OPEN:
@@ -677,6 +680,10 @@ def cancel_session(cash_session, reason, user, current_branch):
         'cash_register', 'branch', 'branch__company'
     ).get(pk=_pk(cash_session))
     _validate_current_branch(current_branch, session.branch, user, 'cash_registers.close')
+    if session.opened_by_id != user.pk and not user_has_branch_permission(
+        user, session.branch_id, 'cash_registers.administer_others',
+    ):
+        raise PermissionDenied('Você não pode anular uma sessão aberta por outro usuário.')
     if session.status != CashSessionStatus.OPEN:
         raise ValidationError({'cash_session': 'Somente sessões abertas podem ser anuladas.'})
     before = {'status': CashSessionStatus.OPEN}

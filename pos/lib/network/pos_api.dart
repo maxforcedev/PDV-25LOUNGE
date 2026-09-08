@@ -78,8 +78,9 @@ abstract class PosApi {
   });
   Future<List<QuickSaleAuthorizer>> quickSaleDiscountAuthorizers();
   Future<List<QuickSaleAuthorizer>> quickSaleItemDiscountAuthorizers();
+  Future<List<QuickSaleAuthorizer>> quickSaleServiceFeeAuthorizers();
   Future<void> validateQuickSaleDiscountAuthorization({
-    required bool item,
+    required String type,
     required Map<String, dynamic> authorization,
   });
   Future<QuickSaleCheckoutOptions> quickSaleCheckoutOptions();
@@ -93,6 +94,7 @@ abstract class PosApi {
     int? customerId,
     Map<String, dynamic>? discountAuthorization,
     Map<String, dynamic>? itemDiscountAuthorization,
+    Map<String, dynamic>? serviceFeeAuthorization,
   });
 }
 
@@ -448,12 +450,21 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   }
 
   @override
+  Future<List<QuickSaleAuthorizer>> quickSaleServiceFeeAuthorizers() async {
+    final payload = await _request('GET', 'sales/service-fee-authorizers/');
+    return (payload['authorizers'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(QuickSaleAuthorizer.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
   Future<void> validateQuickSaleDiscountAuthorization({
-    required bool item,
+    required String type,
     required Map<String, dynamic> authorization,
   }) async {
     await _request('POST', 'sales/discount-authorizations/validate/', body: {
-      'type': item ? 'item' : 'sale',
+      'type': type,
       ...authorization,
     });
   }
@@ -474,6 +485,7 @@ class HttpPosApi implements PosApi, PosCredentialCache {
     int? customerId,
     Map<String, dynamic>? discountAuthorization,
     Map<String, dynamic>? itemDiscountAuthorization,
+    Map<String, dynamic>? serviceFeeAuthorization,
   }) async =>
       QuickSaleResult.fromJson(await _request('POST', 'sales/', body: {
         'idempotency_key': idempotencyKey,
@@ -487,5 +499,7 @@ class HttpPosApi implements PosApi, PosCredentialCache {
           'discount_authorization': discountAuthorization,
         if (itemDiscountAuthorization != null)
           'item_discount_authorization': itemDiscountAuthorization,
+        if (serviceFeeAuthorization != null)
+          'service_fee_authorization': serviceFeeAuthorization,
       }));
 }

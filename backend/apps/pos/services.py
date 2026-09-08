@@ -10,7 +10,7 @@ from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.core.mail import send_mail
 from django.db import transaction
-from django.db.models import Prefetch, Q
+from django.db.models import Prefetch
 from django.utils import timezone
 from rest_framework.exceptions import AuthenticationFailed
 
@@ -18,8 +18,12 @@ from apps.base.audit import audit_log
 from apps.base.exceptions import DomainValidationError
 from apps.cash.models import CashRegister, CashRegisterStatus, CashSession, CashSessionStatus
 from apps.companies.features import branch_feature_enabled
-from apps.companies.models import Branch, Status, UserBranchAccess, UserCompanyAccess, UserPermissionBlock
+from apps.companies.models import Branch, Status, UserBranchAccess, UserCompanyAccess
 from apps.companies.rbac import OPERATING_PERMISSION_CODES
+from apps.companies.selectors import (
+    branch_blocked_permission_codes, branch_permission_codes,
+    company_permission_codes,
+)
 from apps.saas.services import effective_entitlement, resolve_effective_status
 
 from .models import (
@@ -334,29 +338,27 @@ def pos_operator_queryset(branch):
         user__pos_pin_hash__gt='', user__company_accesses__company_id=branch.company_id,
         user__company_accesses__is_active=True, user__company_accesses__archived_at__isnull=True,
         user__company_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
-        access_profile__permissions__status=Status.ACTIVE,
-        access_profile__permissions__code__in=OPERATING_PERMISSION_CODES,
-    ).select_related('user', 'access_profile').prefetch_related('access_profile__permissions').distinct()
-    blocked = {}
-    for user_id, code in UserPermissionBlock.objects.filter(
-        company_id=branch.company_id, is_active=True,
-    ).filter(Q(branch_id=branch.pk) | Q(branch__isnull=True)).values_list('user_id', 'permission__code'):
-        blocked.setdefault(user_id, set()).add(code)
+    ).select_related('user', 'access_profile').distinct()
     eligible_ids = [
         access.user_id for access in candidates
-        if operator_permission_codes(access.user, branch, access.access_profile, blocked.get(access.user_id, set()))
+        if operator_permission_codes(access.user, branch)
     ]
     return candidates.filter(user_id__in=eligible_ids).order_by('user__first_name', 'user__last_name', 'user__id')
 
 
-def operator_permission_codes(operator, branch, profile=None, blocked_codes=None):
-    profile = profile or UserBranchAccess.objects.filter(user=operator, branch=branch, is_active=True).select_related('access_profile').first().access_profile
-    blocked_codes = blocked_codes if blocked_codes is not None else set(
-        UserPermissionBlock.objects.filter(company_id=branch.company_id, user=operator, is_active=True).filter(
-            Q(branch=branch) | Q(branch__isnull=True)
-        ).values_list('permission__code', flat=True)
+def operator_permission_codes(operator, branch):
+    """Resolve POS capabilities through the canonical scope-aware selectors."""
+    branch_codes = branch_permission_codes(
+        operator, branch.pk, allow_pos_only=True, allow_superuser=False,
     )
-    return set(profile.permissions.filter(status=Status.ACTIVE).values_list('code', flat=True)) - set(blocked_codes)
+    company_codes = company_permission_codes(
+        operator, branch.company_id, allow_pos_only=True, allow_superuser=False,
+    )
+    effective_codes = (
+        branch_codes.intersection(OPERATING_PERMISSION_CODES)
+        | company_codes.difference(OPERATING_PERMISSION_CODES)
+    )
+    return effective_codes - branch_blocked_permission_codes(operator, branch.pk)
 
 
 def eligible_operator(branch, operator_id):
@@ -585,7 +587,7 @@ def effective_cash_settings(device):
     return mode, register
 
 
-def _cash_session_data(session, *, include_opening_amount):
+def _cash_session_data(session, *, include_opening_amount, permission_codes, operator):
     if not session:
         return None
     data = {
@@ -600,10 +602,27 @@ def _cash_session_data(session, *, include_opening_amount):
     }
     if include_opening_amount:
         data['opening_amount'] = f'{session.opening_amount:.2f}'
+    owns_session = operator is not None and session.opened_by_id == operator.pk
+    can_administer_others = 'cash_registers.administer_others' in permission_codes
+    data['capabilities'] = {
+        'can_view': bool({'cash_registers.view', 'cash_registers.close'} & permission_codes),
+        'can_entry': (
+            'cash_registers.manual_entry' in permission_codes
+            and (owns_session or can_administer_others)
+        ),
+        'can_withdraw': (
+            'cash_registers.withdraw' in permission_codes
+            and (owns_session or can_administer_others)
+        ),
+        'can_close': (
+            'cash_registers.close' in permission_codes
+            and (owns_session or can_administer_others)
+        ),
+    }
     return data
 
 
-def _cash_register_data(register, *, include_opening_amount):
+def _cash_register_data(register, *, include_opening_amount, permission_codes, operator):
     sessions = getattr(register, 'pos_open_sessions', ())
     return {
         'id': register.pk,
@@ -612,11 +631,13 @@ def _cash_register_data(register, *, include_opening_amount):
         'session': _cash_session_data(
             sessions[0] if sessions else None,
             include_opening_amount=include_opening_amount,
+            permission_codes=permission_codes,
+            operator=operator,
         ),
     }
 
 
-def cash_state_for_device(device, permission_codes):
+def cash_state_for_device(device, permission_codes, operator=None):
     """Build the POS cash state without inferring a selected flexible register."""
     mode, configured_register = effective_cash_settings(device)
     open_sessions = CashSession.objects.filter(
@@ -631,6 +652,14 @@ def cash_state_for_device(device, permission_codes):
     state = {
         'mode': mode,
         'enabled': branch_feature_enabled(device.branch, 'cash_register'),
+        'capabilities': {
+            'can_open': 'cash_registers.open' in permission_codes,
+            'can_operate': bool(permission_codes.intersection({
+                'cash_registers.view', 'cash_registers.open',
+                'cash_registers.manual_entry', 'cash_registers.withdraw',
+                'cash_registers.close', 'cash_registers.administer_others',
+            })),
+        },
     }
     if mode == 'FIXED':
         register = registers.filter(pk=getattr(configured_register, 'pk', None)).first()
@@ -643,10 +672,15 @@ def cash_state_for_device(device, permission_codes):
         state['session'] = _cash_session_data(
             sessions[0] if sessions else None,
             include_opening_amount=include_opening_amount,
+            permission_codes=permission_codes,
+            operator=operator,
         )
         return state
     state['registers'] = [
-        _cash_register_data(register, include_opening_amount=include_opening_amount)
+        _cash_register_data(
+            register, include_opening_amount=include_opening_amount,
+            permission_codes=permission_codes, operator=operator,
+        )
         for register in registers.filter(status=CashRegisterStatus.ACTIVE).order_by('name', 'pk')
     ]
     return state

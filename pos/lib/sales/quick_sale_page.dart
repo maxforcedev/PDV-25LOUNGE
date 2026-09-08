@@ -85,6 +85,14 @@ class _QuickSalePageState extends State<QuickSalePage> {
       widget.controller.bootstrapSnapshot?.permissions
           .contains('sales.waive_service_fee') ??
       false;
+  bool get _canViewCustomers =>
+      widget.controller.bootstrapSnapshot?.permissions
+          .contains('customers.view') ??
+      false;
+  bool get _canAddCustomers =>
+      widget.controller.bootstrapSnapshot?.permissions
+          .contains('customers.add') ??
+      false;
   bool get _cashReady =>
       _checkoutOptions != null && _checkoutOptions!.cashSessions.isNotEmpty;
   bool get _checkoutReady =>
@@ -412,7 +420,10 @@ class _QuickSalePageState extends State<QuickSalePage> {
   Future<void> _selectCustomer() async {
     final customer = await showDialog<QuickSaleCustomer>(
       context: context,
-      builder: (_) => _CustomerPickerDialog(controller: widget.controller),
+      builder: (_) => _CustomerPickerDialog(
+        controller: widget.controller,
+        canCreate: _canAddCustomers,
+      ),
     );
     if (customer == null || !mounted) return;
     setState(() => _draft.customer = customer);
@@ -451,22 +462,26 @@ class _QuickSalePageState extends State<QuickSalePage> {
   }
 
   Future<QuickSaleAuthorization?> _requestDiscountAuthorization() =>
-      _requestDiscountAuthorizationFor(item: false);
+      _requestDiscountAuthorizationFor(type: 'sale');
 
   Future<QuickSaleAuthorization?> _requestItemDiscountAuthorization() =>
-      _requestDiscountAuthorizationFor(item: true);
+      _requestDiscountAuthorizationFor(type: 'item');
 
   Future<QuickSaleAuthorization?> _requestDiscountAuthorizationFor(
-      {required bool item}) async {
+      {required String type}) async {
     // A new approval attempt must not retain a prior approver password.
-    if (item) {
+    if (type == 'item') {
       _draft.itemDiscountAuthorization = null;
+    } else if (type == 'service_fee') {
+      _draft.serviceFeeAuthorization = null;
     } else {
       _draft.discountAuthorization = null;
     }
-    final authorizers = item
-        ? await widget.controller.quickSaleItemDiscountAuthorizers()
-        : await widget.controller.quickSaleDiscountAuthorizers();
+    final authorizers = switch (type) {
+      'item' => await widget.controller.quickSaleItemDiscountAuthorizers(),
+      'service_fee' => await widget.controller.quickSaleServiceFeeAuthorizers(),
+      _ => await widget.controller.quickSaleDiscountAuthorizers(),
+    };
     if (!mounted || authorizers == null) return null;
     if (authorizers.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -481,11 +496,24 @@ class _QuickSalePageState extends State<QuickSalePage> {
         authorizers: authorizers,
         onAuthorize: (authorization) =>
             widget.controller.validateQuickSaleDiscountAuthorization(
-          item: item,
+          type: type,
           authorization: authorization,
         ),
       ),
     );
+  }
+
+  Future<void> _toggleServiceFee() async {
+    if (!_serviceFeeWaived && !_canWaiveFee) {
+      final authorization =
+          await _requestDiscountAuthorizationFor(type: 'service_fee');
+      if (authorization == null || !mounted) return;
+      _draft.serviceFeeAuthorization = authorization;
+    } else if (_serviceFeeWaived) {
+      _draft.serviceFeeAuthorization = null;
+    }
+    setState(() => _serviceFeeWaived = !_serviceFeeWaived);
+    _schedulePreview();
   }
 
   Future<void> _clearCart() async {
@@ -519,15 +547,14 @@ class _QuickSalePageState extends State<QuickSalePage> {
       builder: (_) => _CartPage(
         draft: _draft,
         allowDiscount: true,
-        allowWaiveFee: _canWaiveFee,
+        allowCustomer: _canViewCustomers,
+        allowWaiveFee: _serviceFeeWaived ||
+            (_preview != null && _preview!.serviceFeeRate != '0.00'),
         onCustomer: _selectCustomer,
         onRemoveCustomer: _removeCustomer,
         onDiscount: _editSaleDiscount,
         onRemoveDiscount: _removeSaleDiscount,
-        onServiceFee: () {
-          setState(() => _serviceFeeWaived = !_serviceFeeWaived);
-          _schedulePreview();
-        },
+        onServiceFee: _toggleServiceFee,
         onClear: _clearCart,
         panel: () => _CartPanel(
           cart: _cart,
@@ -535,6 +562,10 @@ class _QuickSalePageState extends State<QuickSalePage> {
           loadingPreview: _loadingPreview,
           discount: _discount,
           cashReady: _checkoutReady,
+          serviceFeeWaived: _serviceFeeWaived,
+          showServiceFeeAction: _serviceFeeWaived ||
+              (_preview != null && _preview!.serviceFeeRate != '0.00'),
+          onServiceFee: _toggleServiceFee,
           onEdit: _editCartItem,
           onCheckout: _checkout,
         ),
@@ -610,6 +641,11 @@ class _QuickSalePageState extends State<QuickSalePage> {
                         loadingPreview: _loadingPreview,
                         discount: _discount,
                         cashReady: _checkoutReady,
+                        serviceFeeWaived: _serviceFeeWaived,
+                        showServiceFeeAction: _serviceFeeWaived ||
+                            (_preview != null &&
+                                _preview!.serviceFeeRate != '0.00'),
+                        onServiceFee: _toggleServiceFee,
                         onEdit: _editCartItem,
                         onCheckout: _checkout,
                       ),
@@ -625,6 +661,7 @@ class _CartPage extends StatelessWidget {
     required this.draft,
     required this.panel,
     required this.allowDiscount,
+    required this.allowCustomer,
     required this.allowWaiveFee,
     required this.onCustomer,
     required this.onRemoveCustomer,
@@ -636,12 +673,13 @@ class _CartPage extends StatelessWidget {
   final QuickSaleDraft draft;
   final Widget Function() panel;
   final bool allowDiscount;
+  final bool allowCustomer;
   final bool allowWaiveFee;
   final Future<void> Function() onCustomer;
   final VoidCallback onRemoveCustomer;
   final Future<void> Function() onDiscount;
   final VoidCallback onRemoveDiscount;
-  final VoidCallback onServiceFee;
+  final Future<void> Function() onServiceFee;
   final Future<void> Function() onClear;
 
   @override
@@ -665,7 +703,7 @@ class _CartPage extends StatelessWidget {
                     onRemoveDiscount();
                     break;
                   case 'fee':
-                    onServiceFee();
+                    unawaited(onServiceFee());
                     break;
                   case 'clear':
                     onClear();
@@ -673,12 +711,13 @@ class _CartPage extends StatelessWidget {
                 }
               },
               itemBuilder: (_) => [
-                PopupMenuItem(
-                  value: 'customer',
-                  child: Text(draft.customer == null
-                      ? 'Adicionar cliente'
-                      : 'Alterar cliente'),
-                ),
+                if (allowCustomer)
+                  PopupMenuItem(
+                    value: 'customer',
+                    child: Text(draft.customer == null
+                        ? 'Adicionar cliente'
+                        : 'Alterar cliente'),
+                  ),
                 if (draft.customer != null)
                   const PopupMenuItem(
                     value: 'remove_customer',
@@ -750,6 +789,7 @@ class _CheckoutPageState extends State<_CheckoutPage> {
       customer: widget.draft.customer,
       discountAuthorization: widget.draft.discountAuthorization,
       itemDiscountAuthorization: widget.draft.itemDiscountAuthorization,
+      serviceFeeAuthorization: widget.draft.serviceFeeAuthorization,
     );
     if (!mounted || result == null) return;
     await widget.onSaleCompleted();
@@ -1140,6 +1180,9 @@ class _CartPanel extends StatelessWidget {
     required this.loadingPreview,
     required this.discount,
     required this.cashReady,
+    required this.serviceFeeWaived,
+    required this.showServiceFeeAction,
+    required this.onServiceFee,
     required this.onEdit,
     required this.onCheckout,
   });
@@ -1148,6 +1191,9 @@ class _CartPanel extends StatelessWidget {
   final bool loadingPreview;
   final QuickSaleDiscountIntent discount;
   final bool cashReady;
+  final bool serviceFeeWaived;
+  final bool showServiceFeeAction;
+  final Future<void> Function() onServiceFee;
   final ValueChanged<int> onEdit;
   final VoidCallback onCheckout;
 
@@ -1284,6 +1330,18 @@ class _CartPanel extends StatelessWidget {
                         strong: true),
                   ],
                   const SizedBox(height: 12),
+                  if (showServiceFeeAction) ...[
+                    OutlinedButton.icon(
+                      onPressed: () => unawaited(onServiceFee()),
+                      icon: Icon(serviceFeeWaived
+                          ? Icons.add_circle_outline
+                          : Icons.remove_circle_outline),
+                      label: Text(serviceFeeWaived
+                          ? 'Restaurar taxa de serviço'
+                          : 'Isentar taxa de serviço'),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
                   FilledButton(
                       onPressed: cart.isEmpty ||
                               preview == null ||
@@ -1320,8 +1378,10 @@ class _AmountRow extends StatelessWidget {
 }
 
 class _CustomerPickerDialog extends StatefulWidget {
-  const _CustomerPickerDialog({required this.controller});
+  const _CustomerPickerDialog(
+      {required this.controller, required this.canCreate});
   final AppController controller;
+  final bool canCreate;
 
   @override
   State<_CustomerPickerDialog> createState() => _CustomerPickerDialogState();
@@ -1403,11 +1463,12 @@ class _CustomerPickerDialogState extends State<_CustomerPickerDialog> {
             onPressed: () => Navigator.of(context).pop(),
             child: const Text('CANCELAR'),
           ),
-          FilledButton.icon(
-            onPressed: _create,
-            icon: const Icon(Icons.person_add_alt_1),
-            label: const Text('CADASTRAR'),
-          ),
+          if (widget.canCreate)
+            FilledButton.icon(
+              onPressed: _create,
+              icon: const Icon(Icons.person_add_alt_1),
+              label: const Text('CADASTRAR'),
+            ),
         ],
       );
 }

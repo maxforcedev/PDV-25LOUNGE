@@ -160,7 +160,7 @@ class POSDiscountAuthorizationSerializer(serializers.Serializer):
 
 
 class POSDiscountAuthorizationValidationSerializer(POSDiscountAuthorizationSerializer):
-    type = serializers.ChoiceField(choices=('sale', 'item'))
+    type = serializers.ChoiceField(choices=('sale', 'item', 'service_fee'))
 
     def to_internal_value(self, data):
         expected = {'type', 'user', 'method', 'credential'}

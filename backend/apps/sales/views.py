@@ -271,6 +271,7 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
         'checkout_options': 'sales.create', 'categories': 'sales.create',
         'sellers': 'sales.create', 'discount_authorizers': 'sales.create',
         'item_discount_authorizers': 'sales.create',
+        'service_fee_authorizers': 'sales.create',
     }
 
     def get_queryset(self):
@@ -350,6 +351,13 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
     def item_discount_authorizers(self, request):
         return self._paginated_response(
             eligible_branch_users(request.branch_context, 'sales.apply_item_discount'),
+            SaleUserOptionSerializer,
+        )
+
+    @action(detail=False, methods=('get',), url_path='service-fee-authorizers')
+    def service_fee_authorizers(self, request):
+        return self._paginated_response(
+            eligible_branch_users(request.branch_context, 'sales.waive_service_fee'),
             SaleUserOptionSerializer,
         )
 

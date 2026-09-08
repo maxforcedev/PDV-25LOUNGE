@@ -454,6 +454,25 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(created.status_code, 201, created.data)
         self.assertEqual(found.status_code, 200, found.data)
         self.assertEqual(found.data['customers'], [created.data])
+        UserPermissionBlock.objects.create(
+            company=self.company, branch=self.branch, user=operator,
+            permission=FunctionalPermission.objects.get(code='customers.view'),
+            created_by=self.owner,
+        )
+        self.assertEqual(
+            self.client.get(reverse('pos:customers')).status_code,
+            403,
+        )
+        operator.permission_blocks.filter(permission__code='customers.view').delete()
+        UserPermissionBlock.objects.create(
+            company=self.company, branch=self.branch, user=operator,
+            permission=FunctionalPermission.objects.get(code='customers.add'),
+            created_by=self.owner,
+        )
+        self.assertEqual(
+            self.client.post(reverse('pos:customers'), {'name': 'Sem cadastro'}, format='json').status_code,
+            403,
+        )
 
     def test_bootstrap_reports_fixed_and_flexible_cash_state_without_fake_selection(self):
         operator, _ = self.login_pos_operator()
@@ -544,6 +563,8 @@ class POSFoundationIntegrationTests(TestCase):
         )
         self.assertEqual(foreign_entry.status_code, 404, foreign_entry.data)
 
+        operator.is_superuser = True
+        operator.save(update_fields=['is_superuser', 'updated_at'])
         UserPermissionBlock.objects.create(
             company=self.company,
             branch=self.branch,
@@ -576,7 +597,8 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(overview.status_code, 200, overview.data)
         self.assertNotIn('opening_amount', overview.data['session'])
         summary = self.client.get(reverse('pos:cash-session-summary', args=[overview.data['session']['id']]))
-        self.assertEqual(summary.status_code, 403, summary.data)
+        self.assertEqual(summary.status_code, 200, summary.data)
+        self.assertTrue(overview.data['session']['capabilities']['can_view'])
         for code in (
             'cash_registers.open', 'cash_registers.manual_entry',
             'cash_registers.withdraw', 'cash_registers.close',

@@ -10,7 +10,7 @@ from .views import (
     POSBarcodeProductView, POSCatalogCategoriesView, POSCatalogView, POSFinalizeSaleView,
     POSCustomersView, POSSaleAvailabilityView, POSSaleCheckoutOptionsView, POSSalePreviewView,
     POSDiscountAuthorizersView, POSDiscountAuthorizationValidationView,
-    POSItemDiscountAuthorizersView,
+    POSItemDiscountAuthorizersView, POSServiceFeeAuthorizersView,
 )
 
 app_name = 'pos'
@@ -39,6 +39,7 @@ urlpatterns = [
     path('sales/availability/', POSSaleAvailabilityView.as_view(), name='sale-availability'),
     path('sales/discount-authorizers/', POSDiscountAuthorizersView.as_view(), name='sale-discount-authorizers'),
     path('sales/item-discount-authorizers/', POSItemDiscountAuthorizersView.as_view(), name='sale-item-discount-authorizers'),
+    path('sales/service-fee-authorizers/', POSServiceFeeAuthorizersView.as_view(), name='sale-service-fee-authorizers'),
     path('sales/discount-authorizations/validate/', POSDiscountAuthorizationValidationView.as_view(), name='sale-discount-authorization-validate'),
     path('sales/checkout-options/', POSSaleCheckoutOptionsView.as_view(), name='sale-checkout-options'),
     path('sales/', POSFinalizeSaleView.as_view(), name='sale-finalize'),
