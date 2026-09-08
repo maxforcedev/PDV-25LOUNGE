@@ -3,11 +3,13 @@ class PosApiException implements Exception {
     required this.statusCode,
     required this.code,
     required this.message,
+    this.details = const {},
   });
 
   final int statusCode;
   final String code;
   final String message;
+  final Map<String, dynamic> details;
 
   bool get isDeviceAccessFailure =>
       code == 'device_blocked' ||

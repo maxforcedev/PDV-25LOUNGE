@@ -212,6 +212,7 @@ class HttpPosApi implements PosApi, PosCredentialCache {
       message: payload['message'] as String? ??
           payload['detail'] as String? ??
           'Falha ao comunicar com o CORE.',
+      details: payload['details'] as Map<String, dynamic>? ?? const {},
     );
   }
 

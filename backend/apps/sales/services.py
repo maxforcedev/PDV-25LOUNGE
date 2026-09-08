@@ -263,8 +263,8 @@ def _eligible_sale_user(branch, user, permission_code, field):
 
 
 def validate_discount_authorization(branch, authorization, *, permission_code,
-                                    authorization_field, allow_pos_only=False,
-                                    pos_device=None):
+                                     authorization_field, allow_pos_only=False,
+                                     pos_device=None, requester=None):
     """Validate a delegated discount approval without storing its credential."""
     if allow_pos_only:
         from apps.pos.services import validate_pos_authorization
@@ -272,6 +272,7 @@ def validate_discount_authorization(branch, authorization, *, permission_code,
         return validate_pos_authorization(
             pos_device, branch, authorization, permission_code=permission_code,
             authorization_field=authorization_field,
+            requester=requester, device_validated=allow_pos_only,
         )
     if not authorization or authorization.get('method') != 'password':
         raise ValidationError({authorization_field: 'Autorização de desconto inválida.'})
@@ -285,35 +286,45 @@ def validate_discount_authorization(branch, authorization, *, permission_code,
 
 def _discount_approver(
     branch, operator, discount, authorization, *, permission_code, authorization_field,
-    allow_pos_only=False, pos_device=None,
+    allow_pos_only=False, pos_device=None, permission_codes=None,
 ):
     if not discount:
         return None
-    if user_has_branch_permission(
-        operator, branch.pk, permission_code, allow_pos_only=allow_pos_only,
-        allow_superuser=not allow_pos_only,
-    ):
+    has_permission = (
+        permission_code in permission_codes
+        if permission_codes is not None
+        else user_has_branch_permission(
+            operator, branch.pk, permission_code, allow_pos_only=allow_pos_only,
+            allow_superuser=not allow_pos_only,
+        )
+    )
+    if has_permission:
         return operator
     return validate_discount_authorization(
         branch, authorization, permission_code=permission_code,
         authorization_field=authorization_field,
-        allow_pos_only=allow_pos_only, pos_device=pos_device,
+        allow_pos_only=allow_pos_only, pos_device=pos_device, requester=operator,
     )
 
 
 def _service_fee_waiver(branch, operator, waived, authorization, *, allow_pos_only=False,
-                         pos_device=None):
+                          pos_device=None, permission_codes=None):
     if not waived:
         return None
-    if user_has_branch_permission(
-        operator, branch.pk, 'sales.waive_service_fee', allow_pos_only=allow_pos_only,
-        allow_superuser=not allow_pos_only,
-    ):
+    has_permission = (
+        'sales.waive_service_fee' in permission_codes
+        if permission_codes is not None
+        else user_has_branch_permission(
+            operator, branch.pk, 'sales.waive_service_fee', allow_pos_only=allow_pos_only,
+            allow_superuser=not allow_pos_only,
+        )
+    )
+    if has_permission:
         return operator
     return validate_discount_authorization(
         branch, authorization, permission_code='sales.waive_service_fee',
         authorization_field='service_fee_authorization',
-        allow_pos_only=allow_pos_only, pos_device=pos_device,
+        allow_pos_only=allow_pos_only, pos_device=pos_device, requester=operator,
     )
 
 
@@ -1207,17 +1218,23 @@ def _pk(value):
     return value.pk if hasattr(value, 'pk') else value
 
 
-def _active_branch(branch, user, permission_code, *, allow_pos_only=False):
+def _active_branch(branch, user, permission_code, *, allow_pos_only=False,
+                   resolved_permission_codes=None):
     try:
         branch = Branch.objects.select_related('company').get(
             pk=_pk(branch), status=Status.ACTIVE, company__status=Status.ACTIVE,
         )
     except (Branch.DoesNotExist, TypeError, ValueError):
         raise ValidationError({'branch': 'Filial ou empresa inativa ou inválida.'})
-    if not user_has_branch_permission(
-        user, branch.pk, permission_code, allow_pos_only=allow_pos_only,
-        allow_superuser=not allow_pos_only,
-    ):
+    has_permission = (
+        permission_code in resolved_permission_codes
+        if resolved_permission_codes is not None
+        else user_has_branch_permission(
+            user, branch.pk, permission_code, allow_pos_only=allow_pos_only,
+            allow_superuser=not allow_pos_only,
+        )
+    )
+    if not has_permission:
         raise PermissionDenied('Você não possui permissão para esta operação nesta filial.')
     return branch
 
@@ -1841,7 +1858,8 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
                      idempotency_key=None, channel=SalesChannel.COUNTER,
                        confirmed_order_items=None, internal_permission_code=None,
                        precomputed_financials=None, payment_sources=None, pos_device=None,
-                       allow_pos_only=False, audit_metadata=None):
+                        allow_pos_only=False, audit_metadata=None,
+                        pos_permission_codes=None):
     permission = 'sales.create_consumption' if operation_type == OperationType.CONSUMPTION else 'sales.create'
     if operation_type not in OperationType.values:
         raise ValidationError({'operation_type': 'Tipo de operação inválido.'})
@@ -1854,7 +1872,10 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         ):
             raise ValidationError({'operation': 'Bypass interno de venda inválido.'})
         permission = internal_permission_code
-    branch = _active_branch(branch, user, permission, allow_pos_only=allow_pos_only)
+    branch = _active_branch(
+        branch, user, permission, allow_pos_only=allow_pos_only,
+        resolved_permission_codes=pos_permission_codes,
+    )
     company = Company.objects.select_for_update().get(pk=branch.company_id)
     branch = Branch.objects.select_for_update().select_related('company').get(pk=branch.pk)
     if pos_device is not None and pos_device.branch_id != branch.pk:
@@ -1938,9 +1959,16 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             raise ValidationError({'charged_amount': 'Venda normal não aceita valor cobrado.'})
         charged = None
         beneficiary_user = None
-        seller_user = _eligible_sale_user(
-            branch, seller_user, 'sales.create', 'seller_user'
-        )
+        if (
+            pos_permission_codes is not None
+            and seller_user is not None
+            and _pk(seller_user) == _pk(user)
+        ):
+            seller_user = user
+        else:
+            seller_user = _eligible_sale_user(
+                branch, seller_user, 'sales.create', 'seller_user'
+            )
         session = _lock_cash_session(cash_session, branch, required=True)
 
     if confirmed_order_items is None:
@@ -2006,6 +2034,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             authorization_field='discount_authorization',
             allow_pos_only=allow_pos_only,
             pos_device=pos_device,
+            permission_codes=pos_permission_codes,
         )
         item_discount_approved_by = _discount_approver(
             branch, user, item_discount_total, item_discount_authorization,
@@ -2013,11 +2042,13 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             authorization_field='item_discount_authorization',
             allow_pos_only=allow_pos_only,
             pos_device=pos_device,
+            permission_codes=pos_permission_codes,
         )
         service_fee_waived_by = _service_fee_waiver(
             branch, user, bool(service_fee_waived), service_fee_authorization,
             allow_pos_only=allow_pos_only,
             pos_device=pos_device,
+            permission_codes=pos_permission_codes,
         )
         service_fee_rate = financials['service_fee_rate']
         service_fee_amount = financials['service_fee_amount']

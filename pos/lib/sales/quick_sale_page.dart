@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../cash/cash_page.dart';
 import '../cash/cash_models.dart';
 import '../core/app_controller.dart';
+import '../network/pos_api_error.dart';
 import '../sync/sync_center_page.dart';
 import '../sync/sync_status_button.dart';
 import 'sale_models.dart';
@@ -12,15 +13,21 @@ import 'sale_models.dart';
 class _PreviewIntent {
   const _PreviewIntent({
     required this.generation,
+    required this.availabilityGeneration,
     required this.items,
     required this.discount,
     required this.serviceFeeWaived,
+    this.rollbackCart,
+    this.stockMutation,
   });
 
   final int generation;
+  final int availabilityGeneration;
   final List<Map<String, dynamic>> items;
   final QuickSaleDiscountIntent discount;
   final bool serviceFeeWaived;
+  final List<QuickSaleCartItem>? rollbackCart;
+  final _CartMutation? stockMutation;
 }
 
 class _CartMutation {
@@ -257,11 +264,11 @@ class _QuickSalePageState extends State<QuickSalePage> {
     final number = _stockNumber(quantity) ?? 0;
     final value = _formatStockNumber(quantity);
     return switch (unit.toLowerCase()) {
-      'un' => '$value ${number == 1 ? 'und' : 'unds'}',
-      'kg' => '$value kg',
-      'g' => '$value g',
-      'l' => '$value L',
-      'ml' => '$value ml',
+      'un' => '$value ${number == 1 ? 'unidade' : 'unidades'}',
+      'kg' => '$value kilos',
+      'g' => '$value gramas',
+      'l' => '$value Litros',
+      'ml' => '$value mls',
       _ => value,
     };
   }
@@ -294,9 +301,19 @@ class _QuickSalePageState extends State<QuickSalePage> {
     ));
   }
 
+  void _showCatalogStockUnavailable() {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text('Este produto está sem estoque no momento.'),
+    ));
+  }
+
   Future<void> _addProduct(QuickSaleProduct product,
       {String quantity = '1'}) async {
     widget.controller.logPosAction('cart_add');
+    if (!product.canSell) {
+      _showCatalogStockUnavailable();
+      return;
+    }
     final item = QuickSaleCartItem(
       clientItemId: createIdempotencyKey(),
       product: product,
@@ -310,6 +327,10 @@ class _QuickSalePageState extends State<QuickSalePage> {
   }
 
   Future<void> _addProductBatch(QuickSaleProduct product) async {
+    if (!product.canSell) {
+      _showCatalogStockUnavailable();
+      return;
+    }
     final quantity = await showDialog<String>(
       context: context,
       builder: (_) => _BatchQuantityDialog(productName: product.name),
@@ -398,6 +419,18 @@ class _QuickSalePageState extends State<QuickSalePage> {
     _pendingAvailabilityGeneration = null;
   }
 
+  void _resetSaleDraftState() {
+    _availabilityGeneration++;
+    _previewGeneration++;
+    _availabilityDebounce?.cancel();
+    _previewDebounce?.cancel();
+    _pendingAvailabilityGeneration = null;
+    _pendingPreview = null;
+    _lastValidatedCart = const [];
+    _pendingCartMutations.clear();
+    _draft.clearAfterSale();
+  }
+
   void _scheduleCartAvailability() {
     _invalidateCartAvailability();
     if (_cart.isEmpty && _pendingCartMutations.isEmpty) return;
@@ -443,6 +476,8 @@ class _QuickSalePageState extends State<QuickSalePage> {
   Future<void> _validateCartAvailability(int generation) async {
     _availabilityInFlight = true;
     var previewRequested = false;
+    List<QuickSaleCartItem>? previewRollbackCart;
+    _CartMutation? previewStockMutation;
     try {
       final mutations = List<_CartMutation>.of(_pendingCartMutations);
       if (mutations.isEmpty) return;
@@ -450,15 +485,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
       final candidates = _replayCartMutations(previousCart, mutations);
       if (!mounted || generation != _availabilityGeneration) return;
       if (candidates.isEmpty) {
-        _lastValidatedCart = const [];
-        _pendingCartMutations.clear();
-        setState(() {
-          _cart.clear();
-          _preview = null;
-          _loadingPreview = false;
-        });
-        _draft.changed();
-        previewRequested = true;
+        setState(_resetSaleDraftState);
         return;
       }
       final availability = await _availabilityFor(candidates);
@@ -501,40 +528,21 @@ class _QuickSalePageState extends State<QuickSalePage> {
       });
       _draft.changed();
       if (rejected) _showStockUnavailable(availability, mutations.last);
-
-      final revalidation = await _availabilityFor(committedCart);
-      if (!mounted || generation != _availabilityGeneration) return;
-      if (revalidation == null) {
-        _pendingCartMutations.clear();
-        setState(() {
-          _cart
-            ..clear()
-            ..addAll(previousCart);
-        });
-        _draft.changed();
-        return;
-      }
-      if (!revalidation.available && revalidation.enforced) {
-        _pendingCartMutations.clear();
-        setState(() {
-          _cart
-            ..clear()
-            ..addAll(previousCart);
-        });
-        _draft.changed();
-        _showStockUnavailable(revalidation, acceptedMutations.last);
-        return;
-      }
       _lastValidatedCart = List<QuickSaleCartItem>.of(committedCart);
       _pendingCartMutations.clear();
       previewRequested = true;
+      previewRollbackCart = previousCart;
+      previewStockMutation = acceptedMutations.last;
     } finally {
       _availabilityInFlight = false;
       if (previewRequested &&
           mounted &&
           generation == _availabilityGeneration &&
           _pendingCartMutations.isEmpty) {
-        _schedulePreview();
+        _schedulePreview(
+          rollbackCart: previewRollbackCart,
+          stockMutation: previewStockMutation,
+        );
       }
       final pending = _pendingAvailabilityGeneration;
       _pendingAvailabilityGeneration = null;
@@ -542,7 +550,10 @@ class _QuickSalePageState extends State<QuickSalePage> {
     }
   }
 
-  void _schedulePreview() {
+  void _schedulePreview({
+    List<QuickSaleCartItem>? rollbackCart,
+    _CartMutation? stockMutation,
+  }) {
     if (_pendingCartMutations.isNotEmpty || _availabilityInFlight) return;
     _draft.changed();
     final generation = ++_previewGeneration;
@@ -563,9 +574,12 @@ class _QuickSalePageState extends State<QuickSalePage> {
       const Duration(milliseconds: 120),
       () => _enqueuePreview(_PreviewIntent(
         generation: generation,
+        availabilityGeneration: _availabilityGeneration,
         items: items,
         discount: discount,
         serviceFeeWaived: serviceFeeWaived,
+        rollbackCart: rollbackCart,
+        stockMutation: stockMutation,
       )),
     );
   }
@@ -581,22 +595,46 @@ class _QuickSalePageState extends State<QuickSalePage> {
   Future<void> _requestPreview(_PreviewIntent intent) async {
     _previewInFlight = true;
     widget.controller.logPosAction('preview_dispatch');
-    final preview = await widget.controller.previewQuickSale(
-      items: intent.items,
-      discount: intent.discount.toJson(),
-      serviceFeeWaived: intent.serviceFeeWaived,
-    );
-    _previewInFlight = false;
-    if (!mounted) return;
-    if (intent.generation == _previewGeneration) {
+    try {
+      final preview = await widget.controller.previewQuickSale(
+        items: intent.items,
+        discount: intent.discount.toJson(),
+        serviceFeeWaived: intent.serviceFeeWaived,
+      );
+      if (!mounted) return;
+      if (intent.generation == _previewGeneration) {
+        setState(() {
+          _preview = preview;
+          _loadingPreview = false;
+        });
+      }
+    } on PosApiException catch (error) {
+      if (!mounted ||
+          error.code != 'stock_unavailable' ||
+          intent.rollbackCart == null ||
+          intent.generation != _previewGeneration ||
+          intent.availabilityGeneration != _availabilityGeneration) {
+        return;
+      }
+      final availability = QuickSaleStockAvailability.fromJson(error.details);
+      _lastValidatedCart = List<QuickSaleCartItem>.of(intent.rollbackCart!);
       setState(() {
-        _preview = preview;
+        _cart
+          ..clear()
+          ..addAll(intent.rollbackCart!);
+        _preview = null;
         _loadingPreview = false;
       });
+      _draft.changed();
+      _showStockUnavailable(availability, intent.stockMutation);
+    } finally {
+      _previewInFlight = false;
+      if (mounted) {
+        final pending = _pendingPreview;
+        _pendingPreview = null;
+        if (pending != null) _enqueuePreview(pending);
+      }
     }
-    final pending = _pendingPreview;
-    _pendingPreview = null;
-    if (pending != null) _enqueuePreview(pending);
   }
 
   Future<void> _checkout() async {
@@ -611,9 +649,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
           options: options,
           preview: _preview!,
           onSaleCompleted: () async {
-            _previewGeneration++;
-            _pendingPreview = null;
-            _draft.clearAfterSale();
+            if (mounted) setState(_resetSaleDraftState);
             unawaited(_loadCheckoutOptions());
             unawaited(_loadCatalog());
           },
@@ -741,13 +777,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
       ),
     );
     if (confirmed != true || !mounted) return;
-    _previewGeneration++;
-    _invalidateCartAvailability();
-    _previewDebounce?.cancel();
-    _pendingPreview = null;
-    _lastValidatedCart = const [];
-    _pendingCartMutations.clear();
-    setState(_draft.clearAfterSale);
+    setState(_resetSaleDraftState);
   }
 
   Future<void> _showMobileCart() async {
@@ -1428,6 +1458,32 @@ class _CartPanel extends StatelessWidget {
     ].join('\n');
   }
 
+  String _provisionalLineTotal(QuickSaleCartItem item) {
+    var unitPrice =
+        double.tryParse(item.product.price.replaceAll(',', '.')) ?? 0;
+    for (final selected in item.modifiers) {
+      final optionId = int.tryParse('${selected['option']}');
+      if (optionId == null) continue;
+      QuickSaleModifierOption? option;
+      for (final group in item.product.modifierGroups) {
+        for (final candidate in group.options) {
+          if (candidate.id == optionId) option = candidate;
+        }
+      }
+      if (option != null) {
+        final optionQuantity = double.tryParse(
+                '${selected['quantity'] ?? '1'}'.replaceAll(',', '.')) ??
+            1;
+        unitPrice +=
+            (double.tryParse(option.additionalPrice.replaceAll(',', '.')) ??
+                    0) *
+                optionQuantity;
+      }
+    }
+    final quantity = double.tryParse(item.quantity.replaceAll(',', '.')) ?? 0;
+    return (unitPrice * quantity).toStringAsFixed(2);
+  }
+
   @override
   Widget build(BuildContext context) => Material(
         color: Colors.white,
@@ -1472,7 +1528,9 @@ class _CartPanel extends StatelessWidget {
                                           const SizedBox(width: 8),
                                           Text(
                                               officialLine == null
-                                                  ? '--'
+                                                  ? formatMoney(
+                                                      _provisionalLineTotal(
+                                                          item))
                                                   : formatMoney(
                                                       officialLine.lineTotal),
                                               style: const TextStyle(

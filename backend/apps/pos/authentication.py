@@ -24,9 +24,13 @@ def require_device(request):
 
 
 def require_operator_session(request, device):
+    session = getattr(request, 'pos_operator_session', None)
+    if session and session.device_id == device.pk:
+        return session
     token = request.META.get('HTTP_X_POS_OPERATOR_SESSION')
     if not token:
         raise AuthenticationFailed('Sessao do operador ausente ou invalida.')
     session = authenticate_operator_session(device, token)
     request.pos_operator_session = session
+    request.pos_permission_codes = session.pos_permission_codes
     return session

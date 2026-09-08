@@ -55,9 +55,9 @@ from .serializers import (
 from .services import (
     assert_branch_device_limit, authenticate_operator, cash_state_for_device, confirm_pairing,
     effective_cash_settings, effective_settings, identify_branch, logout_operator, modules_for,
-    operator_permission_codes, pos_operator_queryset, request_otp, set_device_status,
+    pos_operator_queryset, request_otp, set_device_status,
     eligible_pos_authorizers,
-    request_pos_pin_reset, set_pos_pin, validate_device_operational, version_gate,
+    request_pos_pin_reset, set_pos_pin, version_gate,
 )
 
 
@@ -98,7 +98,10 @@ class POSDeviceView(POSTimedAPIView):
     permission_classes = [AllowAny]
 
     def device(self, request, *, check_version=False):
-        return validate_device_operational(require_device(request), check_version=check_version)
+        device = require_device(request)
+        if check_version:
+            version_gate(device.app_version)
+        return device
 
 
 class PairingIdentifyView(POSPublicView):
@@ -148,7 +151,10 @@ class OperatorsView(POSDeviceView):
 class OperatorLoginView(POSDeviceView):
     def post(self, request):
         device = self.device(request, check_version=True)
-        session, token = authenticate_operator(device, _required(request.data, 'operator_id'), _required(request.data, 'pin'))
+        session, token = authenticate_operator(
+            device, _required(request.data, 'operator_id'), _required(request.data, 'pin'),
+            device_validated=True,
+        )
         return Response({
             'operator_session': {'token': token, 'expires_at': session.expires_at},
             'operator': _operator_data(session.operator),
@@ -165,7 +171,10 @@ class OperatorLogoutView(POSDeviceView):
 
 class OperatorPinResetView(POSDeviceView):
     def post(self, request, operator_id):
-        request_pos_pin_reset(self.device(request, check_version=True), operator_id)
+        request_pos_pin_reset(
+            self.device(request, check_version=True), operator_id,
+            device_validated=True,
+        )
         return Response({'detail': 'Se o operador estiver elegivel, recebera instrucoes por e-mail.'}, status=status.HTTP_202_ACCEPTED)
 
 
@@ -174,7 +183,10 @@ class BootstrapView(POSDeviceView):
         started = perf_counter()
         device = self.device(request, check_version=True)
         session = require_operator_session(request, device)
-        permissions, modules = modules_for(session.operator, device)
+        permissions, modules = modules_for(
+            session.operator, device,
+            permission_codes=request.pos_permission_codes,
+        )
         import logging
 
         logging.getLogger('pos.performance').info(
@@ -222,7 +234,7 @@ class POSCashView(POSDeviceView):
         started = perf_counter()
         device = self.device(request, check_version=True)
         operator_session = require_operator_session(request, device)
-        permissions = operator_permission_codes(operator_session.operator, device.branch)
+        permissions = request.pos_permission_codes
         import logging
 
         logging.getLogger('pos.performance').info(
@@ -520,10 +532,25 @@ class POSSalePreviewView(POSQuickSaleView):
         serializer = POSSalePreviewSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        items = self._items(data['items'])
+        availability = assess_sale_stock_availability(
+            company=device.branch.company,
+            raw_items=items,
+            branch=device.branch,
+            channel=SalesChannel.COUNTER,
+        )
+        if not availability['available'] and availability['enforced']:
+            error = DomainValidationError(
+                code='stock_unavailable',
+                message='Estoque insuficiente para os itens selecionados.',
+                details=availability,
+            )
+            error.status_code = status.HTTP_409_CONFLICT
+            raise error
         result = calculate_preview(
             company=device.branch.company,
             operation_type=OperationType.SALE,
-            raw_items=self._items(data['items']),
+            raw_items=items,
             discount=data['discount'],
             charged_amount=None,
             beneficiary_user=None,
@@ -594,7 +621,7 @@ class POSServiceFeeAuthorizersView(POSQuickSaleView):
 
 class POSDiscountAuthorizationValidationView(POSQuickSaleView):
     def post(self, request):
-        device, _, permissions, _ = self.context(request)
+        device, operator, permissions, _ = self.context(request)
         if 'sales.create' not in permissions:
             raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
         serializer = POSDiscountAuthorizationValidationSerializer(data=request.data)
@@ -609,7 +636,7 @@ class POSDiscountAuthorizationValidationView(POSQuickSaleView):
             validate_discount_authorization(
                 device.branch, data, permission_code=permission_code,
                 authorization_field='authorization',
-                allow_pos_only=True, pos_device=device,
+                allow_pos_only=True, pos_device=device, requester=operator,
             )
         except DjangoValidationError as error:
             messages = error.message_dict.get('authorization', error.messages)
@@ -695,6 +722,7 @@ class POSFinalizeSaleView(POSQuickSaleView):
             pos_device=device,
             allow_pos_only=True,
             audit_metadata=self.audit_metadata(device, operator_session),
+            pos_permission_codes=permissions,
         )
         replayed = bool(getattr(sale, '_idempotency_replayed', False))
         request.branch_context = device.branch

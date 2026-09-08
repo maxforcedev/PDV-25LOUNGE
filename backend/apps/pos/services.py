@@ -168,8 +168,9 @@ def assert_branch_device_limit(branch):
         _error('pos_device_limit_reached', 'O limite de dispositivos POS desta filial foi atingido.', status_code=409)
 
 
-def validate_device_operational(device, *, check_version=True):
-    device = POSDevice.objects.select_related('branch__company').get(pk=device.pk)
+def validate_device_operational(device, *, check_version=True, refresh=True):
+    if refresh:
+        device = POSDevice.objects.select_related('branch__company').get(pk=device.pk)
     if device.status != POSDevice.Status.ACTIVE:
         _error('device_not_active', 'O dispositivo nao esta ativo.', status_code=403)
     if device.branch.status != Status.ACTIVE:
@@ -186,27 +187,44 @@ def authenticate_device(credential):
         raise AuthenticationFailed('Credencial de dispositivo invalida.')
     try:
         fingerprint = _secret_fingerprint(credential)
-        candidates = POSDevice.objects.filter(
+        lookup_started = perf_counter()
+        device = POSDevice.objects.select_related('branch__company').filter(
             credential_fingerprint=fingerprint,
-        ).only('id', 'credential_hash')
-        for device in candidates:
-            if check_password(credential, device.credential_hash):
-                try:
-                    return validate_device_operational(device, check_version=False)
-                except DomainValidationError as error:
-                    raise AuthenticationFailed(error.payload['message']) from error
+            status=POSDevice.Status.ACTIVE,
+        ).first()
+        _log_timing('device_auth_lookup_ms', lookup_started)
+        if device:
+            operational_started = perf_counter()
+            try:
+                return validate_device_operational(
+                    device, check_version=False, refresh=False,
+                )
+            except DomainValidationError as error:
+                raise AuthenticationFailed(error.payload['message']) from error
+            finally:
+                _log_timing('device_auth_operational_ms', operational_started)
         # Existing paired devices are upgraded only after their hash validates.
-        for device in POSDevice.objects.filter(
+        lookup_started = perf_counter()
+        legacy_devices = list(POSDevice.objects.filter(
             credential_fingerprint='',
-        ).exclude(credential_hash='').only('id', 'credential_hash'):
+            status=POSDevice.Status.ACTIVE,
+        ).exclude(credential_hash='').select_related('branch__company'))
+        _log_timing('device_auth_lookup_ms', lookup_started)
+        for device in legacy_devices:
             if check_password(credential, device.credential_hash):
                 POSDevice.objects.filter(pk=device.pk, credential_fingerprint='').update(
                     credential_fingerprint=fingerprint,
                 )
+                device.credential_fingerprint = fingerprint
+                operational_started = perf_counter()
                 try:
-                    return validate_device_operational(device, check_version=False)
+                    return validate_device_operational(
+                        device, check_version=False, refresh=False,
+                    )
                 except DomainValidationError as error:
                     raise AuthenticationFailed(error.payload['message']) from error
+                finally:
+                    _log_timing('device_auth_operational_ms', operational_started)
         raise AuthenticationFailed('Credencial de dispositivo invalida.')
     finally:
         _log_timing('device_auth_ms', started)
@@ -350,27 +368,50 @@ def pos_operator_queryset(branch):
 
 def operator_permission_codes(operator, branch):
     """Resolve POS capabilities through the canonical scope-aware selectors."""
-    branch_codes = branch_permission_codes(
-        operator, branch.pk, allow_pos_only=True, allow_superuser=False,
-    )
-    company_codes = company_permission_codes(
-        operator, branch.company_id, allow_pos_only=True, allow_superuser=False,
-    )
-    effective_codes = (
-        branch_codes.intersection(OPERATING_PERMISSION_CODES)
-        | company_codes.difference(OPERATING_PERMISSION_CODES)
-    )
-    return effective_codes - branch_blocked_permission_codes(operator, branch.pk)
+    started = perf_counter()
+    try:
+        branch_codes = branch_permission_codes(
+            operator, branch.pk, allow_pos_only=True, allow_superuser=False,
+        )
+        company_codes = company_permission_codes(
+            operator, branch.company_id, allow_pos_only=True, allow_superuser=False,
+        )
+        effective_codes = (
+            branch_codes.intersection(OPERATING_PERMISSION_CODES)
+            | company_codes.difference(OPERATING_PERMISSION_CODES)
+        )
+        return effective_codes - branch_blocked_permission_codes(operator, branch.pk)
+    finally:
+        _log_timing('permission_resolution_ms', started)
 
 
 def eligible_operator(branch, operator_id):
-    access = pos_operator_queryset(branch).filter(user_id=operator_id).first()
-    return access.user if access else None
+    if branch.status != Status.ACTIVE or branch.company.status != Status.ACTIVE:
+        return None, set()
+    access = UserBranchAccess.objects.filter(
+        branch=branch,
+        user_id=operator_id,
+        is_active=True,
+        access_profile__status=Status.ACTIVE,
+        user__is_active=True,
+        user__archived_at__isnull=True,
+        user__can_access_pos=True,
+        user__pos_pin_hash__gt='',
+        user__company_accesses__company_id=branch.company_id,
+        user__company_accesses__is_active=True,
+        user__company_accesses__archived_at__isnull=True,
+        user__company_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
+    ).select_related('user').first()
+    if not access:
+        return None, set()
+    permissions = operator_permission_codes(access.user, branch)
+    return (access.user, permissions) if permissions else (None, set())
 
 
-def authenticate_operator(device, operator_id, pin):
-    device = validate_device_operational(device)
-    operator = eligible_operator(device.branch, operator_id)
+def authenticate_operator(device, operator_id, pin, *, device_validated=False):
+    if not device_validated:
+        device = validate_device_operational(device)
+    operator, _permissions = eligible_operator(device.branch, operator_id)
     if not operator:
         _error('operator_not_eligible', 'Operador indisponivel para este dispositivo.', status_code=403)
     with transaction.atomic():
@@ -405,9 +446,9 @@ def eligible_pos_authorizers(branch, permission_code):
 
 
 def _authorization_audit(device, branch, action, *, authorizer_user_id,
-                         permission_code, actor=None):
+                          permission_code, requester=None):
     audit_log(
-        actor=actor,
+        actor=requester,
         action=action,
         obj=device,
         company=branch.company,
@@ -415,6 +456,7 @@ def _authorization_audit(device, branch, action, *, authorizer_user_id,
         metadata={
             'source': 'pos',
             'device_id': str(device.pk),
+            'requester_user_id': requester.pk if requester else None,
             'authorizer_user_id': authorizer_user_id,
             'permission_code': permission_code,
         },
@@ -422,18 +464,20 @@ def _authorization_audit(device, branch, action, *, authorizer_user_id,
 
 
 def validate_pos_authorization(device, branch, authorization, *, permission_code,
-                               authorization_field):
+                                authorization_field, requester=None,
+                                device_validated=False):
     """Validate a delegated POS approval with the approver's operational PIN."""
     if device is None:
         raise ValidationError({authorization_field: 'Dispositivo POS obrigatório.'})
-    device = validate_device_operational(device)
+    if not device_validated:
+        device = validate_device_operational(device)
     if device.branch_id != branch.pk:
         raise ValidationError({authorization_field: 'Autorização fora da filial do dispositivo.'})
     if not authorization or authorization.get('method') != 'pin':
         _authorization_audit(
             device, branch, 'pos.authorization.failed',
             authorizer_user_id=(authorization or {}).get('user'),
-            permission_code=permission_code,
+            permission_code=permission_code, requester=requester,
         )
         raise ValidationError({authorization_field: 'Autorização por PIN inválida.'})
     approver = eligible_pos_authorizers(
@@ -443,6 +487,7 @@ def validate_pos_authorization(device, branch, authorization, *, permission_code
         _authorization_audit(
             device, branch, 'pos.authorization.failed',
             authorizer_user_id=authorization.get('user'), permission_code=permission_code,
+            requester=requester,
         )
         raise ValidationError({authorization_field: 'Autorizador indisponível nesta filial.'})
     key = _fingerprint(
@@ -452,7 +497,7 @@ def validate_pos_authorization(device, branch, authorization, *, permission_code
         _authorization_audit(
             device, branch, 'pos.authorization.rate_limited',
             authorizer_user_id=approver.pk, permission_code=permission_code,
-            actor=approver,
+            requester=requester,
         )
         _error('authorization_pin_rate_limited', 'PIN temporariamente bloqueado.', status_code=429)
     pin = str(authorization.get('credential') or '')
@@ -462,14 +507,14 @@ def validate_pos_authorization(device, branch, authorization, *, permission_code
             device, branch,
             'pos.authorization.rate_limited' if locked else 'pos.authorization.failed',
             authorizer_user_id=approver.pk, permission_code=permission_code,
-            actor=approver,
+            requester=requester,
         )
         raise ValidationError({authorization_field: 'PIN inválido.'})
     _clear_limit(key)
     _authorization_audit(
         device, branch, 'pos.authorization.succeeded',
         authorizer_user_id=approver.pk, permission_code=permission_code,
-        actor=approver,
+        requester=requester,
     )
     return approver
 
@@ -479,29 +524,48 @@ def authenticate_operator_session(device, token):
     now = timezone.now()
     try:
         fingerprint = _secret_fingerprint(token)
-        candidates = POSOperatorSession.objects.filter(
+        lookup_started = perf_counter()
+        session = POSOperatorSession.objects.select_related('operator').filter(
             device=device,
             token_fingerprint=fingerprint,
             ended_at__isnull=True,
             expires_at__gt=now,
-        ).select_related('operator')
-        for session in candidates:
-            if check_password(token, session.token_hash):
-                if not eligible_operator(device.branch, session.operator_id):
-                    raise AuthenticationFailed('Operador nao esta mais elegivel.')
-                return session
-        for session in POSOperatorSession.objects.filter(
+        ).first()
+        _log_timing('operator_session_lookup_ms', lookup_started)
+        if session:
+            eligibility_started = perf_counter()
+            try:
+                operator, permissions = eligible_operator(device.branch, session.operator_id)
+            finally:
+                _log_timing('operator_eligibility_ms', eligibility_started)
+            if not operator:
+                raise AuthenticationFailed('Operador nao esta mais elegivel.')
+            session.operator = operator
+            session.pos_permission_codes = permissions
+            return session
+
+        lookup_started = perf_counter()
+        legacy_sessions = list(POSOperatorSession.objects.filter(
             device=device,
             token_fingerprint='',
             ended_at__isnull=True,
             expires_at__gt=now,
-        ).select_related('operator'):
+        ).select_related('operator'))
+        _log_timing('operator_session_lookup_ms', lookup_started)
+        for session in legacy_sessions:
             if check_password(token, session.token_hash):
                 POSOperatorSession.objects.filter(pk=session.pk, token_fingerprint='').update(
                     token_fingerprint=fingerprint,
                 )
-                if not eligible_operator(device.branch, session.operator_id):
+                eligibility_started = perf_counter()
+                try:
+                    operator, permissions = eligible_operator(device.branch, session.operator_id)
+                finally:
+                    _log_timing('operator_eligibility_ms', eligibility_started)
+                if not operator:
                     raise AuthenticationFailed('Operador nao esta mais elegivel.')
+                session.operator = operator
+                session.pos_permission_codes = permissions
                 return session
         raise AuthenticationFailed('Sessao do operador ausente ou invalida.')
     finally:
@@ -550,9 +614,10 @@ def send_pos_pin_setup(user, company, actor=None, audit_metadata=None, branch=No
 
 
 @transaction.atomic
-def request_pos_pin_reset(device, operator_id):
-    device = validate_device_operational(device)
-    operator = eligible_operator(device.branch, operator_id)
+def request_pos_pin_reset(device, operator_id, *, device_validated=False):
+    if not device_validated:
+        device = validate_device_operational(device)
+    operator, _permissions = eligible_operator(device.branch, operator_id)
     if not operator:
         _error('operator_not_eligible', 'Operador indisponivel para este dispositivo.', status_code=403)
     rows, limit = _consume_delivery_limit(_delivery_limit_keys(device, operator))
@@ -762,8 +827,10 @@ def cash_state_for_device(device, permission_codes, operator=None):
     return state
 
 
-def modules_for(operator, device):
-    permissions = operator_permission_codes(operator, device.branch)
+def modules_for(operator, device, *, permission_codes=None):
+    permissions = permission_codes if permission_codes is not None else operator_permission_codes(
+        operator, device.branch,
+    )
     settings_obj = getattr(device.branch, 'settings', None)
     enabled = pos_enabled(device.branch.company)
     operational = enabled and device.branch.status == Status.ACTIVE
