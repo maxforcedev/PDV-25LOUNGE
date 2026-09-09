@@ -9,6 +9,7 @@ from .models import (
     AccessProfile,
     Branch,
     Company,
+    Customer,
     FunctionalPermission,
     UserBranchAccess,
     UserCompanyAccess,
@@ -38,6 +39,42 @@ def ensure_permission_catalog():
         )
         permissions[code] = permission
     return permissions
+
+
+CUSTOMER_EDITABLE_FIELDS = (
+    'name', 'phone', 'document', 'email', 'birth_date', 'notes', 'status',
+)
+
+
+def prepare_customer(*, company, customer=None, **attributes):
+    """Apply Customer's canonical normalization and validation before persistence."""
+    customer = customer or Customer(company=company)
+    if customer.company_id != company.pk:
+        raise ValidationError({'company': 'A empresa do cliente não pode ser alterada.'})
+    for field, value in attributes.items():
+        if field in CUSTOMER_EDITABLE_FIELDS:
+            setattr(customer, field, value)
+    customer.full_clean()
+    return customer
+
+
+@transaction.atomic
+def create_customer(*, company, **attributes):
+    customer = prepare_customer(company=company, **attributes)
+    customer.save()
+    return customer
+
+
+@transaction.atomic
+def update_customer(*, customer, **attributes):
+    customer = prepare_customer(company=customer.company, customer=customer, **attributes)
+    customer.save()
+    return customer
+
+
+@transaction.atomic
+def set_customer_status(*, customer, status):
+    return update_customer(customer=customer, status=status)
 
 
 def ensure_default_access_profiles(company):

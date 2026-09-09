@@ -1,7 +1,6 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import DecimalField, OuterRef, Prefetch, Q, Subquery, Value
-from django.db.models.functions import Coalesce
+from django.db.models import Prefetch, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework import mixins, status, viewsets
@@ -16,11 +15,8 @@ from apps.base.exceptions import InternalContractError
 from apps.cash.models import CashSession, CashSessionStatus
 from apps.companies.selectors import eligible_branch_users, user_has_branch_permission
 from apps.companies.models import Status
-from apps.products.models import (
-    BranchProductPrice, Category, ModifierOption, Product, ProductBranchConfig,
-    ProductModifierGroup,
-)
-from apps.products.selectors import operational_products
+from apps.products.models import Category, ModifierOption, Product, ProductModifierGroup
+from apps.products.selectors import operational_products, sellable_products_for_branch
 
 from .models import PaymentMethod, Promotion, Sale
 from .permissions import SalesFunctionalPermission
@@ -365,16 +361,9 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
     def catalog(self, request):
         query = SalesQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
-        branch_price = BranchProductPrice.objects.filter(
-            branch=request.branch_context, product_id=OuterRef('pk')
-        ).values('sale_price')[:1]
-        branch_config = ProductBranchConfig.objects.filter(
-            branch=request.branch_context, product_id=OuterRef('pk')
-        )
         channel = query.validated_data['channel']
-        channel_field = f'available_{channel}'
-        queryset = Product.objects.select_related(
-            'company', 'category'
+        queryset = sellable_products_for_branch(
+            request.branch_context, channel, search=request.query_params.get('search'),
         ).prefetch_related(
             'components__component_product',
             Prefetch(
@@ -409,40 +398,11 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
                 ).order_by('sort_order', 'id'),
                 to_attr='operational_modifier_group_links',
             ),
-        ).annotate(
-            effective_sale_price=Coalesce(
-                Subquery(branch_price), 'sale_price', output_field=DecimalField()
-            ),
-            branch_available=Subquery(
-                branch_config.values('is_available')[:1],
-            ),
-            branch_channel=Coalesce(
-                Subquery(branch_config.values(channel_field)[:1]),
-                channel_field,
-            ),
-        ).filter(
-            company_id=request.branch_context.company_id,
-            status=Status.ACTIVE,
-            archived_at__isnull=True,
-            is_sellable=True,
-            branch_available=True,
-            branch_channel=True,
         )
         if query.validated_data.get('category'):
-            queryset = queryset.filter(
-                branch_configs__branch=request.branch_context,
-                branch_configs__category_id=query.validated_data['category'],
-            )
+            queryset = queryset.filter(effective_category_id=query.validated_data['category'])
         if request.query_params.get('favorites') == 'true':
             queryset = queryset.filter(is_favorite=True)
-        if request.query_params.get('search'):
-            search = request.query_params['search']
-            queryset = queryset.filter(
-                Q(name__icontains=search)
-                | Q(internal_code__icontains=search)
-                | Q(barcode__icontains=search)
-            )
-        queryset = queryset.order_by('-is_favorite', 'name', 'id')
         return self._paginated_response(queryset, SaleCatalogProductSerializer)
 
     @action(detail=False, methods=('get',), url_path='checkout-options')

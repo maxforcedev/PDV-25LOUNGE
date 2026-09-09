@@ -1,8 +1,11 @@
-from django.db.models import Q
+from django.db.models import CharField, DecimalField, OuterRef, Q, Subquery
+from django.db.models.functions import Coalesce
 
 from apps.companies.models import Status
 
-from .models import InventoryBehavior, Product, ProductBranchConfig
+from .models import (
+    BranchProductPrice, InventoryBehavior, Product, ProductBranchConfig, SalesChannel,
+)
 
 
 def operational_product_configs(branch):
@@ -21,6 +24,56 @@ def operational_products(branch):
     return Product.objects.filter(
         branch_configs__in=operational_product_configs(branch),
     ).distinct()
+
+
+def sellable_products_for_branch(branch, channel, *, search=None, barcode=None):
+    """Return products that are currently sellable at a branch and sales channel."""
+    if channel not in SalesChannel.values:
+        raise ValueError('Canal de venda invalido.')
+
+    channel_field = f'available_{channel}'
+    branch_price = BranchProductPrice.objects.filter(
+        branch=branch, product_id=OuterRef('pk')
+    ).values('sale_price')[:1]
+    branch_config = ProductBranchConfig.objects.filter(
+        branch=branch, product_id=OuterRef('pk')
+    )
+    queryset = Product.objects.select_related('company', 'category').annotate(
+        effective_sale_price=Coalesce(
+            Subquery(branch_price), 'sale_price', output_field=DecimalField(),
+        ),
+        branch_available=Subquery(branch_config.values('is_available')[:1]),
+        branch_channel=Coalesce(
+            Subquery(branch_config.values(channel_field)[:1]), channel_field,
+        ),
+        effective_category_id=Coalesce(
+            Subquery(branch_config.values('category_id')[:1]), 'category_id',
+            output_field=Product._meta.get_field('category').target_field,
+        ),
+        effective_category_name=Coalesce(
+            Subquery(branch_config.values('category__name')[:1]), 'category__name',
+            output_field=CharField(),
+        ),
+    ).filter(
+        company_id=branch.company_id,
+        status=Status.ACTIVE,
+        archived_at__isnull=True,
+        is_sellable=True,
+        branch_available=True,
+        branch_channel=True,
+        branch_configs__branch=branch,
+        branch_configs__branch__status=Status.ACTIVE,
+        branch_configs__branch__company__status=Status.ACTIVE,
+    )
+    if barcode is not None:
+        queryset = queryset.filter(barcode=barcode)
+    elif search:
+        queryset = queryset.filter(
+            Q(name__icontains=search)
+            | Q(internal_code__icontains=search)
+            | Q(barcode__icontains=search)
+        )
+    return queryset.order_by('-is_favorite', 'name', 'id')
 
 
 def inventory_products(branch):

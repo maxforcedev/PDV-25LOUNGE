@@ -10,7 +10,9 @@ from django.core.exceptions import ValidationError
 
 from apps.base.models import BaseModel
 
-from .validators import normalize_cnpj, validate_cnpj
+from .validators import (
+    normalize_cnpj, normalize_cpf, normalize_phone, validate_cnpj, validate_cpf, validate_phone,
+)
 
 
 class Status(models.TextChoices):
@@ -181,7 +183,13 @@ class Customer(BaseModel):
         ordering = ('name', 'id')
         constraints = [
             models.UniqueConstraint(
-                fields=('company', 'document'), condition=Q(document__isnull=False),
+                fields=('company', 'phone'),
+                condition=Q(status=Status.ACTIVE) & ~Q(phone=''),
+                name='companies_customer_company_phone_active_unique',
+            ),
+            models.UniqueConstraint(
+                fields=('company', 'document'),
+                condition=Q(status=Status.ACTIVE) & Q(document__isnull=False),
                 name='companies_customer_company_document_unique',
             ),
         ]
@@ -189,12 +197,14 @@ class Customer(BaseModel):
     def clean(self):
         super().clean()
         self.name = ' '.join((self.name or '').split())
-        self.phone = re.sub(r'\D', '', self.phone or '')
-        self.document = re.sub(r'\D', '', self.document or '') or None
+        self.phone = normalize_phone(self.phone)
+        self.document = normalize_cpf(self.document)
         self.email = (self.email or '').strip().lower()
         self.notes = (self.notes or '').strip()
         if not self.name:
             raise ValidationError({'name': 'Informe o nome do cliente.'})
+        validate_phone(self.phone)
+        validate_cpf(self.document)
 
     def save(self, *args, **kwargs):
         self.full_clean()

@@ -1,8 +1,7 @@
 from decimal import Decimal, InvalidOperation
 from time import perf_counter
 
-from django.db.models import CharField, DecimalField, OuterRef, Prefetch, Q, Subquery
-from django.db.models.functions import Coalesce
+from django.db.models import Prefetch
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import Http404
 from django.shortcuts import get_object_or_404
@@ -28,14 +27,14 @@ from apps.cash.services import (
     session_operational_summary,
 )
 from apps.companies.permissions import FunctionalCompanyPermission
-from apps.companies.selectors import accessible_branches
+from apps.companies.selectors import accessible_branches, customer_search_queryset
 from apps.companies.features import require_branch_feature
 from apps.companies.models import Customer, Status
 from apps.products.models import (
-    BranchProductPrice, ModifierOption, Product, ProductBranchConfig,
-    ProductModifierGroup,
+    ModifierOption, ProductModifierGroup,
 )
 from apps.products.models import SalesChannel
+from apps.products.selectors import sellable_products_for_branch
 from apps.production.services import lookup_ticket_for_validation, redeem_ticket, ticket_validation_data
 from apps.sales.models import OperationType, Sale
 from apps.sales.serializers import (
@@ -292,13 +291,9 @@ class POSCashOverviewView(POSCashView):
 
 
 def _pos_catalog_queryset(branch, *, search=None, barcode=None):
-    branch_price = BranchProductPrice.objects.filter(
-        branch=branch, product_id=OuterRef('pk')
-    ).values('sale_price')[:1]
-    branch_config = ProductBranchConfig.objects.filter(
-        branch=branch, product_id=OuterRef('pk')
-    )
-    queryset = Product.objects.select_related('company', 'category').prefetch_related(
+    return sellable_products_for_branch(
+        branch, SalesChannel.COUNTER, search=search, barcode=barcode,
+    ).prefetch_related(
         'components__component_product',
         'fraction_components__component_product',
         Prefetch(
@@ -333,39 +328,7 @@ def _pos_catalog_queryset(branch, *, search=None, barcode=None):
             ).order_by('sort_order', 'id'),
             to_attr='operational_modifier_group_links',
         ),
-    ).annotate(
-        effective_sale_price=Coalesce(
-            Subquery(branch_price), 'sale_price', output_field=DecimalField()
-        ),
-        branch_available=Subquery(branch_config.values('is_available')[:1]),
-        branch_counter=Coalesce(
-            Subquery(branch_config.values('available_counter')[:1]), 'available_counter',
-        ),
-        effective_category_id=Coalesce(
-            Subquery(branch_config.values('category_id')[:1]), 'category_id',
-            output_field=Product._meta.get_field('category').target_field,
-        ),
-        effective_category_name=Coalesce(
-            Subquery(branch_config.values('category__name')[:1]), 'category__name',
-            output_field=CharField(),
-        ),
-    ).filter(
-        company_id=branch.company_id,
-        status=Status.ACTIVE,
-        archived_at__isnull=True,
-        is_sellable=True,
-        branch_available=True,
-        branch_counter=True,
     )
-    if barcode is not None:
-        queryset = queryset.filter(barcode=barcode)
-    elif search:
-        queryset = queryset.filter(
-            Q(name__icontains=search)
-            | Q(internal_code__icontains=search)
-            | Q(barcode__icontains=search)
-        )
-    return queryset.order_by('-is_favorite', 'name', 'id')
 
 
 def _visible_pos_catalog(device, queryset):
@@ -539,14 +502,9 @@ class POSCustomersView(POSQuickSaleView):
         if 'sales.create' not in permissions or 'customers.view' not in permissions:
             raise PermissionDenied('Você não possui permissão para consultar clientes nesta filial.')
         term = request.query_params.get('q', '').strip()
-        customers = Customer.objects.filter(
-            company_id=device.branch.company_id, status=Status.ACTIVE,
+        customers = customer_search_queryset(
+            company=device.branch.company, term=term, active_only=True,
         )
-        if term:
-            customers = customers.filter(
-                Q(name__icontains=term) | Q(phone__icontains=term)
-                | Q(email__icontains=term) | Q(document__icontains=term)
-            )
         return Response({'customers': POSCustomerSerializer(
             customers.order_by('name', 'id')[:20], many=True,
         ).data})
@@ -555,9 +513,11 @@ class POSCustomersView(POSQuickSaleView):
         device, operator, permissions, _ = self.context(request)
         if 'sales.create' not in permissions or 'customers.add' not in permissions:
             raise PermissionDenied('Você não possui permissão para cadastrar clientes nesta filial.')
-        serializer = POSCustomerSerializer(data=request.data)
+        serializer = POSCustomerSerializer(
+            data=request.data, context={'company': device.branch.company},
+        )
         serializer.is_valid(raise_exception=True)
-        customer = serializer.save(company=device.branch.company)
+        customer = serializer.save()
         audit_log(
             actor=operator, action='pos.customer.created', obj=customer,
             company=device.branch.company, branch=device.branch,

@@ -1,9 +1,11 @@
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from apps.cash.serializers import StrictMoneyField
 from apps.companies.models import Customer
+from apps.companies.services import create_customer, prepare_customer
 from apps.sales.serializers import DiscountIntentField, ItemInputSerializer, PaymentInputSerializer
 
 from .models import BranchPOSSettings, POSDevice, POSDeviceSettings
@@ -184,6 +186,18 @@ class POSCustomerSerializer(serializers.ModelSerializer):
         model = Customer
         fields = ('id', 'name', 'phone', 'document', 'email')
         read_only_fields = ('id',)
+
+    def validate(self, attrs):
+        try:
+            customer = prepare_customer(company=self.context['company'], **attrs)
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(error.message_dict) from error
+        for field in attrs:
+            attrs[field] = getattr(customer, field)
+        return attrs
+
+    def create(self, validated_data):
+        return create_customer(company=self.context['company'], **validated_data)
 
 
 class POSTicketLookupSerializer(serializers.Serializer):

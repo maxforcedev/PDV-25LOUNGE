@@ -1,6 +1,7 @@
 import uuid
 
 from django.db import transaction
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Prefetch, Q
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -23,6 +24,7 @@ from .permissions import CanCreateCompany, FunctionalCompanyPermission, IsPlatfo
 from .selectors import (
     accessible_branches,
     accessible_companies,
+    customer_search_queryset,
     blockable_permission_codes,
     user_has_branch_permission,
     user_has_company_permission,
@@ -48,6 +50,7 @@ from .services import (
     activate_branch,
     activate_company,
     deactivate_company,
+    set_customer_status,
     transfer_company_owner,
 )
 
@@ -80,8 +83,9 @@ class CustomerViewSet(viewsets.ModelViewSet):
             term = (self.request.query_params.get('q') or self.request.query_params.get('search', '')).strip()
             if term:
                 queryset = queryset.filter(
-                    Q(name__icontains=term) | Q(phone__icontains=term)
-                    | Q(email__icontains=term) | Q(document__icontains=term)
+                    pk__in=customer_search_queryset(
+                        companies=companies, term=term,
+                    ).values('pk')
                 )
         return queryset
 
@@ -101,8 +105,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
     def deactivate(self, request, pk=None):
         customer = self.get_object()
         before = model_snapshot(customer, self.audit_fields)
-        customer.status = Status.INACTIVE
-        customer.save(update_fields=('status', 'updated_at'))
+        customer = set_customer_status(customer=customer, status=Status.INACTIVE)
         audit_log(actor=request.user, action='customer.deactivate', obj=customer,
                   company=customer.company, before=before,
                   after=model_snapshot(customer, self.audit_fields))
@@ -112,8 +115,10 @@ class CustomerViewSet(viewsets.ModelViewSet):
     def activate(self, request, pk=None):
         customer = self.get_object()
         before = model_snapshot(customer, self.audit_fields)
-        customer.status = Status.ACTIVE
-        customer.save(update_fields=('status', 'updated_at'))
+        try:
+            customer = set_customer_status(customer=customer, status=Status.ACTIVE)
+        except DjangoValidationError as error:
+            raise ValidationError(error.message_dict) from error
         audit_log(actor=request.user, action='customer.activate', obj=customer,
                   company=customer.company, before=before,
                   after=model_snapshot(customer, self.audit_fields))

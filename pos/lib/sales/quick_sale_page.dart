@@ -1929,12 +1929,14 @@ class _CustomerCreateDialog extends StatefulWidget {
 class _CustomerCreateDialogState extends State<_CustomerCreateDialog> {
   final _name = TextEditingController();
   final _phone = TextEditingController();
+  final _document = TextEditingController();
   bool _saving = false;
 
   @override
   void dispose() {
     _name.dispose();
     _phone.dispose();
+    _document.dispose();
     super.dispose();
   }
 
@@ -1944,6 +1946,7 @@ class _CustomerCreateDialogState extends State<_CustomerCreateDialog> {
     final customer = await widget.controller.createQuickSaleCustomer(
       name: _name.text.trim(),
       phone: _phone.text.trim(),
+      document: _document.text.trim(),
     );
     if (!mounted) return;
     setState(() => _saving = false);
@@ -1964,6 +1967,11 @@ class _CustomerCreateDialogState extends State<_CustomerCreateDialog> {
             controller: _phone,
             keyboardType: TextInputType.phone,
             decoration: const InputDecoration(labelText: 'Telefone'),
+          ),
+          TextField(
+            controller: _document,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(labelText: 'CPF'),
           ),
         ]),
         actions: [

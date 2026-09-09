@@ -1,6 +1,10 @@
+import re
+
+from django.db.models import Q
+
 from apps.accounts.models import User
 
-from .models import Branch, Company, UserBranchAccess, UserCompanyAccess, UserPermissionBlock
+from .models import Branch, Company, Customer, Status, UserBranchAccess, UserCompanyAccess, UserPermissionBlock
 
 
 def _company_blocked_codes(user, company_id):
@@ -158,6 +162,26 @@ def active_operational_branches(user):
         company__user_accesses__can_login=True,
         company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
     ).distinct()
+
+
+def customer_search_queryset(*, company=None, companies=None, term='', active_only=None):
+    queryset = Customer.objects.all()
+    if company is not None:
+        queryset = queryset.filter(company=company)
+    elif companies is not None:
+        queryset = queryset.filter(company__in=companies)
+    if active_only is True:
+        queryset = queryset.filter(status=Status.ACTIVE)
+    elif active_only is False:
+        queryset = queryset.filter(status=Status.INACTIVE)
+    term = (term or '').strip()
+    if not term:
+        return queryset
+    digits = re.sub(r'\D', '', term)
+    query = Q(name__icontains=term) | Q(email__icontains=term)
+    if digits:
+        query |= Q(phone__icontains=digits) | Q(document__icontains=digits)
+    return queryset.filter(query)
 
 
 def company_permission_codes(user, company_id, *, allow_pos_only=False,

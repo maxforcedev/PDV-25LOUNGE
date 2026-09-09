@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from apps.base.exceptions import DomainValidationError
@@ -15,7 +16,10 @@ from .selectors import (
     user_has_branch_permission,
     user_has_company_permission,
 )
-from .services import create_branch_with_access, create_company_with_matrix
+from .services import (
+    create_branch_with_access, create_company_with_matrix, create_customer,
+    prepare_customer, update_customer,
+)
 from .validators import normalize_cnpj, validate_cnpj
 
 
@@ -38,7 +42,24 @@ class CustomerSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'company': 'Empresa fora do contexto autorizado.'})
         if self.instance and company.pk != self.instance.company_id:
             raise serializers.ValidationError({'company': 'A empresa do cliente não pode ser alterada.'})
+        try:
+            customer = prepare_customer(
+                company=company, customer=self.instance,
+                **{field: attrs[field] for field in attrs if field != 'company'},
+            )
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(error.message_dict) from error
+        for field in ('name', 'phone', 'document', 'email', 'birth_date', 'notes'):
+            if field in attrs:
+                attrs[field] = getattr(customer, field)
         return attrs
+
+    def create(self, validated_data):
+        return create_customer(**validated_data)
+
+    def update(self, instance, validated_data):
+        validated_data.pop('company', None)
+        return update_customer(customer=instance, **validated_data)
 
     def get_duplicate_warning(self, customer):
         matches = Customer.objects.filter(company_id=customer.company_id).exclude(pk=customer.pk)

@@ -4,6 +4,8 @@ from django.core.exceptions import ValidationError
 
 
 ALLOWED_CNPJ_CHARACTERS = re.compile(r'^[0-9.\-/\s]+$')
+ALLOWED_CPF_CHARACTERS = re.compile(r'^[0-9.\-\s]+$')
+ALLOWED_PHONE_CHARACTERS = re.compile(r'^[0-9()\-\s]+$')
 
 
 def normalize_cnpj(value):
@@ -36,3 +38,48 @@ def validate_cnpj(value):
     )
     if digits[-2:] != first + second:
         raise ValidationError('Informe um CNPJ válido.')
+
+
+def normalize_cpf(value):
+    if value in (None, ''):
+        return None
+    if not isinstance(value, str) or not ALLOWED_CPF_CHARACTERS.fullmatch(value):
+        raise ValidationError('Informe um CPF contendo apenas digitos e pontuacao.')
+    return re.sub(r'[.\-\s]', '', value)
+
+
+def validate_cpf(value):
+    if value in (None, ''):
+        return
+
+    digits = normalize_cpf(value)
+    if len(digits) != 11 or not digits.isascii() or not digits.isdigit():
+        raise ValidationError('O CPF deve conter 11 digitos.')
+    if len(set(digits)) == 1:
+        raise ValidationError('Informe um CPF válido.')
+
+    def calculate_digit(numbers, start_weight):
+        total = sum(int(number) * weight for number, weight in zip(numbers, range(start_weight, 1, -1)))
+        remainder = (total * 10) % 11
+        return '0' if remainder == 10 else str(remainder)
+
+    first = calculate_digit(digits[:9], 10)
+    second = calculate_digit(digits[:9] + first, 11)
+    if digits[-2:] != first + second:
+        raise ValidationError('Informe um CPF válido.')
+
+
+def normalize_phone(value):
+    if value in (None, ''):
+        return ''
+    if not isinstance(value, str) or not ALLOWED_PHONE_CHARACTERS.fullmatch(value):
+        raise ValidationError('Informe um telefone contendo apenas digitos e pontuacao.')
+    return re.sub(r'[()\-\s]', '', value)
+
+
+def validate_phone(value):
+    if value in (None, ''):
+        return
+    digits = normalize_phone(value)
+    if len(digits) != 11 or not digits.isascii() or not digits.isdigit():
+        raise ValidationError('O telefone deve conter DDD e 9 digitos.')
