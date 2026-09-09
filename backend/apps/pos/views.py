@@ -27,7 +27,12 @@ from apps.cash.services import (
     session_operational_summary,
 )
 from apps.companies.permissions import FunctionalCompanyPermission
-from apps.companies.selectors import accessible_branches, customer_search_queryset
+from apps.companies.selectors import (
+    accessible_branches, customer_search_queryset, inactive_customer_identity_match,
+)
+from apps.companies.services import (
+    CustomerIdentityConflict, customer_identity_payload, set_customer_status,
+)
 from apps.companies.features import require_branch_feature
 from apps.companies.models import Customer, Status
 from apps.products.models import (
@@ -505,9 +510,14 @@ class POSCustomersView(POSQuickSaleView):
         customers = customer_search_queryset(
             company=device.branch.company, term=term, active_only=True,
         )
-        return Response({'customers': POSCustomerSerializer(
-            customers.order_by('name', 'id')[:20], many=True,
-        ).data})
+        inactive_match = inactive_customer_identity_match(device.branch.company, term)
+        return Response({
+            'customers': POSCustomerSerializer(customers.order_by('name', 'id')[:20], many=True).data,
+            'inactive_identity': {
+                'customer': customer_identity_payload(inactive_match),
+                'can_reactivate': 'customers.change' in permissions,
+            } if inactive_match else None,
+        })
 
     def post(self, request):
         device, operator, permissions, _ = self.context(request)
@@ -517,12 +527,47 @@ class POSCustomersView(POSQuickSaleView):
             data=request.data, context={'company': device.branch.company},
         )
         serializer.is_valid(raise_exception=True)
-        customer = serializer.save()
+        try:
+            customer = serializer.save()
+        except CustomerIdentityConflict as error:
+            details = {**error.details}
+            if error.code == 'customer_inactive_identity_conflict':
+                details['can_reactivate'] = 'customers.change' in permissions
+                if 'customers.change' not in permissions:
+                    message = (
+                        'Cliente cadastrado, porém inativo. '
+                        'Você não possui permissão para reativá-lo.'
+                    )
+                else:
+                    message = error.message
+            else:
+                message = error.message
+            raise DomainValidationError(
+                code=error.code, message=message, details=details,
+            ) from error
         audit_log(
             actor=operator, action='pos.customer.created', obj=customer,
             company=device.branch.company, branch=device.branch,
         )
         return Response(POSCustomerSerializer(customer).data, status=status.HTTP_201_CREATED)
+
+
+class POSCustomerActivateView(POSQuickSaleView):
+    def post(self, request, customer_id):
+        device, operator, permissions, _ = self.context(request)
+        if 'customers.change' not in permissions:
+            raise PermissionDenied('Você não possui permissão para reativar clientes nesta filial.')
+        customer = get_object_or_404(
+            Customer.objects.filter(company_id=device.branch.company_id), pk=customer_id,
+        )
+        before = model_snapshot(customer, ('status',))
+        customer = set_customer_status(customer=customer, status=Status.ACTIVE)
+        audit_log(
+            actor=operator, action='pos.customer.activated', obj=customer,
+            company=device.branch.company, branch=device.branch, before=before,
+            after=model_snapshot(customer, ('status',)),
+        )
+        return Response(POSCustomerSerializer(customer).data)
 
 
 class POSSalePreviewView(POSQuickSaleView):

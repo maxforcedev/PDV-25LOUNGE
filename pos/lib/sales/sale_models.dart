@@ -45,6 +45,33 @@ class QuickSaleCustomer {
   final String email;
 }
 
+class QuickSaleCustomerSearch {
+  const QuickSaleCustomerSearch({
+    required this.customers,
+    this.inactiveIdentity,
+    this.canReactivate = false,
+  });
+
+  factory QuickSaleCustomerSearch.fromJson(Map<String, dynamic> json) {
+    final inactive = json['inactive_identity'] as Map<String, dynamic>?;
+    return QuickSaleCustomerSearch(
+      customers: (json['customers'] as List<dynamic>? ?? const [])
+          .cast<Map<String, dynamic>>()
+          .map(QuickSaleCustomer.fromJson)
+          .toList(growable: false),
+      inactiveIdentity: inactive?['customer'] is Map<String, dynamic>
+          ? QuickSaleCustomer.fromJson(
+              inactive!['customer'] as Map<String, dynamic>)
+          : null,
+      canReactivate: inactive?['can_reactivate'] == true,
+    );
+  }
+
+  final List<QuickSaleCustomer> customers;
+  final QuickSaleCustomer? inactiveIdentity;
+  final bool canReactivate;
+}
+
 class QuickSaleDraft extends ChangeNotifier {
   final List<QuickSaleCartItem> cart = [];
   QuickSalePreview? preview;

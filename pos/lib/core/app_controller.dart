@@ -306,6 +306,17 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
+  Future<QuickSaleCustomer?> activateQuickSaleCustomer(int customerId) async {
+    try {
+      return await _api.activateQuickSaleCustomer(customerId);
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
   Future<bool> recordCashWithdrawal({
     required int sessionId,
     required String amount,
@@ -540,7 +551,7 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
-  Future<List<QuickSaleCustomer>?> quickSaleCustomers(String query) async {
+  Future<QuickSaleCustomerSearch?> quickSaleCustomers(String query) async {
     try {
       return await _api.quickSaleCustomers(query);
     } on PosApiException catch (error) {
@@ -565,6 +576,10 @@ class AppController extends ChangeNotifier {
         email: email,
       );
     } on PosApiException catch (error) {
+      if (error.code == 'customer_identity_conflict' ||
+          error.code == 'customer_inactive_identity_conflict') {
+        rethrow;
+      }
       _handleApiError(error);
     } on PosNetworkException catch (error) {
       _showTransientMessage(error.message);

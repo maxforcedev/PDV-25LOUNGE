@@ -17,7 +17,7 @@ from .selectors import (
     user_has_company_permission,
 )
 from .services import (
-    create_branch_with_access, create_company_with_matrix, create_customer,
+    CustomerIdentityConflict, create_branch_with_access, create_company_with_matrix, create_customer,
     prepare_customer, update_customer,
 )
 from .validators import normalize_cnpj, validate_cnpj
@@ -55,11 +55,21 @@ class CustomerSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
-        return create_customer(**validated_data)
+        try:
+            return create_customer(**validated_data)
+        except CustomerIdentityConflict as error:
+            raise DomainValidationError(
+                code=error.code, message=error.message, details=error.details,
+            ) from error
 
     def update(self, instance, validated_data):
         validated_data.pop('company', None)
-        return update_customer(customer=instance, **validated_data)
+        try:
+            return update_customer(customer=instance, **validated_data)
+        except CustomerIdentityConflict as error:
+            raise DomainValidationError(
+                code=error.code, message=error.message, details=error.details,
+            ) from error
 
     def get_duplicate_warning(self, customer):
         matches = Customer.objects.filter(company_id=customer.company_id).exclude(pk=customer.pk)

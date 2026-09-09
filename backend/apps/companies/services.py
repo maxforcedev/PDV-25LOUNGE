@@ -1,5 +1,6 @@
 from django.core.exceptions import ValidationError
-from django.db import models, transaction
+from django.db import IntegrityError, models, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounts.models import User
@@ -46,6 +47,63 @@ CUSTOMER_EDITABLE_FIELDS = (
 )
 
 
+class CustomerIdentityConflict(Exception):
+    def __init__(self, *, code, message, details):
+        self.code = code
+        self.message = message
+        self.details = details
+        super().__init__(message)
+
+
+def _masked_phone(phone):
+    return f'({phone[:2]}) *****-{phone[-4:]}' if phone else ''
+
+
+def _masked_document(document):
+    return f'***.***.***-{document[-2:]}' if document else None
+
+
+def customer_identity_payload(customer):
+    return {
+        'id': customer.pk,
+        'name': customer.name,
+        'phone': _masked_phone(customer.phone),
+        'document': _masked_document(customer.document),
+        'status': customer.status,
+    }
+
+
+def _identity_conflict(*, company, customer):
+    identities = Q()
+    if customer.phone:
+        identities |= Q(phone=customer.phone)
+    if customer.document:
+        identities |= Q(document=customer.document)
+    if not identities:
+        return None
+    matches = Customer.objects.select_for_update().filter(
+        company=company,
+    ).filter(identities)
+    if customer.pk:
+        matches = matches.exclude(pk=customer.pk)
+    return matches.filter(status='inactive').order_by('id').first() or matches.order_by('id').first()
+
+
+def _raise_identity_conflict(*, company, customer):
+    conflict = _identity_conflict(company=company, customer=customer)
+    if conflict is None:
+        return False
+    inactive = conflict.status == 'inactive'
+    raise CustomerIdentityConflict(
+        code='customer_inactive_identity_conflict' if inactive else 'customer_identity_conflict',
+        message=(
+            'Cliente cadastrado, porém inativo.' if inactive
+            else 'Já existe um cliente cadastrado com este telefone ou CPF.'
+        ),
+        details={'customer': customer_identity_payload(conflict)},
+    )
+
+
 def prepare_customer(*, company, customer=None, **attributes):
     """Apply Customer's canonical normalization and validation before persistence."""
     customer = customer or Customer(company=company)
@@ -54,26 +112,42 @@ def prepare_customer(*, company, customer=None, **attributes):
     for field, value in attributes.items():
         if field in CUSTOMER_EDITABLE_FIELDS:
             setattr(customer, field, value)
-    customer.full_clean()
+    customer.full_clean(validate_constraints=False)
     return customer
 
 
 @transaction.atomic
 def create_customer(*, company, **attributes):
     customer = prepare_customer(company=company, **attributes)
-    customer.save()
+    _raise_identity_conflict(company=company, customer=customer)
+    try:
+        # The inner savepoint leaves the outer transaction usable after a concurrent insert.
+        with transaction.atomic():
+            customer.save()
+    except (ValidationError, IntegrityError):
+        _raise_identity_conflict(company=company, customer=customer)
+        raise
     return customer
 
 
 @transaction.atomic
 def update_customer(*, customer, **attributes):
     customer = prepare_customer(company=customer.company, customer=customer, **attributes)
-    customer.save()
+    _raise_identity_conflict(company=customer.company, customer=customer)
+    try:
+        with transaction.atomic():
+            customer.save()
+    except (ValidationError, IntegrityError):
+        _raise_identity_conflict(company=customer.company, customer=customer)
+        raise
     return customer
 
 
 @transaction.atomic
 def set_customer_status(*, customer, status):
+    customer = Customer.objects.select_for_update().get(
+        pk=customer.pk, company_id=customer.company_id,
+    )
     return update_customer(customer=customer, status=status)
 
 

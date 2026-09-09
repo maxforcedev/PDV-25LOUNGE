@@ -1835,6 +1835,8 @@ class _CustomerPickerDialog extends StatefulWidget {
 class _CustomerPickerDialogState extends State<_CustomerPickerDialog> {
   final _search = TextEditingController();
   List<QuickSaleCustomer> _customers = const [];
+  QuickSaleCustomer? _inactiveIdentity;
+  bool _canReactivate = false;
   bool _loading = true;
 
   @override
@@ -1851,12 +1853,22 @@ class _CustomerPickerDialogState extends State<_CustomerPickerDialog> {
 
   Future<void> _load() async {
     setState(() => _loading = true);
-    final customers = await widget.controller.quickSaleCustomers(_search.text);
+    final result = await widget.controller.quickSaleCustomers(_search.text);
     if (!mounted) return;
     setState(() {
-      _customers = customers ?? const [];
+      _customers = result?.customers ?? const [];
+      _inactiveIdentity = result?.inactiveIdentity;
+      _canReactivate = result?.canReactivate ?? false;
       _loading = false;
     });
+  }
+
+  Future<void> _reactivateInactiveCustomer() async {
+    final customer = _inactiveIdentity;
+    if (customer == null || !_canReactivate) return;
+    final active =
+        await widget.controller.activateQuickSaleCustomer(customer.id);
+    if (active != null && mounted) Navigator.of(context).pop(active);
   }
 
   Future<void> _create() async {
@@ -1883,6 +1895,24 @@ class _CustomerPickerDialogState extends State<_CustomerPickerDialog> {
               ),
             ),
             const SizedBox(height: 8),
+            if (_inactiveIdentity case final customer?)
+              Card(
+                child: ListTile(
+                  leading: const Icon(Icons.person_off_outlined),
+                  title: Text(customer.name),
+                  subtitle: Text([
+                    'Cliente inativo',
+                    if (customer.phone.isNotEmpty) customer.phone,
+                    if (customer.document.isNotEmpty) customer.document,
+                  ].join(' • ')),
+                  trailing: _canReactivate
+                      ? TextButton(
+                          onPressed: _reactivateInactiveCustomer,
+                          child: const Text('REATIVAR'),
+                        )
+                      : null,
+                ),
+              ),
             Expanded(
               child: _loading
                   ? const Center(child: CircularProgressIndicator())
@@ -1941,18 +1971,32 @@ class _CustomerCreateDialogState extends State<_CustomerCreateDialog> {
   }
 
   Future<void> _save() async {
-    if (_name.text.trim().isEmpty ||
-        _phone.text.trim().isEmpty ||
-        _document.text.trim().isEmpty ||
-        _saving) {
+    if (_name.text.trim().isEmpty || _phone.text.trim().isEmpty || _saving) {
       return;
     }
     setState(() => _saving = true);
-    final customer = await widget.controller.createQuickSaleCustomer(
-      name: _name.text.trim(),
-      phone: _phone.text.trim(),
-      document: _document.text.trim(),
-    );
+    QuickSaleCustomer? customer;
+    try {
+      customer = await widget.controller.createQuickSaleCustomer(
+        name: _name.text.trim(),
+        phone: _phone.text.trim(),
+        document: _document.text.trim(),
+      );
+    } on PosApiException catch (error) {
+      if (!mounted) return;
+      final payload = error.details['customer'];
+      if (payload is Map<String, dynamic>) {
+        customer = await showDialog<QuickSaleCustomer>(
+          context: context,
+          builder: (_) => _CustomerConflictDialog(
+            controller: widget.controller,
+            customer: QuickSaleCustomer.fromJson(payload),
+            inactive: error.code == 'customer_inactive_identity_conflict',
+            canReactivate: error.details['can_reactivate'] == true,
+          ),
+        );
+      }
+    }
     if (!mounted) return;
     setState(() => _saving = false);
     if (customer != null) Navigator.of(context).pop(customer);
@@ -1976,7 +2020,7 @@ class _CustomerCreateDialogState extends State<_CustomerCreateDialog> {
           TextField(
             controller: _document,
             keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'CPF *'),
+            decoration: const InputDecoration(labelText: 'CPF'),
           ),
         ]),
         actions: [
@@ -1988,6 +2032,64 @@ class _CustomerCreateDialogState extends State<_CustomerCreateDialog> {
             onPressed: _saving ? null : _save,
             child: Text(_saving ? 'SALVANDO...' : 'SALVAR'),
           ),
+        ],
+      );
+}
+
+class _CustomerConflictDialog extends StatelessWidget {
+  const _CustomerConflictDialog({
+    required this.controller,
+    required this.customer,
+    required this.inactive,
+    required this.canReactivate,
+  });
+
+  final AppController controller;
+  final QuickSaleCustomer customer;
+  final bool inactive;
+  final bool canReactivate;
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('CLIENTE JÁ CADASTRADO'),
+        content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(customer.name,
+                  style: const TextStyle(fontWeight: FontWeight.w700)),
+              if (customer.phone.isNotEmpty)
+                Text('Telefone: ${customer.phone}'),
+              if (customer.document.isNotEmpty)
+                Text('CPF: ${customer.document}'),
+              const SizedBox(height: 12),
+              Text(inactive
+                  ? canReactivate
+                      ? 'Este cliente está inativo.'
+                      : 'Cliente cadastrado, porém inativo. Você não possui permissão para reativá-lo.'
+                  : 'Este cliente já está ativo.'),
+            ]),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('CANCELAR'),
+          ),
+          if (inactive && canReactivate)
+            FilledButton(
+              onPressed: () async {
+                final active =
+                    await controller.activateQuickSaleCustomer(customer.id);
+                if (active != null && context.mounted) {
+                  Navigator.of(context).pop(active);
+                }
+              },
+              child: const Text('REATIVAR CLIENTE'),
+            )
+          else if (!inactive)
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(customer),
+              child: const Text('USAR CLIENTE'),
+            ),
         ],
       );
 }

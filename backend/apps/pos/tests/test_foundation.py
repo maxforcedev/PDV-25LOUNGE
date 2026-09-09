@@ -20,7 +20,9 @@ from apps.companies.models import (
     AccessProfile, Branch, FunctionalPermission, UserBranchAccess, UserCompanyAccess,
     UserPermissionBlock,
 )
-from apps.companies.services import create_branch_with_access, create_company_with_matrix
+from apps.companies.services import (
+    create_branch_with_access, create_company_with_matrix, create_customer, set_customer_status,
+)
 from apps.pos.models import (
     AuthenticationChallenge, BranchPOSSettings, POSDevice, POSDeviceSettings,
     POSOperatorPinAttempt, POSOperatorSession, POSRequestRateLimit,
@@ -77,12 +79,12 @@ class POSFoundationContractTests(SimpleTestCase):
 
 
 class POSQuickCustomerContractTests(SimpleTestCase):
-    def test_name_phone_and_cpf_are_required(self):
+    def test_name_and_phone_are_required_but_cpf_is_optional(self):
         serializer = POSCustomerSerializer(data={'name': 'Ana'})
 
         self.assertFalse(serializer.is_valid())
         self.assertIn('phone', serializer.errors)
-        self.assertIn('document', serializer.errors)
+        self.assertNotIn('document', serializer.errors)
 
 
 @override_settings(
@@ -566,6 +568,63 @@ class POSFoundationIntegrationTests(TestCase):
         )
         self.assertEqual(
             self.client.post(reverse('pos:customers'), {'name': 'Sem cadastro'}, format='json').status_code,
+            403,
+        )
+
+    def test_pos_inactive_customer_conflict_can_be_reactivated(self):
+        operator, _ = self.login_pos_operator()
+        customer = create_customer(
+            company=self.company, name='Cliente Inativo', phone='21999999999',
+        )
+        set_customer_status(customer=customer, status='inactive')
+
+        search = self.client.get(reverse('pos:customers'), {'q': '(21) 99999-9999'})
+        self.assertEqual(search.status_code, 200, search.data)
+        self.assertEqual(search.data['customers'], [])
+        self.assertEqual(search.data['inactive_identity']['customer']['id'], customer.pk)
+        self.assertTrue(search.data['inactive_identity']['can_reactivate'])
+
+        conflict = self.client.post(reverse('pos:customers'), {
+            'name': 'Novo Cliente', 'phone': '21999999999',
+        }, format='json')
+        self.assertEqual(conflict.status_code, 400, conflict.data)
+        self.assertEqual(conflict.data['code'], 'customer_inactive_identity_conflict')
+        self.assertTrue(conflict.data['details']['can_reactivate'])
+
+        activated = self.client.post(reverse('pos:customer-activate', args=[customer.pk]), format='json')
+        self.assertEqual(activated.status_code, 200, activated.data)
+        self.assertEqual(activated.data['id'], customer.pk)
+        self.assertTrue(AuditLog.objects.filter(
+            action='pos.customer.activated', object_id=str(customer.pk), actor=operator,
+        ).exists())
+
+        active_conflict = self.client.post(reverse('pos:customers'), {
+            'name': 'Outro Cliente', 'phone': '21999999999',
+        }, format='json')
+        self.assertEqual(active_conflict.status_code, 400, active_conflict.data)
+        self.assertEqual(active_conflict.data['code'], 'customer_identity_conflict')
+        self.assertEqual(active_conflict.data['details']['customer']['status'], 'active')
+
+    def test_pos_inactive_customer_conflict_cannot_be_reactivated_without_permission(self):
+        operator, _ = self.login_pos_operator()
+        customer = create_customer(
+            company=self.company, name='Cliente Inativo', phone='21999999999',
+        )
+        set_customer_status(customer=customer, status='inactive')
+        UserPermissionBlock.objects.create(
+            company=self.company, branch=None, user=operator,
+            permission=FunctionalPermission.objects.get(code='customers.change'),
+            created_by=self.owner,
+        )
+
+        conflict = self.client.post(reverse('pos:customers'), {
+            'name': 'Novo Cliente', 'phone': '21999999999',
+        }, format='json')
+        self.assertEqual(conflict.status_code, 400, conflict.data)
+        self.assertFalse(conflict.data['details']['can_reactivate'])
+        self.assertIn('não possui permissão', conflict.data['message'])
+        self.assertEqual(
+            self.client.post(reverse('pos:customer-activate', args=[customer.pk])).status_code,
             403,
         )
 

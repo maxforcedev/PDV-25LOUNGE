@@ -62,13 +62,14 @@ abstract class PosApi {
   });
   Future<List<QuickSaleCategory>> quickSaleCategories();
   Future<QuickSaleProduct> quickSaleBarcode(String barcode);
-  Future<List<QuickSaleCustomer>> quickSaleCustomers(String query);
+  Future<QuickSaleCustomerSearch> quickSaleCustomers(String query);
   Future<QuickSaleCustomer> createQuickSaleCustomer({
     required String name,
     String phone,
     String document,
     String email,
   });
+  Future<QuickSaleCustomer> activateQuickSaleCustomer(int customerId);
   Future<QuickSalePreview> quickSalePreview({
     required List<Map<String, dynamic>> items,
     required Map<String, dynamic> discount,
@@ -396,15 +397,12 @@ class HttpPosApi implements PosApi, PosCredentialCache {
           'GET', 'products/barcode/${Uri.encodeComponent(barcode)}/'));
 
   @override
-  Future<List<QuickSaleCustomer>> quickSaleCustomers(String query) async {
+  Future<QuickSaleCustomerSearch> quickSaleCustomers(String query) async {
     final suffix = query.trim().isEmpty
         ? ''
         : '?${Uri(queryParameters: {'q': query.trim()}).query}';
     final payload = await _request('GET', 'customers/$suffix');
-    return (payload['customers'] as List<dynamic>? ?? const [])
-        .cast<Map<String, dynamic>>()
-        .map(QuickSaleCustomer.fromJson)
-        .toList(growable: false);
+    return QuickSaleCustomerSearch.fromJson(payload);
   }
 
   @override
@@ -420,6 +418,14 @@ class HttpPosApi implements PosApi, PosCredentialCache {
         'document': document,
         'email': email,
       }));
+
+  @override
+  Future<QuickSaleCustomer> activateQuickSaleCustomer(int customerId) async =>
+      QuickSaleCustomer.fromJson(await _request(
+        'POST',
+        'customers/$customerId/activate/',
+        body: const {},
+      ));
 
   @override
   Future<QuickSalePreview> quickSalePreview({

@@ -184,6 +184,16 @@ def customer_search_queryset(*, company=None, companies=None, term='', active_on
     return queryset.filter(query)
 
 
+def inactive_customer_identity_match(company, term):
+    digits = re.sub(r'\D', '', (term or '').strip())
+    if not digits:
+        return None
+    return Customer.objects.filter(
+        company=company,
+        status=Status.INACTIVE,
+    ).filter(Q(phone=digits) | Q(document=digits)).order_by('id').first()
+
+
 def company_permission_codes(user, company_id, *, allow_pos_only=False,
                              allow_superuser=True):
     if not user.is_authenticated or not user.is_active:
