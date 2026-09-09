@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../cash/cash_models.dart';
@@ -122,6 +123,7 @@ class _TicketValidatorPageState extends State<TicketValidatorPage> {
                     final code = capture.barcodes.firstOrNull?.rawValue;
                     if (code == null || code.isEmpty) return;
                     _number.text = code;
+                    SystemSound.play(SystemSoundType.click);
                     _lookup(inputMethod: 'scan');
                   },
                 ))),

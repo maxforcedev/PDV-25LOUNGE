@@ -246,26 +246,43 @@ class _QuickSalePageState extends State<QuickSalePage> {
     if (mounted) _search.clear();
   }
 
-  Future<void> _scanBarcode(String barcode) async {
+  Future<bool> _scanBarcode(String barcode) async {
     final product = await widget.controller.quickSaleBarcode(barcode);
-    if (!mounted) return;
+    if (!mounted) return false;
     if (product == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('Produto não encontrado para este código de barras.')));
-      return;
+      return false;
     }
     await _addProduct(product);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('${product.name} adicionado ao carrinho.')));
     }
+    return product.canSell;
   }
 
-  Future<void> _openBarcodeScanner() => Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => ProductBarcodeScannerPage(onBarcode: _scanBarcode),
-        ),
-      );
+  String _scannerItemCount() {
+    final quantity = _cart.fold<double>(
+        0, (total, item) => total + (double.tryParse(item.quantity) ?? 0));
+    return quantity == quantity.roundToDouble()
+        ? quantity.toInt().toString()
+        : quantity.toStringAsFixed(3).replaceFirst(RegExp(r'0+$'), '');
+  }
+
+  Future<void> _openBarcodeScanner() async {
+    final showCart = await Navigator.of(context).push<bool>(MaterialPageRoute(
+      builder: (_) => ProductBarcodeScannerPage(
+        onBarcode: _scanBarcode,
+        cartListenable: _draft,
+        itemCount: _scannerItemCount,
+        total: () => formatMoney(_preview?.total ?? '0.00'),
+      ),
+    ));
+    if (showCart == true && mounted && MediaQuery.sizeOf(context).width < 900) {
+      await _showMobileCart();
+    }
+  }
 
   void _barcodeFromHid(String value) {
     if (RegExp(r'^\d+$').hasMatch(value.trim())) _barcode();
