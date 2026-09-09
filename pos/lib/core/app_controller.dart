@@ -578,6 +578,10 @@ class AppController extends ChangeNotifier {
     } on PosApiException catch (error) {
       if (error.code == 'customer_identity_conflict' ||
           error.code == 'customer_inactive_identity_conflict') {
+        if (error.details['customer'] is! Map<String, dynamic>) {
+          _handleApiError(error);
+          return null;
+        }
         rethrow;
       }
       _handleApiError(error);

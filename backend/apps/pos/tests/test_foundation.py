@@ -17,7 +17,7 @@ from apps.base.models import AuditLog
 from apps.cash.models import CashMovement, CashRegister
 from apps.cash.services import open_session
 from apps.companies.models import (
-    AccessProfile, Branch, FunctionalPermission, UserBranchAccess, UserCompanyAccess,
+    AccessProfile, Branch, Customer, FunctionalPermission, UserBranchAccess, UserCompanyAccess,
     UserPermissionBlock,
 )
 from apps.companies.services import (
@@ -560,6 +560,16 @@ class POSFoundationIntegrationTests(TestCase):
             self.client.get(reverse('pos:customers')).status_code,
             403,
         )
+        hidden_conflict = self.client.post(reverse('pos:customers'), {
+            'name': 'Outro Cliente', 'phone': '11999999999',
+        }, format='json')
+        self.assertEqual(hidden_conflict.status_code, 400, hidden_conflict.data)
+        self.assertEqual(hidden_conflict.data['code'], 'customer_identity_conflict')
+        self.assertEqual(hidden_conflict.data['details'], {})
+        self.assertEqual(
+            hidden_conflict.data['message'],
+            'Já existe um cliente cadastrado com este telefone ou CPF.',
+        )
         operator.permission_blocks.filter(permission__code='customers.view').delete()
         UserPermissionBlock.objects.create(
             company=self.company, branch=None, user=operator,
@@ -604,6 +614,32 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(active_conflict.status_code, 400, active_conflict.data)
         self.assertEqual(active_conflict.data['code'], 'customer_identity_conflict')
         self.assertEqual(active_conflict.data['details']['customer']['status'], 'active')
+
+        repeated_activation = self.client.post(
+            reverse('pos:customer-activate', args=[customer.pk]), format='json',
+        )
+        self.assertEqual(repeated_activation.status_code, 200, repeated_activation.data)
+        self.assertEqual(AuditLog.objects.filter(
+            action='pos.customer.activated', object_id=str(customer.pk), actor=operator,
+        ).count(), 1)
+
+    def test_pos_rejects_phone_and_cpf_that_belong_to_different_customers(self):
+        self.login_pos_operator()
+        create_customer(company=self.company, name='Cliente A', phone='21999999999')
+        create_customer(
+            company=self.company, name='Cliente B', phone='21888888888', document='52998224725',
+        )
+
+        conflict = self.client.post(reverse('pos:customers'), {
+            'name': 'Dados Cruzados',
+            'phone': '21999999999',
+            'document': '52998224725',
+        }, format='json')
+
+        self.assertEqual(conflict.status_code, 400, conflict.data)
+        self.assertEqual(conflict.data['code'], 'customer_identity_mismatch')
+        self.assertEqual(conflict.data['details'], {})
+        self.assertEqual(Customer.objects.filter(company=self.company).count(), 2)
 
     def test_pos_inactive_customer_conflict_cannot_be_reactivated_without_permission(self):
         operator, _ = self.login_pos_operator()

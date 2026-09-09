@@ -1,6 +1,5 @@
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, models, transaction
-from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounts.models import User
@@ -73,24 +72,39 @@ def customer_identity_payload(customer):
     }
 
 
-def _identity_conflict(*, company, customer):
-    identities = Q()
-    if customer.phone:
-        identities |= Q(phone=customer.phone)
-    if customer.document:
-        identities |= Q(document=customer.document)
-    if not identities:
-        return None
-    matches = Customer.objects.select_for_update().filter(
-        company=company,
-    ).filter(identities)
+def _identity_conflicts(*, company, customer):
+    matches = Customer.objects.select_for_update().filter(company=company)
     if customer.pk:
         matches = matches.exclude(pk=customer.pk)
-    return matches.filter(status='inactive').order_by('id').first() or matches.order_by('id').first()
+    phone_conflict = (
+        matches.filter(phone=customer.phone).order_by('id').first()
+        if customer.phone else None
+    )
+    document_conflict = (
+        matches.filter(document=customer.document).order_by('id').first()
+        if customer.document else None
+    )
+    return phone_conflict, document_conflict
 
 
 def _raise_identity_conflict(*, company, customer):
-    conflict = _identity_conflict(company=company, customer=customer)
+    phone_conflict, document_conflict = _identity_conflicts(
+        company=company, customer=customer,
+    )
+    if (
+        phone_conflict is not None
+        and document_conflict is not None
+        and phone_conflict.pk != document_conflict.pk
+    ):
+        raise CustomerIdentityConflict(
+            code='customer_identity_mismatch',
+            message=(
+                'O telefone e o CPF informados pertencem a clientes diferentes. '
+                'Verifique os dados antes de continuar.'
+            ),
+            details={},
+        )
+    conflict = phone_conflict or document_conflict
     if conflict is None:
         return False
     inactive = conflict.status == 'inactive'

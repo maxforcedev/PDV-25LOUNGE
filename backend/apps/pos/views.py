@@ -1,6 +1,7 @@
 from decimal import Decimal, InvalidOperation
 from time import perf_counter
 
+from django.db import transaction
 from django.db.models import Prefetch
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import Http404
@@ -530,6 +531,15 @@ class POSCustomersView(POSQuickSaleView):
         try:
             customer = serializer.save()
         except CustomerIdentityConflict as error:
+            if error.code == 'customer_identity_mismatch':
+                raise DomainValidationError(
+                    code=error.code, message=error.message,
+                ) from error
+            if 'customers.view' not in permissions:
+                raise DomainValidationError(
+                    code='customer_identity_conflict',
+                    message='Já existe um cliente cadastrado com este telefone ou CPF.',
+                ) from error
             details = {**error.details}
             if error.code == 'customer_inactive_identity_conflict':
                 details['can_reactivate'] = 'customers.change' in permissions
@@ -557,16 +567,21 @@ class POSCustomerActivateView(POSQuickSaleView):
         device, operator, permissions, _ = self.context(request)
         if 'customers.change' not in permissions:
             raise PermissionDenied('Você não possui permissão para reativar clientes nesta filial.')
-        customer = get_object_or_404(
-            Customer.objects.filter(company_id=device.branch.company_id), pk=customer_id,
-        )
-        before = model_snapshot(customer, ('status',))
-        customer = set_customer_status(customer=customer, status=Status.ACTIVE)
-        audit_log(
-            actor=operator, action='pos.customer.activated', obj=customer,
-            company=device.branch.company, branch=device.branch, before=before,
-            after=model_snapshot(customer, ('status',)),
-        )
+        with transaction.atomic():
+            customer = get_object_or_404(
+                Customer.objects.select_for_update().filter(
+                    company_id=device.branch.company_id,
+                ),
+                pk=customer_id,
+            )
+            if customer.status == Status.INACTIVE:
+                before = model_snapshot(customer, ('status',))
+                customer = set_customer_status(customer=customer, status=Status.ACTIVE)
+                audit_log(
+                    actor=operator, action='pos.customer.activated', obj=customer,
+                    company=device.branch.company, branch=device.branch, before=before,
+                    after=model_snapshot(customer, ('status',)),
+                )
         return Response(POSCustomerSerializer(customer).data)
 
 
