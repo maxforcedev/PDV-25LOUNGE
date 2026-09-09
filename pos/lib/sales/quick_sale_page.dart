@@ -89,6 +89,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
   int? _pendingAvailabilityGeneration;
   List<QuickSaleCartItem> _lastValidatedCart = const [];
   final List<_CartMutation> _pendingCartMutations = [];
+  final Map<String, Map<String, dynamic>> _cartShortages = {};
 
   List<QuickSaleCartItem> get _cart => _draft.cart;
   QuickSalePreview? get _preview => _draft.preview;
@@ -400,6 +401,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
   }
 
   void _applyCartMutation(_CartMutation mutation) {
+    _cartShortages.clear();
     _pendingCartMutations.add(mutation);
     _scheduleCartAvailability();
   }
@@ -428,6 +430,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
     _pendingPreview = null;
     _lastValidatedCart = const [];
     _pendingCartMutations.clear();
+    _cartShortages.clear();
     _draft.clearAfterSale();
   }
 
@@ -606,6 +609,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
         setState(() {
           _preview = preview;
           _loadingPreview = false;
+          _cartShortages.clear();
         });
       }
     } on PosApiException catch (error) {
@@ -622,6 +626,18 @@ class _QuickSalePageState extends State<QuickSalePage> {
           _cart
             ..clear()
             ..addAll(intent.rollbackCart!);
+        }
+        if (intent.rollbackCart == null) {
+          _cartShortages.clear();
+          for (final item in _cart) {
+            final shortage = availability.shortages.firstWhere(
+              (row) => row['product'] == item.product.id,
+              orElse: () => const <String, dynamic>{},
+            );
+            if (shortage.isNotEmpty) {
+              _cartShortages[item.clientItemId] = shortage;
+            }
+          }
         }
         _preview = null;
         _loadingPreview = false;
@@ -814,6 +830,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
         onClear: _clearCart,
         panel: () => _CartPanel(
           cart: _cart,
+          shortages: _cartShortages,
           preview: _preview,
           loadingPreview: _loadingPreview,
           discount: _discount,
@@ -898,6 +915,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
                       width: 420,
                       child: _CartPanel(
                         cart: _cart,
+                        shortages: _cartShortages,
                         preview: _preview,
                         loadingPreview: _loadingPreview,
                         discount: _discount,
@@ -1442,6 +1460,7 @@ class _ProductImage extends StatelessWidget {
 class _CartPanel extends StatelessWidget {
   const _CartPanel({
     required this.cart,
+    required this.shortages,
     required this.preview,
     required this.loadingPreview,
     required this.discount,
@@ -1458,6 +1477,7 @@ class _CartPanel extends StatelessWidget {
     required this.onCheckout,
   });
   final List<QuickSaleCartItem> cart;
+  final Map<String, Map<String, dynamic>> shortages;
   final QuickSalePreview? preview;
   final bool loadingPreview;
   final QuickSaleDiscountIntent discount;
@@ -1543,6 +1563,7 @@ class _CartPanel extends StatelessWidget {
                               itemBuilder: (context, index) {
                                 final item = cart[index];
                                 final details = _itemDetails(item);
+                                final shortage = shortages[item.clientItemId];
                                 final officialLine =
                                     preview?.itemFor(item.clientItemId);
                                 return InkWell(
@@ -1587,6 +1608,19 @@ class _CartPanel extends StatelessWidget {
                                         Text('Qtd. ${item.quantity}',
                                             style:
                                                 const TextStyle(fontSize: 12)),
+                                        if (shortage != null)
+                                          Padding(
+                                            padding:
+                                                const EdgeInsets.only(top: 4),
+                                            child: Text(
+                                              'Estoque disponível: ${shortage['available_quantity']} | No carrinho: ${item.quantity}',
+                                              style: const TextStyle(
+                                                color: Color(0xffb42318),
+                                                fontWeight: FontWeight.w700,
+                                                fontSize: 12,
+                                              ),
+                                            ),
+                                          ),
                                       ],
                                     ),
                                   ),
@@ -1944,7 +1978,7 @@ class _DiscountDialogState extends State<_DiscountDialog> {
                 suffixText: _type == 'percentage' ? '%' : null,
                 errorText: _value.text.isNotEmpty && !_valid
                     ? _type == 'amount' && widget.maximumAmount != null
-                        ? 'O desconto não pode exceder o valor da venda.'
+                        ? 'O desconto máximo disponível para esta venda é ${formatMoney(widget.maximumAmount!.toStringAsFixed(2))}.'
                         : 'Informe um valor válido.'
                     : null,
               ),
@@ -2645,10 +2679,10 @@ class _ItemEditorDialogState extends State<_ItemEditorDialog> {
 }
 
 class _PaymentDraft {
-  _PaymentDraft(this.method, {this.useRemaining = false})
+  _PaymentDraft({this.method, this.useRemaining = false})
       : amount = TextEditingController(),
         received = TextEditingController();
-  final QuickSalePaymentMethod method;
+  final QuickSalePaymentMethod? method;
   bool useRemaining;
   final TextEditingController amount;
   final TextEditingController received;
@@ -2689,20 +2723,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
   late int _sessionId = widget.options.cashSessions.first.id;
   bool _splitting = false;
   String? _paymentValidation;
-  late final List<_PaymentDraft> _payments = [
-    _PaymentDraft(
-      widget.options.paymentMethods.first,
-      useRemaining: widget.options.paymentMethods.first.code == 'cash',
-    ),
-  ];
-
-  @override
-  void initState() {
-    super.initState();
-    if (!_payments.first.useRemaining) {
-      _payments.first.amount.text = widget.preview.total;
-    }
-  }
+  late final List<_PaymentDraft> _payments = [_PaymentDraft()];
 
   @override
   void dispose() {
@@ -2745,14 +2766,17 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
   }
 
   String? get _paymentValidationMessage {
-    if (_payments.any((item) =>
-        item.method.code == 'cash' && item.received.text.trim().isEmpty)) {
-      return 'Informe o valor recebido em dinheiro.';
+    if (_payments.any((item) => item.method == null)) {
+      return 'Escolha uma forma de pagamento.';
     }
     if (_payments.any((item) =>
         !item.useRemaining &&
         (double.tryParse(item.amount.text.replaceAll(',', '.')) ?? 0) <= 0)) {
       return 'Informe um valor válido para cada pagamento.';
+    }
+    if (_payments.any((item) =>
+        item.method?.code == 'cash' && item.received.text.trim().isEmpty)) {
+      return 'Informe o valor recebido em dinheiro.';
     }
     if (_hasRemainingCash) {
       final remainingCash = _payments.firstWhere((item) => item.useRemaining);
@@ -2765,7 +2789,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
       return null;
     }
     for (final payment
-        in _payments.where((item) => item.method.code == 'cash')) {
+        in _payments.where((item) => item.method?.code == 'cash')) {
       if ((double.tryParse(payment.received.text.replaceAll(',', '.')) ?? 0) <
           _paymentAmount(payment)) {
         return 'O valor recebido é menor que o valor em dinheiro.';
@@ -2786,11 +2810,11 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
     }
     final payload = _payments
         .map((item) => <String, dynamic>{
-              'payment_method': item.method.id,
+              'payment_method': item.method!.id,
               'amount': item.useRemaining
                   ? 'remaining'
                   : item.amount.text.trim().replaceAll(',', '.'),
-              if (item.method.code == 'cash' &&
+              if (item.method!.code == 'cash' &&
                   item.received.text.trim().isNotEmpty)
                 'received_amount':
                     item.received.text.trim().replaceAll(',', '.'),
@@ -2802,7 +2826,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
   void _selectPaymentMethod(int index, QuickSalePaymentMethod method) {
     final previous = _payments[index];
     final next = _PaymentDraft(
-      method,
+      method: method,
       useRemaining: !_splitting && method.code == 'cash',
     );
     next.amount.text = previous.amount.text;
@@ -2826,248 +2850,473 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
         first.useRemaining = false;
         first.amount.text = _remaining.toStringAsFixed(2);
       }
-      _payments.add(_PaymentDraft(widget.options.paymentMethods.first));
+      _payments.add(_PaymentDraft());
       _splitting = true;
       _paymentValidation = null;
     });
   }
 
   void _addSplitPayment() => setState(() {
-        _payments.add(_PaymentDraft(widget.options.paymentMethods.first));
+        _payments.add(_PaymentDraft());
         _paymentValidation = null;
       });
 
   @override
   Widget build(BuildContext context) => Material(
-        color: Colors.white,
+        color: const Color(0xfff0f2f8),
         child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(children: [
-                    Text('Pagamento',
-                        style: Theme.of(context)
-                            .textTheme
-                            .headlineSmall
-                            ?.copyWith(fontWeight: FontWeight.w900)),
-                    const Spacer(),
-                    IconButton(
-                        onPressed: widget.finalizing
-                            ? null
-                            : () => Navigator.of(context).pop(),
-                        icon: const Icon(Icons.close)),
-                  ]),
-                  Text(formatMoney(widget.preview.total),
-                      style: const TextStyle(
-                          color: Color(0xff3454d1),
-                          fontSize: 30,
-                          fontWeight: FontWeight.w900)),
-                  const SizedBox(height: 12),
-                  if (widget.options.cashBindingMode == 'FLEXIBLE')
-                    SizedBox(
-                      height: 42,
-                      child:
-                          ListView(scrollDirection: Axis.horizontal, children: [
-                        for (final session in widget.options.cashSessions)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: ChoiceChip(
-                              label: Text(session.registerName),
-                              selected: session.id == _sessionId,
-                              selectedColor: const Color(0xff3454d1),
-                              labelStyle: TextStyle(
-                                  color: session.id == _sessionId
-                                      ? Colors.white
-                                      : const Color(0xff1e293b)),
-                              onSelected: widget.finalizing
-                                  ? null
-                                  : (_) =>
-                                      setState(() => _sessionId = session.id),
+          child: LayoutBuilder(builder: (context, constraints) {
+            final expanded =
+                constraints.maxWidth >= 960 && constraints.maxHeight >= 560;
+            final columns = constraints.maxWidth >= 520 ? 2 : 1;
+            final content = _paymentContent(columns);
+            return Padding(
+              padding: EdgeInsets.all(constraints.maxWidth < 520 ? 12 : 24),
+              child: Column(children: [
+                _header(),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 1180),
+                      child: expanded
+                          ? Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                  Expanded(
+                                      child: SingleChildScrollView(
+                                          child: content)),
+                                  const SizedBox(width: 24),
+                                  SizedBox(width: 330, child: _summary()),
+                                ])
+                          : SingleChildScrollView(
+                              child: Column(children: [
+                                content,
+                                const SizedBox(height: 16)
+                              ]),
                             ),
-                          ),
-                      ]),
-                    )
-                  else
-                    Text(
-                        'Caixa fixo: ${widget.options.fixedRegisterName ?? widget.options.cashSessions.first.registerName}'),
-                  const SizedBox(height: 12),
-                  Expanded(
-                    child: ListView(
-                      children: [
-                        for (var index = 0; index < _payments.length; index++)
-                          _paymentRow(index),
-                        OutlinedButton.icon(
-                          onPressed: widget.finalizing
-                              ? null
-                              : _splitting
-                                  ? _addSplitPayment
-                                  : _enableSplit,
-                          icon: const Icon(Icons.add),
-                          label: Text(_splitting
-                              ? 'ADICIONAR FORMA DE PAGAMENTO'
-                              : 'DIVIDIR PAGAMENTO'),
-                        ),
-                      ],
                     ),
                   ),
-                  const Divider(),
-                  if (_splitting) ...[
-                    _AmountRow(
-                        label: 'Pago', value: _entered.toStringAsFixed(2)),
-                    _AmountRow(
-                        label: 'Restante',
-                        value: _remaining.toStringAsFixed(2),
-                        strong: true),
-                  ],
-                  const SizedBox(height: 8),
-                  if (widget.error != null || _paymentValidation != null)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Text(widget.error ?? _paymentValidation!,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(color: Colors.red)),
-                    ),
-                  FilledButton(
-                    onPressed: widget.finalizing ? null : _submit,
-                    child: widget.finalizing
-                        ? const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              SizedBox(
-                                height: 18,
-                                width: 18,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              ),
-                              SizedBox(width: 10),
-                              Text('FINALIZANDO VENDA...'),
-                            ],
-                          )
-                        : Text(widget.error == null
-                            ? 'CONFIRMAR VENDA'
-                            : 'TENTAR NOVAMENTE'),
-                  ),
-                ]),
-          ),
+                ),
+                if (!expanded) _summary(),
+              ]),
+            );
+          }),
         ),
       );
 
-  Widget _paymentRow(int index) {
-    final payment = _payments[index];
-    return Card(
-        child: Padding(
-            padding: const EdgeInsets.all(8),
-            child: Column(children: [
-              Row(children: [
-                if (_splitting)
-                  Text('Pagamento ${index + 1}',
-                      style: const TextStyle(fontWeight: FontWeight.w800)),
-                const Spacer(),
-                if (_splitting && _payments.length > 1)
-                  IconButton(
-                      onPressed: widget.finalizing
-                          ? null
-                          : () => setState(() {
-                                _payments.removeAt(index).dispose();
-                              }),
-                      icon: const Icon(Icons.remove_circle_outline)),
-              ]),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final method in widget.options.paymentMethods)
-                    ChoiceChip(
-                      label: Text(_paymentMethodName(method)),
-                      selected: payment.method.id == method.id,
-                      selectedColor: const Color(0xff3454d1),
-                      labelStyle: TextStyle(
-                          color: payment.method.id == method.id
-                              ? Colors.white
-                              : const Color(0xff1e293b),
-                          fontWeight: FontWeight.w800),
-                      onSelected: widget.finalizing
-                          ? null
-                          : (_) => _selectPaymentMethod(index, method),
-                    ),
-                ],
+  Widget _header() => Row(children: [
+        IconButton(
+          tooltip: 'Voltar',
+          onPressed:
+              widget.finalizing ? null : () => Navigator.of(context).pop(),
+          icon: const Icon(Icons.arrow_back),
+        ),
+        const SizedBox(width: 4),
+        const Expanded(
+          child:
+              Text('PAGAMENTO', style: TextStyle(fontWeight: FontWeight.w900)),
+        ),
+        Text(formatMoney(widget.preview.total),
+            style: const TextStyle(
+                color: Color(0xff3454d1),
+                fontSize: 20,
+                fontWeight: FontWeight.w900)),
+        IconButton(
+          tooltip: 'Fechar',
+          onPressed:
+              widget.finalizing ? null : () => Navigator.of(context).pop(),
+          icon: const Icon(Icons.close),
+        ),
+      ]);
+
+  Widget _paymentContent(int columns) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (widget.options.cashBindingMode == 'FLEXIBLE') _cashSessions(),
+          if (widget.options.cashBindingMode != 'FLEXIBLE')
+            Text(
+                'Caixa: ${widget.options.fixedRegisterName ?? widget.options.cashSessions.first.registerName}'),
+          const SizedBox(height: 16),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 180),
+            child: _splitting
+                ? Column(
+                    key: const ValueKey('split'),
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                        const Text('PAGAMENTO DIVIDIDO',
+                            style: TextStyle(fontWeight: FontWeight.w900)),
+                        const SizedBox(height: 8),
+                        _splitTotals(),
+                        const SizedBox(height: 12),
+                        for (var index = 0; index < _payments.length; index++)
+                          _paymentRow(index, columns),
+                        OutlinedButton.icon(
+                          onPressed:
+                              widget.finalizing ? null : _addSplitPayment,
+                          icon: const Icon(Icons.add),
+                          label: const Text('ADICIONAR FORMA'),
+                        ),
+                      ])
+                : Column(
+                    key: const ValueKey('single'),
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                        const Text('FORMA DE PAGAMENTO',
+                            style: TextStyle(fontWeight: FontWeight.w900)),
+                        const SizedBox(height: 12),
+                        _methodPicker(0, columns),
+                        if (_payments.first.method != null) ...[
+                          const SizedBox(height: 16),
+                          _singlePaymentDetails(_payments.first),
+                        ],
+                        const SizedBox(height: 16),
+                        TextButton.icon(
+                          onPressed: widget.finalizing ? null : _enableSplit,
+                          icon: const Icon(Icons.call_split),
+                          label: const Text('DIVIDIR PAGAMENTO'),
+                        ),
+                      ]),
+          ),
+        ],
+      );
+
+  Widget _cashSessions() => SizedBox(
+        height: 42,
+        child: ListView(scrollDirection: Axis.horizontal, children: [
+          for (final session in widget.options.cashSessions)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ChoiceChip(
+                label: Text(session.registerName),
+                selected: session.id == _sessionId,
+                selectedColor: const Color(0xff3454d1),
+                onSelected: widget.finalizing
+                    ? null
+                    : (_) => setState(() => _sessionId = session.id),
               ),
-              const SizedBox(height: 8),
-              Row(children: [
+            ),
+        ]),
+      );
+
+  Widget _methodPicker(int index, int columns) => GridView.count(
+        crossAxisCount: columns,
+        crossAxisSpacing: 12,
+        mainAxisSpacing: 12,
+        childAspectRatio: columns == 1 ? 4.2 : 2.7,
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        children: [
+          for (final method in widget.options.paymentMethods)
+            _PaymentMethodCard(
+              method: method,
+              selected: _payments[index].method?.id == method.id,
+              enabled: !widget.finalizing,
+              onTap: () => _selectPaymentMethod(index, method),
+            ),
+        ],
+      );
+
+  Widget _singlePaymentDetails(_PaymentDraft payment) {
+    final method = payment.method!;
+    return Card(
+      elevation: 0,
+      color: Colors.white,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: method.code == 'cash'
+            ? _cashPanel(payment)
+            : Row(children: [
+                Icon(_paymentIcon(method), color: const Color(0xff3454d1)),
+                const SizedBox(width: 12),
                 Expanded(
-                    child: payment.useRemaining
-                        ? Text(_splitting
-                            ? 'Usará o restante: ${formatMoney(_remaining.toStringAsFixed(2))}'
-                            : 'Pagamento: ${formatMoney(_remaining.toStringAsFixed(2))}')
-                        : !_splitting
-                            ? Text(
-                                'Pagamento: ${formatMoney(_paymentAmount(payment).toStringAsFixed(2))}')
-                            : TextField(
-                                controller: payment.amount,
-                                enabled: !widget.finalizing,
-                                onChanged: (_) =>
-                                    setState(() => _paymentValidation = null),
-                                keyboardType:
-                                    const TextInputType.numberWithOptions(
-                                        decimal: true),
-                                decoration: const InputDecoration(
-                                    labelText: 'Valor', prefixText: 'R\$ '))),
-                if (_splitting && payment.method.code == 'cash')
-                  TextButton(
-                      onPressed: widget.finalizing
-                          ? null
-                          : () => setState(() =>
-                              payment.useRemaining = !payment.useRemaining),
-                      child: Text(payment.useRemaining
-                          ? 'INFORMAR VALOR'
-                          : 'USAR RESTANTE')),
+                    child: Text(_paymentMethodName(method),
+                        style: const TextStyle(fontWeight: FontWeight.w800))),
+                Text(formatMoney(widget.preview.total),
+                    style: const TextStyle(
+                        fontSize: 18, fontWeight: FontWeight.w900)),
               ]),
-              if (payment.method.code == 'cash')
-                TextField(
-                    controller: payment.received,
-                    enabled: !widget.finalizing,
-                    onChanged: (_) => setState(() => _paymentValidation = null),
-                    keyboardType:
-                        const TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(
-                        labelText: 'Valor recebido', prefixText: 'R\$ ')),
-              if (payment.method.code == 'cash') ...[
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    ActionChip(
-                      label: const Text('VALOR EXATO'),
-                      onPressed:
-                          widget.finalizing || _paymentAmount(payment) <= 0
-                              ? null
-                              : () => _setCashReceived(
-                                  payment, _paymentAmount(payment)),
-                    ),
-                    for (final value in _cashSuggestions(payment))
-                      ActionChip(
-                        label: Text('R\$ $value'),
-                        onPressed: widget.finalizing
-                            ? null
-                            : () => _setCashReceived(payment, value.toDouble()),
-                      ),
-                  ],
-                ),
-              ],
-              if (payment.method.code == 'cash' &&
-                  payment.received.text.trim().isNotEmpty)
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    'Troco previsto: ${formatMoney(((double.tryParse(payment.received.text.replaceAll(',', '.')) ?? 0) - (payment.useRemaining ? _remaining : (double.tryParse(payment.amount.text.replaceAll(',', '.')) ?? 0))).clamp(0, double.infinity).toDouble().toStringAsFixed(2))}',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ),
-            ])));
+      ),
+    );
   }
+
+  Widget _splitTotals() => DecoratedBox(
+        decoration: BoxDecoration(
+            color: Colors.white, borderRadius: BorderRadius.circular(12)),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(children: [
+            Expanded(child: _amountText('Total', _total)),
+            Expanded(child: _amountText('Pago', _entered)),
+            Expanded(child: _amountText('Restante', _remaining, strong: true)),
+          ]),
+        ),
+      );
+
+  Widget _amountText(String label, double value, {bool strong = false}) =>
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label,
+              style: const TextStyle(fontSize: 12, color: Color(0xff526173))),
+          Text(formatMoney(value.toStringAsFixed(2)),
+              style: TextStyle(
+                  fontWeight: strong ? FontWeight.w900 : FontWeight.w700)),
+        ],
+      );
+
+  Widget _paymentRow(int index, int columns) {
+    final payment = _payments[index];
+    final method = payment.method;
+    if (method == null) {
+      return Card(
+        elevation: 0,
+        color: Colors.white,
+        margin: const EdgeInsets.only(bottom: 12),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Text('Pagamento ${index + 1}: escolha a forma',
+                style: const TextStyle(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 12),
+            _methodPicker(index, columns),
+          ]),
+        ),
+      );
+    }
+    return Card(
+      elevation: 0,
+      color: Colors.white,
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child:
+            Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Row(children: [
+            Icon(_paymentIcon(method), color: const Color(0xff3454d1)),
+            const SizedBox(width: 8),
+            Expanded(
+                child: Text(_paymentMethodName(method),
+                    style: const TextStyle(fontWeight: FontWeight.w900))),
+            IconButton(
+              tooltip: 'Remover pagamento',
+              onPressed: widget.finalizing || _payments.length == 1
+                  ? null
+                  : () => setState(() => _payments.removeAt(index).dispose()),
+              icon: const Icon(Icons.close),
+            ),
+          ]),
+          if (method.code != 'cash')
+            TextField(
+              controller: payment.amount,
+              enabled: !widget.finalizing,
+              onChanged: (_) => setState(() => _paymentValidation = null),
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                  labelText: 'Valor aplicado', prefixText: 'R\$ '),
+            ),
+          if (method.code == 'cash') ...[
+            TextField(
+              controller: payment.amount,
+              enabled: !widget.finalizing,
+              onChanged: (_) => setState(() => _paymentValidation = null),
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                  labelText: 'Valor aplicado', prefixText: 'R\$ '),
+            ),
+            const SizedBox(height: 12),
+            _cashPanel(payment),
+          ],
+        ]),
+      ),
+    );
+  }
+
+  Widget _cashPanel(_PaymentDraft payment) {
+    final due = _paymentAmount(payment);
+    final received =
+        double.tryParse(payment.received.text.replaceAll(',', '.')) ?? 0;
+    final difference = received - due;
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Text('TOTAL ${formatMoney(due.toStringAsFixed(2))}',
+          style: const TextStyle(fontWeight: FontWeight.w900)),
+      const SizedBox(height: 8),
+      TextField(
+        controller: payment.received,
+        enabled: !widget.finalizing,
+        onChanged: (_) => setState(() => _paymentValidation = null),
+        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        decoration: const InputDecoration(
+          labelText: 'VALOR RECEBIDO',
+          prefixText: 'R\$ ',
+        ),
+      ),
+      const SizedBox(height: 10),
+      Wrap(spacing: 8, runSpacing: 8, children: [
+        _QuickAmountButton(
+          label: 'EXATO',
+          onTap: widget.finalizing || due <= 0
+              ? null
+              : () => _setCashReceived(payment, due),
+        ),
+        for (final value in _cashSuggestions(payment))
+          _QuickAmountButton(
+            label: 'R\$ $value',
+            onTap: widget.finalizing
+                ? null
+                : () => _setCashReceived(payment, value.toDouble()),
+          ),
+      ]),
+      if (payment.received.text.trim().isNotEmpty) ...[
+        const SizedBox(height: 12),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            color: difference >= 0
+                ? const Color(0xffeaf7ef)
+                : const Color(0xfffff1f0),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Text(
+              difference >= 0
+                  ? 'TROCO  ${formatMoney(difference.toStringAsFixed(2))}'
+                  : 'FALTAM  ${formatMoney((-difference).toStringAsFixed(2))}',
+              style: TextStyle(
+                color: difference >= 0
+                    ? const Color(0xff16803c)
+                    : const Color(0xffb42318),
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+        ),
+      ],
+    ]);
+  }
+
+  Widget _summary() => DecoratedBox(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border.all(color: const Color(0xffe2e8f0)),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            const Text('RESUMO', style: TextStyle(fontWeight: FontWeight.w900)),
+            const SizedBox(height: 12),
+            _AmountRow(
+                label: 'Total', value: widget.preview.total, strong: true),
+            if (_splitting) ...[
+              _AmountRow(label: 'Pago', value: _entered.toStringAsFixed(2)),
+              _AmountRow(
+                  label: 'Restante',
+                  value: _remaining.toStringAsFixed(2),
+                  strong: true),
+            ],
+            if (widget.error != null || _paymentValidation != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: Text(widget.error ?? _paymentValidation!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        color: Color(0xffb42318), fontWeight: FontWeight.w700)),
+              ),
+            const SizedBox(height: 16),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(58),
+                  backgroundColor: const Color(0xff3454d1)),
+              onPressed: widget.finalizing ? null : _submit,
+              child: widget.finalizing
+                  ? const Row(mainAxisSize: MainAxisSize.min, children: [
+                      SizedBox(
+                          height: 18,
+                          width: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2)),
+                      SizedBox(width: 10),
+                      Text('FINALIZANDO...'),
+                    ])
+                  : Column(mainAxisSize: MainAxisSize.min, children: [
+                      const Text('CONFIRMAR VENDA'),
+                      Text(formatMoney(widget.preview.total)),
+                    ]),
+            ),
+          ]),
+        ),
+      );
+
+  IconData _paymentIcon(QuickSalePaymentMethod method) => switch (method.code) {
+        'cash' => Icons.payments_outlined,
+        'pix' => Icons.qr_code_2,
+        _ => Icons.credit_card,
+      };
+}
+
+class _PaymentMethodCard extends StatelessWidget {
+  const _PaymentMethodCard(
+      {required this.method,
+      required this.selected,
+      required this.enabled,
+      required this.onTap});
+  final QuickSalePaymentMethod method;
+  final bool selected;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Material(
+        color: selected ? const Color(0xff3454d1) : Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          onTap: enabled ? onTap : null,
+          borderRadius: BorderRadius.circular(14),
+          child: Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                  color: selected
+                      ? const Color(0xff3454d1)
+                      : const Color(0xffe2e8f0),
+                  width: selected ? 2 : 1),
+            ),
+            child: Row(children: [
+              Icon(
+                  switch (method.code) {
+                    'cash' => Icons.payments_outlined,
+                    'pix' => Icons.qr_code_2,
+                    _ => Icons.credit_card,
+                  },
+                  color: selected ? Colors.white : const Color(0xff283c50)),
+              const SizedBox(width: 10),
+              Expanded(
+                  child: Text(_paymentMethodName(method),
+                      style: TextStyle(
+                          color:
+                              selected ? Colors.white : const Color(0xff283c50),
+                          fontWeight: FontWeight.w800))),
+              if (selected) const Icon(Icons.check_circle, color: Colors.white),
+            ]),
+          ),
+        ),
+      );
+}
+
+class _QuickAmountButton extends StatelessWidget {
+  const _QuickAmountButton({required this.label, required this.onTap});
+  final String label;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) =>
+      OutlinedButton(onPressed: onTap, child: Text(label));
 }
 
 class _SaleSuccessPage extends StatelessWidget {
