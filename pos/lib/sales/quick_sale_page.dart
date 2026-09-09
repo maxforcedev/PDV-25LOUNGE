@@ -254,12 +254,12 @@ class _QuickSalePageState extends State<QuickSalePage> {
           content: Text('Produto não encontrado para este código de barras.')));
       return false;
     }
-    await _addProduct(product);
-    if (mounted) {
+    final added = await _addProduct(product);
+    if (added && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('${product.name} adicionado ao carrinho.')));
     }
-    return product.canSell;
+    return added;
   }
 
   String _scannerItemCount() {
@@ -359,12 +359,12 @@ class _QuickSalePageState extends State<QuickSalePage> {
     ));
   }
 
-  Future<void> _addProduct(QuickSaleProduct product,
+  Future<bool> _addProduct(QuickSaleProduct product,
       {String quantity = '1'}) async {
     widget.controller.logPosAction('cart_add');
     if (!product.canSell) {
       _showCatalogStockUnavailable();
-      return;
+      return false;
     }
     final item = QuickSaleCartItem(
       clientItemId: createIdempotencyKey(),
@@ -372,8 +372,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
       quantity: quantity,
     );
     if (_requiresConfiguration(product)) {
-      await _editProduct(product, initial: item);
-      return;
+      return _editProduct(product, initial: item);
     }
     final effectiveCart =
         _replayCartMutations(_lastValidatedCart, _pendingCartMutations);
@@ -386,7 +385,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
         .firstOrNull;
     if (existing == null) {
       _applyCartMutation(_CartMutation.add(item));
-      return;
+      return true;
     }
     final currentQuantity = double.tryParse(existing.quantity) ?? 0;
     final addedQuantity = double.tryParse(quantity) ?? 0;
@@ -398,6 +397,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
               ? '${mergedQuantity.toInt()}'
               : mergedQuantity.toStringAsFixed(3)),
     ));
+    return true;
   }
 
   Future<void> _addProductBatch(QuickSaleProduct product) async {
@@ -423,7 +423,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
     _applyCartMutation(_CartMutation.add(item));
   }
 
-  Future<void> _editProduct(
+  Future<bool> _editProduct(
     QuickSaleProduct product, {
     int? index,
     QuickSaleCartItem? initial,
@@ -438,10 +438,11 @@ class _QuickSalePageState extends State<QuickSalePage> {
         initial: current,
       ),
     );
-    if (!mounted || item == null) return;
+    if (!mounted || item == null) return false;
     _applyCartMutation(index == null
         ? _CartMutation.add(item)
         : _CartMutation.replace(current!.clientItemId, item));
+    return true;
   }
 
   Future<void> _editCartItem(int index) async {

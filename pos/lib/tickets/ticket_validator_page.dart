@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../cash/cash_models.dart';
 import '../core/app_controller.dart';
+import '../scanner/scanner_beep.dart';
 import 'ticket_models.dart';
 
 class TicketValidatorPage extends StatefulWidget {
@@ -123,7 +123,7 @@ class _TicketValidatorPageState extends State<TicketValidatorPage> {
                     final code = capture.barcodes.firstOrNull?.rawValue;
                     if (code == null || code.isEmpty) return;
                     _number.text = code;
-                    SystemSound.play(SystemSoundType.click);
+                    ScannerBeep.play();
                     _lookup(inputMethod: 'scan');
                   },
                 ))),

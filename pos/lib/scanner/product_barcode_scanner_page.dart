@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import 'barcode_cooldown.dart';
+import 'scanner_beep.dart';
 
 class ProductBarcodeScannerPage extends StatefulWidget {
   const ProductBarcodeScannerPage({
@@ -53,7 +53,7 @@ class _ProductBarcodeScannerPageState extends State<ProductBarcodeScannerPage> {
           ? 'Produto adicionado. Aponte para o próximo código.'
           : 'Produto não encontrado. Aponte para o próximo código.';
     });
-    if (accepted) SystemSound.play(SystemSoundType.click);
+    if (accepted) ScannerBeep.play();
     await WidgetsBinding.instance.endOfFrame;
     if (mounted &&
         !_processing &&
@@ -141,7 +141,8 @@ class _ProductBarcodeScannerPageState extends State<ProductBarcodeScannerPage> {
                           const Icon(Icons.shopping_cart_rounded),
                           const SizedBox(width: 10),
                           Expanded(
-                              child: Text('${widget.itemCount()} itens',
+                              child: Text(
+                                  '${widget.itemCount()} ${widget.itemCount() == '1' ? 'item' : 'itens'}',
                                   style: const TextStyle(
                                       fontWeight: FontWeight.w800))),
                           Text(widget.total(),
