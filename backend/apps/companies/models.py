@@ -184,12 +184,12 @@ class Customer(BaseModel):
         constraints = [
             models.UniqueConstraint(
                 fields=('company', 'phone'),
-                condition=Q(status=Status.ACTIVE) & ~Q(phone=''),
-                name='companies_customer_company_phone_active_unique',
+                condition=~Q(phone=''),
+                name='companies_customer_company_phone_unique',
             ),
             models.UniqueConstraint(
                 fields=('company', 'document'),
-                condition=Q(status=Status.ACTIVE) & Q(document__isnull=False),
+                condition=Q(document__isnull=False),
                 name='companies_customer_company_document_unique',
             ),
         ]

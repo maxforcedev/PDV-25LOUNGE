@@ -30,6 +30,7 @@ from apps.pos.services import (
     create_pin_reset_token, effective_settings, pairing_channels, set_pos_pin,
     version_gate,
 )
+from apps.pos.serializers import POSCustomerSerializer
 from apps.inventory.models import Stock
 from apps.products.models import Category, InventoryBehavior, Product, ProductBranchConfig, Unit
 from apps.sales.services import ensure_default_payment_methods
@@ -73,6 +74,15 @@ class POSFoundationContractTests(SimpleTestCase):
             'update_available': True,
             'update_required': False,
         })
+
+
+class POSQuickCustomerContractTests(SimpleTestCase):
+    def test_name_phone_and_cpf_are_required(self):
+        serializer = POSCustomerSerializer(data={'name': 'Ana'})
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('phone', serializer.errors)
+        self.assertIn('document', serializer.errors)
 
 
 @override_settings(
@@ -524,10 +534,14 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertTrue(effective_settings(device)['show_out_of_stock_products'])
 
     def test_pos_customer_search_and_creation_are_scoped_to_device_company(self):
-        _, _ = self.login_pos_operator()
+        operator, _ = self.login_pos_operator()
 
         created = self.client.post(
-            reverse('pos:customers'), {'name': 'Cliente POS', 'phone': '11999999999'},
+            reverse('pos:customers'), {
+                'name': 'Cliente POS',
+                'phone': '11999999999',
+                'document': '52998224725',
+            },
             format='json',
         )
         found = self.client.get(reverse('pos:customers'), {'q': 'Cliente POS'})
@@ -536,7 +550,7 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(found.status_code, 200, found.data)
         self.assertEqual(found.data['customers'], [created.data])
         UserPermissionBlock.objects.create(
-            company=self.company, branch=self.branch, user=operator,
+            company=self.company, branch=None, user=operator,
             permission=FunctionalPermission.objects.get(code='customers.view'),
             created_by=self.owner,
         )
@@ -546,7 +560,7 @@ class POSFoundationIntegrationTests(TestCase):
         )
         operator.permission_blocks.filter(permission__code='customers.view').delete()
         UserPermissionBlock.objects.create(
-            company=self.company, branch=self.branch, user=operator,
+            company=self.company, branch=None, user=operator,
             permission=FunctionalPermission.objects.get(code='customers.add'),
             created_by=self.owner,
         )

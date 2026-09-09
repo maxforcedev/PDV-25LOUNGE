@@ -42,7 +42,7 @@ from apps.inventory.models import (
 )
 from apps.production.models import Ticket, TicketStatus
 from apps.products.models import (
-    Category, Product, SalesChannel, Unit, InventoryBehavior,
+    Category, Product, ProductBranchConfig, SalesChannel, Unit, InventoryBehavior,
 )
 from apps.sales.models import (
     OperationType, Payment, Promotion, PromotionDiscountType, Sale, SaleItem, SaleStatus,
@@ -110,11 +110,16 @@ class Block6Fixture:
         settings.uses_counter = True
         settings.uses_consumption = True
         settings.save()
-        self.category = Category.objects.create(company=self.company, name='Bebidas')
+        self.category = Category.objects.create(
+            company=self.company, branch=self.branch, name='Bebidas',
+        )
         self.product = Product.objects.create(
             company=self.company, category=self.category, name='Cerveja',
             internal_code='CERV01', unit=Unit.UNIT, cost=Decimal('5.00'),
             sale_price=Decimal('10.00'), inventory_behavior=InventoryBehavior.DIRECT,
+        )
+        ProductBranchConfig.objects.create(
+            product=self.product, branch=self.branch, category=self.category,
         )
         set_stock(self.branch, self.product, '100', '5.00')
         self.cash_register = CashRegister.objects.create(branch=self.branch, name='Caixa 1')

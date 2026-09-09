@@ -182,6 +182,9 @@ class POSFinalizeSaleSerializer(POSSalePreviewSerializer):
 
 
 class POSCustomerSerializer(serializers.ModelSerializer):
+    phone = serializers.CharField(required=True, allow_blank=False, max_length=20)
+    document = serializers.CharField(required=True, allow_blank=False, max_length=20)
+
     class Meta:
         model = Customer
         fields = ('id', 'name', 'phone', 'document', 'email')

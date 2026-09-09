@@ -1941,7 +1941,12 @@ class _CustomerCreateDialogState extends State<_CustomerCreateDialog> {
   }
 
   Future<void> _save() async {
-    if (_name.text.trim().isEmpty || _saving) return;
+    if (_name.text.trim().isEmpty ||
+        _phone.text.trim().isEmpty ||
+        _document.text.trim().isEmpty ||
+        _saving) {
+      return;
+    }
     setState(() => _saving = true);
     final customer = await widget.controller.createQuickSaleCustomer(
       name: _name.text.trim(),
@@ -1966,12 +1971,12 @@ class _CustomerCreateDialogState extends State<_CustomerCreateDialog> {
           TextField(
             controller: _phone,
             keyboardType: TextInputType.phone,
-            decoration: const InputDecoration(labelText: 'Telefone'),
+            decoration: const InputDecoration(labelText: 'Telefone *'),
           ),
           TextField(
             controller: _document,
             keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'CPF'),
+            decoration: const InputDecoration(labelText: 'CPF *'),
           ),
         ]),
         actions: [
