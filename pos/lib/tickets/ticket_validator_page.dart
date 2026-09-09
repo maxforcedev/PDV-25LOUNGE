@@ -30,6 +30,7 @@ class _TicketValidatorPageState extends State<TicketValidatorPage> {
   String? _validationKey;
   String _inputMethod = 'manual';
   String? _redeemedNow;
+  bool _startingScanner = false;
 
   @override
   void dispose() {
@@ -281,7 +282,26 @@ class _TicketValidatorPageState extends State<TicketValidatorPage> {
       _inputMethod = 'manual';
       _state = _ValidatorState.scanning;
     });
-    await _scanner.start();
+    await _startScannerAfterFrame();
+  }
+
+  Future<void> _startScannerAfterFrame() async {
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted ||
+        _state != _ValidatorState.scanning ||
+        _startingScanner ||
+        _scanner.value.isRunning ||
+        _scanner.value.isStarting) {
+      return;
+    }
+    _startingScanner = true;
+    try {
+      await _scanner.start();
+    } on MobileScannerException {
+      // The preview's error builder handles denied or unavailable cameras.
+    } finally {
+      _startingScanner = false;
+    }
   }
 
   Widget _successPanel(TicketValidationTicket ticket) =>

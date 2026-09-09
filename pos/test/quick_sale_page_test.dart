@@ -225,7 +225,7 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    expect(find.text('Qtd. 1'), findsNWidgets(2));
+    expect(find.text('Qtd. 2'), findsOneWidget);
   });
 }
 

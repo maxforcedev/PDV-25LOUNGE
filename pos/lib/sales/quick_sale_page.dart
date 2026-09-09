@@ -6,6 +6,7 @@ import '../cash/cash_page.dart';
 import '../cash/cash_models.dart';
 import '../core/app_controller.dart';
 import '../network/pos_api_error.dart';
+import '../scanner/product_barcode_scanner_page.dart';
 import '../sync/sync_center_page.dart';
 import '../sync/sync_status_button.dart';
 import 'sale_models.dart';
@@ -245,6 +246,27 @@ class _QuickSalePageState extends State<QuickSalePage> {
     if (mounted) _search.clear();
   }
 
+  Future<void> _scanBarcode(String barcode) async {
+    final product = await widget.controller.quickSaleBarcode(barcode);
+    if (!mounted) return;
+    if (product == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Produto não encontrado para este código de barras.')));
+      return;
+    }
+    await _addProduct(product);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${product.name} adicionado ao carrinho.')));
+    }
+  }
+
+  Future<void> _openBarcodeScanner() => Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ProductBarcodeScannerPage(onBarcode: _scanBarcode),
+        ),
+      );
+
   void _barcodeFromHid(String value) {
     if (RegExp(r'^\d+$').hasMatch(value.trim())) _barcode();
   }
@@ -336,7 +358,29 @@ class _QuickSalePageState extends State<QuickSalePage> {
       await _editProduct(product, initial: item);
       return;
     }
-    _applyCartMutation(_CartMutation.add(item));
+    final effectiveCart =
+        _replayCartMutations(_lastValidatedCart, _pendingCartMutations);
+    final existing = effectiveCart
+        .where((entry) =>
+            entry.product.id == product.id &&
+            entry.modifiers.isEmpty &&
+            entry.notes.isEmpty &&
+            entry.discount.isZero)
+        .firstOrNull;
+    if (existing == null) {
+      _applyCartMutation(_CartMutation.add(item));
+      return;
+    }
+    final currentQuantity = double.tryParse(existing.quantity) ?? 0;
+    final addedQuantity = double.tryParse(quantity) ?? 0;
+    final mergedQuantity = currentQuantity + addedQuantity;
+    _applyCartMutation(_CartMutation.replace(
+      existing.clientItemId,
+      existing.copyWith(
+          quantity: mergedQuantity == mergedQuantity.roundToDouble()
+              ? '${mergedQuantity.toInt()}'
+              : mergedQuantity.toStringAsFixed(3)),
+    ));
   }
 
   Future<void> _addProductBatch(QuickSaleProduct product) async {
@@ -916,7 +960,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
                         _applyCatalogFilter();
                       });
                     },
-                    onBarcode: _barcode,
+                    onBarcode: _openBarcodeScanner,
                     onSearchSubmitted: _barcodeFromHid,
                     onProduct: _addProduct,
                     onProductLongPress: _addProductBatch,
