@@ -69,6 +69,7 @@ export const reportMenuPermissions = [
   permissions.viewProductsReport,
   permissions.viewSalesReport,
   permissions.viewCustomer,
+  permissions.viewTickets,
 ] as const;
 
 export function hasPermission(user: User | null, company: UserCompany | null, permission: string) {

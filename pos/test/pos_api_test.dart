@@ -22,6 +22,7 @@ void main() {
       }),
     );
 
+    await api.warmCredentials();
     await api.operators();
 
     expect(request.url.path, '/api/v1/pos/operators/');
@@ -41,7 +42,13 @@ void main() {
           'idempotency_key': 'key',
         });
         return http.Response(
-            jsonEncode({'mode': 'FLEXIBLE', 'enabled': true, 'registers': []}),
+            jsonEncode({
+              'cash_state': {
+                'mode': 'FLEXIBLE',
+                'enabled': true,
+                'registers': []
+              }
+            }),
             201);
       }),
     );
@@ -61,6 +68,7 @@ class _MemorySecretStore implements SecretStore {
 
   String? deviceCredential;
   String? operatorSession;
+  String? pendingSaleIntents;
 
   @override
   Future<void> clearDeviceCredential() async => deviceCredential = null;
@@ -75,10 +83,17 @@ class _MemorySecretStore implements SecretStore {
   Future<String?> readOperatorSession() async => operatorSession;
 
   @override
+  Future<String?> readPendingSaleIntents() async => pendingSaleIntents;
+
+  @override
   Future<void> writeDeviceCredential(String credential) async =>
       deviceCredential = credential;
 
   @override
   Future<void> writeOperatorSession(String token) async =>
       operatorSession = token;
+
+  @override
+  Future<void> writePendingSaleIntents(String value) async =>
+      pendingSaleIntents = value;
 }

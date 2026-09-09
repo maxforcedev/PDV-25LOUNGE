@@ -5,7 +5,7 @@ from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from django.db.models import (
-    Case, Count, DecimalField, ExpressionWrapper, F, Q, Sum, Value, When,
+    Case, Count, DecimalField, ExpressionWrapper, F, OuterRef, Q, Subquery, Sum, Value, When,
 )
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
@@ -46,12 +46,14 @@ from apps.inventory.models import (
     StockTransfer,
 )
 from apps.products.models import Category, Product
+from apps.pos.models import POSDevice
 from apps.purchases.models import (
     PayableInstallment,
     PayableInstallmentStatus,
     PurchaseOrder,
     PurchaseOrderStatus,
 )
+from apps.production.models import Ticket, TicketRedemption, TicketStatus
 from apps.sales.models import OperationType, Payment, PaymentMethod, Promotion, Sale, SaleItem, SaleStatus
 from apps.sales.serializers import readable_user_name
 from apps.suppliers.models import Supplier
@@ -117,6 +119,7 @@ from .serializers import (
     StockPositionReportSerializer,
     StockTransferReportSerializer,
     StockTransfersReportQuerySerializer,
+    TicketsReportQuerySerializer,
     WithdrawalReportSerializer,
     WithdrawalsReportQuerySerializer,
 )
@@ -3418,6 +3421,237 @@ class CommandsReportOptionsView(APIView):
                 ).distinct().order_by('name', 'id')
             ],
         })
+
+
+class TicketsReportView(BaseReportView):
+    """Operational ticket ledger, kept separate from commercial/financial reports."""
+
+    required_permission = 'tickets.view'
+    query_serializer_class = TicketsReportQuerySerializer
+    csv_filename = 'relatorio-tickets.csv'
+    csv_headers = (
+        'number', 'product_name', 'issued_quantity', 'redeemed_quantity',
+        'remaining_quantity', 'status', 'origin', 'last_redeemed_at',
+        'last_operator_name', 'last_device_name',
+    )
+
+    quantity_field = DecimalField(max_digits=14, decimal_places=3)
+
+    def get_queryset(self, request, filters, start, end):
+        end_exclusive = period_end_exclusive(end)
+        queryset = Ticket.objects.filter(
+            branch=request.branch_context,
+            issued_at__gte=start,
+            issued_at__lt=end_exclusive,
+        )
+        if filters.get('number'):
+            queryset = queryset.filter(number=filters['number'])
+        if filters.get('product'):
+            queryset = queryset.filter(
+                Q(source_sale_item__product_id=filters['product'])
+                | Q(source_order_item__product_id=filters['product'])
+            )
+        if filters.get('origin') == 'sale':
+            queryset = queryset.filter(source_sale_item__isnull=False)
+        elif filters.get('origin') == 'command':
+            queryset = queryset.filter(source_order_item__isnull=False)
+
+        matching_redemptions = TicketRedemption.objects.filter(ticket__branch=request.branch_context)
+        if filters.get('operator'):
+            matching_redemptions = matching_redemptions.filter(operator_id=filters['operator'])
+        if filters.get('device'):
+            matching_redemptions = matching_redemptions.filter(device_id=filters['device'])
+        if filters.get('input_method'):
+            matching_redemptions = matching_redemptions.filter(input_method=filters['input_method'])
+        if any(filters.get(key) for key in ('operator', 'device', 'input_method')):
+            queryset = queryset.filter(pk__in=matching_redemptions.values('ticket_id'))
+
+        if filters.get('status') == 'validated':
+            queryset = queryset.filter(pk__in=TicketRedemption.objects.filter(
+                ticket__branch=request.branch_context,
+            ).values('ticket_id'))
+        elif filters.get('status'):
+            queryset = queryset.filter(status=filters['status'])
+
+        redemption_totals = TicketRedemption.objects.filter(ticket_id=OuterRef('pk')).values(
+            'ticket_id'
+        ).annotate(total=Sum('quantity')).values('total')
+        return queryset.annotate(
+            redeemed_quantity=Coalesce(
+                Subquery(redemption_totals, output_field=self.quantity_field),
+                Value(Decimal('0.000'), output_field=self.quantity_field),
+                output_field=self.quantity_field,
+            )
+        ).select_related(
+            'source_sale_item__product',
+            'source_sale_item__sale',
+            'source_order_item__product',
+            'source_order_item__order__command',
+        ).prefetch_related(
+            'redemptions__operator', 'redemptions__device',
+        ).order_by('-issued_at', '-id')
+
+    @staticmethod
+    def _origin(ticket):
+        if ticket.source_sale_item_id:
+            sale = ticket.source_sale_item.sale
+            return 'sale', f'Venda #{sale.sale_number}'
+        command = ticket.source_order_item.order.command
+        return 'command', f'Comanda {command.command_number}'
+
+    @staticmethod
+    def _redemptions(ticket):
+        return sorted(ticket.redemptions.all(), key=lambda item: (item.redeemed_at, item.pk))
+
+    def _row(self, ticket, *, detail=False):
+        redemptions = self._redemptions(ticket)
+        latest = redemptions[-1] if redemptions else None
+        origin, origin_label = self._origin(ticket)
+        snapshot = ticket.identification_snapshot or {}
+        redeemed = ticket.redeemed_quantity
+        cancelled = ticket.status == TicketStatus.CANCELLED
+        remaining = Decimal('0.000') if cancelled else ticket.quantity - redeemed
+        row = {
+            'id': ticket.pk,
+            'number': ticket.number,
+            'product_name': snapshot.get('product_name', ''),
+            'unit': snapshot.get('unit', ''),
+            'issued_quantity': str(ticket.quantity),
+            'redeemed_quantity': str(redeemed),
+            'remaining_quantity': str(remaining),
+            'cancelled_quantity': str(ticket.quantity - redeemed) if cancelled else '0.000',
+            'status': ticket.status,
+            'issued_at': ticket.issued_at,
+            'cancelled_at': ticket.cancelled_at,
+            'origin': origin,
+            'origin_label': origin_label,
+            'last_redeemed_at': latest.redeemed_at if latest else None,
+            'last_operator_name': readable_user_name(latest.operator) if latest else '',
+            'last_device_name': latest.device.name if latest else '',
+        }
+        if detail:
+            row.update({
+                'modifiers': snapshot.get('modifiers', []),
+                'notes': snapshot.get('notes', ''),
+                'redemptions': [
+                    {
+                        'id': redemption.pk,
+                        'redeemed_at': redemption.redeemed_at,
+                        'quantity': str(redemption.quantity),
+                        'operator_name': readable_user_name(redemption.operator),
+                        'device_name': redemption.device.name,
+                        'input_method': redemption.input_method,
+                    }
+                    for redemption in redemptions
+                ],
+            })
+        return row
+
+    def serialize_rows(self, rows, request):
+        return [self._row(ticket) for ticket in rows]
+
+    def _summary(self, queryset):
+        ticket_ids = queryset.values('pk')
+        totals = queryset.aggregate(
+            tickets_issued=Count('pk'),
+            tickets_partially_used=Count('pk', filter=Q(status=TicketStatus.PARTIALLY_USED)),
+            tickets_used=Count('pk', filter=Q(status=TicketStatus.USED)),
+            issued_quantity=Coalesce(Sum('quantity'), Value(Decimal('0.000'), output_field=self.quantity_field)),
+            available_quantity=Coalesce(Sum(
+                Case(
+                    When(status=TicketStatus.CANCELLED, then=Value(Decimal('0.000'), output_field=self.quantity_field)),
+                    default=F('quantity'), output_field=self.quantity_field,
+                )
+            ), Value(Decimal('0.000'), output_field=self.quantity_field)),
+            cancelled_quantity=Coalesce(Sum(
+                Case(
+                    When(status=TicketStatus.CANCELLED, then=F('quantity')),
+                    default=Value(Decimal('0.000'), output_field=self.quantity_field),
+                    output_field=self.quantity_field,
+                )
+            ), Value(Decimal('0.000'), output_field=self.quantity_field)),
+        )
+        redemption_totals = TicketRedemption.objects.filter(ticket_id__in=ticket_ids).aggregate(
+            redeemed=Coalesce(Sum('quantity'), Value(Decimal('0.000'), output_field=self.quantity_field)),
+            redeemed_non_cancelled=Coalesce(Sum('quantity', filter=~Q(ticket__status=TicketStatus.CANCELLED)), Value(Decimal('0.000'), output_field=self.quantity_field)),
+            redeemed_cancelled=Coalesce(Sum('quantity', filter=Q(ticket__status=TicketStatus.CANCELLED)), Value(Decimal('0.000'), output_field=self.quantity_field)),
+        )
+        return {
+            'tickets_issued': totals['tickets_issued'],
+            'tickets_validated': Ticket.objects.filter(pk__in=ticket_ids).filter(
+                pk__in=TicketRedemption.objects.filter(ticket_id__in=ticket_ids).values('ticket_id')
+            ).count(),
+            'tickets_partially_used': totals['tickets_partially_used'],
+            'tickets_used': totals['tickets_used'],
+            'issued_quantity': str(totals['issued_quantity']),
+            'redeemed_quantity': str(redemption_totals['redeemed']),
+            'available_quantity': str(totals['available_quantity'] - redemption_totals['redeemed_non_cancelled']),
+            'cancelled_quantity': str(totals['cancelled_quantity'] - redemption_totals['redeemed_cancelled']),
+        }
+
+    def get(self, request):
+        filters, start, end = self.parse_query(request)
+        queryset = self.get_queryset(request, filters, start, end)
+        return self.respond(
+            request,
+            rows=queryset,
+            period=canonical_datetime_range(start, end),
+            summary=self._summary(queryset),
+        )
+
+
+class TicketsReportOptionsView(APIView):
+    permission_classes = (ReportsPermission,)
+    required_permission = 'tickets.view'
+
+    def get(self, request):
+        branch = request.branch_context
+        product_ids = Ticket.objects.filter(branch=branch).values_list(
+            'source_sale_item__product_id', flat=True
+        ).union(Ticket.objects.filter(branch=branch).values_list(
+            'source_order_item__product_id', flat=True
+        ))
+        return Response({
+            'products': [
+                {'id': product.pk, 'name': product.name, 'historical': product.status != 'active'}
+                for product in Product.objects.filter(pk__in=product_ids).order_by('name', 'id')
+            ],
+            'operators': [
+                {'id': user.pk, 'name': readable_user_name(user)}
+                for user in User.objects.filter(
+                    ticket_redemptions__ticket__branch=branch,
+                ).distinct().order_by('first_name', 'last_name', 'email', 'id')
+            ],
+            'devices': [
+                {'id': str(device.pk), 'name': device.name}
+                for device in POSDevice.objects.filter(
+                    ticket_redemptions__ticket__branch=branch,
+                ).distinct().order_by('name', 'id')
+            ],
+        })
+
+
+class TicketReportDetailView(TicketsReportView):
+    """Returns the redemption ledger only after an operator explicitly opens a ticket."""
+
+    def get(self, request, pk):
+        redemption_totals = TicketRedemption.objects.filter(ticket_id=OuterRef('pk')).values(
+            'ticket_id'
+        ).annotate(total=Sum('quantity')).values('total')
+        try:
+            ticket = Ticket.objects.filter(branch=request.branch_context).annotate(
+                redeemed_quantity=Coalesce(
+                    Subquery(redemption_totals, output_field=self.quantity_field),
+                    Value(Decimal('0.000'), output_field=self.quantity_field),
+                    output_field=self.quantity_field,
+                )
+            ).select_related(
+                'source_sale_item__product', 'source_sale_item__sale',
+                'source_order_item__product', 'source_order_item__order__command',
+            ).prefetch_related('redemptions__operator', 'redemptions__device').get(pk=pk)
+        except Ticket.DoesNotExist:
+            raise ValidationError({'detail': 'Ticket não encontrado na filial atual.'})
+        return Response(self._row(ticket, detail=True))
 
 
 class CommandsReportView(BaseReportView):

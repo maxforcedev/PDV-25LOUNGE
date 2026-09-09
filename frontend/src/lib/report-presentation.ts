@@ -70,6 +70,7 @@ export const reportGroups: readonly ReportCenterGroup[] = [
       { href: "/relatorios/mesas-comandas", label: "Mesas e comandas", permission: "commands.view" },
       { href: "/relatorios/promocoes", label: "Promoções", permission: "reports.view_products" },
       { href: "/relatorios/modificadores", label: "Modificadores", permission: "reports.view_products" },
+      { href: "/relatorios/tickets", label: "Tickets", permission: "tickets.view" },
       {
         href: "/relatorios/clientes", label: "Clientes", permission: "customers.view",
         requiredPermissions: ["reports.view_sales"],

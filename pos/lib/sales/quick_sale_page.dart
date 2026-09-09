@@ -230,11 +230,23 @@ class _QuickSalePageState extends State<QuickSalePage> {
     if (mounted) await _loadCheckoutOptions();
   }
 
-  Future<void> _barcode() async {
+  Future<void> _barcode({bool showNotFound = true}) async {
     final barcode = _search.text.trim();
     if (barcode.isEmpty) return;
     final product = await widget.controller.quickSaleBarcode(barcode);
-    if (product != null && mounted) await _addProduct(product);
+    if (!mounted) return;
+    if (product == null) {
+      if (!showNotFound) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Produto não encontrado para este código de barras.')));
+      return;
+    }
+    await _addProduct(product);
+    if (mounted) _search.clear();
+  }
+
+  void _barcodeFromHid(String value) {
+    if (RegExp(r'^\d+$').hasMatch(value.trim())) _barcode();
   }
 
   bool _requiresConfiguration(QuickSaleProduct product) =>
@@ -905,6 +917,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
                       });
                     },
                     onBarcode: _barcode,
+                    onSearchSubmitted: _barcodeFromHid,
                     onProduct: _addProduct,
                     onProductLongPress: _addProductBatch,
                   );
@@ -1226,6 +1239,7 @@ class _CatalogPanel extends StatelessWidget {
     required this.onCategory,
     required this.onFavorites,
     required this.onBarcode,
+    required this.onSearchSubmitted,
     required this.onProduct,
     required this.onProductLongPress,
   });
@@ -1238,6 +1252,7 @@ class _CatalogPanel extends StatelessWidget {
   final ValueChanged<int?> onCategory;
   final VoidCallback onFavorites;
   final VoidCallback onBarcode;
+  final ValueChanged<String> onSearchSubmitted;
   final ValueChanged<QuickSaleProduct> onProduct;
   final ValueChanged<QuickSaleProduct> onProductLongPress;
 
@@ -1249,8 +1264,9 @@ class _CatalogPanel extends StatelessWidget {
             Expanded(
                 child: TextField(
               controller: search,
+              onSubmitted: onSearchSubmitted,
               decoration: const InputDecoration(
-                labelText: 'Buscar produto ou código',
+                labelText: 'Produto, código ou código de barras',
                 prefixIcon: Icon(Icons.search_rounded),
               ),
             )),

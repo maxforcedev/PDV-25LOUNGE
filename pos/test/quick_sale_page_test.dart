@@ -104,7 +104,8 @@ void main() {
     expect(find.text('Coca'), findsNWidgets(2));
     expect(find.text('Guarana'), findsNWidgets(2));
     expect(find.text('Agua'), findsOneWidget);
-    expect(find.textContaining('Quantidade indisponível'), findsOneWidget);
+    expect(
+        find.textContaining('não possui estoque suficiente'), findsOneWidget);
     expect(api.previewCalls, 1);
   });
 
@@ -174,7 +175,8 @@ void main() {
     expect(find.text('Qtd. 2'), findsNothing);
     expect(find.text('Agua'), findsNWidgets(2));
     expect(find.text('Suco'), findsNWidgets(2));
-    expect(find.textContaining('Quantidade indisponível'), findsOneWidget);
+    expect(
+        find.textContaining('não possui estoque suficiente'), findsOneWidget);
   });
 
   testWidgets('non-enforced availability never rolls back an optimistic tap',

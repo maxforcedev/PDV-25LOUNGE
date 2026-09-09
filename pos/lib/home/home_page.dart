@@ -220,7 +220,11 @@ class _ModuleCard extends StatelessWidget {
                     ?.copyWith(fontWeight: FontWeight.w700)),
             const SizedBox(height: 4),
             Text(
-                module.key == 'quick_sale' ? 'Catálogo e checkout' : 'Em breve',
+                module.key == 'quick_sale'
+                    ? 'Catálogo e checkout'
+                    : module.key == 'ticket_validator'
+                        ? 'Escaneie e registre retiradas'
+                        : 'Em breve',
                 style: const TextStyle(color: Color(0xff64748b), fontSize: 12)),
           ]),
         ),

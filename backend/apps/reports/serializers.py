@@ -18,6 +18,7 @@ from apps.inventory.models import (
 from apps.inventory.content import content_breakdown
 from apps.inventory.serializers import StockMovementSerializer
 from apps.products.models import Category, Product, SalesChannel
+from apps.pos.models import POSDevice
 from apps.sales.models import OperationType, Payment, PaymentMethod, Promotion, Sale, SaleItem, SaleStatus
 from apps.sales.serializers import readable_user_name
 from apps.suppliers.models import Supplier
@@ -26,6 +27,7 @@ from apps.purchases.models import (
     PurchaseOrderStatus,
     PurchaseOrderType,
 )
+from apps.production.models import TicketStatus
 
 
 class BaseReportQuerySerializer(serializers.Serializer):
@@ -62,6 +64,7 @@ class BaseReportQuerySerializer(serializers.Serializer):
             'customer': Customer.objects.filter(company_id=branch.company_id),
             'supplier': Supplier.objects.filter(branch=branch),
             'table': Table.objects.filter(branch=branch),
+            'device': POSDevice.objects.filter(branch=branch),
         }
         errors = {}
         for field in fields:
@@ -283,6 +286,21 @@ class CommandsReportQuerySerializer(BaseReportQuerySerializer):
         return self.validate_scoped_ids(
             attrs, ('table', 'customer', 'operator', 'payment_method')
         )
+
+
+class TicketsReportQuerySerializer(BaseReportQuerySerializer):
+    number = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    status = serializers.ChoiceField(
+        choices=(*TicketStatus.values, 'validated'), required=False,
+    )
+    product = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    operator = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    device = serializers.UUIDField(required=False)
+    origin = serializers.ChoiceField(choices=('sale', 'command'), required=False)
+    input_method = serializers.ChoiceField(choices=('scan', 'manual'), required=False)
+
+    def validate(self, attrs):
+        return self.validate_scoped_ids(attrs, ('product', 'operator', 'device'))
 
 
 class CommercialComplementsReportQuerySerializer(BaseReportQuerySerializer):
