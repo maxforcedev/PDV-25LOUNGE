@@ -3439,11 +3439,17 @@ class TicketsReportView(BaseReportView):
 
     def get_queryset(self, request, filters, start, end):
         end_exclusive = period_end_exclusive(end)
-        queryset = Ticket.objects.filter(
-            branch=request.branch_context,
-            issued_at__gte=start,
-            issued_at__lt=end_exclusive,
-        )
+        queryset = Ticket.objects.filter(branch=request.branch_context)
+        if filters['date_basis'] == 'redeemed':
+            queryset = queryset.filter(
+                redemptions__redeemed_at__gte=start,
+                redemptions__redeemed_at__lt=end_exclusive,
+            ).distinct()
+        else:
+            queryset = queryset.filter(
+                issued_at__gte=start,
+                issued_at__lt=end_exclusive,
+            )
         if filters.get('number'):
             queryset = queryset.filter(number=filters['number'])
         if filters.get('product'):
@@ -3595,7 +3601,10 @@ class TicketsReportView(BaseReportView):
         return self.respond(
             request,
             rows=queryset,
-            period=canonical_datetime_range(start, end),
+            period={
+                **canonical_datetime_range(start, end),
+                'date_basis': filters['date_basis'],
+            },
             summary=self._summary(queryset),
         )
 

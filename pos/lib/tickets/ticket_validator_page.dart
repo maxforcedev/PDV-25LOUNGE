@@ -24,6 +24,7 @@ enum _ValidatorState {
 
 class _TicketValidatorPageState extends State<TicketValidatorPage> {
   final _number = TextEditingController();
+  final _fractionalQuantity = TextEditingController();
   final _scanner = MobileScannerController();
   TicketValidationTicket? _ticket;
   String _quantity = '1.000';
@@ -31,11 +32,13 @@ class _TicketValidatorPageState extends State<TicketValidatorPage> {
   String? _validationKey;
   String _inputMethod = 'manual';
   String? _redeemedNow;
+  String? _validationCode;
   bool _startingScanner = false;
 
   @override
   void dispose() {
     _number.dispose();
+    _fractionalQuantity.dispose();
     _scanner.dispose();
     super.dispose();
   }
@@ -47,21 +50,28 @@ class _TicketValidatorPageState extends State<TicketValidatorPage> {
             _state == _ValidatorState.error)) {
       return;
     }
+    final ticketNumber = int.tryParse(value);
+    if (inputMethod == 'manual' && ticketNumber == null) {
+      setState(() => _state = _ValidatorState.error);
+      return;
+    }
     setState(() {
       _state = _ValidatorState.lookingUp;
       _inputMethod = inputMethod;
+      _validationCode = inputMethod == 'scan' ? value : null;
     });
     await _scanner.stop();
     final result = await widget.controller.lookupTicket(
-      ticketNumber: int.tryParse(value),
-      validationCode: int.tryParse(value) == null ? value : null,
+      ticketNumber: inputMethod == 'manual' ? ticketNumber : null,
+      validationCode: inputMethod == 'scan' ? value : null,
     );
     if (mounted) {
       setState(() {
         _state =
             result == null ? _ValidatorState.error : _ValidatorState.reviewing;
         _ticket = result?.ticket;
-        _quantity = '1.000';
+        _quantity = _initialQuantity(result?.ticket);
+        _fractionalQuantity.text = _quantity;
         _validationKey = null;
       });
     }
@@ -72,7 +82,8 @@ class _TicketValidatorPageState extends State<TicketValidatorPage> {
     if (ticket == null || _state != _ValidatorState.reviewing) return;
     setState(() => _state = _ValidatorState.validating);
     final result = await widget.controller.validateTicket(
-      ticketNumber: ticket.number,
+      validationCode: _inputMethod == 'scan' ? _validationCode : null,
+      ticketNumber: _inputMethod == 'manual' ? ticket.number : null,
       quantity: _quantity,
       idempotencyKey: _validationKey ??= createIdempotencyKey(),
       inputMethod: _inputMethod,
@@ -162,6 +173,9 @@ class _TicketValidatorPageState extends State<TicketValidatorPage> {
   Widget _ticketPanel(TicketValidationTicket ticket) {
     final blocked = !ticket.redeemable;
     final remaining = double.tryParse(ticket.redeemableQuantity) ?? 0;
+    final fractional = ticket.unit.toLowerCase() != 'un';
+    final requested = double.tryParse(_quantity.replaceAll(',', '.')) ?? 0;
+    final validQuantity = requested > 0 && requested <= remaining;
     return DecoratedBox(
       decoration: BoxDecoration(
           color: Colors.white,
@@ -204,8 +218,8 @@ class _TicketValidatorPageState extends State<TicketValidatorPage> {
               const SizedBox(height: 18),
               const Text('ADICIONAIS',
                   style: TextStyle(fontWeight: FontWeight.w900)),
-              ...ticket.modifiers.map((item) =>
-                  Text('• ${item['name'] ?? item['option_name'] ?? ''}'))
+              ...ticket.modifiers.map((item) => Text(
+                  '• ${_modifierQuantity(item)}x ${item['option_name'] ?? item['name'] ?? ''}'))
             ],
             if (ticket.notes.isNotEmpty) ...[
               const SizedBox(height: 16),
@@ -237,31 +251,45 @@ class _TicketValidatorPageState extends State<TicketValidatorPage> {
                   textAlign: TextAlign.center,
                   style: TextStyle(fontWeight: FontWeight.w900)),
               const SizedBox(height: 8),
-              Row(children: [
-                IconButton(
-                    onPressed: _decrementQuantity,
-                    icon: const Icon(Icons.remove_circle_outline)),
-                Expanded(
-                    child: Text(_quantityText(_quantity),
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                            fontSize: 24, fontWeight: FontWeight.w900))),
-                IconButton(
-                    onPressed: () => _incrementQuantity(remaining),
-                    icon: const Icon(Icons.add_circle_outline))
-              ]),
+              if (fractional)
+                TextField(
+                    controller: _fractionalQuantity,
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    onChanged: (value) =>
+                        setState(() => _quantity = value.replaceAll(',', '.')),
+                    decoration: InputDecoration(
+                        labelText:
+                            'Quantidade (máx. ${_quantityText(ticket.redeemableQuantity)})'))
+              else
+                Row(children: [
+                  IconButton(
+                      onPressed: _decrementQuantity,
+                      icon: const Icon(Icons.remove_circle_outline)),
+                  Expanded(
+                      child: Text(_quantityText(_quantity),
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                              fontSize: 24, fontWeight: FontWeight.w900))),
+                  IconButton(
+                      onPressed: () => _incrementQuantity(remaining),
+                      icon: const Icon(Icons.add_circle_outline))
+                ]),
               const SizedBox(height: 8),
               FilledButton(
                   onPressed:
-                      _state == _ValidatorState.reviewing ? _validate : null,
+                      _state == _ValidatorState.reviewing && validQuantity
+                          ? _validate
+                          : null,
                   child: Text(_state == _ValidatorState.validating
                       ? 'REGISTRANDO...'
                       : 'ENTREGAR ${_quantityText(_quantity)}')),
-              if (remaining > 1)
+              if (remaining > 1 || fractional)
                 OutlinedButton(
                     onPressed: () {
                       setState(() {
                         _quantity = ticket.redeemableQuantity;
+                        _fractionalQuantity.text = _quantity;
                       });
                     },
                     child: Text(
@@ -279,7 +307,9 @@ class _TicketValidatorPageState extends State<TicketValidatorPage> {
       _ticket = null;
       _number.clear();
       _quantity = '1.000';
+      _fractionalQuantity.text = _quantity;
       _validationKey = null;
+      _validationCode = null;
       _redeemedNow = null;
       _inputMethod = 'manual';
       _state = _ValidatorState.scanning;
@@ -332,6 +362,14 @@ class _TicketValidatorPageState extends State<TicketValidatorPage> {
       ]);
 
   String _ticketNumber(int number) => '#${number.toString().padLeft(4, '0')}';
+  String _initialQuantity(TicketValidationTicket? ticket) {
+    final remaining = double.tryParse(ticket?.redeemableQuantity ?? '') ?? 0;
+    if (ticket?.unit.toLowerCase() != 'un') {
+      return ticket?.redeemableQuantity ?? '0.000';
+    }
+    return remaining < 1 ? remaining.toStringAsFixed(3) : '1.000';
+  }
+
   String _quantityText(String value) => value
       .replaceFirst(RegExp(r'\.0+$'), '')
       .replaceFirst(RegExp(r'(\.\d*?)0+$'), r'$1')
@@ -343,6 +381,8 @@ class _TicketValidatorPageState extends State<TicketValidatorPage> {
         'cancelled' => 'CANCELADO',
         _ => status
       };
+  String _modifierQuantity(Map<String, dynamic> item) => _quantityText(
+      '${item['selected_quantity'] ?? item['quantity'] ?? '1.000'}');
   Widget _quantityLine(String label, String value) => Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(children: [

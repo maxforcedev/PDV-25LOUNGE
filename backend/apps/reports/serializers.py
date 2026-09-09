@@ -289,6 +289,9 @@ class CommandsReportQuerySerializer(BaseReportQuerySerializer):
 
 
 class TicketsReportQuerySerializer(BaseReportQuerySerializer):
+    date_basis = serializers.ChoiceField(
+        choices=('issued', 'redeemed'), required=False, default='issued',
+    )
     number = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
     status = serializers.ChoiceField(
         choices=(*TicketStatus.values, 'validated'), required=False,
