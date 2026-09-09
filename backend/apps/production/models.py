@@ -143,6 +143,7 @@ class PrintJob(BaseModel):
 
 class TicketStatus(models.TextChoices):
     ISSUED = 'issued', 'Emitido'
+    PARTIALLY_USED = 'partially_used', 'Parcialmente utilizado'
     USED = 'used', 'Utilizado'
     CANCELLED = 'cancelled', 'Cancelado'
 
@@ -153,8 +154,9 @@ class Ticket(BaseModel):
     source_sale_item = models.OneToOneField('sales.SaleItem', on_delete=models.PROTECT, related_name='sale_ticket', null=True, blank=True)
     source_order_item = models.OneToOneField('commands.OrderItem', on_delete=models.PROTECT, related_name='order_ticket', null=True, blank=True)
     number = models.PositiveIntegerField()
+    validation_code = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True, editable=False)
     quantity = models.DecimalField(max_digits=14, decimal_places=3)
-    status = models.CharField(max_length=10, choices=TicketStatus.choices, default=TicketStatus.ISSUED)
+    status = models.CharField(max_length=14, choices=TicketStatus.choices, default=TicketStatus.ISSUED)
     issued_at = models.DateTimeField()
     used_at = models.DateTimeField(null=True, blank=True)
     cancelled_at = models.DateTimeField(null=True, blank=True)
@@ -170,4 +172,27 @@ class Ticket(BaseModel):
                 condition=(Q(source_sale_item__isnull=False, source_order_item__isnull=True) | Q(source_sale_item__isnull=True, source_order_item__isnull=False)),
                 name='production_ticket_exactly_one_source',
             ),
+        ]
+
+
+class TicketRedemptionInputMethod(models.TextChoices):
+    SCAN = 'scan', 'Scanner'
+    MANUAL = 'manual', 'Manual'
+
+
+class TicketRedemption(BaseModel):
+    ticket = models.ForeignKey(Ticket, on_delete=models.PROTECT, related_name='redemptions')
+    quantity = models.DecimalField(max_digits=14, decimal_places=3)
+    operator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='ticket_redemptions')
+    device = models.ForeignKey('pos.POSDevice', on_delete=models.PROTECT, related_name='ticket_redemptions')
+    redeemed_at = models.DateTimeField()
+    idempotency_key = models.UUIDField()
+    request_fingerprint = models.CharField(max_length=64)
+    input_method = models.CharField(max_length=10, choices=TicketRedemptionInputMethod.choices)
+
+    class Meta:
+        ordering = ('redeemed_at', 'id')
+        constraints = [
+            models.CheckConstraint(condition=Q(quantity__gt=0), name='production_ticket_redemption_quantity_positive'),
+            models.UniqueConstraint(fields=('ticket', 'idempotency_key'), name='production_ticket_redemption_idempotency_unique'),
         ]

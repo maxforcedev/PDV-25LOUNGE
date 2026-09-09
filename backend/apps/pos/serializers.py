@@ -184,3 +184,28 @@ class POSCustomerSerializer(serializers.ModelSerializer):
         model = Customer
         fields = ('id', 'name', 'phone', 'document', 'email')
         read_only_fields = ('id',)
+
+
+class POSTicketLookupSerializer(serializers.Serializer):
+    validation_code = serializers.UUIDField(required=False)
+    ticket_number = serializers.IntegerField(min_value=1, required=False)
+
+    def validate(self, attrs):
+        if len(attrs) != 1:
+            raise serializers.ValidationError('Informe validation_code ou ticket_number.')
+        return attrs
+
+
+class POSTicketValidateSerializer(POSTicketLookupSerializer):
+    quantity = serializers.DecimalField(max_digits=14, decimal_places=3, min_value=Decimal('0.001'))
+    idempotency_key = serializers.UUIDField()
+    input_method = serializers.ChoiceField(choices=('scan', 'manual'), required=False)
+
+    def validate(self, attrs):
+        identifier = {key: value for key, value in attrs.items() if key in {'validation_code', 'ticket_number'}}
+        if len(identifier) != 1:
+            raise serializers.ValidationError('Informe validation_code ou ticket_number.')
+        attrs['input_method'] = attrs.get('input_method') or (
+            'scan' if 'validation_code' in attrs else 'manual'
+        )
+        return attrs

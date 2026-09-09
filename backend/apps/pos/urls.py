@@ -11,6 +11,7 @@ from .views import (
     POSCustomersView, POSSaleAvailabilityView, POSSaleCheckoutOptionsView, POSSalePreviewView,
     POSDiscountAuthorizersView, POSDiscountAuthorizationValidationView,
     POSItemDiscountAuthorizersView, POSServiceFeeAuthorizersView,
+    POSTicketLookupView, POSTicketValidateView,
 )
 
 app_name = 'pos'
@@ -43,6 +44,8 @@ urlpatterns = [
     path('sales/discount-authorizations/validate/', POSDiscountAuthorizationValidationView.as_view(), name='sale-discount-authorization-validate'),
     path('sales/checkout-options/', POSSaleCheckoutOptionsView.as_view(), name='sale-checkout-options'),
     path('sales/', POSFinalizeSaleView.as_view(), name='sale-finalize'),
+    path('tickets/lookup/', POSTicketLookupView.as_view(), name='ticket-lookup'),
+    path('tickets/validate/', POSTicketValidateView.as_view(), name='ticket-validate'),
     path('heartbeat/', HeartbeatView.as_view(), name='heartbeat'),
     path('pin/confirm/', PinConfirmView.as_view(), name='pin-confirm'),
 ]

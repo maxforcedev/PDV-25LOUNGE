@@ -10,6 +10,7 @@ import '../cash/cash_models.dart';
 import '../pairing/pairing_models.dart';
 import '../sales/sale_models.dart';
 import '../storage/secret_store.dart';
+import '../tickets/ticket_models.dart';
 import 'pos_api_error.dart';
 
 final _posDebugClock = Stopwatch()..start();
@@ -96,6 +97,14 @@ abstract class PosApi {
     Map<String, dynamic>? itemDiscountAuthorization,
     Map<String, dynamic>? serviceFeeAuthorization,
   });
+  Future<TicketValidationResult> lookupTicket(
+      {String? validationCode, int? ticketNumber});
+  Future<TicketValidationResult> validateTicket(
+      {String? validationCode,
+      int? ticketNumber,
+      required String quantity,
+      required String idempotencyKey,
+      required String inputMethod});
 }
 
 abstract interface class PosCredentialCache {
@@ -502,5 +511,30 @@ class HttpPosApi implements PosApi, PosCredentialCache {
           'item_discount_authorization': itemDiscountAuthorization,
         if (serviceFeeAuthorization != null)
           'service_fee_authorization': serviceFeeAuthorization,
+      }));
+
+  @override
+  Future<TicketValidationResult> lookupTicket(
+          {String? validationCode, int? ticketNumber}) async =>
+      TicketValidationResult.fromJson(
+          await _request('POST', 'tickets/lookup/', body: {
+        if (validationCode != null) 'validation_code': validationCode,
+        if (ticketNumber != null) 'ticket_number': ticketNumber,
+      }));
+
+  @override
+  Future<TicketValidationResult> validateTicket(
+          {String? validationCode,
+          int? ticketNumber,
+          required String quantity,
+          required String idempotencyKey,
+          required String inputMethod}) async =>
+      TicketValidationResult.fromJson(
+          await _request('POST', 'tickets/validate/', body: {
+        if (validationCode != null) 'validation_code': validationCode,
+        if (ticketNumber != null) 'ticket_number': ticketNumber,
+        'quantity': quantity,
+        'idempotency_key': idempotencyKey,
+        'input_method': inputMethod,
       }));
 }

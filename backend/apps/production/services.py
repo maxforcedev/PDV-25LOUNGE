@@ -1,17 +1,21 @@
 import uuid
+from decimal import Decimal
+from hashlib import sha256
+import json
 
 from django.db import transaction
-from django.db.models import Max
+from django.db.models import Max, Sum
 from django.utils import timezone
 
 from apps.base.audit import audit_log
+from apps.base.exceptions import DomainValidationError
 from apps.companies.models import Company, Status
 from apps.products.models import ProductProductionDestination
 
 from .adapters import adapter_for
 from .models import (
     PrintJob, PrintJobStatus, PrinterConnectionType, PrinterOperationalStatus,
-    ProductionEvent, ProductionJob, Ticket, TicketStatus,
+    ProductionEvent, ProductionJob, Ticket, TicketRedemption, TicketStatus,
 )
 
 
@@ -163,6 +167,98 @@ def cancel_ticket_for_source(*, source_field, item, user):
     ticket.save(update_fields=('status', 'cancelled_at', 'updated_at'))
     audit_log(actor=user, action='ticket.cancel', obj=ticket, company=ticket.company, branch=ticket.branch)
     return ticket
+
+
+def _ticket_error(code, message, *, conflict=False):
+    error = DomainValidationError(code=code, message=message)
+    if conflict:
+        error.status_code = 409
+    raise error
+
+
+def _redeemed_quantity(ticket):
+    return ticket.redemptions.aggregate(total=Sum('quantity'))['total'] or Decimal('0.000')
+
+
+def ticket_validation_data(ticket):
+    redeemed = _redeemed_quantity(ticket)
+    cancelled = ticket.status == TicketStatus.CANCELLED
+    remaining = Decimal('0.000') if cancelled else ticket.quantity - redeemed
+    snapshot = ticket.identification_snapshot or {}
+    return {
+        'number': ticket.number,
+        'status': ticket.status,
+        'product_name': snapshot.get('product_name', ''),
+        'unit': snapshot.get('unit', ''),
+        'total_quantity': str(ticket.quantity),
+        'redeemed_quantity': str(redeemed),
+        'redeemable_quantity': str(remaining),
+        'cancelled_unredeemed_quantity': str(ticket.quantity - redeemed) if cancelled else '0.000',
+        'modifiers': snapshot.get('modifiers', []),
+        'notes': snapshot.get('notes', ''),
+        'issued_at': ticket.issued_at,
+        'source_type': 'sale' if ticket.source_sale_item_id else 'order',
+    }
+
+
+def lookup_ticket_for_validation(*, branch, validation_code=None, ticket_number=None):
+    filters = {'branch': branch}
+    if validation_code:
+        filters['validation_code'] = validation_code
+    else:
+        filters['number'] = ticket_number
+    ticket = Ticket.objects.prefetch_related('redemptions').filter(**filters).first()
+    if ticket is None:
+        _ticket_error('ticket_not_found', 'Ticket não encontrado.')
+    return ticket
+
+
+@transaction.atomic
+def redeem_ticket(*, branch, operator, device, validation_code=None, ticket_number=None,
+                  quantity, idempotency_key, input_method):
+    filters = {'branch': branch}
+    if validation_code:
+        filters['validation_code'] = validation_code
+    else:
+        filters['number'] = ticket_number
+    ticket = Ticket.objects.select_for_update().prefetch_related('redemptions').filter(**filters).first()
+    if ticket is None:
+        _ticket_error('ticket_not_found', 'Ticket não encontrado.')
+    fingerprint = sha256(json.dumps({
+        'ticket': str(validation_code) if validation_code else ticket_number,
+        'quantity': str(quantity), 'input_method': input_method,
+    }, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    replay = TicketRedemption.objects.filter(ticket=ticket, idempotency_key=idempotency_key).first()
+    if replay:
+        if replay.request_fingerprint != fingerprint:
+            _ticket_error('ticket_idempotency_conflict', 'A chave de idempotência já foi usada com outros dados.', conflict=True)
+        return ticket, replay, True
+    if ticket.status == TicketStatus.CANCELLED:
+        _ticket_error('ticket_cancelled', 'Este ticket foi cancelado e não pode ser utilizado.', conflict=True)
+    redeemed_before = _redeemed_quantity(ticket)
+    remaining = ticket.quantity - redeemed_before
+    if remaining <= 0 or ticket.status == TicketStatus.USED:
+        _ticket_error('ticket_already_used', 'Este ticket já foi utilizado.', conflict=True)
+    if quantity <= 0:
+        _ticket_error('ticket_invalid_quantity', 'Informe uma quantidade positiva.')
+    if quantity > remaining:
+        _ticket_error('ticket_quantity_unavailable', 'A quantidade solicitada excede o saldo disponível.', conflict=True)
+    redemption = TicketRedemption.objects.create(
+        ticket=ticket, quantity=quantity, operator=operator, device=device,
+        redeemed_at=timezone.now(), idempotency_key=idempotency_key,
+        request_fingerprint=fingerprint, input_method=input_method,
+    )
+    redeemed_after = redeemed_before + quantity
+    ticket.status = TicketStatus.USED if redeemed_after == ticket.quantity else TicketStatus.PARTIALLY_USED
+    if ticket.status == TicketStatus.USED:
+        ticket.used_at = redemption.redeemed_at
+    ticket.save(update_fields=('status', 'used_at', 'updated_at'))
+    audit_log(actor=operator, action='ticket.redeem', obj=ticket, company=ticket.company, branch=ticket.branch,
+              metadata={'ticket_id': ticket.pk, 'ticket_number': ticket.number, 'quantity_redeemed_now': str(quantity),
+                        'redeemed_before': str(redeemed_before), 'redeemed_after': str(redeemed_after),
+                        'remaining_after': str(ticket.quantity - redeemed_after), 'device_id': str(device.pk),
+                        'idempotency_key': str(idempotency_key), 'input_method': input_method})
+    return ticket, redemption, False
 
 
 @transaction.atomic

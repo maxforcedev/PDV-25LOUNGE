@@ -36,6 +36,7 @@ from apps.products.models import (
     ProductModifierGroup,
 )
 from apps.products.models import SalesChannel
+from apps.production.services import lookup_ticket_for_validation, redeem_ticket, ticket_validation_data
 from apps.sales.models import OperationType, Sale
 from apps.sales.serializers import (
     CalculationOutputSerializer, SaleCatalogProductSerializer, SaleSerializer,
@@ -51,6 +52,7 @@ from .serializers import (
     POSAdminDeviceSerializer, POSDeviceSettingsSerializer, POSOpenCashSessionSerializer,
     POSCustomerSerializer, POSDiscountAuthorizationValidationSerializer,
     POSFinalizeSaleSerializer, POSSalePreviewSerializer, POSStockAvailabilitySerializer,
+    POSTicketLookupSerializer, POSTicketValidateSerializer,
 )
 from .services import (
     assert_branch_device_limit, authenticate_operator, cash_state_for_device, confirm_pairing,
@@ -394,6 +396,45 @@ def _pos_sale_session(device, session_id):
                 message='Este dispositivo só pode vender no caixa fixo configurado.',
             )
     return session
+
+
+class POSTicketValidatorView(POSCashView):
+    def _context(self, request):
+        device, operator, permissions, operator_session = self.context(request)
+        if 'tickets.validate' not in permissions:
+            raise PermissionDenied('Você não possui permissão para validar tickets nesta filial.')
+        return device, operator, operator_session
+
+
+class POSTicketLookupView(POSTicketValidatorView):
+    def post(self, request):
+        device, _operator, _session = self._context(request)
+        serializer = POSTicketLookupSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        ticket = lookup_ticket_for_validation(branch=device.branch, **serializer.validated_data)
+        return Response({'ticket': ticket_validation_data(ticket)})
+
+
+class POSTicketValidateView(POSTicketValidatorView):
+    def post(self, request):
+        device, operator, operator_session = self._context(request)
+        serializer = POSTicketValidateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        ticket, redemption, replayed = redeem_ticket(
+            branch=device.branch, operator=operator, device=device,
+            validation_code=data.get('validation_code'), ticket_number=data.get('ticket_number'),
+            quantity=data['quantity'], idempotency_key=data['idempotency_key'],
+            input_method=data['input_method'],
+        )
+        request.branch_context = device.branch
+        response = Response({
+            'ticket': ticket_validation_data(ticket),
+            'redemption': {'quantity': str(redemption.quantity), 'redeemed_at': redemption.redeemed_at},
+        })
+        if replayed:
+            response['Idempotency-Replayed'] = 'true'
+        return response
 
 
 class POSQuickSaleView(POSCashView):

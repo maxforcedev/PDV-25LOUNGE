@@ -7,6 +7,7 @@ import '../core/transient_feedback.dart';
 import '../sync/sync_center_page.dart';
 import '../sync/sync_status_button.dart';
 import '../sales/quick_sale_page.dart';
+import '../tickets/ticket_validator_page.dart';
 
 class HomePage extends StatelessWidget {
   const HomePage({required this.controller, super.key});
@@ -190,6 +191,11 @@ class _ModuleCard extends StatelessWidget {
           if (module.key == 'quick_sale') {
             Navigator.of(context).push(MaterialPageRoute(
                 builder: (_) => QuickSalePage(controller: controller)));
+            return;
+          }
+          if (module.key == 'ticket_validator') {
+            Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => TicketValidatorPage(controller: controller)));
             return;
           }
           controller.showTransientMessage(

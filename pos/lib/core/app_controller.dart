@@ -11,6 +11,7 @@ import '../pairing/pairing_models.dart';
 import '../sales/sale_models.dart';
 import '../storage/secret_store.dart';
 import '../sync/sync_status.dart';
+import '../tickets/ticket_models.dart';
 import 'transient_feedback.dart';
 
 enum AppPhase {
@@ -375,6 +376,42 @@ class AppController extends ChangeNotifier {
       _handleApiError(error);
     } on PosNetworkException catch (error) {
       _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<TicketValidationResult?> lookupTicket(
+      {String? validationCode, int? ticketNumber}) async {
+    try {
+      return await _api.lookupTicket(
+          validationCode: validationCode, ticketNumber: ticketNumber);
+    } on PosApiException catch (error) {
+      _showTransientMessage(error.message);
+    } on PosNetworkException {
+      _showTransientMessage(
+          'Não foi possível validar o ticket agora. Verifique a conexão e tente novamente.');
+    }
+    return null;
+  }
+
+  Future<TicketValidationResult?> validateTicket(
+      {String? validationCode,
+      int? ticketNumber,
+      required String quantity,
+      required String idempotencyKey,
+      required String inputMethod}) async {
+    try {
+      return await _api.validateTicket(
+          validationCode: validationCode,
+          ticketNumber: ticketNumber,
+          quantity: quantity,
+          idempotencyKey: idempotencyKey,
+          inputMethod: inputMethod);
+    } on PosApiException catch (error) {
+      _showTransientMessage(error.message);
+    } on PosNetworkException {
+      _showTransientMessage(
+          'Não foi possível validar o ticket agora. Verifique a conexão e tente novamente.');
     }
     return null;
   }

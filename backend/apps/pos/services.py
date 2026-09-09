@@ -837,7 +837,7 @@ def modules_for(operator, device, *, permission_codes=None):
     return permissions, {
         'quick_sale': {'enabled': bool(operational and settings_obj and settings_obj.uses_counter and 'sales.create' in permissions)},
         'commands': {'enabled': bool(operational and settings_obj and settings_obj.uses_commands and permissions.intersection({'commands.view', 'commands.open', 'commands.add_items'}))},
-        'ticket_validator': {'enabled': False, 'reason': 'not_implemented'},
+        'ticket_validator': {'enabled': bool(operational and 'tickets.validate' in permissions)},
         'inventory': {'enabled': False, 'reason': 'not_implemented'},
         'reports': {'enabled': False, 'reason': 'not_implemented'},
     }
