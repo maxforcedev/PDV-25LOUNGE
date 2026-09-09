@@ -777,6 +777,7 @@ export interface Product {
   available_command: boolean;
   participates_in_service_fee: boolean;
   participates_in_commission: boolean;
+  emits_ticket: boolean;
   inventory_behavior: InventoryBehavior;
   status: Status;
   archived_at: string | null;

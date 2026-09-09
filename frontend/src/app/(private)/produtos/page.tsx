@@ -78,6 +78,7 @@ type ProductForm = {
   available_command: boolean;
   participates_in_service_fee: boolean;
   participates_in_commission: boolean;
+  emits_ticket: boolean;
 };
 type ProductFilters = {
   category: string;
@@ -113,6 +114,7 @@ const blank = (company = 0, includeCost = false): ProductForm => ({
   available_command: true,
   participates_in_service_fee: true,
   participates_in_commission: true,
+  emits_ticket: false,
 });
 function behaviorLabel(value: InventoryBehavior) {
   return value === "direct"
@@ -466,6 +468,7 @@ function Products() {
               available_command: detail.available_command,
               participates_in_service_fee: detail.participates_in_service_fee,
               participates_in_commission: detail.participates_in_commission,
+              emits_ticket: detail.emits_ticket,
             }
           : blank(currentCompany?.id, canViewCosts),
       );
@@ -1463,6 +1466,35 @@ function Products() {
                 </fieldset>
               </>
             )}
+            {(!isDetail || !editing || detailTab === "production") &&
+              <fieldset className="sm:col-span-2 lg:col-span-3 rounded-lg border border-subtle p-4">
+                <legend className="px-1 text-xs font-bold">
+                  Ticket de retirada
+                </legend>
+                <div className="flex items-start justify-between gap-4">
+                  <label className="flex cursor-pointer items-start gap-3 text-xs font-semibold">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 size-4 accent-primary"
+                      checked={form.emits_ticket}
+                      onChange={(event) =>
+                        update("emits_ticket", event.target.checked)
+                      }
+                    />
+                    <span>
+                      Emitir ticket de retirada
+                      <span className="mt-1 block max-w-xl text-[11px] font-normal leading-relaxed text-muted">
+                        Quando habilitado, cada venda deste produto gera automaticamente um ticket para validação no CORE POS. O ticket é usado para controlar a retirada ou entrega do item após a venda.
+                      </span>
+                    </span>
+                  </label>
+                  {form.emits_ticket && (
+                    <span className="rounded-full bg-primary/10 px-2 py-1 text-[10px] font-bold text-primary">
+                      ATIVO
+                    </span>
+                  )}
+                </div>
+              </fieldset>}
             {(!isDetail || !editing || detailTab === "production") &&
               form.inventory_behavior === "components" && (
                 <div className="sm:col-span-2 lg:col-span-3 rounded-lg border border-slate-200 p-4">
