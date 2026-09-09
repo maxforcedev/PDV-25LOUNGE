@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
+import 'barcode_cooldown.dart';
+
 class ProductBarcodeScannerPage extends StatefulWidget {
   const ProductBarcodeScannerPage({required this.onBarcode, super.key});
 
@@ -13,6 +15,7 @@ class ProductBarcodeScannerPage extends StatefulWidget {
 
 class _ProductBarcodeScannerPageState extends State<ProductBarcodeScannerPage> {
   final _controller = MobileScannerController();
+  final _cooldown = BarcodeCooldown();
   bool _processing = false;
   String? _message;
 
@@ -23,9 +26,8 @@ class _ProductBarcodeScannerPageState extends State<ProductBarcodeScannerPage> {
   }
 
   Future<void> _onDetect(BarcodeCapture capture) async {
-    if (_processing) return;
     final barcode = capture.barcodes.firstOrNull?.rawValue?.trim();
-    if (barcode == null || barcode.isEmpty) return;
+    if (_processing || barcode == null || !_cooldown.accept(barcode)) return;
     setState(() {
       _processing = true;
       _message = 'Consultando produto...';
