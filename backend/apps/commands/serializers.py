@@ -13,7 +13,7 @@ class TableSerializer(serializers.ModelSerializer):
     class Meta:
         model = Table
         fields = ('id', 'branch', 'name', 'seats', 'status', 'created_at', 'updated_at')
-        read_only_fields = ('id', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'status', 'created_at', 'updated_at')
 
     def validate_name(self, value):
         return ' '.join((value or '').split())

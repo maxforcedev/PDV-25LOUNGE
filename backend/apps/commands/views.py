@@ -15,7 +15,7 @@ from apps.sales.models import PaymentMethod
 from apps.sales.serializers import CalculationOutputSerializer, SaleUserOptionSerializer
 from apps.sales.services import calculate_command_preview
 from .models import Command, CommandPayment, CommandPaymentStatus, CommandStatus, OrderItem, Table, TableStatus
-from .permissions import CommandFunctionalPermission
+from .permissions import CommandFunctionalPermission, TableFunctionalPermission
 from .serializers import (
     BatchTableSerializer, CancelOrderItemSerializer, CommandCalculationSerializer,
     CommandSerializer, ConfirmOrderItemSerializer, CreateOrderItemSerializer,
@@ -35,7 +35,7 @@ from .services import (
 
 class TableViewSet(viewsets.ModelViewSet):
     serializer_class = TableSerializer
-    permission_classes = [CommandFunctionalPermission]
+    permission_classes = [TableFunctionalPermission]
     http_method_names = ('get', 'post', 'patch', 'delete', 'head', 'options')
 
     def get_queryset(self):

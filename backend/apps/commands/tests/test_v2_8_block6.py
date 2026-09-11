@@ -21,7 +21,7 @@ from rest_framework.test import APIClient
 from apps.accounts.models import User
 from apps.base.models import AuditLog
 from apps.companies.models import (
-    AccessProfile, BranchSettings, FunctionalPermission, Status,
+    AccessProfile, Branch, BranchSettings, FunctionalPermission, Status,
     UserBranchAccess, UserCompanyAccess,
 )
 from apps.companies.rbac import PERMISSION_CATALOG
@@ -180,6 +180,17 @@ class MultipleCommandsPerTableTests(Block6Fixture, TestCase):
 
 
 class TableDeletionTests(Block6Fixture, TestCase):
+    def client_for(self, email, profile_name, codes):
+        user = create_user(email)
+        profile = make_profile(self.company, profile_name, codes)
+        UserCompanyAccess.objects.create(
+            user=user, company=self.company, access_profile=profile, is_active=True,
+        )
+        UserBranchAccess.objects.create(user=user, branch=self.branch, access_profile=profile)
+        client = APIClient()
+        client.force_authenticate(user)
+        return client
+
     def test_free_table_soft_deletes_and_disappears_from_administration(self):
         table = create_table(branch=self.branch, name='Mesa livre', user=self.owner)
         delete_table(table=table, user=self.owner)
@@ -238,19 +249,95 @@ class TableDeletionTests(Block6Fixture, TestCase):
         self.assertEqual([row['id'] for row in default_response.data], [active.pk])
 
     def test_tables_open_without_tables_manage_cannot_change_structure(self):
-        operator = create_user('tables-open@block6.com')
-        profile = make_profile(self.company, 'Mesa Operacional', ['tables.view', 'tables.open'])
-        UserCompanyAccess.objects.create(
-            user=operator, company=self.company, access_profile=profile, is_active=True,
+        table = create_table(branch=self.branch, name='Mesa existente', user=self.owner)
+        client = self.client_for(
+            'tables-open@block6.com', 'Mesa Operacional', ['tables.view', 'tables.open'],
         )
-        UserBranchAccess.objects.create(user=operator, branch=self.branch, access_profile=profile)
-        client = APIClient()
-        client.force_authenticate(operator)
         response = client.post(
             '/api/v1/tables/', {'branch': self.branch.pk, 'name': 'Mesa indevida'},
             format='json', HTTP_X_BRANCH_ID=str(self.branch.pk),
         )
         self.assertEqual(response.status_code, 403)
+        response = client.patch(
+            f'/api/v1/tables/{table.pk}/', {'name': 'Mesa alterada'},
+            format='json', HTTP_X_BRANCH_ID=str(self.branch.pk),
+        )
+        self.assertEqual(response.status_code, 403)
+        response = client.delete(
+            f'/api/v1/tables/{table.pk}/', HTTP_X_BRANCH_ID=str(self.branch.pk),
+        )
+        self.assertEqual(response.status_code, 403)
+        response = client.post(
+            '/api/v1/tables/batch/', {'branch': self.branch.pk, 'start': 1, 'end': 2},
+            format='json', HTTP_X_BRANCH_ID=str(self.branch.pk),
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_tables_manage_can_create_edit_delete_and_generate_range(self):
+        client = self.client_for('tables-manage@block6.com', 'Mesa Admin', ['tables.manage'])
+        response = client.post(
+            '/api/v1/tables/', {'branch': self.branch.pk, 'name': 'Mesa admin'},
+            format='json', HTTP_X_BRANCH_ID=str(self.branch.pk),
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        table_id = response.data['id']
+        response = client.patch(
+            f'/api/v1/tables/{table_id}/', {'name': 'Mesa editada'},
+            format='json', HTTP_X_BRANCH_ID=str(self.branch.pk),
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        response = client.post(
+            '/api/v1/tables/batch/', {'branch': self.branch.pk, 'start': 1, 'end': 2},
+            format='json', HTTP_X_BRANCH_ID=str(self.branch.pk),
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        response = client.delete(
+            f'/api/v1/tables/{table_id}/', HTTP_X_BRANCH_ID=str(self.branch.pk),
+        )
+        self.assertEqual(response.status_code, 204)
+
+    def test_external_status_change_is_ignored(self):
+        table = create_table(branch=self.branch, name='Mesa status', user=self.owner)
+        client = APIClient()
+        client.force_authenticate(self.owner)
+        response = client.patch(
+            f'/api/v1/tables/{table.pk}/', {'status': TableStatus.INACTIVE},
+            format='json', HTTP_X_BRANCH_ID=str(self.branch.pk),
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        table.refresh_from_db()
+        self.assertEqual(table.status, TableStatus.ACTIVE)
+        self.assertIsNone(table.deleted_at)
+
+    def test_commands_view_does_not_require_tables_view(self):
+        command = open_command(branch=self.branch, user=self.owner, identifier='Consulta')
+        client = self.client_for('commands-view@block6.com', 'Comanda Consulta', ['commands.view'])
+        response = client.get('/api/v1/commands/', HTTP_X_BRANCH_ID=str(self.branch.pk))
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['results'][0]['id'], command.pk)
+        response = client.get(
+            f'/api/v1/commands/{command.pk}/', HTTP_X_BRANCH_ID=str(self.branch.pk),
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_tables_operational_does_not_require_commands_view(self):
+        table = create_table(branch=self.branch, name='Mesa consulta', user=self.owner)
+        client = self.client_for('tables-view@block6.com', 'Mesa Consulta', ['tables.view'])
+        response = client.get('/api/v1/tables/operational/', HTTP_X_BRANCH_ID=str(self.branch.pk))
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data[0]['id'], table.pk)
+
+    def test_table_from_another_branch_cannot_be_deleted(self):
+        other_branch = Branch.objects.create(company=self.company, name='Filial isolada')
+        table = Table.objects.create(branch=other_branch, name='Mesa isolada')
+        client = APIClient()
+        client.force_authenticate(self.owner)
+        response = client.delete(
+            f'/api/v1/tables/{table.pk}/', HTTP_X_BRANCH_ID=str(self.branch.pk),
+        )
+        self.assertEqual(response.status_code, 404)
+        table.refresh_from_db()
+        self.assertIsNone(table.deleted_at)
 
 
 class CommandConsumptionLimitTests(Block6Fixture, TestCase):
@@ -325,6 +412,17 @@ class CommandConsumptionLimitTests(Block6Fixture, TestCase):
         self.assertEqual(response.status_code, 201, response.data)
         self.assertTrue(Table.objects.filter(pk=historical.pk).exists())
         self.assertEqual(Command.objects.get(pk=command.pk).table_id, historical.pk)
+
+    def test_reducing_range_from_twenty_to_ten_keeps_tables_eleven_to_twenty(self):
+        batch_create_tables(
+            branch=self.branch, prefix='Mesa ', start=1, end=20, seats=4, user=self.owner,
+        )
+        batch_create_tables(
+            branch=self.branch, prefix='Mesa ', start=1, end=10, seats=4, user=self.owner,
+        )
+        self.assertEqual(Table.objects.filter(branch=self.branch).count(), 20)
+        self.assertTrue(Table.objects.filter(branch=self.branch, name='Mesa 11').exists())
+        self.assertTrue(Table.objects.filter(branch=self.branch, name='Mesa 20').exists())
 
 
 class CommandStabilizationTests(Block6Fixture, TestCase):

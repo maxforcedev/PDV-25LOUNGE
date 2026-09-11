@@ -41,6 +41,13 @@ class Table(BaseModel):
                 condition=Q(deleted_at__isnull=True),
                 name='commands_table_branch_name_operational_unique',
             ),
+            models.CheckConstraint(
+                condition=(
+                    Q(deleted_at__isnull=True, status=TableStatus.ACTIVE)
+                    | Q(deleted_at__isnull=False, status=TableStatus.INACTIVE)
+                ),
+                name='commands_table_status_tombstone_coherent',
+            ),
         ]
 
     def clean(self):
@@ -52,6 +59,8 @@ class Table(BaseModel):
             raise ValidationError({'branch': 'A empresa deve estar ativa.'})
         if self.deleted_at is not None and self.status != TableStatus.INACTIVE:
             raise ValidationError({'status': 'Mesa excluída deve permanecer inativa.'})
+        if self.deleted_at is None and self.status != TableStatus.ACTIVE:
+            raise ValidationError({'status': 'Mesa operacional deve permanecer ativa.'})
 
     def save(self, *args, **kwargs):
         self.full_clean()

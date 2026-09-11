@@ -10,8 +10,8 @@ class CommandFunctionalPermission(BasePermission):
     message = 'Você não possui permissão para esta operação.'
 
     codes = {
-        'list': 'tables.view',
-        'retrieve': 'tables.view',
+        'list': 'commands.view',
+        'retrieve': 'commands.view',
         'open': 'commands.open',
         'set_customer': 'commands.open',
         'open_list': 'commands.view',
@@ -33,12 +33,6 @@ class CommandFunctionalPermission(BasePermission):
         'payment_summary': 'commands.payments.view',
         'record_payment': 'commands.payments.record',
         'reverse_payment': 'commands.payments.reverse',
-        'operational': 'tables.view',
-        'create': 'tables.manage',
-        'update': 'tables.manage',
-        'partial_update': 'tables.manage',
-        'destroy': 'tables.manage',
-        'batch_create': 'tables.manage',
     }
 
     @staticmethod
@@ -98,3 +92,22 @@ class CommandFunctionalPermission(BasePermission):
         if feature:
             require_branch_feature(Branch.objects.get(pk=branch_id), feature)
         return user_has_branch_permission(request.user, branch_id, code)
+
+
+class TableFunctionalPermission(CommandFunctionalPermission):
+    """Table administration has its own RBAC; command permissions stay isolated."""
+
+    codes = {
+        'list': 'tables.view',
+        'retrieve': 'tables.view',
+        'operational': 'tables.view',
+        'create': 'tables.manage',
+        'update': 'tables.manage',
+        'partial_update': 'tables.manage',
+        'destroy': 'tables.manage',
+        'batch_create': 'tables.manage',
+    }
+
+    @staticmethod
+    def _feature(view):
+        return 'tables'

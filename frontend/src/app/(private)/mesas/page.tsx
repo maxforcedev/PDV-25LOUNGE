@@ -35,7 +35,8 @@ function hasPositivePayment(command: OpenTableCommand) {
 function TablesPage() {
   const { currentBranch, hasPermission, supportSession } = useAuth();
   const readOnly = supportSession?.mode === "READ_ONLY";
-  const canChange = hasPermission(permissions.manageTables) && !readOnly;
+  const canManageTables = hasPermission(permissions.manageTables) && !readOnly;
+  const canOpenCommand = hasPermission(permissions.openCommand) && !readOnly;
   const [tables, setTables] = useState<Table[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -117,7 +118,7 @@ function TablesPage() {
   }
 
   async function deleteTable(table: Table) {
-    if (!canChange || !currentBranch) return;
+    if (!canManageTables || !currentBranch) return;
     setSaving(true); setError("");
     try { await http.delete(`tables/${table.id}/`); setDeleting(null); await load(String(currentBranch.id)); }
     catch (caught) { setError(caught instanceof ApiError ? caught.message : "Não foi possível excluir a mesa."); }
@@ -152,7 +153,7 @@ function TablesPage() {
 
   return (
     <>
-      <PageHeader title="Mesas" description="Acompanhe ocupação e abra Comandas rapidamente." action={canChange ? (
+      <PageHeader title="Mesas" description="Acompanhe ocupação e abra Comandas rapidamente." action={canManageTables ? (
         <div className="flex gap-2">
           <Button variant="secondary" onClick={() => { setBatchForm({ prefix: settings?.default_table_prefix || "", start: String(settings?.table_range_start || 1), end: String(settings?.table_range_end || settings?.default_table_quantity || 20), seats: String(settings?.default_table_seats || 0) }); setBatchOpen(true); }}><Layers className="size-4" />Configurar intervalo</Button>
           <Button onClick={openCreate}><Plus className="size-4" />Nova mesa</Button>
@@ -170,10 +171,10 @@ function TablesPage() {
               const occupied = table.operational_status === "occupied";
               const partial = table.open_commands?.some(hasPartialPayment);
               return <section key={table.id} className={`card min-h-60 p-5 ${occupied ? "border-primary/40 bg-primary/5" : "border-success/30"}`}>
-                <div className="flex items-start justify-between gap-3"><div><h2 className="text-2xl font-black tracking-tight">{table.name}</h2><p className={`mt-1 text-xs font-bold ${occupied ? "text-primary" : "text-success"}`}>{occupied ? "OCUPADA" : "LIVRE"}{partial ? " · PAGAMENTO PARCIAL" : ""}</p></div><div className="flex gap-1">{canChange && <><button className="icon-button" title="Editar mesa" onClick={() => openEdit(table)}><Pencil className="size-4" /></button><button className="icon-button" title="Excluir mesa" onClick={() => setDeleting(table)}><Trash2 className="size-4" /></button></>}</div></div>
+                <div className="flex items-start justify-between gap-3"><div><h2 className="text-2xl font-black tracking-tight">{table.name}</h2><p className={`mt-1 text-xs font-bold ${occupied ? "text-primary" : "text-success"}`}>{occupied ? "OCUPADA" : "LIVRE"}{partial ? " · PAGAMENTO PARCIAL" : ""}</p></div><div className="flex gap-1">{canManageTables && <><button className="icon-button" title="Editar mesa" onClick={() => openEdit(table)}><Pencil className="size-4" /></button><button className="icon-button" title="Excluir mesa" onClick={() => setDeleting(table)}><Trash2 className="size-4" /></button></>}</div></div>
                 <div className="mt-6 flex items-end justify-between"><div><span className="block text-xs text-muted">Total atual</span><strong className="text-xl">{occupied ? formatBRL(table.open_commands_total || "0") : formatBRL("0")}</strong></div><span className="inline-flex items-center gap-1 text-xs text-muted"><Users className="size-3" />{table.seats ? `${table.seats} lugares` : "Sem capacidade"}</span></div>
                 {table.open_commands?.length ? <div className="mt-4 space-y-2 border-t border-subtle pt-3">{table.open_commands.map((command) => <Link key={command.id} href={`/comandas/${command.id}`} className="block rounded-md bg-surface-muted p-2 text-sm hover:bg-primary/10"><div className="flex justify-between gap-2 font-bold"><span>{command.identifier || command.command_number}</span><span>{formatBRL(command.confirmed_total)}</span></div><div className="mt-1 flex justify-between text-[11px] text-muted"><span>{command.opened_by_name || "Atendente não informado"}</span><span className="inline-flex items-center gap-1"><Clock3 className="size-3" />{openedFor(command.opened_at)}</span></div>{hasPositivePayment(command) && <div className="mt-1 flex items-center gap-1 text-[11px] text-warning-strong"><CreditCard className="size-3" />Pago {formatBRL(command.paid_total)}</div>}</Link>)}</div> : null}
-                {canChange && table.status === "active" ? <Button className="mt-4 w-full min-h-11" variant={occupied ? "secondary" : "primary"} onClick={() => { setCommandTable(table); setCommandIdentifier(""); setCommandCustomer(null); setFields({}); }}><Users className="size-4" />{occupied ? "Adicionar comanda" : "Abrir mesa"}</Button> : null}
+                {canOpenCommand && table.status === "active" ? <Button className="mt-4 w-full min-h-11" variant={occupied ? "secondary" : "primary"} onClick={() => { setCommandTable(table); setCommandIdentifier(""); setCommandCustomer(null); setFields({}); }}><Users className="size-4" />{occupied ? "Adicionar comanda" : "Abrir mesa"}</Button> : null}
               </section>;
             })}
           </div>
