@@ -154,11 +154,22 @@ def open_table(*, branch, table_id, user, idempotency_key, people_count=None, id
 
 
 @transaction.atomic
-def open_command(*, branch, user, identifier='', customer_id=None, table_id=None, people_count=None, notes='', audit_metadata=None):
+def open_command(*, branch, user, idempotency_key, identifier='', customer_id=None, table_id=None,
+                 people_count=None, notes='', audit_metadata=None):
     from apps.commands.models import Table, TableStatus
 
     branch = _active_branch(branch)
     require_branch_feature(branch, 'commands')
+    operation, replayed = _operation(
+        branch=branch, operation_type=AttendanceOperationType.OPEN_COMMAND,
+        idempotency_key=idempotency_key,
+        payload={
+            'table': table_id, 'people_count': people_count, 'identifier': identifier,
+            'notes': notes, 'customer': customer_id,
+        },
+    )
+    if replayed:
+        return AttendanceCommand.objects.get(pk=operation.result['command_id']), True
     table = None
     if table_id is not None:
         require_branch_feature(branch, 'tables')
@@ -182,13 +193,15 @@ def open_command(*, branch, user, identifier='', customer_id=None, table_id=None
         table_name_snapshot=table.name if table else '',
         customer_name_snapshot=customer.name if customer else '',
     )
+    operation.result = {'command_id': command.pk}
+    operation.save(update_fields=('result', 'updated_at'))
     audit_log(
         actor=user, action='attendance.command.open', obj=command,
         company=branch.company, branch=branch,
         after=model_snapshot(command, ('table_id', 'number', 'identifier', 'is_primary', 'status')),
-        metadata=audit_metadata,
+        metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)),
     )
-    return command
+    return command, False
 
 
 def financial_state(command, *, lock=False, discount=None, service_fee_waived=None):
@@ -231,11 +244,20 @@ def command_summary(command):
 
 
 @transaction.atomic
-def add_order_items(*, command, user, items, audit_metadata=None):
+def add_order_items(*, command, user, items, idempotency_key, audit_metadata=None):
     command = AttendanceCommand.objects.select_for_update().select_related('branch__company').get(pk=command.pk)
     require_branch_feature(command.branch, 'commands')
     if command.status != AttendanceCommandStatus.OPEN:
         raise AttendanceConflict('command_closed', 'A comanda deve estar aberta.')
+    operation, replayed = _operation(
+        branch=command.branch, operation_type=AttendanceOperationType.ADD_ITEMS,
+        idempotency_key=idempotency_key,
+        payload={'command': command.pk, 'items': items},
+    )
+    if replayed:
+        return None, list(AttendanceOrderItem.objects.filter(
+            pk__in=operation.result['item_ids'],
+        ).order_by('id')), True
     order = AttendanceOrder.objects.create(command=command, created_by=user)
     created = []
     for entry in items:
@@ -257,7 +279,9 @@ def add_order_items(*, command, user, items, audit_metadata=None):
             branch=command.branch, item_quantity=quantity,
         )
         base_price = branch_price_map(command.branch, [product.pk]).get(product.pk, product.sale_price)
-        unit_cost = branch_cost_map(command.branch, [product.pk]).get(product.pk, product.cost)
+        unit_cost = branch_cost_map(command.branch, [product.pk]).get(
+            product.pk, product.cost,
+        ).quantize(CENT, rounding=ROUND_HALF_UP)
         created.append(AttendanceOrderItem.objects.create(
             order=order, product=product, quantity=quantity, product_name=product.name,
             internal_code=product.internal_code or '', category_id_snapshot=product.category_id,
@@ -267,8 +291,11 @@ def add_order_items(*, command, user, items, audit_metadata=None):
             modifier_snapshot=modifiers, notes=entry.get('notes', ''), unit_cost=unit_cost,
         ))
     audit_log(actor=user, action='attendance.order.create', obj=order, company=command.company,
-              branch=command.branch, after={'command_id': command.pk, 'item_ids': [item.pk for item in created]}, metadata=audit_metadata)
-    return order, created
+              branch=command.branch, after={'command_id': command.pk, 'item_ids': [item.pk for item in created]},
+              metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
+    operation.result = {'order_id': order.pk, 'item_ids': [item.pk for item in created]}
+    operation.save(update_fields=('result', 'updated_at'))
+    return order, created, False
 
 
 @transaction.atomic
@@ -539,7 +566,7 @@ def record_payment(*, command, user, payment_method_id, amount, idempotency_key,
         ):
             return existing
         raise AttendanceConflict('idempotency_key_conflict', 'A chave de idempotência já foi usada com outros dados.')
-    paid_rows = AttendancePayment.objects.select_for_update().filter(
+    paid_rows = AttendancePayment.objects.select_for_update(of=('self',)).filter(
         command=command, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
     )
     has_payment = bool(list(paid_rows))

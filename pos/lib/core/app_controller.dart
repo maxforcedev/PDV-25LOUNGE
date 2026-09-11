@@ -363,7 +363,14 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
+  Future<List<QuickSaleProduct>?> attendanceCatalog({String? search}) =>
+      _attendance(() => _api.attendanceCatalog(search: search));
+
+  Future<QuickSaleCheckoutOptions?> attendanceCheckoutOptions() =>
+      _attendance(_api.attendanceCheckoutOptions);
+
   Future<AttendanceCommand?> openAttendanceCommand({
+    required String idempotencyKey,
     String identifier = '',
     int? tableId,
     int? customerId,
@@ -372,12 +379,115 @@ class AppController extends ChangeNotifier {
   }) async {
     try {
       return await _api.openAttendanceCommand(
+        idempotencyKey: idempotencyKey,
         identifier: identifier,
         tableId: tableId,
         customerId: customerId,
         peopleCount: peopleCount,
         notes: notes,
       );
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<AttendanceCommandDetail?> attendanceCommandDetail(int commandId) =>
+      _attendance(() => _api.attendanceCommandDetail(commandId));
+
+  Future<List<AttendanceOrderItem>?> addAttendanceItems({
+    required int commandId,
+    required List<Map<String, dynamic>> items,
+    required String idempotencyKey,
+  }) =>
+      _attendance(() => _api.addAttendanceItems(
+            commandId: commandId,
+            items: items,
+            idempotencyKey: idempotencyKey,
+          ));
+
+  Future<AttendanceOrderItem?> confirmAttendanceItem({
+    required int itemId,
+    required String idempotencyKey,
+  }) =>
+      _attendance(() => _api.confirmAttendanceItem(
+          itemId: itemId, idempotencyKey: idempotencyKey));
+
+  Future<AttendanceOrderItem?> cancelAttendanceItem({
+    required int itemId,
+    required String idempotencyKey,
+    String reason = '',
+  }) =>
+      _attendance(() => _api.cancelAttendanceItem(
+          itemId: itemId, idempotencyKey: idempotencyKey, reason: reason));
+
+  Future<AttendanceLedger?> attendanceLedger(int commandId) =>
+      _attendance(() => _api.attendanceLedger(commandId));
+
+  Future<AttendancePayment?> recordAttendancePayment({
+    required int commandId,
+    required int paymentMethodId,
+    required String amount,
+    required String idempotencyKey,
+    String? receivedAmount,
+    int? cashSessionId,
+  }) =>
+      _attendance(() => _api.recordAttendancePayment(
+            commandId: commandId,
+            paymentMethodId: paymentMethodId,
+            amount: amount,
+            idempotencyKey: idempotencyKey,
+            receivedAmount: receivedAmount,
+            cashSessionId: cashSessionId,
+          ));
+
+  Future<AttendancePayment?> reverseAttendancePayment({
+    required int paymentId,
+    required String idempotencyKey,
+    String reason = '',
+  }) =>
+      _attendance(() => _api.reverseAttendancePayment(
+          paymentId: paymentId,
+          idempotencyKey: idempotencyKey,
+          reason: reason));
+
+  Future<AttendanceCommand?> finalizeAttendanceCommand({
+    required int commandId,
+    required int cashSessionId,
+    required String idempotencyKey,
+  }) =>
+      _attendance(() => _api.finalizeAttendanceCommand(
+          commandId: commandId,
+          cashSessionId: cashSessionId,
+          idempotencyKey: idempotencyKey));
+
+  Future<AttendanceCommand?> transferAttendanceCommand({
+    required int commandId,
+    required int? tableId,
+    required String idempotencyKey,
+  }) =>
+      _attendance(() => _api.transferAttendanceCommand(
+          commandId: commandId,
+          tableId: tableId,
+          idempotencyKey: idempotencyKey));
+
+  Future<AttendanceCommand?> transferAttendanceItems({
+    required int commandId,
+    required int destinationCommandId,
+    required List<Map<String, dynamic>> items,
+    required String idempotencyKey,
+  }) =>
+      _attendance(() => _api.transferAttendanceItems(
+          commandId: commandId,
+          destinationCommandId: destinationCommandId,
+          items: items,
+          idempotencyKey: idempotencyKey));
+
+  Future<T?> _attendance<T>(Future<T> Function() request) async {
+    try {
+      return await request();
     } on PosApiException catch (error) {
       _handleApiError(error);
     } on PosNetworkException catch (error) {

@@ -760,6 +760,15 @@ def open_command(*, branch, user, table=None, identifier='', customer_id=None, s
             raise ValidationError({'table': 'A mesa deve pertencer à filial.'})
         if table_obj.status != TableStatus.ACTIVE:
             raise ValidationError({'table': 'A mesa deve estar ativa.'})
+        # POS-5 attendance owns the table while any of its commands remain open.
+        from apps.attendance.models import AttendanceCommand, AttendanceCommandStatus
+
+        if AttendanceCommand.objects.filter(
+            table=table_obj, status=AttendanceCommandStatus.OPEN,
+        ).exists():
+            raise ValidationError({
+                'table': 'A mesa possui atendimento aberto no POS e não pode receber comanda legada.'
+            })
     customer = None
     if customer_id is not None:
         customer = Customer.objects.select_for_update().filter(pk=customer_id).first()

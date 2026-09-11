@@ -80,12 +80,60 @@ abstract class PosApi {
     String notes,
   });
   Future<List<AttendanceCommand>> attendanceCommands({String? query});
+  Future<List<QuickSaleProduct>> attendanceCatalog({String? search});
+  Future<QuickSaleCheckoutOptions> attendanceCheckoutOptions();
+  Future<AttendanceCommandDetail> attendanceCommandDetail(int commandId);
   Future<AttendanceCommand> openAttendanceCommand({
+    required String idempotencyKey,
     String identifier,
     int? tableId,
     int? customerId,
     int? peopleCount,
     String notes,
+  });
+  Future<List<AttendanceOrderItem>> addAttendanceItems({
+    required int commandId,
+    required List<Map<String, dynamic>> items,
+    required String idempotencyKey,
+  });
+  Future<AttendanceOrderItem> confirmAttendanceItem({
+    required int itemId,
+    required String idempotencyKey,
+  });
+  Future<AttendanceOrderItem> cancelAttendanceItem({
+    required int itemId,
+    required String idempotencyKey,
+    String reason,
+  });
+  Future<AttendanceLedger> attendanceLedger(int commandId);
+  Future<AttendancePayment> recordAttendancePayment({
+    required int commandId,
+    required int paymentMethodId,
+    required String amount,
+    required String idempotencyKey,
+    String? receivedAmount,
+    int? cashSessionId,
+  });
+  Future<AttendancePayment> reverseAttendancePayment({
+    required int paymentId,
+    required String idempotencyKey,
+    String reason,
+  });
+  Future<AttendanceCommand> finalizeAttendanceCommand({
+    required int commandId,
+    required int cashSessionId,
+    required String idempotencyKey,
+  });
+  Future<AttendanceCommand> transferAttendanceCommand({
+    required int commandId,
+    required int? tableId,
+    required String idempotencyKey,
+  });
+  Future<AttendanceCommand> transferAttendanceItems({
+    required int commandId,
+    required int destinationCommandId,
+    required List<Map<String, dynamic>> items,
+    required String idempotencyKey,
   });
   Future<QuickSalePreview> quickSalePreview({
     required List<Map<String, dynamic>> items,
@@ -196,7 +244,7 @@ class HttpPosApi implements PosApi, PosCredentialCache {
     };
   }
 
-  Future<Map<String, dynamic>> _request(
+  Future<dynamic> _request(
     String method,
     String path, {
     Map<String, dynamic>? body,
@@ -228,7 +276,7 @@ class HttpPosApi implements PosApi, PosCredentialCache {
         response.body.isEmpty ? <String, dynamic>{} : jsonDecode(response.body);
     final payload =
         decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
-    if (response.statusCode >= 200 && response.statusCode < 300) return payload;
+    if (response.statusCode >= 200 && response.statusCode < 300) return decoded;
     final code = payload['code'] as String? ??
         (response.statusCode == 401
             ? 'authentication_failed'
@@ -485,7 +533,31 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   }
 
   @override
+  Future<List<QuickSaleProduct>> attendanceCatalog({String? search}) async {
+    final suffix = search == null || search.trim().isEmpty
+        ? ''
+        : '?${Uri(queryParameters: {'q': search.trim()}).query}';
+    final payload = await _request('GET', 'commands/catalog/$suffix');
+    return (payload['products'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(QuickSaleProduct.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<QuickSaleCheckoutOptions> attendanceCheckoutOptions() async =>
+      QuickSaleCheckoutOptions.fromJson(
+          await _request('GET', 'commands/checkout-options/'));
+
+  @override
+  Future<AttendanceCommandDetail> attendanceCommandDetail(
+          int commandId) async =>
+      AttendanceCommandDetail.fromJson(
+          await _request('GET', 'commands/$commandId/'));
+
+  @override
   Future<AttendanceCommand> openAttendanceCommand({
+    required String idempotencyKey,
     String identifier = '',
     int? tableId,
     int? customerId,
@@ -493,12 +565,113 @@ class HttpPosApi implements PosApi, PosCredentialCache {
     String notes = '',
   }) async =>
       AttendanceCommand.fromJson(await _request('POST', 'commands/', body: {
+        'idempotency_key': idempotencyKey,
         'identifier': identifier,
         if (tableId != null) 'table': tableId,
         if (customerId != null) 'customer': customerId,
         if (peopleCount != null) 'people_count': peopleCount,
         'notes': notes,
       }));
+
+  @override
+  Future<List<AttendanceOrderItem>> addAttendanceItems({
+    required int commandId,
+    required List<Map<String, dynamic>> items,
+    required String idempotencyKey,
+  }) async {
+    final payload = await _request('POST', 'commands/$commandId/items/',
+        body: {'items': items, 'idempotency_key': idempotencyKey});
+    return (payload as List<dynamic>)
+        .cast<Map<String, dynamic>>()
+        .map(AttendanceOrderItem.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<AttendanceOrderItem> confirmAttendanceItem(
+          {required int itemId, required String idempotencyKey}) async =>
+      AttendanceOrderItem.fromJson(await _request(
+          'POST', 'command-items/$itemId/confirm/',
+          body: {'idempotency_key': idempotencyKey}));
+
+  @override
+  Future<AttendanceOrderItem> cancelAttendanceItem(
+          {required int itemId,
+          required String idempotencyKey,
+          String reason = ''}) async =>
+      AttendanceOrderItem.fromJson(await _request(
+          'POST', 'command-items/$itemId/cancel/',
+          body: {'idempotency_key': idempotencyKey, 'reason': reason}));
+
+  @override
+  Future<AttendanceLedger> attendanceLedger(int commandId) async =>
+      AttendanceLedger.fromJson(
+          await _request('GET', 'commands/$commandId/payments/'));
+
+  @override
+  Future<AttendancePayment> recordAttendancePayment(
+          {required int commandId,
+          required int paymentMethodId,
+          required String amount,
+          required String idempotencyKey,
+          String? receivedAmount,
+          int? cashSessionId}) async =>
+      AttendancePayment.fromJson(
+          await _request('POST', 'commands/$commandId/payments/', body: {
+        'payment_method': paymentMethodId,
+        'amount': amount,
+        'idempotency_key': idempotencyKey,
+        if (receivedAmount != null) 'received_amount': receivedAmount,
+        if (cashSessionId != null) 'cash_session': cashSessionId,
+      }));
+
+  @override
+  Future<AttendancePayment> reverseAttendancePayment(
+          {required int paymentId,
+          required String idempotencyKey,
+          String reason = ''}) async =>
+      AttendancePayment.fromJson(await _request(
+          'POST', 'command-payments/$paymentId/reverse/',
+          body: {'idempotency_key': idempotencyKey, 'reason': reason}));
+
+  @override
+  Future<AttendanceCommand> finalizeAttendanceCommand(
+          {required int commandId,
+          required int cashSessionId,
+          required String idempotencyKey}) async =>
+      AttendanceCommand.fromJson(
+          await _request('POST', 'commands/$commandId/finalize/', body: {
+        'cash_session': cashSessionId,
+        'payments': const [],
+        'discount': '0.00',
+        'service_fee_waived': false,
+        'idempotency_key': idempotencyKey
+      }));
+
+  @override
+  Future<AttendanceCommand> transferAttendanceCommand(
+          {required int commandId,
+          required int? tableId,
+          required String idempotencyKey}) async =>
+      AttendanceCommand.fromJson(await _request(
+          'POST', 'commands/$commandId/transfer/',
+          body: {'table': tableId, 'idempotency_key': idempotencyKey}));
+
+  @override
+  Future<AttendanceCommand> transferAttendanceItems(
+      {required int commandId,
+      required int destinationCommandId,
+      required List<Map<String, dynamic>> items,
+      required String idempotencyKey}) async {
+    final payload =
+        await _request('POST', 'commands/$commandId/transfer-items/', body: {
+      'command': destinationCommandId,
+      'items': items,
+      'idempotency_key': idempotencyKey
+    });
+    return AttendanceCommand.fromJson(
+        payload['command'] as Map<String, dynamic>);
+  }
 
   @override
   Future<QuickSalePreview> quickSalePreview({

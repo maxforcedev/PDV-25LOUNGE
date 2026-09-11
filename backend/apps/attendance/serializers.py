@@ -62,6 +62,7 @@ class AttendanceOpenTableSerializer(serializers.Serializer):
 
 
 class AttendanceOpenCommandSerializer(serializers.Serializer):
+    idempotency_key = serializers.UUIDField()
     identifier = serializers.CharField(max_length=100, required=False, allow_blank=True, default='')
     customer = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     table = serializers.IntegerField(min_value=1, required=False, allow_null=True)
@@ -70,6 +71,7 @@ class AttendanceOpenCommandSerializer(serializers.Serializer):
 
 
 class AttendanceItemsSerializer(serializers.Serializer):
+    idempotency_key = serializers.UUIDField()
     items = serializers.ListField(child=serializers.DictField(), allow_empty=False)
 
     def validate_items(self, values):

@@ -34,6 +34,8 @@ class AttendancePaymentStatus(models.TextChoices):
 
 class AttendanceOperationType(models.TextChoices):
     OPEN_TABLE = 'open_table', 'Abrir mesa'
+    OPEN_COMMAND = 'open_command', 'Abrir comanda'
+    ADD_ITEMS = 'add_items', 'Adicionar itens'
     TRANSFER_COMMAND = 'transfer_command', 'Transferir comanda'
     TRANSFER_ITEMS = 'transfer_items', 'Transferir itens'
     CANCEL_ITEM = 'cancel_item', 'Cancelar item'

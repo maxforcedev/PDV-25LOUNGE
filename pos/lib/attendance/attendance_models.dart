@@ -10,7 +10,8 @@ class AttendanceTable {
     this.commands = const [],
   });
 
-  factory AttendanceTable.fromJson(Map<String, dynamic> json) => AttendanceTable(
+  factory AttendanceTable.fromJson(Map<String, dynamic> json) =>
+      AttendanceTable(
         id: json['id'] as int,
         name: json['name'] as String? ?? '',
         capacity: json['capacity'] as int? ?? 0,
@@ -79,4 +80,108 @@ class AttendanceCommand {
   final Map<String, dynamic> summary;
 
   String get label => identifier.isEmpty ? number : identifier;
+}
+
+class AttendanceCommandDetail {
+  const AttendanceCommandDetail({
+    required this.command,
+    required this.items,
+    required this.summary,
+  });
+
+  factory AttendanceCommandDetail.fromJson(Map<String, dynamic> json) =>
+      AttendanceCommandDetail(
+        command: AttendanceCommand.fromJson(json),
+        items: (json['orders'] as List<dynamic>? ?? const [])
+            .cast<Map<String, dynamic>>()
+            .map(AttendanceOrderItem.fromJson)
+            .toList(growable: false),
+        summary: json['summary'] as Map<String, dynamic>? ?? const {},
+      );
+
+  final AttendanceCommand command;
+  final List<AttendanceOrderItem> items;
+  final Map<String, dynamic> summary;
+}
+
+class AttendanceOrderItem {
+  const AttendanceOrderItem({
+    required this.id,
+    required this.productId,
+    required this.productName,
+    required this.quantity,
+    required this.unitPrice,
+    required this.status,
+    this.notes = '',
+    this.modifiers = const [],
+  });
+
+  factory AttendanceOrderItem.fromJson(Map<String, dynamic> json) =>
+      AttendanceOrderItem(
+        id: json['id'] as int,
+        productId: (json['product'] ?? json['product_id']) as int? ?? 0,
+        productName: json['product_name'] as String? ?? '',
+        quantity: '${json['quantity'] ?? '0'}',
+        unitPrice: '${json['unit_price'] ?? '0.00'}',
+        status: json['status'] as String? ?? 'pending',
+        notes: json['notes'] as String? ?? '',
+        modifiers: (json['modifier_snapshot'] as List<dynamic>? ?? const [])
+            .cast<Map<String, dynamic>>(),
+      );
+
+  final int id;
+  final int productId;
+  final String productName;
+  final String quantity;
+  final String unitPrice;
+  final String status;
+  final String notes;
+  final List<Map<String, dynamic>> modifiers;
+}
+
+class AttendancePayment {
+  const AttendancePayment({
+    required this.id,
+    required this.amount,
+    required this.status,
+    this.paymentMethodName = '',
+    this.paymentMethodCode = '',
+    this.receivedAmount = '0.00',
+    this.changeAmount = '0.00',
+  });
+
+  factory AttendancePayment.fromJson(Map<String, dynamic> json) =>
+      AttendancePayment(
+        id: json['id'] as int,
+        amount: '${json['amount'] ?? '0.00'}',
+        status: json['status'] as String? ?? 'applied',
+        paymentMethodName: json['payment_method_name'] as String? ?? '',
+        paymentMethodCode: json['payment_method_code'] as String? ?? '',
+        receivedAmount: '${json['received_amount'] ?? '0.00'}',
+        changeAmount: '${json['change_amount'] ?? '0.00'}',
+      );
+
+  final int id;
+  final String amount;
+  final String status;
+  final String paymentMethodName;
+  final String paymentMethodCode;
+  final String receivedAmount;
+  final String changeAmount;
+}
+
+class AttendanceLedger {
+  const AttendanceLedger({required this.summary, required this.payments});
+
+  factory AttendanceLedger.fromJson(Map<String, dynamic> json) =>
+      AttendanceLedger(
+        summary: json['summary'] as Map<String, dynamic>? ?? const {},
+        payments: (json['payments'] as List<dynamic>? ?? const [])
+            .cast<Map<String, dynamic>>()
+            .map(AttendancePayment.fromJson)
+            .toList(growable: false),
+      );
+
+  final Map<String, dynamic> summary;
+  final List<AttendancePayment> payments;
 }

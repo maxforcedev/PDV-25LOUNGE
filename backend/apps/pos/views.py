@@ -697,14 +697,79 @@ class POSAttendanceCommandsView(POSAttendanceView):
         self._require(permissions, 'commands.open', 'Você não possui permissão para abrir comandas nesta filial.')
         serializer = AttendanceOpenCommandSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
         try:
-            command = open_attendance_command(
+            command, replayed = open_attendance_command(
                 branch=device.branch, user=operator,
-                audit_metadata=self.audit_metadata(device, operator_session), **serializer.validated_data,
+                table_id=data.get('table'), idempotency_key=data['idempotency_key'],
+                identifier=data['identifier'], customer_id=data.get('customer'),
+                people_count=data.get('people_count'), notes=data['notes'],
+                audit_metadata=self.audit_metadata(device, operator_session),
             )
         except AttendanceConflict as error:
             self._domain(error)
-        return Response(AttendanceCommandSerializer(command).data, status=status.HTTP_201_CREATED)
+        request.audit_fallback_suppressed = replayed
+        response = Response(
+            AttendanceCommandSerializer(command).data,
+            status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED,
+        )
+        if replayed:
+            response['Idempotency-Replayed'] = 'true'
+        return response
+
+
+class POSAttendanceCatalogView(POSAttendanceView, POSQuickSaleView):
+    def get(self, request):
+        device, _, permissions, _ = self.context(request)
+        self._require(permissions, 'commands.add_items', 'Você não possui permissão para adicionar itens.')
+        require_branch_feature(device.branch, 'commands')
+        request._pos_branch = device.branch
+        queryset = _pos_catalog_queryset(
+            device.branch, search=request.query_params.get('search'),
+        ).filter(available_command=True)
+        return Response({'products': self._catalog_payload(
+            request, _visible_pos_catalog(device, queryset), device.branch,
+        )})
+
+
+class POSAttendanceCheckoutOptionsView(POSAttendanceView):
+    def get(self, request):
+        device, _, permissions, _ = self.context(request)
+        if not permissions.intersection({'commands.payments.record', 'commands.finalize'}):
+            raise PermissionDenied('Você não possui permissão para consultar opções de pagamento.')
+        from apps.sales.models import PaymentMethod
+
+        mode, fixed_register = effective_cash_settings(device)
+        sessions = CashSession.objects.filter(
+            branch=device.branch, status='open',
+        ).select_related('cash_register', 'opened_by').order_by('id')
+        fixed_cash_available = True
+        if mode == 'FIXED':
+            fixed_cash_available = bool(
+                fixed_register and fixed_register.status == CashRegisterStatus.ACTIVE
+            )
+            sessions = sessions.filter(cash_register=fixed_register) if fixed_cash_available else sessions.none()
+        methods = PaymentMethod.objects.filter(
+            company_id=device.branch.company_id, status=Status.ACTIVE,
+        ).order_by('name', 'id').values('id', 'code', 'name')
+        return Response({
+            'payment_methods': list(methods),
+            'cash_binding_mode': mode,
+            'fixed_register': (
+                {'id': fixed_register.pk, 'name': fixed_register.name}
+                if mode == 'FIXED' and fixed_register else None
+            ),
+            'cash_required': True,
+            'fixed_cash_available': fixed_cash_available,
+            'cash_sessions': [
+                {
+                    'id': session.pk,
+                    'register_name': session.cash_register.name,
+                    'opened_by_name': session.opened_by.get_full_name().strip() or session.opened_by.email,
+                }
+                for session in sessions
+            ],
+        })
 
 
 class POSAttendanceCommandDetailView(POSAttendanceView):
@@ -728,13 +793,20 @@ class POSAttendanceCommandItemsView(POSAttendanceView):
         serializer = AttendanceItemsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            _, items = add_order_items(
+            _, items, replayed = add_order_items(
                 command=command, user=operator, items=serializer.validated_data['items'],
+                idempotency_key=serializer.validated_data['idempotency_key'],
                 audit_metadata=self.audit_metadata(device, operator_session),
             )
         except AttendanceConflict as error:
             self._domain(error)
-        return Response(AttendanceOrderItemSerializer(items, many=True).data, status=status.HTTP_201_CREATED)
+        response = Response(
+            AttendanceOrderItemSerializer(items, many=True).data,
+            status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED,
+        )
+        if replayed:
+            response['Idempotency-Replayed'] = 'true'
+        return response
 
 
 class POSAttendanceItemConfirmView(POSAttendanceView):
