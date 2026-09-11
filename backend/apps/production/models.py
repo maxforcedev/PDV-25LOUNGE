@@ -103,10 +103,10 @@ class ProductionJob(BaseModel):
         constraints = [
             models.CheckConstraint(
                 condition=(
-                    Q(order_item__isnull=False, sale_item__isnull=True, attendance_order_item__isnull=True)
-                    | Q(order_item__isnull=True, sale_item__isnull=False, attendance_order_item__isnull=True)
-                    | Q(order_item__isnull=True, sale_item__isnull=True, attendance_order_item__isnull=False)
-                    | Q(order_item__isnull=True, sale_item__isnull=True, table_order_item__isnull=False)
+                    Q(order_item__isnull=False, sale_item__isnull=True, attendance_order_item__isnull=True, table_order_item__isnull=True)
+                    | Q(order_item__isnull=True, sale_item__isnull=False, attendance_order_item__isnull=True, table_order_item__isnull=True)
+                    | Q(order_item__isnull=True, sale_item__isnull=True, attendance_order_item__isnull=False, table_order_item__isnull=True)
+                    | Q(order_item__isnull=True, sale_item__isnull=True, attendance_order_item__isnull=True, table_order_item__isnull=False)
                 ),
                 name='production_job_exactly_one_source',
             ),
@@ -181,10 +181,10 @@ class Ticket(BaseModel):
             models.CheckConstraint(condition=Q(quantity__gt=0), name='production_ticket_quantity_positive'),
             models.CheckConstraint(
                 condition=(
-                    Q(source_sale_item__isnull=False, source_order_item__isnull=True, source_attendance_order_item__isnull=True)
-                    | Q(source_sale_item__isnull=True, source_order_item__isnull=False, source_attendance_order_item__isnull=True)
-                    | Q(source_sale_item__isnull=True, source_order_item__isnull=True, source_attendance_order_item__isnull=False)
-                    | Q(source_sale_item__isnull=True, source_order_item__isnull=True, source_table_order_item__isnull=False)
+                    Q(source_sale_item__isnull=False, source_order_item__isnull=True, source_attendance_order_item__isnull=True, source_table_order_item__isnull=True)
+                    | Q(source_sale_item__isnull=True, source_order_item__isnull=False, source_attendance_order_item__isnull=True, source_table_order_item__isnull=True)
+                    | Q(source_sale_item__isnull=True, source_order_item__isnull=True, source_attendance_order_item__isnull=False, source_table_order_item__isnull=True)
+                    | Q(source_sale_item__isnull=True, source_order_item__isnull=True, source_attendance_order_item__isnull=True, source_table_order_item__isnull=False)
                 ),
                 name='production_ticket_exactly_one_source',
             ),

@@ -324,6 +324,7 @@ def ticket_validation_data(ticket):
         'source_type': (
             'sale' if ticket.source_sale_item_id
             else 'attendance_order' if ticket.source_attendance_order_item_id
+            else 'table_order' if ticket.source_table_order_item_id
             else 'order'
         ),
     }

@@ -278,6 +278,7 @@ class TableAttendance(BaseModel):
     branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='table_attendances')
     table = models.ForeignKey('commands.Table', on_delete=models.PROTECT, related_name='table_attendances')
     people_count = models.PositiveIntegerField(null=True, blank=True)
+    responsible_name = models.CharField(max_length=200, blank=True, default='')
     customer = models.ForeignKey(
         'companies.Customer', on_delete=models.PROTECT, related_name='table_attendances',
         blank=True, null=True,
@@ -303,6 +304,7 @@ class TableAttendance(BaseModel):
     def clean(self):
         super().clean()
         self.notes = (self.notes or '').strip()
+        self.responsible_name = ' '.join((self.responsible_name or '').split())
         errors = {}
         if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
             errors['branch'] = 'A filial deve pertencer à empresa do atendimento.'
@@ -362,15 +364,45 @@ class TablePayment(BaseModel):
     attendance = models.ForeignKey(TableAttendance, on_delete=models.PROTECT, related_name='payments')
     payment_method = models.ForeignKey('sales.PaymentMethod', on_delete=models.PROTECT, related_name='table_payments')
     amount = models.DecimalField(max_digits=14, decimal_places=2)
+    received_amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    change_amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    cash_session = models.ForeignKey('cash.CashSession', on_delete=models.PROTECT, related_name='table_payments', null=True, blank=True)
     operator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='table_payments')
     status = models.CharField(max_length=10, choices=AttendancePaymentStatus.choices, default=AttendancePaymentStatus.APPLIED)
     idempotency_key = models.UUIDField(default=uuid.uuid4)
+    reversal_of = models.OneToOneField('self', on_delete=models.PROTECT, related_name='reversal', null=True, blank=True)
+    reversal_reason = models.TextField(blank=True, default='')
 
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=('attendance', 'idempotency_key'), name='table_payment_idempotency_unique'),
             models.CheckConstraint(condition=Q(amount__gt=0), name='table_payment_amount_positive'),
+            models.CheckConstraint(condition=Q(received_amount__isnull=True) | Q(received_amount__gte=F('amount')), name='table_payment_received_gte_amount'),
+            models.CheckConstraint(condition=Q(change_amount__isnull=True) | Q(change_amount__gte=0), name='table_payment_change_nonnegative'),
         ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.attendance_id and self.payment_method_id and self.payment_method.company_id != self.attendance.company_id:
+            errors['payment_method'] = 'A forma de pagamento deve pertencer à empresa.'
+        if self.attendance_id and self.cash_session_id and self.cash_session.branch_id != self.attendance.branch_id:
+            errors['cash_session'] = 'A sessão deve pertencer à filial.'
+        if self.payment_method_id and self.payment_method.code == 'cash':
+            if self.received_amount is None or self.received_amount < self.amount:
+                errors['received_amount'] = 'Dinheiro exige valor recebido igual ou maior ao aplicado.'
+        elif self.received_amount is not None or self.change_amount is not None or self.cash_session_id:
+            errors['payment_method'] = 'Somente dinheiro aceita recebido, troco ou sessão de caixa.'
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError('Pagamentos de mesa são imutáveis.')
+        if self.payment_method_id and self.payment_method.code == 'cash' and self.received_amount is not None:
+            self.change_amount = self.received_amount - self.amount
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
 
 class TablePaymentAllocation(BaseModel):
@@ -378,9 +410,12 @@ class TablePaymentAllocation(BaseModel):
     item = models.ForeignKey(TableOrderItem, on_delete=models.PROTECT, related_name='payment_allocations', blank=True, null=True)
     person_number = models.PositiveIntegerField(blank=True, null=True)
     amount = models.DecimalField(max_digits=14, decimal_places=2)
+    allocated_quantity = models.DecimalField(max_digits=14, decimal_places=3, blank=True, null=True)
 
     class Meta:
         constraints = [
             models.CheckConstraint(condition=Q(amount__gt=0), name='table_payment_allocation_amount_positive'),
             models.CheckConstraint(condition=Q(item__isnull=False) | Q(person_number__isnull=False), name='table_payment_allocation_target_required'),
+            models.CheckConstraint(condition=Q(allocated_quantity__isnull=True) | Q(allocated_quantity__gt=0), name='table_payment_allocation_quantity_positive'),
+            models.CheckConstraint(condition=Q(allocated_quantity__isnull=True) | Q(item__isnull=False), name='table_payment_allocation_quantity_requires_item'),
         ]

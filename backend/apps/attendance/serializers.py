@@ -179,7 +179,7 @@ class TableAttendanceSerializer(serializers.ModelSerializer):
     class Meta:
         model = TableAttendance
         fields = (
-            'id', 'table', 'table_name', 'customer', 'people_count', 'notes', 'status',
+            'id', 'table', 'table_name', 'customer', 'people_count', 'responsible_name', 'notes', 'status',
             'opened_by', 'bill_requested_at', 'bill_requested_by', 'closed_at', 'closed_by',
             'sale', 'created_at', 'updated_at',
         )
@@ -189,7 +189,14 @@ class TableAttendanceSerializer(serializers.ModelSerializer):
 class TableOrderItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = TableOrderItem
-        fields = '__all__'
+        fields = (
+            'id', 'order', 'product', 'quantity', 'product_name', 'internal_code',
+            'category_id_snapshot', 'category_name_snapshot', 'unit', 'unit_price',
+            'base_unit_price', 'modifier_unit_total', 'modifier_snapshot', 'notes',
+            'unit_cost', 'component_cost_snapshot', 'status', 'confirmed_at',
+            'confirmed_by', 'cancelled_at', 'cancelled_by', 'cancellation_reason',
+            'created_at', 'updated_at',
+        )
         read_only_fields = fields
 
 
@@ -205,7 +212,7 @@ class TableOrderSerializer(serializers.ModelSerializer):
 class TablePaymentAllocationSerializer(serializers.ModelSerializer):
     class Meta:
         model = TablePaymentAllocation
-        fields = ('id', 'item', 'person_number', 'amount')
+        fields = ('id', 'item', 'person_number', 'amount', 'allocated_quantity')
         read_only_fields = fields
 
 
@@ -214,5 +221,9 @@ class TablePaymentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = TablePayment
-        fields = ('id', 'attendance', 'payment_method', 'amount', 'operator', 'status', 'allocations', 'created_at')
+        fields = (
+            'id', 'attendance', 'payment_method', 'amount', 'received_amount',
+            'change_amount', 'cash_session', 'operator', 'status', 'idempotency_key',
+            'reversal_of', 'reversal_reason', 'allocations', 'created_at',
+        )
         read_only_fields = fields
