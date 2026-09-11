@@ -150,6 +150,7 @@ class _CommandsPageState extends State<CommandsPage> {
         appBar: AppBar(
           title: const Text('Comandas'),
           actions: [IconButton(onPressed: _loading ? null : _load, icon: const Icon(Icons.refresh))],
+        ),
         floatingActionButton: FloatingActionButton.extended(
           onPressed: _open,
           icon: const Icon(Icons.add),
