@@ -15,6 +15,7 @@ from decimal import Decimal
 
 from django.test import TestCase
 from django.utils import timezone
+from rest_framework.exceptions import ValidationError
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
@@ -35,8 +36,11 @@ from apps.commands.models import (
 from apps.commands.services import (
     create_table, open_command, add_order_item, confirm_order_item,
     cancel_order_item, command_payment_summary, finalize_command, record_command_payment,
-    transfer_command_items, split_command, merge_commands, CommandConflict,
+    transfer_command_items, split_command, merge_commands, archive_table, restore_table,
+    CommandConflict,
 )
+from apps.attendance.models import AttendanceCommand, AttendanceCommandStatus
+from apps.attendance.services import open_table as open_attendance_table
 from apps.inventory.models import (
     MovementType, MovementDomainOrigin, Stock, StockMovement,
 )
@@ -172,6 +176,54 @@ class MultipleCommandsPerTableTests(Block6Fixture, TestCase):
         self.assertEqual(row['operational_status'], 'occupied')
         self.assertEqual(row['open_commands'][0]['paid_total'], '5.00')
         self.assertEqual(row['open_commands'][0]['confirmed_total'], '20.00')
+
+
+class TableArchiveTests(Block6Fixture, TestCase):
+    def test_free_table_archives_and_restores(self):
+        table = create_table(branch=self.branch, name='Mesa livre', user=self.owner)
+        archive_table(table=table, user=self.owner)
+        table.refresh_from_db()
+        self.assertEqual(table.status, TableStatus.INACTIVE)
+        restore_table(table=table, user=self.owner)
+        table.refresh_from_db()
+        self.assertEqual(table.status, TableStatus.ACTIVE)
+
+    def test_legacy_open_command_blocks_archive(self):
+        table = create_table(branch=self.branch, name='Mesa legacy', user=self.owner)
+        open_command(branch=self.branch, user=self.owner, table=table)
+        with self.assertRaisesRegex(ValidationError, 'Não é possível arquivar esta mesa'):
+            archive_table(table=table, user=self.owner)
+
+    def test_open_attendance_command_blocks_archive(self):
+        table = create_table(branch=self.branch, name='Mesa attendance', user=self.owner)
+        command, _ = open_attendance_table(
+            branch=self.branch, table_id=table.pk, user=self.owner,
+            idempotency_key=uuid.uuid4(),
+        )
+        self.assertEqual(command.status, AttendanceCommandStatus.OPEN)
+        self.assertTrue(AttendanceCommand.objects.filter(table=table, status='open').exists())
+        with self.assertRaisesRegex(ValidationError, 'Não é possível arquivar esta mesa'):
+            archive_table(table=table, user=self.owner)
+
+    def test_restore_rejects_active_identifier_collision(self):
+        archived = create_table(branch=self.branch, name='Mesa 20', user=self.owner)
+        archive_table(table=archived, user=self.owner)
+        Table.objects.create(branch=self.branch, name='Mesa 20', status=TableStatus.ACTIVE)
+        with self.assertRaisesRegex(ValidationError, 'Já existe uma mesa ativa com este identificador'):
+            restore_table(table=archived, user=self.owner)
+
+    def test_operational_endpoint_hides_archived_by_default_and_lists_them_explicitly(self):
+        active = create_table(branch=self.branch, name='Mesa ativa', user=self.owner)
+        archived = create_table(branch=self.branch, name='Mesa arquivada', user=self.owner)
+        archive_table(table=archived, user=self.owner)
+        client = APIClient()
+        client.force_authenticate(self.owner)
+        default_response = client.get('/api/v1/tables/operational/', HTTP_X_BRANCH_ID=str(self.branch.pk))
+        archived_response = client.get('/api/v1/tables/operational/?status=archived', HTTP_X_BRANCH_ID=str(self.branch.pk))
+        self.assertEqual(default_response.status_code, 200, default_response.data)
+        self.assertEqual(archived_response.status_code, 200, archived_response.data)
+        self.assertEqual([row['id'] for row in default_response.data], [active.pk])
+        self.assertEqual([row['id'] for row in archived_response.data], [archived.pk])
 
 
 class CommandConsumptionLimitTests(Block6Fixture, TestCase):

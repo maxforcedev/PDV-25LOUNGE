@@ -47,7 +47,7 @@ function TablesPage() {
   const [editing, setEditing] = useState<Table | null>(null);
   const [form, setForm] = useState({ name: "", seats: "0" });
   const [batchForm, setBatchForm] = useState({ prefix: "", start: "1", end: "20", seats: "0" });
-  const [filter, setFilter] = useState<"all" | "free" | "occupied" | "partial">("all");
+  const [filter, setFilter] = useState<"all" | "free" | "occupied" | "archived">("all");
   const [search, setSearch] = useState("");
   const [, setClock] = useState(0);
   const [settings, setSettings] = useState<BranchSettings | null>(null);
@@ -61,7 +61,7 @@ function TablesPage() {
     setLoading(true);
     setError("");
     try {
-      const response = await http.get<Table[]>(`tables/operational/?branch=${currentBranch.id}`);
+      const response = await http.get<Table[]>(`tables/operational/?branch=${currentBranch.id}&status=${filter === "archived" ? "archived" : "all"}`);
       if (context.current === token) setTables(response);
     } catch (caught) {
       if (context.current === token) setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar as mesas.");
@@ -72,7 +72,7 @@ function TablesPage() {
 
   const loadRef = useRef(load);
   loadRef.current = load;
-  useEffect(() => { setTables([]); void loadRef.current(String(currentBranch?.id || "")); if (currentBranch) void http.get<BranchSettings>(`branches/${currentBranch.id}/settings/`).then(setSettings).catch(() => setSettings(null)); }, [currentBranch?.id]);
+  useEffect(() => { setTables([]); void loadRef.current(String(currentBranch?.id || "")); if (currentBranch) void http.get<BranchSettings>(`branches/${currentBranch.id}/settings/`).then(setSettings).catch(() => setSettings(null)); }, [currentBranch?.id, filter]);
   useEffect(() => {
     const interval = window.setInterval(() => setClock((value) => value + 1), 60000);
     return () => window.clearInterval(interval);
@@ -117,7 +117,7 @@ function TablesPage() {
 
   async function toggleStatus(table: Table) {
     if (!canChange || !currentBranch) return;
-    const action = table.status === "active" ? "deactivate" : "activate";
+    const action = table.status === "active" ? "archive" : "restore";
     try { await http.post(`tables/${table.id}/${action}/`, {}); await load(String(currentBranch.id)); }
     catch (caught) { setError(caught instanceof ApiError ? caught.message : "Não foi possível alterar o status."); }
   }
@@ -142,10 +142,8 @@ function TablesPage() {
   if (!currentBranch) return <div className="p-6"><Alert message="Selecione uma filial." /></div>;
   const visibleTables = tables.filter((table) => {
     const commands = table.open_commands || [];
-    const partial = commands.some(hasPartialPayment);
     if (filter === "free" && table.operational_status !== "free") return false;
     if (filter === "occupied" && table.operational_status !== "occupied") return false;
-    if (filter === "partial" && !partial) return false;
     const term = search.trim().toLowerCase();
     return !term || table.name.toLowerCase().includes(term) || commands.some((command) => `${command.identifier} ${command.command_number} ${command.opened_by_name}`.toLowerCase().includes(term));
   });
@@ -161,7 +159,7 @@ function TablesPage() {
       <div className="space-y-4 p-4 sm:p-6 lg:p-8">
         {error && <Alert message={error} />}
         <section className="flex flex-col gap-3 rounded-lg border border-subtle bg-surface p-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-wrap gap-2">{(["all", "free", "occupied", "partial"] as const).map((value) => <Button key={value} variant={filter === value ? "primary" : "secondary"} className="min-h-10" onClick={() => setFilter(value)}>{({ all: "Todas", free: "Livres", occupied: "Ocupadas", partial: "Pagamento parcial" })[value]}</Button>)}</div>
+          <div className="flex flex-wrap gap-2">{(["all", "free", "occupied", "archived"] as const).map((value) => <Button key={value} variant={filter === value ? "primary" : "secondary"} className="min-h-10" onClick={() => setFilter(value)}>{({ all: "Todas", free: "Livres", occupied: "Ocupadas", archived: "Arquivadas" })[value]}</Button>)}</div>
           <div className="relative w-full lg:max-w-md"><Search className="absolute left-3 top-3 size-4 text-muted" /><Input className="pl-9" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Mesa, responsável ou atendente" /></div>
         </section>
         {loading ? <TableLoading /> : visibleTables.length ? (
@@ -170,10 +168,10 @@ function TablesPage() {
               const occupied = table.operational_status === "occupied";
               const partial = table.open_commands?.some(hasPartialPayment);
               return <section key={table.id} className={`card min-h-60 p-5 ${occupied ? "border-primary/40 bg-primary/5" : "border-success/30"}`}>
-                <div className="flex items-start justify-between gap-3"><div><h2 className="text-2xl font-black tracking-tight">{table.name}</h2><p className={`mt-1 text-xs font-bold ${occupied ? "text-primary" : "text-success"}`}>{occupied ? "OCUPADA" : "LIVRE"}{partial ? " · PAGAMENTO PARCIAL" : ""}</p></div><div className="flex gap-1">{canChange && <><button className="icon-button" title="Editar mesa" onClick={() => openEdit(table)}><Pencil className="size-4" /></button><button className="icon-button" title={table.status === "active" ? "Inativar" : "Ativar"} onClick={() => void toggleStatus(table)}><Power className="size-4" /></button></>}</div></div>
+                <div className="flex items-start justify-between gap-3"><div><h2 className="text-2xl font-black tracking-tight">{table.name}</h2><p className={`mt-1 text-xs font-bold ${table.status === "inactive" ? "text-muted" : occupied ? "text-primary" : "text-success"}`}>{table.status === "inactive" ? "ARQUIVADA" : occupied ? "OCUPADA" : "LIVRE"}{partial ? " · PAGAMENTO PARCIAL" : ""}</p></div><div className="flex gap-1">{canChange && <>{table.status === "active" && <button className="icon-button" title="Editar mesa" onClick={() => openEdit(table)}><Pencil className="size-4" /></button>}<button className="icon-button" title={table.status === "active" ? "Arquivar mesa" : "Restaurar mesa"} onClick={() => void toggleStatus(table)}><Power className="size-4" /></button></>}</div></div>
                 <div className="mt-6 flex items-end justify-between"><div><span className="block text-xs text-muted">Total atual</span><strong className="text-xl">{occupied ? formatBRL(table.open_commands_total || "0") : formatBRL("0")}</strong></div><span className="inline-flex items-center gap-1 text-xs text-muted"><Users className="size-3" />{table.seats ? `${table.seats} lugares` : "Sem capacidade"}</span></div>
                 {table.open_commands?.length ? <div className="mt-4 space-y-2 border-t border-subtle pt-3">{table.open_commands.map((command) => <Link key={command.id} href={`/comandas/${command.id}`} className="block rounded-md bg-surface-muted p-2 text-sm hover:bg-primary/10"><div className="flex justify-between gap-2 font-bold"><span>{command.identifier || command.command_number}</span><span>{formatBRL(command.confirmed_total)}</span></div><div className="mt-1 flex justify-between text-[11px] text-muted"><span>{command.opened_by_name || "Atendente não informado"}</span><span className="inline-flex items-center gap-1"><Clock3 className="size-3" />{openedFor(command.opened_at)}</span></div>{hasPositivePayment(command) && <div className="mt-1 flex items-center gap-1 text-[11px] text-warning-strong"><CreditCard className="size-3" />Pago {formatBRL(command.paid_total)}</div>}</Link>)}</div> : null}
-                {canChange && table.status === "active" ? <Button className="mt-4 w-full min-h-11" variant={occupied ? "secondary" : "primary"} onClick={() => { setCommandTable(table); setCommandIdentifier(""); setCommandCustomer(null); setFields({}); }}><Users className="size-4" />{occupied ? "Adicionar comanda" : "Abrir mesa"}</Button> : null}
+                {canChange && table.status === "active" ? <Button className="mt-4 w-full min-h-11" variant={occupied ? "secondary" : "primary"} onClick={() => { setCommandTable(table); setCommandIdentifier(""); setCommandCustomer(null); setFields({}); }}><Users className="size-4" />{occupied ? "Adicionar comanda" : "Abrir mesa"}</Button> : table.status === "inactive" && canChange ? <Button className="mt-4 w-full min-h-11" variant="secondary" onClick={() => void toggleStatus(table)}>RESTAURAR</Button> : null}
               </section>;
             })}
           </div>

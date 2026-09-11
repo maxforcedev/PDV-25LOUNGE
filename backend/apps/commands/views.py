@@ -25,11 +25,11 @@ from .serializers import (
     RecordCommandPaymentSerializer, ReverseCommandPaymentSerializer, SetCommandCustomerSerializer,
 )
 from .services import (
-    add_order_item, batch_create_tables, cancel_order_item, confirm_order_item,
+    add_order_item, archive_table, batch_create_tables, cancel_order_item, confirm_order_item,
     create_table, finalize_command, open_command,
     set_command_customer,
     merge_commands, split_command, transfer_command_items, transfer_command_table,
-    record_command_payment, reverse_command_payment, command_payment_summary,
+    record_command_payment, restore_table, reverse_command_payment, command_payment_summary,
 )
 
 
@@ -59,11 +59,11 @@ class TableViewSet(viewsets.ModelViewSet):
         branch = getattr(self.request, 'branch_context', None)
         if branch and serializer.validated_data.get('branch') and serializer.validated_data['branch'].pk != branch.pk:
             raise PermissionDenied({'branch': 'A mesa deve pertencer à filial atual.'})
-        if (
-            serializer.validated_data.get('status') == TableStatus.INACTIVE
-            and serializer.instance.commands.filter(status=CommandStatus.OPEN).exists()
+        if serializer.validated_data and (
+            serializer.instance.commands.filter(status=CommandStatus.OPEN).exists()
+            or serializer.instance.attendance_commands.filter(status='open').exists()
         ):
-            raise ValidationError({'status': 'Existem comandas abertas vinculadas a esta mesa.'})
+            raise ValidationError({'table': 'Não é possível alterar a estrutura de uma mesa com atendimento ou comanda aberta vinculada.'})
         fields = ('branch_id', 'name', 'seats', 'status')
         before = model_snapshot(serializer.instance, fields)
         table = serializer.save()
@@ -95,6 +95,10 @@ class TableViewSet(viewsets.ModelViewSet):
             seats=seats,
             user=request.user,
         )
+        before_settings = model_snapshot(settings, (
+            'table_range_start', 'table_range_end', 'default_table_prefix',
+            'default_table_seats', 'default_table_quantity',
+        ))
         settings.table_range_start = start
         settings.table_range_end = end
         settings.default_table_prefix = prefix
@@ -104,6 +108,12 @@ class TableViewSet(viewsets.ModelViewSet):
             'table_range_start', 'table_range_end', 'default_table_prefix',
             'default_table_seats', 'default_table_quantity', 'updated_at',
         ))
+        audit_log(actor=request.user, action='table.range.generate', obj=settings,
+                  company=branch.company, branch=branch, before=before_settings,
+                  after=model_snapshot(settings, (
+                      'table_range_start', 'table_range_end', 'default_table_prefix',
+                      'default_table_seats', 'default_table_quantity',
+                  )), metadata={'created_count': len(created)})
         return Response(
             {'created': len(created), 'tables': TableSerializer(created, many=True).data},
             status=status.HTTP_201_CREATED,
@@ -111,33 +121,31 @@ class TableViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=('post',))
     def activate(self, request, pk=None):
-        table = self.get_object()
-        table.status = TableStatus.ACTIVE
-        table.save(update_fields=('status', 'updated_at'))
-        audit_log(
-            actor=request.user, action='table.activate', obj=table,
-            company=table.branch.company, branch=table.branch,
-            after=model_snapshot(table, ('name', 'status')),
-        )
+        table = restore_table(table=self.get_object(), user=request.user)
         return Response(TableSerializer(table).data)
 
     @action(detail=True, methods=('post',))
     def deactivate(self, request, pk=None):
-        table = self.get_object()
-        if table.commands.filter(status=CommandStatus.OPEN).exists():
-            raise ValidationError({'status': 'Existem comandas abertas vinculadas a esta mesa.'})
-        table.status = TableStatus.INACTIVE
-        table.save(update_fields=('status', 'updated_at'))
-        audit_log(
-            actor=request.user, action='table.deactivate', obj=table,
-            company=table.branch.company, branch=table.branch,
-            after=model_snapshot(table, ('name', 'status')),
-        )
+        table = archive_table(table=self.get_object(), user=request.user)
         return Response(TableSerializer(table).data)
+
+    @action(detail=True, methods=('post',), url_path='archive')
+    def archive(self, request, pk=None):
+        return Response(TableSerializer(archive_table(table=self.get_object(), user=request.user)).data)
+
+    @action(detail=True, methods=('post',), url_path='restore')
+    def restore(self, request, pk=None):
+        return Response(TableSerializer(restore_table(table=self.get_object(), user=request.user)).data)
 
     @action(detail=False, methods=('get',), url_path='operational')
     def operational(self, request):
-        tables = list(self.get_queryset())
+        tables_queryset = self.get_queryset()
+        status_filter = request.query_params.get('status')
+        if status_filter == 'archived':
+            tables_queryset = tables_queryset.filter(status=TableStatus.INACTIVE)
+        elif status_filter != 'all':
+            tables_queryset = tables_queryset.filter(status=TableStatus.ACTIVE)
+        tables = list(tables_queryset)
         table_ids = [table.pk for table in tables]
         money_field = DecimalField(max_digits=14, decimal_places=2)
         payment_totals = CommandPayment.objects.filter(

@@ -313,6 +313,8 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
         )
         read_only_fields = (
             'id', 'branch', 'feature_flags',
+            'default_table_quantity', 'default_table_seats', 'default_table_prefix',
+            'table_range_start', 'table_range_end',
             'created_at', 'updated_at',
             'negative_stock_count', 'negative_stock_state',
         )

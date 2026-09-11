@@ -39,6 +39,8 @@ class CommandFunctionalPermission(BasePermission):
         'partial_update': 'commands.open',
         'activate': 'commands.open',
         'deactivate': 'commands.open',
+        'archive': 'commands.open',
+        'restore': 'commands.open',
         'batch_create': 'commands.open',
     }
 
