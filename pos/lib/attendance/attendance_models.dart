@@ -7,6 +7,8 @@ class AttendanceTable {
     required this.total,
     required this.balance,
     this.legacyOccupied = false,
+    this.billRequested = false,
+    this.group,
     this.commands = const [],
   });
 
@@ -19,6 +21,11 @@ class AttendanceTable {
         total: json['total'] as String? ?? '0.00',
         balance: json['balance'] as String? ?? '0.00',
         legacyOccupied: json['legacy_occupied'] == true,
+        billRequested: json['bill_requested'] == true,
+        group: json['group'] is Map<String, dynamic>
+            ? AttendanceTableGroup.fromJson(
+                json['group'] as Map<String, dynamic>)
+            : null,
         commands: (json['commands'] as List<dynamic>? ?? const [])
             .cast<Map<String, dynamic>>()
             .map(AttendanceCommand.fromJson)
@@ -32,9 +39,31 @@ class AttendanceTable {
   final String total;
   final String balance;
   final bool legacyOccupied;
+  final bool billRequested;
+  final AttendanceTableGroup? group;
   final List<AttendanceCommand> commands;
 
   bool get isOpen => status == 'occupied';
+}
+
+class AttendanceTableGroup {
+  const AttendanceTableGroup({
+    required this.id,
+    required this.tableIds,
+    required this.tableNames,
+  });
+
+  factory AttendanceTableGroup.fromJson(Map<String, dynamic> json) =>
+      AttendanceTableGroup(
+        id: json['id'] as int,
+        tableIds: (json['table_ids'] as List<dynamic>? ?? const []).cast<int>(),
+        tableNames:
+            (json['table_names'] as List<dynamic>? ?? const []).cast<String>(),
+      );
+
+  final int id;
+  final List<int> tableIds;
+  final List<String> tableNames;
 }
 
 class AttendanceCommand {
@@ -50,6 +79,7 @@ class AttendanceCommand {
     this.peopleCount,
     this.notes = '',
     this.summary = const {},
+    this.billRequestedAt,
   });
 
   factory AttendanceCommand.fromJson(Map<String, dynamic> json) =>
@@ -65,6 +95,7 @@ class AttendanceCommand {
         peopleCount: json['people_count'] as int?,
         notes: json['notes'] as String? ?? '',
         summary: json['summary'] as Map<String, dynamic>? ?? const {},
+        billRequestedAt: json['bill_requested_at'] as String?,
       );
 
   final int id;
@@ -78,6 +109,9 @@ class AttendanceCommand {
   final int? peopleCount;
   final String notes;
   final Map<String, dynamic> summary;
+  final String? billRequestedAt;
+
+  bool get billRequested => billRequestedAt != null;
 
   String get label => identifier.isEmpty ? number : identifier;
 }

@@ -27,7 +27,7 @@ from .models import (
     AttendanceCommand, AttendanceCommandStatus, AttendanceOperation,
     AttendanceOperationType, AttendanceOrder, AttendanceOrderItem,
     AttendanceOrderItemStatus, AttendanceOrderStatus, AttendancePayment,
-    AttendancePaymentStatus,
+    AttendancePaymentStatus, AttendanceTableGroup, AttendanceTableGroupMembership,
 )
 
 
@@ -482,7 +482,10 @@ def transfer_items(*, command, destination_id, items, user, idempotency_key, aud
     if replayed:
         return destination, operation.result.get('item_ids', []), True
     if AttendancePayment.objects.filter(command__in=(source, destination), status=AttendancePaymentStatus.APPLIED, reversal__isnull=True).exists():
-        raise AttendanceConflict('command_payments_transfer_unsupported', 'Estorne os pagamentos antes de transferir itens.')
+        raise AttendanceConflict(
+            'command_payments_transfer_unsupported',
+            'Não é possível transferir itens com pagamento parcial ativo: o rateio do pagamento entre consumos não é automático. Estorne os pagamentos antes de transferir itens.',
+        )
     requested = {entry['item']: entry['quantity'] for entry in items}
     source_items = list(AttendanceOrderItem.objects.select_for_update().filter(
         pk__in=requested, order__command=source,
@@ -524,6 +527,123 @@ def transfer_items(*, command, destination_id, items, user, idempotency_key, aud
     operation.result = {'command_id': destination.pk, 'item_ids': moved}
     operation.save(update_fields=('result', 'updated_at'))
     return destination, moved, False
+
+
+@transaction.atomic
+def group_tables(*, branch, table_ids, user, idempotency_key, audit_metadata=None):
+    from apps.commands.models import Table, TableStatus
+
+    branch = _active_branch(branch)
+    normalized_ids = sorted(set(table_ids))
+    operation, replayed = _operation(
+        branch=branch, operation_type=AttendanceOperationType.GROUP_TABLES,
+        idempotency_key=idempotency_key, payload={'tables': normalized_ids},
+    )
+    if replayed:
+        return AttendanceTableGroup.objects.get(pk=operation.result['group_id']), True
+    tables = list(Table.objects.select_for_update().filter(
+        pk__in=normalized_ids, branch=branch, status=TableStatus.ACTIVE,
+    ).order_by('pk'))
+    if len(tables) != len(normalized_ids):
+        raise AttendanceConflict('table_not_found', 'Uma ou mais mesas não pertencem à filial atual.')
+    memberships = list(AttendanceTableGroupMembership.objects.select_for_update().filter(
+        table_id__in=normalized_ids, left_at__isnull=True,
+    ).select_related('group'))
+    existing_groups = {membership.group for membership in memberships if membership.group.is_active}
+    if len(existing_groups) > 1:
+        raise AttendanceConflict(
+            'table_group_merge_unsupported',
+            'Separe os grupos existentes antes de agrupar essas mesas.',
+        )
+    group = next(iter(existing_groups), None)
+    if group is None:
+        group = AttendanceTableGroup.objects.create(
+            company=branch.company, branch=branch, created_by=user,
+        )
+    current_ids = {membership.table_id for membership in memberships if membership.group_id == group.pk}
+    added = [table for table in tables if table.pk not in current_ids]
+    for table in added:
+        AttendanceTableGroupMembership.objects.create(group=group, table=table, joined_by=user)
+    active_ids = list(group.memberships.filter(left_at__isnull=True).values_list('table_id', flat=True))
+    operation.result = {'group_id': group.pk, 'table_ids': active_ids}
+    operation.save(update_fields=('result', 'updated_at'))
+    audit_log(
+        actor=user, action='attendance.table_group.group', obj=group,
+        company=branch.company, branch=branch,
+        after={'table_ids': active_ids, 'added_table_ids': [table.pk for table in added]},
+        metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)),
+    )
+    return group, False
+
+
+@transaction.atomic
+def separate_table_from_group(*, branch, table_id, user, idempotency_key, audit_metadata=None):
+    branch = _active_branch(branch)
+    operation, replayed = _operation(
+        branch=branch, operation_type=AttendanceOperationType.SEPARATE_TABLE,
+        idempotency_key=idempotency_key, payload={'table': table_id},
+    )
+    if replayed:
+        return operation.result.get('group_id'), True
+    membership = AttendanceTableGroupMembership.objects.select_for_update().select_related('group').filter(
+        table_id=table_id, table__branch=branch, left_at__isnull=True, group__is_active=True,
+    ).first()
+    if membership is None:
+        raise AttendanceConflict('table_not_grouped', 'A mesa não pertence a um agrupamento ativo.')
+    group = AttendanceTableGroup.objects.select_for_update().get(pk=membership.group_id)
+    now = timezone.now()
+    membership.left_at = now
+    membership.left_by = user
+    membership.save(update_fields=('left_at', 'left_by', 'updated_at'))
+    remaining = list(group.memberships.select_for_update().filter(left_at__isnull=True))
+    dissolved_ids = []
+    if len(remaining) < 2:
+        for row in remaining:
+            row.left_at = now
+            row.left_by = user
+            row.save(update_fields=('left_at', 'left_by', 'updated_at'))
+            dissolved_ids.append(row.table_id)
+        group.is_active = False
+        group.separated_at = now
+        group.separated_by = user
+        group.save(update_fields=('is_active', 'separated_at', 'separated_by', 'updated_at'))
+    operation.result = {'group_id': group.pk, 'table_id': table_id, 'dissolved_table_ids': dissolved_ids}
+    operation.save(update_fields=('result', 'updated_at'))
+    audit_log(
+        actor=user, action='attendance.table_group.separate', obj=group,
+        company=branch.company, branch=branch,
+        after=operation.result,
+        metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)),
+    )
+    return group.pk, False
+
+
+@transaction.atomic
+def set_bill_requested(*, command, user, idempotency_key, requested, audit_metadata=None):
+    command = AttendanceCommand.objects.select_for_update().select_related('branch__company').get(pk=command.pk)
+    if command.status != AttendanceCommandStatus.OPEN:
+        raise AttendanceConflict('command_closed', 'A comanda deve estar aberta.')
+    operation_type = AttendanceOperationType.REQUEST_BILL if requested else AttendanceOperationType.CLEAR_BILL
+    operation, replayed = _operation(
+        branch=command.branch, operation_type=operation_type, idempotency_key=idempotency_key,
+        payload={'command': command.pk},
+    )
+    if replayed:
+        return command, True
+    before = model_snapshot(command, ('bill_requested_at', 'bill_requested_by_id'))
+    command.bill_requested_at = timezone.now() if requested else None
+    command.bill_requested_by = user if requested else None
+    command.save(update_fields=('bill_requested_at', 'bill_requested_by', 'updated_at'))
+    operation.result = {'command_id': command.pk, 'requested': requested}
+    operation.save(update_fields=('result', 'updated_at'))
+    audit_log(
+        actor=user,
+        action='attendance.bill.request' if requested else 'attendance.bill.clear',
+        obj=command, company=command.company, branch=command.branch,
+        before=before, after=model_snapshot(command, ('bill_requested_at', 'bill_requested_by_id')),
+        metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)),
+    )
+    return command, False
 
 
 @transaction.atomic
@@ -721,7 +841,12 @@ def finalize_command(*, command, user, cash_session_id, payments, idempotency_ke
     command.closed_at = timezone.now()
     command.closed_by = user
     command.closed_by_name_snapshot = _operator_name(user)
-    command.save(update_fields=('status', 'sale', 'closed_at', 'closed_by', 'closed_by_name_snapshot', 'updated_at'))
+    command.bill_requested_at = None
+    command.bill_requested_by = None
+    command.save(update_fields=(
+        'status', 'sale', 'closed_at', 'closed_by', 'closed_by_name_snapshot',
+        'bill_requested_at', 'bill_requested_by', 'updated_at',
+    ))
     audit_log(actor=user, action='attendance.command.finalize', obj=command, company=command.company,
               branch=command.branch, after={'sale_id': sale.pk, 'total': str(sale.total)},
                metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))

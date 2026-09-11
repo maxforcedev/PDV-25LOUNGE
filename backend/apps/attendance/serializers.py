@@ -13,7 +13,8 @@ class AttendanceCommandSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'number', 'identifier', 'table', 'table_name', 'customer', 'is_primary',
             'people_count', 'notes', 'status', 'opened_by', 'opened_by_name_snapshot',
-            'customer_name_snapshot', 'closed_at', 'closed_by', 'sale', 'created_at', 'updated_at',
+            'customer_name_snapshot', 'bill_requested_at', 'bill_requested_by', 'closed_at',
+            'closed_by', 'sale', 'created_at', 'updated_at',
         )
         read_only_fields = fields
 
@@ -68,6 +69,20 @@ class AttendanceOpenCommandSerializer(serializers.Serializer):
     table = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     people_count = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     notes = serializers.CharField(max_length=1000, required=False, allow_blank=True, default='')
+
+
+class AttendanceTableGroupSerializer(serializers.Serializer):
+    tables = serializers.ListField(child=serializers.IntegerField(min_value=1), min_length=2)
+    idempotency_key = serializers.UUIDField()
+
+    def validate_tables(self, value):
+        if len(set(value)) != len(value):
+            raise serializers.ValidationError('Informe mesas diferentes para agrupar.')
+        return value
+
+
+class AttendanceBillRequestSerializer(serializers.Serializer):
+    idempotency_key = serializers.UUIDField()
 
 
 class AttendanceItemsSerializer(serializers.Serializer):

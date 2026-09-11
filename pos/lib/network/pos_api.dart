@@ -72,6 +72,14 @@ abstract class PosApi {
   });
   Future<QuickSaleCustomer> activateQuickSaleCustomer(int customerId);
   Future<List<AttendanceTable>> attendanceTables();
+  Future<void> groupAttendanceTables({
+    required List<int> tableIds,
+    required String idempotencyKey,
+  });
+  Future<void> separateAttendanceTable({
+    required int tableId,
+    required String idempotencyKey,
+  });
   Future<AttendanceCommand> openAttendanceTable({
     required int tableId,
     required String idempotencyKey,
@@ -83,6 +91,11 @@ abstract class PosApi {
   Future<List<QuickSaleProduct>> attendanceCatalog({String? search});
   Future<QuickSaleCheckoutOptions> attendanceCheckoutOptions();
   Future<AttendanceCommandDetail> attendanceCommandDetail(int commandId);
+  Future<AttendanceCommand> setAttendanceBillRequested({
+    required int commandId,
+    required bool requested,
+    required String idempotencyKey,
+  });
   Future<AttendanceCommand> openAttendanceCommand({
     required String idempotencyKey,
     String identifier,
@@ -502,6 +515,26 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   }
 
   @override
+  Future<void> groupAttendanceTables({
+    required List<int> tableIds,
+    required String idempotencyKey,
+  }) async {
+    await _request('POST', 'tables/groups/', body: {
+      'tables': tableIds,
+      'idempotency_key': idempotencyKey,
+    });
+  }
+
+  @override
+  Future<void> separateAttendanceTable({
+    required int tableId,
+    required String idempotencyKey,
+  }) async {
+    await _request('POST', 'tables/$tableId/separate/',
+        body: {'idempotency_key': idempotencyKey});
+  }
+
+  @override
   Future<AttendanceCommand> openAttendanceTable({
     required int tableId,
     required String idempotencyKey,
@@ -554,6 +587,18 @@ class HttpPosApi implements PosApi, PosCredentialCache {
           int commandId) async =>
       AttendanceCommandDetail.fromJson(
           await _request('GET', 'commands/$commandId/'));
+
+  @override
+  Future<AttendanceCommand> setAttendanceBillRequested({
+    required int commandId,
+    required bool requested,
+    required String idempotencyKey,
+  }) async =>
+      AttendanceCommand.fromJson(await _request(
+        'POST',
+        'commands/$commandId/${requested ? 'request-bill' : 'clear-bill'}/',
+        body: {'idempotency_key': idempotencyKey},
+      ));
 
   @override
   Future<AttendanceCommand> openAttendanceCommand({

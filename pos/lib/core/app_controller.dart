@@ -329,6 +329,34 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
+  Future<bool> groupAttendanceTables({
+    required List<int> tableIds,
+    required String idempotencyKey,
+  }) async {
+    final result = await _attendance<bool>(() async {
+      await _api.groupAttendanceTables(
+        tableIds: tableIds,
+        idempotencyKey: idempotencyKey,
+      );
+      return true;
+    });
+    return result != null;
+  }
+
+  Future<bool> separateAttendanceTable({
+    required int tableId,
+    required String idempotencyKey,
+  }) async {
+    final result = await _attendance<bool>(() async {
+      await _api.separateAttendanceTable(
+        tableId: tableId,
+        idempotencyKey: idempotencyKey,
+      );
+      return true;
+    });
+    return result != null;
+  }
+
   Future<AttendanceCommand?> openAttendanceTable({
     required int tableId,
     required String idempotencyKey,
@@ -396,6 +424,17 @@ class AppController extends ChangeNotifier {
 
   Future<AttendanceCommandDetail?> attendanceCommandDetail(int commandId) =>
       _attendance(() => _api.attendanceCommandDetail(commandId));
+
+  Future<AttendanceCommand?> setAttendanceBillRequested({
+    required int commandId,
+    required bool requested,
+    required String idempotencyKey,
+  }) =>
+      _attendance(() => _api.setAttendanceBillRequested(
+            commandId: commandId,
+            requested: requested,
+            idempotencyKey: idempotencyKey,
+          ));
 
   Future<List<AttendanceOrderItem>?> addAttendanceItems({
     required int commandId,

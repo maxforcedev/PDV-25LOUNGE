@@ -40,6 +40,10 @@ class AttendanceOperationType(models.TextChoices):
     TRANSFER_ITEMS = 'transfer_items', 'Transferir itens'
     CANCEL_ITEM = 'cancel_item', 'Cancelar item'
     REVERSE_PAYMENT = 'reverse_payment', 'Estornar pagamento'
+    GROUP_TABLES = 'group_tables', 'Agrupar mesas'
+    SEPARATE_TABLE = 'separate_table', 'Separar mesa'
+    REQUEST_BILL = 'request_bill', 'Solicitar conta'
+    CLEAR_BILL = 'clear_bill', 'Limpar solicitação de conta'
 
 
 class AttendanceCommand(BaseModel):
@@ -71,6 +75,11 @@ class AttendanceCommand(BaseModel):
     sale = models.OneToOneField('sales.Sale', on_delete=models.PROTECT, related_name='attendance_command', blank=True, null=True)
     checkout_discount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     checkout_service_fee_waived = models.BooleanField(default=False)
+    bill_requested_at = models.DateTimeField(blank=True, null=True)
+    bill_requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='requested_attendance_bills', blank=True, null=True,
+    )
 
     class Meta:
         ordering = ('-created_at', '-id')
@@ -110,6 +119,39 @@ class AttendanceCommand(BaseModel):
     def save(self, *args, **kwargs):
         self.full_clean()
         return super().save(*args, **kwargs)
+
+
+class AttendanceTableGroup(BaseModel):
+    """Temporary physical-table grouping; commands remain attached to each table."""
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='attendance_table_groups')
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='attendance_table_groups')
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='created_attendance_table_groups')
+    is_active = models.BooleanField(default=True)
+    separated_at = models.DateTimeField(blank=True, null=True)
+    separated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='separated_attendance_table_groups', blank=True, null=True,
+    )
+
+
+class AttendanceTableGroupMembership(BaseModel):
+    group = models.ForeignKey(AttendanceTableGroup, on_delete=models.PROTECT, related_name='memberships')
+    table = models.ForeignKey('commands.Table', on_delete=models.PROTECT, related_name='attendance_group_memberships')
+    joined_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='joined_attendance_table_groups')
+    left_at = models.DateTimeField(blank=True, null=True)
+    left_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='left_attendance_table_groups', blank=True, null=True,
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=('table',), condition=Q(left_at__isnull=True),
+                name='attendance_one_active_group_per_table',
+            ),
+        ]
 
 
 class AttendanceOperation(BaseModel):

@@ -113,6 +113,21 @@ void main() {
                   'status': 'confirmed'
                 }),
                 200);
+          case '/api/v1/pos/tables/groups/':
+            expect(jsonDecode(request.body), {
+              'tables': [3, 4],
+              'idempotency_key': 'group-key',
+            });
+            return http.Response(jsonEncode({'id': 9}), 201);
+          case '/api/v1/pos/commands/7/request-bill/':
+            expect(jsonDecode(request.body), {'idempotency_key': 'bill-key'});
+            return http.Response(
+                jsonEncode({
+                  'id': 7,
+                  'number': 'A000007',
+                  'bill_requested_at': '2026-01-01T12:00:00Z'
+                }),
+                200);
         }
         throw StateError('Unexpected request: ${request.url}');
       }),
@@ -137,6 +152,15 @@ void main() {
                 itemId: 11, idempotencyKey: 'confirm-key'))
             .status,
         'confirmed');
+    await api
+        .groupAttendanceTables(tableIds: [3, 4], idempotencyKey: 'group-key');
+    expect(
+        (await api.setAttendanceBillRequested(
+                commandId: command.id,
+                requested: true,
+                idempotencyKey: 'bill-key'))
+            .billRequested,
+        isTrue);
   });
 }
 

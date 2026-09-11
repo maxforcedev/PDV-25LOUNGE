@@ -38,6 +38,7 @@ from apps.companies.features import require_branch_feature
 from apps.companies.models import Customer, Status
 from apps.attendance.models import (
     AttendanceCommand, AttendanceCommandStatus, AttendanceOrderItem, AttendancePayment,
+    AttendanceTableGroupMembership,
 )
 from apps.attendance.serializers import (
     AttendanceCancelItemSerializer, AttendanceCommandSerializer, AttendanceConfirmItemSerializer,
@@ -45,13 +46,15 @@ from apps.attendance.serializers import (
     AttendanceOpenCommandSerializer, AttendanceOpenTableSerializer,
     AttendanceOrderItemSerializer, AttendancePaymentInputSerializer,
     AttendancePaymentSerializer, AttendanceReversePaymentSerializer, AttendanceTransferCommandSerializer,
-    AttendanceTransferItemsSerializer,
+    AttendanceTransferItemsSerializer, AttendanceBillRequestSerializer, AttendanceTableGroupSerializer,
 )
 from apps.attendance.services import (
     AttendanceConflict, add_order_items, cancel_order_item, command_summary, confirm_order_item,
     finalize_command as finalize_attendance_command, open_command as open_attendance_command,
     open_table as open_attendance_table, record_payment as record_attendance_payment,
     reverse_payment as reverse_attendance_payment,
+    group_tables as group_attendance_tables, separate_table_from_group,
+    set_bill_requested,
     transfer_command as transfer_attendance_command,
     transfer_items as transfer_attendance_items,
 )
@@ -642,10 +645,18 @@ class POSTablesView(POSAttendanceView):
         legacy_ids = set(Command.objects.filter(
             branch=device.branch, status=CommandStatus.OPEN, table_id__in=grouped,
         ).values_list('table_id', flat=True))
+        active_memberships = AttendanceTableGroupMembership.objects.filter(
+            table_id__in=grouped, left_at__isnull=True, group__is_active=True,
+        ).select_related('group', 'table')
+        memberships_by_table = {membership.table_id: membership for membership in active_memberships}
+        group_members = {}
+        for membership in active_memberships:
+            group_members.setdefault(membership.group_id, []).append(membership)
         payload = []
         for table in tables:
             rows = grouped[table.pk]
             summaries = [command_summary(command) for command in rows]
+            membership = memberships_by_table.get(table.pk)
             payload.append({
                 'id': table.pk, 'name': table.name, 'capacity': table.seats,
                 'status': 'occupied' if rows or table.pk in legacy_ids else 'free',
@@ -653,6 +664,15 @@ class POSTablesView(POSAttendanceView):
                 'commands': [AttendanceCommandSerializer(command).data for command in rows],
                 'total': f"{sum((Decimal(summary['total_due']) for summary in summaries), Decimal('0.00')):.2f}",
                 'balance': f"{sum((Decimal(summary['remaining_balance']) for summary in summaries), Decimal('0.00')):.2f}",
+                'bill_requested': any(command.bill_requested_at is not None for command in rows),
+                'group': (
+                    {
+                        'id': membership.group_id,
+                        'table_ids': [row.table_id for row in group_members[membership.group_id]],
+                        'table_names': [row.table.name for row in group_members[membership.group_id]],
+                    }
+                    if membership else None
+                ),
             })
         return Response({'tables': payload})
 
@@ -671,6 +691,46 @@ class POSTableOpenView(POSAttendanceView):
         except AttendanceConflict as error:
             self._domain(error)
         response = Response(AttendanceCommandSerializer(command).data, status=(status.HTTP_200_OK if replayed else status.HTTP_201_CREATED))
+        if replayed:
+            response['Idempotency-Replayed'] = 'true'
+        return response
+
+
+class POSTableGroupView(POSAttendanceView):
+    def post(self, request):
+        device, operator, permissions, operator_session = self.context(request)
+        self._require(permissions, 'tables.merge', 'Você não possui permissão para agrupar mesas.')
+        serializer = AttendanceTableGroupSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            group, replayed = group_attendance_tables(
+                branch=device.branch, table_ids=serializer.validated_data['tables'], user=operator,
+                idempotency_key=serializer.validated_data['idempotency_key'],
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+        except AttendanceConflict as error:
+            self._domain(error)
+        response = Response({'id': group.pk}, status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED)
+        if replayed:
+            response['Idempotency-Replayed'] = 'true'
+        return response
+
+
+class POSTableSeparateView(POSAttendanceView):
+    def post(self, request, table_id):
+        device, operator, permissions, operator_session = self.context(request)
+        self._require(permissions, 'tables.merge', 'Você não possui permissão para separar mesas.')
+        serializer = AttendanceBillRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            group_id, replayed = separate_table_from_group(
+                branch=device.branch, table_id=table_id, user=operator,
+                idempotency_key=serializer.validated_data['idempotency_key'],
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+        except AttendanceConflict as error:
+            self._domain(error)
+        response = Response({'group_id': group_id})
         if replayed:
             response['Idempotency-Replayed'] = 'true'
         return response
@@ -783,6 +843,46 @@ class POSAttendanceCommandDetailView(POSAttendanceView):
             order__command=command,
         ).values('id', 'order_id', 'product_id', 'product_name', 'quantity', 'unit', 'unit_price', 'modifier_snapshot', 'notes', 'status', 'confirmed_at'))
         return Response(data)
+
+
+class POSAttendanceBillRequestView(POSAttendanceView):
+    def post(self, request, command_id):
+        device, operator, permissions, operator_session = self.context(request)
+        self._require(permissions, 'commands.finalize', 'Você não possui permissão para solicitar conta.')
+        serializer = AttendanceBillRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            command, replayed = set_bill_requested(
+                command=self._command(device, command_id), user=operator,
+                idempotency_key=serializer.validated_data['idempotency_key'], requested=True,
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+        except AttendanceConflict as error:
+            self._domain(error)
+        response = Response(AttendanceCommandSerializer(command).data)
+        if replayed:
+            response['Idempotency-Replayed'] = 'true'
+        return response
+
+
+class POSAttendanceBillClearView(POSAttendanceView):
+    def post(self, request, command_id):
+        device, operator, permissions, operator_session = self.context(request)
+        self._require(permissions, 'commands.finalize', 'Você não possui permissão para resolver a solicitação de conta.')
+        serializer = AttendanceBillRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            command, replayed = set_bill_requested(
+                command=self._command(device, command_id), user=operator,
+                idempotency_key=serializer.validated_data['idempotency_key'], requested=False,
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+        except AttendanceConflict as error:
+            self._domain(error)
+        response = Response(AttendanceCommandSerializer(command).data)
+        if replayed:
+            response['Idempotency-Replayed'] = 'true'
+        return response
 
 
 class POSAttendanceCommandItemsView(POSAttendanceView):

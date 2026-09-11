@@ -9,11 +9,14 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
-from apps.attendance.models import AttendanceCommand, AttendanceCommandStatus, AttendanceOrderItem
+from apps.attendance.models import (
+    AttendanceCommand, AttendanceCommandStatus, AttendanceOrderItem,
+    AttendanceTableGroupMembership,
+)
 from apps.attendance.services import (
     AttendanceConflict, add_order_items, command_summary, confirm_order_item,
     finalize_command, open_command, open_table, record_payment, transfer_command,
-    transfer_items,
+    transfer_items, group_tables, separate_table_from_group, set_bill_requested,
 )
 from apps.base.models import AuditLog
 from apps.cash.models import CashRegister
@@ -327,3 +330,107 @@ class POS5AttendanceTests(TestCase):
             open_legacy_command(branch=self.branch, user=self.owner, table=attendance_table)
         self.assertEqual(command.status, AttendanceCommandStatus.OPEN)
         self.assertEqual(Command.objects.filter(table=attendance_table, status='open').count(), 0)
+
+    def test_grouping_preserves_table_and_command_identity_and_separation_history(self):
+        first_table = create_table(branch=self.branch, name='POS5 Group 1', user=self.owner)
+        second_table = create_table(branch=self.branch, name='POS5 Group 2', user=self.owner)
+        first_command, _ = open_table(
+            branch=self.branch, table_id=first_table.pk, user=self.owner, idempotency_key=uuid4(),
+        )
+        second_command, _ = open_table(
+            branch=self.branch, table_id=second_table.pk, user=self.owner, idempotency_key=uuid4(),
+        )
+        group, replayed = group_tables(
+            branch=self.branch, table_ids=[first_table.pk, second_table.pk], user=self.owner,
+            idempotency_key=uuid4(),
+        )
+        self.assertFalse(replayed)
+        self.assertEqual(
+            set(group.memberships.filter(left_at__isnull=True).values_list('table_id', flat=True)),
+            {first_table.pk, second_table.pk},
+        )
+        self.assertEqual(AttendanceCommand.objects.get(pk=first_command.pk).table_id, first_table.pk)
+        self.assertEqual(AttendanceCommand.objects.get(pk=second_command.pk).table_id, second_table.pk)
+        self.assertTrue(AuditLog.objects.filter(action='attendance.table_group.group', object_id=str(group.pk)).exists())
+        client, _ = self.pos_client()
+        tables = client.get('/api/v1/pos/tables/')
+        self.assertEqual(tables.status_code, 200, tables.data)
+        first_row = next(row for row in tables.data['tables'] if row['id'] == first_table.pk)
+        self.assertEqual(set(first_row['group']['table_ids']), {first_table.pk, second_table.pk})
+
+        separate_table_from_group(
+            branch=self.branch, table_id=first_table.pk, user=self.owner, idempotency_key=uuid4(),
+        )
+        self.assertEqual(AttendanceTableGroupMembership.objects.filter(group=group).count(), 2)
+        self.assertFalse(group.memberships.filter(left_at__isnull=True).exists())
+        self.assertEqual(AttendanceCommand.objects.get(pk=first_command.pk).table_id, first_table.pk)
+        self.assertEqual(AttendanceCommand.objects.get(pk=second_command.pk).table_id, second_table.pk)
+        self.assertTrue(AuditLog.objects.filter(action='attendance.table_group.separate', object_id=str(group.pk)).exists())
+
+    def test_bill_request_is_audited_and_clears_without_freeing_open_table(self):
+        table = create_table(branch=self.branch, name='POS5 Bill', user=self.owner)
+        command, _ = open_table(
+            branch=self.branch, table_id=table.pk, user=self.owner, idempotency_key=uuid4(),
+        )
+        requested, replayed = set_bill_requested(
+            command=command, user=self.owner, idempotency_key=uuid4(), requested=True,
+        )
+        self.assertFalse(replayed)
+        self.assertIsNotNone(requested.bill_requested_at)
+        self.assertEqual(AttendanceCommand.objects.filter(table=table, status='open').count(), 1)
+        client, _ = self.pos_client()
+        tables = client.get('/api/v1/pos/tables/')
+        self.assertEqual(tables.status_code, 200, tables.data)
+        self.assertTrue(next(row for row in tables.data['tables'] if row['id'] == table.pk)['bill_requested'])
+        cleared, _ = set_bill_requested(
+            command=requested, user=self.owner, idempotency_key=uuid4(), requested=False,
+        )
+        self.assertIsNone(cleared.bill_requested_at)
+        self.assertTrue(AuditLog.objects.filter(action='attendance.bill.request').exists())
+        self.assertTrue(AuditLog.objects.filter(action='attendance.bill.clear').exists())
+
+        set_bill_requested(command=cleared, user=self.owner, idempotency_key=uuid4(), requested=True)
+        self.add_confirmed_item(cleared)
+        closed = self.close(cleared)
+        self.assertIsNone(closed.bill_requested_at)
+
+    def test_item_transfer_with_partial_payment_is_blocked_with_explicit_rule(self):
+        source, _ = self.open_standalone(identifier='Paid source')
+        destination, _ = self.open_standalone(identifier='Destination')
+        item = self.add_confirmed_item(source)
+        record_payment(
+            command=source, user=self.owner, payment_method_id=self.cash_method.pk,
+            amount='4.00', received_amount='4.00', cash_session_id=self.cash_session.pk,
+            idempotency_key=uuid4(),
+        )
+        with self.assertRaises(AttendanceConflict) as conflict:
+            transfer_items(
+                command=source, destination_id=destination.pk,
+                items=[{'item': item.pk, 'quantity': Decimal('1.000')}],
+                user=self.owner, idempotency_key=uuid4(),
+            )
+        self.assertEqual(conflict.exception.code, 'command_payments_transfer_unsupported')
+        self.assertIn('rateio', conflict.exception.message)
+
+    def test_whole_command_transfer_preserves_partial_payment_and_history(self):
+        source_table = create_table(branch=self.branch, name='POS5 Paid Source', user=self.owner)
+        destination_table = create_table(branch=self.branch, name='POS5 Paid Target', user=self.owner)
+        command, _ = open_table(
+            branch=self.branch, table_id=source_table.pk, user=self.owner, idempotency_key=uuid4(),
+        )
+        open_table(
+            branch=self.branch, table_id=destination_table.pk, user=self.owner, idempotency_key=uuid4(),
+        )
+        self.add_confirmed_item(command)
+        payment = record_payment(
+            command=command, user=self.owner, payment_method_id=self.cash_method.pk,
+            amount='4.00', received_amount='4.00', cash_session_id=self.cash_session.pk,
+            idempotency_key=uuid4(),
+        )
+        transferred, _ = transfer_command(
+            command=command, table_id=destination_table.pk, user=self.owner, idempotency_key=uuid4(),
+        )
+        self.assertEqual(transferred.table_id, destination_table.pk)
+        self.assertEqual(transferred.payments.get(pk=payment.pk).amount, Decimal('4.00'))
+        self.assertEqual(command_summary(transferred)['remaining_balance'], '6.00')
+        self.assertTrue(AuditLog.objects.filter(action='attendance.command.transfer', object_id=str(command.pk)).exists())

@@ -20,6 +20,9 @@ class TablesPage extends StatefulWidget {
 class _TablesPageState extends State<TablesPage> {
   List<AttendanceTable> _tables = const [];
   bool _loading = true;
+  final Set<int> _groupSelection = {};
+
+  bool get _canGroup => _can(widget.controller, 'tables.merge');
 
   @override
   void initState() {
@@ -55,13 +58,38 @@ class _TablesPageState extends State<TablesPage> {
     if (mounted) await _load();
   }
 
+  Future<void> _groupSelected() async {
+    if (_groupSelection.length < 2) return;
+    final grouped = await widget.controller.groupAttendanceTables(
+      tableIds: _groupSelection.toList(),
+      idempotencyKey: createIdempotencyKey(),
+    );
+    if (!mounted || !grouped) return;
+    setState(_groupSelection.clear);
+    await _load();
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: const Text('Mesas'), actions: [
-          IconButton(
-              onPressed: _loading ? null : _load,
-              icon: const Icon(Icons.refresh)),
-        ]),
+        appBar: AppBar(
+            title: Text(_groupSelection.isEmpty
+                ? 'Mesas'
+                : '${_groupSelection.length} selecionada(s)'),
+            actions: [
+              if (_groupSelection.length >= 2)
+                IconButton(
+                    onPressed: _groupSelected,
+                    tooltip: 'Agrupar mesas',
+                    icon: const Icon(Icons.merge_type)),
+              if (_groupSelection.isNotEmpty)
+                IconButton(
+                    onPressed: () => setState(_groupSelection.clear),
+                    tooltip: 'Cancelar seleção',
+                    icon: const Icon(Icons.close)),
+              IconButton(
+                  onPressed: _loading ? null : _load,
+                  icon: const Icon(Icons.refresh)),
+            ]),
         body: _loading
             ? const Center(child: CircularProgressIndicator())
             : RefreshIndicator(
@@ -86,7 +114,20 @@ class _TablesPageState extends State<TablesPage> {
                     return Card(
                       child: InkWell(
                         borderRadius: BorderRadius.circular(12),
-                        onTap: locked ? null : () => _open(table),
+                        onTap: locked
+                            ? null
+                            : _groupSelection.isNotEmpty
+                                ? () => setState(() =>
+                                    _groupSelection.contains(table.id)
+                                        ? _groupSelection.remove(table.id)
+                                        : _groupSelection.add(table.id))
+                                : () => _open(table),
+                        onLongPress: _canGroup && !locked
+                            ? () => setState(() =>
+                                _groupSelection.contains(table.id)
+                                    ? _groupSelection.remove(table.id)
+                                    : _groupSelection.add(table.id))
+                            : null,
                         child: Padding(
                           padding: const EdgeInsets.all(16),
                           child: Column(
@@ -112,6 +153,19 @@ class _TablesPageState extends State<TablesPage> {
                                   Text('${table.capacity} lugares'),
                                 if (table.isOpen)
                                   Text('Saldo: ${formatMoney(table.balance)}'),
+                                if (table.billRequested)
+                                  const Text('CONTA SOLICITADA',
+                                      style: TextStyle(
+                                          fontWeight: FontWeight.w700,
+                                          color: Colors.deepOrange)),
+                                if (table.group != null)
+                                  Text(
+                                      'Grupo: ${table.group!.tableNames.join(', ')}'),
+                                if (_groupSelection.contains(table.id))
+                                  const Align(
+                                      alignment: Alignment.centerRight,
+                                      child: Icon(Icons.check_circle,
+                                          color: Colors.blue)),
                               ]),
                         ),
                       ),
@@ -137,6 +191,7 @@ class _TableDetailPageState extends State<TableDetailPage> {
   bool _loading = false;
   bool get _canOpen => _can(widget.controller, 'tables.open');
   bool get _canCommand => _can(widget.controller, 'commands.open');
+  bool get _canGroup => _can(widget.controller, 'tables.merge');
 
   @override
   void initState() {
@@ -189,6 +244,14 @@ class _TableDetailPageState extends State<TableDetailPage> {
     if (mounted) await _load();
   }
 
+  Future<void> _separate() async {
+    final separated = await widget.controller.separateAttendanceTable(
+      tableId: _table.id,
+      idempotencyKey: createIdempotencyKey(),
+    );
+    if (separated && mounted) await _load();
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
         appBar: AppBar(title: Text(_table.name), actions: [
@@ -216,6 +279,20 @@ class _TableDetailPageState extends State<TableDetailPage> {
                       icon: const Icon(Icons.play_arrow),
                       label: const Text('ABRIR MESA')),
                 if (_table.isOpen) ...[
+                  if (_table.group != null) ...[
+                    Card(
+                        child: ListTile(
+                      leading: const Icon(Icons.group_work_outlined),
+                      title: const Text('Mesas agrupadas'),
+                      subtitle: Text(_table.group!.tableNames.join(', ')),
+                      trailing: _canGroup
+                          ? TextButton(
+                              onPressed: _separate,
+                              child: const Text('SEPARAR'))
+                          : null,
+                    )),
+                    const SizedBox(height: 8),
+                  ],
                   Text('Comandas',
                       style: Theme.of(context).textTheme.titleMedium),
                   const SizedBox(height: 8),
@@ -453,6 +530,16 @@ class _CommandDetailPageState extends State<CommandDetailPage> {
     if (mounted) await _load();
   }
 
+  Future<void> _bill() async {
+    final requested = _detail?.command.billRequested != true;
+    await widget.controller.setAttendanceBillRequested(
+      commandId: widget.command.id,
+      requested: requested,
+      idempotencyKey: createIdempotencyKey(),
+    );
+    if (mounted) await _load();
+  }
+
   Future<void> _transfer() async {
     final tables = await widget.controller.attendanceTables();
     if (!mounted || tables == null) return;
@@ -516,6 +603,13 @@ class _CommandDetailPageState extends State<CommandDetailPage> {
                   const SizedBox(height: 12),
                   if (detail.command.notes.isNotEmpty)
                     Text('Obs.: ${detail.command.notes}'),
+                  if (detail.command.billRequested)
+                    const Padding(
+                        padding: EdgeInsets.only(top: 8),
+                        child: Text('CONTA SOLICITADA',
+                            style: TextStyle(
+                                color: Colors.deepOrange,
+                                fontWeight: FontWeight.w800))),
                   const SizedBox(height: 16),
                   Text('Itens', style: Theme.of(context).textTheme.titleMedium),
                   ...detail.items.map((item) => Card(
@@ -554,6 +648,15 @@ class _CommandDetailPageState extends State<CommandDetailPage> {
                         onPressed: _payment,
                         icon: const Icon(Icons.payments_outlined),
                         label: const Text('REGISTRAR PAGAMENTO')),
+                  if (_allowed('commands.finalize'))
+                    OutlinedButton.icon(
+                        onPressed: _bill,
+                        icon: Icon(detail.command.billRequested
+                            ? Icons.remove_done_outlined
+                            : Icons.request_quote_outlined),
+                        label: Text(detail.command.billRequested
+                            ? 'RESOLVER SOLICITAÇÃO DE CONTA'
+                            : 'SOLICITAR CONTA')),
                   if (_allowed('commands.finalize'))
                     FilledButton.icon(
                         onPressed: _finalize,
