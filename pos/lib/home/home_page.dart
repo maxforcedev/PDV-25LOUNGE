@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../bootstrap/bootstrap_models.dart';
+import '../attendance/attendance_pages.dart';
 import '../cash/cash_page.dart';
 import '../core/app_controller.dart';
 import '../core/transient_feedback.dart';
@@ -171,14 +172,16 @@ class _ModuleCard extends StatelessWidget {
 
   static const _labels = {
     'quick_sale': 'Venda Rápida',
-    'commands': 'Mesas / Comandas',
+    'tables': 'Mesas',
+    'commands': 'Comandas',
     'ticket_validator': 'Validador de Ticket',
     'inventory': 'Estoque',
     'reports': 'Relatórios',
   };
   static const _icons = {
     'quick_sale': Icons.shopping_bag_outlined,
-    'commands': Icons.table_restaurant_outlined,
+    'tables': Icons.table_restaurant_outlined,
+    'commands': Icons.receipt_long_outlined,
     'ticket_validator': Icons.confirmation_number_outlined,
     'inventory': Icons.inventory_2_outlined,
     'reports': Icons.insights_outlined,
@@ -196,6 +199,16 @@ class _ModuleCard extends StatelessWidget {
           if (module.key == 'ticket_validator') {
             Navigator.of(context).push(MaterialPageRoute(
                 builder: (_) => TicketValidatorPage(controller: controller)));
+            return;
+          }
+          if (module.key == 'tables') {
+            Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => TablesPage(controller: controller)));
+            return;
+          }
+          if (module.key == 'commands') {
+            Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => CommandsPage(controller: controller)));
             return;
           }
           controller.showTransientMessage(
@@ -224,6 +237,10 @@ class _ModuleCard extends StatelessWidget {
                     ? 'Catálogo e checkout'
                     : module.key == 'ticket_validator'
                         ? 'Escaneie e registre retiradas'
+                        : module.key == 'tables'
+                            ? 'Atendimentos por mesa'
+                            : module.key == 'commands'
+                                ? 'Contas e consumo'
                         : 'Em breve',
                 style: const TextStyle(color: Color(0xff64748b), fontSize: 12)),
           ]),

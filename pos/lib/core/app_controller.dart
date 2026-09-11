@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 import '../auth/auth_models.dart';
+import '../attendance/attendance_models.dart';
 import '../bootstrap/bootstrap_models.dart';
 import '../cash/cash_models.dart';
 import '../network/pos_api.dart';
@@ -309,6 +310,74 @@ class AppController extends ChangeNotifier {
   Future<QuickSaleCustomer?> activateQuickSaleCustomer(int customerId) async {
     try {
       return await _api.activateQuickSaleCustomer(customerId);
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<List<AttendanceTable>?> attendanceTables() async {
+    try {
+      return await _api.attendanceTables();
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<AttendanceCommand?> openAttendanceTable({
+    required int tableId,
+    required String idempotencyKey,
+    int? peopleCount,
+    String identifier = '',
+    String notes = '',
+  }) async {
+    try {
+      return await _api.openAttendanceTable(
+        tableId: tableId,
+        idempotencyKey: idempotencyKey,
+        peopleCount: peopleCount,
+        identifier: identifier,
+        notes: notes,
+      );
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<List<AttendanceCommand>?> attendanceCommands({String? query}) async {
+    try {
+      return await _api.attendanceCommands(query: query);
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<AttendanceCommand?> openAttendanceCommand({
+    String identifier = '',
+    int? tableId,
+    int? customerId,
+    int? peopleCount,
+    String notes = '',
+  }) async {
+    try {
+      return await _api.openAttendanceCommand(
+        identifier: identifier,
+        tableId: tableId,
+        customerId: customerId,
+        peopleCount: peopleCount,
+        notes: notes,
+      );
     } on PosApiException catch (error) {
       _handleApiError(error);
     } on PosNetworkException catch (error) {

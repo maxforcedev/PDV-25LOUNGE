@@ -766,6 +766,10 @@ class Payment(ImmutableHistoricalModel):
         'commands.CommandPayment', on_delete=models.PROTECT,
         related_name='final_payment', blank=True, null=True,
     )
+    source_attendance_payment = models.OneToOneField(
+        'attendance.AttendancePayment', on_delete=models.PROTECT,
+        related_name='final_payment', blank=True, null=True,
+    )
     # Command tender is recorded before the sale exists; retain its business timestamp.
     occurred_at = models.DateTimeField(blank=True, null=True)
 

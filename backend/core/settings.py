@@ -105,6 +105,7 @@ INSTALLED_APPS = [
     'apps.cash',
     'apps.sales',
     'apps.commands',
+    'apps.attendance',
     'apps.production',
     'apps.reports',
     'apps.saas',

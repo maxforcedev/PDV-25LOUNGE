@@ -1,0 +1,701 @@
+import hashlib
+import json
+from decimal import Decimal, ROUND_HALF_UP
+
+from django.core.exceptions import ValidationError
+from django.db import transaction
+from django.db.models import DecimalField, F, Sum, Value
+from django.db.models.functions import Coalesce
+from django.utils import timezone
+
+from apps.base.audit import audit_log, model_snapshot
+from apps.companies.features import require_branch_feature
+from apps.companies.models import Branch, Customer, Status
+from apps.inventory.models import MovementDomainOrigin, MovementNature, MovementType
+from apps.inventory.materialization import materialize_stock
+from apps.inventory.services import apply_locked_stock
+from apps.cash.models import CashSession, CashSessionStatus
+from apps.products.models import Product, ProductBranchConfig, SalesChannel, Unit
+from apps.sales.models import OperationType, PaymentMethod, PaymentMethodCode
+from apps.sales.services import (
+    CENT, _discount_approver, _reconcile_modifier_component_costs, _service_fee_waiver,
+    branch_cost_map, branch_price_map, calculate_command_preview, finalize_sale,
+    resolve_modifiers, stock_requirements_for_product, strict_decimal,
+)
+
+from .models import (
+    AttendanceCommand, AttendanceCommandStatus, AttendanceOperation,
+    AttendanceOperationType, AttendanceOrder, AttendanceOrderItem,
+    AttendanceOrderItemStatus, AttendanceOrderStatus, AttendancePayment,
+    AttendancePaymentStatus,
+)
+
+
+class AttendanceConflict(Exception):
+    def __init__(self, code, message):
+        self.code = code
+        self.message = message
+        super().__init__(message)
+
+
+def _fingerprint(payload):
+    return hashlib.sha256(json.dumps(
+        payload, sort_keys=True, separators=(',', ':'), default=str,
+    ).encode()).hexdigest()
+
+
+def _operator_name(user):
+    return user.get_full_name().strip() or user.email
+
+
+def _operation(*, branch, operation_type, idempotency_key, payload):
+    fingerprint = _fingerprint(payload)
+    operation = AttendanceOperation.objects.select_for_update().filter(
+        branch=branch, operation_type=operation_type, idempotency_key=idempotency_key,
+    ).first()
+    if operation:
+        if operation.payload_fingerprint != fingerprint:
+            raise AttendanceConflict(
+                'idempotency_key_conflict',
+                'A chave de idempotência já foi usada com outros dados.',
+            )
+        return operation, True
+    return AttendanceOperation.objects.create(
+        company=branch.company, branch=branch, operation_type=operation_type,
+        idempotency_key=idempotency_key, payload_fingerprint=fingerprint,
+    ), False
+
+
+def _active_branch(branch):
+    branch = Branch.objects.select_for_update().select_related('company').get(pk=branch.pk)
+    if branch.status != Status.ACTIVE or branch.company.status != Status.ACTIVE:
+        raise ValidationError({'branch': 'A empresa e a filial devem estar ativas.'})
+    return branch
+
+
+def _next_number(branch):
+    return f'A{AttendanceCommand.objects.filter(branch=branch).count() + 1:06d}'
+
+
+def _customer(branch, customer_id):
+    if customer_id is None:
+        return None
+    customer = Customer.objects.select_for_update().filter(pk=customer_id).first()
+    if not customer or customer.company_id != branch.company_id or customer.status != Status.ACTIVE:
+        raise ValidationError({'customer': 'Cliente inválido, inativo ou fora da empresa.'})
+    return customer
+
+
+def _command_reference(command):
+    return {
+        'id': command.pk,
+        'number': command.number,
+        'table_id': command.table_id,
+        'status': command.status,
+    }
+
+
+def _audit_metadata(metadata=None, **values):
+    return {**(metadata or {}), **values}
+
+
+@transaction.atomic
+def open_table(*, branch, table_id, user, idempotency_key, people_count=None, identifier='', notes='', customer_id=None, audit_metadata=None):
+    """Open exactly one primary POS-5 command for a physical table."""
+    from apps.commands.models import Command, CommandStatus, Table, TableStatus
+
+    branch = _active_branch(branch)
+    require_branch_feature(branch, 'tables')
+    require_branch_feature(branch, 'commands')
+    operation, replayed = _operation(
+        branch=branch, operation_type=AttendanceOperationType.OPEN_TABLE,
+        idempotency_key=idempotency_key,
+        payload={
+            'table': table_id, 'people_count': people_count, 'identifier': identifier,
+            'notes': notes, 'customer': customer_id,
+        },
+    )
+    if replayed:
+        return AttendanceCommand.objects.get(pk=operation.result['command_id']), True
+    table = Table.objects.select_for_update().filter(
+        pk=table_id, branch=branch, status=TableStatus.ACTIVE,
+    ).first()
+    if table is None:
+        raise AttendanceConflict('table_not_found', 'Mesa não encontrada na filial atual.')
+    if Command.objects.select_for_update().filter(table=table, status=CommandStatus.OPEN).exists():
+        raise AttendanceConflict(
+            'table_in_legacy_use',
+            'A mesa possui atendimento aberto no fluxo legado e não pode ser aberta no POS agora.',
+        )
+    existing = AttendanceCommand.objects.select_for_update().filter(
+        table=table, is_primary=True, status=AttendanceCommandStatus.OPEN,
+    ).first()
+    if existing:
+        operation.result = {'command_id': existing.pk}
+        operation.save(update_fields=('result', 'updated_at'))
+        return existing, True
+    customer = _customer(branch, customer_id)
+    command = AttendanceCommand.objects.create(
+        company=branch.company, branch=branch, table=table, is_primary=True,
+        number=_next_number(branch), identifier=identifier, notes=notes,
+        people_count=people_count, customer=customer, opened_by=user,
+        opened_by_name_snapshot=_operator_name(user), table_name_snapshot=table.name,
+        customer_name_snapshot=customer.name if customer else '',
+    )
+    operation.result = {'command_id': command.pk}
+    operation.save(update_fields=('result', 'updated_at'))
+    audit_log(
+        actor=user, action='attendance.table.open', obj=command,
+        company=branch.company, branch=branch,
+        after=model_snapshot(command, ('table_id', 'number', 'is_primary', 'people_count', 'status')),
+        metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)),
+    )
+    return command, False
+
+
+@transaction.atomic
+def open_command(*, branch, user, identifier='', customer_id=None, table_id=None, people_count=None, notes='', audit_metadata=None):
+    from apps.commands.models import Table, TableStatus
+
+    branch = _active_branch(branch)
+    require_branch_feature(branch, 'commands')
+    table = None
+    if table_id is not None:
+        require_branch_feature(branch, 'tables')
+        table = Table.objects.select_for_update().filter(
+            pk=table_id, branch=branch, status=TableStatus.ACTIVE,
+        ).first()
+        if table is None:
+            raise AttendanceConflict('table_not_found', 'Mesa não encontrada na filial atual.')
+        if not AttendanceCommand.objects.filter(
+            table=table, is_primary=True, status=AttendanceCommandStatus.OPEN,
+        ).exists():
+            raise AttendanceConflict(
+                'table_not_open',
+                'Abra a mesa antes de criar uma comanda adicional.',
+            )
+    customer = _customer(branch, customer_id)
+    command = AttendanceCommand.objects.create(
+        company=branch.company, branch=branch, table=table, number=_next_number(branch),
+        identifier=identifier, people_count=people_count, notes=notes, customer=customer,
+        opened_by=user, opened_by_name_snapshot=_operator_name(user),
+        table_name_snapshot=table.name if table else '',
+        customer_name_snapshot=customer.name if customer else '',
+    )
+    audit_log(
+        actor=user, action='attendance.command.open', obj=command,
+        company=branch.company, branch=branch,
+        after=model_snapshot(command, ('table_id', 'number', 'identifier', 'is_primary', 'status')),
+        metadata=audit_metadata,
+    )
+    return command
+
+
+def financial_state(command, *, lock=False, discount=None, service_fee_waived=None):
+    items = AttendanceOrderItem.objects.filter(
+        order__command=command, status=AttendanceOrderItemStatus.CONFIRMED,
+    ).select_related('product__category').order_by('id')
+    if lock:
+        items = items.select_for_update()
+    preview = calculate_command_preview(
+        branch=command.branch, order_items=list(items),
+        discount=command.checkout_discount if discount is None else discount,
+        service_fee_waived=(
+            command.checkout_service_fee_waived
+            if service_fee_waived is None else service_fee_waived
+        ),
+        lock=lock, include_internal_snapshots=True,
+    )
+    payments = AttendancePayment.objects.filter(
+        command=command, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
+    )
+    if lock:
+        payments = payments.select_for_update(of=('self',))
+    paid = payments.aggregate(total=Coalesce(
+        Sum('amount'), Value(Decimal('0.00'), output_field=DecimalField(max_digits=14, decimal_places=2)),
+    ))['total']
+    return preview, paid, max(preview['total'] - paid, Decimal('0.00'))
+
+
+def command_summary(command):
+    preview, paid, remaining = financial_state(command)
+    return {
+        'subtotal': f"{preview['subtotal']:.2f}",
+        'promotion_discount': f"{preview['promotion_discount_total']:.2f}",
+        'manual_discount': f"{preview['discount']:.2f}",
+        'service_fee': f"{preview['service_fee_amount']:.2f}",
+        'total_due': f"{preview['total']:.2f}",
+        'paid_total': f'{paid:.2f}',
+        'remaining_balance': f'{remaining:.2f}',
+    }
+
+
+@transaction.atomic
+def add_order_items(*, command, user, items, audit_metadata=None):
+    command = AttendanceCommand.objects.select_for_update().select_related('branch__company').get(pk=command.pk)
+    require_branch_feature(command.branch, 'commands')
+    if command.status != AttendanceCommandStatus.OPEN:
+        raise AttendanceConflict('command_closed', 'A comanda deve estar aberta.')
+    order = AttendanceOrder.objects.create(command=command, created_by=user)
+    created = []
+    for entry in items:
+        product = Product.objects.select_for_update().filter(pk=entry['product']).first()
+        if not product or product.company_id != command.company_id:
+            raise ValidationError({'product': 'Produto não encontrado na empresa da comanda.'})
+        config = ProductBranchConfig.objects.filter(branch=command.branch, product=product).first()
+        if not (
+            product.status == Status.ACTIVE and product.archived_at is None and product.is_sellable
+            and product.available_command and config and config.is_available
+            and config.available_command is not False
+        ):
+            raise ValidationError({'product': 'Produto indisponível para Comanda nesta filial.'})
+        quantity = strict_decimal(entry['quantity'], field='quantity', decimal_places=3, max_digits=14)
+        if quantity <= 0 or (product.unit == Unit.UNIT and quantity != quantity.to_integral_value()):
+            raise ValidationError({'quantity': 'Quantidade inválida para o produto.'})
+        modifier_total, modifiers = resolve_modifiers(
+            product, entry.get('modifiers', []), command.company_id,
+            branch=command.branch, item_quantity=quantity,
+        )
+        base_price = branch_price_map(command.branch, [product.pk]).get(product.pk, product.sale_price)
+        unit_cost = branch_cost_map(command.branch, [product.pk]).get(product.pk, product.cost)
+        created.append(AttendanceOrderItem.objects.create(
+            order=order, product=product, quantity=quantity, product_name=product.name,
+            internal_code=product.internal_code or '', category_id_snapshot=product.category_id,
+            category_name_snapshot=product.category.name if product.category_id else '', unit=product.unit,
+            base_unit_price=base_price, modifier_unit_total=modifier_total,
+            unit_price=(base_price + modifier_total).quantize(CENT, rounding=ROUND_HALF_UP),
+            modifier_snapshot=modifiers, notes=entry.get('notes', ''), unit_cost=unit_cost,
+        ))
+    audit_log(actor=user, action='attendance.order.create', obj=order, company=command.company,
+              branch=command.branch, after={'command_id': command.pk, 'item_ids': [item.pk for item in created]}, metadata=audit_metadata)
+    return order, created
+
+
+@transaction.atomic
+def confirm_order_item(*, item, user, idempotency_key, audit_metadata=None):
+    item = AttendanceOrderItem.objects.select_for_update().select_related('order__command', 'product').get(pk=item.pk)
+    command = item.order.command
+    if item.status == AttendanceOrderItemStatus.CONFIRMED:
+        return item
+    if command.status != AttendanceCommandStatus.OPEN or item.status != AttendanceOrderItemStatus.PENDING:
+        raise AttendanceConflict('item_not_confirmable', 'O item não pode ser confirmado.')
+    requirements, contents, component_snapshots = stock_requirements_for_product(
+        item.product, item.quantity, command.branch, item.modifier_snapshot,
+    )
+    stocks = {}
+    for product_id, quantity in sorted(requirements.items()):
+        stock = materialize_stock(product=product_id, branch=command.branch)
+        stocks[product_id] = stock
+        apply_locked_stock(
+            stock=stock, quantity=-quantity, user=user, movement_type=MovementType.SALE,
+            nature=MovementNature.SALE, reason=f'Confirmação AttendanceOrderItem {item.pk}',
+            operation_reference=idempotency_key, domain_origin=MovementDomainOrigin.ATTENDANCE_ORDER,
+            attendance_order_item=item,
+            unit_cost_snapshot=stock.average_unit_cost if stock.average_unit_cost is not None else stock.product.cost,
+            content_quantity=-contents[product_id] if product_id in contents else None,
+        )
+    snapshot = {'quantity': item.quantity, 'component_cost_snapshot': component_snapshots, 'modifier_snapshot': item.modifier_snapshot}
+    _reconcile_modifier_component_costs([snapshot], stocks)
+    item.status = AttendanceOrderItemStatus.CONFIRMED
+    item.confirmed_at = timezone.now()
+    item.confirmed_by = user
+    item.component_cost_snapshot = snapshot['component_cost_snapshot']
+    item.save(update_fields=('status', 'confirmed_at', 'confirmed_by', 'component_cost_snapshot', 'updated_at'))
+    if not item.order.items.filter(status=AttendanceOrderItemStatus.PENDING).exists():
+        item.order.status = AttendanceOrderStatus.CONFIRMED
+        item.order.save(update_fields=('status', 'updated_at'))
+    from apps.production.services import create_attendance_order_item_ticket, create_attendance_production_jobs
+    create_attendance_production_jobs(item=item, command=command, user=user, idempotency_key=idempotency_key)
+    create_attendance_order_item_ticket(item=item, command=command, user=user)
+    audit_log(actor=user, action='attendance.order_item.confirm', obj=item, company=command.company,
+              branch=command.branch, after=model_snapshot(item, ('status', 'confirmed_at', 'confirmed_by_id')),
+              metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
+    return item
+
+
+@transaction.atomic
+def cancel_order_item(*, item, user, reason, idempotency_key, audit_metadata=None):
+    item = AttendanceOrderItem.objects.select_for_update().select_related(
+        'order__command', 'product',
+    ).get(pk=item.pk)
+    command = item.order.command
+    if item.status == AttendanceOrderItemStatus.CANCELLED:
+        return item, True
+    if command.status != AttendanceCommandStatus.OPEN:
+        raise AttendanceConflict('command_closed', 'O item só pode ser cancelado em comanda aberta.')
+    operation, replayed = _operation(
+        branch=command.branch, operation_type=AttendanceOperationType.CANCEL_ITEM,
+        idempotency_key=idempotency_key, payload={'item': item.pk, 'reason': reason},
+    )
+    if replayed:
+        return item, True
+    if AttendancePayment.objects.filter(
+        command=command, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
+    ).exists():
+        raise AttendanceConflict(
+            'command_payments_cancel_unsupported',
+            'Estorne os pagamentos parciais antes de cancelar itens da comanda.',
+        )
+    before = model_snapshot(item, ('status', 'cancelled_at', 'cancelled_by_id', 'cancellation_reason'))
+    if item.status == AttendanceOrderItemStatus.CONFIRMED:
+        from apps.inventory.models import StockMovement
+
+        originals = list(StockMovement.objects.select_for_update().filter(
+            attendance_order_item=item, movement_type=MovementType.SALE,
+            original_movement__isnull=True,
+        ).order_by('stock_id', 'pk'))
+        # Stock is locked in a stable order before creating immutable reversals.
+        from apps.inventory.models import Stock
+        stocks = {
+            stock.pk: stock for stock in Stock.objects.select_for_update().filter(
+                pk__in=[movement.stock_id for movement in originals],
+            ).select_related('product').order_by('product_id', 'pk')
+        }
+        for original in originals:
+            apply_locked_stock(
+                stock=stocks[original.stock_id], quantity=-original.quantity, user=user,
+                movement_type=MovementType.SALE_CANCELLATION,
+                reason=f'Cancelamento AttendanceOrderItem {item.pk}: {reason}',
+                original_movement=original,
+                domain_origin=MovementDomainOrigin.ATTENDANCE_ORDER_CANCELLATION,
+                attendance_order_item=item,
+                unit_cost_snapshot=(
+                    original.unit_cost_snapshot
+                    if original.unit_cost_snapshot is not None else original.stock.product.cost
+                ),
+                content_quantity=(
+                    -original.content_quantity
+                    if original.content_quantity is not None else None
+                ),
+            )
+        from apps.production.services import (
+            cancel_attendance_ticket_for_item, create_attendance_cancellation_jobs,
+        )
+        create_attendance_cancellation_jobs(
+            item=item, command=command, user=user, idempotency_key=idempotency_key,
+            reason=reason,
+        )
+        cancel_attendance_ticket_for_item(item=item, user=user)
+    item.status = AttendanceOrderItemStatus.CANCELLED
+    item.cancelled_at = timezone.now()
+    item.cancelled_by = user
+    item.cancellation_reason = (reason or '').strip()
+    item.save(update_fields=(
+        'status', 'cancelled_at', 'cancelled_by', 'cancellation_reason', 'updated_at',
+    ))
+    if not item.order.items.exclude(status=AttendanceOrderItemStatus.CANCELLED).exists():
+        item.order.status = AttendanceOrderStatus.CANCELLED
+        item.order.save(update_fields=('status', 'updated_at'))
+    operation.result = {'item_id': item.pk}
+    operation.save(update_fields=('result', 'updated_at'))
+    audit_log(actor=user, action='attendance.order_item.cancel', obj=item, company=command.company,
+              branch=command.branch, before=before,
+              after=model_snapshot(item, ('status', 'cancelled_at', 'cancelled_by_id', 'cancellation_reason')),
+              metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
+    return item, False
+
+
+@transaction.atomic
+def transfer_command(*, command, table_id, user, idempotency_key, audit_metadata=None):
+    from apps.commands.models import Table, TableStatus
+
+    command = AttendanceCommand.objects.select_for_update().select_related('branch__company').get(pk=command.pk)
+    if command.status != AttendanceCommandStatus.OPEN:
+        raise AttendanceConflict('command_closed', 'A comanda deve estar aberta.')
+    operation, replayed = _operation(
+        branch=command.branch, operation_type=AttendanceOperationType.TRANSFER_COMMAND,
+        idempotency_key=idempotency_key, payload={'command': command.pk, 'table': table_id},
+    )
+    if replayed:
+        return command, True
+    table = None
+    if table_id is not None:
+        table = Table.objects.select_for_update().filter(
+            pk=table_id, branch=command.branch, status=TableStatus.ACTIVE,
+        ).first()
+        if table is None:
+            raise AttendanceConflict('table_not_found', 'Mesa de destino não encontrada.')
+        if not AttendanceCommand.objects.filter(table=table, is_primary=True, status=AttendanceCommandStatus.OPEN).exists():
+            raise AttendanceConflict('destination_table_not_open', 'Abra a mesa de destino antes da transferência.')
+    if command.is_primary and AttendanceCommand.objects.filter(
+        table_id=command.table_id, status=AttendanceCommandStatus.OPEN,
+    ).exclude(pk=command.pk).exists():
+        raise AttendanceConflict(
+            'primary_command_required',
+            'A mesa de origem possui outras comandas abertas e deve manter sua comanda principal.',
+        )
+    before = model_snapshot(command, ('table_id', 'table_name_snapshot', 'is_primary'))
+    command.table = table
+    command.table_name_snapshot = table.name if table else ''
+    if command.is_primary:
+        # Its former table becomes free; the destination already has its own primary command.
+        command.is_primary = False
+    command.save(update_fields=('table', 'table_name_snapshot', 'is_primary', 'updated_at'))
+    operation.result = {'command_id': command.pk, 'table_id': command.table_id}
+    operation.save(update_fields=('result', 'updated_at'))
+    audit_log(actor=user, action='attendance.command.transfer', obj=command, company=command.company,
+              branch=command.branch, before=before, after=model_snapshot(command, ('table_id', 'table_name_snapshot', 'is_primary')),
+              metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
+    return command, False
+
+
+@transaction.atomic
+def transfer_items(*, command, destination_id, items, user, idempotency_key, audit_metadata=None):
+    ids = sorted({command.pk, destination_id})
+    locked = {row.pk: row for row in AttendanceCommand.objects.select_for_update().filter(pk__in=ids)}
+    source, destination = locked.get(command.pk), locked.get(destination_id)
+    if not source or not destination or source.branch_id != destination.branch_id:
+        raise AttendanceConflict('command_scope_mismatch', 'As comandas devem pertencer à mesma filial.')
+    if source.status != AttendanceCommandStatus.OPEN or destination.status != AttendanceCommandStatus.OPEN:
+        raise AttendanceConflict('command_closed', 'A transferência exige comandas abertas.')
+    operation, replayed = _operation(
+        branch=source.branch, operation_type=AttendanceOperationType.TRANSFER_ITEMS,
+        idempotency_key=idempotency_key, payload={'source': source.pk, 'destination': destination.pk, 'items': items},
+    )
+    if replayed:
+        return destination, operation.result.get('item_ids', []), True
+    if AttendancePayment.objects.filter(command__in=(source, destination), status=AttendancePaymentStatus.APPLIED, reversal__isnull=True).exists():
+        raise AttendanceConflict('command_payments_transfer_unsupported', 'Estorne os pagamentos antes de transferir itens.')
+    requested = {entry['item']: entry['quantity'] for entry in items}
+    source_items = list(AttendanceOrderItem.objects.select_for_update().filter(
+        pk__in=requested, order__command=source,
+    ).select_related('order').order_by('pk'))
+    if len(source_items) != len(requested):
+        raise ValidationError({'items': 'Um ou mais itens não pertencem à comanda de origem.'})
+    target_orders = {}
+    moved = []
+    for item in source_items:
+        quantity = requested[item.pk]
+        if quantity > item.quantity or item.status == AttendanceOrderItemStatus.CANCELLED:
+            raise AttendanceConflict('item_not_transferable', 'O item não pode ser transferido.')
+        if quantity < item.quantity and item.status == AttendanceOrderItemStatus.CONFIRMED:
+            raise AttendanceConflict('confirmed_partial_transfer_unsupported', 'Item confirmado só pode ser transferido integralmente.')
+        order = target_orders.setdefault(item.status, AttendanceOrder.objects.create(
+            command=destination, created_by=user,
+            status=AttendanceOrderStatus.CONFIRMED if item.status == AttendanceOrderItemStatus.CONFIRMED else AttendanceOrderStatus.DRAFT,
+        ))
+        before = model_snapshot(item, ('order_id', 'quantity'))
+        if quantity == item.quantity:
+            item.order = order
+            item.save(update_fields=('order', 'updated_at'))
+            moved.append(item.pk)
+        else:
+            item.quantity -= quantity
+            item.save(update_fields=('quantity', 'updated_at'))
+            clone = AttendanceOrderItem.objects.create(
+                order=order, product=item.product, quantity=quantity, product_name=item.product_name,
+                internal_code=item.internal_code, category_id_snapshot=item.category_id_snapshot,
+                category_name_snapshot=item.category_name_snapshot, unit=item.unit, unit_price=item.unit_price,
+                base_unit_price=item.base_unit_price, modifier_unit_total=item.modifier_unit_total,
+                modifier_snapshot=item.modifier_snapshot, notes=item.notes, unit_cost=item.unit_cost,
+                component_cost_snapshot=item.component_cost_snapshot,
+            )
+            moved.append(clone.pk)
+        audit_log(actor=user, action='attendance.item.transfer', obj=item, company=source.company,
+                  branch=source.branch, before=before, after={'destination_command_id': destination.pk},
+                   metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
+    operation.result = {'command_id': destination.pk, 'item_ids': moved}
+    operation.save(update_fields=('result', 'updated_at'))
+    return destination, moved, False
+
+
+@transaction.atomic
+def record_payment(*, command, user, payment_method_id, amount, idempotency_key,
+                    cash_session_id=None, received_amount=None, discount=None,
+                    discount_authorization=None, service_fee_waived=None,
+                    service_fee_authorization=None, pos_device=None,
+                    pos_permission_codes=None, audit_metadata=None):
+    amount = strict_decimal(amount, field='amount', decimal_places=2, max_digits=14)
+    received_amount = strict_decimal(
+        received_amount, field='received_amount', decimal_places=2,
+        max_digits=14, allow_none=True,
+    )
+    command = AttendanceCommand.objects.select_for_update().select_related('branch__company').get(pk=command.pk)
+    if command.status != AttendanceCommandStatus.OPEN:
+        raise AttendanceConflict('command_closed', 'Pagamentos parciais exigem comanda aberta.')
+    method = PaymentMethod.objects.select_for_update().filter(
+        pk=payment_method_id, company=command.company, status=Status.ACTIVE,
+    ).first()
+    if method is None:
+        raise ValidationError({'payment_method': 'Forma de pagamento inválida ou inativa.'})
+    session = None
+    if method.code == PaymentMethodCode.CASH:
+        session = CashSession.objects.select_for_update().filter(
+            pk=cash_session_id, branch=command.branch, status=CashSessionStatus.OPEN,
+        ).first()
+        if session is None:
+            raise ValidationError({'cash_session': 'Dinheiro exige sessão de caixa aberta na filial.'})
+        if received_amount is None or received_amount < amount:
+            raise ValidationError({'received_amount': 'Dinheiro exige valor recebido igual ou maior ao aplicado.'})
+    elif cash_session_id is not None or received_amount is not None:
+        raise ValidationError({'payment_method': 'Somente dinheiro aceita sessão, recebido e troco.'})
+    existing = AttendancePayment.objects.select_for_update().filter(
+        command=command, idempotency_key=idempotency_key,
+    ).first()
+    if existing:
+        if (
+            existing.payment_method_id == method.pk and existing.amount == amount
+            and existing.received_amount == received_amount and existing.cash_session_id == (session.pk if session else None)
+        ):
+            return existing
+        raise AttendanceConflict('idempotency_key_conflict', 'A chave de idempotência já foi usada com outros dados.')
+    paid_rows = AttendancePayment.objects.select_for_update().filter(
+        command=command, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
+    )
+    has_payment = bool(list(paid_rows))
+    requested_discount = strict_decimal(
+        discount if discount is not None else command.checkout_discount,
+        field='discount', decimal_places=2, max_digits=14,
+    )
+    requested_waiver = command.checkout_service_fee_waived if service_fee_waived is None else bool(service_fee_waived)
+    if has_payment and (
+        requested_discount != command.checkout_discount
+        or requested_waiver != command.checkout_service_fee_waived
+    ):
+        raise AttendanceConflict('checkout_context_mismatch', 'Desconto e taxa foram definidos pelo primeiro pagamento.')
+    if not has_payment:
+        _discount_approver(command.branch, user, requested_discount, discount_authorization,
+                            permission_code='sales.apply_discount', authorization_field='discount_authorization',
+                            allow_pos_only=pos_device is not None, pos_device=pos_device,
+                            permission_codes=pos_permission_codes,
+                            device_validated=pos_device is not None)
+        _service_fee_waiver(
+            command.branch, user, requested_waiver, service_fee_authorization,
+            allow_pos_only=pos_device is not None, pos_device=pos_device,
+            permission_codes=pos_permission_codes, device_validated=pos_device is not None,
+        )
+        command.checkout_discount = requested_discount
+        command.checkout_service_fee_waived = requested_waiver
+        command.save(update_fields=('checkout_discount', 'checkout_service_fee_waived', 'updated_at'))
+    _, paid, remaining = financial_state(command, lock=True)
+    if amount > remaining:
+        raise AttendanceConflict('command_overpayment', f'O pagamento excede o saldo de R$ {remaining:.2f}.')
+    payment = AttendancePayment.objects.create(
+        company=command.company, branch=command.branch, command=command,
+        payment_method=method, amount=amount, received_amount=received_amount,
+        cash_session=session, operator=user, idempotency_key=idempotency_key,
+    )
+    audit_log(actor=user, action='attendance.payment.record', obj=payment, company=command.company,
+              branch=command.branch, after={'command_id': command.pk, 'amount': str(amount), 'payment_method_id': method.pk},
+              metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
+    return payment
+
+
+@transaction.atomic
+def reverse_payment(*, payment, user, reason, idempotency_key, audit_metadata=None):
+    payment = AttendancePayment.objects.select_for_update().select_related(
+        'command__branch__company', 'payment_method', 'cash_session',
+    ).get(pk=payment.pk)
+    command = payment.command
+    if command.status != AttendanceCommandStatus.OPEN:
+        raise AttendanceConflict('command_closed', 'Só é possível estornar pagamentos de comanda aberta.')
+    operation, replayed = _operation(
+        branch=command.branch, operation_type=AttendanceOperationType.REVERSE_PAYMENT,
+        idempotency_key=idempotency_key, payload={'payment': payment.pk, 'reason': reason},
+    )
+    if replayed:
+        return AttendancePayment.objects.get(pk=operation.result['reversal_id']), True
+    if payment.status != AttendancePaymentStatus.APPLIED or hasattr(payment, 'reversal'):
+        raise AttendanceConflict('payment_already_reversed', 'O pagamento já foi estornado.')
+    if payment.cash_session_id:
+        session = CashSession.objects.select_for_update().get(pk=payment.cash_session_id)
+        if session.status != CashSessionStatus.OPEN:
+            raise AttendanceConflict('cash_session_closed', 'Não é possível estornar após o fechamento do caixa.')
+    reversal = AttendancePayment.objects.create(
+        company=command.company, branch=command.branch, command=command,
+        payment_method=payment.payment_method, amount=payment.amount,
+        received_amount=payment.received_amount, cash_session=payment.cash_session,
+        operator=user, status=AttendancePaymentStatus.REVERSED,
+        idempotency_key=idempotency_key, reversal_of=payment,
+        reversal_reason=(reason or '').strip(),
+    )
+    operation.result = {'reversal_id': reversal.pk, 'payment_id': payment.pk}
+    operation.save(update_fields=('result', 'updated_at'))
+    audit_log(actor=user, action='attendance.payment.reverse', obj=reversal, company=command.company,
+              branch=command.branch, after={'payment_id': payment.pk, 'reason': reversal.reversal_reason},
+              metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
+    return reversal, False
+
+
+@transaction.atomic
+def finalize_command(*, command, user, cash_session_id, payments, idempotency_key,
+                     discount=Decimal('0.00'), discount_authorization=None,
+                      service_fee_waived=False, service_fee_authorization=None,
+                      pos_device=None, pos_permission_codes=None, audit_metadata=None):
+    command = AttendanceCommand.objects.select_for_update().select_related('branch__company').get(pk=command.pk)
+    if command.sale_id:
+        if command.sale.idempotency_key == idempotency_key:
+            return command
+        raise AttendanceConflict('command_closed', 'Esta comanda já foi finalizada.')
+    if command.status != AttendanceCommandStatus.OPEN:
+        raise AttendanceConflict('command_closed', 'A comanda deve estar aberta.')
+    if AttendanceOrderItem.objects.filter(order__command=command, status=AttendanceOrderItemStatus.PENDING).exists():
+        raise ValidationError({'items': 'Confirme ou cancele todos os itens pendentes antes de fechar a comanda.'})
+    confirmed = list(AttendanceOrderItem.objects.filter(
+        order__command=command, status=AttendanceOrderItemStatus.CONFIRMED,
+    ).select_related('product').order_by('id'))
+    if not confirmed:
+        raise ValidationError({'items': 'A comanda não possui itens confirmados.'})
+    ledger = list(AttendancePayment.objects.select_for_update(of=('self',)).select_related('payment_method').filter(
+        command=command, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
+    ).order_by('pk'))
+    if ledger and (
+        strict_decimal(discount, field='discount', decimal_places=2, max_digits=14) != command.checkout_discount
+        or bool(service_fee_waived) != command.checkout_service_fee_waived
+    ):
+        raise AttendanceConflict('checkout_context_mismatch', 'A finalização deve usar desconto e taxa do primeiro pagamento.')
+    cash_session = CashSession.objects.select_for_update().filter(
+        pk=cash_session_id, branch=command.branch, status=CashSessionStatus.OPEN,
+    ).first()
+    if cash_session is None:
+        raise ValidationError({'cash_session': 'Informe uma sessão aberta da filial.'})
+    preview, paid, remaining = financial_state(
+        command, lock=True, discount=discount, service_fee_waived=service_fee_waived,
+    )
+    if paid > preview['total']:
+        raise AttendanceConflict('command_paid_exceeds_final_total', 'Os pagamentos parciais excedem o total final.')
+    if any(
+        row.payment_method.code == PaymentMethodCode.CASH and row.cash_session_id != cash_session.pk
+        for row in ledger
+    ):
+        raise AttendanceConflict(
+            'partial_payment_cash_session_mismatch',
+            'Finalize a comanda no mesmo caixa usado para os pagamentos parciais em dinheiro.',
+        )
+    normalized = [
+        {'payment_method': row.payment_method_id, 'amount': row.amount, 'received_amount': row.received_amount}
+        for row in ledger
+    ] + list(payments)
+    sale_items = [
+        {
+            'product': item.product_id, 'quantity': str(item.quantity),
+            'modifiers': [
+                {'option': modifier['option_id'], 'quantity': modifier['selected_quantity']}
+                for modifier in item.modifier_snapshot or []
+            ],
+            'notes': item.notes, 'discount': '0.00',
+        }
+        for item in confirmed
+    ]
+    sale = finalize_sale(
+        branch=command.branch, user=user, operation_type=OperationType.SALE,
+        cash_session=cash_session, items=sale_items, payments=normalized, discount=discount,
+        discount_authorization=discount_authorization, service_fee_waived=service_fee_waived,
+        service_fee_authorization=service_fee_authorization, idempotency_key=idempotency_key,
+        channel=SalesChannel.COMMAND, seller_user=user, customer=command.customer,
+        confirmed_order_items=confirmed, internal_permission_code='commands.finalize',
+        precomputed_financials=preview, attendance_payment_sources=[*ledger, *([None] * len(payments))],
+        pos_device=pos_device, allow_pos_only=pos_device is not None,
+        pos_permission_codes=pos_permission_codes, pos_device_validated=pos_device is not None,
+        audit_metadata=audit_metadata,
+    )
+    command.status = AttendanceCommandStatus.CLOSED
+    command.sale = sale
+    command.closed_at = timezone.now()
+    command.closed_by = user
+    command.closed_by_name_snapshot = _operator_name(user)
+    command.save(update_fields=('status', 'sale', 'closed_at', 'closed_by', 'closed_by_name_snapshot', 'updated_at'))
+    audit_log(actor=user, action='attendance.command.finalize', obj=command, company=command.company,
+              branch=command.branch, after={'sale_id': sale.pk, 'total': str(sale.total)},
+               metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
+    return command

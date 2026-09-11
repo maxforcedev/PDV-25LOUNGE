@@ -210,6 +210,8 @@ class MovementDomainOrigin(models.TextChoices):
     INVENTORY_COUNT = 'INVENTORY_COUNT', 'Contagem de inventario'
     ORDER = 'ORDER', 'Confirmacao de OrderItem'
     ORDER_CANCELLATION = 'ORDER_CANCELLATION', 'Cancelamento de OrderItem'
+    ATTENDANCE_ORDER = 'ATTENDANCE_ORDER', 'Confirmacao de item de atendimento'
+    ATTENDANCE_ORDER_CANCELLATION = 'ATTENDANCE_ORDER_CANCELLATION', 'Cancelamento de item de atendimento'
 
 
 class StockMovement(ProtectedInventoryModel):
@@ -255,6 +257,10 @@ class StockMovement(ProtectedInventoryModel):
         related_name='stock_movements',
         blank=True,
         null=True,
+    )
+    attendance_order_item = models.ForeignKey(
+        'attendance.AttendanceOrderItem', on_delete=models.PROTECT,
+        related_name='stock_movements', blank=True, null=True,
     )
     original_movement = models.ForeignKey(
         'self',
@@ -352,6 +358,13 @@ class StockMovement(ProtectedInventoryModel):
                         original_movement__isnull=True,
                         domain_origin=MovementDomainOrigin.ORDER,
                     )
+                    | Q(
+                        movement_type=MovementType.SALE,
+                        sale__isnull=True,
+                        attendance_order_item__isnull=False,
+                        original_movement__isnull=True,
+                        domain_origin=MovementDomainOrigin.ATTENDANCE_ORDER,
+                    )
                     | Q(movement_type__in=(MovementType.SALE_CANCELLATION,
                                             MovementType.CONSUMPTION_CANCELLATION),
                         sale__isnull=False, original_movement__isnull=False)
@@ -361,6 +374,13 @@ class StockMovement(ProtectedInventoryModel):
                         order_item__isnull=False,
                         original_movement__isnull=False,
                         domain_origin=MovementDomainOrigin.ORDER_CANCELLATION,
+                    )
+                    | Q(
+                        movement_type=MovementType.SALE_CANCELLATION,
+                        sale__isnull=True,
+                        attendance_order_item__isnull=False,
+                        original_movement__isnull=False,
+                        domain_origin=MovementDomainOrigin.ATTENDANCE_ORDER_CANCELLATION,
                     )
                 ),
                 name='inventory_movement_sales_links_coherent',
@@ -379,6 +399,16 @@ class StockMovement(ProtectedInventoryModel):
                     original_movement__isnull=True,
                 ),
                 name='inventory_order_item_stock_original_unique',
+            ),
+            models.UniqueConstraint(
+                fields=('attendance_order_item', 'stock'),
+                condition=Q(
+                    attendance_order_item__isnull=False,
+                    movement_type=MovementType.SALE,
+                    domain_origin=MovementDomainOrigin.ATTENDANCE_ORDER,
+                    original_movement__isnull=True,
+                ),
+                name='inventory_attendance_order_item_stock_original_unique',
             ),
             models.CheckConstraint(
                 condition=Q(unit_cost_snapshot__isnull=True) | Q(unit_cost_snapshot__gte=0),
@@ -424,7 +454,13 @@ class StockMovement(ProtectedInventoryModel):
                 and self.order_item_id
                 and not self.sale_id
             )
-            if not self.sale_id and not is_order_confirmation:
+            is_attendance_confirmation = (
+                self.movement_type == MovementType.SALE
+                and self.domain_origin == MovementDomainOrigin.ATTENDANCE_ORDER
+                and self.attendance_order_item_id
+                and not self.sale_id
+            )
+            if not self.sale_id and not (is_order_confirmation or is_attendance_confirmation):
                 raise ValidationError({'sale': 'A venda é obrigatória para esta movimentação.'})
             if self.original_movement_id:
                 raise ValidationError({'original_movement': 'Uma baixa não pode estornar outro movimento.'})
@@ -435,7 +471,13 @@ class StockMovement(ProtectedInventoryModel):
                 and self.order_item_id
                 and not self.sale_id
             )
-            if (not self.sale_id and not is_order_cancellation) or not self.original_movement_id:
+            is_attendance_cancellation = (
+                self.movement_type == MovementType.SALE_CANCELLATION
+                and self.domain_origin == MovementDomainOrigin.ATTENDANCE_ORDER_CANCELLATION
+                and self.attendance_order_item_id
+                and not self.sale_id
+            )
+            if (not self.sale_id and not (is_order_cancellation or is_attendance_cancellation)) or not self.original_movement_id:
                 raise ValidationError({'original_movement': 'O movimento original é obrigatório.'})
             else:
                 original = self.original_movement
@@ -452,10 +494,24 @@ class StockMovement(ProtectedInventoryModel):
                     and original.order_item_id
                     and original.order_item.order.command.sale_id == self.sale_id
                 )
-                if self.sale_id and original.sale_id != self.sale_id and not original_belongs_to_command_sale:
+                original_belongs_to_attendance_command_sale = bool(
+                    original.domain_origin == MovementDomainOrigin.ATTENDANCE_ORDER
+                    and original.attendance_order_item_id
+                    and original.attendance_order_item.order.command.sale_id == self.sale_id
+                )
+                if (
+                    self.sale_id and original.sale_id != self.sale_id
+                    and not original_belongs_to_command_sale
+                    and not original_belongs_to_attendance_command_sale
+                ):
                     raise ValidationError({'original_movement': 'A venda deve ser a mesma do movimento original.'})
                 if is_order_cancellation and (
                     original.sale_id or original.order_item_id != self.order_item_id
+                ):
+                    raise ValidationError({'original_movement': 'O item original deve ser a confirmação pendente da comanda.'})
+                if is_attendance_cancellation and (
+                    original.sale_id
+                    or original.attendance_order_item_id != self.attendance_order_item_id
                 ):
                     raise ValidationError({'original_movement': 'O item original deve ser a confirmação pendente da comanda.'})
                 if original.content_quantity is None and self.quantity != -original.quantity:

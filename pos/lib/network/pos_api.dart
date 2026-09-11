@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../auth/auth_models.dart';
+import '../attendance/attendance_models.dart';
 import '../bootstrap/bootstrap_models.dart';
 import '../cash/cash_models.dart';
 import '../pairing/pairing_models.dart';
@@ -70,6 +71,22 @@ abstract class PosApi {
     String email,
   });
   Future<QuickSaleCustomer> activateQuickSaleCustomer(int customerId);
+  Future<List<AttendanceTable>> attendanceTables();
+  Future<AttendanceCommand> openAttendanceTable({
+    required int tableId,
+    required String idempotencyKey,
+    int? peopleCount,
+    String identifier,
+    String notes,
+  });
+  Future<List<AttendanceCommand>> attendanceCommands({String? query});
+  Future<AttendanceCommand> openAttendanceCommand({
+    String identifier,
+    int? tableId,
+    int? customerId,
+    int? peopleCount,
+    String notes,
+  });
   Future<QuickSalePreview> quickSalePreview({
     required List<Map<String, dynamic>> items,
     required Map<String, dynamic> discount,
@@ -426,6 +443,62 @@ class HttpPosApi implements PosApi, PosCredentialCache {
         'customers/$customerId/activate/',
         body: const {},
       ));
+
+  @override
+  Future<List<AttendanceTable>> attendanceTables() async {
+    final payload = await _request('GET', 'tables/');
+    return (payload['tables'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(AttendanceTable.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<AttendanceCommand> openAttendanceTable({
+    required int tableId,
+    required String idempotencyKey,
+    int? peopleCount,
+    String identifier = '',
+    String notes = '',
+  }) async =>
+      AttendanceCommand.fromJson(await _request(
+        'POST',
+        'tables/$tableId/open/',
+        body: {
+          'idempotency_key': idempotencyKey,
+          if (peopleCount != null) 'people_count': peopleCount,
+          'identifier': identifier,
+          'notes': notes,
+        },
+      ));
+
+  @override
+  Future<List<AttendanceCommand>> attendanceCommands({String? query}) async {
+    final suffix = query == null || query.trim().isEmpty
+        ? ''
+        : '?${Uri(queryParameters: {'q': query.trim()}).query}';
+    final payload = await _request('GET', 'commands/$suffix');
+    return (payload['commands'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(AttendanceCommand.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<AttendanceCommand> openAttendanceCommand({
+    String identifier = '',
+    int? tableId,
+    int? customerId,
+    int? peopleCount,
+    String notes = '',
+  }) async =>
+      AttendanceCommand.fromJson(await _request('POST', 'commands/', body: {
+        'identifier': identifier,
+        if (tableId != null) 'table': tableId,
+        if (customerId != null) 'customer': customerId,
+        if (peopleCount != null) 'people_count': peopleCount,
+        'notes': notes,
+      }));
 
   @override
   Future<QuickSalePreview> quickSalePreview({

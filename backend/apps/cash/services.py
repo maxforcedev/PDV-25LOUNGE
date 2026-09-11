@@ -345,6 +345,7 @@ def expected_amount_from_components(session, *, totals=None, cash=None):
         + cash['consumption_cash']
         - cash['cash_reversals']
         + cash['command_cash']
+        + cash['attendance_cash']
     ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
 
@@ -356,6 +357,7 @@ def cash_payment_components(session):
     # Command payments are a temporary tender ledger until finalization creates
     # the corresponding Sale Payment rows.
     from apps.commands.models import CommandPayment, CommandPaymentStatus
+    from apps.attendance.models import AttendancePayment, AttendancePaymentStatus
 
     money = DecimalField(max_digits=20, decimal_places=2)
     payments = Payment.objects.filter(sale__cash_session_id=_pk(session)).filter(
@@ -388,11 +390,17 @@ def cash_payment_components(session):
     ).aggregate(
         total=Coalesce(Sum('amount'), Decimal('0.00'), output_field=money)
     )['total']
+    values['attendance_cash'] = AttendancePayment.objects.filter(
+        cash_session_id=_pk(session), payment_method__code=PaymentMethodCode.CASH,
+        status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
+        command__sale__isnull=True,
+    ).aggregate(total=Coalesce(Sum('amount'), Decimal('0.00'), output_field=money))['total']
     values['cash_payments'] = (
         values['sale_cash']
         + values['consumption_cash']
         - values['cash_reversals']
         + values['command_cash']
+        + values['attendance_cash']
     )
     return values
 
@@ -471,11 +479,15 @@ def build_session_operational_summary(session, session_sales):
     cash['command_cash'] = getattr(session, 'command_cash', None)
     if cash['command_cash'] is None:
         cash['command_cash'] = cash_payment_components(session)['command_cash']
+    cash['attendance_cash'] = getattr(session, 'attendance_cash', None)
+    if cash['attendance_cash'] is None:
+        cash['attendance_cash'] = cash_payment_components(session)['attendance_cash']
     cash['cash_payments'] = (
         cash['sale_cash']
         + cash['consumption_cash']
         - cash['cash_reversals']
         + cash['command_cash']
+        + cash['attendance_cash']
     )
     return {
         'status': session.status,
@@ -575,6 +587,7 @@ def session_cash_state(session):
         'consumption_cash': f'{cash["consumption_cash"]:.2f}',
         'cash_reversals': f'{cash["cash_reversals"]:.2f}',
         'command_cash': f'{cash["command_cash"]:.2f}',
+        'attendance_cash': f'{cash["attendance_cash"]:.2f}',
         'cash_payments': f'{cash["cash_payments"]:.2f}',
         'expected_amount': f'{expected:.2f}',
         'closing_amount_informed': (
@@ -624,6 +637,9 @@ def close_session(
         )
         # Command-payment writers acquire this session lock before command locks.
         from apps.commands.models import CommandPayment, CommandPaymentStatus, CommandStatus
+        from apps.attendance.models import (
+            AttendanceCommandStatus, AttendancePayment, AttendancePaymentStatus,
+        )
         blocked_payment_ids = list(CommandPayment.objects.select_for_update(of=('self',)).filter(
             cash_session=session,
             payment_method__code='cash',
@@ -631,7 +647,12 @@ def close_session(
             reversal__isnull=True,
             command__status=CommandStatus.OPEN,
         ).values_list('pk', flat=True))
-        if not blocked_payment_ids:
+        blocked_attendance_payment_ids = list(AttendancePayment.objects.select_for_update(of=('self',)).filter(
+            cash_session=session, payment_method__code='cash',
+            status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
+            command__status=AttendanceCommandStatus.OPEN,
+        ).values_list('pk', flat=True))
+        if not blocked_payment_ids and not blocked_attendance_payment_ids:
             expected = calculate_expected_amount(session)
             session.status = CashSessionStatus.CLOSED
             session.closed_by = user
@@ -663,13 +684,14 @@ def close_session(
                 metadata={
                     **(audit_metadata or {}),
                     'reason': 'open_command_partial_payments',
-                   'command_payment_count': len(blocked_payment_ids),
-                   'command_payment_ids': blocked_payment_ids,
+                    'command_payment_count': len(blocked_payment_ids) + len(blocked_attendance_payment_ids),
+                    'command_payment_ids': blocked_payment_ids,
+                    'attendance_payment_ids': blocked_attendance_payment_ids,
                })
     raise ValidationError({
         'cash_session': (
             'Não é possível fechar a sessão: há pagamento parcial de comanda aberta '
-            f'({len(blocked_payment_ids)} pendência(s)).'
+            f'({len(blocked_payment_ids) + len(blocked_attendance_payment_ids)} pendência(s)).'
         )
     })
 

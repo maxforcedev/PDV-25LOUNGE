@@ -1854,15 +1854,79 @@ def calculate_command_preview(*, branch, order_items, discount=Decimal('0.00'),
     return result
 
 
+def stock_requirements_for_product(product, quantity, branch, modifier_snapshot=None):
+    """Shared stock primitive for confirmed persistent-attendance items."""
+    requirements = {}
+    content_requirements = {}
+    component_snapshots = []
+    if product.inventory_behavior == InventoryBehavior.NONE:
+        apply_modifier_stock_requirements(
+            requirements, product=product, quantity=quantity,
+            modifier_snapshot=modifier_snapshot,
+        )
+        return requirements, content_requirements, component_snapshots
+    if product.inventory_behavior == InventoryBehavior.DIRECT:
+        requirements[product.pk] = quantity
+        apply_modifier_stock_requirements(
+            requirements, product=product, quantity=quantity,
+            modifier_snapshot=modifier_snapshot,
+        )
+        return requirements, content_requirements, component_snapshots
+    normal_rows = ProductComponent.objects.filter(
+        parent_product=product,
+    ).select_related('component_product').order_by('component_product_id')
+    fraction_rows = ProductFractionComponent.objects.filter(
+        parent_product=product,
+    ).select_related('component_product').order_by('component_product_id')
+    cost_map = branch_cost_map(branch, {
+        row.component_product_id for row in [*normal_rows, *fraction_rows]
+    })
+    for row in normal_rows:
+        component = row.component_product
+        consumed = row.quantity * quantity
+        requirements[component.pk] = requirements.get(component.pk, Decimal('0')) + consumed
+        cost = cost_map.get(component.pk, component.cost)
+        component_snapshots.append({
+            'product': component.pk, 'product_name': component.name,
+            'internal_code': component.internal_code, 'unit': component.unit,
+            'quantity_per_unit': str(row.quantity), 'consumed_quantity': str(consumed),
+            'unit_cost': str(cost), 'unit_cost_contribution': str(cost * consumed),
+        })
+    for row in fraction_rows:
+        component = row.component_product
+        config = getattr(component, 'fraction_config', None)
+        if not config or not config.tracking_active:
+            raise ValidationError({
+                'product': f'O componente fracionado {component.name} não possui rastreamento ativo.'
+            })
+        content = row.content_quantity * quantity
+        content_requirements[component.pk] = content_requirements.get(component.pk, Decimal('0')) + content
+        consumed = (content / config.package_content).quantize(Decimal('0.001'), rounding=ROUND_HALF_UP)
+        requirements[component.pk] = requirements.get(component.pk, Decimal('0')) + consumed
+        cost = cost_map.get(component.pk, component.cost)
+        component_snapshots.append({
+            'product': component.pk, 'product_name': component.name,
+            'internal_code': component.internal_code, 'unit': component.unit,
+            'quantity_per_unit': str(consumed), 'consumed_quantity': str(content),
+            'unit_cost': str(cost), 'unit_cost_contribution': str(cost * consumed),
+        })
+    apply_modifier_stock_requirements(
+        requirements, product=product, quantity=quantity,
+        modifier_snapshot=modifier_snapshot,
+    )
+    return requirements, content_requirements, component_snapshots
+
+
 @transaction.atomic
 def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiary_user=None, customer=None,
                   seller_user=None, discount_authorization=None, items=None, discount=None,
                   charged_amount=None, payments=None, service_fee_waived=False,
                    service_fee_authorization=None, item_discount_authorization=None,
-                     idempotency_key=None, channel=SalesChannel.COUNTER,
-                       confirmed_order_items=None, internal_permission_code=None,
-                       precomputed_financials=None, payment_sources=None, pos_device=None,
-                        allow_pos_only=False, audit_metadata=None,
+                      idempotency_key=None, channel=SalesChannel.COUNTER,
+                        confirmed_order_items=None, internal_permission_code=None,
+                        precomputed_financials=None, payment_sources=None, pos_device=None,
+                         attendance_payment_sources=None,
+                         allow_pos_only=False, audit_metadata=None,
                         pos_permission_codes=None, pos_device_validated=False):
     permission = 'sales.create_consumption' if operation_type == OperationType.CONSUMPTION else 'sales.create'
     if operation_type not in OperationType.values:
@@ -2123,12 +2187,18 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         create_sale_tickets(sale=sale, user=user)
     if payment_sources is not None and len(payment_sources) != len(prepared_payments):
         raise ValidationError({'payments': 'Proveniência de pagamentos inconsistente.'})
+    if attendance_payment_sources is not None and len(attendance_payment_sources) != len(prepared_payments):
+        raise ValidationError({'payments': 'Proveniência de pagamentos inconsistente.'})
     for index, (method, amount, received) in enumerate(prepared_payments):
         source = payment_sources[index] if payment_sources is not None else None
+        attendance_source = (
+            attendance_payment_sources[index]
+            if attendance_payment_sources is not None else None
+        )
         Payment.objects.create(
             sale=sale, payment_method=method, amount=amount, received_amount=received,
-            source_command_payment=source,
-            occurred_at=source.created_at if source else None,
+            source_command_payment=source, source_attendance_payment=attendance_source,
+            occurred_at=(source or attendance_source).created_at if (source or attendance_source) else None,
         )
     movement_type = (
         MovementType.CONSUMPTION
@@ -2270,7 +2340,18 @@ def cancel_sale(*, sale, branch, user, reason=''):
         StockMovement.objects.select_for_update().filter(pk__in=command_movement_ids)
         .order_by('stock_id', 'pk')
     ) if command_movement_ids else []
-    originals = direct_movements + command_movements
+    attendance_movement_ids = list(
+        StockMovement.objects.filter(
+            attendance_order_item__order__command__sale=sale,
+            movement_type=original_type,
+            original_movement__isnull=True,
+        ).values_list('pk', flat=True).order_by('stock_id', 'pk')
+    )
+    attendance_movements = list(
+        StockMovement.objects.select_for_update().filter(pk__in=attendance_movement_ids)
+        .order_by('stock_id', 'pk')
+    ) if attendance_movement_ids else []
+    originals = direct_movements + command_movements + attendance_movements
     stock_ids = sorted({movement.stock_id for movement in originals})
     stocks = {
         stock.pk: stock
@@ -2297,6 +2378,7 @@ def cancel_sale(*, sale, branch, user, reason=''):
                 if original.unit_cost_snapshot is not None
                 else original.stock.product.cost
             ),
+            attendance_order_item=original.attendance_order_item,
         )
     sale.status = SaleStatus.CANCELLED
     sale.cancelled_at = timezone.now()
@@ -2311,6 +2393,21 @@ def cancel_sale(*, sale, branch, user, reason=''):
         create_sale_cancellation_jobs(sale=sale, user=user, idempotency_key=sale.idempotency_key, reason=reason)
         for item in sale.items.all():
             cancel_ticket_for_source(source_field='source_sale_item', item=item, user=user)
+    else:
+        from apps.production.services import (
+            cancel_attendance_ticket_for_item, create_attendance_cancellation_jobs,
+        )
+        from apps.attendance.models import AttendanceOrderItem
+
+        attendance_items = AttendanceOrderItem.objects.filter(
+            order__command__sale=sale,
+        ).select_related('order__command')
+        for item in attendance_items:
+            create_attendance_cancellation_jobs(
+                item=item, command=item.order.command, user=user,
+                idempotency_key=sale.idempotency_key, reason=reason,
+            )
+            cancel_attendance_ticket_for_item(item=item, user=user)
     audit_log(
         actor=user,
         action='sale.cancel' if sale.operation_type == OperationType.SALE else 'consumption.cancel',
