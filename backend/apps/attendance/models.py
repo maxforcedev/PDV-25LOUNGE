@@ -264,3 +264,123 @@ class AttendancePayment(BaseModel):
             self.change_amount = self.received_amount - self.amount
         self.full_clean()
         return super().save(*args, **kwargs)
+
+
+class TableAttendanceStatus(models.TextChoices):
+    OPEN = 'open', 'Aberto'
+    CLOSED = 'closed', 'Fechado'
+
+
+class TableAttendance(BaseModel):
+    """The operational account for one physical table, independent from Command."""
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='table_attendances')
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='table_attendances')
+    table = models.ForeignKey('commands.Table', on_delete=models.PROTECT, related_name='table_attendances')
+    people_count = models.PositiveIntegerField(null=True, blank=True)
+    customer = models.ForeignKey(
+        'companies.Customer', on_delete=models.PROTECT, related_name='table_attendances',
+        blank=True, null=True,
+    )
+    notes = models.TextField(blank=True, default='')
+    status = models.CharField(max_length=10, choices=TableAttendanceStatus.choices, default=TableAttendanceStatus.OPEN)
+    opened_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='opened_table_attendances')
+    closed_at = models.DateTimeField(blank=True, null=True)
+    closed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='closed_table_attendances', blank=True, null=True)
+    sale = models.OneToOneField('sales.Sale', on_delete=models.PROTECT, related_name='table_attendance', blank=True, null=True)
+    checkout_discount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
+    checkout_service_fee_waived = models.BooleanField(default=False)
+    bill_requested_at = models.DateTimeField(blank=True, null=True)
+    bill_requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='requested_table_bills', blank=True, null=True)
+
+    class Meta:
+        ordering = ('-created_at', '-id')
+        constraints = [
+            models.UniqueConstraint(fields=('table',), condition=Q(status='open'), name='table_attendance_one_open_per_table'),
+            models.CheckConstraint(condition=Q(status='open') | Q(closed_at__isnull=False), name='table_attendance_closed_requires_timestamp'),
+        ]
+
+    def clean(self):
+        super().clean()
+        self.notes = (self.notes or '').strip()
+        errors = {}
+        if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
+            errors['branch'] = 'A filial deve pertencer à empresa do atendimento.'
+        if self.table_id and self.table.branch_id != self.branch_id:
+            errors['table'] = 'A mesa deve pertencer à filial do atendimento.'
+        if self.customer_id and (self.customer.company_id != self.company_id or self.customer.status != Status.ACTIVE):
+            errors['customer'] = 'O cliente deve estar ativo e pertencer à empresa.'
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+
+class TableOrder(BaseModel):
+    attendance = models.ForeignKey(TableAttendance, on_delete=models.PROTECT, related_name='orders')
+    status = models.CharField(max_length=10, choices=AttendanceOrderStatus.choices, default=AttendanceOrderStatus.DRAFT)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='created_table_orders')
+
+    class Meta:
+        ordering = ('-created_at', '-id')
+
+
+class TableOrderItem(BaseModel):
+    order = models.ForeignKey(TableOrder, on_delete=models.PROTECT, related_name='items')
+    product = models.ForeignKey('products.Product', on_delete=models.PROTECT, related_name='table_order_items')
+    quantity = models.DecimalField(max_digits=14, decimal_places=3)
+    product_name = models.CharField(max_length=200)
+    internal_code = models.CharField(max_length=100, blank=True, default='')
+    category_id_snapshot = models.PositiveBigIntegerField(blank=True, null=True)
+    category_name_snapshot = models.CharField(max_length=150, blank=True, default='')
+    unit = models.CharField(max_length=5)
+    unit_price = models.DecimalField(max_digits=14, decimal_places=2)
+    base_unit_price = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
+    modifier_unit_total = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
+    modifier_snapshot = models.JSONField(default=list, blank=True)
+    notes = models.TextField(blank=True, default='')
+    unit_cost = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
+    component_cost_snapshot = models.JSONField(default=list, blank=True)
+    status = models.CharField(max_length=10, choices=AttendanceOrderItemStatus.choices, default=AttendanceOrderItemStatus.PENDING)
+    confirmed_at = models.DateTimeField(blank=True, null=True)
+    confirmed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='confirmed_table_order_items', blank=True, null=True)
+    cancelled_at = models.DateTimeField(blank=True, null=True)
+    cancelled_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='cancelled_table_order_items', blank=True, null=True)
+    cancellation_reason = models.TextField(blank=True, default='')
+
+    class Meta:
+        ordering = ('id',)
+        constraints = [
+            models.CheckConstraint(condition=Q(quantity__gt=0), name='table_order_item_quantity_positive'),
+            models.CheckConstraint(condition=Q(unit_price__gte=0), name='table_order_item_price_nonnegative'),
+        ]
+
+
+class TablePayment(BaseModel):
+    attendance = models.ForeignKey(TableAttendance, on_delete=models.PROTECT, related_name='payments')
+    payment_method = models.ForeignKey('sales.PaymentMethod', on_delete=models.PROTECT, related_name='table_payments')
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    operator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='table_payments')
+    status = models.CharField(max_length=10, choices=AttendancePaymentStatus.choices, default=AttendancePaymentStatus.APPLIED)
+    idempotency_key = models.UUIDField(default=uuid.uuid4)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=('attendance', 'idempotency_key'), name='table_payment_idempotency_unique'),
+            models.CheckConstraint(condition=Q(amount__gt=0), name='table_payment_amount_positive'),
+        ]
+
+
+class TablePaymentAllocation(BaseModel):
+    payment = models.ForeignKey(TablePayment, on_delete=models.PROTECT, related_name='allocations')
+    item = models.ForeignKey(TableOrderItem, on_delete=models.PROTECT, related_name='payment_allocations', blank=True, null=True)
+    person_number = models.PositiveIntegerField(blank=True, null=True)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=Q(amount__gt=0), name='table_payment_allocation_amount_positive'),
+            models.CheckConstraint(condition=Q(item__isnull=False) | Q(person_number__isnull=False), name='table_payment_allocation_target_required'),
+        ]

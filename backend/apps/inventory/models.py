@@ -212,6 +212,8 @@ class MovementDomainOrigin(models.TextChoices):
     ORDER_CANCELLATION = 'ORDER_CANCELLATION', 'Cancelamento de OrderItem'
     ATTENDANCE_ORDER = 'ATTENDANCE_ORDER', 'Confirmacao de item de atendimento'
     ATTENDANCE_ORDER_CANCELLATION = 'ATTENDANCE_ORDER_CANCELLATION', 'Cancelamento de item de atendimento'
+    TABLE_ORDER = 'TABLE_ORDER', 'Confirmacao de item de mesa'
+    TABLE_ORDER_CANCELLATION = 'TABLE_ORDER_CANCELLATION', 'Cancelamento de item de mesa'
 
 
 class StockMovement(ProtectedInventoryModel):
@@ -260,6 +262,10 @@ class StockMovement(ProtectedInventoryModel):
     )
     attendance_order_item = models.ForeignKey(
         'attendance.AttendanceOrderItem', on_delete=models.PROTECT,
+        related_name='stock_movements', blank=True, null=True,
+    )
+    table_order_item = models.ForeignKey(
+        'attendance.TableOrderItem', on_delete=models.PROTECT,
         related_name='stock_movements', blank=True, null=True,
     )
     original_movement = models.ForeignKey(
@@ -365,6 +371,13 @@ class StockMovement(ProtectedInventoryModel):
                         original_movement__isnull=True,
                         domain_origin=MovementDomainOrigin.ATTENDANCE_ORDER,
                     )
+                    | Q(
+                        movement_type=MovementType.SALE,
+                        sale__isnull=True,
+                        table_order_item__isnull=False,
+                        original_movement__isnull=True,
+                        domain_origin=MovementDomainOrigin.TABLE_ORDER,
+                    )
                     | Q(movement_type__in=(MovementType.SALE_CANCELLATION,
                                             MovementType.CONSUMPTION_CANCELLATION),
                         sale__isnull=False, original_movement__isnull=False)
@@ -381,6 +394,13 @@ class StockMovement(ProtectedInventoryModel):
                         attendance_order_item__isnull=False,
                         original_movement__isnull=False,
                         domain_origin=MovementDomainOrigin.ATTENDANCE_ORDER_CANCELLATION,
+                    )
+                    | Q(
+                        movement_type=MovementType.SALE_CANCELLATION,
+                        sale__isnull=True,
+                        table_order_item__isnull=False,
+                        original_movement__isnull=False,
+                        domain_origin=MovementDomainOrigin.TABLE_ORDER_CANCELLATION,
                     )
                 ),
                 name='inventory_movement_sales_links_coherent',
@@ -409,6 +429,16 @@ class StockMovement(ProtectedInventoryModel):
                     original_movement__isnull=True,
                 ),
                 name='inventory_attendance_order_item_stock_original_unique',
+            ),
+            models.UniqueConstraint(
+                fields=('table_order_item', 'stock'),
+                condition=Q(
+                    table_order_item__isnull=False,
+                    movement_type=MovementType.SALE,
+                    domain_origin=MovementDomainOrigin.TABLE_ORDER,
+                    original_movement__isnull=True,
+                ),
+                name='inventory_table_order_item_stock_original_unique',
             ),
             models.CheckConstraint(
                 condition=Q(unit_cost_snapshot__isnull=True) | Q(unit_cost_snapshot__gte=0),

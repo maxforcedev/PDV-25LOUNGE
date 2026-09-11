@@ -19,7 +19,7 @@ from .models import (
 )
 
 
-def _payload(item, destination, event, reason='', command=None):
+def _payload(item, destination, event, reason='', command=None, table_attendance=None):
     command_data = {}
     if command:
         command_data = {
@@ -29,6 +29,14 @@ def _payload(item, destination, event, reason='', command=None):
                 'number': getattr(command, 'command_number', None) or command.number,
                 'identifier': command.identifier,
             },
+        }
+    elif table_attendance:
+        command_data = {
+            'table': {
+                'id': table_attendance.table_id,
+                'name': table_attendance.table.name,
+            },
+            'table_attendance': {'id': table_attendance.pk},
         }
     return {
         'event': event,
@@ -233,6 +241,44 @@ def create_attendance_cancellation_jobs(*, item, command, user, idempotency_key,
 def cancel_attendance_ticket_for_item(*, item, user):
     return cancel_ticket_for_source(
         source_field='source_attendance_order_item', item=item, user=user,
+    )
+
+
+def create_table_production_jobs(*, item, attendance, user, idempotency_key):
+    destinations = ProductProductionDestination.objects.filter(
+        product_id=item.product_id, destination__branch=attendance.branch,
+        destination__status=Status.ACTIVE,
+    ).select_related('destination')
+    for link in destinations:
+        destination = link.destination
+        job, created = ProductionJob.objects.get_or_create(
+            table_order_item=item, destination=destination, event=ProductionEvent.NEW,
+            defaults={
+                'company': attendance.company, 'branch': attendance.branch,
+                'payload_snapshot': _payload(
+                    item, destination, ProductionEvent.NEW,
+                    table_attendance=attendance,
+                ),
+            },
+        )
+        if not created:
+            continue
+        audit_log(actor=user, action='production_job.create', obj=job, company=attendance.company,
+                  branch=attendance.branch, metadata={'idempotency_key': str(idempotency_key)})
+        for device in destination.printer_devices.filter(branch=attendance.branch, status=Status.ACTIVE):
+            PrintJob.objects.create(
+                company=attendance.company, branch=attendance.branch, production_job=job,
+                destination=destination, printer_device=device, payload_snapshot=job.payload_snapshot,
+                idempotency_key=uuid.uuid5(uuid.NAMESPACE_URL, f'production:{job.pk}:device:{device.pk}'),
+            )
+
+
+def create_table_order_item_ticket(*, item, attendance, user):
+    if not item.product.emits_ticket:
+        return None
+    return _create_ticket(
+        item=item, company=attendance.company, branch=attendance.branch, user=user,
+        source_field='source_table_order_item',
     )
 
 

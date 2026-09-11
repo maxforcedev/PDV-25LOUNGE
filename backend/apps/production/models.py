@@ -91,6 +91,7 @@ class ProductionJob(BaseModel):
     branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='production_jobs')
     order_item = models.ForeignKey('commands.OrderItem', on_delete=models.PROTECT, related_name='production_jobs', null=True, blank=True)
     attendance_order_item = models.ForeignKey('attendance.AttendanceOrderItem', on_delete=models.PROTECT, related_name='production_jobs', null=True, blank=True)
+    table_order_item = models.ForeignKey('attendance.TableOrderItem', on_delete=models.PROTECT, related_name='production_jobs', null=True, blank=True)
     sale_item = models.ForeignKey('sales.SaleItem', on_delete=models.PROTECT, related_name='production_jobs', null=True, blank=True)
     destination = models.ForeignKey('products.ProductionDestination', on_delete=models.PROTECT, related_name='production_jobs')
     event = models.CharField(max_length=10, choices=ProductionEvent.choices)
@@ -105,12 +106,14 @@ class ProductionJob(BaseModel):
                     Q(order_item__isnull=False, sale_item__isnull=True, attendance_order_item__isnull=True)
                     | Q(order_item__isnull=True, sale_item__isnull=False, attendance_order_item__isnull=True)
                     | Q(order_item__isnull=True, sale_item__isnull=True, attendance_order_item__isnull=False)
+                    | Q(order_item__isnull=True, sale_item__isnull=True, table_order_item__isnull=False)
                 ),
                 name='production_job_exactly_one_source',
             ),
             models.UniqueConstraint(fields=('order_item', 'destination', 'event'), condition=Q(order_item__isnull=False), name='production_job_order_destination_event_unique'),
             models.UniqueConstraint(fields=('sale_item', 'destination', 'event'), condition=Q(sale_item__isnull=False), name='production_job_sale_destination_event_unique'),
             models.UniqueConstraint(fields=('attendance_order_item', 'destination', 'event'), condition=Q(attendance_order_item__isnull=False), name='production_job_attendance_order_destination_event_unique'),
+            models.UniqueConstraint(fields=('table_order_item', 'destination', 'event'), condition=Q(table_order_item__isnull=False), name='production_job_table_order_destination_event_unique'),
         ]
 
 
@@ -160,6 +163,7 @@ class Ticket(BaseModel):
     source_sale_item = models.OneToOneField('sales.SaleItem', on_delete=models.PROTECT, related_name='sale_ticket', null=True, blank=True)
     source_order_item = models.OneToOneField('commands.OrderItem', on_delete=models.PROTECT, related_name='order_ticket', null=True, blank=True)
     source_attendance_order_item = models.OneToOneField('attendance.AttendanceOrderItem', on_delete=models.PROTECT, related_name='order_ticket', null=True, blank=True)
+    source_table_order_item = models.OneToOneField('attendance.TableOrderItem', on_delete=models.PROTECT, related_name='order_ticket', null=True, blank=True)
     number = models.PositiveIntegerField()
     validation_code = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True, editable=False)
     quantity = models.DecimalField(max_digits=14, decimal_places=3)
@@ -180,6 +184,7 @@ class Ticket(BaseModel):
                     Q(source_sale_item__isnull=False, source_order_item__isnull=True, source_attendance_order_item__isnull=True)
                     | Q(source_sale_item__isnull=True, source_order_item__isnull=False, source_attendance_order_item__isnull=True)
                     | Q(source_sale_item__isnull=True, source_order_item__isnull=True, source_attendance_order_item__isnull=False)
+                    | Q(source_sale_item__isnull=True, source_order_item__isnull=True, source_table_order_item__isnull=False)
                 ),
                 name='production_ticket_exactly_one_source',
             ),

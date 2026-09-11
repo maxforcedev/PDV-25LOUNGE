@@ -2,7 +2,10 @@ from decimal import Decimal, InvalidOperation
 
 from rest_framework import serializers
 
-from .models import AttendanceCommand, AttendanceOrder, AttendanceOrderItem, AttendancePayment
+from .models import (
+    AttendanceCommand, AttendanceOrder, AttendanceOrderItem, AttendancePayment,
+    TableAttendance, TableOrder, TableOrderItem, TablePayment, TablePaymentAllocation,
+)
 
 
 class AttendanceCommandSerializer(serializers.ModelSerializer):
@@ -168,3 +171,48 @@ class AttendanceFinalizeSerializer(serializers.Serializer):
     discount_authorization = serializers.DictField(required=False)
     service_fee_waived = serializers.BooleanField(required=False, default=False)
     service_fee_authorization = serializers.DictField(required=False)
+
+
+class TableAttendanceSerializer(serializers.ModelSerializer):
+    table_name = serializers.CharField(source='table.name', read_only=True)
+
+    class Meta:
+        model = TableAttendance
+        fields = (
+            'id', 'table', 'table_name', 'customer', 'people_count', 'notes', 'status',
+            'opened_by', 'bill_requested_at', 'bill_requested_by', 'closed_at', 'closed_by',
+            'sale', 'created_at', 'updated_at',
+        )
+        read_only_fields = fields
+
+
+class TableOrderItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TableOrderItem
+        fields = '__all__'
+        read_only_fields = fields
+
+
+class TableOrderSerializer(serializers.ModelSerializer):
+    items = TableOrderItemSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = TableOrder
+        fields = ('id', 'attendance', 'status', 'created_by', 'items', 'created_at', 'updated_at')
+        read_only_fields = fields
+
+
+class TablePaymentAllocationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TablePaymentAllocation
+        fields = ('id', 'item', 'person_number', 'amount')
+        read_only_fields = fields
+
+
+class TablePaymentSerializer(serializers.ModelSerializer):
+    allocations = TablePaymentAllocationSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = TablePayment
+        fields = ('id', 'attendance', 'payment_method', 'amount', 'operator', 'status', 'allocations', 'created_at')
+        read_only_fields = fields
