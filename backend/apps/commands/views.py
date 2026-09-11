@@ -25,18 +25,18 @@ from .serializers import (
     RecordCommandPaymentSerializer, ReverseCommandPaymentSerializer, SetCommandCustomerSerializer,
 )
 from .services import (
-    add_order_item, archive_table, batch_create_tables, cancel_order_item, confirm_order_item,
+    add_order_item, batch_create_tables, cancel_order_item, confirm_order_item, delete_table,
     create_table, finalize_command, open_command,
     set_command_customer,
     merge_commands, split_command, transfer_command_items, transfer_command_table,
-    record_command_payment, restore_table, reverse_command_payment, command_payment_summary,
+    record_command_payment, reverse_command_payment, command_payment_summary,
 )
 
 
 class TableViewSet(viewsets.ModelViewSet):
     serializer_class = TableSerializer
     permission_classes = [CommandFunctionalPermission]
-    http_method_names = ('get', 'post', 'patch', 'head', 'options')
+    http_method_names = ('get', 'post', 'patch', 'delete', 'head', 'options')
 
     def get_queryset(self):
         return Table.objects.filter(branch=self.request.branch_context).select_related('branch')
@@ -119,32 +119,13 @@ class TableViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
-    @action(detail=True, methods=('post',))
-    def activate(self, request, pk=None):
-        table = restore_table(table=self.get_object(), user=request.user)
-        return Response(TableSerializer(table).data)
-
-    @action(detail=True, methods=('post',))
-    def deactivate(self, request, pk=None):
-        table = archive_table(table=self.get_object(), user=request.user)
-        return Response(TableSerializer(table).data)
-
-    @action(detail=True, methods=('post',), url_path='archive')
-    def archive(self, request, pk=None):
-        return Response(TableSerializer(archive_table(table=self.get_object(), user=request.user)).data)
-
-    @action(detail=True, methods=('post',), url_path='restore')
-    def restore(self, request, pk=None):
-        return Response(TableSerializer(restore_table(table=self.get_object(), user=request.user)).data)
+    def perform_destroy(self, instance):
+        delete_table(table=instance, user=self.request.user)
 
     @action(detail=False, methods=('get',), url_path='operational')
     def operational(self, request):
         tables_queryset = self.get_queryset()
-        status_filter = request.query_params.get('status')
-        if status_filter == 'archived':
-            tables_queryset = tables_queryset.filter(status=TableStatus.INACTIVE)
-        elif status_filter != 'all':
-            tables_queryset = tables_queryset.filter(status=TableStatus.ACTIVE)
+        tables_queryset = tables_queryset.filter(status=TableStatus.ACTIVE)
         tables = list(tables_queryset)
         table_ids = [table.pk for table in tables]
         money_field = DecimalField(max_digits=14, decimal_places=2)

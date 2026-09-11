@@ -19,6 +19,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
+from apps.base.models import AuditLog
 from apps.companies.models import (
     AccessProfile, BranchSettings, FunctionalPermission, Status,
     UserBranchAccess, UserCompanyAccess,
@@ -36,7 +37,7 @@ from apps.commands.models import (
 from apps.commands.services import (
     create_table, open_command, add_order_item, confirm_order_item,
     cancel_order_item, command_payment_summary, finalize_command, record_command_payment,
-    transfer_command_items, split_command, merge_commands, archive_table, restore_table,
+    transfer_command_items, split_command, merge_commands, batch_create_tables, delete_table,
     CommandConflict,
 )
 from apps.attendance.models import AttendanceCommand, AttendanceCommandStatus
@@ -178,21 +179,19 @@ class MultipleCommandsPerTableTests(Block6Fixture, TestCase):
         self.assertEqual(row['open_commands'][0]['confirmed_total'], '20.00')
 
 
-class TableArchiveTests(Block6Fixture, TestCase):
-    def test_free_table_archives_and_restores(self):
+class TableDeletionTests(Block6Fixture, TestCase):
+    def test_free_table_soft_deletes_and_disappears_from_administration(self):
         table = create_table(branch=self.branch, name='Mesa livre', user=self.owner)
-        archive_table(table=table, user=self.owner)
-        table.refresh_from_db()
-        self.assertEqual(table.status, TableStatus.INACTIVE)
-        restore_table(table=table, user=self.owner)
-        table.refresh_from_db()
-        self.assertEqual(table.status, TableStatus.ACTIVE)
+        delete_table(table=table, user=self.owner)
+        self.assertFalse(Table.objects.filter(pk=table.pk).exists())
+        self.assertIsNotNone(Table.all_objects.get(pk=table.pk).deleted_at)
+        self.assertTrue(AuditLog.objects.filter(action='table.delete', object_id=str(table.pk)).exists())
 
     def test_legacy_open_command_blocks_archive(self):
         table = create_table(branch=self.branch, name='Mesa legacy', user=self.owner)
         open_command(branch=self.branch, user=self.owner, table=table)
-        with self.assertRaisesRegex(ValidationError, 'Não é possível arquivar esta mesa'):
-            archive_table(table=table, user=self.owner)
+        with self.assertRaisesRegex(ValidationError, 'Não é possível excluir esta mesa'):
+            delete_table(table=table, user=self.owner)
 
     def test_open_attendance_command_blocks_archive(self):
         table = create_table(branch=self.branch, name='Mesa attendance', user=self.owner)
@@ -202,28 +201,56 @@ class TableArchiveTests(Block6Fixture, TestCase):
         )
         self.assertEqual(command.status, AttendanceCommandStatus.OPEN)
         self.assertTrue(AttendanceCommand.objects.filter(table=table, status='open').exists())
-        with self.assertRaisesRegex(ValidationError, 'Não é possível arquivar esta mesa'):
-            archive_table(table=table, user=self.owner)
+        with self.assertRaisesRegex(ValidationError, 'Não é possível excluir esta mesa'):
+            delete_table(table=table, user=self.owner)
 
-    def test_restore_rejects_active_identifier_collision(self):
-        archived = create_table(branch=self.branch, name='Mesa 20', user=self.owner)
-        archive_table(table=archived, user=self.owner)
-        Table.objects.create(branch=self.branch, name='Mesa 20', status=TableStatus.ACTIVE)
-        with self.assertRaisesRegex(ValidationError, 'Já existe uma mesa ativa com este identificador'):
-            restore_table(table=archived, user=self.owner)
+    def test_deleted_identifier_can_be_created_again_with_new_id(self):
+        deleted = create_table(branch=self.branch, name='Mesa 20', user=self.owner)
+        delete_table(table=deleted, user=self.owner)
+        replacement = create_table(branch=self.branch, name='Mesa 20', user=self.owner)
+        self.assertNotEqual(replacement.pk, deleted.pk)
+        self.assertIsNotNone(Table.all_objects.get(pk=deleted.pk).deleted_at)
 
-    def test_operational_endpoint_hides_archived_by_default_and_lists_them_explicitly(self):
+    def test_interval_creates_replacement_for_deleted_table_without_reusing_history(self):
+        deleted = create_table(branch=self.branch, name='Mesa 5', user=self.owner)
+        command = open_command(branch=self.branch, user=self.owner, table=deleted, identifier='Histórico')
+        command.status = CommandStatus.CLOSED
+        command.closed_at = timezone.now()
+        command.closed_by = self.owner
+        command.save(update_fields=('status', 'closed_at', 'closed_by', 'updated_at'))
+        delete_table(table=deleted, user=self.owner)
+        created = batch_create_tables(
+            branch=self.branch, prefix='Mesa ', start=1, end=20, seats=4, user=self.owner,
+        )
+        replacement = Table.objects.get(branch=self.branch, name='Mesa 5')
+        self.assertIn(replacement, created)
+        self.assertNotEqual(replacement.pk, deleted.pk)
+        self.assertEqual(Command.objects.get(pk=command.pk).table_id, deleted.pk)
+
+    def test_operational_endpoint_hides_deleted_table(self):
         active = create_table(branch=self.branch, name='Mesa ativa', user=self.owner)
-        archived = create_table(branch=self.branch, name='Mesa arquivada', user=self.owner)
-        archive_table(table=archived, user=self.owner)
+        deleted = create_table(branch=self.branch, name='Mesa excluída', user=self.owner)
+        delete_table(table=deleted, user=self.owner)
         client = APIClient()
         client.force_authenticate(self.owner)
         default_response = client.get('/api/v1/tables/operational/', HTTP_X_BRANCH_ID=str(self.branch.pk))
-        archived_response = client.get('/api/v1/tables/operational/?status=archived', HTTP_X_BRANCH_ID=str(self.branch.pk))
         self.assertEqual(default_response.status_code, 200, default_response.data)
-        self.assertEqual(archived_response.status_code, 200, archived_response.data)
         self.assertEqual([row['id'] for row in default_response.data], [active.pk])
-        self.assertEqual([row['id'] for row in archived_response.data], [archived.pk])
+
+    def test_tables_open_without_tables_manage_cannot_change_structure(self):
+        operator = create_user('tables-open@block6.com')
+        profile = make_profile(self.company, 'Mesa Operacional', ['tables.view', 'tables.open'])
+        UserCompanyAccess.objects.create(
+            user=operator, company=self.company, access_profile=profile, is_active=True,
+        )
+        UserBranchAccess.objects.create(user=operator, branch=self.branch, access_profile=profile)
+        client = APIClient()
+        client.force_authenticate(operator)
+        response = client.post(
+            '/api/v1/tables/', {'branch': self.branch.pk, 'name': 'Mesa indevida'},
+            format='json', HTTP_X_BRANCH_ID=str(self.branch.pk),
+        )
+        self.assertEqual(response.status_code, 403)
 
 
 class CommandConsumptionLimitTests(Block6Fixture, TestCase):

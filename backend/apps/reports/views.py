@@ -3400,8 +3400,8 @@ class CommandsReportOptionsView(APIView):
         return Response({
             'tables': [
                 {'id': table.pk, 'name': table.name, 'historical': table.status != 'active'}
-                for table in Table.objects.filter(branch=branch).filter(
-                    Q(status='active') | Q(pk__in=table_ids)
+                for table in Table.all_objects.filter(branch=branch).filter(
+                    Q(deleted_at__isnull=True) | Q(pk__in=table_ids)
                 ).order_by('name', 'id')
             ],
             'customers': [

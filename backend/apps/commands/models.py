@@ -15,7 +15,14 @@ class TableStatus(models.TextChoices):
     INACTIVE = 'inactive', 'Inativo'
 
 
+class ActiveTableManager(models.Manager):
+    def get_queryset(self):
+        return super().get_queryset().filter(deleted_at__isnull=True)
+
+
 class Table(BaseModel):
+    objects = ActiveTableManager()
+    all_objects = models.Manager()
     branch = models.ForeignKey(
         Branch, on_delete=models.PROTECT, related_name='tables'
     )
@@ -24,14 +31,15 @@ class Table(BaseModel):
     status = models.CharField(
         max_length=10, choices=TableStatus.choices, default=TableStatus.ACTIVE
     )
+    deleted_at = models.DateTimeField(blank=True, null=True, editable=False)
 
     class Meta:
         ordering = ('name', 'id')
         constraints = [
             models.UniqueConstraint(
                 fields=('branch', 'name'),
-                condition=Q(status='active'),
-                name='commands_table_branch_name_active_unique',
+                condition=Q(deleted_at__isnull=True),
+                name='commands_table_branch_name_operational_unique',
             ),
         ]
 
@@ -42,6 +50,8 @@ class Table(BaseModel):
             raise ValidationError({'name': 'O nome da mesa é obrigatório.'})
         if self.branch_id and self.branch.company.status != Status.ACTIVE:
             raise ValidationError({'branch': 'A empresa deve estar ativa.'})
+        if self.deleted_at is not None and self.status != TableStatus.INACTIVE:
+            raise ValidationError({'status': 'Mesa excluída deve permanecer inativa.'})
 
     def save(self, *args, **kwargs):
         self.full_clean()

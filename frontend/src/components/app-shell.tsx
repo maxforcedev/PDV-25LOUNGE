@@ -59,7 +59,7 @@ const mainNavigation: NavItem[] = [
 
 const operationNavigation: NavItem[] = [
   { href: "/pdv", label: "PDV", icon: ShoppingCart, requiredPermissions: [], alternatives: [{ permission: permissions.createSale, features: ["counter", "cash_register"] }, { permission: permissions.createConsumption, features: ["consumption"] }] },
-  { href: "/mesas", label: "Mesas", icon: LayoutGrid, requiredPermissions: [permissions.viewCommands], requiredFeatures: ["tables"] },
+  { href: "/mesas", label: "Mesas", icon: LayoutGrid, requiredPermissions: [permissions.viewTables], requiredFeatures: ["tables"] },
   { href: "/comandas", label: "Comandas", icon: ClipboardList, requiredPermissions: [permissions.viewCommands], requiredFeatures: ["commands"] },
   { href: "/caixas", label: "Caixa", icon: Banknote, requiredPermissions: [permissions.viewCashRegister], requiredFeatures: ["cash_register"] },
 ];

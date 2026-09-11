@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from decimal import Decimal, ROUND_HALF_UP
 
-from django.db import IntegrityError, transaction
+from django.db import transaction
 from django.db.models import DecimalField, F, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
@@ -701,49 +701,25 @@ def _assert_table_without_open_attendance(table):
     ):
         raise ValidationError({
             'status': (
-                'Não é possível arquivar esta mesa enquanto houver atendimento ou comanda aberta vinculada a ela. '
-                'Encerre ou transfira o atendimento antes de arquivar.'
+                'Não é possível excluir esta mesa enquanto houver atendimento ou comanda aberta vinculada a ela. '
+                'Encerre ou transfira o atendimento antes de excluir.'
             )
         })
 
 
 @transaction.atomic
-def archive_table(*, table, user):
-    table = Table.objects.select_for_update().select_related('branch__company').get(pk=table.pk)
+def delete_table(*, table, user):
+    table = Table.all_objects.select_for_update().select_related('branch__company').get(pk=table.pk)
     _assert_table_without_open_attendance(table)
-    if table.status == TableStatus.INACTIVE:
+    if table.deleted_at is not None:
         return table
-    before = model_snapshot(table, ('name', 'seats', 'status'))
+    before = model_snapshot(table, ('name', 'seats', 'status', 'deleted_at'))
     table.status = TableStatus.INACTIVE
-    table.save(update_fields=('status', 'updated_at'))
-    audit_log(actor=user, action='table.archive', obj=table, company=table.branch.company,
-              branch=table.branch, before=before, after=model_snapshot(table, ('name', 'seats', 'status')))
-    return table
-
-
-@transaction.atomic
-def restore_table(*, table, user):
-    table = Table.objects.select_for_update().select_related('branch__company').get(pk=table.pk)
-    if table.status == TableStatus.ACTIVE:
-        return table
-    if Table.objects.select_for_update().filter(
-        branch=table.branch, name=table.name, status=TableStatus.ACTIVE,
-    ).exclude(pk=table.pk).exists():
-        raise ValidationError({
-            'name': 'Já existe uma mesa ativa com este identificador. Altere os dados antes de restaurar.'
-        })
-    before = model_snapshot(table, ('name', 'seats', 'status'))
-    table.status = TableStatus.ACTIVE
-    try:
-        # The partial unique index remains the final guard against a concurrent recreation.
-        with transaction.atomic():
-            table.save(update_fields=('status', 'updated_at'))
-    except IntegrityError as error:
-        raise ValidationError({
-            'name': 'Já existe uma mesa ativa com este identificador. Altere os dados antes de restaurar.'
-        }) from error
-    audit_log(actor=user, action='table.restore', obj=table, company=table.branch.company,
-              branch=table.branch, before=before, after=model_snapshot(table, ('name', 'seats', 'status')))
+    table.deleted_at = timezone.now()
+    table.save(update_fields=('status', 'deleted_at', 'updated_at'))
+    audit_log(actor=user, action='table.delete', obj=table, company=table.branch.company,
+              branch=table.branch, before=before,
+              after=model_snapshot(table, ('name', 'seats', 'status', 'deleted_at')))
     return table
 
 

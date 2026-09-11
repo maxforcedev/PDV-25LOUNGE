@@ -10,7 +10,7 @@ const routes: Array<{
 }> = [
   { href: "/dashboard", permissions: [permissions.viewDashboard] },
   { href: "/pdv", permissions: [], alternatives: [{ permission: permissions.createSale, features: ["counter", "cash_register"] }, { permission: permissions.createConsumption, features: ["consumption"] }] },
-  { href: "/mesas", permissions: [permissions.viewCommands], features: ["tables"] },
+  { href: "/mesas", permissions: [permissions.viewTables], features: ["tables"] },
   { href: "/comandas", permissions: [permissions.viewCommands], features: ["commands"] },
   { href: "/caixas", permissions: [permissions.viewCashRegister], features: ["cash_register"] },
   { href: "/producao/fila", permissions: [permissions.viewPrintJobs] },

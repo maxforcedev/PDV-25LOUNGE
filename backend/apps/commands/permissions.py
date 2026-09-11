@@ -10,8 +10,8 @@ class CommandFunctionalPermission(BasePermission):
     message = 'Você não possui permissão para esta operação.'
 
     codes = {
-        'list': 'commands.view',
-        'retrieve': 'commands.view',
+        'list': 'tables.view',
+        'retrieve': 'tables.view',
         'open': 'commands.open',
         'set_customer': 'commands.open',
         'open_list': 'commands.view',
@@ -33,15 +33,12 @@ class CommandFunctionalPermission(BasePermission):
         'payment_summary': 'commands.payments.view',
         'record_payment': 'commands.payments.record',
         'reverse_payment': 'commands.payments.reverse',
-        'operational': 'commands.view',
-        'create': 'commands.open',
-        'update': 'commands.open',
-        'partial_update': 'commands.open',
-        'activate': 'commands.open',
-        'deactivate': 'commands.open',
-        'archive': 'commands.open',
-        'restore': 'commands.open',
-        'batch_create': 'commands.open',
+        'operational': 'tables.view',
+        'create': 'tables.manage',
+        'update': 'tables.manage',
+        'partial_update': 'tables.manage',
+        'destroy': 'tables.manage',
+        'batch_create': 'tables.manage',
     }
 
     @staticmethod

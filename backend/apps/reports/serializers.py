@@ -63,7 +63,7 @@ class BaseReportQuerySerializer(serializers.Serializer):
             'cash_session': CashSession.objects.filter(branch=branch),
             'customer': Customer.objects.filter(company_id=branch.company_id),
             'supplier': Supplier.objects.filter(branch=branch),
-            'table': Table.objects.filter(branch=branch),
+            'table': Table.all_objects.filter(branch=branch),
             'device': POSDevice.objects.filter(branch=branch),
         }
         errors = {}

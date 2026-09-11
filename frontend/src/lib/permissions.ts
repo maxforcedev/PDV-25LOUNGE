@@ -31,6 +31,7 @@ export const permissions = {
   addCashRegister: "cash_registers.add", changeCashRegister: "cash_registers.change", changeCashRegisterStatus: "cash_registers.change_status", administerOtherCash: "cash_registers.administer_others",
   createSale: "sales.create", viewSale: "sales.view", cancelSale: "sales.cancel", applyDiscount: "sales.apply_discount", applyItemDiscount: "sales.apply_item_discount", waiveServiceFee: "sales.waive_service_fee",
   createConsumption: "sales.create_consumption", viewConsumption: "sales.view_consumption", cancelConsumption: "sales.cancel_consumption",
+  viewTables: "tables.view", manageTables: "tables.manage", openTables: "tables.open",
   viewCommands: "commands.view", openCommand: "commands.open", addCommandItems: "commands.add_items", cancelCommandItems: "commands.cancel_items", finalizeCommand: "commands.finalize",
   transferCommand: "commands.transfer", transferCommandItems: "commands.transfer_items", mergeCommands: "commands.merge", splitCommand: "commands.split",
   viewCommandPayments: "commands.payments.view", recordCommandPayment: "commands.payments.record", reverseCommandPayment: "commands.payments.reverse",
