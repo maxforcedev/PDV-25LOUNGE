@@ -282,6 +282,42 @@ def create_table_order_item_ticket(*, item, attendance, user):
     )
 
 
+def cancel_table_ticket_for_item(*, item, user):
+    return cancel_ticket_for_source(
+        source_field='source_table_order_item', item=item, user=user,
+    )
+
+
+def create_table_cancellation_jobs(*, item, attendance, user, idempotency_key, reason):
+    originals = ProductionJob.objects.filter(
+        table_order_item=item, event=ProductionEvent.NEW,
+    ).select_related('destination')
+    for original in originals:
+        cancellation, created = ProductionJob.objects.get_or_create(
+            table_order_item=item, destination=original.destination, event=ProductionEvent.CANCEL,
+            defaults={
+                'company': attendance.company, 'branch': attendance.branch,
+                'original_job': original,
+                'payload_snapshot': _payload(
+                    item, original.destination, ProductionEvent.CANCEL, reason,
+                    table_attendance=attendance,
+                ),
+            },
+        )
+        if not created:
+            continue
+        audit_log(actor=user, action='production_job.cancel_notice', obj=cancellation,
+                  company=attendance.company, branch=attendance.branch,
+                  metadata={'idempotency_key': str(idempotency_key)})
+        for device_id in original.print_jobs.values_list('printer_device_id', flat=True):
+            PrintJob.objects.create(
+                company=attendance.company, branch=attendance.branch,
+                production_job=cancellation, destination=original.destination,
+                printer_device_id=device_id, payload_snapshot=cancellation.payload_snapshot,
+                idempotency_key=uuid.uuid5(uuid.NAMESPACE_URL, f'production:{cancellation.pk}:device:{device_id}'),
+            )
+
+
 def cancel_ticket_for_source(*, source_field, item, user):
     ticket = Ticket.objects.select_for_update().filter(**{source_field: item}).first()
     if not ticket or ticket.status == TicketStatus.CANCELLED:

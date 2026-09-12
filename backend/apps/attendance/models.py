@@ -44,6 +44,14 @@ class AttendanceOperationType(models.TextChoices):
     SEPARATE_TABLE = 'separate_table', 'Separar mesa'
     REQUEST_BILL = 'request_bill', 'Solicitar conta'
     CLEAR_BILL = 'clear_bill', 'Limpar solicitação de conta'
+    TABLE_OPEN = 'table_open', 'Abrir atendimento de mesa'
+    TABLE_ORDER = 'table_order', 'Salvar pedido de mesa'
+    TABLE_PAYMENT = 'table_payment', 'Registrar pagamento de mesa'
+    TABLE_REVERSE_PAYMENT = 'table_reverse_payment', 'Estornar pagamento de mesa'
+    TABLE_CANCEL_ITEM = 'table_cancel_item', 'Cancelar item de mesa'
+    TABLE_TRANSFER_ITEMS = 'table_transfer_items', 'Transferir itens de mesa'
+    TABLE_BILL = 'table_bill', 'Solicitar conta de mesa'
+    TABLE_CLOSE = 'table_close', 'Fechar atendimento de mesa'
 
 
 class AttendanceCommand(BaseModel):

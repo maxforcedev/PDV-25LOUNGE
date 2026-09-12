@@ -227,3 +227,16 @@ class TablePaymentSerializer(serializers.ModelSerializer):
             'reversal_of', 'reversal_reason', 'allocations', 'created_at',
         )
         read_only_fields = fields
+
+
+class TableAttendanceOpenSerializer(serializers.Serializer):
+    idempotency_key = serializers.UUIDField()
+    people_count = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    responsible_name = serializers.CharField(max_length=200, required=False, allow_blank=True, default='')
+    customer = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    notes = serializers.CharField(max_length=1000, required=False, allow_blank=True, default='')
+
+
+class TablePaymentInputSerializer(AttendancePaymentInputSerializer):
+    mode = serializers.ChoiceField(choices=('value', 'remaining', 'equal_people', 'items'), required=False, default='value')
+    allocations = serializers.ListField(child=serializers.DictField(), required=False, default=list)

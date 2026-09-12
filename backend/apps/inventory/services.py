@@ -364,7 +364,7 @@ def apply_locked_stock(*, stock, quantity, user, movement_type, reason='', sale=
                        domain_origin=MovementDomainOrigin.LEGACY, transfer_item=None,
                         transfer_resolution=None, loss_record=None,
                         inventory_count_item=None, content_quantity=None,
-                        order_item=None, attendance_order_item=None):
+                         order_item=None, attendance_order_item=None, table_order_item=None):
     """Apply a delta to a Stock row already locked by the current transaction."""
     config = _active_fraction_config(stock.product)
     previous = stock.current_quantity
@@ -509,6 +509,7 @@ def apply_locked_stock(*, stock, quantity, user, movement_type, reason='', sale=
         inventory_count_item=inventory_count_item,
         order_item=order_item,
         attendance_order_item=attendance_order_item,
+        table_order_item=table_order_item,
     )
 
 
