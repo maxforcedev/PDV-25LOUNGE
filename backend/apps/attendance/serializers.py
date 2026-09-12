@@ -212,7 +212,7 @@ class TableOrderSerializer(serializers.ModelSerializer):
 class TablePaymentAllocationSerializer(serializers.ModelSerializer):
     class Meta:
         model = TablePaymentAllocation
-        fields = ('id', 'item', 'person_number', 'amount', 'allocated_quantity')
+        fields = ('id', 'item', 'person_number', 'amount', 'allocated_quantity', 'equal_split_cycle')
         read_only_fields = fields
 
 
@@ -251,3 +251,23 @@ class TablePaymentInputSerializer(AttendancePaymentInputSerializer):
         if mode != 'items' and attrs.get('allocations'):
             raise serializers.ValidationError({'allocations': 'Alocações são exclusivas do pagamento por itens.'})
         return attrs
+
+
+class TableTransferItemsSerializer(serializers.Serializer):
+    destination_attendance = serializers.IntegerField(min_value=1)
+    items = serializers.ListField(child=serializers.DictField(), allow_empty=False)
+    idempotency_key = serializers.UUIDField()
+
+    def validate_items(self, values):
+        seen = set()
+        for value in values:
+            try:
+                item = int(value['item'])
+                quantity = Decimal(str(value['quantity']))
+            except (KeyError, TypeError, ValueError, InvalidOperation) as error:
+                raise serializers.ValidationError('Item ou quantidade inválidos.') from error
+            if item < 1 or quantity <= 0 or quantity.as_tuple().exponent < -3 or item in seen:
+                raise serializers.ValidationError('Itens devem ser únicos e ter quantidade positiva.')
+            value['item'], value['quantity'] = item, quantity
+            seen.add(item)
+        return values

@@ -49,6 +49,7 @@ from apps.attendance.serializers import (
     AttendanceTransferItemsSerializer, AttendanceBillRequestSerializer, AttendanceTableGroupSerializer,
     TableAttendanceOpenSerializer, TableAttendanceSerializer, TableOrderItemSerializer,
     TablePaymentInputSerializer, TablePaymentSerializer,
+    TableTransferItemsSerializer,
 )
 from apps.attendance.services import (
     AttendanceConflict, add_order_items, cancel_order_item, command_summary, confirm_order_item,
@@ -649,6 +650,8 @@ class POSTablesView(POSAttendanceView):
             grouped[attendance.table_id] = attendance
         legacy_ids = set(Command.objects.filter(
             branch=device.branch, status=CommandStatus.OPEN, table_id__in=grouped,
+        ).values_list('table_id', flat=True)) | set(AttendanceCommand.objects.filter(
+            branch=device.branch, status=AttendanceCommandStatus.OPEN, table_id__in=grouped,
         ).values_list('table_id', flat=True))
         active_memberships = AttendanceTableGroupMembership.objects.filter(
             table_id__in=grouped, left_at__isnull=True, group__is_active=True,
@@ -845,6 +848,26 @@ class POSAttendanceCheckoutOptionsView(POSAttendanceView):
                 for session in sessions
             ],
         })
+
+
+class POSTableCheckoutOptionsView(POSAttendanceView):
+    def get(self, request):
+        device, _, permissions, _ = self.context(request)
+        if not permissions.intersection({'tables.payments.view', 'tables.payments.record'}):
+            raise PermissionDenied('Você não possui permissão para consultar opções de recebimento de Mesa.')
+        from apps.sales.models import PaymentMethod
+        mode, fixed_register = effective_cash_settings(device)
+        sessions = CashSession.objects.filter(branch=device.branch, status='open').select_related('cash_register', 'opened_by').order_by('id')
+        fixed_cash_available = True
+        if mode == 'FIXED':
+            fixed_cash_available = bool(fixed_register and fixed_register.status == CashRegisterStatus.ACTIVE)
+            sessions = sessions.filter(cash_register=fixed_register) if fixed_cash_available else sessions.none()
+        methods = PaymentMethod.objects.filter(company_id=device.branch.company_id, status=Status.ACTIVE).order_by('name', 'id').values('id', 'code', 'name')
+        return Response({'payment_methods': list(methods), 'cash_binding_mode': mode,
+            'fixed_register': {'id': fixed_register.pk, 'name': fixed_register.name} if mode == 'FIXED' and fixed_register else None,
+            'cash_required': True, 'fixed_cash_available': fixed_cash_available,
+            'cash_sessions': [{'id': session.pk, 'register_name': session.cash_register.name,
+                'opened_by_name': session.opened_by.get_full_name().strip() or session.opened_by.email} for session in sessions]})
 
 
 class POSAttendanceCommandDetailView(POSAttendanceView):
@@ -1058,7 +1081,7 @@ class POSAttendanceCommandItemsTransferView(POSAttendanceView):
     def post(self, request, command_id):
         device, operator, permissions, operator_session = self.context(request)
         self._require(permissions, 'commands.transfer_items', 'Você não possui permissão para transferir itens.')
-        serializer = AttendanceTransferItemsSerializer(data=request.data)
+        serializer = TableTransferItemsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
             destination, item_ids, replayed = transfer_attendance_items(
@@ -1132,31 +1155,8 @@ class POSTableAttendancePaymentsView(POSTableAttendanceView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         attendance = self._attendance(device, attendance_id)
-        amount = data['amount']
-        if data['mode'] == 'remaining':
-            amount = Decimal(table_summary(attendance)['remaining_balance'])
-        elif data['mode'] == 'equal_people':
-            if not attendance.people_count:
-                raise ValidationError({'people_count': 'Informe a quantidade de pessoas para dividir igualmente.'})
-            remaining = Decimal(table_summary(attendance)['remaining_balance'])
-            active_people = set(attendance.payments.filter(
-                status='applied', reversal__isnull=True,
-            ).values_list('allocations__person_number', flat=True)) - {None}
-            if attendance.equal_split_total is None:
-                attendance.equal_split_total = remaining
-                attendance.equal_split_people_count = attendance.people_count
-                attendance.save(update_fields=('equal_split_total', 'equal_split_people_count', 'updated_at'))
-            elif attendance.equal_split_people_count != attendance.people_count:
-                raise ValidationError({'people_count': 'A divisão igual já foi iniciada com outra quantidade de pessoas.'})
-            if len(active_people) >= attendance.equal_split_people_count:
-                raise ValidationError({'payments': 'Todas as parcelas da divisão igual já foram registradas.'})
-            person_number = next(index for index in range(1, attendance.equal_split_people_count + 1) if index not in active_people)
-            cents = int(attendance.equal_split_total * 100)
-            base, remainder = divmod(cents, attendance.equal_split_people_count)
-            amount = Decimal(base + (1 if person_number <= remainder else 0)) / Decimal('100')
-            data['allocations'] = [{'person_number': person_number, 'amount': amount}]
         try:
-            payment, replayed = record_table_payment(attendance=attendance, user=operator, payment_method_id=data['payment_method'], amount=amount,
+            payment, replayed = record_table_payment(attendance=attendance, user=operator, payment_method_id=data['payment_method'], amount=data.get('amount'), mode=data['mode'],
                 received_amount=data.get('received_amount'), cash_session_id=data.get('cash_session'), allocations=data.get('allocations'),
                 idempotency_key=data['idempotency_key'], discount=data.get('discount'), discount_authorization=data.get('discount_authorization'),
                 service_fee_waived=data.get('service_fee_waived'), service_fee_authorization=data.get('service_fee_authorization'),
@@ -1224,7 +1224,7 @@ class POSTableAttendanceItemsTransferView(POSTableAttendanceView):
         serializer.is_valid(raise_exception=True)
         try:
             destination, item_ids, replayed = transfer_table_items(
-                attendance=self._attendance(device, attendance_id), destination_id=serializer.validated_data['command'],
+                attendance=self._attendance(device, attendance_id), destination_id=serializer.validated_data['destination_attendance'],
                 items=serializer.validated_data['items'], user=operator,
                 idempotency_key=serializer.validated_data['idempotency_key'],
                 audit_metadata=self.audit_metadata(device, operator_session),

@@ -1925,7 +1925,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
                       idempotency_key=None, channel=SalesChannel.COUNTER,
                         confirmed_order_items=None, internal_permission_code=None,
                         precomputed_financials=None, payment_sources=None, pos_device=None,
-                         attendance_payment_sources=None,
+                          attendance_payment_sources=None, table_payment_sources=None,
                          allow_pos_only=False, audit_metadata=None,
                         pos_permission_codes=None, pos_device_validated=False):
     permission = 'sales.create_consumption' if operation_type == OperationType.CONSUMPTION else 'sales.create'
@@ -1933,9 +1933,9 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         raise ValidationError({'operation_type': 'Tipo de operação inválido.'})
     if internal_permission_code:
         if not (
-            internal_permission_code == 'commands.finalize'
+            internal_permission_code in {'commands.finalize', 'tables.close'}
             and operation_type == OperationType.SALE
-            and channel == SalesChannel.COMMAND
+            and channel in {SalesChannel.COMMAND, SalesChannel.TABLE}
             and confirmed_order_items is not None
         ):
             raise ValidationError({'operation': 'Bypass interno de venda inválido.'})
@@ -2051,7 +2051,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         content_requirements = {}
         stocks = {}
     if precomputed_financials is not None:
-        if not (internal_permission_code == 'commands.finalize' and confirmed_order_items is not None):
+        if not (internal_permission_code in {'commands.finalize', 'tables.close'} and confirmed_order_items is not None):
             raise ValidationError({'operation': 'Financeiro pré-calculado só é permitido ao finalizar comandas.'})
         financial_snapshots = precomputed_financials.get('_snapshots')
         if not isinstance(financial_snapshots, list):
@@ -2189,16 +2189,20 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         raise ValidationError({'payments': 'Proveniência de pagamentos inconsistente.'})
     if attendance_payment_sources is not None and len(attendance_payment_sources) != len(prepared_payments):
         raise ValidationError({'payments': 'Proveniência de pagamentos inconsistente.'})
+    if table_payment_sources is not None and len(table_payment_sources) != len(prepared_payments):
+        raise ValidationError({'payments': 'Proveniência de pagamentos inconsistente.'})
     for index, (method, amount, received) in enumerate(prepared_payments):
         source = payment_sources[index] if payment_sources is not None else None
         attendance_source = (
             attendance_payment_sources[index]
             if attendance_payment_sources is not None else None
         )
+        table_source = table_payment_sources[index] if table_payment_sources is not None else None
         Payment.objects.create(
             sale=sale, payment_method=method, amount=amount, received_amount=received,
             source_command_payment=source, source_attendance_payment=attendance_source,
-            occurred_at=(source or attendance_source).created_at if (source or attendance_source) else None,
+            source_table_payment=table_source,
+            occurred_at=(source or attendance_source or table_source).created_at if (source or attendance_source or table_source) else None,
         )
     movement_type = (
         MovementType.CONSUMPTION

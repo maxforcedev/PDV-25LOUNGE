@@ -24,6 +24,7 @@ from .views import (
     POSTableAttendanceBillView, POSTableAttendanceCloseView,
     POSTableAttendanceItemsTransferView,
     POSTableCatalogView,
+    POSTableCheckoutOptionsView,
     POSTicketLookupView, POSTicketValidateView,
 )
 
@@ -55,6 +56,7 @@ urlpatterns = [
     path('tables/<int:table_id>/separate/', POSTableSeparateView.as_view(), name='table-separate'),
     path('tables/<int:table_id>/open/', POSTableOpenView.as_view(), name='table-open'),
     path('tables/catalog/', POSTableCatalogView.as_view(), name='table-catalog'),
+    path('tables/checkout-options/', POSTableCheckoutOptionsView.as_view(), name='table-checkout-options'),
     path('table-attendances/<int:attendance_id>/', POSTableAttendanceView.as_view(), name='table-attendance-detail'),
     path('table-attendances/<int:attendance_id>/orders/', POSTableAttendanceOrdersView.as_view(), name='table-attendance-orders'),
     path('table-attendances/<int:attendance_id>/payments/', POSTableAttendancePaymentsView.as_view(), name='table-attendance-payments'),

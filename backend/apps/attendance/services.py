@@ -898,7 +898,7 @@ def table_summary(attendance):
     preview, paid, remaining, service_fee_base = table_financial_state(attendance)
     return {
         'subtotal': f"{preview['subtotal']:.2f}",
-        'discount_total': f"{(preview['promotion_discount_total'] + preview['discount']):.2f}",
+        'discount_total': f"{(preview['promotion_discount_total'] + preview['item_discount_total'] + preview['discount']):.2f}",
         'service_fee_base': f'{service_fee_base:.2f}',
         'service_fee_total': f"{preview['service_fee_amount']:.2f}",
         'total_due': f"{preview['total']:.2f}",
@@ -926,7 +926,7 @@ def open_table_attendance(*, branch, table_id, user, idempotency_key, people_cou
     table = Table.objects.select_for_update().filter(pk=table_id, branch=branch, status=TableStatus.ACTIVE).first()
     if not table:
         raise AttendanceConflict('table_not_found', 'Mesa não encontrada na filial atual.')
-    if Command.objects.select_for_update().filter(table=table, status=CommandStatus.OPEN).exists():
+    if Command.objects.select_for_update().filter(table=table, status=CommandStatus.OPEN).exists() or AttendanceCommand.objects.select_for_update().filter(table=table, status=AttendanceCommandStatus.OPEN).exists():
         raise AttendanceConflict('table_in_legacy_use', 'A mesa possui atendimento aberto no fluxo legado.')
     existing = TableAttendance.objects.select_for_update().filter(table=table, status=TableAttendanceStatus.OPEN).first()
     if existing:
@@ -1049,17 +1049,21 @@ def cancel_table_item(*, item, user, reason, idempotency_key, audit_metadata=Non
 
 
 @transaction.atomic
-def record_table_payment(*, attendance, user, payment_method_id, amount, idempotency_key,
+def record_table_payment(*, attendance, user, payment_method_id, amount=None, mode='value', idempotency_key=None,
                          cash_session_id=None, received_amount=None, allocations=None,
                          discount=None, discount_authorization=None, service_fee_waived=None,
                          service_fee_authorization=None, pos_device=None, pos_permission_codes=None,
                          audit_metadata=None):
     from .models import TableAttendance, TableAttendanceStatus, TablePayment, TablePaymentAllocation
-    amount = strict_decimal(amount, field='amount', decimal_places=2, max_digits=14)
     received_amount = strict_decimal(received_amount, field='received_amount', decimal_places=2, max_digits=14, allow_none=True)
     attendance = TableAttendance.objects.select_for_update().select_related('branch__company').get(pk=attendance.pk)
     if attendance.status != TableAttendanceStatus.OPEN:
         raise AttendanceConflict('table_closed', 'Pagamentos exigem mesa aberta.')
+    existing_payment = TablePayment.objects.select_for_update().filter(
+        attendance=attendance, idempotency_key=idempotency_key,
+    ).first()
+    if existing_payment:
+        return existing_payment, True
     method = PaymentMethod.objects.select_for_update().filter(pk=payment_method_id, company=attendance.company, status=Status.ACTIVE).first()
     if not method:
         raise ValidationError({'payment_method': 'Forma de pagamento inválida ou inativa.'})
@@ -1068,15 +1072,8 @@ def record_table_payment(*, attendance, user, payment_method_id, amount, idempot
         session = CashSession.objects.select_for_update().filter(pk=cash_session_id, branch=attendance.branch, status=CashSessionStatus.OPEN).first()
         if not session:
             raise ValidationError({'cash_session': 'Dinheiro exige sessão de caixa aberta na filial.'})
-        if received_amount is None or received_amount < amount:
-            raise ValidationError({'received_amount': 'Dinheiro exige valor recebido igual ou maior ao aplicado.'})
     elif cash_session_id is not None or received_amount is not None:
         raise ValidationError({'payment_method': 'Somente dinheiro aceita sessão, recebido e troco.'})
-    operation, replayed = _operation(branch=attendance.branch, operation_type=AttendanceOperationType.TABLE_PAYMENT,
-        idempotency_key=idempotency_key, payload={'attendance': attendance.pk, 'payment_method': payment_method_id,
-        'amount': str(amount), 'cash_session': cash_session_id, 'received_amount': str(received_amount) if received_amount is not None else None, 'allocations': allocations or []})
-    if replayed:
-        return TablePayment.objects.get(pk=operation.result['payment_id']), True
     requested_discount = strict_decimal(discount if discount is not None else attendance.checkout_discount, field='discount', decimal_places=2, max_digits=14)
     requested_waiver = attendance.checkout_service_fee_waived if service_fee_waived is None else bool(service_fee_waived)
     has_payment = TablePayment.objects.select_for_update().filter(attendance=attendance, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True).exists()
@@ -1088,13 +1085,28 @@ def record_table_payment(*, attendance, user, payment_method_id, amount, idempot
         attendance.checkout_discount, attendance.checkout_service_fee_waived = requested_discount, requested_waiver
         attendance.save(update_fields=('checkout_discount', 'checkout_service_fee_waived', 'updated_at'))
     preview, _paid, remaining, _base = table_financial_state(attendance, lock=True)
-    if any(row.get('item') for row in allocations or []):
+    if mode == 'value':
+        amount = strict_decimal(amount, field='amount', decimal_places=2, max_digits=14)
+    elif mode == 'remaining':
+        amount = remaining
+    elif mode == 'equal_people':
+        amount, allocations = _next_equal_split(attendance, remaining)
+    elif mode == 'items':
         amount = _table_allocation_amount(attendance, allocations, preview)
+    else:
+        raise ValidationError({'mode': 'Modo de pagamento inválido.'})
+    if method.code == PaymentMethodCode.CASH and (received_amount is None or received_amount < amount):
+        raise ValidationError({'received_amount': 'Dinheiro exige valor recebido igual ou maior ao aplicado.'})
+    operation, replayed = _operation(branch=attendance.branch, operation_type=AttendanceOperationType.TABLE_PAYMENT,
+        idempotency_key=idempotency_key, payload={'attendance': attendance.pk, 'payment_method': payment_method_id,
+        'mode': mode, 'amount': str(amount), 'cash_session': cash_session_id, 'received_amount': str(received_amount) if received_amount is not None else None, 'allocations': allocations or []})
+    if replayed:
+        return TablePayment.objects.get(pk=operation.result['payment_id']), True
     if amount > remaining:
         raise AttendanceConflict('table_overpayment', f'O pagamento excede o saldo de R$ {remaining:.2f}.')
     payment = TablePayment.objects.create(attendance=attendance, payment_method=method, amount=amount, received_amount=received_amount, cash_session=session, operator=user, idempotency_key=idempotency_key)
     for allocation in allocations or []:
-        TablePaymentAllocation.objects.create(payment=payment, item_id=allocation.get('item'), person_number=allocation.get('person_number'), amount=allocation['amount'], allocated_quantity=allocation.get('allocated_quantity'))
+        TablePaymentAllocation.objects.create(payment=payment, item_id=allocation.get('item'), person_number=allocation.get('person_number'), amount=allocation['amount'], allocated_quantity=allocation.get('allocated_quantity'), equal_split_cycle=allocation.get('equal_split_cycle'))
     operation.result = {'payment_id': payment.pk}
     operation.save(update_fields=('result', 'updated_at'))
     audit_log(actor=user, action='table_payment.record', obj=payment, company=attendance.company, branch=attendance.branch,
@@ -1102,18 +1114,46 @@ def record_table_payment(*, attendance, user, payment_method_id, amount, idempot
     return payment, False
 
 
+def _next_equal_split(attendance, remaining):
+    from .models import TablePaymentAllocation
+    if not attendance.people_count:
+        raise ValidationError({'people_count': 'Informe a quantidade de pessoas para dividir igualmente.'})
+    valid_people = set(TablePaymentAllocation.objects.filter(
+        payment__attendance=attendance, payment__status=AttendancePaymentStatus.APPLIED,
+        payment__reversal__isnull=True, person_number__isnull=False,
+        equal_split_cycle=attendance.equal_split_cycle,
+    ).values_list('person_number', flat=True))
+    if attendance.equal_split_total is None or len(valid_people) >= attendance.equal_split_people_count:
+        attendance.equal_split_total = remaining
+        attendance.equal_split_people_count = attendance.people_count
+        attendance.equal_split_cycle += 1
+        attendance.save(update_fields=('equal_split_total', 'equal_split_people_count', 'equal_split_cycle', 'updated_at'))
+        valid_people = set()
+    if attendance.equal_split_people_count != attendance.people_count:
+        raise ValidationError({'people_count': 'A divisão igual em aberto usa outra quantidade de pessoas.'})
+    person_number = next(index for index in range(1, attendance.people_count + 1) if index not in valid_people)
+    cents = int(attendance.equal_split_total * 100)
+    base, remainder = divmod(cents, attendance.people_count)
+    amount = Decimal(base + (1 if person_number <= remainder else 0)) / Decimal('100')
+    return amount, [{'person_number': person_number, 'amount': amount, 'equal_split_cycle': attendance.equal_split_cycle}]
+
+
 def _table_allocation_amount(attendance, allocations, preview):
+    from copy import copy
     from .models import TableOrderItem, TablePaymentAllocation
     item_ids = [row.get('item') for row in allocations if row.get('item')]
     items = {item.pk: item for item in TableOrderItem.objects.select_for_update().filter(pk__in=item_ids, order__attendance=attendance, status=AttendanceOrderItemStatus.CONFIRMED)}
     if len(items) != len(set(item_ids)):
         raise ValidationError({'allocations': 'Itens devem pertencer ao atendimento aberto da mesa.'})
+    all_items = list(TableOrderItem.objects.select_for_update().filter(
+        order__attendance=attendance, status=AttendanceOrderItemStatus.CONFIRMED,
+    ).select_related('product__category').order_by('id'))
     allocated = dict(TablePaymentAllocation.objects.select_for_update().filter(
         item_id__in=item_ids, payment__status=AttendancePaymentStatus.APPLIED,
         payment__reversal__isnull=True,
     ).values('item_id').annotate(total=Sum('allocated_quantity')).values_list('item_id', 'total'))
     total = Decimal('0.00')
-    fee_rate = preview['service_fee_rate'] / Decimal('100')
+    selected = []
     for row in allocations:
         item_id, quantity = row.get('item'), row.get('allocated_quantity')
         if not item_id or quantity is None:
@@ -1122,15 +1162,32 @@ def _table_allocation_amount(attendance, allocations, preview):
         item = items[item_id]
         if (allocated.get(item_id) or Decimal('0')) + quantity > item.quantity:
             raise AttendanceConflict('table_item_overallocated', 'A quantidade alocada excede a quantidade disponível do item.')
-        value = (item.unit_price * quantity).quantize(CENT, rounding=ROUND_HALF_UP)
-        config = ProductBranchConfig.objects.filter(branch=attendance.branch, product=item.product).first()
-        participates_in_service_fee = (
-            config.effective_participation('participates_in_service_fee')
-            if config else item.product.participates_in_service_fee
-        )
-        if participates_in_service_fee and not attendance.checkout_service_fee_waived:
-            value += (value * fee_rate).quantize(CENT, rounding=ROUND_HALF_UP)
-        row['allocated_quantity'], row['amount'] = quantity, value
+        selected_item = copy(item)
+        selected_item.quantity = quantity
+        selected.append((row, selected_item))
+    # Use the canonical preview for promotions and service-fee participation before
+    # proportionally applying only the account-level discount already approved for the table.
+    selected_preview = calculate_command_preview(
+        branch=attendance.branch, order_items=[item for _, item in selected], discount=Decimal('0.00'),
+        service_fee_waived=attendance.checkout_service_fee_waived, lock=True,
+    )
+    undiscounted_preview = calculate_command_preview(
+        branch=attendance.branch, order_items=all_items, discount=Decimal('0.00'),
+        service_fee_waived=attendance.checkout_service_fee_waived, lock=True,
+    )
+    account_discount = undiscounted_preview['total'] - preview['total']
+    selection_total = selected_preview['total']
+    allocation_discount = (
+        (account_discount * selection_total / undiscounted_preview['total']).quantize(CENT, rounding=ROUND_HALF_UP)
+        if undiscounted_preview['total'] else Decimal('0.00')
+    )
+    remaining_discount = allocation_discount
+    for index, (row, selected_item) in enumerate(selected):
+        item_preview = calculate_command_preview(branch=attendance.branch, order_items=[selected_item], discount=Decimal('0.00'), service_fee_waived=attendance.checkout_service_fee_waived, lock=True)
+        discount = remaining_discount if index == len(selected) - 1 else (allocation_discount * item_preview['total'] / selection_total).quantize(CENT, rounding=ROUND_HALF_UP)
+        value = item_preview['total'] - discount
+        remaining_discount -= discount
+        row['allocated_quantity'], row['amount'] = selected_item.quantity, value
         total += value
     return total
 
@@ -1184,7 +1241,7 @@ def set_table_bill_requested(*, attendance, user, requested, idempotency_key, au
 
 @transaction.atomic
 def close_table_attendance(*, attendance, user, idempotency_key, audit_metadata=None):
-    from .models import TableAttendance, TableAttendanceStatus
+    from .models import TableAttendance, TableAttendanceStatus, TableOrderItem, TablePayment
     attendance = TableAttendance.objects.select_for_update().get(pk=attendance.pk)
     operation, replayed = _operation(branch=attendance.branch, operation_type=AttendanceOperationType.TABLE_CLOSE,
         idempotency_key=idempotency_key, payload={'attendance': attendance.pk})
@@ -1192,16 +1249,38 @@ def close_table_attendance(*, attendance, user, idempotency_key, audit_metadata=
         return attendance, True
     if attendance.status != TableAttendanceStatus.OPEN:
         raise AttendanceConflict('table_closed', 'A mesa já está fechada.')
-    _preview, _paid, remaining, _base = table_financial_state(attendance, lock=True)
+    preview, _paid, remaining, _base = table_financial_state(attendance, lock=True)
     if remaining != Decimal('0.00'):
         raise AttendanceConflict('table_balance_remaining', f'Não é possível fechar: saldo de R$ {remaining:.2f}.')
+    if attendance.sale_id:
+        return attendance, True
+    confirmed = list(TableOrderItem.objects.filter(order__attendance=attendance, status=AttendanceOrderItemStatus.CONFIRMED).select_related('product').order_by('id'))
+    payments = list(TablePayment.objects.select_for_update().select_related('payment_method', 'cash_session').filter(
+        attendance=attendance, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
+    ).order_by('pk'))
+    if not confirmed or not payments:
+        raise AttendanceConflict('table_not_finalizable', 'A mesa precisa possuir itens e pagamentos válidos para fechar.')
+    cash_session = next((payment.cash_session for payment in payments if payment.cash_session_id), None)
+    if cash_session is None:
+        cash_session = CashSession.objects.select_for_update().filter(branch=attendance.branch, status=CashSessionStatus.OPEN).first()
+    if cash_session is None:
+        raise ValidationError({'cash_session': 'A consolidação exige uma sessão de caixa aberta na filial.'})
+    sale = finalize_sale(
+        branch=attendance.branch, user=user, operation_type=OperationType.SALE, cash_session=cash_session,
+        items=None, payments=[{'payment_method': payment.payment_method_id, 'amount': payment.amount, 'received_amount': payment.received_amount} for payment in payments],
+        discount=attendance.checkout_discount, service_fee_waived=attendance.checkout_service_fee_waived,
+        idempotency_key=idempotency_key, channel=SalesChannel.TABLE, seller_user=user, customer=attendance.customer,
+        confirmed_order_items=confirmed, internal_permission_code='tables.close', precomputed_financials=preview,
+        table_payment_sources=payments, pos_device=None, audit_metadata=audit_metadata,
+    )
     attendance.status, attendance.closed_at, attendance.closed_by = TableAttendanceStatus.CLOSED, timezone.now(), user
+    attendance.sale = sale
     attendance.bill_requested_at, attendance.bill_requested_by = None, None
-    attendance.save(update_fields=('status', 'closed_at', 'closed_by', 'bill_requested_at', 'bill_requested_by', 'updated_at'))
+    attendance.save(update_fields=('status', 'sale', 'closed_at', 'closed_by', 'bill_requested_at', 'bill_requested_by', 'updated_at'))
     operation.result = {'attendance_id': attendance.pk}
     operation.save(update_fields=('result', 'updated_at'))
     audit_log(actor=user, action='table_attendance.close', obj=attendance, company=attendance.company,
-              branch=attendance.branch, after=_table_reference(attendance),
+              branch=attendance.branch, after={**_table_reference(attendance), 'sale_id': sale.pk},
               metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
     return attendance, False
 

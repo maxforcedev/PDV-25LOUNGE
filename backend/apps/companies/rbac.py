@@ -96,7 +96,7 @@ PERMISSION_CATALOG = (
     ('tables.payments.record', 'tables', 'Registrar pagamento de mesa', 'Registrar pagamentos parciais em mesas abertas.'),
     ('tables.payments.reverse', 'tables', 'Estornar pagamento de mesa', 'Estornar pagamentos parciais de mesas.'),
     ('tables.transfer', 'tables', 'Transferir mesas', 'Transferir atendimento entre mesas.'),
-    ('tables.transfer_items', 'tables', 'Transferir itens de mesa', 'Transferir itens entre comandas de mesas.'),
+    ('tables.transfer_items', 'tables', 'Transferir itens de mesa', 'Transferir itens entre atendimentos de mesas.'),
     ('tables.merge', 'tables', 'Agrupar mesas', 'Agrupar mesas operacionalmente.'),
     ('tables.close', 'tables', 'Fechar mesas', 'Encerrar atendimentos de mesa quando resolvidos.'),
     ('commands.view', 'commands', 'Visualizar comandas', 'Visualizar mesas e comandas.'),

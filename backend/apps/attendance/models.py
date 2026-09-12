@@ -83,8 +83,6 @@ class AttendanceCommand(BaseModel):
     sale = models.OneToOneField('sales.Sale', on_delete=models.PROTECT, related_name='attendance_command', blank=True, null=True)
     checkout_discount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     checkout_service_fee_waived = models.BooleanField(default=False)
-    equal_split_total = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
-    equal_split_people_count = models.PositiveIntegerField(null=True, blank=True)
     bill_requested_at = models.DateTimeField(blank=True, null=True)
     bill_requested_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
@@ -301,6 +299,9 @@ class TableAttendance(BaseModel):
     sale = models.OneToOneField('sales.Sale', on_delete=models.PROTECT, related_name='table_attendance', blank=True, null=True)
     checkout_discount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     checkout_service_fee_waived = models.BooleanField(default=False)
+    equal_split_total = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    equal_split_people_count = models.PositiveIntegerField(null=True, blank=True)
+    equal_split_cycle = models.PositiveIntegerField(default=0)
     bill_requested_at = models.DateTimeField(blank=True, null=True)
     bill_requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='requested_table_bills', blank=True, null=True)
 
@@ -421,6 +422,7 @@ class TablePaymentAllocation(BaseModel):
     person_number = models.PositiveIntegerField(blank=True, null=True)
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     allocated_quantity = models.DecimalField(max_digits=14, decimal_places=3, blank=True, null=True)
+    equal_split_cycle = models.PositiveIntegerField(blank=True, null=True)
 
     class Meta:
         constraints = [
