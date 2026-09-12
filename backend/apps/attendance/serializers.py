@@ -238,5 +238,16 @@ class TableAttendanceOpenSerializer(serializers.Serializer):
 
 
 class TablePaymentInputSerializer(AttendancePaymentInputSerializer):
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0.01'), required=False)
     mode = serializers.ChoiceField(choices=('value', 'remaining', 'equal_people', 'items'), required=False, default='value')
     allocations = serializers.ListField(child=serializers.DictField(), required=False, default=list)
+
+    def validate(self, attrs):
+        mode = attrs['mode']
+        if mode == 'value' and attrs.get('amount') is None:
+            raise serializers.ValidationError({'amount': 'Informe o valor do pagamento.'})
+        if mode == 'items' and not attrs.get('allocations'):
+            raise serializers.ValidationError({'allocations': 'Informe os itens a pagar.'})
+        if mode != 'items' and attrs.get('allocations'):
+            raise serializers.ValidationError({'allocations': 'Alocações são exclusivas do pagamento por itens.'})
+        return attrs

@@ -28,6 +28,7 @@ from .models import (
     AttendanceOperationType, AttendanceOrder, AttendanceOrderItem,
     AttendanceOrderItemStatus, AttendanceOrderStatus, AttendancePayment,
     AttendancePaymentStatus, AttendanceTableGroup, AttendanceTableGroupMembership,
+    TableAttendance, TableAttendanceStatus,
 )
 
 
@@ -127,6 +128,8 @@ def open_table(*, branch, table_id, user, idempotency_key, people_count=None, id
             'table_in_legacy_use',
             'A mesa possui atendimento aberto no fluxo legado e não pode ser aberta no POS agora.',
         )
+    if TableAttendance.objects.select_for_update().filter(table=table, status=TableAttendanceStatus.OPEN).exists():
+        raise AttendanceConflict('table_in_table_attendance_use', 'A mesa possui atendimento aberto no novo fluxo de Mesa.')
     existing = AttendanceCommand.objects.select_for_update().filter(
         table=table, is_primary=True, status=AttendanceCommandStatus.OPEN,
     ).first()
@@ -178,6 +181,8 @@ def open_command(*, branch, user, idempotency_key, identifier='', customer_id=No
         ).first()
         if table is None:
             raise AttendanceConflict('table_not_found', 'Mesa não encontrada na filial atual.')
+        if TableAttendance.objects.filter(table=table, status=TableAttendanceStatus.OPEN).exists():
+            raise AttendanceConflict('table_in_table_attendance_use', 'A mesa possui atendimento aberto no novo fluxo de Mesa.')
         if not AttendanceCommand.objects.filter(
             table=table, is_primary=True, status=AttendanceCommandStatus.OPEN,
         ).exists():
@@ -956,9 +961,9 @@ def save_table_order(*, attendance, user, items, idempotency_key, audit_metadata
     order = TableOrder.objects.create(attendance=attendance, created_by=user)
     created = []
     for entry in items:
-        product = Product.objects.select_for_update().filter(pk=entry['product'], company=attendance.company).first()
-        config = ProductBranchConfig.objects.filter(branch=attendance.branch, product=product).first() if product else None
-        if not product or not (product.status == Status.ACTIVE and product.archived_at is None and product.is_sellable and product.available_command and config and config.is_available and config.available_command is not False):
+        from apps.products.selectors import sellable_products_for_branch
+        product = sellable_products_for_branch(attendance.branch, SalesChannel.TABLE).select_for_update().filter(pk=entry['product']).first()
+        if not product:
             raise ValidationError({'product': 'Produto indisponível para Mesa nesta filial.'})
         quantity = strict_decimal(entry['quantity'], field='quantity', decimal_places=3, max_digits=14)
         if quantity <= 0 or (product.unit == Unit.UNIT and quantity != quantity.to_integral_value()):
@@ -1037,6 +1042,9 @@ def cancel_table_item(*, item, user, reason, idempotency_key, audit_metadata=Non
     item.save(update_fields=('status', 'cancelled_at', 'cancelled_by', 'cancellation_reason', 'updated_at'))
     operation.result = {'item_id': item.pk}
     operation.save(update_fields=('result', 'updated_at'))
+    audit_log(actor=user, action='table_order_item.cancel', obj=item, company=attendance.company, branch=attendance.branch,
+              after={'attendance_id': attendance.pk, 'reason': item.cancellation_reason},
+              metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
     return item, False
 
 
@@ -1080,7 +1088,7 @@ def record_table_payment(*, attendance, user, payment_method_id, amount, idempot
         attendance.checkout_discount, attendance.checkout_service_fee_waived = requested_discount, requested_waiver
         attendance.save(update_fields=('checkout_discount', 'checkout_service_fee_waived', 'updated_at'))
     preview, _paid, remaining, _base = table_financial_state(attendance, lock=True)
-    if allocations:
+    if any(row.get('item') for row in allocations or []):
         amount = _table_allocation_amount(attendance, allocations, preview)
     if amount > remaining:
         raise AttendanceConflict('table_overpayment', f'O pagamento excede o saldo de R$ {remaining:.2f}.')
@@ -1100,7 +1108,10 @@ def _table_allocation_amount(attendance, allocations, preview):
     items = {item.pk: item for item in TableOrderItem.objects.select_for_update().filter(pk__in=item_ids, order__attendance=attendance, status=AttendanceOrderItemStatus.CONFIRMED)}
     if len(items) != len(set(item_ids)):
         raise ValidationError({'allocations': 'Itens devem pertencer ao atendimento aberto da mesa.'})
-    allocated = dict(TablePaymentAllocation.objects.select_for_update().filter(item_id__in=item_ids).values('item_id').annotate(total=Sum('allocated_quantity')).values_list('item_id', 'total'))
+    allocated = dict(TablePaymentAllocation.objects.select_for_update().filter(
+        item_id__in=item_ids, payment__status=AttendancePaymentStatus.APPLIED,
+        payment__reversal__isnull=True,
+    ).values('item_id').annotate(total=Sum('allocated_quantity')).values_list('item_id', 'total'))
     total = Decimal('0.00')
     fee_rate = preview['service_fee_rate'] / Decimal('100')
     for row in allocations:
@@ -1144,6 +1155,9 @@ def reverse_table_payment(*, payment, user, reason, idempotency_key, audit_metad
         reversal_of=payment, reversal_reason=(reason or '').strip())
     operation.result = {'payment_id': payment.pk, 'reversal_id': reversal.pk}
     operation.save(update_fields=('result', 'updated_at'))
+    audit_log(actor=user, action='table_payment.reverse', obj=reversal, company=payment.attendance.company,
+              branch=payment.attendance.branch, after={'payment_id': payment.pk, 'reason': reversal.reversal_reason},
+              metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
     return reversal, False
 
 
@@ -1162,6 +1176,9 @@ def set_table_bill_requested(*, attendance, user, requested, idempotency_key, au
     attendance.save(update_fields=('bill_requested_at', 'bill_requested_by', 'updated_at'))
     operation.result = {'attendance_id': attendance.pk, 'requested': requested}
     operation.save(update_fields=('result', 'updated_at'))
+    audit_log(actor=user, action='table_attendance.bill.request' if requested else 'table_attendance.bill.clear', obj=attendance,
+              company=attendance.company, branch=attendance.branch, after=operation.result,
+              metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
     return attendance, False
 
 
@@ -1183,6 +1200,9 @@ def close_table_attendance(*, attendance, user, idempotency_key, audit_metadata=
     attendance.save(update_fields=('status', 'closed_at', 'closed_by', 'bill_requested_at', 'bill_requested_by', 'updated_at'))
     operation.result = {'attendance_id': attendance.pk}
     operation.save(update_fields=('result', 'updated_at'))
+    audit_log(actor=user, action='table_attendance.close', obj=attendance, company=attendance.company,
+              branch=attendance.branch, after=_table_reference(attendance),
+              metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
     return attendance, False
 
 
@@ -1219,4 +1239,7 @@ def transfer_table_items(*, attendance, destination_id, items, user, idempotency
         moved.append(item.pk)
     operation.result = {'attendance_id': destination.pk, 'item_ids': moved}
     operation.save(update_fields=('result', 'updated_at'))
+    audit_log(actor=user, action='table_order_item.transfer', obj=destination, company=source.company,
+              branch=source.branch, after={'source_attendance_id': source.pk, 'item_ids': moved},
+              metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
     return destination, moved, False

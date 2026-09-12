@@ -9,7 +9,7 @@ class Migration(migrations.Migration):
             model_name='attendanceoperation',
             name='operation_type',
             field=models.CharField(
-                max_length=20,
+                max_length=32,
                 choices=[
                     ('open_table', 'Abrir mesa'), ('open_command', 'Abrir comanda'),
                     ('add_items', 'Adicionar itens'), ('transfer_command', 'Transferir comanda'),

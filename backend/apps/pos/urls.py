@@ -22,6 +22,8 @@ from .views import (
     POSTableAttendanceView, POSTableAttendanceOrdersView, POSTableAttendanceItemCancelView,
     POSTableAttendancePaymentsView, POSTableAttendancePaymentReverseView,
     POSTableAttendanceBillView, POSTableAttendanceCloseView,
+    POSTableAttendanceItemsTransferView,
+    POSTableCatalogView,
     POSTicketLookupView, POSTicketValidateView,
 )
 
@@ -52,12 +54,14 @@ urlpatterns = [
     path('tables/groups/', POSTableGroupView.as_view(), name='table-groups'),
     path('tables/<int:table_id>/separate/', POSTableSeparateView.as_view(), name='table-separate'),
     path('tables/<int:table_id>/open/', POSTableOpenView.as_view(), name='table-open'),
+    path('tables/catalog/', POSTableCatalogView.as_view(), name='table-catalog'),
     path('table-attendances/<int:attendance_id>/', POSTableAttendanceView.as_view(), name='table-attendance-detail'),
     path('table-attendances/<int:attendance_id>/orders/', POSTableAttendanceOrdersView.as_view(), name='table-attendance-orders'),
     path('table-attendances/<int:attendance_id>/payments/', POSTableAttendancePaymentsView.as_view(), name='table-attendance-payments'),
     path('table-attendances/<int:attendance_id>/request-bill/', POSTableAttendanceBillView.as_view(requested=True), name='table-attendance-request-bill'),
     path('table-attendances/<int:attendance_id>/clear-bill/', POSTableAttendanceBillView.as_view(requested=False), name='table-attendance-clear-bill'),
     path('table-attendances/<int:attendance_id>/close/', POSTableAttendanceCloseView.as_view(), name='table-attendance-close'),
+    path('table-attendances/<int:attendance_id>/transfer-items/', POSTableAttendanceItemsTransferView.as_view(), name='table-attendance-transfer-items'),
     path('table-order-items/<int:item_id>/cancel/', POSTableAttendanceItemCancelView.as_view(), name='table-order-item-cancel'),
     path('table-payments/<int:payment_id>/reverse/', POSTableAttendancePaymentReverseView.as_view(), name='table-payment-reverse'),
     path('commands/', POSAttendanceCommandsView.as_view(), name='attendance-commands'),

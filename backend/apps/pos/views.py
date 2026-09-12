@@ -61,6 +61,7 @@ from apps.attendance.services import (
     transfer_items as transfer_attendance_items,
     open_table_attendance, save_table_order, table_summary, cancel_table_item,
     record_table_payment, reverse_table_payment, set_table_bill_requested, close_table_attendance,
+    transfer_table_items,
 )
 from apps.products.models import (
     ModifierOption, ProductModifierGroup,
@@ -796,6 +797,16 @@ class POSAttendanceCatalogView(POSAttendanceView, POSQuickSaleView):
         )})
 
 
+class POSTableCatalogView(POSAttendanceView, POSQuickSaleView):
+    def get(self, request):
+        device, _, permissions, _ = self.context(request)
+        self._require(permissions, 'tables.add_items', 'Você não possui permissão para consultar o catálogo de Mesa.')
+        require_branch_feature(device.branch, 'tables')
+        request._pos_branch = device.branch
+        queryset = sellable_products_for_branch(device.branch, SalesChannel.TABLE, search=request.query_params.get('search'))
+        return Response({'products': self._catalog_payload(request, _visible_pos_catalog(device, queryset), device.branch)})
+
+
 class POSAttendanceCheckoutOptionsView(POSAttendanceView):
     def get(self, request):
         device, _, permissions, _ = self.context(request)
@@ -1078,7 +1089,7 @@ class POSTableAttendanceView(POSAttendanceView):
 class POSTableAttendanceOrdersView(POSTableAttendanceView):
     def post(self, request, attendance_id):
         device, operator, permissions, operator_session = self.context(request)
-        self._require(permissions, 'tables.open', 'Você não possui permissão para salvar pedidos de mesa.')
+        self._require(permissions, 'tables.add_items', 'Você não possui permissão para salvar pedidos de mesa.')
         serializer = AttendanceItemsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -1096,7 +1107,7 @@ class POSTableAttendanceOrdersView(POSTableAttendanceView):
 class POSTableAttendanceItemCancelView(POSAttendanceView):
     def post(self, request, item_id):
         device, operator, permissions, operator_session = self.context(request)
-        self._require(permissions, 'commands.cancel_items', 'Você não possui permissão para cancelar itens.')
+        self._require(permissions, 'tables.cancel_items', 'Você não possui permissão para cancelar itens.')
         serializer = AttendanceCancelItemSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         item = get_object_or_404(TableOrderItem.objects.select_related('order__attendance'), pk=item_id, order__attendance__branch=device.branch)
@@ -1110,13 +1121,13 @@ class POSTableAttendanceItemCancelView(POSAttendanceView):
 class POSTableAttendancePaymentsView(POSTableAttendanceView):
     def get(self, request, attendance_id):
         device, _, permissions, _ = self.context(request)
-        self._require(permissions, 'commands.payments.view', 'Você não possui permissão para consultar pagamentos.')
+        self._require(permissions, 'tables.payments.view', 'Você não possui permissão para consultar pagamentos.')
         attendance = self._attendance(device, attendance_id)
         return Response({'summary': table_summary(attendance), 'payments': TablePaymentSerializer(attendance.payments.select_related('payment_method', 'cash_session').prefetch_related('allocations'), many=True).data})
 
     def post(self, request, attendance_id):
         device, operator, permissions, operator_session = self.context(request)
-        self._require(permissions, 'commands.payments.record', 'Você não possui permissão para registrar pagamentos.')
+        self._require(permissions, 'tables.payments.record', 'Você não possui permissão para registrar pagamentos.')
         serializer = TablePaymentInputSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
@@ -1128,7 +1139,22 @@ class POSTableAttendancePaymentsView(POSTableAttendanceView):
             if not attendance.people_count:
                 raise ValidationError({'people_count': 'Informe a quantidade de pessoas para dividir igualmente.'})
             remaining = Decimal(table_summary(attendance)['remaining_balance'])
-            amount = (remaining / attendance.people_count).quantize(Decimal('0.01'))
+            active_people = set(attendance.payments.filter(
+                status='applied', reversal__isnull=True,
+            ).values_list('allocations__person_number', flat=True)) - {None}
+            if attendance.equal_split_total is None:
+                attendance.equal_split_total = remaining
+                attendance.equal_split_people_count = attendance.people_count
+                attendance.save(update_fields=('equal_split_total', 'equal_split_people_count', 'updated_at'))
+            elif attendance.equal_split_people_count != attendance.people_count:
+                raise ValidationError({'people_count': 'A divisão igual já foi iniciada com outra quantidade de pessoas.'})
+            if len(active_people) >= attendance.equal_split_people_count:
+                raise ValidationError({'payments': 'Todas as parcelas da divisão igual já foram registradas.'})
+            person_number = next(index for index in range(1, attendance.equal_split_people_count + 1) if index not in active_people)
+            cents = int(attendance.equal_split_total * 100)
+            base, remainder = divmod(cents, attendance.equal_split_people_count)
+            amount = Decimal(base + (1 if person_number <= remainder else 0)) / Decimal('100')
+            data['allocations'] = [{'person_number': person_number, 'amount': amount}]
         try:
             payment, replayed = record_table_payment(attendance=attendance, user=operator, payment_method_id=data['payment_method'], amount=amount,
                 received_amount=data.get('received_amount'), cash_session_id=data.get('cash_session'), allocations=data.get('allocations'),
@@ -1146,7 +1172,7 @@ class POSTableAttendancePaymentsView(POSTableAttendanceView):
 class POSTableAttendancePaymentReverseView(POSAttendanceView):
     def post(self, request, payment_id):
         device, operator, permissions, operator_session = self.context(request)
-        self._require(permissions, 'commands.payments.reverse', 'Você não possui permissão para estornar pagamentos.')
+        self._require(permissions, 'tables.payments.reverse', 'Você não possui permissão para estornar pagamentos.')
         serializer = AttendanceReversePaymentSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payment = get_object_or_404(TablePayment.objects.select_related('attendance'), pk=payment_id, attendance__branch=device.branch)
@@ -1188,6 +1214,24 @@ class POSTableAttendanceCloseView(POSTableAttendanceView):
         except AttendanceConflict as error:
             self._domain(error)
         return Response(TableAttendanceSerializer(attendance).data, headers={'Idempotency-Replayed': 'true'} if replayed else None)
+
+
+class POSTableAttendanceItemsTransferView(POSTableAttendanceView):
+    def post(self, request, attendance_id):
+        device, operator, permissions, operator_session = self.context(request)
+        self._require(permissions, 'tables.transfer_items', 'Você não possui permissão para transferir itens de mesa.')
+        serializer = AttendanceTransferItemsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            destination, item_ids, replayed = transfer_table_items(
+                attendance=self._attendance(device, attendance_id), destination_id=serializer.validated_data['command'],
+                items=serializer.validated_data['items'], user=operator,
+                idempotency_key=serializer.validated_data['idempotency_key'],
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+        except AttendanceConflict as error:
+            self._domain(error)
+        return Response({'attendance': TableAttendanceSerializer(destination).data, 'item_ids': item_ids, 'idempotency_replayed': replayed})
 
 
 class POSSalePreviewView(POSQuickSaleView):
