@@ -300,6 +300,8 @@ class TableAttendance(BaseModel):
     sale = models.OneToOneField('sales.Sale', on_delete=models.PROTECT, related_name='table_attendance', blank=True, null=True)
     checkout_discount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     checkout_service_fee_waived = models.BooleanField(default=False)
+    service_fee_rate_snapshot = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True)
+    commission_rate_snapshot = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True)
     equal_split_total = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     equal_split_people_count = models.PositiveIntegerField(null=True, blank=True)
     equal_split_cycle = models.PositiveIntegerField(default=0)

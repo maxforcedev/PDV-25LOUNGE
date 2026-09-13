@@ -665,7 +665,6 @@ class SaleItem(ImmutableHistoricalModel):
                         promotion_benefit=0,
                     )
                     | Q(
-                        promotion__isnull=False,
                         promotion_name__isnull=False,
                         promotion_discount_type__isnull=False,
                         promotion_discount_value__isnull=False,
@@ -689,10 +688,11 @@ class SaleItem(ImmutableHistoricalModel):
         )
         if self.promotion_id and any(value is None for value in snapshots):
             errors['promotion'] = 'Os snapshots da promoção são obrigatórios.'
-        if not self.promotion_id and (
-            any(value is not None for value in snapshots) or self.promotion_benefit != 0
-        ):
-            errors['promotion'] = 'Item sem promoção não pode possuir benefício promocional.'
+        if not self.promotion_id and any(value is not None for value in snapshots):
+            if any(value is None for value in snapshots):
+                errors['promotion'] = 'Snapshots históricos da promoção estão incompletos.'
+        elif not self.promotion_id and self.promotion_benefit != 0:
+            errors['promotion'] = 'Benefício promocional exige snapshots históricos.'
         if self.promotion_benefit < 0 or self.promotion_benefit > self.subtotal:
             errors['promotion_benefit'] = 'O benefício deve estar entre zero e o subtotal.'
         remaining = self.subtotal - self.promotion_benefit

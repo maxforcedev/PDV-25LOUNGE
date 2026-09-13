@@ -212,18 +212,23 @@ def _commission_rate_for_seller(branch, seller_user, branch_default):
 
 
 def _financial_snapshots(branch, service_fee_base, *, commission_base=None,
-                         seller_user=None, service_fee_waived=False, lock=False):
+                          seller_user=None, service_fee_waived=False, lock=False,
+                          service_fee_rate_snapshot=None, commission_rate_snapshot=None):
     queryset = BranchSettings.objects
     if lock:
         queryset = queryset.select_for_update()
     settings = queryset.filter(branch=branch).first()
-    service_fee_rate = (
-        settings.service_fee_rate
-        if settings and settings.charges_service_fee
-        else Decimal('0.00')
-    )
-    branch_commission_rate = settings.commission_rate if settings else Decimal('0.00')
-    commission_rate = _commission_rate_for_seller(branch, seller_user, branch_commission_rate)
+    service_fee_rate = service_fee_rate_snapshot
+    if service_fee_rate is None:
+        service_fee_rate = (
+            settings.service_fee_rate
+            if settings and settings.charges_service_fee
+            else Decimal('0.00')
+        )
+    commission_rate = commission_rate_snapshot
+    if commission_rate is None:
+        branch_commission_rate = settings.commission_rate if settings else Decimal('0.00')
+        commission_rate = _commission_rate_for_seller(branch, seller_user, branch_commission_rate)
     if commission_base is None:
         commission_base = service_fee_base
     service_fee_amount = (
@@ -953,7 +958,8 @@ def _apply_promotions(operation_type, items, promotions):
 def _calculate_sale_financials(*, company, branch, operation_type, snapshots, subtotal,
                                discount, charged_amount, beneficiary_user, seller_user=None,
                                service_fee_waived=False, lock=False,
-                               item_financials_frozen=False):
+                               item_financials_frozen=False,
+                               service_fee_rate_snapshot=None, commission_rate_snapshot=None):
     """Apply the shared financial rules to either live or frozen item snapshots."""
     if item_financials_frozen:
         live_items = [
@@ -1021,6 +1027,8 @@ def _calculate_sale_financials(*, company, branch, operation_type, snapshots, su
     ) = _financial_snapshots(
         branch, service_base, commission_base=commission_base,
         seller_user=seller_user, service_fee_waived=bool(service_fee_waived), lock=lock,
+        service_fee_rate_snapshot=service_fee_rate_snapshot,
+        commission_rate_snapshot=commission_rate_snapshot,
     )
     total = remaining - discount_value + service_fee_amount
     ensure_money_fits(total, 'total')
@@ -1848,11 +1856,17 @@ def _frozen_command_snapshots(order_items, branch):
         }
         financial_snapshot = getattr(item, 'financial_snapshot', None) or {}
         if financial_snapshot:
+            promotion_id = financial_snapshot.get('promotion')
+            promotion = (
+                Promotion.objects.filter(pk=promotion_id, company_id=item.product.company_id).first()
+                if promotion_id else None
+            )
             snapshot.update({
                 'financial_conditions_frozen': True,
                 'category_id_snapshot': item.category_id_snapshot,
                 'category_name_snapshot': item.category_name_snapshot,
                 'promotion': financial_snapshot.get('promotion'),
+                'promotion_object': promotion,
                 'promotion_name': financial_snapshot.get('promotion_name'),
                 'promotion_discount_type': financial_snapshot.get('promotion_discount_type'),
                 'promotion_discount_value': Decimal(str(financial_snapshot.get('promotion_discount_value', '0.00'))),
@@ -1871,7 +1885,8 @@ def calculate_order_items_preview(*, branch, order_items, discount=Decimal('0.00
                                   seller_user=None, service_fee_waived=False, lock=False,
                                   include_internal_snapshots=False,
                                   channel=SalesChannel.COMMAND,
-                                  item_financials_frozen=False):
+                                  item_financials_frozen=False,
+                                  service_fee_rate_snapshot=None, commission_rate_snapshot=None):
     """Calculate immutable ordered items without assigning a command-specific meaning."""
     snapshots, subtotal = _frozen_command_snapshots(order_items, branch)
     financials = _calculate_sale_financials(
@@ -1880,6 +1895,8 @@ def calculate_order_items_preview(*, branch, order_items, discount=Decimal('0.00
         charged_amount=None, beneficiary_user=None, seller_user=seller_user,
         service_fee_waived=service_fee_waived, lock=lock,
         item_financials_frozen=item_financials_frozen,
+        service_fee_rate_snapshot=service_fee_rate_snapshot,
+        commission_rate_snapshot=commission_rate_snapshot,
     )
     result = {
         'operation_type': OperationType.SALE,

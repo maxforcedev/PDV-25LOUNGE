@@ -18,7 +18,7 @@ from apps.cash.models import CashSession, CashSessionStatus
 from apps.products.models import Product, ProductBranchConfig, SalesChannel, Unit
 from apps.sales.models import OperationType, PaymentMethod, PaymentMethodCode
 from apps.sales.services import (
-    CENT, _discount_approver, _reconcile_modifier_component_costs, _service_fee_waiver,
+    CENT, _discount_approver, _financial_snapshots, _reconcile_modifier_component_costs, _service_fee_waiver,
     branch_cost_map, branch_price_map, calculate_command_preview, calculate_order_items_preview,
     calculate_table_preview, finalize_sale,
     resolve_modifiers, stock_requirements_for_product, strict_decimal,
@@ -879,6 +879,8 @@ def table_financial_state(attendance, *, lock=False, discount=None, service_fee_
             if service_fee_waived is None else service_fee_waived
         ),
         seller_user=attendance.seller_user, lock=lock, include_internal_snapshots=True,
+        service_fee_rate_snapshot=attendance.service_fee_rate_snapshot,
+        commission_rate_snapshot=attendance.commission_rate_snapshot,
     )
     payments = TablePayment.objects.filter(
         attendance=attendance, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
@@ -956,8 +958,15 @@ def open_table_attendance(*, branch, table_id, user, idempotency_key, people_cou
         return existing, True
     attendance = TableAttendance.objects.create(
         company=branch.company, branch=branch, table=table, people_count=people_count,
-        responsible_name=responsible_name, notes=notes, customer=_customer(branch, customer_id), opened_by=user, seller_user=user,
+        responsible_name=responsible_name, notes=notes, customer=_customer(branch, customer_id),
+        opened_by=user, seller_user=user,
     )
+    service_fee_rate, _service_fee_amount, commission_rate, _commission_amount = _financial_snapshots(
+        branch, Decimal('0.00'), commission_base=Decimal('0.00'), seller_user=user, lock=True,
+    )
+    attendance.service_fee_rate_snapshot = service_fee_rate
+    attendance.commission_rate_snapshot = commission_rate
+    attendance.save(update_fields=('service_fee_rate_snapshot', 'commission_rate_snapshot', 'updated_at'))
     operation.result = {'attendance_id': attendance.pk}
     operation.save(update_fields=('result', 'updated_at'))
     audit_log(actor=user, action='table_attendance.open', obj=attendance, company=branch.company,
@@ -992,9 +1001,13 @@ def save_table_order(*, attendance, user, items, idempotency_key, audit_metadata
         modifier_total, modifiers = resolve_modifiers(product, entry.get('modifiers', []), attendance.company_id, branch=attendance.branch, item_quantity=quantity)
         base_price = branch_price_map(attendance.branch, [product.pk]).get(product.pk, product.sale_price)
         unit_cost = branch_cost_map(attendance.branch, [product.pk]).get(product.pk, product.cost).quantize(CENT, rounding=ROUND_HALF_UP)
+        config = ProductBranchConfig.objects.select_related('category').filter(
+            product=product, branch=attendance.branch,
+        ).first()
+        category = config.category if config and config.category_id else product.category
         item = TableOrderItem.objects.create(order=order, product=product, quantity=quantity, product_name=product.name,
-            internal_code=product.internal_code or '', category_id_snapshot=product.category_id,
-            category_name_snapshot=product.category.name if product.category_id else '', unit=product.unit,
+            internal_code=product.internal_code or '', category_id_snapshot=category.pk if category else None,
+            category_name_snapshot=category.name if category else '', unit=product.unit,
             base_unit_price=base_price, modifier_unit_total=modifier_total,
             unit_price=(base_price + modifier_total).quantize(CENT, rounding=ROUND_HALF_UP),
             modifier_snapshot=modifiers, notes=entry.get('notes', ''), unit_cost=unit_cost)
