@@ -54,6 +54,7 @@ class AttendanceOperationType(models.TextChoices):
     TABLE_CLOSE = 'table_close', 'Fechar atendimento de mesa'
     TABLE_CANCEL_ORDER = 'table_cancel_order', 'Cancelar pedido de mesa'
     TABLE_SET_CUSTOMER = 'table_set_customer', 'Alterar cliente da mesa'
+    TABLE_CHECKOUT_CONTEXT = 'table_checkout_context', 'Atualizar contexto financeiro da mesa'
 
 
 class AttendanceCommand(BaseModel):
@@ -301,7 +302,15 @@ class TableAttendance(BaseModel):
     closed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='closed_table_attendances', blank=True, null=True)
     sale = models.OneToOneField('sales.Sale', on_delete=models.PROTECT, related_name='table_attendance', blank=True, null=True)
     checkout_discount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
+    checkout_discount_approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='approved_table_checkout_discounts', blank=True, null=True,
+    )
     checkout_service_fee_waived = models.BooleanField(default=False)
+    checkout_service_fee_waived_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='approved_table_service_fee_waivers', blank=True, null=True,
+    )
     service_fee_rate_snapshot = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True)
     commission_rate_snapshot = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True)
     equal_split_total = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
@@ -375,6 +384,16 @@ class TableOrderItem(BaseModel):
             models.CheckConstraint(condition=Q(quantity__gt=0), name='table_order_item_quantity_positive'),
             models.CheckConstraint(condition=Q(unit_price__gte=0), name='table_order_item_price_nonnegative'),
         ]
+
+    def clean(self):
+        super().clean()
+        self.cancellation_reason = (self.cancellation_reason or '').strip()
+        if self.status == AttendanceOrderItemStatus.CANCELLED and not self.cancellation_reason:
+            raise ValidationError({'cancellation_reason': 'Informe o motivo do cancelamento.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
 
 class TablePayment(BaseModel):

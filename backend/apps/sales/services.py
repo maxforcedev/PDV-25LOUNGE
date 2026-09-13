@@ -1991,10 +1991,11 @@ def stock_requirements_for_product(product, quantity, branch, modifier_snapshot=
 
 @transaction.atomic
 def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiary_user=None, customer=None,
-                  seller_user=None, discount_authorization=None, items=None, discount=None,
-                  charged_amount=None, payments=None, service_fee_waived=False,
-                   service_fee_authorization=None, item_discount_authorization=None,
-                      idempotency_key=None, channel=SalesChannel.COUNTER,
+                   seller_user=None, discount_authorization=None, items=None, discount=None,
+                   charged_amount=None, payments=None, service_fee_waived=False,
+                    service_fee_authorization=None, item_discount_authorization=None,
+                      checkout_discount_approved_by=None, checkout_service_fee_waived_by=None,
+                       idempotency_key=None, channel=SalesChannel.COUNTER,
                         confirmed_order_items=None, internal_permission_code=None,
                         precomputed_financials=None, payment_sources=None, pos_device=None,
                           attendance_payment_sources=None, table_payment_sources=None,
@@ -2012,6 +2013,14 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         ):
             raise ValidationError({'operation': 'Bypass interno de venda inválido.'})
         permission = internal_permission_code
+    if checkout_discount_approved_by is not None or checkout_service_fee_waived_by is not None:
+        if not (
+            internal_permission_code == 'tables.close'
+            and operation_type == OperationType.SALE
+            and channel == SalesChannel.TABLE
+            and confirmed_order_items is not None
+        ):
+            raise ValidationError({'operation': 'Aprovações persistidas só são válidas ao fechar mesas.'})
     branch = _active_branch(
         branch, user, permission, allow_pos_only=allow_pos_only,
         resolved_permission_codes=pos_permission_codes,
@@ -2168,15 +2177,20 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         promotion_discount_total = financials['promotion_discount_total']
         item_discount_total = financials['item_discount_total']
         discount_value = financials['discount']
-        discount_approved_by = _discount_approver(
-            branch, user, discount_value, discount_authorization,
-            permission_code='sales.apply_discount',
-            authorization_field='discount_authorization',
-            allow_pos_only=allow_pos_only,
-            pos_device=pos_device,
-            permission_codes=pos_permission_codes,
-            device_validated=pos_device_validated,
-        )
+        if checkout_discount_approved_by is not None:
+            if not discount_value:
+                raise ValidationError({'discount': 'Venda sem desconto não possui aprovação persistida.'})
+            discount_approved_by = checkout_discount_approved_by
+        else:
+            discount_approved_by = _discount_approver(
+                branch, user, discount_value, discount_authorization,
+                permission_code='sales.apply_discount',
+                authorization_field='discount_authorization',
+                allow_pos_only=allow_pos_only,
+                pos_device=pos_device,
+                permission_codes=pos_permission_codes,
+                device_validated=pos_device_validated,
+            )
         item_discount_approved_by = _discount_approver(
             branch, user, item_discount_total, item_discount_authorization,
             permission_code='sales.apply_item_discount',
@@ -2186,13 +2200,18 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             permission_codes=pos_permission_codes,
             device_validated=pos_device_validated,
         )
-        service_fee_waived_by = _service_fee_waiver(
-            branch, user, bool(service_fee_waived), service_fee_authorization,
-            allow_pos_only=allow_pos_only,
-            pos_device=pos_device,
-            permission_codes=pos_permission_codes,
-            device_validated=pos_device_validated,
-        )
+        if checkout_service_fee_waived_by is not None:
+            if not service_fee_waived:
+                raise ValidationError({'service_fee_waived': 'Taxa ativa não possui aprovação persistida.'})
+            service_fee_waived_by = checkout_service_fee_waived_by
+        else:
+            service_fee_waived_by = _service_fee_waiver(
+                branch, user, bool(service_fee_waived), service_fee_authorization,
+                allow_pos_only=allow_pos_only,
+                pos_device=pos_device,
+                permission_codes=pos_permission_codes,
+                device_validated=pos_device_validated,
+            )
         service_fee_rate = financials['service_fee_rate']
         service_fee_amount = financials['service_fee_amount']
         commission_rate = financials['commission_rate']

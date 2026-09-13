@@ -182,7 +182,7 @@ class TableAttendanceSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'table', 'table_name', 'customer', 'customer_name', 'people_count', 'responsible_name', 'notes', 'status',
             'opened_by', 'bill_requested_at', 'bill_requested_by', 'closed_at', 'closed_by',
-            'sale', 'created_at', 'updated_at',
+            'sale', 'checkout_discount', 'checkout_service_fee_waived', 'created_at', 'updated_at',
         )
         read_only_fields = fields
 
@@ -240,7 +240,7 @@ class TableAttendanceOpenSerializer(serializers.Serializer):
     idempotency_key = serializers.UUIDField()
     people_count = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     responsible_name = serializers.CharField(max_length=200, required=False, allow_blank=True, default='')
-    customer = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    customer_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     notes = serializers.CharField(max_length=1000, required=False, allow_blank=True, default='')
 
 
@@ -281,8 +281,21 @@ class TableTransferItemsSerializer(serializers.Serializer):
 
 
 class TableAttendanceCustomerSerializer(serializers.Serializer):
-    customer = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    customer_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     idempotency_key = serializers.UUIDField()
+
+
+class TableCancelOrderItemSerializer(serializers.Serializer):
+    idempotency_key = serializers.UUIDField()
+    reason = serializers.CharField(max_length=1000, allow_blank=False, trim_whitespace=True)
+
+
+class TableCheckoutContextSerializer(serializers.Serializer):
+    idempotency_key = serializers.UUIDField()
+    discount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, default=Decimal('0.00'))
+    discount_authorization = serializers.DictField(required=False)
+    service_fee_waived = serializers.BooleanField(required=False, default=False)
+    service_fee_authorization = serializers.DictField(required=False)
 
 
 class TableCloseSerializer(serializers.Serializer):

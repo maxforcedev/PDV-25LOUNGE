@@ -1077,6 +1077,9 @@ def cancel_table_item(*, item, user, reason, idempotency_key, audit_metadata=Non
     from .models import TableAttendanceStatus, TablePayment
     item = item.__class__.objects.select_for_update().select_related('order__attendance', 'product').get(pk=item.pk)
     attendance = item.order.attendance
+    reason = (reason or '').strip()
+    if not reason:
+        raise ValidationError({'reason': 'Informe o motivo do cancelamento.'})
     if attendance.status != TableAttendanceStatus.OPEN:
         raise AttendanceConflict('table_closed', 'O item só pode ser cancelado em mesa aberta.')
     operation, replayed = _operation(branch=attendance.branch, operation_type=AttendanceOperationType.TABLE_CANCEL_ITEM,
@@ -1114,8 +1117,11 @@ def cancel_table_item(*, item, user, reason, idempotency_key, audit_metadata=Non
     create_table_cancellation_jobs(item=item, attendance=attendance, user=user, idempotency_key=idempotency_key, reason=reason)
     cancel_table_ticket_for_item(item=item, user=user)
     item.status = AttendanceOrderItemStatus.CANCELLED
-    item.cancelled_at, item.cancelled_by, item.cancellation_reason = timezone.now(), user, (reason or '').strip()
+    item.cancelled_at, item.cancelled_by, item.cancellation_reason = timezone.now(), user, reason
     item.save(update_fields=('status', 'cancelled_at', 'cancelled_by', 'cancellation_reason', 'updated_at'))
+    if not item.order.items.exclude(status=AttendanceOrderItemStatus.CANCELLED).exists():
+        item.order.status = AttendanceOrderStatus.CANCELLED
+        item.order.save(update_fields=('status', 'updated_at'))
     operation.result = {'item_id': item.pk}
     operation.save(update_fields=('result', 'updated_at'))
     if audit:
@@ -1131,6 +1137,9 @@ def cancel_table_order(*, order, user, reason, idempotency_key, audit_metadata=N
 
     order = TableOrder.objects.select_for_update().select_related('attendance').get(pk=order.pk)
     attendance = TableAttendance.objects.select_for_update().get(pk=order.attendance_id)
+    reason = (reason or '').strip()
+    if not reason:
+        raise ValidationError({'reason': 'Informe o motivo do cancelamento.'})
     if attendance.status != TableAttendanceStatus.OPEN:
         raise AttendanceConflict('table_closed', 'O pedido só pode ser cancelado em mesa aberta.')
     operation, replayed = _operation(
@@ -1206,6 +1215,57 @@ def set_table_customer(*, attendance, user, customer_id, idempotency_key, audit_
 
 
 @transaction.atomic
+def set_table_checkout_context(*, attendance, user, discount, discount_authorization,
+                               service_fee_waived, service_fee_authorization, idempotency_key,
+                               pos_device=None, pos_permission_codes=None, audit_metadata=None):
+    from .models import TableAttendance, TableAttendanceStatus, TablePayment
+
+    attendance = TableAttendance.objects.select_for_update().select_related('branch__company').get(pk=attendance.pk)
+    if attendance.status != TableAttendanceStatus.OPEN:
+        raise AttendanceConflict('table_closed', 'O contexto financeiro exige mesa aberta.')
+    if TablePayment.objects.filter(
+        attendance=attendance, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
+    ).exists():
+        raise AttendanceConflict('checkout_context_locked', 'Desconto e taxa não podem ser alterados após o primeiro pagamento.')
+    discount = strict_decimal(discount, field='discount', decimal_places=2, max_digits=14)
+    service_fee_waived = bool(service_fee_waived)
+    operation, replayed = _operation(
+        branch=attendance.branch, operation_type=AttendanceOperationType.TABLE_CHECKOUT_CONTEXT,
+        idempotency_key=idempotency_key,
+        payload={'attendance': attendance.pk, 'discount': str(discount), 'service_fee_waived': service_fee_waived},
+    )
+    if replayed:
+        return attendance, True
+    discount_approved_by = _discount_approver(
+        attendance.branch, user, discount, discount_authorization,
+        permission_code='sales.apply_discount', authorization_field='discount_authorization',
+        allow_pos_only=pos_device is not None, pos_device=pos_device,
+        permission_codes=pos_permission_codes, device_validated=pos_device is not None,
+    )
+    service_fee_waived_by = _service_fee_waiver(
+        attendance.branch, user, service_fee_waived, service_fee_authorization,
+        allow_pos_only=pos_device is not None, pos_device=pos_device,
+        permission_codes=pos_permission_codes, device_validated=pos_device is not None,
+    )
+    before = model_snapshot(attendance, ('checkout_discount', 'checkout_service_fee_waived'))
+    attendance.checkout_discount = discount
+    attendance.checkout_discount_approved_by = discount_approved_by
+    attendance.checkout_service_fee_waived = service_fee_waived
+    attendance.checkout_service_fee_waived_by = service_fee_waived_by
+    attendance.save(update_fields=(
+        'checkout_discount', 'checkout_discount_approved_by',
+        'checkout_service_fee_waived', 'checkout_service_fee_waived_by', 'updated_at',
+    ))
+    operation.result = {'attendance_id': attendance.pk}
+    operation.save(update_fields=('result', 'updated_at'))
+    audit_log(actor=user, action='table_attendance.checkout_context.set', obj=attendance,
+              company=attendance.company, branch=attendance.branch, before=before,
+              after=model_snapshot(attendance, ('checkout_discount', 'checkout_service_fee_waived')),
+              metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
+    return attendance, False
+
+
+@transaction.atomic
 def record_table_payment(*, attendance, user, payment_method_id, amount=None, mode='value', idempotency_key=None,
                          cash_session_id=None, received_amount=None, allocations=None,
                          discount=None, discount_authorization=None, service_fee_waived=None,
@@ -1245,10 +1305,31 @@ def record_table_payment(*, attendance, user, payment_method_id, amount=None, mo
     if has_payment and (requested_discount != attendance.checkout_discount or requested_waiver != attendance.checkout_service_fee_waived):
         raise AttendanceConflict('checkout_context_mismatch', 'Desconto e taxa foram definidos pelo primeiro pagamento.')
     if not has_payment:
-        _discount_approver(attendance.branch, user, requested_discount, discount_authorization, permission_code='sales.apply_discount', authorization_field='discount_authorization', allow_pos_only=pos_device is not None, pos_device=pos_device, permission_codes=pos_permission_codes, device_validated=pos_device is not None)
-        _service_fee_waiver(attendance.branch, user, requested_waiver, service_fee_authorization, allow_pos_only=pos_device is not None, pos_device=pos_device, permission_codes=pos_permission_codes, device_validated=pos_device is not None)
-        attendance.checkout_discount, attendance.checkout_service_fee_waived = requested_discount, requested_waiver
-        attendance.save(update_fields=('checkout_discount', 'checkout_service_fee_waived', 'updated_at'))
+        discount_approved_by = attendance.checkout_discount_approved_by if (
+            requested_discount == attendance.checkout_discount
+            and attendance.checkout_discount_approved_by_id
+        ) else _discount_approver(
+            attendance.branch, user, requested_discount, discount_authorization,
+            permission_code='sales.apply_discount', authorization_field='discount_authorization',
+            allow_pos_only=pos_device is not None, pos_device=pos_device,
+            permission_codes=pos_permission_codes, device_validated=pos_device is not None,
+        )
+        service_fee_waived_by = attendance.checkout_service_fee_waived_by if (
+            requested_waiver == attendance.checkout_service_fee_waived
+            and attendance.checkout_service_fee_waived_by_id
+        ) else _service_fee_waiver(
+            attendance.branch, user, requested_waiver, service_fee_authorization,
+            allow_pos_only=pos_device is not None, pos_device=pos_device,
+            permission_codes=pos_permission_codes, device_validated=pos_device is not None,
+        )
+        attendance.checkout_discount = requested_discount
+        attendance.checkout_discount_approved_by = discount_approved_by
+        attendance.checkout_service_fee_waived = requested_waiver
+        attendance.checkout_service_fee_waived_by = service_fee_waived_by
+        attendance.save(update_fields=(
+            'checkout_discount', 'checkout_discount_approved_by',
+            'checkout_service_fee_waived', 'checkout_service_fee_waived_by', 'updated_at',
+        ))
     preview, _paid, remaining, _base = table_financial_state(attendance, lock=True)
     if mode != 'equal_people' and attendance.equal_split_total is not None:
         attendance.equal_split_total = None
@@ -1466,6 +1547,8 @@ def close_table_attendance(*, attendance, user, idempotency_key, cash_session_id
         branch=attendance.branch, user=user, operation_type=OperationType.SALE, cash_session=cash_session,
         items=None, payments=[{'payment_method': payment.payment_method_id, 'amount': payment.amount, 'received_amount': payment.received_amount} for payment in payments],
         discount=attendance.checkout_discount, service_fee_waived=attendance.checkout_service_fee_waived,
+        checkout_discount_approved_by=attendance.checkout_discount_approved_by,
+        checkout_service_fee_waived_by=attendance.checkout_service_fee_waived_by,
         idempotency_key=idempotency_key, channel=SalesChannel.TABLE, seller_user=attendance.seller_user or attendance.opened_by, customer=attendance.customer,
         confirmed_order_items=confirmed, internal_permission_code='tables.close', precomputed_financials=preview,
             table_payment_sources=payments, pos_device=None, audit_metadata=audit_metadata,

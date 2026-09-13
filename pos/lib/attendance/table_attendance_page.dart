@@ -11,6 +11,61 @@ import '../sales/quick_sale_page.dart';
 import '../sales/sale_models.dart';
 import 'attendance_models.dart';
 
+double _tableCartNumber(Object? value) =>
+    double.tryParse('$value'.replaceAll(',', '.')) ?? 0;
+
+String _tableQuantityText(Object? value) {
+  final quantity = _tableCartNumber(value);
+  return quantity == quantity.roundToDouble()
+      ? quantity.toInt().toString()
+      : quantity.toStringAsFixed(3).replaceFirst(RegExp(r'0+$'), '');
+}
+
+QuickSaleModifierOption? _tableModifierOption(
+    QuickSaleProduct product, Map<String, dynamic> modifier) {
+  final optionId = int.tryParse(
+      '${modifier['option'] ?? modifier['option_id'] ?? modifier['id'] ?? ''}');
+  if (optionId == null) return null;
+  return product.modifierGroups
+      .expand((group) => group.options)
+      .where((option) => option.id == optionId)
+      .firstOrNull;
+}
+
+String _tableModifierName(
+    QuickSaleProduct product, Map<String, dynamic> modifier) {
+  final option = _tableModifierOption(product, modifier);
+  return option?.name ??
+      '${modifier['option_name'] ?? modifier['modifier_name'] ?? modifier['name'] ?? 'Modificador'}';
+}
+
+String _tableModifierText(
+    QuickSaleProduct product, Map<String, dynamic> modifier) {
+  final quantity = _tableCartNumber(modifier['quantity'] ?? 1);
+  final prefix = quantity == 1 ? '' : '${_tableQuantityText(quantity)}x ';
+  return '+ $prefix${_tableModifierName(product, modifier)}';
+}
+
+double _tableLineTotal(QuickSaleCartItem item) {
+  final modifiers = item.modifiers.fold<double>(0, (total, modifier) {
+    final option = _tableModifierOption(item.product, modifier);
+    return total +
+        _tableCartNumber(option?.additionalPrice) *
+            _tableCartNumber(modifier['quantity'] ?? 1);
+  });
+  return (_tableCartNumber(item.product.price) + modifiers) *
+      _tableCartNumber(item.quantity);
+}
+
+String _tableHistoryTime(String? value) {
+  if (value == null || value.isEmpty) return '';
+  final date = DateTime.tryParse(value)?.toLocal();
+  if (date == null) return value;
+  String twoDigits(int number) => number.toString().padLeft(2, '0');
+  return '${twoDigits(date.day)}/${twoDigits(date.month)}/${date.year} '
+      '${twoDigits(date.hour)}:${twoDigits(date.minute)}';
+}
+
 class TableAttendancePage extends StatefulWidget {
   const TableAttendancePage({
     required this.controller,
@@ -347,8 +402,8 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
                                 order.createdByName.isNotEmpty)
                               Text(
                                   [
-                                    if (order.createdAt != null)
-                                      order.createdAt!,
+                                     if (order.createdAt != null)
+                                       _tableHistoryTime(order.createdAt),
                                     if (order.createdByName.isNotEmpty)
                                       'Operador: ${order.createdByName}',
                                   ].join(' · '),
@@ -377,15 +432,21 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
                                           style: Theme.of(context)
                                               .textTheme
                                               .bodySmall),
-                                    if (item.modifierSnapshot.isNotEmpty)
-                                      Text(
-                                          item.modifierSnapshot
-                                              .map((row) =>
-                                                  '+ ${row['name'] ?? row['option_name'] ?? 'Modificador'}')
-                                              .join('\n'),
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodySmall),
+                                     if (item.modifierSnapshot.isNotEmpty)
+                                       Text(
+                                           item.modifierSnapshot
+                                               .map((row) =>
+                                                   '+ ${row['option_name'] ?? row['modifier_name'] ?? row['name'] ?? 'Modificador'}')
+                                               .join('\n'),
+                                           style: Theme.of(context)
+                                               .textTheme
+                                               .bodySmall),
+                                     if (item.confirmedAt != null)
+                                       Text(
+                                           'Confirmado em ${_tableHistoryTime(item.confirmedAt)}',
+                                           style: Theme.of(context)
+                                               .textTheme
+                                               .bodySmall),
                                     if (item.status == 'confirmed' &&
                                         _can('tables.transfer_items'))
                                       CheckboxListTile(
@@ -559,8 +620,10 @@ class _TableOrderPageState extends State<TableOrderPage> {
   Future<void> _add(QuickSaleProduct product) async {
     if (_saving) return;
     if (!product.canSell) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Este produto está sem estoque no momento.'),
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(product.availabilityReason?.trim().isNotEmpty == true
+            ? product.availabilityReason!
+            : 'Este produto está sem estoque no momento.'),
       ));
       return;
     }
@@ -569,31 +632,22 @@ class _TableOrderPageState extends State<TableOrderPage> {
       product: product,
       quantity: '1',
     );
-    if (_requiresConfiguration(product)) {
+    if (product.modifierGroups.isNotEmpty) {
       await _editNewItem(product, item);
       return;
     }
     await _addCartItem(item);
   }
 
-  bool _requiresConfiguration(QuickSaleProduct product) =>
-      product.modifierGroups.any(
-        (group) =>
-            group.required ||
-            group.minSelections > 0 ||
-            (double.tryParse(group.minTotalQuantity.replaceAll(',', '.')) ??
-                    0) >
-                0 ||
-            group.requiredQuantity != null,
-      );
-
   Future<void> _editNewItem(
       QuickSaleProduct product, QuickSaleCartItem item) async {
     final configured = await showDialog<QuickSaleCartItem>(
       context: context,
-      builder: (_) => SaleItemEditorDialog(product: product, initial: item),
+      builder: (_) => _TableSaleItemEditorDialog(product: product, initial: item),
     );
-    if (configured != null && mounted) await _addCartItem(configured);
+    if (configured != null && mounted && !_saving) {
+      await _addCartItem(configured);
+    }
   }
 
   Future<void> _addCartItem(QuickSaleCartItem item) =>
@@ -616,37 +670,61 @@ class _TableOrderPageState extends State<TableOrderPage> {
         return merged;
       });
 
-  Future<void> _replaceCartItem(int index, QuickSaleCartItem item) =>
+  Future<void> _replaceCartItem(String clientItemId, QuickSaleCartItem item) =>
       _queueCartMutation((cart) {
-        if (index >= cart.length) return cart;
+        final index =
+            cart.indexWhere((entry) => entry.clientItemId == clientItemId);
+        if (index < 0) return cart;
         final updated = List<QuickSaleCartItem>.from(cart)..[index] = item;
         return updated;
       });
 
   Future<void> _queueCartMutation(
-      List<QuickSaleCartItem> Function(List<QuickSaleCartItem>) update) {
-    final queued = _cartMutationQueue.then((_) async {
-      if (_saving || !mounted) return;
+      List<QuickSaleCartItem> Function(List<QuickSaleCartItem>) update,
+      {bool checkAvailability = true}) {
+    return _queueCartTask(() async {
+      if (!mounted) return;
       final candidate = update(List<QuickSaleCartItem>.from(_cart));
-      final availability = await widget.controller.tableStockAvailability(
-        items: candidate.map((item) => item.toJson()).toList(growable: false),
-      );
-      if (!mounted || availability == null) return;
-      if (!availability.available && availability.enforced) {
-        _showStockUnavailable(availability, candidate);
-        return;
+      if (checkAvailability && candidate.isNotEmpty) {
+        final availability = await widget.controller.tableStockAvailability(
+          items: _tableCartPayload(candidate),
+        );
+        if (!mounted || availability == null) return;
+        if (!availability.available && availability.enforced) {
+          _showStockUnavailable(availability, candidate);
+          return;
+        }
       }
       setState(() {
         _cart
           ..clear()
           ..addAll(candidate);
         _orderIdempotencyKey = null;
-        _cartListenable.value = _itemCount;
       });
+      _notifyCartChanged();
     });
-    _cartMutationQueue = queued.catchError((_) {});
+  }
+
+  Future<T> _queueCartTask<T>(FutureOr<T> Function() task) {
+    final queued = _cartMutationQueue.then((_) => task());
+    _cartMutationQueue = queued.then<void>((_) {}, onError: (_, __) {});
     return queued;
   }
+
+  List<Map<String, dynamic>> _tableCartPayload(
+          List<QuickSaleCartItem> cart) =>
+      cart
+          .map((item) => <String, dynamic>{
+                'product': item.product.id,
+                'quantity': item.quantity,
+                'modifiers': item.modifiers
+                    .map((modifier) => Map<String, dynamic>.from(modifier))
+                    .toList(growable: false),
+                'notes': item.notes,
+              })
+          .toList(growable: false);
+
+  void _notifyCartChanged() => _cartListenable.value++;
 
   void _showStockUnavailable(
       QuickSaleStockAvailability availability, List<QuickSaleCartItem> cart) {
@@ -674,7 +752,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
       context: context,
       builder: (_) => BatchQuantityDialog(productName: product.name),
     );
-    if (quantity == null || !mounted) return;
+    if (quantity == null || !mounted || _saving) return;
     final item = QuickSaleCartItem(
       clientItemId: createIdempotencyKey(),
       product: product,
@@ -690,31 +768,19 @@ class _TableOrderPageState extends State<TableOrderPage> {
   int get _itemCount => _cart.length;
 
   String get _provisionalTotal => _cart.fold<double>(0, (total, item) {
-        var price =
-            double.tryParse(item.product.price.replaceAll(',', '.')) ?? 0;
-        for (final modifier in item.modifiers) {
-          final option = item.product.modifierGroups
-              .expand((group) => group.options)
-              .where((option) => option.id == modifier['option'])
-              .firstOrNull;
-          price += (double.tryParse(
-                      option?.additionalPrice.replaceAll(',', '.') ?? '0') ??
-                  0) *
-              (double.tryParse('${modifier['quantity'] ?? '1'}') ?? 1);
-        }
-        return total +
-            price * (double.tryParse(item.quantity.replaceAll(',', '.')) ?? 0);
+        return total + _tableLineTotal(item);
       }).toStringAsFixed(2);
 
   Future<void> _edit(int index) async {
     if (_saving) return;
+    final initial = _cart[index];
     final item = await showDialog<QuickSaleCartItem>(
       context: context,
-      builder: (_) => SaleItemEditorDialog(
-          product: _cart[index].product, initial: _cart[index]),
+      builder: (_) => _TableSaleItemEditorDialog(
+          product: initial.product, initial: initial),
     );
-    if (item != null && mounted) {
-      await _replaceCartItem(index, item);
+    if (item != null && mounted && !_saving) {
+      await _replaceCartItem(initial.clientItemId, item);
     }
   }
 
@@ -742,35 +808,37 @@ class _TableOrderPageState extends State<TableOrderPage> {
   Future<void> _save() async {
     if (_saving || _cart.isEmpty) return;
     setState(() => _saving = true);
-    final availability = await widget.controller.tableStockAvailability(
-      items: _cart.map((item) => item.toJson()).toList(growable: false),
-    );
-    if (!mounted) return;
-    if (availability == null) {
-      setState(() => _saving = false);
-      return;
+    _notifyCartChanged();
+    var created = false;
+    try {
+      created = await _queueCartTask(() async {
+        if (!mounted || _cart.isEmpty) return false;
+        // This immutable payload is captured only after every earlier cart task.
+        final snapshot = _tableCartPayload(List<QuickSaleCartItem>.from(_cart));
+        final availability = await widget.controller.tableStockAvailability(
+          items: snapshot,
+        );
+        if (!mounted || availability == null) return false;
+        if (!availability.available && availability.enforced) {
+          _showStockUnavailable(availability, _cart);
+          return false;
+        }
+        final idempotencyKey = _orderIdempotencyKey ??= createIdempotencyKey();
+        return (await widget.controller.saveTableOrder(
+                  attendanceId: widget.attendance.id,
+                  idempotencyKey: idempotencyKey,
+                  items: snapshot,
+                )) !=
+            null;
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _saving = false);
+        _notifyCartChanged();
+      }
     }
-    if (!availability.available && availability.enforced) {
-      setState(() => _saving = false);
-      _showStockUnavailable(availability, _cart);
-      return;
-    }
-    final idempotencyKey = _orderIdempotencyKey ??= createIdempotencyKey();
-    final created = await widget.controller.saveTableOrder(
-      attendanceId: widget.attendance.id,
-      idempotencyKey: idempotencyKey,
-      items: _cart
-          .map((item) => <String, dynamic>{
-                'product': item.product.id,
-                'quantity': item.quantity,
-                'modifiers': item.modifiers,
-                'notes': item.notes,
-              })
-          .toList(growable: false),
-    );
     if (!mounted) return;
-    setState(() => _saving = false);
-    if (created == null) return;
+    if (!created) return;
     _orderIdempotencyKey = null;
     widget.controller.showTransientMessage('Pedido enviado com sucesso.',
         tone: TransientAlertTone.success);
@@ -782,13 +850,16 @@ class _TableOrderPageState extends State<TableOrderPage> {
         appBar:
             AppBar(title: Text('Novo pedido • ${widget.attendance.tableName}')),
         bottomNavigationBar: MediaQuery.sizeOf(context).width < 900
-            ? MobileCartBar(
-                itemCount: _itemCount,
-                preview: null,
-                updating: false,
-                showTotal: false,
-                actionLabel: 'VER RESUMO',
-                onTap: _showMobileSummary,
+            ? ValueListenableBuilder<int>(
+                valueListenable: _cartListenable,
+                builder: (_, __, ___) => MobileCartBar(
+                  itemCount: _itemCount,
+                  preview: null,
+                  updating: _saving,
+                  showTotal: false,
+                  actionLabel: 'VER RESUMO',
+                  onTap: _showMobileSummary,
+                ),
               )
             : null,
         body: _loading
@@ -817,36 +888,46 @@ class _TableOrderPageState extends State<TableOrderPage> {
                 if (constraints.maxWidth < 900) return catalog;
                 return Row(children: [
                   Expanded(flex: 3, child: catalog),
-                  SizedBox(
+                    SizedBox(
                       width: 420,
-                      child: _TableOrderSummaryPanel(
-                        cart: _cart,
-                        saving: _saving,
-                        onEdit: _edit,
-                        onRemove: _remove,
-                        onSave: _save,
-                      )),
+                      child: ValueListenableBuilder<int>(
+                          valueListenable: _cartListenable,
+                          builder: (_, __, ___) => _TableOrderSummaryPanel(
+                                cart: _cart,
+                                saving: _saving,
+                                onEdit: _edit,
+                                onRemove: (index) => unawaited(_remove(index)),
+                                onSave: _save,
+                              ))),
                 ]);
               }),
       );
 
-  void _remove(int index) => setState(() {
-        _cart.removeAt(index);
-        _orderIdempotencyKey = null;
-        _cartListenable.value = _itemCount;
-      });
+  Future<void> _remove(int index) {
+    if (_saving || index >= _cart.length) return Future.value();
+    final clientItemId = _cart[index].clientItemId;
+    return _queueCartMutation((cart) {
+      final index =
+          cart.indexWhere((entry) => entry.clientItemId == clientItemId);
+      if (index < 0) return cart;
+      return List<QuickSaleCartItem>.from(cart)..removeAt(index);
+    }, checkAvailability: false);
+  }
 
   Future<void> _showMobileSummary() async {
     final saved = await Navigator.of(context).push<bool>(MaterialPageRoute(
       builder: (_) => Scaffold(
         appBar: AppBar(
             title: Text('Resumo do pedido • ${widget.attendance.tableName}')),
-        body: _TableOrderSummaryPanel(
-          cart: _cart,
-          saving: _saving,
-          onEdit: _edit,
-          onRemove: _remove,
-          onSave: _save,
+        body: ValueListenableBuilder<int>(
+          valueListenable: _cartListenable,
+          builder: (_, __, ___) => _TableOrderSummaryPanel(
+            cart: _cart,
+            saving: _saving,
+            onEdit: _edit,
+            onRemove: (index) => unawaited(_remove(index)),
+            onSave: _save,
+          ),
         ),
       ),
     ));
@@ -889,24 +970,40 @@ class _TableOrderSummaryPanel extends StatelessWidget {
                         separatorBuilder: (_, __) => const Divider(height: 1),
                         itemBuilder: (_, index) {
                           final item = cart[index];
-                          return ListTile(
-                            onTap: () => onEdit(index),
-                            title: Text(item.product.name),
-                            subtitle: Text([
-                              'Qtd. ${item.quantity}',
-                              for (final modifier in item.modifiers)
-                                '+ ${modifier['name'] ?? modifier['option_name'] ?? 'Modificador'}',
-                              if (item.notes.isNotEmpty) 'Obs: ${item.notes}'
-                            ].join('\n')),
-                            leading: Text(formatMoney(item.product.price)),
-                            trailing: IconButton(
-                                onPressed: () => onRemove(index),
-                                icon: const Icon(Icons.delete_outline)),
-                          );
+                           return ListTile(
+                             onTap: saving ? null : () => onEdit(index),
+                             title: Text(item.product.name),
+                             subtitle: Text([
+                               'Qtd. ${item.quantity}',
+                               for (final modifier in item.modifiers)
+                                 _tableModifierText(item.product, modifier),
+                               if (item.notes.isNotEmpty) 'Obs: ${item.notes}'
+                             ].join('\n')),
+                             leading: SizedBox(
+                               width: 76,
+                               child: Text(
+                                 formatMoney(_tableLineTotal(item).toStringAsFixed(2)),
+                                 style: const TextStyle(
+                                     fontWeight: FontWeight.w800),
+                               ),
+                             ),
+                             trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                               IconButton(
+                                   onPressed: saving ? null : () => onRemove(index),
+                                   icon: const Icon(Icons.delete_outline)),
+                               const Icon(Icons.chevron_right),
+                             ]),
+                           );
                         },
-                      )),
-            const SizedBox(height: 12),
-            FilledButton.icon(
+                       )),
+             const SizedBox(height: 12),
+             Text(
+               'Total provisório: ${formatMoney(cart.fold<double>(0, (total, item) => total + _tableLineTotal(item)).toStringAsFixed(2))}',
+               textAlign: TextAlign.end,
+               style: const TextStyle(fontWeight: FontWeight.w800),
+             ),
+             const SizedBox(height: 8),
+             FilledButton.icon(
               onPressed: saving || cart.isEmpty ? null : () => onSave(),
               icon: saving
                   ? const SizedBox(
@@ -918,6 +1015,264 @@ class _TableOrderSummaryPanel extends StatelessWidget {
             ),
           ]),
         ),
+      );
+}
+
+class _TableSaleItemEditorDialog extends StatefulWidget {
+  const _TableSaleItemEditorDialog({
+    required this.product,
+    required this.initial,
+  });
+
+  final QuickSaleProduct product;
+  final QuickSaleCartItem initial;
+
+  @override
+  State<_TableSaleItemEditorDialog> createState() =>
+      _TableSaleItemEditorDialogState();
+}
+
+class _TableSaleItemEditorDialogState
+    extends State<_TableSaleItemEditorDialog> {
+  final Map<int, int> _modifierQuantities = {};
+  late final TextEditingController _quantity;
+  late final TextEditingController _notes;
+  String? _validation;
+
+  @override
+  void initState() {
+    super.initState();
+    _quantity = TextEditingController(text: widget.initial.quantity);
+    _notes = TextEditingController(text: widget.initial.notes);
+    for (final modifier in widget.initial.modifiers) {
+      final optionId = int.tryParse('${modifier['option'] ?? ''}');
+      if (optionId != null) {
+        _modifierQuantities[optionId] =
+            _tableCartNumber(modifier['quantity'] ?? 1).round();
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _quantity.dispose();
+    _notes.dispose();
+    super.dispose();
+  }
+
+  double get _itemQuantity => _tableCartNumber(_quantity.text);
+
+  void _setQuantity(double quantity) {
+    if (quantity <= 0) return;
+    setState(() {
+      _quantity.text = _tableQuantityText(quantity);
+      _validation = null;
+    });
+  }
+
+  void _select(
+      QuickSaleModifierGroup group, QuickSaleModifierOption option, bool value) {
+    setState(() {
+      if (value) {
+        if (group.maxSelections == 1) {
+          for (final candidate in group.options) {
+            _modifierQuantities.remove(candidate.id);
+          }
+        }
+        _modifierQuantities[option.id] = 1;
+      } else {
+        _modifierQuantities.remove(option.id);
+      }
+      _validation = null;
+    });
+  }
+
+  void _increase(QuickSaleModifierGroup group, QuickSaleModifierOption option) {
+    setState(() {
+      if (group.maxSelections == 1) {
+        for (final candidate in group.options) {
+          _modifierQuantities.remove(candidate.id);
+        }
+      }
+      _modifierQuantities[option.id] = (_modifierQuantities[option.id] ?? 0) + 1;
+      _validation = null;
+    });
+  }
+
+  void _decrease(QuickSaleModifierOption option) {
+    setState(() {
+      final current = _modifierQuantities[option.id] ?? 0;
+      if (current <= 1) {
+        _modifierQuantities.remove(option.id);
+      } else {
+        _modifierQuantities[option.id] = current - 1;
+      }
+      _validation = null;
+    });
+  }
+
+  String? _groupValidation(QuickSaleModifierGroup group) {
+    final selected = group.options
+        .where((option) => _modifierQuantities.containsKey(option.id));
+    final selections = selected.length;
+    final total = selected.fold<double>(
+        0, (sum, option) => sum + (_modifierQuantities[option.id] ?? 0));
+    if (selections < group.minSelections ||
+        (group.required && selections == 0)) {
+      final missing = (group.minSelections - selections).clamp(1, 999);
+      return 'Selecione mais $missing ${missing == 1 ? 'opção' : 'opções'} em ${group.name}.';
+    }
+    if (group.maxSelections != null && selections > group.maxSelections!) {
+      return 'Remova opções em ${group.name} para respeitar o limite.';
+    }
+    final required = _tableCartNumber(group.requiredQuantity) * _itemQuantity;
+    if (group.requiredQuantity != null && (total - required).abs() > .001) {
+      return total < required
+          ? 'Selecione mais ${_tableQuantityText(required - total)} unidade(s) em ${group.name}.'
+          : 'Remova ${_tableQuantityText(total - required)} unidade(s) em ${group.name}.';
+    }
+    final minimum = _tableCartNumber(group.minTotalQuantity);
+    if (minimum > 0 && total < minimum) {
+      return 'Selecione mais ${_tableQuantityText(minimum - total)} unidade(s) em ${group.name}.';
+    }
+    final maximum = group.maxTotalQuantity == null
+        ? null
+        : _tableCartNumber(group.maxTotalQuantity);
+    if (maximum != null && total > maximum) {
+      return 'Remova ${_tableQuantityText(total - maximum)} unidade(s) em ${group.name}.';
+    }
+    return null;
+  }
+
+  void _save() {
+    if (_itemQuantity <= 0) {
+      setState(() => _validation = 'Informe uma quantidade válida.');
+      return;
+    }
+    for (final group in widget.product.modifierGroups) {
+      final validation = _groupValidation(group);
+      if (validation != null) {
+        setState(() => _validation = validation);
+        return;
+      }
+    }
+    Navigator.of(context).pop(widget.initial.copyWith(
+      quantity: _tableQuantityText(_itemQuantity),
+      notes: _notes.text.trim(),
+      modifiers: _modifierQuantities.entries
+          .map((entry) => <String, dynamic>{
+                'option': entry.key,
+                'quantity': '${entry.value}',
+              })
+          .toList(growable: false),
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: Text('Editar ${widget.product.name}'),
+        content: SizedBox(
+          width: 460,
+          child: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Row(children: [
+                IconButton(
+                  onPressed: () => _setQuantity(_itemQuantity - 1),
+                  icon: const Icon(Icons.remove_circle_outline),
+                  tooltip: 'Diminuir quantidade',
+                ),
+                Expanded(
+                  child: TextField(
+                    controller: _quantity,
+                    textAlign: TextAlign.center,
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    onChanged: (_) => setState(() => _validation = null),
+                    decoration: const InputDecoration(labelText: 'Quantidade'),
+                  ),
+                ),
+                IconButton(
+                  onPressed: () => _setQuantity(_itemQuantity + 1),
+                  icon: const Icon(Icons.add_circle_outline),
+                  tooltip: 'Aumentar quantidade',
+                ),
+              ]),
+              for (final group in widget.product.modifierGroups) ...[
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 16),
+                    child: Text(
+                      '${group.name}${group.required ? ' *' : ''}',
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                ),
+                for (final option in group.options)
+                  Row(children: [
+                    Expanded(
+                      child: group.allowOptionQuantity
+                          ? ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              onTap: () => _increase(group, option),
+                              title: Text(option.name),
+                              subtitle: Text(
+                                  '+ ${formatMoney(option.additionalPrice)}'),
+                              leading: Icon(
+                                _modifierQuantities.containsKey(option.id)
+                                    ? Icons.add_circle
+                                    : Icons.add_circle_outline,
+                                color: const Color(0xff3454d1),
+                              ),
+                            )
+                          : CheckboxListTile(
+                              contentPadding: EdgeInsets.zero,
+                              value: _modifierQuantities.containsKey(option.id),
+                              onChanged: (value) =>
+                                  _select(group, option, value ?? false),
+                              title: Text(option.name),
+                              subtitle: Text(
+                                  '+ ${formatMoney(option.additionalPrice)}'),
+                            ),
+                    ),
+                    if (group.allowOptionQuantity &&
+                        _modifierQuantities.containsKey(option.id)) ...[
+                      IconButton(
+                        onPressed: () => _decrease(option),
+                        icon: const Icon(Icons.remove),
+                        tooltip: 'Diminuir ${option.name}',
+                      ),
+                      Text('${_modifierQuantities[option.id]}'),
+                      IconButton(
+                        onPressed: () => _increase(group, option),
+                        icon: const Icon(Icons.add),
+                        tooltip: 'Aumentar ${option.name}',
+                      ),
+                    ],
+                  ]),
+              ],
+              TextField(
+                controller: _notes,
+                minLines: 2,
+                maxLines: 4,
+                maxLength: 1000,
+                decoration: const InputDecoration(labelText: 'Observação'),
+              ),
+              if (_validation != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(_validation!,
+                      style: const TextStyle(color: Colors.red)),
+                ),
+            ]),
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('CANCELAR')),
+          FilledButton(onPressed: _save, child: const Text('SALVAR')),
+        ],
       );
 }
 

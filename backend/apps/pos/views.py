@@ -49,8 +49,8 @@ from apps.attendance.serializers import (
     AttendanceTransferItemsSerializer, AttendanceBillRequestSerializer, AttendanceTableGroupSerializer,
     TableAttendanceOpenSerializer, TableAttendanceSerializer, TableOrderSerializer, TableOrderItemSerializer,
     TablePaymentInputSerializer, TablePaymentSerializer,
-    TableTransferItemsSerializer, TableAttendanceCustomerSerializer,
-    TableCloseSerializer,
+    TableTransferItemsSerializer, TableAttendanceCustomerSerializer, TableCancelOrderItemSerializer,
+    TableCheckoutContextSerializer, TableCloseSerializer,
 )
 from apps.attendance.services import (
     AttendanceConflict, add_order_items, cancel_order_item, command_summary, confirm_order_item,
@@ -64,7 +64,7 @@ from apps.attendance.services import (
     open_table_attendance, save_table_order, table_summary, cancel_table_item,
     record_table_payment, reverse_table_payment, set_table_bill_requested, close_table_attendance,
     transfer_table_items,
-    cancel_table_order, set_table_customer,
+    cancel_table_order, set_table_customer, set_table_checkout_context,
 )
 from apps.products.models import (
     ModifierOption, ProductModifierGroup,
@@ -538,7 +538,7 @@ class POSCustomersView(POSQuickSaleView):
     def get(self, request):
         device, _, permissions, _ = self.context(request)
         if ('sales.create' not in permissions and
-                not permissions.intersection({'tables.open', 'tables.add_items'})) or 'customers.view' not in permissions:
+                not permissions.intersection({'tables.open', 'tables.set_customer', 'tables.add_items'})) or 'customers.view' not in permissions:
             raise PermissionDenied('Você não possui permissão para consultar clientes nesta filial.')
         term = request.query_params.get('q', '').strip()
         customers = customer_search_queryset(
@@ -556,7 +556,7 @@ class POSCustomersView(POSQuickSaleView):
     def post(self, request):
         device, operator, permissions, operator_session = self.context(request)
         if ('sales.create' not in permissions and
-                not permissions.intersection({'tables.open', 'tables.add_items'})) or 'customers.add' not in permissions:
+                not permissions.intersection({'tables.open', 'tables.set_customer', 'tables.add_items'})) or 'customers.add' not in permissions:
             raise PermissionDenied('Você não possui permissão para cadastrar clientes nesta filial.')
         serializer = POSCustomerSerializer(
             data=request.data, context={'company': device.branch.company},
@@ -1158,7 +1158,7 @@ class POSTableAttendanceItemCancelView(POSAttendanceView):
     def post(self, request, item_id):
         device, operator, permissions, operator_session = self.context(request)
         self._require(permissions, 'tables.cancel_items', 'Você não possui permissão para cancelar itens.')
-        serializer = AttendanceCancelItemSerializer(data=request.data)
+        serializer = TableCancelOrderItemSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         item = get_object_or_404(TableOrderItem.objects.select_related('order__attendance'), pk=item_id, order__attendance__branch=device.branch)
         try:
@@ -1172,7 +1172,7 @@ class POSTableAttendanceOrderCancelView(POSTableAttendanceView):
     def post(self, request, order_id):
         device, operator, permissions, operator_session = self.context(request)
         self._require(permissions, 'tables.cancel_items', 'Você não possui permissão para cancelar pedidos.')
-        serializer = AttendanceCancelItemSerializer(data=request.data)
+        serializer = TableCancelOrderItemSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         order = get_object_or_404(
             TableOrder.objects.select_related('attendance'), pk=order_id,
@@ -1194,7 +1194,7 @@ class POSTableAttendanceOrderCancelView(POSTableAttendanceView):
 class POSTableAttendanceCustomerView(POSTableAttendanceView):
     def post(self, request, attendance_id):
         device, operator, permissions, operator_session = self.context(request)
-        self._require(permissions, 'tables.add_items', 'Você não possui permissão para alterar o cliente da mesa.')
+        self._require(permissions, 'tables.set_customer', 'Você não possui permissão para alterar o cliente da mesa.')
         serializer = TableAttendanceCustomerSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -1206,6 +1206,30 @@ class POSTableAttendanceCustomerView(POSTableAttendanceView):
         except AttendanceConflict as error:
             self._domain(error)
         response = Response(TableAttendanceSerializer(attendance).data)
+        if replayed:
+            response['Idempotency-Replayed'] = 'true'
+        return response
+
+
+class POSTableAttendanceCheckoutContextView(POSTableAttendanceView):
+    def post(self, request, attendance_id):
+        device, operator, permissions, operator_session = self.context(request)
+        self._require(permissions, 'tables.add_items', 'Você não possui permissão para alterar o contexto financeiro da mesa.')
+        serializer = TableCheckoutContextSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            attendance, replayed = set_table_checkout_context(
+                attendance=self._attendance(device, attendance_id), user=operator,
+                pos_device=device, pos_permission_codes=permissions,
+                audit_metadata=self.audit_metadata(device, operator_session),
+                **serializer.validated_data,
+            )
+        except AttendanceConflict as error:
+            self._domain(error)
+        response = Response({
+            'attendance': TableAttendanceSerializer(attendance).data,
+            'summary': table_summary(attendance),
+        })
         if replayed:
             response['Idempotency-Replayed'] = 'true'
         return response
