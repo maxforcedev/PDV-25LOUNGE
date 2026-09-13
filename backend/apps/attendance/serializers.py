@@ -175,11 +175,12 @@ class AttendanceFinalizeSerializer(serializers.Serializer):
 
 class TableAttendanceSerializer(serializers.ModelSerializer):
     table_name = serializers.CharField(source='table.name', read_only=True)
+    customer_name = serializers.CharField(source='customer.name', read_only=True, default='')
 
     class Meta:
         model = TableAttendance
         fields = (
-            'id', 'table', 'table_name', 'customer', 'people_count', 'responsible_name', 'notes', 'status',
+            'id', 'table', 'table_name', 'customer', 'customer_name', 'people_count', 'responsible_name', 'notes', 'status',
             'opened_by', 'bill_requested_at', 'bill_requested_by', 'closed_at', 'closed_by',
             'sale', 'created_at', 'updated_at',
         )
@@ -202,10 +203,14 @@ class TableOrderItemSerializer(serializers.ModelSerializer):
 
 class TableOrderSerializer(serializers.ModelSerializer):
     items = TableOrderItemSerializer(many=True, read_only=True)
+    created_by_name = serializers.SerializerMethodField()
+
+    def get_created_by_name(self, order):
+        return order.created_by.get_full_name().strip() or order.created_by.email
 
     class Meta:
         model = TableOrder
-        fields = ('id', 'attendance', 'status', 'created_by', 'items', 'created_at', 'updated_at')
+        fields = ('id', 'attendance', 'status', 'created_by', 'created_by_name', 'items', 'created_at', 'updated_at')
         read_only_fields = fields
 
 
@@ -273,6 +278,11 @@ class TableTransferItemsSerializer(serializers.Serializer):
             value['item'], value['quantity'] = item, quantity
             seen.add(item)
         return values
+
+
+class TableAttendanceCustomerSerializer(serializers.Serializer):
+    customer = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    idempotency_key = serializers.UUIDField()
 
 
 class TableCloseSerializer(serializers.Serializer):

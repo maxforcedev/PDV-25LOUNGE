@@ -52,6 +52,8 @@ class AttendanceOperationType(models.TextChoices):
     TABLE_TRANSFER_ITEMS = 'table_transfer_items', 'Transferir itens de mesa'
     TABLE_BILL = 'table_bill', 'Solicitar conta de mesa'
     TABLE_CLOSE = 'table_close', 'Fechar atendimento de mesa'
+    TABLE_CANCEL_ORDER = 'table_cancel_order', 'Cancelar pedido de mesa'
+    TABLE_SET_CUSTOMER = 'table_set_customer', 'Alterar cliente da mesa'
 
 
 class AttendanceCommand(BaseModel):

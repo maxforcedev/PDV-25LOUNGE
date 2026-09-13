@@ -27,7 +27,8 @@ class AttendanceTable {
                 json['group'] as Map<String, dynamic>)
             : null,
         attendance: json['attendance'] is Map<String, dynamic>
-            ? TableAttendance.fromJson(json['attendance'] as Map<String, dynamic>)
+            ? TableAttendance.fromJson(
+                json['attendance'] as Map<String, dynamic>)
             : null,
       );
 
@@ -52,6 +53,7 @@ class TableAttendance {
     required this.tableName,
     required this.status,
     this.customerId,
+    this.customerName = '',
     this.peopleCount,
     this.responsibleName = '',
     this.notes = '',
@@ -64,20 +66,13 @@ class TableAttendance {
   });
 
   factory TableAttendance.fromJson(Map<String, dynamic> json) {
-    final items = (json['orders'] as List<dynamic>? ?? const [])
-        .cast<Map<String, dynamic>>()
-        .map(TableOrderItem.fromJson)
-        .toList(growable: false);
-    final orders = <int, List<TableOrderItem>>{};
-    for (final item in items) {
-      orders.putIfAbsent(item.orderId, () => []).add(item);
-    }
     return TableAttendance(
       id: json['id'] as int,
       tableId: json['table'] as int? ?? 0,
       tableName: json['table_name'] as String? ?? '',
       status: json['status'] as String? ?? 'open',
       customerId: json['customer'] as int?,
+      customerName: json['customer_name'] as String? ?? '',
       peopleCount: json['people_count'] as int?,
       responsibleName: json['responsible_name'] as String? ?? '',
       notes: json['notes'] as String? ?? '',
@@ -86,8 +81,9 @@ class TableAttendance {
       openedAt: json['created_at'] as String?,
       closedAt: json['closed_at'] as String?,
       summary: json['summary'] as Map<String, dynamic>? ?? const {},
-      orders: orders.entries
-          .map((entry) => TableOrder(id: entry.key, items: entry.value))
+      orders: (json['orders'] as List<dynamic>? ?? const [])
+          .cast<Map<String, dynamic>>()
+          .map(TableOrder.fromJson)
           .toList(growable: false),
     );
   }
@@ -97,6 +93,7 @@ class TableAttendance {
   final String tableName;
   final String status;
   final int? customerId;
+  final String customerName;
   final int? peopleCount;
   final String responsibleName;
   final String notes;
@@ -111,10 +108,30 @@ class TableAttendance {
 }
 
 class TableOrder {
-  const TableOrder({required this.id, required this.items});
+  const TableOrder({
+    required this.id,
+    required this.items,
+    this.status = '',
+    this.createdByName = '',
+    this.createdAt,
+  });
+
+  factory TableOrder.fromJson(Map<String, dynamic> json) => TableOrder(
+        id: json['id'] as int,
+        status: json['status'] as String? ?? '',
+        createdByName: json['created_by_name'] as String? ?? '',
+        createdAt: json['created_at'] as String?,
+        items: (json['items'] as List<dynamic>? ?? const [])
+            .cast<Map<String, dynamic>>()
+            .map(TableOrderItem.fromJson)
+            .toList(growable: false),
+      );
 
   final int id;
   final List<TableOrderItem> items;
+  final String status;
+  final String createdByName;
+  final String? createdAt;
 }
 
 class TableOrderItem {
@@ -138,7 +155,8 @@ class TableOrderItem {
   factory TableOrderItem.fromJson(Map<String, dynamic> json) => TableOrderItem(
         id: json['id'] as int,
         orderId: (json['order'] ?? json['order_id']) as int? ?? 0,
-        productId: (json['product'] as int?) ?? (json['product_id'] as int?) ?? 0,
+        productId:
+            (json['product'] as int?) ?? (json['product_id'] as int?) ?? 0,
         productName: json['product_name'] as String? ?? '',
         quantity: '${json['quantity'] ?? '0'}',
         unit: json['unit'] as String? ?? '',
@@ -146,8 +164,9 @@ class TableOrderItem {
         status: json['status'] as String? ?? 'pending',
         categoryId: json['category_id_snapshot'] as int?,
         categoryName: json['category_name_snapshot'] as String? ?? '',
-        modifierSnapshot: (json['modifier_snapshot'] as List<dynamic>? ?? const [])
-            .cast<Map<String, dynamic>>(),
+        modifierSnapshot:
+            (json['modifier_snapshot'] as List<dynamic>? ?? const [])
+                .cast<Map<String, dynamic>>(),
         notes: json['notes'] as String? ?? '',
         confirmedAt: json['confirmed_at'] as String?,
         cancellationReason: json['cancellation_reason'] as String? ?? '',

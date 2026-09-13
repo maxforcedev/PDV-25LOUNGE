@@ -388,6 +388,11 @@ class AppController extends ChangeNotifier {
   Future<List<QuickSaleProduct>?> tableCatalog({String? search}) =>
       _attendance(() => _api.tableCatalog(search: search));
 
+  Future<QuickSaleStockAvailability?> tableStockAvailability({
+    required List<Map<String, dynamic>> items,
+  }) =>
+      _attendance(() => _api.tableStockAvailability(items: items));
+
   Future<List<TableOrderItem>?> saveTableOrder({
     required int attendanceId,
     required List<Map<String, dynamic>> items,
@@ -395,6 +400,63 @@ class AppController extends ChangeNotifier {
   }) =>
       _attendance(() => _api.saveTableOrder(
             attendanceId: attendanceId,
+            items: items,
+            idempotencyKey: idempotencyKey,
+          ));
+
+  Future<TableOrderItem?> cancelTableOrderItem({
+    required int itemId,
+    required String reason,
+    required String idempotencyKey,
+  }) =>
+      _attendance(() => _api.cancelTableOrderItem(
+            itemId: itemId,
+            reason: reason,
+            idempotencyKey: idempotencyKey,
+          ));
+
+  Future<TableOrder?> cancelTableOrder({
+    required int orderId,
+    required String reason,
+    required String idempotencyKey,
+  }) =>
+      _attendance(() => _api.cancelTableOrder(
+            orderId: orderId,
+            reason: reason,
+            idempotencyKey: idempotencyKey,
+          ));
+
+  Future<TableAttendance?> setTableBillRequested({
+    required int attendanceId,
+    required bool requested,
+    required String idempotencyKey,
+  }) =>
+      _attendance(() => _api.setTableBillRequested(
+            attendanceId: attendanceId,
+            requested: requested,
+            idempotencyKey: idempotencyKey,
+          ));
+
+  Future<TableAttendance?> setTableAttendanceCustomer({
+    required int attendanceId,
+    required int? customerId,
+    required String idempotencyKey,
+  }) =>
+      _attendance(() => _api.setTableAttendanceCustomer(
+            attendanceId: attendanceId,
+            customerId: customerId,
+            idempotencyKey: idempotencyKey,
+          ));
+
+  Future<TableAttendance?> transferTableItems({
+    required int attendanceId,
+    required int destinationAttendanceId,
+    required List<Map<String, dynamic>> items,
+    required String idempotencyKey,
+  }) =>
+      _attendance(() => _api.transferTableItems(
+            attendanceId: attendanceId,
+            destinationAttendanceId: destinationAttendanceId,
             items: items,
             idempotencyKey: idempotencyKey,
           ));

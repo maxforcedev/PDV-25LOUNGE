@@ -47,9 +47,9 @@ from apps.attendance.serializers import (
     AttendanceOrderItemSerializer, AttendancePaymentInputSerializer,
     AttendancePaymentSerializer, AttendanceReversePaymentSerializer, AttendanceTransferCommandSerializer,
     AttendanceTransferItemsSerializer, AttendanceBillRequestSerializer, AttendanceTableGroupSerializer,
-    TableAttendanceOpenSerializer, TableAttendanceSerializer, TableOrderItemSerializer,
+    TableAttendanceOpenSerializer, TableAttendanceSerializer, TableOrderSerializer, TableOrderItemSerializer,
     TablePaymentInputSerializer, TablePaymentSerializer,
-    TableTransferItemsSerializer,
+    TableTransferItemsSerializer, TableAttendanceCustomerSerializer,
     TableCloseSerializer,
 )
 from apps.attendance.services import (
@@ -64,6 +64,7 @@ from apps.attendance.services import (
     open_table_attendance, save_table_order, table_summary, cancel_table_item,
     record_table_payment, reverse_table_payment, set_table_bill_requested, close_table_attendance,
     transfer_table_items,
+    cancel_table_order, set_table_customer,
 )
 from apps.products.models import (
     ModifierOption, ProductModifierGroup,
@@ -536,7 +537,8 @@ class POSBarcodeProductView(POSQuickSaleView):
 class POSCustomersView(POSQuickSaleView):
     def get(self, request):
         device, _, permissions, _ = self.context(request)
-        if 'sales.create' not in permissions or 'customers.view' not in permissions:
+        if ('sales.create' not in permissions and
+                not permissions.intersection({'tables.open', 'tables.add_items'})) or 'customers.view' not in permissions:
             raise PermissionDenied('Você não possui permissão para consultar clientes nesta filial.')
         term = request.query_params.get('q', '').strip()
         customers = customer_search_queryset(
@@ -553,7 +555,8 @@ class POSCustomersView(POSQuickSaleView):
 
     def post(self, request):
         device, operator, permissions, operator_session = self.context(request)
-        if 'sales.create' not in permissions or 'customers.add' not in permissions:
+        if ('sales.create' not in permissions and
+                not permissions.intersection({'tables.open', 'tables.add_items'})) or 'customers.add' not in permissions:
             raise PermissionDenied('Você não possui permissão para cadastrar clientes nesta filial.')
         serializer = POSCustomerSerializer(
             data=request.data, context={'company': device.branch.company},
@@ -815,6 +818,21 @@ class POSTableCatalogView(POSAttendanceView, POSQuickSaleView):
             search=request.query_params.get('search'),
         )
         return Response({'products': self._catalog_payload(request, _visible_pos_catalog(device, queryset), device.branch)})
+
+
+class POSTableAvailabilityView(POSAttendanceView, POSQuickSaleView):
+    def post(self, request):
+        device, _, permissions, _ = self.context(request)
+        self._require(permissions, 'tables.add_items', 'Você não possui permissão para verificar o estoque de Mesa.')
+        require_branch_feature(device.branch, 'tables')
+        serializer = POSStockAvailabilitySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return Response(assess_sale_stock_availability(
+            company=device.branch.company,
+            raw_items=self._items(serializer.validated_data['items']),
+            branch=device.branch,
+            channel=SalesChannel.TABLE,
+        ))
 
 
 class POSAttendanceCheckoutOptionsView(POSAttendanceView):
@@ -1112,7 +1130,9 @@ class POSTableAttendanceView(POSAttendanceView):
         attendance = self._attendance(device, attendance_id)
         data = TableAttendanceSerializer(attendance).data
         data['summary'] = table_summary(attendance)
-        data['orders'] = list(TableOrderItem.objects.filter(order__attendance=attendance).values('id', 'order_id', 'product_id', 'product_name', 'quantity', 'unit', 'unit_price', 'modifier_snapshot', 'notes', 'status', 'confirmed_at'))
+        data['orders'] = TableOrderSerializer(
+            attendance.orders.select_related('created_by').prefetch_related('items').all(), many=True,
+        ).data
         return Response(data)
 
 
@@ -1146,6 +1166,49 @@ class POSTableAttendanceItemCancelView(POSAttendanceView):
         except AttendanceConflict as error:
             self._domain(error)
         return Response(TableOrderItemSerializer(item).data, headers={'Idempotency-Replayed': 'true'} if replayed else None)
+
+
+class POSTableAttendanceOrderCancelView(POSTableAttendanceView):
+    def post(self, request, order_id):
+        device, operator, permissions, operator_session = self.context(request)
+        self._require(permissions, 'tables.cancel_items', 'Você não possui permissão para cancelar pedidos.')
+        serializer = AttendanceCancelItemSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        order = get_object_or_404(
+            TableOrder.objects.select_related('attendance'), pk=order_id,
+            attendance__branch=device.branch,
+        )
+        try:
+            order, replayed = cancel_table_order(
+                order=order, user=operator, audit_metadata=self.audit_metadata(device, operator_session),
+                **serializer.validated_data,
+            )
+        except AttendanceConflict as error:
+            self._domain(error)
+        response = Response(TableOrderSerializer(order).data)
+        if replayed:
+            response['Idempotency-Replayed'] = 'true'
+        return response
+
+
+class POSTableAttendanceCustomerView(POSTableAttendanceView):
+    def post(self, request, attendance_id):
+        device, operator, permissions, operator_session = self.context(request)
+        self._require(permissions, 'tables.add_items', 'Você não possui permissão para alterar o cliente da mesa.')
+        serializer = TableAttendanceCustomerSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            attendance, replayed = set_table_customer(
+                attendance=self._attendance(device, attendance_id), user=operator,
+                audit_metadata=self.audit_metadata(device, operator_session),
+                **serializer.validated_data,
+            )
+        except AttendanceConflict as error:
+            self._domain(error)
+        response = Response(TableAttendanceSerializer(attendance).data)
+        if replayed:
+            response['Idempotency-Replayed'] = 'true'
+        return response
 
 
 class POSTableAttendancePaymentsView(POSTableAttendanceView):

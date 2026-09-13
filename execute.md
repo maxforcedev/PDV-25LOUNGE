@@ -1,849 +1,945 @@
-OPENCODE — MESA 1.8
-UNIFICAR UI/UX DE PEDIDOS DA MESA COM VENDA RÁPIDA
+OPENCODE — MESA 1.9
+FECHAR COMPLETAMENTE A ETAPA DE PEDIDOS DA MESA
 
-HEAD esperado:
-4a3d5807bb76101e3ed4007a546434bff32c91a2
-MESA 1.7
+IMPORTANTE:
+A FONTE DA VERDADE É O ESTADO ATUAL DO REPOSITÓRIO.
 
-Antes de alterar qualquer coisa, leia completamente:
+HEAD de referência analisado:
+1ee7103039c1a8d5c083725b43d0511431f86204
+MESA 1.8.1
 
+NÃO confie em checkpoints anteriores.
+Leia o código atual antes de alterar qualquer coisa.
+
+O execute.md foi removido de propósito.
+NÃO recriar execute.md.
+NÃO criar documentos/instruções operacionais na raiz do projeto.
+
+==================================================
+REGRA CRÍTICA — VENDA RÁPIDA ESTÁ APROVADA
+==================================================
+
+A VENDA RÁPIDA JÁ FOI APROVADA.
+
+NÃO modificar seu comportamento.
+
+Nesta missão:
+
+NÃO modificar:
 pos/lib/sales/quick_sale_page.dart
-pos/lib/sales/sale_models.dart
-pos/lib/attendance/table_attendance_page.dart
-pos/lib/attendance/attendance_pages.dart
-pos/lib/attendance/attendance_models.dart
-pos/lib/network/pos_api.dart
-pos/lib/core/app_controller.dart
 
-e no backend:
-
-backend/apps/pos/views.py
-backend/apps/pos/urls.py
-backend/apps/attendance/serializers.py
-backend/apps/attendance/services.py
-backend/apps/production/services.py
-backend/apps/sales/services.py
-
-OBJETIVO:
-
-A experiência de adicionar pedidos à Mesa deve ser A MESMA UI/UX BASE da Venda Rápida.
-
-NÃO quero uma segunda implementação simplificada tentando imitar Venda Rápida.
-
-Quero componentes compartilhados.
-
-Venda Rápida e Mesa devem reutilizar:
-
-- catálogo;
-- categorias;
-- favoritos;
-- busca;
-- fotos;
-- scanner/código de barras;
-- cards de produto;
-- comportamento responsivo;
+NÃO alterar:
+- UX da Venda Rápida;
 - carrinho;
-- editor de produto;
-- quantidade;
+- checkout;
+- scanner;
+- estoque;
+- descontos;
+- taxa;
+- clientes;
 - modificadores;
-- observações;
-- disponibilidade;
-- mensagens de estoque;
-- layout desktop/tablet/mobile;
-- barra de carrinho no mobile;
-- padrões visuais;
-- feedbacks.
+- permissões;
+- mensagens;
+- responsividade;
+- fluxo de venda;
+- cálculo.
 
-A diferença deve estar somente nas funcionalidades específicas de cada contexto.
+A Mesa deve se adaptar ao padrão aprovado.
 
-==================================================
-REGRA DE ARQUITETURA
-==================================================
+Pode REUTILIZAR componentes que já estão públicos, como:
 
-NÃO transformar Mesa em Venda Rápida.
+- ProductCatalogPanel
+- ProductCard
+- MobileCartBar
+- BatchQuantityDialog
+- SaleItemEditorDialog
+- ProductBarcodeScannerPage
 
-NÃO criar Sale ao salvar pedido de Mesa.
-
-Não existe Comanda por baixo da Mesa.
-
-Fluxos:
-
-VENDA RÁPIDA:
-
-SharedCatalog / SharedCart
-→ pagamento
-→ Sale
-
-MESA:
-
-SharedCatalog / SharedCart
-→ SALVAR E ENVIAR PEDIDO
-→ TableOrder
-→ TableOrderItem
-
-Portanto:
-
-MESMA experiência de seleção
-DESTINO diferente.
-
-Extraia componentes compartilháveis da QuickSalePage quando necessário.
-
-Não copie centenas de linhas para TableOrderPage.
-
-Evite:
-
-QuickSaleCatalogGrid
-e
-TableCatalogGrid
-
-com implementações duplicadas.
-
-Prefira algo como:
-
-ProductCatalogPanel
-ProductCard
-CatalogFilters
-CartPanel
-ProductItemEditor
-BarcodeScanner flow
-
-configuráveis pelo contexto.
+Mas não alterar a Venda Rápida para acomodar a Mesa.
 
 ==================================================
-1. INVESTIGAR PRIMEIRO O ERRO 400
+OBJETIVO DESTA MISSÃO
 ==================================================
 
-Existe erro real:
+Finalizar a camada de PEDIDOS da Mesa.
 
-POST /api/v1/pos/table-attendances/1/orders/
-→ HTTP 400
+Ao concluir MESA 1.9, queremos:
 
-Antes de tentar corrigir no escuro:
+Mesa
+→ Novo pedido
+→ catálogo no padrão Venda Rápida
+→ carrinho/resumo coerente
+→ estoque validado
+→ modificadores
+→ cliente
+→ desconto/taxa
+→ salvar e enviar
+→ estoque/produção/ticket
+→ visualizar pedido enviado
+→ cancelar item
+→ cancelar pedido inteiro
+→ impressão de cancelamento na cozinha
+→ solicitar conta
+→ transferências
+→ agrupamento/separação
 
-- inspecione o payload real enviado pelo Flutter;
-- inspecione a resposta JSON real do backend;
-- identifique exatamente qual validação está gerando 400.
+SEM implementar pagamentos ainda.
 
-O PosApi atualmente pode perder detalhes de respostas DRF que vêm como:
+NÃO implementar nesta missão:
 
-{
-  "items": [...]
-}
+- pagamento parcial;
+- pagar por valor;
+- pagar por itens;
+- divisão por pessoas;
+- saldo total;
+- Stone/Cielo;
+- fechamento financeiro da Mesa.
 
-ou outros dictionaries de validação.
+Isso será MESA 2.
 
-Melhore o tratamento de erro SOMENTE se necessário para que o POS consiga exibir mensagem útil enviada pelo backend.
+==================================================
+1. VALIDAR PRIMEIRO SALVAR E ENVIAR PEDIDO
+==================================================
 
-NÃO mascarar erro.
+Antes de avançar nas novas funcionalidades, valide o fluxo atual:
 
-NÃO converter qualquer 400 em mensagem genérica.
+POST
+/api/v1/pos/table-attendances/<id>/orders/
 
-Precisamos saber:
+Testar manualmente o contrato pelo código/uso atual para:
 
-request:
-- attendance_id
-- items
-- product
-- quantity
-- modifiers
-- notes
-- idempotency_key
-
-response:
-- código/mensagem/campos de validação reais.
+A. produto simples sem promoção;
+B. produto com modificador;
+C. produto com observação;
+D. produto que emite ticket;
+E. produto com destino de produção.
 
 IMPORTANTE:
 
-Hoje TableOrderPage faz:
+No MESA 1.8.1 foi corrigido o crash:
 
-SaleItemEditorDialog
-→ depois _TableCartItemDialog
+Decimal(str(None))
 
-Isso é errado/redundante.
+de promotion_discount_value.
 
-Não quero dois editores sequenciais.
+Não desfazer essa correção.
 
-Quantidade, modificadores e observação devem ser tratados em UMA experiência coerente, igual à Venda Rápida.
+Sem promoção deve continuar:
 
-Alterar quantidade depois de selecionar modificadores pode tornar as regras de modificadores inconsistentes e provocar 400.
+promotion = null
+promotion_name = null
+promotion_discount_type = null
+promotion_discount_value = null
+promotion_benefit = 0
 
-Remover esse fluxo duplicado.
+Se o POST ainda retornar HTTP 400:
 
-==================================================
-2. MESMA UI DE VENDA RÁPIDA
-==================================================
+NÃO CHUTAR A CAUSA.
 
-A tela NOVO PEDIDO da Mesa deve visualmente parecer a Venda Rápida porque deve reutilizar a base dela.
+Capturar e informar:
 
-Preservar da Venda Rápida:
+REQUEST JSON EXATO
 
-- barra de pesquisa;
-- categorias;
-- filtro favoritos;
-- scanner;
-- cards;
-- imagem do produto;
-- preço;
-- grid responsivo;
-- carrinho lateral em telas maiores;
-- carrinho mobile;
-- contador de itens;
-- editor de item;
-- modificadores;
-- quantidade;
-- observação;
-- mensagens de disponibilidade;
-- feedback de carregamento.
+RESPONSE JSON EXATA
 
-Na Mesa, trocar a ação final:
+campo que falhou
 
-VENDA RÁPIDA:
-[ PAGAR / FINALIZAR ]
+validação responsável
 
-MESA:
-[ SALVAR E ENVIAR PEDIDO ]
+correção aplicada.
 
-Após salvar:
+O PosApi já foi melhorado para preservar erros DRF.
 
-→ backend cria TableOrder
-→ confirma TableOrderItems
-→ estoque/produção/tickets são processados no backend
-→ Flutter limpa carrinho
-→ volta para TableAttendancePage
-→ recarrega atendimento
-→ mostra pedido novo
+Use a resposta real.
 
 ==================================================
-3. CATEGORIAS
+2. PROTEGER CONTRA PEDIDO DUPLICADO
 ==================================================
 
-Mesa precisa ter o mesmo comportamento de categorias da Venda Rápida.
+Existe risco de múltiplos cliques rápidos em:
 
-Usar categoria efetiva da filial retornada pelo catálogo.
+SALVAR E ENVIAR PEDIDO
 
-Filtros:
+Corrigir.
 
-[ Todos ]
-[ Favoritos ]
-[ Categoria A ]
-[ Categoria B ]
-...
+Regra:
 
-Mesma experiência visual do Venda Rápida.
+se _saving == true
+→ NÃO permitir novo envio.
+
+Adicionar proteção lógica dentro de _save(), e não apenas visual.
+
+Exemplo conceitual:
+
+if (_saving) return;
+
+Além disso:
+
+uma tentativa de envio deve usar UMA chave de idempotência estável.
+
+Não gerar uma chave diferente caso a resposta da mesma tentativa fique incerta.
+
+Fluxo:
+
+criou tentativa
+→ cria idempotency_key
+→ mantém essa key até sucesso ou erro definitivamente conhecido.
+
+Se:
+
+POST orders → sucesso
+
+mas:
+
+GET TableAttendance depois → falhar
+
+NÃO reenviar automaticamente o POST.
+
+O pedido já pode existir.
 
 ==================================================
-4. FAVORITOS
+3. CLIQUE SIMPLES — IGUAL VENDA RÁPIDA
 ==================================================
 
-Mesa deve respeitar:
+Manter o comportamento implementado no 1.8.1:
 
-QuickSaleProduct.favorite
+produto simples
+→ toque
+→ entra diretamente.
 
-e oferecer o mesmo filtro Favoritos.
+SEM modal de confirmação.
 
-Não criar outro conceito de favorito.
+Produto que realmente exige configuração obrigatória
+→ SaleItemEditorDialog.
 
-O favorito pertence ao catálogo/produto e é compartilhado.
+Revisar _requiresConfiguration para garantir coerência com as regras reais de:
 
-==================================================
-5. FOTOS DOS PRODUTOS
-==================================================
+- required;
+- minSelections;
+- minTotalQuantity;
+- requiredQuantity.
 
-Mesa deve utilizar:
-
-QuickSaleProduct.imageUrl
-
-e renderizar exatamente com o mesmo componente/padrão da Venda Rápida.
-
-Não criar card simplificado sem foto.
-
-Fallback visual também deve ser o mesmo.
+Não abrir modal desnecessariamente.
 
 ==================================================
-6. ESTOQUE — MESMA REGRA DA VENDA RÁPIDA
+4. MESCLAR PRODUTOS IGUAIS NO CARRINHO
 ==================================================
 
-A configuração existente do Backoffice/POS deve valer para Mesa.
+Mesa ainda faz:
 
-Hoje o backend possui:
+_cart.add(item)
 
-effective_settings(device)
-→ show_out_of_stock_products
+para todo toque.
 
-Venda Rápida usa:
+Isso produz:
 
-_visible_pos_catalog()
+1x Coca
+1x Coca
+1x Coca
 
-que:
+Quero o comportamento operacional aprovado da Venda Rápida:
 
-se show_out_of_stock_products = true
-→ produto aparece, mas indisponível quando aplicável
+3x Coca
 
-se false
-→ produto sem estoque não aparece
+quando forem itens equivalentes.
 
-O TableCatalog atualmente precisa ser revisado porque não está usando exatamente essa filtragem.
+Itens podem ser mesclados quando:
 
-Mesa precisa respeitar a MESMA configuração.
+- mesmo produto;
+- mesmos modificadores;
+- mesma observação;
+- mesmas condições relevantes.
 
-Mas deve usar:
+Produto simples sem modificadores/observação:
+
+tap Coca
+tap Coca
+tap Coca
+
+→ uma linha
+3x Coca.
+
+NÃO mesclar itens diferentes semanticamente.
+
+Exemplo:
+
+1x Hambúrguer + Bacon
+1x Hambúrguer + Cheddar
+
+continuam separados.
+
+Criar essa lógica NA MESA.
+
+NÃO alterar QuickSalePage.
+
+==================================================
+5. PRESSIONAR — ADICIONAR EM LOTE
+==================================================
+
+Manter:
+
+long press
+→ BatchQuantityDialog.
+
+Mas corrigir a diferença atual.
+
+Venda Rápida aprovada passa por editor quando o produto possui modificadores.
+
+Na Mesa:
+
+se produto possuir QUALQUER grupo de modificadores relevante
+→ após escolher quantidade, permitir configurar modificadores.
+
+Não considerar apenas modificadores obrigatórios.
+
+Exemplo:
+
+pressionar Gin
+→ quantidade 5
+→ produto possui adicional opcional
+→ editor pode ser utilizado para configurar o lote.
+
+Preservar coerência de quantidade/modificadores.
+
+==================================================
+6. ESTOQUE — CRIAR PREFLIGHT PARA TABLE
+==================================================
+
+Hoje o catálogo já usa:
 
 SalesChannel.TABLE
 
-e não COUNTER.
+e respeita:
 
-Resultado esperado:
+show_out_of_stock_products.
 
-CONFIG:
-mostrar produto sem estoque = false
-→ não aparece na Mesa.
+Preservar isso.
 
-CONFIG:
-mostrar produto sem estoque = true
-→ aparece desabilitado
-→ ao tocar:
-   "Este produto está sem estoque no momento."
+Mas ainda falta o equivalente ao preflight da Venda Rápida.
 
-Além disso, o carrinho deve validar disponibilidade antes de salvar, reaproveitando o mesmo padrão de UX do Venda Rápida.
+Precisamos validar:
 
-Não inventar cálculo de estoque no Flutter.
+- quantidade;
+- produto;
+- composição;
+- modificadores;
+- estoque relacionado;
 
-Backend continua fonte de verdade.
+ANTES de consolidar alterações relevantes no carrinho/enviar pedido.
 
-Se for necessário criar um endpoint de stock availability específico para TABLE, faça-o reutilizando:
+NÃO fazer cálculo de estoque no Flutter.
+
+Backend é a fonte da verdade.
+
+Criar/reutilizar serviço backend usando o motor canônico:
 
 assess_sale_stock_availability
-ou serviço canônico equivalente
 
-com:
+ou equivalente existente,
 
-channel = TABLE.
+MAS COM:
 
-NÃO use o endpoint COUNTER da Venda Rápida para Mesa se isso ignorar disponibilidade específica do canal.
+channel = SalesChannel.TABLE
 
-==================================================
-7. PESQUISA
-==================================================
-
-Corrigir o bug atual.
-
-Flutter Mesa hoje envia:
-
-?q=
-
-mas POSTableCatalogView lê:
-
-?search=
-
-Padronizar.
-
-Idealmente utilizar a mesma convenção do catálogo do Venda Rápida:
-
-search
-
-Busca deve funcionar por:
-
-- nome;
-- código interno;
-- código de barras;
-
-conforme comportamento canônico já existente.
-
-==================================================
-8. SCANNER / CÓDIGO DE BARRAS
-==================================================
-
-Mesa deve ter o mesmo botão e experiência do scanner da Venda Rápida.
-
-Reutilizar:
-
-ProductBarcodeScannerPage
-
-e o mesmo fluxo visual.
-
-IMPORTANTE:
-
-não usar cegamente:
-
-quickSaleBarcode()
-
-se esse endpoint:
-
-- exige sales.create;
-- usa SalesChannel.COUNTER.
-
-Mesa precisa funcionar para operador que possua:
+e permissão:
 
 tables.add_items
 
-mesmo que não tenha:
+NÃO exigir:
 
-sales.create.
+sales.create
 
-Criar/reutilizar contrato próprio para TABLE.
+para operador de Mesa.
 
-Exemplo aceitável:
+Pode criar endpoint específico, por exemplo:
 
-GET tables/catalog/barcode/<barcode>/
+POST /api/v1/pos/tables/availability/
 
-ou equivalente.
+ou nome equivalente consistente.
 
-O produto localizado precisa ser validado em:
+Payload deve trabalhar com itens da Mesa.
 
-SalesChannel.TABLE
+Flutter:
 
-e respeitar estoque/configuração.
+adicionar/editar/lote
+→ consulta disponibilidade quando necessário
+→ se insuficiente:
+   mensagem clara
+   não consolidar alteração inválida.
+
+Exemplo:
+
+"Você tentou adicionar 10 unidades, mas há somente 2 disponíveis."
+
+Preservar configuração:
+
+show_out_of_stock_products = false
+→ produto indisponível não aparece.
+
+show_out_of_stock_products = true
+→ produto aparece indisponível;
+→ toque informa falta de estoque.
 
 ==================================================
-9. CLIENTE NA MESA
+7. QUANTIDADES FRACIONADAS
 ==================================================
 
-Na Mesa quero:
+O contador atual usa .round().
 
-- visualizar cliente;
-- procurar cliente;
-- adicionar cliente;
-- trocar cliente;
-- remover cliente;
-- criar cliente, respeitando permissões existentes.
+Isso não pode distorcer produto fracionado.
 
-Reutilizar a mesma UI e APIs de pesquisa/criação do Venda Rápida sempre que forem genéricas.
+Não transformar:
 
-Permissões continuam sendo:
+0,500 kg → 1 item
+1,600 kg → 2 itens
+
+como se fossem unidades físicas inteiras.
+
+Definir comportamento coerente para a barra/resumo.
+
+Para produtos UNIT:
+pode somar quantidade inteira.
+
+Para KG/L/etc:
+não use round() para representar quantidade vendida.
+
+Se o indicador da barra for "linhas/produtos", use quantidade de linhas.
+
+Se for "itens", mantenha semântica adequada.
+
+Não inventar uma soma incorreta.
+
+==================================================
+8. RESUMO DO PEDIDO — MOBILE
+==================================================
+
+Manter o padrão:
+
+[ X itens ]                  [ VER RESUMO ]
+
+Ao tocar:
+
+RESUMO DO PEDIDO • MESA XX
+
+Precisa mostrar de forma completa:
+
+2x Hambúrguer
+   + Bacon
+   + Cheddar
+   Obs: sem cebola
+   R$ XX,XX
+
+6x Heineken
+   R$ XX,XX
+
+Permitir:
+
+- editar;
+- remover;
+- alterar quantidade;
+- modificadores;
+- observação.
+
+No final:
+
+[ SALVAR E ENVIAR PEDIDO ]
+
+Não é pagamento.
+
+==================================================
+9. RESUMO DESKTOP/TABLET
+==================================================
+
+Layout:
+
+CATÁLOGO | RESUMO DO PEDIDO
+
+Manter identidade da Venda Rápida.
+
+O painel da direita deve mostrar:
+
+- produto;
+- quantidade;
+- modificadores;
+- observação;
+- valor;
+- editar;
+- excluir.
+
+E:
+
+SALVAR E ENVIAR PEDIDO
+
+Não colocar checkout/pagamentos.
+
+==================================================
+10. TOTAL DO PEDIDO
+==================================================
+
+Se houver total provisório no carrinho antes de enviar:
+
+pode ser usado somente para UX.
+
+NÃO considerar cálculo Flutter como fonte financeira oficial.
+
+Depois do pedido ser salvo:
+
+valores oficiais vêm de:
+
+table_summary / backend.
+
+Taxa, promoções, descontos e regras financeiras são backend.
+
+==================================================
+11. HISTÓRICO DE PEDIDOS DA MESA
+==================================================
+
+TableAttendancePage atual mostra informação simplificada.
+
+Melhorar.
+
+Quero:
+
+PEDIDO #1058
+14:32
+Operador: João
+
+2x Hambúrguer
+   + Bacon
+   + Cheddar
+   Obs: sem cebola
+
+1x Coca-Cola
+
+Status: CONFIRMADO
+
+O backend possui TableOrder.
+
+Não quero continuar dependendo apenas de:
+
+lista plana de TableOrderItem
+→ Flutter agrupa por order_id
+
+se isso impedir metadados do pedido.
+
+Revisar contrato do detalhe da TableAttendance.
+
+Preferência:
+
+orders: [
+  {
+    id,
+    status,
+    created_at,
+    created_by,
+    created_by_name,
+    items: [...]
+  }
+]
+
+Não quebrar consumidores existentes sem necessidade.
+
+Flutter TableOrder deve representar os metadados reais.
+
+==================================================
+12. CLIENTE DA MESA
+==================================================
+
+Implementar no TableAttendancePage:
+
+CLIENTE
+[ Nenhum cliente ]
+
+ou:
+
+CLIENTE
+João da Silva
+(21) ...
+
+Ações:
+
+- VER;
+- PESQUISAR;
+- ADICIONAR;
+- TROCAR;
+- REMOVER.
+
+Reutilizar APIs/modelos genéricos já existentes do POS para clientes.
+
+Permissões existentes devem continuar sendo respeitadas:
 
 customers.view
 customers.add
 customers.change
 
-Não criar cadastro de cliente específico para Mesa.
+Não criar cadastro de cliente duplicado.
 
-TableAttendance deve ser o dono do vínculo do cliente.
+O cliente deve ficar vinculado ao:
 
-Se o backend atual só permite informar customer ao ABRIR a Mesa e não existe forma segura de atualizar depois:
+TableAttendance
 
-criar uma operação explícita no backend para atualizar cliente do TableAttendance aberto.
+e não ao pedido individual.
 
-Algo equivalente a:
+Se atualmente só é possível definir cliente ao abrir Mesa:
 
-PATCH/POST table-attendances/<id>/customer/
-
-ações:
-
-- set customer;
-- replace customer;
-- clear customer.
-
-Com:
-
-- tenant/branch isolation;
-- auditoria;
-- permissão adequada;
-- Mesa OPEN obrigatória.
-
-Não fechar/reabrir Mesa para trocar cliente.
-
-==================================================
-10. MODIFICADORES
-==================================================
-
-Reutilizar exatamente o editor e as regras da Venda Rápida.
-
-Não criar outro sistema.
-
-Precisa respeitar:
-
-- grupo obrigatório;
-- min selections;
-- max selections;
-- quantidade por opção;
-- min total quantity;
-- max total quantity;
-- required quantity;
-- preço adicional;
-- regras de estoque de modificadores.
-
-Payload final para Mesa:
-
-{
-  product,
-  quantity,
-  modifiers,
-  notes
-}
-
-O backend continua chamando resolve_modifiers().
-
-==================================================
-11. OBSERVAÇÕES
-==================================================
-
-Mesmo campo/UX do Venda Rápida.
+criar operação backend explícita para atendimento OPEN.
 
 Exemplo:
 
-Hambúrguer
-Obs: sem cebola
+PATCH/POST
+table-attendances/<id>/customer/
 
-Essa observação precisa:
+Suportar:
 
-→ salvar no TableOrderItem;
-→ aparecer na Mesa;
-→ ir para produção/cozinha;
-→ aparecer no ticket/payload quando aplicável.
+set
+replace
+clear
+
+Com:
+
+- tenant isolation;
+- branch isolation;
+- status OPEN;
+- auditoria;
+- RBAC.
+
+Não fechar/reabrir Mesa para alterar cliente.
 
 ==================================================
-12. DESCONTO
+13. DESCONTO DA MESA
 ==================================================
 
-Mesa precisa ter experiência equivalente à Venda Rápida para:
+Implementar contexto financeiro ANTES do pagamento.
 
-- desconto da conta;
-- desconto por item quando fizer sentido;
-- autorização por PIN quando operador não possui permissão direta.
+Precisamos poder:
+
+- aplicar desconto da Mesa;
+- remover desconto;
+- visualizar desconto atual.
+
+Usar motor financeiro canônico existente.
+
+NÃO calcular total no Flutter.
+
+Permissão/autorização deve seguir regra já existente.
 
 Reutilizar:
 
 sales.apply_discount
+
+e fluxo de autorização/PIN existente quando necessário.
+
+Se backend não possui operação explícita para atualizar checkout_discount
+antes do primeiro pagamento:
+
+criar endpoint próprio de checkout context da Mesa.
+
+Exemplo conceitual:
+
+PATCH
+table-attendances/<id>/checkout-context/
+
+{
+  "discount": "20.00"
+}
+
+Backend:
+
+→ valida autorização;
+→ atualiza checkout_discount;
+→ retorna summary atualizado;
+→ audita.
+
+==================================================
+14. DESCONTO POR ITEM
+==================================================
+
+Mesa precisa estar preparada para desconto por item conforme regras existentes.
+
+NÃO criar novo motor.
+
+Usar a mesma regra financeira canônica e permissão:
+
 sales.apply_item_discount
 
-ou os códigos de permissão específicos de Mesa já existentes, se o backend já os separou.
+quando aplicável.
 
 IMPORTANTE:
 
-não duplicar motor financeiro.
+TableOrderItem possui financial_snapshot congelado.
+
+Definir corretamente como desconto posterior ao envio deve funcionar.
+
+Não simplesmente editar financial_snapshot manualmente no Flutter/backend.
+
+Se a arquitetura atual ainda não oferece operação segura para isso:
+
+implementar serviço de domínio explícito.
+
+Preservar auditoria.
+
+==================================================
+15. REMOVER / RESTAURAR TAXA DE SERVIÇO
+==================================================
+
+Implementar na Mesa:
+
+[ REMOVER TAXA ]
+
+e, depois:
+
+[ RESTAURAR TAXA ]
+
+NÃO alterar:
+
+service_fee_rate_snapshot
+
+A alíquota congelada continua a mesma.
+
+A operação deve atuar em:
+
+checkout_service_fee_waived
 
 Backend é fonte da verdade.
 
-Hoje TableAttendance já possui contexto financeiro como:
+Usar autorização quando operador não possuir permissão direta.
 
-checkout_discount
-checkout_service_fee_waived
+Reutilizar regras existentes.
 
-e record_table_payment congela contexto financeiro no primeiro pagamento.
-
-Precisamos de UX coerente ANTES do pagamento.
-
-Se não existir endpoint para alterar/previewar contexto de checkout da Mesa antes do primeiro pagamento:
-
-criar operação explícita para atualizar o contexto financeiro da Mesa aberta e retornar table_summary atualizado.
-
-Não implementar desconto somente visualmente no Flutter.
-
-Não recalcular total no app.
-
-==================================================
-13. REMOVER / RESTAURAR TAXA DE SERVIÇO
-==================================================
-
-Assim como Venda Rápida:
-
-- remover taxa;
-- restaurar taxa;
-- exigir autorização quando necessário.
-
-O backend já possui regra financeira canônica.
-
-A Mesa deve somente executar operação autorizada e mostrar resultado do backend.
-
-Preservar:
-
-service_fee_rate_snapshot
-
-da Mesa.
-
-Remover a taxa NÃO significa alterar a alíquota congelada.
-
-Significa:
-
-checkout_service_fee_waived = true
-
-Restaurar:
-
-checkout_service_fee_waived = false
-
-conforme regras atuais.
-
-==================================================
-14. PEDIDOS JÁ SALVOS NA MESA
-==================================================
-
-TableAttendancePage precisa mostrar claramente:
-
-PEDIDO #123
-hora
-operador se disponível
-
-itens:
-2x Heineken
-1x Hambúrguer
-   + Bacon
-   + Cheddar
-   Obs: sem cebola
-
-status.
-
-Não misturar os pedidos antigos no carrinho do pedido novo.
-
-Carrinho é apenas o pedido ainda não enviado.
-
-Depois de:
-
-SALVAR E ENVIAR
-
-ele vira pedido histórico/confirmado da Mesa.
-
-==================================================
-15. CANCELAR ITEM DA MESA
-==================================================
-
-Adicionar ação no item confirmado:
-
-CANCELAR ITEM
-
-Exigir:
-
-- permissão tables.cancel_items;
-- motivo do cancelamento;
-- confirmação visual.
-
-Usar endpoint existente de cancelamento do TableOrderItem.
-
-O backend já possui:
-
-cancel_table_item()
-
-Ele:
-
-- valida Mesa aberta;
-- bloqueia item financeiramente alocado quando necessário;
-- gera movimento reverso de estoque;
-- cria aviso de cancelamento da produção;
-- cancela ticket;
-- audita.
-
-NÃO reproduzir isso no Flutter.
-
-Flutter apenas manda:
-
-item_id
-reason
-idempotency_key
-
-e recarrega Mesa.
-
-==================================================
-16. CANCELAMENTO DEVE IMPRIMIR NA COZINHA
-==================================================
+Retornar summary recalculado pelo backend.
 
 IMPORTANTE:
 
-O backend JÁ possui:
-
-create_table_cancellation_jobs()
-
-Esse serviço:
-
-- encontra ProductionJob NEW do TableOrderItem;
-- cria ProductionJob CANCEL;
-- usa as impressoras que receberam o pedido original;
-- cria PrintJob de cancelamento;
-- envia payload com:
-  event = CANCEL
-  mesa
-  item
-  modificadores
-  observação
-  cancellation_reason
-
-PRESERVAR ESSA ARQUITETURA.
-
-Portanto:
-
-cancelar item no POS
-→ backend cancel_table_item
-→ create_table_cancellation_jobs
-→ CANCELAMENTO vai para mesma cozinha/setor/impressora que recebeu o item.
-
-NÃO imprimir cancelamento diretamente pelo Flutter.
+se já existir pagamento e o contexto financeiro estiver congelado,
+respeitar as regras atuais e bloquear alteração incompatível.
 
 ==================================================
-17. CANCELAR PEDIDO INTEIRO
+16. CANCELAR ITEM ENVIADO
 ==================================================
 
-Quero também:
+Adicionar na TableAttendancePage:
 
-CANCELAR PEDIDO
+CANCELAR ITEM
+
+Somente para item elegível.
+
+Exigir:
+
+tables.cancel_items
+
+Fluxo:
+
+operador toca cancelar
+→ confirmação
+→ motivo obrigatório
+→ POST backend
+→ refresh da Mesa.
+
+Usar serviço existente:
+
+cancel_table_item()
+
+NÃO reproduzir regras no Flutter.
+
+Backend já:
+
+- estorna estoque;
+- impede cancelamento incompatível com pagamentos;
+- cancela ticket;
+- gera ProductionJob CANCEL;
+- gera PrintJob de cancelamento;
+- audita.
+
+Mostrar mensagem de erro real quando backend bloquear.
+
+==================================================
+17. IMPRESSÃO DE CANCELAMENTO NA COZINHA
+==================================================
+
+PRESERVAR O QUE JÁ EXISTE.
+
+Hoje:
+
+cancel_table_item()
+→ create_table_cancellation_jobs()
+
+Esse fluxo encontra ProductionJob NEW original
+e cria CANCEL nas impressoras que receberam o pedido original.
+
+NÃO imprimir diretamente pelo Flutter.
+
+NÃO criar segunda arquitetura de cancelamento.
+
+Apenas garantir que a UI chama o backend correto.
+
+==================================================
+18. CANCELAR PEDIDO INTEIRO
+==================================================
+
+Hoje existe cancelamento de ITEM, mas não existe operação atômica de TableOrder.
+
+Implementar.
+
+UI:
+
+PEDIDO #1058
+[ CANCELAR PEDIDO ]
+
+Motivo obrigatório.
+
+Backend:
+
+criar serviço transacional próprio.
 
 Exemplo:
 
-Pedido #1058
-[ CANCELAR PEDIDO ]
-
-Não quero o Flutter disparando N cancelamentos sem atomicidade.
-
-Se backend ainda não possui cancelamento de TableOrder inteiro:
-
-criar serviço próprio e transacional.
-
-Algo equivalente:
-
 cancel_table_order(
     order,
-    reason,
     user,
+    reason,
     idempotency_key
 )
 
-Ele deve:
+Regras:
 
-- exigir Mesa OPEN;
-- validar todos os itens;
-- verificar alocações financeiras;
-- impedir cancelamento se algum item não puder ser cancelado;
-- somente depois cancelar todos;
-- reverter estoque de cada item;
-- gerar ProductionJob CANCEL de cada item;
-- imprimir cancelamentos nos respectivos setores;
-- cancelar tickets;
-- atualizar status do TableOrder;
-- auditar uma operação única;
-- ser idempotente.
+1. TableAttendance deve estar OPEN;
+2. pedido deve pertencer à Mesa/filial;
+3. bloquear se algum item não puder ser cancelado;
+4. verificar pagamentos/alocações;
+5. validar tudo ANTES de cancelar;
+6. depois cancelar todos os itens;
+7. estornar estoque;
+8. cancelar tickets;
+9. criar ProductionJob CANCEL;
+10. gerar PrintJob nas impressoras originais;
+11. atualizar status do TableOrder;
+12. auditar uma única operação;
+13. idempotência obrigatória.
 
-Ou tudo cancela, ou nada cancela.
+ATÔMICO:
 
-NÃO fazer loop ingênuo no Flutter.
+ou todo o pedido é cancelado,
+ou nenhum item é cancelado.
 
-==================================================
-18. NÃO CANCELAR APENAS VISUALMENTE
-==================================================
+NÃO fazer:
 
-Depois do cancelamento:
+Flutter:
+for item in order.items:
+   POST cancel
 
-item/pedido deve aparecer como CANCELADO ou ser separado visualmente.
-
-Não apagar histórico.
-
-O financeiro da Mesa deve ser recalculado pelo backend.
-
-Se pagamento já foi alocado ao item:
-
-backend deve bloquear e orientar:
-
-"Estorne o pagamento alocado ao item antes de cancelá-lo."
-
-Não redistribuir pagamento automaticamente.
+Isso é proibido.
 
 ==================================================
-19. UI/UX EXATAMENTE NO PADRÃO VENDA RÁPIDA
+19. STATUS VISUAL DE CANCELAMENTO
 ==================================================
 
-Não quero uma tela genérica Flutter com:
+Não apagar item/pedido cancelado do histórico.
 
-Card
-GridView
-TextField
+Mostrar:
 
-montados separadamente.
+CANCELADO
 
-A aparência e interação precisam nascer dos componentes do Venda Rápida.
+Motivo:
+"Cliente desistiu"
 
-Na prática quero abrir:
+Itens cancelados podem ficar visualmente diferenciados.
 
-Mesa 12
-→ NOVO PEDIDO
+O histórico precisa continuar auditável.
 
-e sentir que estou na mesma tela do Venda Rápida.
-
-Diferenças:
-
-título:
-Novo pedido • Mesa 12
-
-ação final:
-SALVAR E ENVIAR PEDIDO
-
-e não:
-FINALIZAR VENDA.
-
-O resto da seleção deve ser compartilhado.
+Financeiro da Mesa deve vir recalculado pelo backend.
 
 ==================================================
-20. RESPONSIVIDADE
+20. SOLICITAR CONTA
 ==================================================
 
-Preservar comportamento do Venda Rápida:
+Backend já possui:
 
-TELA GRANDE / TABLET:
-catálogo + carrinho
+request-bill
+clear-bill
 
-MOBILE / STONE:
-catálogo
-+ barra inferior de carrinho
-→ VER CARRINHO
+Adicionar UI na Mesa.
 
-Não criar layout exclusivo de Mesa que se comporte diferente.
+Quando não solicitado:
 
-==================================================
-21. CORRIGIR OS DOIS PONTOS BACKEND PENDENTES
-==================================================
+[ SOLICITAR CONTA ]
 
-Aproveitar esta etapa para corrigir SOMENTE os dois bugs pequenos já encontrados:
+Quando solicitado:
 
-A)
+CONTA SOLICITADA
+[ CANCELAR SOLICITAÇÃO ]
 
-Em _confirm_table_item(), quando NÃO existe promoção:
+Respeitar permissão existente.
 
-promotion_discount_value deve permanecer None/null
-
-e NÃO:
-
-"0.00"
-
-Preservar coerência do constraint do SaleItem.
-
-B)
-
-cancel_table_item() cria replacement_preview.
-
-Esse preview precisa usar os snapshots congelados da Mesa:
-
-service_fee_rate_snapshot
-commission_rate_snapshot
-
-para não avaliar cancelamento usando taxa atual da filial.
-
-Não fazer outras refatorações financeiras desnecessárias.
+Atualizar TableAttendance após operação.
 
 ==================================================
-22. /pos/pin
+21. TRANSFERIR ITENS
 ==================================================
 
-Corrigir também o blocker localizado do frontend Next:
+Backend já possui:
 
-/pos/pin
+transfer-items
 
-useSearchParams() precisa ficar sob Suspense boundary conforme Next atual.
+Adicionar UI.
 
-Alteração mínima.
+Fluxo:
 
-Não refatorar frontend inteiro.
+selecionar itens
+→ TRANSFERIR
+→ escolher Mesa destino aberta
+→ confirmar.
+
+Respeitar regras backend:
+
+- mesma filial;
+- destino aberto;
+- item confirmado só integral quando regra atual exigir;
+- pagamento alocado bloqueia transferência;
+- sem redistribuição financeira automática.
+
+Não duplicar regra no Flutter.
 
 ==================================================
-23. NÃO IMPLEMENTAR PAGAMENTOS/SPLITS AINDA
+22. AGRUPAR / SEPARAR MESAS
 ==================================================
 
-Ainda NÃO montar a UI de:
+Agrupamento já existe na tela de Mesas.
 
-- pagar por valor;
-- pagar itens;
-- divisão igual;
-- saldo total.
+Separação existe no controller/backend, mas não está acessível na nova tela.
 
-Primeiro quero o motor/UX de PEDIDOS da Mesa redondo.
+Adicionar ação apropriada quando Mesa fizer parte de grupo:
 
-Depois iremos para:
+[ SEPARAR DO GRUPO ]
 
-MESA 2 — PAGAMENTOS.
+Respeitar:
+
+tables.merge
+
+ou permissão existente apropriada.
+
+Não destruir histórico.
+
+==================================================
+23. /redefinir-senha — CI
+==================================================
+
+Existe blocker independente da Mesa:
+
+frontend:
+/redefinir-senha
+
+useSearchParams()
+sem Suspense.
+
+Corrigir com alteração MÍNIMA seguindo o mesmo padrão já aplicado em /pos/pin.
+
+NÃO refatorar autenticação.
+
+NÃO mexer em outras telas.
+
+Objetivo:
+
+parar de bloquear a pipeline por esse erro.
 
 ==================================================
 24. NÃO ALTERAR ANDROID
@@ -851,80 +947,172 @@ MESA 2 — PAGAMENTOS.
 
 NÃO mexer em:
 
-Gradle
-AGP
-Kotlin
-AndroidManifest
-compileSdk
-targetSdk
-Flutter version
+- Gradle;
+- AGP;
+- Kotlin;
+- compileSdk;
+- targetSdk;
+- AndroidManifest;
+- Flutter SDK/version;
+- configuração de build Android.
 
 ==================================================
-25. NÃO CRIAR NEM EXECUTAR TESTES
+25. NÃO ALTERAR VENDA RÁPIDA
+==================================================
+
+Repito:
+
+NÃO MODIFICAR:
+
+pos/lib/sales/quick_sale_page.dart
+
+A Venda Rápida está aprovada.
+
+Se alguma implementação exigir alteração nela:
+
+PARE.
+
+Encontre outra forma para a Mesa reutilizar o que já está público.
+
+==================================================
+26. NÃO IMPLEMENTAR PAGAMENTOS
+==================================================
+
+Mesmo que o backend já possua:
+
+record_table_payment
+equal split
+payment allocations
+reverse payment
+
+NÃO criar as telas de pagamento agora.
+
+MESA 1.9 termina em:
+
+PEDIDOS + OPERAÇÕES DA MESA.
+
+MESA 2 começa pagamentos.
+
+==================================================
+27. NÃO CRIAR / EXECUTAR TESTES
 ==================================================
 
 NÃO criar testes automatizados.
 
-NÃO alterar testes existentes.
+NÃO modificar testes existentes.
 
 NÃO executar:
 
-flutter test
 python manage.py test
-npm test
 pytest
+flutter test
+npm test
 jest
 vitest
 
 NÃO executar builds completos manualmente.
 
-Pode executar somente checks leves:
+NÃO executar:
+
+flutter build
+npm run build
+docker build
+docker compose build
+
+O GitHub pode executar CI automaticamente após push.
+Isso é separado da execução manual.
+
+==================================================
+28. CHECKS LEVES PERMITIDOS
+==================================================
+
+Pode executar apenas:
 
 flutter analyze
+
 python manage.py check
+
 python manage.py makemigrations --check --dry-run
+
 git diff --check
 
-Se migrations forem necessárias para alguma operação nova, crie somente se realmente necessárias.
+python -m compileall
+se realmente necessário.
 
 ==================================================
-CHECKPOINT
+29. NÃO FAZER ALTERAÇÕES FORA DO ESCOPO
 ==================================================
 
-Depois PARE.
+Não aproveitar para:
 
-Me entregue:
+- cleanup geral;
+- renomear arquivos sem necessidade;
+- mudar arquitetura não relacionada;
+- alterar módulos de Comandas;
+- alterar Venda Rápida;
+- alterar pagamentos;
+- alterar Android;
+- resolver warnings antigos aleatórios;
+- atualizar dependências.
 
-1. causa EXATA encontrada para o HTTP 400 ao salvar pedido;
-2. request que estava sendo enviado;
-3. response de validação do backend;
-4. arquivos alterados;
-5. quais componentes da Venda Rápida passaram a ser compartilhados;
-6. confirmação de que não existe uma segunda UI paralela de catálogo/carrinho;
-7. categorias na Mesa;
-8. favoritos;
-9. busca;
-10. scanner;
-11. fotos;
-12. comportamento de produto sem estoque;
-13. configuração show_out_of_stock_products respeitada;
-14. cliente na Mesa;
-15. modificadores;
-16. observações;
-17. descontos;
-18. remoção/restauração da taxa;
-19. cancelamento de item;
-20. cancelamento de pedido;
-21. confirmação de que cancelamento gera PrintJob para a cozinha/setor original;
-22. correção do snapshot sem promoção;
-23. correção do preview de cancelamento;
-24. correção de /pos/pin;
-25. resultado do flutter analyze;
-26. outros checks leves;
-27. confirmação de que NÃO executou testes;
-28. confirmação de que NÃO executou builds manuais;
-29. confirmação de que NÃO alterou Android/Gradle/Kotlin.
+==================================================
+CHECKPOINT OBRIGATÓRIO
+==================================================
 
-Depois PARE.
+Quando terminar, PARE.
 
-NÃO avance para pagamentos/splits ainda.
+Não avance para MESA 2.
+
+Me entregue objetivamente:
+
+1. HEAD inicial usado;
+2. arquivos alterados;
+3. resultado real do SALVAR E ENVIAR PEDIDO;
+4. se houve HTTP 400:
+   - request exata;
+   - response exata;
+   - causa exata;
+   - correção;
+5. como ficou proteção contra duplo envio;
+6. como a idempotency_key do pedido é mantida;
+7. comportamento do toque simples;
+8. comportamento do long press/lote;
+9. como produtos iguais são mesclados;
+10. como itens com modificadores diferentes permanecem separados;
+11. endpoint/preflight TABLE de estoque;
+12. confirmação de SalesChannel.TABLE;
+13. comportamento show_out_of_stock_products;
+14. comportamento para quantidade fracionada;
+15. UI mobile VER RESUMO;
+16. UI desktop/tablet;
+17. conteúdo completo do resumo;
+18. estrutura nova do histórico de TableOrder;
+19. cliente da Mesa;
+20. permissões de cliente;
+21. desconto da Mesa;
+22. desconto por item;
+23. remover/restaurar taxa;
+24. autorizações/PIN;
+25. cancelar item;
+26. cancelar pedido inteiro;
+27. confirmação de atomicidade do cancelamento de pedido;
+28. confirmação de que cancelamento gera PrintJob na cozinha original;
+29. solicitar/cancelar solicitação de conta;
+30. transferência de itens;
+31. separação de Mesa agrupada;
+32. correção de /redefinir-senha;
+33. resultado do flutter analyze;
+34. resultado do python manage.py check;
+35. resultado do makemigrations --check --dry-run;
+36. resultado do git diff --check;
+37. confirmação de que NÃO criou testes;
+38. confirmação de que NÃO executou testes;
+39. confirmação de que NÃO executou builds manuais;
+40. confirmação de que NÃO alterou Android/Gradle/Kotlin;
+41. confirmação de que NÃO modificou quick_sale_page.dart;
+42. confirmação de que NÃO implementou pagamentos/splits.
+
+Depois PARE e aguarde revisão.
+
+NÃO considere a tarefa concluída apenas porque "compila".
+A conclusão será avaliada pelo estado real do GitHub.

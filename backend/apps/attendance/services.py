@@ -1,5 +1,6 @@
 import hashlib
 import json
+import uuid
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.core.exceptions import ValidationError
@@ -1070,7 +1071,7 @@ def _confirm_table_item(*, item, attendance, user, idempotency_key):
 
 
 @transaction.atomic
-def cancel_table_item(*, item, user, reason, idempotency_key, audit_metadata=None):
+def cancel_table_item(*, item, user, reason, idempotency_key, audit_metadata=None, audit=True):
     from apps.inventory.models import Stock, StockMovement
     from apps.production.services import cancel_table_ticket_for_item, create_table_cancellation_jobs
     from .models import TableAttendanceStatus, TablePayment
@@ -1117,10 +1118,91 @@ def cancel_table_item(*, item, user, reason, idempotency_key, audit_metadata=Non
     item.save(update_fields=('status', 'cancelled_at', 'cancelled_by', 'cancellation_reason', 'updated_at'))
     operation.result = {'item_id': item.pk}
     operation.save(update_fields=('result', 'updated_at'))
-    audit_log(actor=user, action='table_order_item.cancel', obj=item, company=attendance.company, branch=attendance.branch,
-              after={'attendance_id': attendance.pk, 'reason': item.cancellation_reason},
-              metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
+    if audit:
+        audit_log(actor=user, action='table_order_item.cancel', obj=item, company=attendance.company, branch=attendance.branch,
+                  after={'attendance_id': attendance.pk, 'reason': item.cancellation_reason},
+                  metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
     return item, False
+
+
+@transaction.atomic
+def cancel_table_order(*, order, user, reason, idempotency_key, audit_metadata=None):
+    from .models import TableAttendanceStatus, TableOrder, TableOrderItem, TablePaymentAllocation
+
+    order = TableOrder.objects.select_for_update().select_related('attendance').get(pk=order.pk)
+    attendance = TableAttendance.objects.select_for_update().get(pk=order.attendance_id)
+    if attendance.status != TableAttendanceStatus.OPEN:
+        raise AttendanceConflict('table_closed', 'O pedido só pode ser cancelado em mesa aberta.')
+    operation, replayed = _operation(
+        branch=attendance.branch,
+        operation_type=AttendanceOperationType.TABLE_CANCEL_ORDER,
+        idempotency_key=idempotency_key,
+        payload={'order': order.pk, 'reason': reason},
+    )
+    if replayed:
+        return order, True
+    items = list(TableOrderItem.objects.select_for_update().filter(order=order).order_by('pk'))
+    if not items or order.status == AttendanceOrderStatus.CANCELLED or any(
+        item.status != AttendanceOrderItemStatus.CONFIRMED for item in items
+    ):
+        raise AttendanceConflict('table_order_not_cancellable', 'O pedido possui itens que não podem mais ser cancelados integralmente.')
+    if TablePaymentAllocation.objects.filter(
+        item__in=items, payment__status=AttendancePaymentStatus.APPLIED,
+        payment__reversal__isnull=True,
+    ).exists():
+        raise AttendanceConflict('table_order_allocated_cancel_unsupported', 'Estorne o pagamento alocado aos itens antes de cancelar o pedido.')
+    _preview, paid, _remaining, _base = table_financial_state(attendance, lock=True)
+    replacement_items = list(TableOrderItem.objects.select_for_update().filter(
+        order__attendance=attendance, status=AttendanceOrderItemStatus.CONFIRMED,
+    ).exclude(pk__in=[item.pk for item in items]).select_related('product__category').order_by('id'))
+    replacement_preview = calculate_table_preview(
+        branch=attendance.branch, order_items=replacement_items,
+        discount=attendance.checkout_discount,
+        service_fee_waived=attendance.checkout_service_fee_waived,
+        lock=True,
+        service_fee_rate_snapshot=attendance.service_fee_rate_snapshot,
+        commission_rate_snapshot=attendance.commission_rate_snapshot,
+    )
+    if replacement_preview['total'] < paid:
+        raise AttendanceConflict('table_paid_exceeds_new_total', 'Estorne ou devolva pagamentos antes de cancelar este pedido.')
+    for item in items:
+        cancel_table_item(
+            item=item, user=user, reason=reason,
+            idempotency_key=uuid.uuid5(idempotency_key, f'table-order-item:{item.pk}'),
+            audit_metadata=audit_metadata, audit=False,
+        )
+    order.status = AttendanceOrderStatus.CANCELLED
+    order.save(update_fields=('status', 'updated_at'))
+    operation.result = {'order_id': order.pk, 'item_ids': [item.pk for item in items]}
+    operation.save(update_fields=('result', 'updated_at'))
+    audit_log(actor=user, action='table_order.cancel', obj=order, company=attendance.company,
+              branch=attendance.branch, after={'attendance_id': attendance.pk, 'reason': (reason or '').strip()},
+              metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
+    return order, False
+
+
+@transaction.atomic
+def set_table_customer(*, attendance, user, customer_id, idempotency_key, audit_metadata=None):
+    attendance = TableAttendance.objects.select_for_update().get(pk=attendance.pk)
+    if attendance.status != TableAttendanceStatus.OPEN:
+        raise AttendanceConflict('table_closed', 'A mesa deve estar aberta.')
+    operation, replayed = _operation(
+        branch=attendance.branch,
+        operation_type=AttendanceOperationType.TABLE_SET_CUSTOMER,
+        idempotency_key=idempotency_key,
+        payload={'attendance': attendance.pk, 'customer': customer_id},
+    )
+    if replayed:
+        return attendance, True
+    customer = _customer(attendance.branch, customer_id)
+    attendance.customer = customer
+    attendance.save(update_fields=('customer', 'updated_at'))
+    operation.result = {'attendance_id': attendance.pk, 'customer_id': customer.pk if customer else None}
+    operation.save(update_fields=('result', 'updated_at'))
+    audit_log(actor=user, action='table_attendance.customer.set', obj=attendance,
+              company=attendance.company, branch=attendance.branch, after=operation.result,
+              metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
+    return attendance, False
 
 
 @transaction.atomic

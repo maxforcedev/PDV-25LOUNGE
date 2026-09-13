@@ -90,11 +90,46 @@ abstract class PosApi {
   });
   Future<TableAttendance> tableAttendanceDetail(int attendanceId);
   Future<List<QuickSaleProduct>> tableCatalog({String? search});
+  Future<QuickSaleStockAvailability> tableStockAvailability({
+    required List<Map<String, dynamic>> items,
+  }) =>
+      throw UnimplementedError();
   Future<List<TableOrderItem>> saveTableOrder({
     required int attendanceId,
     required List<Map<String, dynamic>> items,
     required String idempotencyKey,
   });
+  Future<TableOrderItem> cancelTableOrderItem({
+    required int itemId,
+    required String reason,
+    required String idempotencyKey,
+  }) =>
+      throw UnimplementedError();
+  Future<TableOrder> cancelTableOrder({
+    required int orderId,
+    required String reason,
+    required String idempotencyKey,
+  }) =>
+      throw UnimplementedError();
+  Future<TableAttendance> setTableBillRequested({
+    required int attendanceId,
+    required bool requested,
+    required String idempotencyKey,
+  }) =>
+      throw UnimplementedError();
+  Future<TableAttendance> setTableAttendanceCustomer({
+    required int attendanceId,
+    required int? customerId,
+    required String idempotencyKey,
+  }) =>
+      throw UnimplementedError();
+  Future<TableAttendance> transferTableItems({
+    required int attendanceId,
+    required int destinationAttendanceId,
+    required List<Map<String, dynamic>> items,
+    required String idempotencyKey,
+  }) =>
+      throw UnimplementedError();
   Future<List<AttendanceCommand>> attendanceCommands({String? query});
   Future<List<QuickSaleProduct>> attendanceCatalog({String? search});
   Future<QuickSaleCheckoutOptions> attendanceCheckoutOptions();
@@ -597,6 +632,16 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   }
 
   @override
+  Future<QuickSaleStockAvailability> tableStockAvailability({
+    required List<Map<String, dynamic>> items,
+  }) async =>
+      QuickSaleStockAvailability.fromJson(await _request(
+        'POST',
+        'tables/availability/',
+        body: {'items': items},
+      ));
+
+  @override
   Future<List<TableOrderItem>> saveTableOrder({
     required int attendanceId,
     required List<Map<String, dynamic>> items,
@@ -609,6 +654,73 @@ class HttpPosApi implements PosApi, PosCredentialCache {
         .cast<Map<String, dynamic>>()
         .map(TableOrderItem.fromJson)
         .toList(growable: false);
+  }
+
+  @override
+  Future<TableOrderItem> cancelTableOrderItem({
+    required int itemId,
+    required String reason,
+    required String idempotencyKey,
+  }) async =>
+      TableOrderItem.fromJson(await _request(
+        'POST',
+        'table-order-items/$itemId/cancel/',
+        body: {'reason': reason, 'idempotency_key': idempotencyKey},
+      ));
+
+  @override
+  Future<TableOrder> cancelTableOrder({
+    required int orderId,
+    required String reason,
+    required String idempotencyKey,
+  }) async =>
+      TableOrder.fromJson(await _request(
+        'POST',
+        'table-orders/$orderId/cancel/',
+        body: {'reason': reason, 'idempotency_key': idempotencyKey},
+      ));
+
+  @override
+  Future<TableAttendance> setTableBillRequested({
+    required int attendanceId,
+    required bool requested,
+    required String idempotencyKey,
+  }) async =>
+      TableAttendance.fromJson(await _request(
+        'POST',
+        'table-attendances/$attendanceId/${requested ? 'request-bill' : 'clear-bill'}/',
+        body: {'idempotency_key': idempotencyKey},
+      ));
+
+  @override
+  Future<TableAttendance> setTableAttendanceCustomer({
+    required int attendanceId,
+    required int? customerId,
+    required String idempotencyKey,
+  }) async =>
+      TableAttendance.fromJson(await _request(
+        'POST',
+        'table-attendances/$attendanceId/customer/',
+        body: {'customer': customerId, 'idempotency_key': idempotencyKey},
+      ));
+
+  @override
+  Future<TableAttendance> transferTableItems({
+    required int attendanceId,
+    required int destinationAttendanceId,
+    required List<Map<String, dynamic>> items,
+    required String idempotencyKey,
+  }) async {
+    final payload = await _request(
+      'POST',
+      'table-attendances/$attendanceId/transfer-items/',
+      body: {
+        'destination_attendance': destinationAttendanceId,
+        'items': items,
+        'idempotency_key': idempotencyKey,
+      },
+    );
+    return TableAttendance.fromJson(payload['attendance'] as Map<String, dynamic>);
   }
 
   @override

@@ -2,12 +2,12 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { KeyRound } from "lucide-react";
 import { Alert, Button, Field, Input } from "@/components/ui";
 import { ApiError, http } from "@/lib/http";
 
-export default function ResetPasswordPage() {
+function ResetPasswordContent() {
   const params = useSearchParams();
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -60,4 +60,8 @@ export default function ResetPasswordPage() {
       </div>
     </main>
   );
+}
+
+export default function ResetPasswordPage() {
+  return <Suspense fallback={<main className="min-h-screen bg-canvas" />}><ResetPasswordContent /></Suspense>;
 }
