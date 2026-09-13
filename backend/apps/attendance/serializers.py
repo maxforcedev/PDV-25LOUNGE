@@ -218,11 +218,13 @@ class TablePaymentAllocationSerializer(serializers.ModelSerializer):
 
 class TablePaymentSerializer(serializers.ModelSerializer):
     allocations = TablePaymentAllocationSerializer(many=True, read_only=True)
+    payment_method_name = serializers.CharField(source='payment_method.name', read_only=True)
+    payment_method_code = serializers.CharField(source='payment_method.code', read_only=True)
 
     class Meta:
         model = TablePayment
         fields = (
-            'id', 'attendance', 'payment_method', 'amount', 'received_amount',
+            'id', 'attendance', 'payment_method', 'payment_method_name', 'payment_method_code', 'amount', 'received_amount',
             'change_amount', 'cash_session', 'operator', 'status', 'idempotency_key',
             'reversal_of', 'reversal_reason', 'allocations', 'created_at',
         )

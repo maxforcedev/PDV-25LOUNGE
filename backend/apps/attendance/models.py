@@ -236,6 +236,7 @@ class AttendancePayment(BaseModel):
     operator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='attendance_payments')
     status = models.CharField(max_length=10, choices=AttendancePaymentStatus.choices, default=AttendancePaymentStatus.APPLIED)
     idempotency_key = models.UUIDField(default=uuid.uuid4)
+    request_fingerprint = models.CharField(max_length=64, editable=False, default='')
     reversal_of = models.OneToOneField('self', on_delete=models.PROTECT, related_name='reversal', null=True, blank=True)
     reversal_reason = models.TextField(blank=True, default='')
 
@@ -294,6 +295,7 @@ class TableAttendance(BaseModel):
     notes = models.TextField(blank=True, default='')
     status = models.CharField(max_length=10, choices=TableAttendanceStatus.choices, default=TableAttendanceStatus.OPEN)
     opened_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='opened_table_attendances')
+    seller_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='sold_table_attendances', blank=True, null=True)
     closed_at = models.DateTimeField(blank=True, null=True)
     closed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='closed_table_attendances', blank=True, null=True)
     sale = models.OneToOneField('sales.Sale', on_delete=models.PROTECT, related_name='table_attendance', blank=True, null=True)
