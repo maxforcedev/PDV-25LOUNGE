@@ -19,7 +19,8 @@ from apps.products.models import Product, ProductBranchConfig, SalesChannel, Uni
 from apps.sales.models import OperationType, PaymentMethod, PaymentMethodCode
 from apps.sales.services import (
     CENT, _discount_approver, _reconcile_modifier_component_costs, _service_fee_waiver,
-    branch_cost_map, branch_price_map, calculate_command_preview, finalize_sale,
+    branch_cost_map, branch_price_map, calculate_command_preview, calculate_order_items_preview,
+    calculate_table_preview, finalize_sale,
     resolve_modifiers, stock_requirements_for_product, strict_decimal,
 )
 
@@ -870,7 +871,7 @@ def table_financial_state(attendance, *, lock=False, discount=None, service_fee_
     ).select_related('product__category').order_by('id')
     if lock:
         items = items.select_for_update()
-    preview = calculate_command_preview(
+    preview = calculate_table_preview(
         branch=attendance.branch, order_items=list(items),
         discount=attendance.checkout_discount if discount is None else discount,
         service_fee_waived=(
@@ -1023,11 +1024,31 @@ def _confirm_table_item(*, item, attendance, user, idempotency_key):
             content_quantity=-contents[product_id] if product_id in contents else None)
     snapshot = {'quantity': item.quantity, 'component_cost_snapshot': component_snapshots, 'modifier_snapshot': item.modifier_snapshot}
     _reconcile_modifier_component_costs([snapshot], stocks)
+    preview = calculate_order_items_preview(
+        branch=attendance.branch, order_items=[item], channel=SalesChannel.TABLE,
+        service_fee_waived=False, lock=True, include_internal_snapshots=True,
+    )
+    financial = preview['_snapshots'][0]
+    item.financial_snapshot = {
+        'promotion': financial['promotion'],
+        'promotion_name': financial['promotion_name'],
+        'promotion_discount_type': financial['promotion_discount_type'],
+        'promotion_discount_value': str(financial['promotion_discount_value'] or Decimal('0.00')),
+        'promotion_benefit': str(financial['promotion_benefit']),
+        'manual_discount_intent': {
+            'type': financial['manual_discount_intent']['type'],
+            'value': str(financial['manual_discount_intent']['value']),
+        },
+        'manual_discount': str(financial['manual_discount']),
+        'net_subtotal': str(financial['net_subtotal']),
+        'participates_in_service_fee': financial['participates_in_service_fee'],
+        'participates_in_commission': financial['participates_in_commission'],
+    }
     item.status = AttendanceOrderItemStatus.CONFIRMED
     item.confirmed_at = timezone.now()
     item.confirmed_by = user
     item.component_cost_snapshot = snapshot['component_cost_snapshot']
-    item.save(update_fields=('status', 'confirmed_at', 'confirmed_by', 'component_cost_snapshot', 'updated_at'))
+    item.save(update_fields=('financial_snapshot', 'status', 'confirmed_at', 'confirmed_by', 'component_cost_snapshot', 'updated_at'))
     create_table_production_jobs(item=item, attendance=attendance, user=user, idempotency_key=idempotency_key)
     create_table_order_item_ticket(item=item, attendance=attendance, user=user)
 
@@ -1055,7 +1076,7 @@ def cancel_table_item(*, item, user, reason, idempotency_key, audit_metadata=Non
     remaining_items = list(item.__class__.objects.select_for_update().filter(
         order__attendance=attendance, status=AttendanceOrderItemStatus.CONFIRMED,
     ).exclude(pk=item.pk).select_related('product__category').order_by('id'))
-    replacement_preview = calculate_command_preview(
+    replacement_preview = calculate_table_preview(
         branch=attendance.branch, order_items=remaining_items,
         discount=attendance.checkout_discount,
         service_fee_waived=attendance.checkout_service_fee_waived,

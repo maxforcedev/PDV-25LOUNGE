@@ -952,15 +952,34 @@ def _apply_promotions(operation_type, items, promotions):
 
 def _calculate_sale_financials(*, company, branch, operation_type, snapshots, subtotal,
                                discount, charged_amount, beneficiary_user, seller_user=None,
-                               service_fee_waived=False, lock=False):
+                               service_fee_waived=False, lock=False,
+                               item_financials_frozen=False):
     """Apply the shared financial rules to either live or frozen item snapshots."""
-    promotions = (
-        _eligible_promotions(company, timezone.now(), branch=branch, lock=lock)
-        if operation_type == OperationType.SALE else []
-    )
-    promotion_discount_total, item_discount_total = _apply_promotions(
-        operation_type, snapshots, promotions
-    )
+    if item_financials_frozen:
+        live_items = [
+            item for item in snapshots
+            if not item.get('financial_conditions_frozen', False)
+        ]
+        if live_items:
+            promotions = (
+                _eligible_promotions(company, timezone.now(), branch=branch, lock=lock)
+                if operation_type == OperationType.SALE else []
+            )
+            _apply_promotions(operation_type, live_items, promotions)
+        promotion_discount_total = sum(
+            (item['promotion_benefit'] for item in snapshots), Decimal('0.00'),
+        )
+        item_discount_total = sum(
+            (item['manual_discount'] for item in snapshots), Decimal('0.00'),
+        )
+    else:
+        promotions = (
+            _eligible_promotions(company, timezone.now(), branch=branch, lock=lock)
+            if operation_type == OperationType.SALE else []
+        )
+        promotion_discount_total, item_discount_total = _apply_promotions(
+            operation_type, snapshots, promotions
+        )
     if operation_type == OperationType.CONSUMPTION:
         if discount_intent_is_nonzero(discount):
             raise ValidationError({'discount': 'Consumação não aceita desconto.'})
@@ -1801,7 +1820,7 @@ def _frozen_command_snapshots(order_items, branch):
         category = config.category if config and config.category_id else item.product.category
         item_subtotal = (item.unit_price * item.quantity).quantize(CENT, rounding=ROUND_HALF_UP)
         subtotal += item_subtotal
-        snapshots.append({
+        snapshot = {
             'product_object': item.product,
             'product': item.product_id,
             'quantity': item.quantity,
@@ -1826,24 +1845,45 @@ def _frozen_command_snapshots(order_items, branch):
                 if config else item.product.participates_in_commission
             ),
             'component_cost_snapshot': item.component_cost_snapshot or [],
-        })
+        }
+        financial_snapshot = getattr(item, 'financial_snapshot', None) or {}
+        if financial_snapshot:
+            snapshot.update({
+                'financial_conditions_frozen': True,
+                'category_id_snapshot': item.category_id_snapshot,
+                'category_name_snapshot': item.category_name_snapshot,
+                'promotion': financial_snapshot.get('promotion'),
+                'promotion_name': financial_snapshot.get('promotion_name'),
+                'promotion_discount_type': financial_snapshot.get('promotion_discount_type'),
+                'promotion_discount_value': Decimal(str(financial_snapshot.get('promotion_discount_value', '0.00'))),
+                'promotion_benefit': Decimal(str(financial_snapshot.get('promotion_benefit', '0.00'))),
+                'manual_discount_intent': financial_snapshot.get('manual_discount_intent') or {'type': 'amount', 'value': Decimal('0.00')},
+                'manual_discount': Decimal(str(financial_snapshot.get('manual_discount', '0.00'))),
+                'net_subtotal': Decimal(str(financial_snapshot.get('net_subtotal', item_subtotal))),
+                'participates_in_service_fee': bool(financial_snapshot['participates_in_service_fee']),
+                'participates_in_commission': bool(financial_snapshot['participates_in_commission']),
+            })
+        snapshots.append(snapshot)
     return snapshots, subtotal
 
 
-def calculate_command_preview(*, branch, order_items, discount=Decimal('0.00'),
-                              seller_user=None, service_fee_waived=False, lock=False,
-                              include_internal_snapshots=False):
-    """Calculate a command from its confirmed, immutable item snapshots."""
+def calculate_order_items_preview(*, branch, order_items, discount=Decimal('0.00'),
+                                  seller_user=None, service_fee_waived=False, lock=False,
+                                  include_internal_snapshots=False,
+                                  channel=SalesChannel.COMMAND,
+                                  item_financials_frozen=False):
+    """Calculate immutable ordered items without assigning a command-specific meaning."""
     snapshots, subtotal = _frozen_command_snapshots(order_items, branch)
     financials = _calculate_sale_financials(
         company=branch.company, branch=branch, operation_type=OperationType.SALE,
         snapshots=snapshots, subtotal=subtotal, discount=discount,
         charged_amount=None, beneficiary_user=None, seller_user=seller_user,
         service_fee_waived=service_fee_waived, lock=lock,
+        item_financials_frozen=item_financials_frozen,
     )
     result = {
         'operation_type': OperationType.SALE,
-        'channel': SalesChannel.COMMAND,
+        'channel': channel,
         'items': _preview_items(snapshots),
         'subtotal': subtotal,
         **financials,
@@ -1853,6 +1893,16 @@ def calculate_command_preview(*, branch, order_items, discount=Decimal('0.00'),
     if include_internal_snapshots:
         result['_snapshots'] = snapshots
     return result
+
+
+def calculate_command_preview(**kwargs):
+    return calculate_order_items_preview(channel=SalesChannel.COMMAND, **kwargs)
+
+
+def calculate_table_preview(**kwargs):
+    return calculate_order_items_preview(
+        channel=SalesChannel.TABLE, item_financials_frozen=True, **kwargs,
+    )
 
 
 def stock_requirements_for_product(product, quantity, branch, modifier_snapshot=None):

@@ -354,6 +354,7 @@ class TableOrderItem(BaseModel):
     base_unit_price = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     modifier_unit_total = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     modifier_snapshot = models.JSONField(default=list, blank=True)
+    financial_snapshot = models.JSONField(default=dict, blank=True)
     notes = models.TextField(blank=True, default='')
     unit_cost = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     component_cost_snapshot = models.JSONField(default=list, blank=True)

@@ -489,12 +489,16 @@ def build_session_operational_summary(session, session_sales):
     cash['attendance_cash'] = getattr(session, 'attendance_cash', None)
     if cash['attendance_cash'] is None:
         cash['attendance_cash'] = cash_payment_components(session)['attendance_cash']
+    cash['table_cash'] = getattr(session, 'table_cash', None)
+    if cash['table_cash'] is None:
+        cash['table_cash'] = cash_payment_components(session)['table_cash']
     cash['cash_payments'] = (
         cash['sale_cash']
         + cash['consumption_cash']
         - cash['cash_reversals']
         + cash['command_cash']
         + cash['attendance_cash']
+        + cash['table_cash']
     )
     return {
         'status': session.status,
