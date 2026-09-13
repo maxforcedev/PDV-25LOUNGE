@@ -955,7 +955,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
                   onOpenCash: _openCash,
                 )
               : LayoutBuilder(builder: (context, constraints) {
-                  final catalog = _CatalogPanel(
+                  final catalog = ProductCatalogPanel(
                     search: _search,
                     loading: _loading,
                     products: _catalog,
@@ -1290,8 +1290,8 @@ class _MobileCartBar extends StatelessWidget {
       );
 }
 
-class _CatalogPanel extends StatelessWidget {
-  const _CatalogPanel({
+class ProductCatalogPanel extends StatelessWidget {
+  const ProductCatalogPanel({
     required this.search,
     required this.loading,
     required this.products,
@@ -1304,6 +1304,7 @@ class _CatalogPanel extends StatelessWidget {
     required this.onSearchSubmitted,
     required this.onProduct,
     required this.onProductLongPress,
+    super.key,
   });
   final TextEditingController search;
   final bool loading;
@@ -1403,7 +1404,7 @@ class _CatalogPanel extends StatelessWidget {
                               childAspectRatio: .76,
                             ),
                             itemCount: products.length,
-                            itemBuilder: (context, index) => _ProductCard(
+                            itemBuilder: (context, index) => ProductCard(
                               product: products[index],
                               onTap: () => onProduct(products[index]),
                               onLongPress: () =>
@@ -1415,21 +1416,22 @@ class _CatalogPanel extends StatelessWidget {
       );
 }
 
-class _ProductCard extends StatefulWidget {
-  const _ProductCard({
+class ProductCard extends StatefulWidget {
+  const ProductCard({
     required this.product,
     required this.onTap,
     required this.onLongPress,
+    super.key,
   });
   final QuickSaleProduct product;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
 
   @override
-  State<_ProductCard> createState() => _ProductCardState();
+  State<ProductCard> createState() => _ProductCardState();
 }
 
-class _ProductCardState extends State<_ProductCard>
+class _ProductCardState extends State<ProductCard>
     with SingleTickerProviderStateMixin {
   late final AnimationController _feedback = AnimationController(
     vsync: this,
@@ -2511,7 +2513,8 @@ class _EditCartItemDialogState extends State<_EditCartItemDialog> {
   Future<void> _editModifiers() async {
     final updated = await showDialog<QuickSaleCartItem>(
       context: context,
-      builder: (_) => SaleItemEditorDialog(product: _item.product, initial: _item),
+      builder: (_) =>
+          SaleItemEditorDialog(product: _item.product, initial: _item),
     );
     if (updated != null && mounted) setState(() => _item = updated);
   }

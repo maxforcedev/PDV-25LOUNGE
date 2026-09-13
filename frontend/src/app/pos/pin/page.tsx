@@ -1,7 +1,7 @@
 "use client";
 
 import { useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { CheckCircle2, KeyRound, ShieldCheck } from "lucide-react";
 import { BrandWordmark } from "@/components/marketing/brand-wordmark";
 import { Alert, Button, Field, Input } from "@/components/ui";
@@ -18,7 +18,7 @@ function tokenError(caught: unknown) {
   return "Não foi possível configurar o PIN. Verifique sua conexão e tente novamente.";
 }
 
-export default function PosPinPage() {
+function PosPinContent() {
   const params = useSearchParams();
   const token = params.get("token") || "";
   const [pin, setPin] = useState("");
@@ -85,5 +85,13 @@ export default function PosPinPage() {
         </div>
       </section>
     </main>
+  );
+}
+
+export default function PosPinPage() {
+  return (
+    <Suspense fallback={<main className="min-h-screen bg-canvas" />}>
+      <PosPinContent />
+    </Suspense>
   );
 }

@@ -1046,7 +1046,10 @@ def _confirm_table_item(*, item, attendance, user, idempotency_key):
         'promotion': financial['promotion'],
         'promotion_name': financial['promotion_name'],
         'promotion_discount_type': financial['promotion_discount_type'],
-        'promotion_discount_value': str(financial['promotion_discount_value'] or Decimal('0.00')),
+        'promotion_discount_value': (
+            str(financial['promotion_discount_value'])
+            if financial['promotion_discount_value'] is not None else None
+        ),
         'promotion_benefit': str(financial['promotion_benefit']),
         'manual_discount_intent': {
             'type': financial['manual_discount_intent']['type'],
@@ -1094,6 +1097,8 @@ def cancel_table_item(*, item, user, reason, idempotency_key, audit_metadata=Non
         discount=attendance.checkout_discount,
         service_fee_waived=attendance.checkout_service_fee_waived,
         lock=True,
+        service_fee_rate_snapshot=attendance.service_fee_rate_snapshot,
+        commission_rate_snapshot=attendance.commission_rate_snapshot,
     )
     if replacement_preview['total'] < paid:
         raise AttendanceConflict('table_paid_exceeds_new_total', 'Estorne ou devolva pagamentos antes de cancelar este item.')

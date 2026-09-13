@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../cash/cash_models.dart';
 import '../core/app_controller.dart';
 import '../core/transient_feedback.dart';
+import '../scanner/product_barcode_scanner_page.dart';
 import '../sales/quick_sale_page.dart';
 import '../sales/sale_models.dart';
 import 'attendance_models.dart';
@@ -28,7 +29,9 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
   bool _loading = true;
 
   bool get _canAddItems =>
-      widget.controller.bootstrapSnapshot?.permissions.contains('tables.add_items') == true;
+      widget.controller.bootstrapSnapshot?.permissions
+          .contains('tables.add_items') ==
+      true;
 
   @override
   void initState() {
@@ -38,7 +41,8 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
 
   Future<void> _load() async {
     setState(() => _loading = true);
-    final detail = await widget.controller.tableAttendanceDetail(_attendance.id);
+    final detail =
+        await widget.controller.tableAttendanceDetail(_attendance.id);
     if (!mounted) return;
     setState(() {
       _attendance = detail ?? _attendance;
@@ -61,9 +65,8 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
   @override
   Widget build(BuildContext context) => Scaffold(
         appBar: AppBar(
-          title: Text(_attendance.tableName.isEmpty
-              ? 'Mesa'
-              : _attendance.tableName),
+          title: Text(
+              _attendance.tableName.isEmpty ? 'Mesa' : _attendance.tableName),
           actions: [
             IconButton(
               onPressed: _loading ? null : _load,
@@ -89,8 +92,12 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(_attendance.status == 'open' ? 'ABERTA' : 'FECHADA',
-                              style: const TextStyle(fontWeight: FontWeight.w800)),
+                          Text(
+                              _attendance.status == 'open'
+                                  ? 'ABERTA'
+                                  : 'FECHADA',
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.w800)),
                           if (_attendance.peopleCount != null)
                             Text('${_attendance.peopleCount} pessoa(s)'),
                           if (_attendance.responsibleName.isNotEmpty)
@@ -108,10 +115,12 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  Text('Pedidos', style: Theme.of(context).textTheme.titleLarge),
+                  Text('Pedidos',
+                      style: Theme.of(context).textTheme.titleLarge),
                   const SizedBox(height: 8),
                   if (_attendance.orders.isEmpty)
-                    const Card(child: ListTile(title: Text('Nenhum pedido enviado.'))),
+                    const Card(
+                        child: ListTile(title: Text('Nenhum pedido enviado.'))),
                   for (final order in _attendance.orders)
                     Card(
                       child: Padding(
@@ -120,7 +129,8 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text('Pedido #${order.id}',
-                                style: const TextStyle(fontWeight: FontWeight.w800)),
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w800)),
                             const SizedBox(height: 6),
                             for (final item in order.items)
                               Padding(
@@ -128,15 +138,24 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text('${item.quantity}x ${item.productName}'),
-                                    Text('${formatMoney(item.unitPrice)} · ${item.status}',
-                                        style: Theme.of(context).textTheme.bodySmall),
+                                    Text(
+                                        '${item.quantity}x ${item.productName}'),
+                                    Text(
+                                        '${formatMoney(item.unitPrice)} · ${item.status}',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall),
                                     if (item.notes.isNotEmpty)
                                       Text(item.notes,
-                                          style: Theme.of(context).textTheme.bodySmall),
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall),
                                     if (item.modifierSnapshot.isNotEmpty)
-                                      Text('${item.modifierSnapshot.length} modificador(es)',
-                                          style: Theme.of(context).textTheme.bodySmall),
+                                      Text(
+                                          '${item.modifierSnapshot.length} modificador(es)',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall),
                                   ],
                                 ),
                               ),
@@ -154,7 +173,8 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
                       _SummaryRow('Taxa', _summary('service_fee_total')),
                       _SummaryRow('Total', _summary('total_due'), bold: true),
                       _SummaryRow('Pago', _summary('paid_total')),
-                      _SummaryRow('Saldo', _summary('remaining_balance'), bold: true),
+                      _SummaryRow('Saldo', _summary('remaining_balance'),
+                          bold: true),
                     ]),
                   ),
                   const SizedBox(height: 96),
@@ -172,7 +192,8 @@ class _SummaryRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ListTile(
         dense: true,
-        title: Text(label, style: bold ? const TextStyle(fontWeight: FontWeight.w800) : null),
+        title: Text(label,
+            style: bold ? const TextStyle(fontWeight: FontWeight.w800) : null),
         trailing: Text(formatMoney(value),
             style: bold ? const TextStyle(fontWeight: FontWeight.w800) : null),
       );
@@ -194,27 +215,31 @@ class TableOrderPage extends StatefulWidget {
 
 class _TableOrderPageState extends State<TableOrderPage> {
   final _search = TextEditingController();
+  final _cartListenable = ValueNotifier<int>(0);
   List<QuickSaleProduct> _catalog = const [];
   final List<QuickSaleCartItem> _cart = [];
   int? _categoryId;
+  bool _favoritesOnly = false;
   bool _loading = true;
   bool _saving = false;
 
   @override
   void initState() {
     super.initState();
+    _search.addListener(() => setState(() {}));
     unawaited(_load());
   }
 
   @override
   void dispose() {
     _search.dispose();
+    _cartListenable.dispose();
     super.dispose();
   }
 
   Future<void> _load() async {
     setState(() => _loading = true);
-    final catalog = await widget.controller.tableCatalog(search: _search.text);
+    final catalog = await widget.controller.tableCatalog();
     if (!mounted) return;
     setState(() {
       _catalog = catalog ?? const [];
@@ -223,7 +248,20 @@ class _TableOrderPageState extends State<TableOrderPage> {
   }
 
   List<QuickSaleProduct> get _visible => _catalog
-      .where((product) => _categoryId == null || product.categoryId == _categoryId)
+      .where((product) =>
+          (_categoryId == null || product.categoryId == _categoryId) &&
+          (!_favoritesOnly || product.favorite) &&
+          (_search.text.trim().isEmpty ||
+              product.name
+                  .toLowerCase()
+                  .contains(_search.text.trim().toLowerCase()) ||
+              product.internalCode
+                  .toLowerCase()
+                  .contains(_search.text.trim().toLowerCase()) ||
+              (product.barcode
+                      ?.toLowerCase()
+                      .contains(_search.text.trim().toLowerCase()) ??
+                  false)))
       .toList(growable: false);
 
   List<QuickSaleCategory> get _categories {
@@ -240,29 +278,52 @@ class _TableOrderPageState extends State<TableOrderPage> {
   }
 
   Future<void> _add(QuickSaleProduct product) async {
-    var item = await showDialog<QuickSaleCartItem>(
+    if (!product.canSell) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Este produto está sem estoque no momento.'),
+      ));
+      return;
+    }
+    final item = await showDialog<QuickSaleCartItem>(
       context: context,
       builder: (_) => SaleItemEditorDialog(product: product),
     );
-    if (item == null || !mounted) return;
-    item = await showDialog<QuickSaleCartItem>(
-      context: context,
-      builder: (_) => _TableCartItemDialog(item: item!),
-    );
-    if (item != null && mounted) setState(() => _cart.add(item!));
+    if (item != null && mounted) {
+      setState(() {
+        _cart.add(item);
+        _cartListenable.value = _cart.length;
+      });
+    }
   }
 
   Future<void> _edit(int index) async {
-    var item = await showDialog<QuickSaleCartItem>(
+    final item = await showDialog<QuickSaleCartItem>(
       context: context,
-      builder: (_) => SaleItemEditorDialog(product: _cart[index].product, initial: _cart[index]),
+      builder: (_) => SaleItemEditorDialog(
+          product: _cart[index].product, initial: _cart[index]),
     );
-    if (item == null || !mounted) return;
-    item = await showDialog<QuickSaleCartItem>(
-      context: context,
-      builder: (_) => _TableCartItemDialog(item: item!),
-    );
-    if (item != null && mounted) setState(() => _cart[index] = item!);
+    if (item != null && mounted) setState(() => _cart[index] = item);
+  }
+
+  Future<bool> _scanBarcode(String barcode) async {
+    final products = await widget.controller.tableCatalog(search: barcode);
+    if (!mounted || products == null) return false;
+    final product =
+        products.where((item) => item.barcode == barcode).firstOrNull;
+    if (product == null) return false;
+    await _add(product);
+    return true;
+  }
+
+  Future<void> _openBarcodeScanner() async {
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => ProductBarcodeScannerPage(
+        onBarcode: _scanBarcode,
+        cartListenable: _cartListenable,
+        itemCount: () => '${_cart.length}',
+        total: () => formatMoney('0.00'),
+      ),
+    ));
   }
 
   Future<void> _save() async {
@@ -290,13 +351,17 @@ class _TableOrderPageState extends State<TableOrderPage> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: const Text('Novo pedido')),
+        appBar:
+            AppBar(title: Text('Novo pedido • ${widget.attendance.tableName}')),
         bottomNavigationBar: SafeArea(
           minimum: const EdgeInsets.all(16),
           child: FilledButton.icon(
             onPressed: _saving || _cart.isEmpty ? null : _save,
             icon: _saving
-                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2))
                 : const Icon(Icons.send),
             label: Text(_saving ? 'ENVIANDO...' : 'SALVAR E ENVIAR PEDIDO'),
           ),
@@ -304,62 +369,26 @@ class _TableOrderPageState extends State<TableOrderPage> {
         body: _loading
             ? const Center(child: CircularProgressIndicator())
             : Column(children: [
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: TextField(
-                    controller: _search,
-                    onSubmitted: (_) => _load(),
-                    decoration: InputDecoration(
-                      labelText: 'Pesquisar produtos',
-                      prefixIcon: const Icon(Icons.search),
-                      suffixIcon: IconButton(onPressed: _load, icon: const Icon(Icons.search)),
-                    ),
-                  ),
-                ),
-                SizedBox(
-                  height: 44,
-                  child: ListView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.symmetric(horizontal: 16), children: [
-                    ChoiceChip(label: const Text('Todos'), selected: _categoryId == null, onSelected: (_) => setState(() => _categoryId = null)),
-                    for (final category in _categories)
-                      Padding(
-                        padding: const EdgeInsets.only(left: 8),
-                        child: ChoiceChip(
-                          label: Text(category.name),
-                          selected: _categoryId == category.id,
-                          onSelected: (_) => setState(() => _categoryId = category.id),
-                        ),
-                      ),
-                  ]),
-                ),
                 Expanded(
-                  child: GridView.builder(
-                    padding: const EdgeInsets.all(16),
-                    gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                      maxCrossAxisExtent: 220,
-                      mainAxisSpacing: 12,
-                      crossAxisSpacing: 12,
-                      childAspectRatio: 1.25,
-                    ),
-                    itemCount: _visible.length,
-                    itemBuilder: (_, index) {
-                      final product = _visible[index];
-                      return Card(
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(12),
-                          onTap: product.canSell ? () => _add(product) : null,
-                          child: Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                              Text(product.name, maxLines: 2, overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontWeight: FontWeight.w800)),
-                              const Spacer(),
-                              Text(formatMoney(product.price)),
-                              if (!product.canSell) Text(product.availabilityReason ?? 'Indisponível', style: const TextStyle(color: Colors.red)),
-                            ]),
-                          ),
-                        ),
-                      );
-                    },
+                  child: ProductCatalogPanel(
+                    search: _search,
+                    loading: false,
+                    products: _visible,
+                    categories: _categories,
+                    categoryId: _categoryId,
+                    favoritesOnly: _favoritesOnly,
+                    onCategory: (value) => setState(() {
+                      _categoryId = value;
+                      if (value != null) _favoritesOnly = false;
+                    }),
+                    onFavorites: () => setState(() {
+                      _favoritesOnly = !_favoritesOnly;
+                      if (_favoritesOnly) _categoryId = null;
+                    }),
+                    onBarcode: _openBarcodeScanner,
+                    onSearchSubmitted: (_) {},
+                    onProduct: _add,
+                    onProductLongPress: _add,
                   ),
                 ),
                 if (_cart.isNotEmpty)
@@ -370,53 +399,22 @@ class _TableOrderPageState extends State<TableOrderPage> {
                       child: ListView.builder(
                         itemCount: _cart.length,
                         itemBuilder: (_, index) => ListTile(
-                          title: Text('${_cart[index].quantity}x ${_cart[index].product.name}'),
-                          subtitle: Text(_cart[index].notes.isEmpty ? formatMoney(_cart[index].product.price) : _cart[index].notes),
-                          trailing: IconButton(onPressed: () => setState(() => _cart.removeAt(index)), icon: const Icon(Icons.delete_outline)),
+                          title: Text(
+                              '${_cart[index].quantity}x ${_cart[index].product.name}'),
+                          subtitle: Text(_cart[index].notes.isEmpty
+                              ? formatMoney(_cart[index].product.price)
+                              : _cart[index].notes),
+                          trailing: IconButton(
+                              onPressed: () => setState(() {
+                                    _cart.removeAt(index);
+                                    _cartListenable.value = _cart.length;
+                                  }),
+                              icon: const Icon(Icons.delete_outline)),
                           onTap: () => _edit(index),
                         ),
                       ),
                     ),
                   ),
               ]),
-      );
-}
-
-class _TableCartItemDialog extends StatefulWidget {
-  const _TableCartItemDialog({required this.item});
-  final QuickSaleCartItem item;
-
-  @override
-  State<_TableCartItemDialog> createState() => _TableCartItemDialogState();
-}
-
-class _TableCartItemDialogState extends State<_TableCartItemDialog> {
-  late final _quantity = TextEditingController(text: widget.item.quantity);
-  late final _notes = TextEditingController(text: widget.item.notes);
-
-  @override
-  void dispose() {
-    _quantity.dispose();
-    _notes.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: Text(widget.item.product.name),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(controller: _quantity, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Quantidade')),
-          TextField(controller: _notes, maxLines: 3, decoration: const InputDecoration(labelText: 'Observações')),
-        ]),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCELAR')),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, widget.item.copyWith(
-              quantity: _quantity.text.trim(),
-              notes: _notes.text.trim(),
-            )),
-            child: const Text('ADICIONAR'),
-          ),
-        ],
       );
 }

@@ -325,9 +325,11 @@ class POSCashOverviewView(POSCashView):
         return Response(cash_state_for_device(device, permissions, operator))
 
 
-def _pos_catalog_queryset(branch, *, search=None, barcode=None):
+def _pos_catalog_queryset(
+    branch, *, channel=SalesChannel.COUNTER, search=None, barcode=None,
+):
     return sellable_products_for_branch(
-        branch, SalesChannel.COUNTER, search=search, barcode=barcode,
+        branch, channel, search=search, barcode=barcode,
     ).prefetch_related(
         'components__component_product',
         'fraction_components__component_product',
@@ -807,7 +809,11 @@ class POSTableCatalogView(POSAttendanceView, POSQuickSaleView):
         self._require(permissions, 'tables.add_items', 'Você não possui permissão para consultar o catálogo de Mesa.')
         require_branch_feature(device.branch, 'tables')
         request._pos_branch = device.branch
-        queryset = sellable_products_for_branch(device.branch, SalesChannel.TABLE, search=request.query_params.get('search'))
+        queryset = _pos_catalog_queryset(
+            device.branch,
+            channel=SalesChannel.TABLE,
+            search=request.query_params.get('search'),
+        )
         return Response({'products': self._catalog_payload(request, _visible_pos_catalog(device, queryset), device.branch)})
 
 

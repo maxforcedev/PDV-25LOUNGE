@@ -302,13 +302,29 @@ class HttpPosApi implements PosApi, PosCredentialCache {
         (response.statusCode == 401
             ? 'authentication_failed'
             : 'request_failed');
+    final details = payload['details'] is Map<String, dynamic>
+        ? payload['details'] as Map<String, dynamic>
+        : Map<String, dynamic>.fromEntries(payload.entries.where((entry) =>
+            !{'code', 'message', 'detail', 'details'}.contains(entry.key)));
+    String? validationMessage;
+    for (final value in details.values) {
+      final messages = value is List ? value : [value];
+      for (final message in messages) {
+        if (message is String) {
+          validationMessage = message;
+          break;
+        }
+      }
+      if (validationMessage != null) break;
+    }
     throw PosApiException(
       statusCode: response.statusCode,
       code: code,
       message: payload['message'] as String? ??
           payload['detail'] as String? ??
+          validationMessage ??
           'Falha ao comunicar com o CORE.',
-      details: payload['details'] as Map<String, dynamic>? ?? const {},
+      details: details,
     );
   }
 
@@ -572,7 +588,7 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   Future<List<QuickSaleProduct>> tableCatalog({String? search}) async {
     final suffix = search == null || search.trim().isEmpty
         ? ''
-        : '?${Uri(queryParameters: {'q': search.trim()}).query}';
+        : '?${Uri(queryParameters: {'search': search.trim()}).query}';
     final payload = await _request('GET', 'tables/catalog/$suffix');
     return (payload['products'] as List<dynamic>? ?? const [])
         .cast<Map<String, dynamic>>()
@@ -586,7 +602,8 @@ class HttpPosApi implements PosApi, PosCredentialCache {
     required List<Map<String, dynamic>> items,
     required String idempotencyKey,
   }) async {
-    final payload = await _request('POST', 'table-attendances/$attendanceId/orders/',
+    final payload = await _request(
+        'POST', 'table-attendances/$attendanceId/orders/',
         body: {'items': items, 'idempotency_key': idempotencyKey});
     return (payload as List<dynamic>)
         .cast<Map<String, dynamic>>()
