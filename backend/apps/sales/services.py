@@ -1869,7 +1869,11 @@ def _frozen_command_snapshots(order_items, branch):
                 'promotion_object': promotion,
                 'promotion_name': financial_snapshot.get('promotion_name'),
                 'promotion_discount_type': financial_snapshot.get('promotion_discount_type'),
-                'promotion_discount_value': Decimal(str(financial_snapshot.get('promotion_discount_value', '0.00'))),
+                'promotion_discount_value': (
+                    Decimal(str(financial_snapshot['promotion_discount_value']))
+                    if financial_snapshot.get('promotion_discount_value') is not None
+                    else None
+                ),
                 'promotion_benefit': Decimal(str(financial_snapshot.get('promotion_benefit', '0.00'))),
                 'manual_discount_intent': financial_snapshot.get('manual_discount_intent') or {'type': 'amount', 'value': Decimal('0.00')},
                 'manual_discount': Decimal(str(financial_snapshot.get('manual_discount', '0.00'))),

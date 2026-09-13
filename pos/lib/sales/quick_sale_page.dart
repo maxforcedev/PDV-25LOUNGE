@@ -407,7 +407,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
     }
     final quantity = await showDialog<String>(
       context: context,
-      builder: (_) => _BatchQuantityDialog(productName: product.name),
+      builder: (_) => BatchQuantityDialog(productName: product.name),
     );
     if (quantity == null || !mounted) return;
     final item = QuickSaleCartItem(
@@ -940,7 +940,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
         ),
         bottomNavigationBar:
             MediaQuery.sizeOf(context).width < 900 && _cashReady
-                ? _MobileCartBar(
+                ? MobileCartBar(
                     itemCount: _cart.length,
                     preview: _preview,
                     updating: _loadingPreview,
@@ -1232,18 +1232,23 @@ class _CashRequiredPanel extends StatelessWidget {
       );
 }
 
-class _MobileCartBar extends StatelessWidget {
-  const _MobileCartBar({
+class MobileCartBar extends StatelessWidget {
+  const MobileCartBar({
     required this.itemCount,
     required this.preview,
     required this.updating,
     required this.onTap,
+    this.actionLabel = 'VER CARRINHO',
+    this.showTotal = true,
+    super.key,
   });
 
   final int itemCount;
   final QuickSalePreview? preview;
   final bool updating;
   final VoidCallback onTap;
+  final String actionLabel;
+  final bool showTotal;
 
   @override
   Widget build(BuildContext context) => SafeArea(
@@ -1266,20 +1271,21 @@ class _MobileCartBar extends StatelessWidget {
                         color: Colors.white, fontWeight: FontWeight.w700),
                   ),
                 ),
-                Flexible(
-                  child: Text(
-                    updating
-                        ? 'Atualizando...'
-                        : formatMoney(preview?.total ?? '0.00'),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        color: Colors.white, fontWeight: FontWeight.w800),
+                if (showTotal)
+                  Flexible(
+                    child: Text(
+                      updating
+                          ? 'Atualizando...'
+                          : formatMoney(preview?.total ?? '0.00'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.w800),
+                    ),
                   ),
-                ),
                 const SizedBox(width: 8),
-                const Text(
-                  'VER CARRINHO',
+                Text(
+                  actionLabel,
                   style: TextStyle(
                       color: Colors.white, fontWeight: FontWeight.w900),
                 ),
@@ -2239,16 +2245,16 @@ class _DiscountTypeButton extends StatelessWidget {
       );
 }
 
-class _BatchQuantityDialog extends StatefulWidget {
-  const _BatchQuantityDialog({required this.productName});
+class BatchQuantityDialog extends StatefulWidget {
+  const BatchQuantityDialog({required this.productName, super.key});
 
   final String productName;
 
   @override
-  State<_BatchQuantityDialog> createState() => _BatchQuantityDialogState();
+  State<BatchQuantityDialog> createState() => _BatchQuantityDialogState();
 }
 
-class _BatchQuantityDialogState extends State<_BatchQuantityDialog> {
+class _BatchQuantityDialogState extends State<BatchQuantityDialog> {
   final _quantity = TextEditingController(text: '1');
 
   bool get _valid =>
