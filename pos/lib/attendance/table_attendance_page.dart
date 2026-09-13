@@ -785,7 +785,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
       final candidate = update(List<QuickSaleCartItem>.from(_cart));
       if (checkAvailability && candidate.isNotEmpty) {
         final availability = await widget.controller.tableStockAvailability(
-          items: _tableCartPayload(candidate),
+          items: _tableAvailabilityPayload(candidate),
         );
         if (!mounted || availability == null) return;
         if (!availability.available && availability.enforced) {
@@ -809,7 +809,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
     return queued;
   }
 
-  List<Map<String, dynamic>> _tableCartPayload(List<QuickSaleCartItem> cart) =>
+  List<Map<String, dynamic>> _tableOrderPayload(List<QuickSaleCartItem> cart) =>
       cart
           .map((item) => <String, dynamic>{
                 'product': item.product.id,
@@ -818,6 +818,15 @@ class _TableOrderPageState extends State<TableOrderPage> {
                     .map((modifier) => Map<String, dynamic>.from(modifier))
                     .toList(growable: false),
                 'notes': item.notes,
+              })
+          .toList(growable: false);
+
+  List<Map<String, dynamic>> _tableAvailabilityPayload(
+          List<QuickSaleCartItem> cart) =>
+      cart
+          .map((item) => <String, dynamic>{
+                'client_item_id': item.clientItemId,
+                ..._tableOrderPayload([item]).single,
               })
           .toList(growable: false);
 
@@ -867,7 +876,10 @@ class _TableOrderPageState extends State<TableOrderPage> {
     }
   }
 
-  int get _itemCount => _cart.length;
+  int get _itemCount =>
+      _attendance.orders
+          .fold<int>(0, (count, order) => count + order.items.length) +
+      _cart.length;
 
   String get _provisionalTotal => _cart.fold<double>(0, (total, item) {
         return total + _tableLineTotal(item);
@@ -916,9 +928,9 @@ class _TableOrderPageState extends State<TableOrderPage> {
       created = await _queueCartTask(() async {
         if (!mounted || _cart.isEmpty) return false;
         // This immutable payload is captured only after every earlier cart task.
-        final snapshot = _tableCartPayload(List<QuickSaleCartItem>.from(_cart));
+        final snapshotCart = List<QuickSaleCartItem>.from(_cart);
         final availability = await widget.controller.tableStockAvailability(
-          items: snapshot,
+          items: _tableAvailabilityPayload(snapshotCart),
         );
         if (!mounted || availability == null) return false;
         if (!availability.available && availability.enforced) {
@@ -929,7 +941,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
         return (await widget.controller.saveTableOrder(
               attendanceId: _attendance.id,
               idempotencyKey: idempotencyKey,
-              items: snapshot,
+              items: _tableOrderPayload(snapshotCart),
             )) !=
             null;
       });
@@ -944,7 +956,13 @@ class _TableOrderPageState extends State<TableOrderPage> {
     _orderIdempotencyKey = null;
     widget.controller.showTransientMessage('Pedido enviado com sucesso.',
         tone: TransientAlertTone.success);
-    Navigator.of(context).pop(true);
+    await _load();
+    if (!mounted) return;
+    setState(() {
+      _cart.clear();
+      _orderIdempotencyKey = null;
+    });
+    _notifyCartChanged();
   }
 
   @override
@@ -958,19 +976,6 @@ class _TableOrderPageState extends State<TableOrderPage> {
                       style: TextStyle(
                           fontSize: 11, fontWeight: FontWeight.w800))),
             ),
-          PopupMenuButton<String>(
-            onSelected: (_) async {
-              await Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => TableAttendancePage(
-                    controller: widget.controller, attendance: _attendance),
-              ));
-              if (mounted) await _load();
-            },
-            itemBuilder: (_) => const [
-              PopupMenuItem(
-                  value: 'operations', child: Text('OPERAÇÕES DA MESA')),
-            ],
-          ),
         ]),
         bottomNavigationBar: MediaQuery.sizeOf(context).width < 900
             ? ValueListenableBuilder<int>(
@@ -1022,6 +1027,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
                                 onEdit: _edit,
                                 onRemove: (index) => unawaited(_remove(index)),
                                 onSave: _save,
+                                onConference: _showConference,
                               ))),
                 ]);
               }),
@@ -1051,11 +1057,61 @@ class _TableOrderPageState extends State<TableOrderPage> {
             onEdit: _edit,
             onRemove: (index) => unawaited(_remove(index)),
             onSave: _save,
+            onConference: _showConference,
           ),
         ),
       ),
     ));
-    if (saved == true && mounted) Navigator.of(context).pop(true);
+    if (saved == true && mounted) await _load();
+  }
+
+  Future<void> _showConference() async {
+    if (_cart.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text(
+            'Existem itens ainda não enviados. Envie o pedido antes de gerar a conferência.'),
+      ));
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(_attendance.tableName),
+        content: SizedBox(
+            width: 360,
+            child: SingleChildScrollView(
+                child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text('CONFERÊNCIA SEM VALOR FISCAL',
+                    style: TextStyle(fontWeight: FontWeight.w800)),
+                const Divider(),
+                for (final order in _attendance.orders)
+                  for (final item in order.items)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(children: [
+                        Expanded(
+                            child:
+                                Text('${item.quantity}x ${item.productName}')),
+                        Text(formatMoney(item.lineTotal ?? item.unitPrice))
+                      ]),
+                    ),
+                const Divider(),
+                TableSummaryWidgets(_attendance.summary),
+                if (_attendance.customerName.isNotEmpty)
+                  Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Text('Cliente: ${_attendance.customerName}')),
+              ],
+            ))),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('FECHAR'))
+        ],
+      ),
+    );
   }
 }
 
@@ -1066,13 +1122,15 @@ class _TableOrderSummaryPanel extends StatelessWidget {
       required this.saving,
       required this.onEdit,
       required this.onRemove,
-      required this.onSave});
+      required this.onSave,
+      required this.onConference});
   final List<QuickSaleCartItem> cart;
   final TableAttendance attendance;
   final bool saving;
   final ValueChanged<int> onEdit;
   final ValueChanged<int> onRemove;
   final Future<void> Function() onSave;
+  final Future<void> Function() onConference;
 
   @override
   Widget build(BuildContext context) => Material(
@@ -1081,11 +1139,24 @@ class _TableOrderSummaryPanel extends StatelessWidget {
           padding: const EdgeInsets.all(16),
           child:
               Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            Text('RESUMO DO PEDIDO',
-                style: Theme.of(context)
-                    .textTheme
-                    .titleMedium
-                    ?.copyWith(fontWeight: FontWeight.w800)),
+            Row(children: [
+              Expanded(
+                  child: Text('RESUMO DA MESA',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(fontWeight: FontWeight.w800))),
+              PopupMenuButton<String>(
+                onSelected: (value) {
+                  if (value == 'conference') onConference();
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                      value: 'conference',
+                      child: Text('VISUALIZAR CONFERÊNCIA')),
+                ],
+              ),
+            ]),
             const SizedBox(height: 8),
             Expanded(
                 child: cart.isEmpty && attendance.orders.isEmpty
@@ -1116,7 +1187,8 @@ class _TableOrderSummaryPanel extends StatelessWidget {
                                 if (item.cancellationReason.isNotEmpty)
                                   'Cancelado: ${item.cancellationReason}',
                               ].join('\n')),
-                              trailing: Text(formatMoney(item.unitPrice)),
+                              trailing: Text(formatMoney(
+                                  item.lineTotal ?? item.unitPrice)),
                             );
                           }
                           final item = cart[index - persisted.length];

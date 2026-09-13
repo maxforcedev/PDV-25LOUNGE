@@ -46,17 +46,9 @@ class _TablesPageState extends State<TablesPage> {
     if (table.legacyOccupied) return;
     var attendance = table.attendance;
     if (attendance == null) {
-      final details = await showDialog<_OpenTableDetails>(
-        context: context,
-        builder: (_) => const _OpenTableDialog(),
-      );
-      if (details == null) return;
       attendance = await widget.controller.openAttendanceTable(
         tableId: table.id,
         idempotencyKey: createIdempotencyKey(),
-        peopleCount: details.peopleCount,
-        responsibleName: details.responsibleName,
-        notes: details.notes,
       );
       if (attendance == null || !mounted) return;
     }

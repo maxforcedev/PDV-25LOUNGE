@@ -169,6 +169,7 @@ class TableOrderItem {
     required this.quantity,
     required this.unit,
     required this.unitPrice,
+    this.lineTotal,
     required this.status,
     this.categoryId,
     this.categoryName = '',
@@ -187,6 +188,7 @@ class TableOrderItem {
         quantity: '${json['quantity'] ?? '0'}',
         unit: json['unit'] as String? ?? '',
         unitPrice: '${json['unit_price'] ?? '0.00'}',
+        lineTotal: json['line_total']?.toString(),
         status: json['status'] as String? ?? 'pending',
         categoryId: json['category_id_snapshot'] as int?,
         categoryName: json['category_name_snapshot'] as String? ?? '',
@@ -205,6 +207,7 @@ class TableOrderItem {
   final String quantity;
   final String unit;
   final String unitPrice;
+  final String? lineTotal;
   final String status;
   final int? categoryId;
   final String categoryName;

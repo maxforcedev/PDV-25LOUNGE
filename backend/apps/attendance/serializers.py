@@ -188,10 +188,15 @@ class TableAttendanceSerializer(serializers.ModelSerializer):
 
 
 class TableOrderItemSerializer(serializers.ModelSerializer):
+    line_total = serializers.SerializerMethodField()
+
+    def get_line_total(self, item):
+        return item.unit_price * item.quantity
+
     class Meta:
         model = TableOrderItem
         fields = (
-            'id', 'order', 'product', 'quantity', 'product_name', 'internal_code',
+            'id', 'order', 'product', 'quantity', 'product_name', 'internal_code', 'line_total',
             'category_id_snapshot', 'category_name_snapshot', 'unit', 'unit_price',
             'base_unit_price', 'modifier_unit_total', 'modifier_snapshot', 'notes',
             'unit_cost', 'component_cost_snapshot', 'status', 'confirmed_at',
