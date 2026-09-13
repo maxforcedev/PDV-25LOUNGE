@@ -182,7 +182,7 @@ class TableAttendanceSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'table', 'table_name', 'customer', 'customer_name', 'people_count', 'responsible_name', 'notes', 'status',
             'opened_by', 'bill_requested_at', 'bill_requested_by', 'closed_at', 'closed_by',
-            'sale', 'checkout_discount', 'checkout_service_fee_waived', 'created_at', 'updated_at',
+            'sale', 'checkout_discount', 'checkout_discount_type', 'checkout_service_fee_waived', 'created_at', 'updated_at',
         )
         read_only_fields = fields
 
@@ -303,7 +303,7 @@ class TableItemDiscountSerializer(serializers.Serializer):
 
 class TableCheckoutContextSerializer(serializers.Serializer):
     idempotency_key = serializers.UUIDField()
-    discount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, default=Decimal('0.00'))
+    discount = serializers.JSONField(required=False, default='0.00')
     discount_authorization = serializers.DictField(required=False)
     service_fee_waived = serializers.BooleanField(required=False, default=False)
     service_fee_authorization = serializers.DictField(required=False)

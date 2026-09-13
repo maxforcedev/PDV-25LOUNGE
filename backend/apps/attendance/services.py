@@ -17,6 +17,7 @@ from apps.inventory.materialization import materialize_stock
 from apps.inventory.services import apply_locked_stock
 from apps.cash.models import CashSession, CashSessionStatus
 from apps.products.models import Product, ProductBranchConfig, SalesChannel, Unit
+from apps.products.selectors import sellable_products_for_branch
 from apps.sales.models import OperationType, PaymentMethod, PaymentMethodCode
 from apps.sales.services import (
     CENT, _discount_approver, _financial_snapshots, _reconcile_modifier_component_costs, _service_fee_waiver,
@@ -864,6 +865,13 @@ def _table_reference(attendance):
     return {'id': attendance.pk, 'table_id': attendance.table_id, 'status': attendance.status}
 
 
+def _table_discount_intent(attendance):
+    return {
+        'type': attendance.checkout_discount_type,
+        'value': attendance.checkout_discount,
+    }
+
+
 def table_financial_state(attendance, *, lock=False, discount=None, service_fee_waived=None):
     from .models import TableOrderItem, TablePayment
 
@@ -874,7 +882,7 @@ def table_financial_state(attendance, *, lock=False, discount=None, service_fee_
         items = items.select_for_update()
     preview = calculate_table_preview(
         branch=attendance.branch, order_items=list(items),
-        discount=attendance.checkout_discount if discount is None else discount,
+        discount=_table_discount_intent(attendance) if discount is None else discount,
         service_fee_waived=(
             attendance.checkout_service_fee_waived
             if service_fee_waived is None else service_fee_waived
@@ -934,7 +942,7 @@ def preview_table_order(*, attendance, items):
         ))
     return calculate_table_preview(
         branch=attendance.branch, order_items=[*confirmed, *draft],
-        discount=attendance.checkout_discount,
+        discount=_table_discount_intent(attendance),
         service_fee_waived=attendance.checkout_service_fee_waived,
         seller_user=attendance.seller_user,
         service_fee_rate_snapshot=attendance.service_fee_rate_snapshot,
@@ -1200,7 +1208,7 @@ def cancel_table_item(*, item, user, reason, idempotency_key, audit_metadata=Non
     ).exclude(pk=item.pk).select_related('product__category').order_by('id'))
     replacement_preview = calculate_table_preview(
         branch=attendance.branch, order_items=remaining_items,
-        discount=attendance.checkout_discount,
+        discount=_table_discount_intent(attendance),
         service_fee_waived=attendance.checkout_service_fee_waived,
         lock=True,
         service_fee_rate_snapshot=attendance.service_fee_rate_snapshot,
@@ -1268,7 +1276,7 @@ def cancel_table_order(*, order, user, reason, idempotency_key, audit_metadata=N
     ).exclude(pk__in=[item.pk for item in items]).select_related('product__category').order_by('id'))
     replacement_preview = calculate_table_preview(
         branch=attendance.branch, order_items=replacement_items,
-        discount=attendance.checkout_discount,
+        discount=_table_discount_intent(attendance),
         service_fee_waived=attendance.checkout_service_fee_waived,
         lock=True,
         service_fee_rate_snapshot=attendance.service_fee_rate_snapshot,
@@ -1329,17 +1337,25 @@ def set_table_checkout_context(*, attendance, user, discount, discount_authoriza
         attendance=attendance, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
     ).exists():
         raise AttendanceConflict('checkout_context_locked', 'Desconto e taxa não podem ser alterados após o primeiro pagamento.')
-    discount = strict_decimal(discount, field='discount', decimal_places=2, max_digits=14)
+    discount_intent = normalize_discount_intent(discount, field='discount')
     service_fee_waived = bool(service_fee_waived)
+    # Resolve against the current frozen items before persisting an intent that
+    # could otherwise make the next table summary invalid.
+    table_financial_state(
+        attendance, lock=True, discount=discount_intent,
+        service_fee_waived=service_fee_waived,
+    )
     operation, replayed = _operation(
         branch=attendance.branch, operation_type=AttendanceOperationType.TABLE_CHECKOUT_CONTEXT,
         idempotency_key=idempotency_key,
-        payload={'attendance': attendance.pk, 'discount': str(discount), 'service_fee_waived': service_fee_waived},
+        payload={'attendance': attendance.pk, 'discount': {
+            'type': discount_intent['type'], 'value': str(discount_intent['value']),
+        }, 'service_fee_waived': service_fee_waived},
     )
     if replayed:
         return attendance, True
     discount_approved_by = _discount_approver(
-        attendance.branch, user, discount, discount_authorization,
+        attendance.branch, user, discount_intent['value'], discount_authorization,
         permission_code='sales.apply_discount', authorization_field='discount_authorization',
         allow_pos_only=pos_device is not None, pos_device=pos_device,
         permission_codes=pos_permission_codes, device_validated=pos_device is not None,
@@ -1349,20 +1365,21 @@ def set_table_checkout_context(*, attendance, user, discount, discount_authoriza
         allow_pos_only=pos_device is not None, pos_device=pos_device,
         permission_codes=pos_permission_codes, device_validated=pos_device is not None,
     )
-    before = model_snapshot(attendance, ('checkout_discount', 'checkout_service_fee_waived'))
-    attendance.checkout_discount = discount
+    before = model_snapshot(attendance, ('checkout_discount', 'checkout_discount_type', 'checkout_service_fee_waived'))
+    attendance.checkout_discount = discount_intent['value']
+    attendance.checkout_discount_type = discount_intent['type']
     attendance.checkout_discount_approved_by = discount_approved_by
     attendance.checkout_service_fee_waived = service_fee_waived
     attendance.checkout_service_fee_waived_by = service_fee_waived_by
     attendance.save(update_fields=(
-        'checkout_discount', 'checkout_discount_approved_by',
+        'checkout_discount', 'checkout_discount_type', 'checkout_discount_approved_by',
         'checkout_service_fee_waived', 'checkout_service_fee_waived_by', 'updated_at',
     ))
     operation.result = {'attendance_id': attendance.pk}
     operation.save(update_fields=('result', 'updated_at'))
     audit_log(actor=user, action='table_attendance.checkout_context.set', obj=attendance,
               company=attendance.company, branch=attendance.branch, before=before,
-              after=model_snapshot(attendance, ('checkout_discount', 'checkout_service_fee_waived')),
+              after=model_snapshot(attendance, ('checkout_discount', 'checkout_discount_type', 'checkout_service_fee_waived')),
               metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
     return attendance, False
 
@@ -1648,7 +1665,7 @@ def close_table_attendance(*, attendance, user, idempotency_key, cash_session_id
         sale = finalize_sale(
         branch=attendance.branch, user=user, operation_type=OperationType.SALE, cash_session=cash_session,
         items=None, payments=[{'payment_method': payment.payment_method_id, 'amount': payment.amount, 'received_amount': payment.received_amount} for payment in payments],
-        discount=attendance.checkout_discount, service_fee_waived=attendance.checkout_service_fee_waived,
+        discount=_table_discount_intent(attendance), service_fee_waived=attendance.checkout_service_fee_waived,
         checkout_discount_approved_by=attendance.checkout_discount_approved_by,
         checkout_service_fee_waived_by=attendance.checkout_service_fee_waived_by,
         idempotency_key=idempotency_key, channel=SalesChannel.TABLE, seller_user=attendance.seller_user or attendance.opened_by, customer=attendance.customer,

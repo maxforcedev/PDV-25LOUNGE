@@ -302,6 +302,9 @@ class TableAttendance(BaseModel):
     closed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='closed_table_attendances', blank=True, null=True)
     sale = models.OneToOneField('sales.Sale', on_delete=models.PROTECT, related_name='table_attendance', blank=True, null=True)
     checkout_discount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
+    checkout_discount_type = models.CharField(max_length=10, choices=(
+        ('amount', 'Valor'), ('percentage', 'Percentual'),
+    ), default='amount')
     checkout_discount_approved_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         related_name='approved_table_checkout_discounts', blank=True, null=True,

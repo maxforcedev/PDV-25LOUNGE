@@ -64,6 +64,7 @@ class TableAttendance {
     this.summary = const {},
     this.orders = const [],
     this.checkoutDiscount = '0.00',
+    this.checkoutDiscountType = 'amount',
     this.checkoutServiceFeeWaived = false,
   });
 
@@ -88,6 +89,8 @@ class TableAttendance {
           .map(TableOrder.fromJson)
           .toList(growable: false),
       checkoutDiscount: '${json['checkout_discount'] ?? '0.00'}',
+      checkoutDiscountType:
+          json['checkout_discount_type'] as String? ?? 'amount',
       checkoutServiceFeeWaived: json['checkout_service_fee_waived'] == true,
     );
   }
@@ -108,6 +111,7 @@ class TableAttendance {
   final Map<String, dynamic> summary;
   final List<TableOrder> orders;
   final String checkoutDiscount;
+  final String checkoutDiscountType;
   final bool checkoutServiceFeeWaived;
 
   TableAttendance withSummary(Map<String, dynamic> value) => TableAttendance(
@@ -127,6 +131,7 @@ class TableAttendance {
         orders: orders,
         summary: value,
         checkoutDiscount: checkoutDiscount,
+        checkoutDiscountType: checkoutDiscountType,
         checkoutServiceFeeWaived: checkoutServiceFeeWaived,
       );
 

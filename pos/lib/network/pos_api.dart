@@ -137,7 +137,7 @@ abstract class PosApi {
       throw UnimplementedError();
   Future<TableAttendance> setTableCheckoutContext({
     required int attendanceId,
-    required String discount,
+    required Object discount,
     required bool serviceFeeWaived,
     required String idempotencyKey,
     Map<String, dynamic>? discountAuthorization,
@@ -756,7 +756,7 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   @override
   Future<TableAttendance> setTableCheckoutContext({
     required int attendanceId,
-    required String discount,
+    required Object discount,
     required bool serviceFeeWaived,
     required String idempotencyKey,
     Map<String, dynamic>? discountAuthorization,

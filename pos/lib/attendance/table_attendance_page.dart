@@ -1225,7 +1225,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
   }
 
   Future<void> _setCheckoutContext({
-    String? discount,
+    Object? discount,
     bool? waiveFee,
     QuickSaleAuthorization? discountAuthorization,
     QuickSaleAuthorization? serviceFeeAuthorization,
@@ -1234,7 +1234,11 @@ class _TableOrderPageState extends State<TableOrderPage> {
     setState(() => _actionInProgress = true);
     final updated = await widget.controller.setTableCheckoutContext(
       attendanceId: _attendance.id,
-      discount: discount ?? _attendance.checkoutDiscount,
+      discount: discount ??
+          {
+            'type': _attendance.checkoutDiscountType,
+            'value': _attendance.checkoutDiscount,
+          },
       serviceFeeWaived: waiveFee ?? _attendance.checkoutServiceFeeWaived,
       idempotencyKey: createIdempotencyKey(),
       discountAuthorization: discountAuthorization?.toJson(),
@@ -1252,7 +1256,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
         title: const Text('Desconto da mesa'),
         content: Text(_attendance.checkoutDiscount == '0.00'
             ? 'Nenhum desconto aplicado.'
-            : 'Desconto atual: ${formatMoney(_attendance.checkoutDiscount)}'),
+            : 'Desconto atual: ${_attendance.checkoutDiscountType == 'percentage' ? '${_attendance.checkoutDiscount}%' : formatMoney(_attendance.checkoutDiscount)}'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
@@ -1274,36 +1278,19 @@ class _TableOrderPageState extends State<TableOrderPage> {
     );
     if (!mounted || action == null) return;
     if (action == 'remove') {
-      await _setCheckoutContext(discount: '0.00');
+      await _setCheckoutContext(
+          discount: const {'type': 'amount', 'value': '0.00'});
       return;
     }
-    final controller =
-        TextEditingController(text: _attendance.checkoutDiscount);
-    final discount = await showDialog<String>(
+    final discount = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Desconto da mesa'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: const InputDecoration(labelText: 'Valor do desconto'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('CANCELAR'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context)
-                .pop(controller.text.trim().replaceAll(',', '.')),
-            child: const Text('SALVAR'),
-          ),
-        ],
+      builder: (_) => _TableItemDiscountDialog(
+        title: 'Aplicar desconto',
+        initialType: _attendance.checkoutDiscountType,
+        initialValue: _attendance.checkoutDiscount,
       ),
     );
-    controller.dispose();
-    if (discount == null || discount.isEmpty || !mounted) return;
+    if (discount == null || !mounted) return;
     final authorization = _can('sales.apply_discount')
         ? null
         : await _requestAuthorization('sale');
@@ -2014,7 +2001,15 @@ class _TableAuthorizationDialogState extends State<_TableAuthorizationDialog> {
 }
 
 class _TableItemDiscountDialog extends StatefulWidget {
-  const _TableItemDiscountDialog();
+  const _TableItemDiscountDialog({
+    this.title = 'Desconto do item',
+    this.initialType = 'amount',
+    this.initialValue = '',
+  });
+
+  final String title;
+  final String initialType;
+  final String initialValue;
 
   @override
   State<_TableItemDiscountDialog> createState() =>
@@ -2022,8 +2017,8 @@ class _TableItemDiscountDialog extends StatefulWidget {
 }
 
 class _TableItemDiscountDialogState extends State<_TableItemDiscountDialog> {
-  final _value = TextEditingController();
-  String _type = 'amount';
+  late final _value = TextEditingController(text: widget.initialValue);
+  late String _type = widget.initialType;
 
   @override
   void dispose() {
@@ -2033,7 +2028,7 @@ class _TableItemDiscountDialogState extends State<_TableItemDiscountDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-        title: const Text('Desconto do item'),
+        title: Text(widget.title),
         content: Column(mainAxisSize: MainAxisSize.min, children: [
           SegmentedButton<String>(
             segments: const [
