@@ -295,6 +295,12 @@ class TableCancelOrderItemSerializer(serializers.Serializer):
     reason = serializers.CharField(max_length=1000, allow_blank=False, trim_whitespace=True)
 
 
+class TableItemDiscountSerializer(serializers.Serializer):
+    idempotency_key = serializers.UUIDField()
+    discount = serializers.JSONField()
+    authorization = serializers.DictField(required=False)
+
+
 class TableCheckoutContextSerializer(serializers.Serializer):
     idempotency_key = serializers.UUIDField()
     discount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, default=Decimal('0.00'))

@@ -150,6 +150,16 @@ class POSStockAvailabilitySerializer(serializers.Serializer):
         return items
 
 
+class POSTablePreviewSerializer(serializers.Serializer):
+    items = POSCartItemSerializer(many=True, required=False, default=list)
+
+    def validate_items(self, items):
+        client_item_ids = [item['client_item_id'] for item in items]
+        if len(client_item_ids) != len(set(client_item_ids)):
+            raise serializers.ValidationError('Cada item do carrinho deve ter um identificador único.')
+        return items
+
+
 class POSDiscountAuthorizationSerializer(serializers.Serializer):
     user = serializers.IntegerField(min_value=1)
     method = serializers.ChoiceField(choices=('pin',))

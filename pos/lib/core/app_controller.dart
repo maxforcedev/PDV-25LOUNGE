@@ -393,6 +393,15 @@ class AppController extends ChangeNotifier {
   }) =>
       _attendance(() => _api.tableStockAvailability(items: items));
 
+  Future<Map<String, dynamic>?> tableOrderPreview({
+    required int attendanceId,
+    required List<Map<String, dynamic>> items,
+  }) =>
+      _attendance(() => _api.tableOrderPreview(
+            attendanceId: attendanceId,
+            items: items,
+          ));
+
   Future<List<TableOrderItem>?> saveTableOrder({
     required int attendanceId,
     required List<Map<String, dynamic>> items,
@@ -413,6 +422,19 @@ class AppController extends ChangeNotifier {
             itemId: itemId,
             reason: reason,
             idempotencyKey: idempotencyKey,
+          ));
+
+  Future<TableOrderItem?> setTableOrderItemDiscount({
+    required int itemId,
+    required Object discount,
+    required String idempotencyKey,
+    Map<String, dynamic>? authorization,
+  }) =>
+      _attendance(() => _api.setTableOrderItemDiscount(
+            itemId: itemId,
+            discount: discount,
+            idempotencyKey: idempotencyKey,
+            authorization: authorization,
           ));
 
   Future<TableOrder?> cancelTableOrder({

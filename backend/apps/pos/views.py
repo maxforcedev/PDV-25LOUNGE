@@ -50,7 +50,7 @@ from apps.attendance.serializers import (
     TableAttendanceOpenSerializer, TableAttendanceSerializer, TableOrderSerializer, TableOrderItemSerializer,
     TablePaymentInputSerializer, TablePaymentSerializer,
     TableTransferItemsSerializer, TableAttendanceCustomerSerializer, TableCancelOrderItemSerializer,
-    TableCheckoutContextSerializer, TableCloseSerializer,
+    TableCheckoutContextSerializer, TableCloseSerializer, TableItemDiscountSerializer,
 )
 from apps.attendance.services import (
     AttendanceConflict, add_order_items, cancel_order_item, command_summary, confirm_order_item,
@@ -64,7 +64,8 @@ from apps.attendance.services import (
     open_table_attendance, save_table_order, table_summary, cancel_table_item,
     record_table_payment, reverse_table_payment, set_table_bill_requested, close_table_attendance,
     transfer_table_items,
-    cancel_table_order, set_table_customer, set_table_checkout_context,
+    cancel_table_order, set_table_customer, set_table_checkout_context, preview_table_order,
+    set_table_item_discount,
 )
 from apps.products.models import (
     ModifierOption, ProductModifierGroup,
@@ -87,6 +88,7 @@ from .serializers import (
     POSAdminDeviceSerializer, POSDeviceSettingsSerializer, POSOpenCashSessionSerializer,
     POSCustomerSerializer, POSDiscountAuthorizationValidationSerializer,
     POSFinalizeSaleSerializer, POSSalePreviewSerializer, POSStockAvailabilitySerializer,
+    POSTablePreviewSerializer,
     POSTicketLookupSerializer, POSTicketValidateSerializer,
 )
 from .services import (
@@ -839,6 +841,24 @@ class POSTableAvailabilityView(POSAttendanceView, POSQuickSaleView):
         ))
 
 
+class POSTableOrderPreviewView(POSAttendanceView, POSQuickSaleView):
+    def post(self, request, attendance_id):
+        device, _, permissions, _ = self.context(request)
+        self._require(permissions, 'tables.add_items', 'Você não possui permissão para consultar o resumo da Mesa.')
+        require_branch_feature(device.branch, 'tables')
+        serializer = POSTablePreviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        attendance = get_object_or_404(
+            TableAttendance.objects.select_related('branch__company', 'seller_user'),
+            pk=attendance_id, branch=device.branch, status=TableAttendanceStatus.OPEN,
+        )
+        preview = preview_table_order(
+            attendance=attendance,
+            items=self._items(serializer.validated_data['items']),
+        )
+        return Response(CalculationOutputSerializer(preview).data)
+
+
 class POSAttendanceCheckoutOptionsView(POSAttendanceView):
     def get(self, request):
         device, _, permissions, _ = self.context(request)
@@ -1170,6 +1190,30 @@ class POSTableAttendanceItemCancelView(POSAttendanceView):
         except AttendanceConflict as error:
             self._domain(error)
         return Response(TableOrderItemSerializer(item).data, headers={'Idempotency-Replayed': 'true'} if replayed else None)
+
+
+class POSTableAttendanceItemDiscountView(POSAttendanceView):
+    def post(self, request, item_id):
+        device, operator, permissions, operator_session = self.context(request)
+        self._require(permissions, 'tables.add_items', 'Você não possui permissão para alterar itens da Mesa.')
+        serializer = TableItemDiscountSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        item = get_object_or_404(
+            TableOrderItem.objects.select_related('order__attendance'),
+            pk=item_id, order__attendance__branch=device.branch,
+        )
+        try:
+            item, replayed = set_table_item_discount(
+                item=item, user=operator,
+                discount=serializer.validated_data['discount'],
+                authorization=serializer.validated_data.get('authorization'),
+                idempotency_key=serializer.validated_data['idempotency_key'],
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+        except AttendanceConflict as error:
+            self._domain(error)
+        return Response(TableOrderItemSerializer(item).data,
+                        headers={'Idempotency-Replayed': 'true'} if replayed else None)
 
 
 class POSTableAttendanceOrderCancelView(POSTableAttendanceView):

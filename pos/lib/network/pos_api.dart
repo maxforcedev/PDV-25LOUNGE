@@ -94,6 +94,11 @@ abstract class PosApi {
     required List<Map<String, dynamic>> items,
   }) =>
       throw UnimplementedError();
+  Future<Map<String, dynamic>> tableOrderPreview({
+    required int attendanceId,
+    required List<Map<String, dynamic>> items,
+  }) =>
+      throw UnimplementedError();
   Future<List<TableOrderItem>> saveTableOrder({
     required int attendanceId,
     required List<Map<String, dynamic>> items,
@@ -103,6 +108,13 @@ abstract class PosApi {
     required int itemId,
     required String reason,
     required String idempotencyKey,
+  }) =>
+      throw UnimplementedError();
+  Future<TableOrderItem> setTableOrderItemDiscount({
+    required int itemId,
+    required Object discount,
+    required String idempotencyKey,
+    Map<String, dynamic>? authorization,
   }) =>
       throw UnimplementedError();
   Future<TableOrder> cancelTableOrder({
@@ -678,6 +690,23 @@ class HttpPosApi implements PosApi, PosCredentialCache {
       ));
 
   @override
+  Future<TableOrderItem> setTableOrderItemDiscount({
+    required int itemId,
+    required Object discount,
+    required String idempotencyKey,
+    Map<String, dynamic>? authorization,
+  }) async =>
+      TableOrderItem.fromJson(await _request(
+        'POST',
+        'table-order-items/$itemId/discount/',
+        body: {
+          'discount': discount,
+          'idempotency_key': idempotencyKey,
+          if (authorization != null) 'authorization': authorization,
+        },
+      ));
+
+  @override
   Future<TableOrder> cancelTableOrder({
     required int orderId,
     required String reason,
@@ -711,6 +740,17 @@ class HttpPosApi implements PosApi, PosCredentialCache {
         'POST',
         'table-attendances/$attendanceId/customer/',
         body: {'customer': customerId, 'idempotency_key': idempotencyKey},
+      ));
+
+  @override
+  Future<Map<String, dynamic>> tableOrderPreview({
+    required int attendanceId,
+    required List<Map<String, dynamic>> items,
+  }) async =>
+      (await _request(
+        'POST',
+        'table-attendances/$attendanceId/preview/',
+        body: {'items': items},
       ));
 
   @override

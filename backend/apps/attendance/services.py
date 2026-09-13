@@ -22,7 +22,7 @@ from apps.sales.services import (
     CENT, _discount_approver, _financial_snapshots, _reconcile_modifier_component_costs, _service_fee_waiver,
     branch_cost_map, branch_price_map, calculate_command_preview, calculate_order_items_preview,
     calculate_table_preview, finalize_sale,
-    resolve_modifiers, stock_requirements_for_product, strict_decimal,
+    normalize_discount_intent, resolve_modifiers, stock_requirements_for_product, strict_decimal,
 )
 
 from .models import (
@@ -892,6 +892,108 @@ def table_financial_state(attendance, *, lock=False, discount=None, service_fee_
         Sum('amount'), Value(Decimal('0.00'), output_field=DecimalField(max_digits=14, decimal_places=2)),
     ))['total']
     return preview, paid, max(preview['total'] - paid, Decimal('0.00')), preview['service_fee_base']
+
+
+def preview_table_order(*, attendance, items):
+    """Calculate a read-only table preview including the unsaved POS draft."""
+    from .models import TableOrderItem
+
+    confirmed = list(TableOrderItem.objects.filter(
+        order__attendance=attendance, status=AttendanceOrderItemStatus.CONFIRMED,
+    ).select_related('product__category').order_by('id'))
+    draft = []
+    for entry in items:
+        product = sellable_products_for_branch(
+            attendance.branch, SalesChannel.TABLE,
+        ).filter(pk=entry['product']).first()
+        if not product:
+            raise ValidationError({'product': 'Produto indisponível para Mesa nesta filial.'})
+        quantity = strict_decimal(
+            entry['quantity'], field='quantity', decimal_places=3, max_digits=14,
+        )
+        if quantity <= 0 or (product.unit == Unit.UNIT and quantity != quantity.to_integral_value()):
+            raise ValidationError({'quantity': 'Quantidade inválida para o produto.'})
+        modifier_total, modifiers = resolve_modifiers(
+            product, entry.get('modifiers', []), attendance.company_id,
+            branch=attendance.branch, item_quantity=quantity,
+        )
+        base_price = branch_price_map(attendance.branch, [product.pk]).get(product.pk, product.sale_price)
+        unit_cost = branch_cost_map(attendance.branch, [product.pk]).get(product.pk, product.cost)
+        config = ProductBranchConfig.objects.select_related('category').filter(
+            product=product, branch=attendance.branch,
+        ).first()
+        category = config.category if config and config.category_id else product.category
+        draft.append(TableOrderItem(
+            product=product, quantity=quantity, product_name=product.name,
+            internal_code=product.internal_code or '',
+            category_id_snapshot=category.pk if category else None,
+            category_name_snapshot=category.name if category else '', unit=product.unit,
+            base_unit_price=base_price, modifier_unit_total=modifier_total,
+            unit_price=(base_price + modifier_total).quantize(CENT, rounding=ROUND_HALF_UP),
+            modifier_snapshot=modifiers, notes=entry.get('notes', ''), unit_cost=unit_cost,
+        ))
+    return calculate_table_preview(
+        branch=attendance.branch, order_items=[*confirmed, *draft],
+        discount=attendance.checkout_discount,
+        service_fee_waived=attendance.checkout_service_fee_waived,
+        seller_user=attendance.seller_user,
+        service_fee_rate_snapshot=attendance.service_fee_rate_snapshot,
+        commission_rate_snapshot=attendance.commission_rate_snapshot,
+    )
+
+
+@transaction.atomic
+def set_table_item_discount(*, item, user, discount, authorization, idempotency_key,
+                            audit_metadata=None):
+    from .models import TableAttendance, TableOrderItem, TablePayment
+
+    item = TableOrderItem.objects.select_for_update().select_related(
+        'order__attendance__branch__company', 'product__category',
+    ).get(pk=item.pk)
+    attendance = TableAttendance.objects.select_for_update().get(pk=item.order.attendance_id)
+    if attendance.status != TableAttendanceStatus.OPEN or item.status != AttendanceOrderItemStatus.CONFIRMED:
+        raise AttendanceConflict('table_item_not_editable', 'O desconto exige item confirmado em mesa aberta.')
+    if TablePayment.objects.filter(
+        attendance=attendance, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
+    ).exists():
+        raise AttendanceConflict('table_item_discount_locked', 'O desconto não pode ser alterado após pagamento.')
+    intent = normalize_discount_intent(discount, field='discount')
+    operation, replayed = _operation(
+        branch=attendance.branch, operation_type=AttendanceOperationType.TABLE_ORDER,
+        idempotency_key=idempotency_key,
+        payload={'item': item.pk, 'discount': {'type': intent['type'], 'value': str(intent['value'])}},
+    )
+    if replayed:
+        return item, True
+    before = dict(item.financial_snapshot or {})
+    candidate = dict(before)
+    candidate['manual_discount_intent'] = {'type': intent['type'], 'value': str(intent['value'])}
+    item.financial_snapshot = candidate
+    preview = calculate_table_preview(
+        branch=attendance.branch, order_items=[item], seller_user=attendance.seller_user,
+        service_fee_waived=True, include_internal_snapshots=True,
+        service_fee_rate_snapshot=attendance.service_fee_rate_snapshot,
+        commission_rate_snapshot=attendance.commission_rate_snapshot,
+    )
+    financial = preview['_snapshots'][0]
+    amount = financial['manual_discount']
+    approved_by = _discount_approver(
+        attendance.branch, user, amount, authorization,
+        permission_code='sales.apply_item_discount', authorization_field='authorization',
+    )
+    candidate['manual_discount'] = str(amount)
+    candidate['net_subtotal'] = str(financial['net_subtotal'])
+    candidate['participates_in_service_fee'] = financial['participates_in_service_fee']
+    candidate['participates_in_commission'] = financial['participates_in_commission']
+    item.financial_snapshot = candidate
+    item.save(update_fields=('financial_snapshot', 'updated_at'))
+    operation.result = {'item_id': item.pk, 'approved_by': approved_by.pk if approved_by else None}
+    operation.save(update_fields=('result', 'updated_at'))
+    audit_log(actor=user, action='table_order_item.discount.set', obj=item,
+              company=attendance.company, branch=attendance.branch, before=before,
+              after=candidate,
+              metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
+    return item, False
 
 
 def table_summary(attendance):
