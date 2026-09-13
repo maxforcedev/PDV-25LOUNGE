@@ -697,10 +697,14 @@ class POSTableOpenView(POSAttendanceView):
         self._require(permissions, 'tables.open', 'Você não possui permissão para abrir mesas nesta filial.')
         serializer = TableAttendanceOpenSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
         try:
             attendance, replayed = open_table_attendance(
                 branch=device.branch, table_id=table_id, user=operator,
-                audit_metadata=self.audit_metadata(device, operator_session), **serializer.validated_data,
+                people_count=data.get('people_count'), responsible_name=data['responsible_name'],
+                notes=data['notes'], customer_id=data.get('customer'),
+                idempotency_key=data['idempotency_key'],
+                audit_metadata=self.audit_metadata(device, operator_session),
             )
         except AttendanceConflict as error:
             self._domain(error)
@@ -1197,11 +1201,12 @@ class POSTableAttendanceCustomerView(POSTableAttendanceView):
         self._require(permissions, 'tables.set_customer', 'Você não possui permissão para alterar o cliente da mesa.')
         serializer = TableAttendanceCustomerSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
         try:
             attendance, replayed = set_table_customer(
                 attendance=self._attendance(device, attendance_id), user=operator,
                 audit_metadata=self.audit_metadata(device, operator_session),
-                **serializer.validated_data,
+                customer_id=data.get('customer'), idempotency_key=data['idempotency_key'],
             )
         except AttendanceConflict as error:
             self._domain(error)

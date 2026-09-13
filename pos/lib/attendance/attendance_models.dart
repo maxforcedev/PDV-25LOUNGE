@@ -63,6 +63,8 @@ class TableAttendance {
     this.closedAt,
     this.summary = const {},
     this.orders = const [],
+    this.checkoutDiscount = '0.00',
+    this.checkoutServiceFeeWaived = false,
   });
 
   factory TableAttendance.fromJson(Map<String, dynamic> json) {
@@ -85,6 +87,8 @@ class TableAttendance {
           .cast<Map<String, dynamic>>()
           .map(TableOrder.fromJson)
           .toList(growable: false),
+      checkoutDiscount: '${json['checkout_discount'] ?? '0.00'}',
+      checkoutServiceFeeWaived: json['checkout_service_fee_waived'] == true,
     );
   }
 
@@ -103,6 +107,28 @@ class TableAttendance {
   final String? closedAt;
   final Map<String, dynamic> summary;
   final List<TableOrder> orders;
+  final String checkoutDiscount;
+  final bool checkoutServiceFeeWaived;
+
+  TableAttendance withSummary(Map<String, dynamic> value) => TableAttendance(
+        id: id,
+        tableId: tableId,
+        tableName: tableName,
+        status: status,
+        customerId: customerId,
+        customerName: customerName,
+        peopleCount: peopleCount,
+        responsibleName: responsibleName,
+        notes: notes,
+        openedBy: openedBy,
+        billRequestedAt: billRequestedAt,
+        openedAt: openedAt,
+        closedAt: closedAt,
+        orders: orders,
+        summary: value,
+        checkoutDiscount: checkoutDiscount,
+        checkoutServiceFeeWaived: checkoutServiceFeeWaived,
+      );
 
   bool get billRequested => billRequestedAt != null;
 }

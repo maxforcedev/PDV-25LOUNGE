@@ -240,7 +240,7 @@ class TableAttendanceOpenSerializer(serializers.Serializer):
     idempotency_key = serializers.UUIDField()
     people_count = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     responsible_name = serializers.CharField(max_length=200, required=False, allow_blank=True, default='')
-    customer_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    customer = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     notes = serializers.CharField(max_length=1000, required=False, allow_blank=True, default='')
 
 
@@ -281,7 +281,7 @@ class TableTransferItemsSerializer(serializers.Serializer):
 
 
 class TableAttendanceCustomerSerializer(serializers.Serializer):
-    customer_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    customer = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     idempotency_key = serializers.UUIDField()
 
 

@@ -10,6 +10,7 @@ import '../scanner/product_barcode_scanner_page.dart';
 import '../sales/quick_sale_page.dart';
 import '../sales/sale_models.dart';
 import 'attendance_models.dart';
+import 'table_summary_widgets.dart';
 
 double _tableCartNumber(Object? value) =>
     double.tryParse('$value'.replaceAll(',', '.')) ?? 0;
@@ -90,7 +91,7 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
   bool get _canAddItems =>
       widget.controller.bootstrapSnapshot?.permissions
           .contains('tables.add_items') ==
-       true;
+      true;
 
   bool _can(String permission) =>
       widget.controller.bootstrapSnapshot?.permissions.contains(permission) ==
@@ -151,8 +152,8 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
   }
 
   Future<void> _cancelOrder(TableOrder order) async {
-    final reason = await _requiredReasonDialog(
-        context, 'Cancelar pedido #${order.id}');
+    final reason =
+        await _requiredReasonDialog(context, 'Cancelar pedido #${order.id}');
     if (reason == null || _actionInProgress) return;
     setState(() => _actionInProgress = true);
     final cancelled = await widget.controller.cancelTableOrder(
@@ -248,6 +249,49 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
     if (updated != null) await _load();
   }
 
+  Future<void> _setCheckoutContext({String? discount, bool? waiveFee}) async {
+    if (_actionInProgress) return;
+    setState(() => _actionInProgress = true);
+    final updated = await widget.controller.setTableCheckoutContext(
+      attendanceId: _attendance.id,
+      discount: discount ?? _attendance.checkoutDiscount,
+      serviceFeeWaived: waiveFee ?? _attendance.checkoutServiceFeeWaived,
+      idempotencyKey: createIdempotencyKey(),
+    );
+    if (!mounted) return;
+    setState(() => _actionInProgress = false);
+    if (updated != null) await _load();
+  }
+
+  Future<void> _editDiscount() async {
+    final controller =
+        TextEditingController(text: _attendance.checkoutDiscount);
+    final value = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Desconto da mesa'),
+        content: TextField(
+          controller: controller,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: const InputDecoration(labelText: 'Valor do desconto'),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('CANCELAR')),
+          FilledButton(
+              onPressed: () => Navigator.pop(
+                  context, controller.text.trim().replaceAll(',', '.')),
+              child: const Text('SALVAR')),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (value != null && value.isNotEmpty) {
+      await _setCheckoutContext(discount: value);
+    }
+  }
+
   void _showCustomer() {
     showDialog<void>(
       context: context,
@@ -255,7 +299,8 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
         title: const Text('Cliente'),
         content: Text([
           _attendance.customerName,
-          if (_attendance.customerId != null) 'Código: ${_attendance.customerId}',
+          if (_attendance.customerId != null)
+            'Código: ${_attendance.customerId}',
         ].join('\n')),
         actions: [
           TextButton(
@@ -337,15 +382,17 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
                                   onPressed: _showCustomer,
                                   child: const Text('VER'),
                                 ),
-                              TextButton(
-                                onPressed: _actionInProgress
-                                    ? null
-                                    : _selectCustomer,
-                                child: Text(_attendance.customerId == null
-                                    ? 'PESQUISAR'
-                                    : 'TROCAR'),
-                              ),
-                              if (_attendance.customerId != null && _canAddItems)
+                              if (_can('tables.set_customer'))
+                                TextButton(
+                                  onPressed: _actionInProgress
+                                      ? null
+                                      : _selectCustomer,
+                                  child: Text(_attendance.customerId == null
+                                      ? 'PESQUISAR'
+                                      : 'TROCAR'),
+                                ),
+                              if (_attendance.customerId != null &&
+                                  _can('tables.set_customer'))
                                 TextButton(
                                   onPressed: _actionInProgress
                                       ? null
@@ -366,7 +413,8 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
                             Padding(
                               padding: const EdgeInsets.only(top: 8),
                               child: OutlinedButton.icon(
-                                onPressed: _actionInProgress ? null : _toggleBill,
+                                onPressed:
+                                    _actionInProgress ? null : _toggleBill,
                                 icon: Icon(_attendance.billRequested
                                     ? Icons.remove_done_outlined
                                     : Icons.request_quote_outlined),
@@ -374,6 +422,36 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
                                     ? 'CANCELAR SOLICITAÇÃO'
                                     : 'SOLICITAR CONTA'),
                               ),
+                            ),
+                          if (_attendance.status == 'open' &&
+                              _can('sales.apply_discount'))
+                            Wrap(spacing: 8, children: [
+                              OutlinedButton(
+                                  onPressed:
+                                      _actionInProgress ? null : _editDiscount,
+                                  child: Text(
+                                      _attendance.checkoutDiscount == '0.00'
+                                          ? 'APLICAR DESCONTO'
+                                          : 'ALTERAR DESCONTO')),
+                              if (_attendance.checkoutDiscount != '0.00')
+                                OutlinedButton(
+                                    onPressed: _actionInProgress
+                                        ? null
+                                        : () => _setCheckoutContext(
+                                            discount: '0.00'),
+                                    child: const Text('REMOVER DESCONTO')),
+                            ]),
+                          if (_attendance.status == 'open' &&
+                              _can('sales.waive_service_fee'))
+                            OutlinedButton(
+                              onPressed: _actionInProgress
+                                  ? null
+                                  : () => _setCheckoutContext(
+                                      waiveFee: !_attendance
+                                          .checkoutServiceFeeWaived),
+                              child: Text(_attendance.checkoutServiceFeeWaived
+                                  ? 'RESTAURAR TAXA'
+                                  : 'REMOVER TAXA'),
                             ),
                         ],
                       ),
@@ -402,8 +480,8 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
                                 order.createdByName.isNotEmpty)
                               Text(
                                   [
-                                     if (order.createdAt != null)
-                                       _tableHistoryTime(order.createdAt),
+                                    if (order.createdAt != null)
+                                      _tableHistoryTime(order.createdAt),
                                     if (order.createdByName.isNotEmpty)
                                       'Operador: ${order.createdByName}',
                                   ].join(' · '),
@@ -432,21 +510,21 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
                                           style: Theme.of(context)
                                               .textTheme
                                               .bodySmall),
-                                     if (item.modifierSnapshot.isNotEmpty)
-                                       Text(
-                                           item.modifierSnapshot
-                                               .map((row) =>
-                                                   '+ ${row['option_name'] ?? row['modifier_name'] ?? row['name'] ?? 'Modificador'}')
-                                               .join('\n'),
-                                           style: Theme.of(context)
-                                               .textTheme
-                                               .bodySmall),
-                                     if (item.confirmedAt != null)
-                                       Text(
-                                           'Confirmado em ${_tableHistoryTime(item.confirmedAt)}',
-                                           style: Theme.of(context)
-                                               .textTheme
-                                               .bodySmall),
+                                    if (item.modifierSnapshot.isNotEmpty)
+                                      Text(
+                                          item.modifierSnapshot
+                                              .map((row) =>
+                                                  '+ ${row['option_name'] ?? row['modifier_name'] ?? row['name'] ?? 'Modificador'}')
+                                              .join('\n'),
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall),
+                                    if (item.confirmedAt != null)
+                                      Text(
+                                          'Confirmado em ${_tableHistoryTime(item.confirmedAt)}',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall),
                                     if (item.status == 'confirmed' &&
                                         _can('tables.transfer_items'))
                                       CheckboxListTile(
@@ -458,8 +536,10 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
                                             ? null
                                             : (selected) => setState(() =>
                                                 selected == true
-                                                    ? _selectedItems.add(item.id)
-                                                    : _selectedItems.remove(item.id)),
+                                                    ? _selectedItems
+                                                        .add(item.id)
+                                                    : _selectedItems
+                                                        .remove(item.id)),
                                       ),
                                     if (item.status == 'confirmed' &&
                                         _can('tables.cancel_items'))
@@ -469,7 +549,8 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
                                           onPressed: _actionInProgress
                                               ? null
                                               : () => _cancelItem(item),
-                                          icon: const Icon(Icons.cancel_outlined),
+                                          icon:
+                                              const Icon(Icons.cancel_outlined),
                                           label: const Text('CANCELAR ITEM'),
                                         ),
                                       ),
@@ -484,7 +565,8 @@ class _TableAttendancePageState extends State<TableAttendancePage> {
                                   onPressed: _actionInProgress
                                       ? null
                                       : () => _cancelOrder(order),
-                                  icon: const Icon(Icons.cancel_presentation_outlined),
+                                  icon: const Icon(
+                                      Icons.cancel_presentation_outlined),
                                   label: const Text('CANCELAR PEDIDO'),
                                 ),
                               ),
@@ -552,6 +634,7 @@ class TableOrderPage extends StatefulWidget {
 }
 
 class _TableOrderPageState extends State<TableOrderPage> {
+  late TableAttendance _attendance = widget.attendance;
   final _search = TextEditingController();
   final _cartListenable = ValueNotifier<int>(0);
   List<QuickSaleProduct> _catalog = const [];
@@ -579,10 +662,14 @@ class _TableOrderPageState extends State<TableOrderPage> {
 
   Future<void> _load() async {
     setState(() => _loading = true);
-    final catalog = await widget.controller.tableCatalog();
+    final results = await Future.wait([
+      widget.controller.tableCatalog(),
+      widget.controller.tableAttendanceDetail(widget.attendance.id),
+    ]);
     if (!mounted) return;
     setState(() {
-      _catalog = catalog ?? const [];
+      _catalog = results[0] as List<QuickSaleProduct>? ?? const [];
+      _attendance = results[1] as TableAttendance? ?? _attendance;
       _loading = false;
     });
   }
@@ -632,18 +719,28 @@ class _TableOrderPageState extends State<TableOrderPage> {
       product: product,
       quantity: '1',
     );
-    if (product.modifierGroups.isNotEmpty) {
+    if (_requiresConfiguration(product)) {
       await _editNewItem(product, item);
       return;
     }
     await _addCartItem(item);
   }
 
+  bool _requiresConfiguration(QuickSaleProduct product) =>
+      product.modifierGroups.any(
+        (group) =>
+            group.required ||
+            group.minSelections > 0 ||
+            _tableCartNumber(group.minTotalQuantity) > 0 ||
+            group.requiredQuantity != null,
+      );
+
   Future<void> _editNewItem(
       QuickSaleProduct product, QuickSaleCartItem item) async {
     final configured = await showDialog<QuickSaleCartItem>(
       context: context,
-      builder: (_) => _TableSaleItemEditorDialog(product: product, initial: item),
+      builder: (_) =>
+          _TableSaleItemEditorDialog(product: product, initial: item),
     );
     if (configured != null && mounted && !_saving) {
       await _addCartItem(configured);
@@ -658,7 +755,8 @@ class _TableOrderPageState extends State<TableOrderPage> {
             entry.modifiers.toString() == item.modifiers.toString());
         if (equivalent < 0) return [...cart, item];
         final current =
-            double.tryParse(cart[equivalent].quantity.replaceAll(',', '.')) ?? 0;
+            double.tryParse(cart[equivalent].quantity.replaceAll(',', '.')) ??
+                0;
         final added = double.tryParse(item.quantity.replaceAll(',', '.')) ?? 0;
         final quantity = current + added;
         final merged = List<QuickSaleCartItem>.from(cart);
@@ -711,8 +809,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
     return queued;
   }
 
-  List<Map<String, dynamic>> _tableCartPayload(
-          List<QuickSaleCartItem> cart) =>
+  List<Map<String, dynamic>> _tableCartPayload(List<QuickSaleCartItem> cart) =>
       cart
           .map((item) => <String, dynamic>{
                 'product': item.product.id,
@@ -732,14 +829,19 @@ class _TableOrderPageState extends State<TableOrderPage> {
     final shortage = availability.shortages.firstOrNull;
     final item = shortage == null
         ? null
-        : cart.where((entry) => '${entry.product.id}' == '${shortage['product'] ?? shortage['product_id']}').firstOrNull;
+        : cart
+            .where((entry) =>
+                '${entry.product.id}' ==
+                '${shortage['product'] ?? shortage['product_id']}')
+            .firstOrNull;
     final requested = item?.quantity;
     final message = available == null
         ? 'Este produto não possui estoque suficiente para essa quantidade.'
         : requested == null
             ? 'Só temos $available disponíveis deste produto.'
             : 'Você tentou adicionar $requested, mas há somente $available disponíveis.';
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _addBatch(QuickSaleProduct product) async {
@@ -825,10 +927,10 @@ class _TableOrderPageState extends State<TableOrderPage> {
         }
         final idempotencyKey = _orderIdempotencyKey ??= createIdempotencyKey();
         return (await widget.controller.saveTableOrder(
-                  attendanceId: widget.attendance.id,
-                  idempotencyKey: idempotencyKey,
-                  items: snapshot,
-                )) !=
+              attendanceId: _attendance.id,
+              idempotencyKey: idempotencyKey,
+              items: snapshot,
+            )) !=
             null;
       });
     } finally {
@@ -847,8 +949,29 @@ class _TableOrderPageState extends State<TableOrderPage> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-        appBar:
-            AppBar(title: Text('Novo pedido • ${widget.attendance.tableName}')),
+        appBar: AppBar(title: Text(_attendance.tableName), actions: [
+          if (_attendance.billRequested)
+            const Padding(
+              padding: EdgeInsets.only(right: 8),
+              child: Center(
+                  child: Text('CONTA SOLICITADA',
+                      style: TextStyle(
+                          fontSize: 11, fontWeight: FontWeight.w800))),
+            ),
+          PopupMenuButton<String>(
+            onSelected: (_) async {
+              await Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => TableAttendancePage(
+                    controller: widget.controller, attendance: _attendance),
+              ));
+              if (mounted) await _load();
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                  value: 'operations', child: Text('OPERAÇÕES DA MESA')),
+            ],
+          ),
+        ]),
         bottomNavigationBar: MediaQuery.sizeOf(context).width < 900
             ? ValueListenableBuilder<int>(
                 valueListenable: _cartListenable,
@@ -888,12 +1011,13 @@ class _TableOrderPageState extends State<TableOrderPage> {
                 if (constraints.maxWidth < 900) return catalog;
                 return Row(children: [
                   Expanded(flex: 3, child: catalog),
-                    SizedBox(
+                  SizedBox(
                       width: 420,
                       child: ValueListenableBuilder<int>(
                           valueListenable: _cartListenable,
                           builder: (_, __, ___) => _TableOrderSummaryPanel(
                                 cart: _cart,
+                                attendance: _attendance,
                                 saving: _saving,
                                 onEdit: _edit,
                                 onRemove: (index) => unawaited(_remove(index)),
@@ -917,12 +1041,12 @@ class _TableOrderPageState extends State<TableOrderPage> {
   Future<void> _showMobileSummary() async {
     final saved = await Navigator.of(context).push<bool>(MaterialPageRoute(
       builder: (_) => Scaffold(
-        appBar: AppBar(
-            title: Text('Resumo do pedido • ${widget.attendance.tableName}')),
+        appBar: AppBar(title: Text('Mesa ${_attendance.tableName}')),
         body: ValueListenableBuilder<int>(
           valueListenable: _cartListenable,
           builder: (_, __, ___) => _TableOrderSummaryPanel(
             cart: _cart,
+            attendance: _attendance,
             saving: _saving,
             onEdit: _edit,
             onRemove: (index) => unawaited(_remove(index)),
@@ -938,11 +1062,13 @@ class _TableOrderPageState extends State<TableOrderPage> {
 class _TableOrderSummaryPanel extends StatelessWidget {
   const _TableOrderSummaryPanel(
       {required this.cart,
+      required this.attendance,
       required this.saving,
       required this.onEdit,
       required this.onRemove,
       required this.onSave});
   final List<QuickSaleCartItem> cart;
+  final TableAttendance attendance;
   final bool saving;
   final ValueChanged<int> onEdit;
   final ValueChanged<int> onRemove;
@@ -962,48 +1088,77 @@ class _TableOrderSummaryPanel extends StatelessWidget {
                     ?.copyWith(fontWeight: FontWeight.w800)),
             const SizedBox(height: 8),
             Expanded(
-                child: cart.isEmpty
+                child: cart.isEmpty && attendance.orders.isEmpty
                     ? const Center(
                         child: Text('Adicione produtos para iniciar o pedido.'))
                     : ListView.separated(
-                        itemCount: cart.length,
+                        itemCount: attendance.orders.fold<int>(0,
+                                (count, order) => count + order.items.length) +
+                            cart.length,
                         separatorBuilder: (_, __) => const Divider(height: 1),
                         itemBuilder: (_, index) {
-                          final item = cart[index];
-                           return ListTile(
-                             onTap: saving ? null : () => onEdit(index),
-                             title: Text(item.product.name),
-                             subtitle: Text([
-                               'Qtd. ${item.quantity}',
-                               for (final modifier in item.modifiers)
-                                 _tableModifierText(item.product, modifier),
-                               if (item.notes.isNotEmpty) 'Obs: ${item.notes}'
-                             ].join('\n')),
-                             leading: SizedBox(
-                               width: 76,
-                               child: Text(
-                                 formatMoney(_tableLineTotal(item).toStringAsFixed(2)),
-                                 style: const TextStyle(
-                                     fontWeight: FontWeight.w800),
-                               ),
-                             ),
-                             trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                               IconButton(
-                                   onPressed: saving ? null : () => onRemove(index),
-                                   icon: const Icon(Icons.delete_outline)),
-                               const Icon(Icons.chevron_right),
-                             ]),
-                           );
+                          final persisted = attendance.orders
+                              .expand((order) =>
+                                  order.items.map((item) => (order, item)))
+                              .toList(growable: false);
+                          if (index < persisted.length) {
+                            final entry = persisted[index];
+                            final item = entry.$2;
+                            return ListTile(
+                              enabled: false,
+                              title:
+                                  Text('${item.quantity}x ${item.productName}'),
+                              subtitle: Text([
+                                'Pedido #${entry.$1.id} · ${item.status.toUpperCase()}',
+                                for (final modifier in item.modifierSnapshot)
+                                  '+ ${modifier['name'] ?? modifier['option_name'] ?? 'Modificador'}',
+                                if (item.notes.isNotEmpty) 'Obs: ${item.notes}',
+                                if (item.cancellationReason.isNotEmpty)
+                                  'Cancelado: ${item.cancellationReason}',
+                              ].join('\n')),
+                              trailing: Text(formatMoney(item.unitPrice)),
+                            );
+                          }
+                          final item = cart[index - persisted.length];
+                          return ListTile(
+                            onTap: saving ? null : () => onEdit(index),
+                            title: Text(item.product.name),
+                            subtitle: Text([
+                              'Qtd. ${item.quantity}',
+                              for (final modifier in item.modifiers)
+                                _tableModifierText(item.product, modifier),
+                              if (item.notes.isNotEmpty) 'Obs: ${item.notes}'
+                            ].join('\n')),
+                            leading: SizedBox(
+                              width: 76,
+                              child: Text(
+                                formatMoney(
+                                    _tableLineTotal(item).toStringAsFixed(2)),
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w800),
+                              ),
+                            ),
+                            trailing:
+                                Row(mainAxisSize: MainAxisSize.min, children: [
+                              IconButton(
+                                  onPressed:
+                                      saving ? null : () => onRemove(index),
+                                  icon: const Icon(Icons.delete_outline)),
+                              const Icon(Icons.chevron_right),
+                            ]),
+                          );
                         },
-                       )),
-             const SizedBox(height: 12),
-             Text(
-               'Total provisório: ${formatMoney(cart.fold<double>(0, (total, item) => total + _tableLineTotal(item)).toStringAsFixed(2))}',
-               textAlign: TextAlign.end,
-               style: const TextStyle(fontWeight: FontWeight.w800),
-             ),
-             const SizedBox(height: 8),
-             FilledButton.icon(
+                      )),
+            const SizedBox(height: 12),
+            if (cart.isNotEmpty)
+              Text(
+                'Novos itens: ${formatMoney(cart.fold<double>(0, (total, item) => total + _tableLineTotal(item)).toStringAsFixed(2))}',
+                textAlign: TextAlign.end,
+              ),
+            const SizedBox(height: 4),
+            TableSummaryWidgets(attendance.summary),
+            const SizedBox(height: 8),
+            FilledButton.icon(
               onPressed: saving || cart.isEmpty ? null : () => onSave(),
               icon: saving
                   ? const SizedBox(
@@ -1070,8 +1225,8 @@ class _TableSaleItemEditorDialogState
     });
   }
 
-  void _select(
-      QuickSaleModifierGroup group, QuickSaleModifierOption option, bool value) {
+  void _select(QuickSaleModifierGroup group, QuickSaleModifierOption option,
+      bool value) {
     setState(() {
       if (value) {
         if (group.maxSelections == 1) {
@@ -1094,7 +1249,8 @@ class _TableSaleItemEditorDialogState
           _modifierQuantities.remove(candidate.id);
         }
       }
-      _modifierQuantities[option.id] = (_modifierQuantities[option.id] ?? 0) + 1;
+      _modifierQuantities[option.id] =
+          (_modifierQuantities[option.id] ?? 0) + 1;
       _validation = null;
     });
   }
@@ -1147,6 +1303,17 @@ class _TableSaleItemEditorDialogState
   void _save() {
     if (_itemQuantity <= 0) {
       setState(() => _validation = 'Informe uma quantidade válida.');
+      return;
+    }
+    if (widget.product.unit.toLowerCase() == 'un' &&
+        _itemQuantity != _itemQuantity.roundToDouble()) {
+      setState(() =>
+          _validation = 'Produtos por unidade exigem quantidade inteira.');
+      return;
+    }
+    if (_quantity.text.split(RegExp(r'[,.]')).last.length > 3) {
+      setState(() =>
+          _validation = 'A quantidade aceita no máximo três casas decimais.');
       return;
     }
     for (final group in widget.product.modifierGroups) {
@@ -1292,10 +1459,11 @@ class _TableAttendancePicker extends StatelessWidget {
                   shrinkWrap: true,
                   children: tables
                       .map((table) => ListTile(
-                            leading: const Icon(Icons.table_restaurant_outlined),
+                            leading:
+                                const Icon(Icons.table_restaurant_outlined),
                             title: Text(table.name),
-                            subtitle: Text(
-                                'Saldo: ${formatMoney(table.balance)}'),
+                            subtitle:
+                                Text('Saldo: ${formatMoney(table.balance)}'),
                             onTap: () => Navigator.of(context).pop(table),
                           ))
                       .toList(growable: false),
@@ -1365,7 +1533,8 @@ class _TableCustomerPickerState extends State<_TableCustomerPicker> {
   Future<void> _reactivate() async {
     final customer = _inactiveCustomer;
     if (customer == null || !widget.canReactivate) return;
-    final active = await widget.controller.activateQuickSaleCustomer(customer.id);
+    final active =
+        await widget.controller.activateQuickSaleCustomer(customer.id);
     if (active != null && mounted) Navigator.of(context).pop(active);
   }
 
@@ -1511,7 +1680,8 @@ class _TableCustomerCreateState extends State<_TableCustomerCreate> {
       );
 }
 
-Future<String?> _requiredReasonDialog(BuildContext context, String title) async {
+Future<String?> _requiredReasonDialog(
+    BuildContext context, String title) async {
   final controller = TextEditingController();
   var showError = false;
   final result = await showDialog<String>(

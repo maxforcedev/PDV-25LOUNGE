@@ -61,7 +61,7 @@ class _TablesPageState extends State<TablesPage> {
       if (attendance == null || !mounted) return;
     }
     await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => TableAttendancePage(
+      builder: (_) => TableOrderPage(
         controller: widget.controller,
         attendance: attendance!,
       ),
@@ -188,7 +188,8 @@ class _TablesPageState extends State<TablesPage> {
 }
 
 class _OpenTableDetails {
-  const _OpenTableDetails({this.peopleCount, this.responsibleName = '', this.notes = ''});
+  const _OpenTableDetails(
+      {this.peopleCount, this.responsibleName = '', this.notes = ''});
   final int? peopleCount;
   final String responsibleName;
   final String notes;
@@ -218,18 +219,30 @@ class _OpenTableDialogState extends State<_OpenTableDialog> {
   Widget build(BuildContext context) => AlertDialog(
         title: const Text('Abrir mesa'),
         content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(controller: _people, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Pessoas')),
-          TextField(controller: _responsible, decoration: const InputDecoration(labelText: 'Responsável')),
-          TextField(controller: _notes, maxLines: 2, decoration: const InputDecoration(labelText: 'Observações')),
+          TextField(
+              controller: _people,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Pessoas')),
+          TextField(
+              controller: _responsible,
+              decoration: const InputDecoration(labelText: 'Responsável')),
+          TextField(
+              controller: _notes,
+              maxLines: 2,
+              decoration: const InputDecoration(labelText: 'Observações')),
         ]),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCELAR')),
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('CANCELAR')),
           FilledButton(
-            onPressed: () => Navigator.pop(context, _OpenTableDetails(
-              peopleCount: int.tryParse(_people.text),
-              responsibleName: _responsible.text.trim(),
-              notes: _notes.text.trim(),
-            )),
+            onPressed: () => Navigator.pop(
+                context,
+                _OpenTableDetails(
+                  peopleCount: int.tryParse(_people.text),
+                  responsibleName: _responsible.text.trim(),
+                  notes: _notes.text.trim(),
+                )),
             child: const Text('ABRIR'),
           ),
         ],

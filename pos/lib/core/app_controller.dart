@@ -448,6 +448,23 @@ class AppController extends ChangeNotifier {
             idempotencyKey: idempotencyKey,
           ));
 
+  Future<TableAttendance?> setTableCheckoutContext({
+    required int attendanceId,
+    required String discount,
+    required bool serviceFeeWaived,
+    required String idempotencyKey,
+    Map<String, dynamic>? discountAuthorization,
+    Map<String, dynamic>? serviceFeeAuthorization,
+  }) =>
+      _attendance(() => _api.setTableCheckoutContext(
+            attendanceId: attendanceId,
+            discount: discount,
+            serviceFeeWaived: serviceFeeWaived,
+            idempotencyKey: idempotencyKey,
+            discountAuthorization: discountAuthorization,
+            serviceFeeAuthorization: serviceFeeAuthorization,
+          ));
+
   Future<TableAttendance?> transferTableItems({
     required int attendanceId,
     required int destinationAttendanceId,

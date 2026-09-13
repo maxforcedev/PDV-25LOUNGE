@@ -123,6 +123,15 @@ abstract class PosApi {
     required String idempotencyKey,
   }) =>
       throw UnimplementedError();
+  Future<TableAttendance> setTableCheckoutContext({
+    required int attendanceId,
+    required String discount,
+    required bool serviceFeeWaived,
+    required String idempotencyKey,
+    Map<String, dynamic>? discountAuthorization,
+    Map<String, dynamic>? serviceFeeAuthorization,
+  }) =>
+      throw UnimplementedError();
   Future<TableAttendance> transferTableItems({
     required int attendanceId,
     required int destinationAttendanceId,
@@ -705,6 +714,34 @@ class HttpPosApi implements PosApi, PosCredentialCache {
       ));
 
   @override
+  Future<TableAttendance> setTableCheckoutContext({
+    required int attendanceId,
+    required String discount,
+    required bool serviceFeeWaived,
+    required String idempotencyKey,
+    Map<String, dynamic>? discountAuthorization,
+    Map<String, dynamic>? serviceFeeAuthorization,
+  }) async {
+    final payload = await _request(
+      'POST',
+      'table-attendances/$attendanceId/checkout-context/',
+      body: {
+        'discount': discount,
+        'service_fee_waived': serviceFeeWaived,
+        'idempotency_key': idempotencyKey,
+        if (discountAuthorization != null)
+          'discount_authorization': discountAuthorization,
+        if (serviceFeeAuthorization != null)
+          'service_fee_authorization': serviceFeeAuthorization,
+      },
+    );
+    final attendance =
+        TableAttendance.fromJson(payload['attendance'] as Map<String, dynamic>);
+    return attendance
+        .withSummary(payload['summary'] as Map<String, dynamic>? ?? const {});
+  }
+
+  @override
   Future<TableAttendance> transferTableItems({
     required int attendanceId,
     required int destinationAttendanceId,
@@ -720,7 +757,8 @@ class HttpPosApi implements PosApi, PosCredentialCache {
         'idempotency_key': idempotencyKey,
       },
     );
-    return TableAttendance.fromJson(payload['attendance'] as Map<String, dynamic>);
+    return TableAttendance.fromJson(
+        payload['attendance'] as Map<String, dynamic>);
   }
 
   @override
