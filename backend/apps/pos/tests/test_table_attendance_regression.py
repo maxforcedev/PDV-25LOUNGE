@@ -1,0 +1,54 @@
+from decimal import Decimal
+from uuid import uuid4
+
+from django.test import TestCase
+
+from apps.accounts.models import User
+from apps.attendance.models import AttendanceCommand, TableAttendance, TableAttendanceStatus
+from apps.attendance.services import (
+    close_table_attendance, open_table_attendance, record_table_payment, save_table_order,
+)
+from apps.cash.models import CashRegister
+from apps.cash.services import open_session
+from apps.commands.services import create_table
+from apps.companies.services import create_company_with_matrix
+from apps.inventory.models import Stock
+from apps.products.models import Category, InventoryBehavior, Product, ProductBranchConfig, Unit
+from apps.sales.services import ensure_default_payment_methods
+
+
+class TableAttendanceRegressionTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email='table-regression@example.com', password='table-regression-password')
+        self.company = create_company_with_matrix(creator=self.user, trade_name='Tables', legal_name='Tables Legal')
+        self.branch = self.company.branches.get(is_matrix=True)
+        self.branch.settings.uses_tables = True
+        self.branch.settings.uses_commands = False
+        self.branch.settings.uses_cash_register = True
+        self.branch.settings.save()
+        category = Category.objects.create(company=self.company, branch=self.branch, name='Table category')
+        self.product = Product.objects.create(company=self.company, category=category, name='Table item', internal_code='TABLE-ITEM', unit=Unit.UNIT, cost=Decimal('2.00'), sale_price=Decimal('10.00'), inventory_behavior=InventoryBehavior.DIRECT)
+        ProductBranchConfig.objects.create(product=self.product, branch=self.branch, category=category, available_table=True)
+        Stock.objects.create(product=self.product, branch=self.branch, current_quantity=Decimal('20.000'), average_unit_cost=Decimal('2.00'), last_unit_cost=Decimal('2.00'))
+        register = CashRegister.objects.create(branch=self.branch, name='Table cash')
+        self.cash_session = open_session(register, Decimal('0.00'), self.user, self.branch)
+        self.cash_method = next(method for method in ensure_default_payment_methods(self.company) if method.code == 'cash')
+
+    def test_empty_table_closes_without_sale_or_command(self):
+        table = create_table(branch=self.branch, name='Empty table', user=self.user)
+        attendance, _ = open_table_attendance(branch=self.branch, table_id=table.pk, user=self.user, idempotency_key=uuid4())
+        closed, _ = close_table_attendance(attendance=attendance, user=self.user, idempotency_key=uuid4())
+        self.assertEqual(closed.status, TableAttendanceStatus.CLOSED)
+        self.assertIsNone(closed.sale_id)
+        self.assertFalse(AttendanceCommand.objects.filter(table=table).exists())
+
+    def test_paid_table_closes_to_sale_without_command(self):
+        table = create_table(branch=self.branch, name='Paid table', user=self.user)
+        attendance, _ = open_table_attendance(branch=self.branch, table_id=table.pk, user=self.user, idempotency_key=uuid4())
+        save_table_order(attendance=attendance, user=self.user, items=[{'product': self.product.pk, 'quantity': Decimal('1.000')}], idempotency_key=uuid4())
+        payment, _ = record_table_payment(attendance=attendance, user=self.user, payment_method_id=self.cash_method.pk, amount=Decimal('10.00'), received_amount=Decimal('10.00'), cash_session_id=self.cash_session.pk, idempotency_key=uuid4())
+        self.assertEqual(payment.change_amount, Decimal('0.00'))
+        closed, _ = close_table_attendance(attendance=attendance, user=self.user, idempotency_key=uuid4())
+        self.assertEqual(closed.status, TableAttendanceStatus.CLOSED)
+        self.assertIsNotNone(closed.sale_id)
+        self.assertFalse(AttendanceCommand.objects.filter(table=table).exists())

@@ -1010,6 +1010,7 @@ def _calculate_sale_financials(*, company, branch, operation_type, snapshots, su
         'item_discount_total': item_discount_total,
         'discount': discount_value,
         'discount_intent': discount_intent,
+        'service_fee_base': service_base,
         'service_fee_rate': service_fee_rate,
         'service_fee_amount': service_fee_amount,
         'commission_rate': commission_rate,

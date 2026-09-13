@@ -236,7 +236,6 @@ class AttendancePayment(BaseModel):
     operator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='attendance_payments')
     status = models.CharField(max_length=10, choices=AttendancePaymentStatus.choices, default=AttendancePaymentStatus.APPLIED)
     idempotency_key = models.UUIDField(default=uuid.uuid4)
-    request_fingerprint = models.CharField(max_length=64, editable=False, default='')
     reversal_of = models.OneToOneField('self', on_delete=models.PROTECT, related_name='reversal', null=True, blank=True)
     reversal_reason = models.TextField(blank=True, default='')
 
@@ -383,6 +382,7 @@ class TablePayment(BaseModel):
     operator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='table_payments')
     status = models.CharField(max_length=10, choices=AttendancePaymentStatus.choices, default=AttendancePaymentStatus.APPLIED)
     idempotency_key = models.UUIDField(default=uuid.uuid4)
+    request_fingerprint = models.CharField(max_length=64, editable=False, default='')
     reversal_of = models.OneToOneField('self', on_delete=models.PROTECT, related_name='reversal', null=True, blank=True)
     reversal_reason = models.TextField(blank=True, default='')
 

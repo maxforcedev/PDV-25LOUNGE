@@ -273,3 +273,8 @@ class TableTransferItemsSerializer(serializers.Serializer):
             value['item'], value['quantity'] = item, quantity
             seen.add(item)
         return values
+
+
+class TableCloseSerializer(serializers.Serializer):
+    idempotency_key = serializers.UUIDField()
+    cash_session = serializers.IntegerField(min_value=1, required=False, allow_null=True)

@@ -50,6 +50,7 @@ from apps.attendance.serializers import (
     TableAttendanceOpenSerializer, TableAttendanceSerializer, TableOrderItemSerializer,
     TablePaymentInputSerializer, TablePaymentSerializer,
     TableTransferItemsSerializer,
+    TableCloseSerializer,
 )
 from apps.attendance.services import (
     AttendanceConflict, add_order_items, cancel_order_item, command_summary, confirm_order_item,
@@ -1081,7 +1082,7 @@ class POSAttendanceCommandItemsTransferView(POSAttendanceView):
     def post(self, request, command_id):
         device, operator, permissions, operator_session = self.context(request)
         self._require(permissions, 'commands.transfer_items', 'Você não possui permissão para transferir itens.')
-        serializer = TableTransferItemsSerializer(data=request.data)
+        serializer = AttendanceTransferItemsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
             destination, item_ids, replayed = transfer_attendance_items(
@@ -1206,11 +1207,11 @@ class POSTableAttendanceCloseView(POSTableAttendanceView):
     def post(self, request, attendance_id):
         device, operator, permissions, operator_session = self.context(request)
         self._require(permissions, 'tables.close', 'Você não possui permissão para fechar mesas.')
-        serializer = AttendanceBillRequestSerializer(data=request.data)
+        serializer = TableCloseSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
             attendance, replayed = close_table_attendance(attendance=self._attendance(device, attendance_id), user=operator,
-                idempotency_key=serializer.validated_data['idempotency_key'], audit_metadata=self.audit_metadata(device, operator_session))
+                idempotency_key=serializer.validated_data['idempotency_key'], cash_session_id=serializer.validated_data.get('cash_session'), audit_metadata=self.audit_metadata(device, operator_session))
         except AttendanceConflict as error:
             self._domain(error)
         return Response(TableAttendanceSerializer(attendance).data, headers={'Idempotency-Replayed': 'true'} if replayed else None)
@@ -1220,7 +1221,7 @@ class POSTableAttendanceItemsTransferView(POSTableAttendanceView):
     def post(self, request, attendance_id):
         device, operator, permissions, operator_session = self.context(request)
         self._require(permissions, 'tables.transfer_items', 'Você não possui permissão para transferir itens de mesa.')
-        serializer = AttendanceTransferItemsSerializer(data=request.data)
+        serializer = TableTransferItemsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
             destination, item_ids, replayed = transfer_table_items(
