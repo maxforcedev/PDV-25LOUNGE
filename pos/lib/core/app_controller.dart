@@ -357,11 +357,12 @@ class AppController extends ChangeNotifier {
     return result != null;
   }
 
-  Future<AttendanceCommand?> openAttendanceTable({
+  Future<TableAttendance?> openAttendanceTable({
     required int tableId,
     required String idempotencyKey,
     int? peopleCount,
-    String identifier = '',
+    String responsibleName = '',
+    int? customerId,
     String notes = '',
   }) async {
     try {
@@ -369,7 +370,8 @@ class AppController extends ChangeNotifier {
         tableId: tableId,
         idempotencyKey: idempotencyKey,
         peopleCount: peopleCount,
-        identifier: identifier,
+        responsibleName: responsibleName,
+        customerId: customerId,
         notes: notes,
       );
     } on PosApiException catch (error) {
@@ -379,6 +381,23 @@ class AppController extends ChangeNotifier {
     }
     return null;
   }
+
+  Future<TableAttendance?> tableAttendanceDetail(int attendanceId) =>
+      _attendance(() => _api.tableAttendanceDetail(attendanceId));
+
+  Future<List<QuickSaleProduct>?> tableCatalog({String? search}) =>
+      _attendance(() => _api.tableCatalog(search: search));
+
+  Future<List<TableOrderItem>?> saveTableOrder({
+    required int attendanceId,
+    required List<Map<String, dynamic>> items,
+    required String idempotencyKey,
+  }) =>
+      _attendance(() => _api.saveTableOrder(
+            attendanceId: attendanceId,
+            items: items,
+            idempotencyKey: idempotencyKey,
+          ));
 
   Future<List<AttendanceCommand>?> attendanceCommands({String? query}) async {
     try {

@@ -9,7 +9,7 @@ class AttendanceTable {
     this.legacyOccupied = false,
     this.billRequested = false,
     this.group,
-    this.commands = const [],
+    this.attendance,
   });
 
   factory AttendanceTable.fromJson(Map<String, dynamic> json) =>
@@ -26,10 +26,9 @@ class AttendanceTable {
             ? AttendanceTableGroup.fromJson(
                 json['group'] as Map<String, dynamic>)
             : null,
-        commands: (json['commands'] as List<dynamic>? ?? const [])
-            .cast<Map<String, dynamic>>()
-            .map(AttendanceCommand.fromJson)
-            .toList(growable: false),
+        attendance: json['attendance'] is Map<String, dynamic>
+            ? TableAttendance.fromJson(json['attendance'] as Map<String, dynamic>)
+            : null,
       );
 
   final int id;
@@ -41,9 +40,176 @@ class AttendanceTable {
   final bool legacyOccupied;
   final bool billRequested;
   final AttendanceTableGroup? group;
-  final List<AttendanceCommand> commands;
+  final TableAttendance? attendance;
 
   bool get isOpen => status == 'occupied';
+}
+
+class TableAttendance {
+  const TableAttendance({
+    required this.id,
+    required this.tableId,
+    required this.tableName,
+    required this.status,
+    this.customerId,
+    this.peopleCount,
+    this.responsibleName = '',
+    this.notes = '',
+    this.openedBy,
+    this.billRequestedAt,
+    this.openedAt,
+    this.closedAt,
+    this.summary = const {},
+    this.orders = const [],
+  });
+
+  factory TableAttendance.fromJson(Map<String, dynamic> json) {
+    final items = (json['orders'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(TableOrderItem.fromJson)
+        .toList(growable: false);
+    final orders = <int, List<TableOrderItem>>{};
+    for (final item in items) {
+      orders.putIfAbsent(item.orderId, () => []).add(item);
+    }
+    return TableAttendance(
+      id: json['id'] as int,
+      tableId: json['table'] as int? ?? 0,
+      tableName: json['table_name'] as String? ?? '',
+      status: json['status'] as String? ?? 'open',
+      customerId: json['customer'] as int?,
+      peopleCount: json['people_count'] as int?,
+      responsibleName: json['responsible_name'] as String? ?? '',
+      notes: json['notes'] as String? ?? '',
+      openedBy: json['opened_by'] as int?,
+      billRequestedAt: json['bill_requested_at'] as String?,
+      openedAt: json['created_at'] as String?,
+      closedAt: json['closed_at'] as String?,
+      summary: json['summary'] as Map<String, dynamic>? ?? const {},
+      orders: orders.entries
+          .map((entry) => TableOrder(id: entry.key, items: entry.value))
+          .toList(growable: false),
+    );
+  }
+
+  final int id;
+  final int tableId;
+  final String tableName;
+  final String status;
+  final int? customerId;
+  final int? peopleCount;
+  final String responsibleName;
+  final String notes;
+  final int? openedBy;
+  final String? billRequestedAt;
+  final String? openedAt;
+  final String? closedAt;
+  final Map<String, dynamic> summary;
+  final List<TableOrder> orders;
+
+  bool get billRequested => billRequestedAt != null;
+}
+
+class TableOrder {
+  const TableOrder({required this.id, required this.items});
+
+  final int id;
+  final List<TableOrderItem> items;
+}
+
+class TableOrderItem {
+  const TableOrderItem({
+    required this.id,
+    required this.orderId,
+    required this.productId,
+    required this.productName,
+    required this.quantity,
+    required this.unit,
+    required this.unitPrice,
+    required this.status,
+    this.categoryId,
+    this.categoryName = '',
+    this.modifierSnapshot = const [],
+    this.notes = '',
+    this.confirmedAt,
+    this.cancellationReason = '',
+  });
+
+  factory TableOrderItem.fromJson(Map<String, dynamic> json) => TableOrderItem(
+        id: json['id'] as int,
+        orderId: (json['order'] ?? json['order_id']) as int? ?? 0,
+        productId: (json['product'] as int?) ?? (json['product_id'] as int?) ?? 0,
+        productName: json['product_name'] as String? ?? '',
+        quantity: '${json['quantity'] ?? '0'}',
+        unit: json['unit'] as String? ?? '',
+        unitPrice: '${json['unit_price'] ?? '0.00'}',
+        status: json['status'] as String? ?? 'pending',
+        categoryId: json['category_id_snapshot'] as int?,
+        categoryName: json['category_name_snapshot'] as String? ?? '',
+        modifierSnapshot: (json['modifier_snapshot'] as List<dynamic>? ?? const [])
+            .cast<Map<String, dynamic>>(),
+        notes: json['notes'] as String? ?? '',
+        confirmedAt: json['confirmed_at'] as String?,
+        cancellationReason: json['cancellation_reason'] as String? ?? '',
+      );
+
+  final int id;
+  final int orderId;
+  final int productId;
+  final String productName;
+  final String quantity;
+  final String unit;
+  final String unitPrice;
+  final String status;
+  final int? categoryId;
+  final String categoryName;
+  final List<Map<String, dynamic>> modifierSnapshot;
+  final String notes;
+  final String? confirmedAt;
+  final String cancellationReason;
+}
+
+class TablePayment {
+  const TablePayment({
+    required this.id,
+    required this.amount,
+    required this.status,
+    this.paymentMethodId,
+    this.paymentMethodName = '',
+    this.paymentMethodCode = '',
+    this.receivedAmount,
+    this.changeAmount,
+    this.operatorId,
+    this.allocations = const [],
+    this.createdAt,
+  });
+
+  factory TablePayment.fromJson(Map<String, dynamic> json) => TablePayment(
+        id: json['id'] as int,
+        amount: '${json['amount'] ?? '0.00'}',
+        status: json['status'] as String? ?? 'applied',
+        paymentMethodId: json['payment_method'] as int?,
+        paymentMethodName: json['payment_method_name'] as String? ?? '',
+        paymentMethodCode: json['payment_method_code'] as String? ?? '',
+        receivedAmount: json['received_amount']?.toString(),
+        changeAmount: json['change_amount']?.toString(),
+        operatorId: json['operator'] as int?,
+        allocations: (json['allocations'] as List<dynamic>? ?? const [])
+            .cast<Map<String, dynamic>>(),
+        createdAt: json['created_at'] as String?,
+      );
+
+  final int id;
+  final String amount;
+  final String status;
+  final int? paymentMethodId;
+  final String paymentMethodName;
+  final String paymentMethodCode;
+  final String? receivedAmount;
+  final String? changeAmount;
+  final int? operatorId;
+  final List<Map<String, dynamic>> allocations;
+  final String? createdAt;
 }
 
 class AttendanceTableGroup {

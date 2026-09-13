@@ -6,6 +6,7 @@ import '../cash/cash_models.dart';
 import '../core/app_controller.dart';
 import '../sales/sale_models.dart';
 import 'attendance_models.dart';
+import 'table_attendance_page.dart';
 
 bool _can(AppController controller, String permission) =>
     controller.bootstrapSnapshot?.permissions.contains(permission) == true;
@@ -42,18 +43,28 @@ class _TablesPageState extends State<TablesPage> {
   }
 
   Future<void> _open(AttendanceTable table) async {
-    if (table.isOpen &&
-        table.commands.length == 1 &&
-        table.commands.single.isPrimary) {
-      await Navigator.of(context).push(MaterialPageRoute(
-          builder: (_) => CommandDetailPage(
-              controller: widget.controller, command: table.commands.single)));
-      if (mounted) await _load();
-      return;
+    if (table.legacyOccupied) return;
+    var attendance = table.attendance;
+    if (attendance == null) {
+      final details = await showDialog<_OpenTableDetails>(
+        context: context,
+        builder: (_) => const _OpenTableDialog(),
+      );
+      if (details == null) return;
+      attendance = await widget.controller.openAttendanceTable(
+        tableId: table.id,
+        idempotencyKey: createIdempotencyKey(),
+        peopleCount: details.peopleCount,
+        responsibleName: details.responsibleName,
+        notes: details.notes,
+      );
+      if (attendance == null || !mounted) return;
     }
     await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) =>
-          TableDetailPage(controller: widget.controller, table: table),
+      builder: (_) => TableAttendancePage(
+        controller: widget.controller,
+        attendance: attendance!,
+      ),
     ));
     if (mounted) await _load();
   }
@@ -176,144 +187,52 @@ class _TablesPageState extends State<TablesPage> {
       );
 }
 
-class TableDetailPage extends StatefulWidget {
-  const TableDetailPage(
-      {required this.controller, required this.table, super.key});
-  final AppController controller;
-  final AttendanceTable table;
-  @override
-  State<TableDetailPage> createState() => _TableDetailPageState();
+class _OpenTableDetails {
+  const _OpenTableDetails({this.peopleCount, this.responsibleName = '', this.notes = ''});
+  final int? peopleCount;
+  final String responsibleName;
+  final String notes;
 }
 
-class _TableDetailPageState extends State<TableDetailPage> {
-  late AttendanceTable _table = widget.table;
-  int? _selectedCommandId;
-  bool _loading = false;
-  bool get _canOpen => _can(widget.controller, 'tables.open');
-  bool get _canCommand => _can(widget.controller, 'commands.open');
-  bool get _canGroup => _can(widget.controller, 'tables.merge');
+class _OpenTableDialog extends StatefulWidget {
+  const _OpenTableDialog();
 
   @override
-  void initState() {
-    super.initState();
-    if (_table.commands.length == 1 && _table.commands.single.isPrimary) {
-      _selectedCommandId = _table.commands.single.id;
-    }
-    if (_table.isOpen) unawaited(_load());
-  }
+  State<_OpenTableDialog> createState() => _OpenTableDialogState();
+}
 
-  Future<void> _load() async {
-    setState(() => _loading = true);
-    final tables = await widget.controller.attendanceTables();
-    if (!mounted) return;
-    setState(() {
-      _table =
-          tables?.where((table) => table.id == _table.id).firstOrNull ?? _table;
-      _loading = false;
-    });
-  }
+class _OpenTableDialogState extends State<_OpenTableDialog> {
+  final _people = TextEditingController();
+  final _responsible = TextEditingController();
+  final _notes = TextEditingController();
 
-  Future<void> _open({bool additional = false}) async {
-    final details = await showDialog<_OpenDetails>(
-        context: context,
-        builder: (_) => _OpenCommandDialog(
-            title: additional ? 'Nova comanda' : 'Abrir mesa'));
-    if (details == null) return;
-    final command = additional
-        ? await widget.controller.openAttendanceCommand(
-            idempotencyKey: createIdempotencyKey(),
-            tableId: _table.id,
-            identifier: details.identifier,
-            peopleCount: details.peopleCount,
-            notes: details.notes)
-        : await widget.controller.openAttendanceTable(
-            tableId: _table.id,
-            idempotencyKey: createIdempotencyKey(),
-            identifier: details.identifier,
-            peopleCount: details.peopleCount,
-            notes: details.notes);
-    if (command == null || !mounted) return;
-    await _load();
-    if (mounted) await _command(command);
-  }
-
-  Future<void> _command(AttendanceCommand command) async {
-    await Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => CommandDetailPage(
-            controller: widget.controller, command: command)));
-    if (mounted) await _load();
-  }
-
-  Future<void> _separate() async {
-    final separated = await widget.controller.separateAttendanceTable(
-      tableId: _table.id,
-      idempotencyKey: createIdempotencyKey(),
-    );
-    if (separated && mounted) await _load();
+  @override
+  void dispose() {
+    _people.dispose();
+    _responsible.dispose();
+    _notes.dispose();
+    super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: Text(_table.name), actions: [
-          IconButton(
-              onPressed: _loading ? null : _load,
-              icon: const Icon(Icons.refresh))
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('Abrir mesa'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: _people, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Pessoas')),
+          TextField(controller: _responsible, decoration: const InputDecoration(labelText: 'Responsável')),
+          TextField(controller: _notes, maxLines: 2, decoration: const InputDecoration(labelText: 'Observações')),
         ]),
-        floatingActionButton: _table.isOpen && _canCommand
-            ? FloatingActionButton.extended(
-                onPressed: () => _open(additional: true),
-                icon: const Icon(Icons.add),
-                label: const Text('COMANDA'))
-            : null,
-        body: _loading
-            ? const Center(child: CircularProgressIndicator())
-            : ListView(padding: const EdgeInsets.all(16), children: [
-                _SummaryCard(summary: {
-                  'total_due': _table.total,
-                  'remaining_balance': _table.balance
-                }),
-                const SizedBox(height: 16),
-                if (!_table.isOpen)
-                  FilledButton.icon(
-                      onPressed: _canOpen ? _open : null,
-                      icon: const Icon(Icons.play_arrow),
-                      label: const Text('ABRIR MESA')),
-                if (_table.isOpen) ...[
-                  if (_table.group != null) ...[
-                    Card(
-                        child: ListTile(
-                      leading: const Icon(Icons.group_work_outlined),
-                      title: const Text('Mesas agrupadas'),
-                      subtitle: Text(_table.group!.tableNames.join(', ')),
-                      trailing: _canGroup
-                          ? TextButton(
-                              onPressed: _separate,
-                              child: const Text('SEPARAR'))
-                          : null,
-                    )),
-                    const SizedBox(height: 8),
-                  ],
-                  Text('Comandas',
-                      style: Theme.of(context).textTheme.titleMedium),
-                  const SizedBox(height: 8),
-                  ..._table.commands.map((command) => Card(
-                          child: ListTile(
-                        selected: command.id == _selectedCommandId,
-                        leading: Icon(command.isPrimary
-                            ? Icons.star
-                            : Icons.receipt_long_outlined),
-                        title: Text(command.label),
-                        subtitle: Text(command.isPrimary
-                            ? 'Comanda principal'
-                            : command.number),
-                        trailing: const Icon(Icons.chevron_right),
-                        onTap: () {
-                          setState(() => _selectedCommandId = command.id);
-                          _command(command);
-                        },
-                      ))),
-                ],
-              ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCELAR')),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, _OpenTableDetails(
+              peopleCount: int.tryParse(_people.text),
+              responsibleName: _responsible.text.trim(),
+              notes: _notes.text.trim(),
+            )),
+            child: const Text('ABRIR'),
+          ),
+        ],
       );
 }
 

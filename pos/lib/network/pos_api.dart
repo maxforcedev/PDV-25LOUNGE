@@ -80,12 +80,20 @@ abstract class PosApi {
     required int tableId,
     required String idempotencyKey,
   });
-  Future<AttendanceCommand> openAttendanceTable({
+  Future<TableAttendance> openAttendanceTable({
     required int tableId,
     required String idempotencyKey,
     int? peopleCount,
-    String identifier,
+    String responsibleName,
+    int? customerId,
     String notes,
+  });
+  Future<TableAttendance> tableAttendanceDetail(int attendanceId);
+  Future<List<QuickSaleProduct>> tableCatalog({String? search});
+  Future<List<TableOrderItem>> saveTableOrder({
+    required int attendanceId,
+    required List<Map<String, dynamic>> items,
+    required String idempotencyKey,
   });
   Future<List<AttendanceCommand>> attendanceCommands({String? query});
   Future<List<QuickSaleProduct>> attendanceCatalog({String? search});
@@ -535,23 +543,56 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   }
 
   @override
-  Future<AttendanceCommand> openAttendanceTable({
+  Future<TableAttendance> openAttendanceTable({
     required int tableId,
     required String idempotencyKey,
     int? peopleCount,
-    String identifier = '',
+    String responsibleName = '',
+    int? customerId,
     String notes = '',
   }) async =>
-      AttendanceCommand.fromJson(await _request(
+      TableAttendance.fromJson(await _request(
         'POST',
         'tables/$tableId/open/',
         body: {
           'idempotency_key': idempotencyKey,
           if (peopleCount != null) 'people_count': peopleCount,
-          'identifier': identifier,
+          'responsible_name': responsibleName,
+          if (customerId != null) 'customer': customerId,
           'notes': notes,
         },
       ));
+
+  @override
+  Future<TableAttendance> tableAttendanceDetail(int attendanceId) async =>
+      TableAttendance.fromJson(
+          await _request('GET', 'table-attendances/$attendanceId/'));
+
+  @override
+  Future<List<QuickSaleProduct>> tableCatalog({String? search}) async {
+    final suffix = search == null || search.trim().isEmpty
+        ? ''
+        : '?${Uri(queryParameters: {'q': search.trim()}).query}';
+    final payload = await _request('GET', 'tables/catalog/$suffix');
+    return (payload['products'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(QuickSaleProduct.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<List<TableOrderItem>> saveTableOrder({
+    required int attendanceId,
+    required List<Map<String, dynamic>> items,
+    required String idempotencyKey,
+  }) async {
+    final payload = await _request('POST', 'table-attendances/$attendanceId/orders/',
+        body: {'items': items, 'idempotency_key': idempotencyKey});
+    return (payload as List<dynamic>)
+        .cast<Map<String, dynamic>>()
+        .map(TableOrderItem.fromJson)
+        .toList(growable: false);
+  }
 
   @override
   Future<List<AttendanceCommand>> attendanceCommands({String? query}) async {

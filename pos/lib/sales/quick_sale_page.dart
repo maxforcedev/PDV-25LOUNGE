@@ -433,7 +433,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
     final current = initial ?? (index == null ? null : _cart[index]);
     final item = await showDialog<QuickSaleCartItem>(
       context: context,
-      builder: (_) => _ItemEditorDialog(
+      builder: (_) => SaleItemEditorDialog(
         product: product,
         initial: current,
       ),
@@ -2511,7 +2511,7 @@ class _EditCartItemDialogState extends State<_EditCartItemDialog> {
   Future<void> _editModifiers() async {
     final updated = await showDialog<QuickSaleCartItem>(
       context: context,
-      builder: (_) => _ItemEditorDialog(product: _item.product, initial: _item),
+      builder: (_) => SaleItemEditorDialog(product: _item.product, initial: _item),
     );
     if (updated != null && mounted) setState(() => _item = updated);
   }
@@ -2653,15 +2653,15 @@ class _EditCartItemDialogState extends State<_EditCartItemDialog> {
       );
 }
 
-class _ItemEditorDialog extends StatefulWidget {
-  const _ItemEditorDialog({required this.product, this.initial});
+class SaleItemEditorDialog extends StatefulWidget {
+  const SaleItemEditorDialog({required this.product, this.initial, super.key});
   final QuickSaleProduct product;
   final QuickSaleCartItem? initial;
   @override
-  State<_ItemEditorDialog> createState() => _ItemEditorDialogState();
+  State<SaleItemEditorDialog> createState() => _ItemEditorDialogState();
 }
 
-class _ItemEditorDialogState extends State<_ItemEditorDialog> {
+class _ItemEditorDialogState extends State<SaleItemEditorDialog> {
   final Map<int, int> _quantities = {};
   String? _validation;
 
