@@ -1484,6 +1484,13 @@ def _prepare_products(company, raw_items, *, branch=None, channel=SalesChannel.C
     return snapshots, requirements, content_requirements, subtotal
 
 
+def prepare_sale_products(company, raw_items, *, branch, channel, lock):
+    """Canonical branch/channel eligibility and item preparation for POS flows."""
+    return _prepare_products(
+        company, raw_items, branch=branch, channel=channel, lock=lock,
+    )
+
+
 def _lock_required_stocks(branch, requirements, content_requirements=None):
     content_requirements = content_requirements or {}
     if not requirements:
@@ -1607,7 +1614,7 @@ def catalog_product_operational_states(branch, products):
 def assess_sale_stock_availability(*, company, raw_items, branch,
                                    channel=SalesChannel.COUNTER):
     """Read the finalization requirement pipeline without locking or materializing stock."""
-    _snapshots, requirements, content_requirements, _subtotal = _prepare_products(
+    _snapshots, requirements, content_requirements, _subtotal = prepare_sale_products(
         company, raw_items, branch=branch, channel=channel, lock=False,
     )
     branch_settings = BranchSettings.objects.filter(branch=branch).only(

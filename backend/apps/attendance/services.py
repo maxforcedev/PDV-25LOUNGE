@@ -22,7 +22,7 @@ from apps.sales.models import OperationType, PaymentMethod, PaymentMethodCode
 from apps.sales.services import (
     CENT, _discount_approver, _financial_snapshots, _reconcile_modifier_component_costs, _service_fee_waiver,
     branch_cost_map, branch_price_map, calculate_command_preview, calculate_order_items_preview,
-    calculate_table_preview, finalize_sale,
+    calculate_table_preview, finalize_sale, prepare_sale_products,
     normalize_discount_intent, resolve_modifiers, stock_requirements_for_product, strict_decimal,
 )
 
@@ -909,11 +909,16 @@ def preview_table_order(*, attendance, items):
     confirmed = list(TableOrderItem.objects.filter(
         order__attendance=attendance, status=AttendanceOrderItemStatus.CONFIRMED,
     ).select_related('product__category').order_by('id'))
+    snapshots, _requirements, _contents, _subtotal = prepare_sale_products(
+        attendance.company, items, branch=attendance.branch,
+        channel=SalesChannel.TABLE, lock=False,
+    ) if items else ([], {}, {}, Decimal('0.00'))
+    products = {
+        snapshot['product']: snapshot['product_object'] for snapshot in snapshots
+    }
     draft = []
     for entry in items:
-        product = sellable_products_for_branch(
-            attendance.branch, SalesChannel.TABLE,
-        ).filter(pk=entry['product']).first()
+        product = products.get(int(entry['product']))
         if not product:
             raise ValidationError({'product': 'Produto indisponível para Mesa nesta filial.'})
         quantity = strict_decimal(
@@ -1099,11 +1104,17 @@ def save_table_order(*, attendance, user, items, idempotency_key, audit_metadata
     )
     if replayed:
         return None, list(TableOrderItem.objects.filter(pk__in=operation.result['item_ids']).order_by('id')), True
+    snapshots, _requirements, _contents, _subtotal = prepare_sale_products(
+        attendance.company, items, branch=attendance.branch,
+        channel=SalesChannel.TABLE, lock=True,
+    )
+    products = {
+        snapshot['product']: snapshot['product_object'] for snapshot in snapshots
+    }
     order = TableOrder.objects.create(attendance=attendance, created_by=user)
     created = []
     for entry in items:
-        from apps.products.selectors import sellable_products_for_branch
-        product = sellable_products_for_branch(attendance.branch, SalesChannel.TABLE).select_for_update().filter(pk=entry['product']).first()
+        product = products.get(int(entry['product']))
         if not product:
             raise ValidationError({'product': 'Produto indisponível para Mesa nesta filial.'})
         quantity = strict_decimal(entry['quantity'], field='quantity', decimal_places=3, max_digits=14)
