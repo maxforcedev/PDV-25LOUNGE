@@ -5,25 +5,18 @@ import 'package:flutter/material.dart';
 import '../cash/cash_models.dart';
 import '../core/app_controller.dart';
 import '../core/transient_feedback.dart';
-import '../network/pos_api_error.dart';
 import '../scanner/product_barcode_scanner_page.dart';
 import '../sales/quick_sale_page.dart';
 import '../sales/sale_models.dart';
 import '../sales/shared_customer_dialog.dart';
 import '../sales/shared_pos_widgets.dart';
 import 'attendance_models.dart';
+import 'attendance_presentation.dart';
 import 'shared_tables_grid.dart';
 import 'table_summary_widgets.dart';
 
 double _tableCartNumber(Object? value) =>
     double.tryParse('$value'.replaceAll(',', '.')) ?? 0;
-
-String _tableQuantityText(Object? value) {
-  final quantity = _tableCartNumber(value);
-  return quantity == quantity.roundToDouble()
-      ? quantity.toInt().toString()
-      : quantity.toStringAsFixed(3).replaceFirst(RegExp(r'0+$'), '');
-}
 
 QuickSaleModifierOption? _tableModifierOption(
     QuickSaleProduct product, Map<String, dynamic> modifier) {
@@ -46,7 +39,7 @@ String _tableModifierName(
 String _tableModifierText(
     QuickSaleProduct product, Map<String, dynamic> modifier) {
   final quantity = _tableCartNumber(modifier['quantity'] ?? 1);
-  final prefix = quantity == 1 ? '' : '${_tableQuantityText(quantity)}x ';
+  final prefix = quantity == 1 ? '' : '${formatAttendanceQuantity(quantity)}x ';
   return '+ $prefix${_tableModifierName(product, modifier)}';
 }
 
@@ -68,498 +61,6 @@ String _tableHistoryTime(String? value) {
   String twoDigits(int number) => number.toString().padLeft(2, '0');
   return '${twoDigits(date.day)}/${twoDigits(date.month)}/${date.year} '
       '${twoDigits(date.hour)}:${twoDigits(date.minute)}';
-}
-
-String _localizedItemStatus(String status) => switch (status) {
-      'confirmed' => 'Confirmado',
-      'cancelled' || 'canceled' => 'Cancelado',
-      'pending' => 'Pendente',
-      _ => 'Indisponível',
-    };
-
-String? _printStatusLabel(String? printStatus) =>
-    switch (printStatus?.toLowerCase()) {
-      'printed' => '✓ Impresso',
-      'pending' => 'Aguardando impressão',
-      'processing' => 'Impressão em andamento',
-      'failed' => 'Falha na impressão',
-      _ => null,
-    };
-
-class TableAttendancePage extends StatefulWidget {
-  const TableAttendancePage({
-    required this.controller,
-    required this.attendance,
-    super.key,
-  });
-
-  final AppController controller;
-  final TableAttendance attendance;
-
-  @override
-  State<TableAttendancePage> createState() => _TableAttendancePageState();
-}
-
-class _TableAttendancePageState extends State<TableAttendancePage> {
-  late TableAttendance _attendance = widget.attendance;
-  bool _loading = true;
-  bool _actionInProgress = false;
-  AttendanceTableGroup? _group;
-  final Set<int> _selectedItems = {};
-
-  bool get _canAddItems =>
-      widget.controller.bootstrapSnapshot?.permissions
-          .contains('tables.add_items') ==
-      true;
-
-  bool _can(String permission) =>
-      widget.controller.bootstrapSnapshot?.permissions.contains(permission) ==
-      true;
-
-  @override
-  void initState() {
-    super.initState();
-    unawaited(_load());
-  }
-
-  Future<void> _load() async {
-    setState(() => _loading = true);
-    final results = await Future.wait<Object?>([
-      widget.controller.tableAttendanceDetail(_attendance.id),
-      widget.controller.attendanceTables(),
-    ]);
-    if (!mounted) return;
-    final detail = results[0] as TableAttendance?;
-    final tables = results[1] as List<AttendanceTable>?;
-    setState(() {
-      _attendance = detail ?? _attendance;
-      _group = tables
-          ?.where((table) => table.id == _attendance.tableId)
-          .firstOrNull
-          ?.group;
-      _selectedItems.removeWhere((id) => !_attendance.orders
-          .expand((order) => order.items)
-          .any((item) => item.id == id && item.status == 'confirmed'));
-      _loading = false;
-    });
-  }
-
-  Future<void> _newOrder() async {
-    final saved = await Navigator.of(context).push<bool>(MaterialPageRoute(
-      builder: (_) => TableOrderPage(
-        controller: widget.controller,
-        attendance: _attendance,
-      ),
-    ));
-    if (saved == true && mounted) await _load();
-  }
-
-  String _summary(String key) => '${_attendance.summary[key] ?? '0.00'}';
-
-  Future<void> _cancelItem(TableOrderItem item) async {
-    final reason = await _requiredReasonDialog(context, 'Cancelar item');
-    if (reason == null || _actionInProgress) return;
-    setState(() => _actionInProgress = true);
-    final cancelled = await widget.controller.cancelTableOrderItem(
-      itemId: item.id,
-      reason: reason,
-      idempotencyKey: createIdempotencyKey(),
-    );
-    if (!mounted) return;
-    setState(() => _actionInProgress = false);
-    if (cancelled != null) await _load();
-  }
-
-  Future<void> _cancelOrder(TableOrder order) async {
-    final reason =
-        await _requiredReasonDialog(context, 'Cancelar pedido #${order.id}');
-    if (reason == null || _actionInProgress) return;
-    setState(() => _actionInProgress = true);
-    final cancelled = await widget.controller.cancelTableOrder(
-      orderId: order.id,
-      reason: reason,
-      idempotencyKey: createIdempotencyKey(),
-    );
-    if (!mounted) return;
-    setState(() => _actionInProgress = false);
-    if (cancelled != null) await _load();
-  }
-
-  Future<void> _toggleBill() async {
-    if (_actionInProgress) return;
-    setState(() => _actionInProgress = true);
-    final updated = await widget.controller.setTableBillRequested(
-      attendanceId: _attendance.id,
-      requested: !_attendance.billRequested,
-      idempotencyKey: createIdempotencyKey(),
-    );
-    if (!mounted) return;
-    setState(() => _actionInProgress = false);
-    if (updated != null) await _load();
-  }
-
-  Future<void> _transferItems() async {
-    if (_selectedItems.isEmpty || _actionInProgress) return;
-    final tables = await widget.controller.attendanceTables();
-    if (!mounted || tables == null) return;
-    final target = await Navigator.of(context).push<AttendanceTable>(
-      MaterialPageRoute(
-        builder: (_) => _TableTransferDestinationPage(
-          sourceTableId: _attendance.tableId,
-          tables: tables,
-        ),
-      ),
-    );
-    if (target?.attendance == null || !mounted) return;
-    final items = _attendance.orders
-        .expand((order) => order.items)
-        .where((item) => _selectedItems.contains(item.id))
-        .map((item) => {'item': item.id, 'quantity': item.quantity})
-        .toList(growable: false);
-    setState(() => _actionInProgress = true);
-    final moved = await widget.controller.transferTableItems(
-      attendanceId: _attendance.id,
-      destinationAttendanceId: target!.attendance!.id,
-      items: items,
-      idempotencyKey: createIdempotencyKey(),
-    );
-    if (!mounted) return;
-    setState(() => _actionInProgress = false);
-    if (moved != null) await _load();
-  }
-
-  Future<void> _separateFromGroup() async {
-    if (_actionInProgress) return;
-    setState(() => _actionInProgress = true);
-    final separated = await widget.controller.separateAttendanceTable(
-      tableId: _attendance.tableId,
-      idempotencyKey: createIdempotencyKey(),
-    );
-    if (!mounted) return;
-    setState(() => _actionInProgress = false);
-    if (separated) await _load();
-  }
-
-  Future<void> _selectCustomer() async {
-    final customer = await showDialog<QuickSaleCustomer>(
-      context: context,
-      builder: (_) => _TableCustomerPicker(
-        controller: widget.controller,
-        canCreate: _can('customers.add'),
-        canReactivate: _can('customers.change'),
-      ),
-    );
-    if (customer != null && mounted) await _setCustomer(customer.id);
-  }
-
-  Future<void> _setCustomer(int? customerId) async {
-    if (_actionInProgress) return;
-    setState(() => _actionInProgress = true);
-    final updated = await widget.controller.setTableAttendanceCustomer(
-      attendanceId: _attendance.id,
-      customerId: customerId,
-      idempotencyKey: createIdempotencyKey(),
-    );
-    if (!mounted) return;
-    setState(() => _actionInProgress = false);
-    if (updated != null) await _load();
-  }
-
-  void _showCustomer() {
-    showDialog<void>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Cliente'),
-        content: Text([
-          _attendance.customerName,
-          if (_attendance.customerId != null)
-            'Código: ${_attendance.customerId}',
-        ].join('\n')),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('FECHAR'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(
-          title: Text(
-              _attendance.tableName.isEmpty ? 'Mesa' : _attendance.tableName),
-          actions: [
-            if (_attendance.status == 'open' && _can('tables.close'))
-              IconButton(
-                onPressed: _loading || _actionInProgress ? null : _toggleBill,
-                tooltip: _attendance.billRequested
-                    ? 'Cancelar solicitação de conta'
-                    : 'Solicitar conta',
-                icon: Icon(_attendance.billRequested
-                    ? Icons.remove_done_outlined
-                    : Icons.request_quote_outlined),
-              ),
-            if (_group != null && _can('tables.merge'))
-              IconButton(
-                onPressed:
-                    _loading || _actionInProgress ? null : _separateFromGroup,
-                tooltip: 'Separar do grupo',
-                icon: const Icon(Icons.call_split_outlined),
-              ),
-            IconButton(
-              onPressed: _loading ? null : _load,
-              icon: const Icon(Icons.refresh),
-            ),
-          ],
-        ),
-        floatingActionButton: _attendance.status == 'open' && _canAddItems
-            ? FloatingActionButton.extended(
-                onPressed: _newOrder,
-                icon: const Icon(Icons.add),
-                label: const Text('NOVO PEDIDO'),
-              )
-            : null,
-        body: _loading
-            ? const Center(child: CircularProgressIndicator())
-            : RefreshIndicator(
-                onRefresh: _load,
-                child: ListView(padding: const EdgeInsets.all(16), children: [
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                              _attendance.status == 'open'
-                                  ? 'ABERTA'
-                                  : 'FECHADA',
-                              style:
-                                  const TextStyle(fontWeight: FontWeight.w800)),
-                          if (_attendance.peopleCount != null)
-                            Text('${_attendance.peopleCount} pessoa(s)'),
-                          if (_attendance.responsibleName.isNotEmpty)
-                            Text('Responsável: ${_attendance.responsibleName}'),
-                          const SizedBox(height: 12),
-                          Text('CLIENTE',
-                              style: Theme.of(context).textTheme.labelLarge),
-                          Text(_attendance.customerName.isEmpty
-                              ? 'Nenhum cliente'
-                              : _attendance.customerName),
-                          if (_can('customers.view'))
-                            Wrap(spacing: 8, children: [
-                              if (_attendance.customerId != null)
-                                TextButton(
-                                  onPressed: _showCustomer,
-                                  child: const Text('VER'),
-                                ),
-                              if (_can('tables.set_customer'))
-                                TextButton(
-                                  onPressed: _actionInProgress
-                                      ? null
-                                      : _selectCustomer,
-                                  child: Text(_attendance.customerId == null
-                                      ? 'PESQUISAR'
-                                      : 'TROCAR'),
-                                ),
-                              if (_attendance.customerId != null &&
-                                  _can('tables.set_customer'))
-                                TextButton(
-                                  onPressed: _actionInProgress
-                                      ? null
-                                      : () => _setCustomer(null),
-                                  child: const Text('REMOVER'),
-                                ),
-                            ]),
-                          if (_attendance.billRequested)
-                            const Padding(
-                              padding: EdgeInsets.only(top: 8),
-                              child: Text('CONTA SOLICITADA',
-                                  style: TextStyle(
-                                      color: Colors.deepOrange,
-                                      fontWeight: FontWeight.w800)),
-                            ),
-                          if (_attendance.status == 'open' &&
-                              _can('tables.close'))
-                            Padding(
-                              padding: const EdgeInsets.only(top: 8),
-                              child: OutlinedButton.icon(
-                                onPressed:
-                                    _actionInProgress ? null : _toggleBill,
-                                icon: Icon(_attendance.billRequested
-                                    ? Icons.remove_done_outlined
-                                    : Icons.request_quote_outlined),
-                                label: Text(_attendance.billRequested
-                                    ? 'CANCELAR SOLICITAÇÃO'
-                                    : 'SOLICITAR CONTA'),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Text('Pedidos',
-                      style: Theme.of(context).textTheme.titleLarge),
-                  const SizedBox(height: 8),
-                  if (_attendance.orders.isEmpty)
-                    const Card(
-                        child: ListTile(title: Text('Nenhum pedido enviado.'))),
-                  for (final order in _attendance.orders)
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('Pedido #${order.id}',
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.w800)),
-                            Text('Status: ${order.status.toUpperCase()}',
-                                style: Theme.of(context).textTheme.bodySmall),
-                            if (order.createdAt != null ||
-                                order.createdByName.isNotEmpty)
-                              Text(
-                                  [
-                                    if (order.createdAt != null)
-                                      _tableHistoryTime(order.createdAt),
-                                    if (order.createdByName.isNotEmpty)
-                                      'Operador: ${order.createdByName}',
-                                  ].join(' · '),
-                                  style: Theme.of(context).textTheme.bodySmall),
-                            const SizedBox(height: 6),
-                            for (final item in order.items)
-                              Padding(
-                                padding: const EdgeInsets.only(bottom: 8),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                        '${item.quantity}x ${item.productName}'),
-                                    Text(
-                                        '${formatMoney(item.unitPrice)} · ${item.status}',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall),
-                                    if (item.notes.isNotEmpty)
-                                      Text('Obs: ${item.notes}',
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodySmall),
-                                    if (item.cancellationReason.isNotEmpty)
-                                      Text('Motivo: ${item.cancellationReason}',
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodySmall),
-                                    if (item.modifierSnapshot.isNotEmpty)
-                                      Text(
-                                          item.modifierSnapshot
-                                              .map((row) =>
-                                                  '+ ${row['option_name'] ?? row['modifier_name'] ?? row['name'] ?? 'Modificador'}')
-                                              .join('\n'),
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodySmall),
-                                    if (item.confirmedAt != null)
-                                      Text(
-                                          'Confirmado em ${_tableHistoryTime(item.confirmedAt)}',
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodySmall),
-                                    if (item.status == 'confirmed' &&
-                                        _can('tables.transfer_items'))
-                                      CheckboxListTile(
-                                        contentPadding: EdgeInsets.zero,
-                                        dense: true,
-                                        title: const Text('Transferir item'),
-                                        value: _selectedItems.contains(item.id),
-                                        onChanged: _actionInProgress
-                                            ? null
-                                            : (selected) => setState(() =>
-                                                selected == true
-                                                    ? _selectedItems
-                                                        .add(item.id)
-                                                    : _selectedItems
-                                                        .remove(item.id)),
-                                      ),
-                                    if (item.status == 'confirmed' &&
-                                        _can('tables.cancel_items'))
-                                      Align(
-                                        alignment: Alignment.centerRight,
-                                        child: TextButton.icon(
-                                          onPressed: _actionInProgress
-                                              ? null
-                                              : () => _cancelItem(item),
-                                          icon:
-                                              const Icon(Icons.cancel_outlined),
-                                          label: const Text('CANCELAR ITEM'),
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                              ),
-                            if (order.status == 'confirmed' &&
-                                _can('tables.cancel_items'))
-                              Align(
-                                alignment: Alignment.centerRight,
-                                child: OutlinedButton.icon(
-                                  onPressed: _actionInProgress
-                                      ? null
-                                      : () => _cancelOrder(order),
-                                  icon: const Icon(
-                                      Icons.cancel_presentation_outlined),
-                                  label: const Text('CANCELAR PEDIDO'),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  if (_selectedItems.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: OutlinedButton.icon(
-                        onPressed: _actionInProgress ? null : _transferItems,
-                        icon: const Icon(Icons.drive_file_move_outline),
-                        label: const Text('TRANSFERIR ITENS'),
-                      ),
-                    ),
-                  const SizedBox(height: 16),
-                  Text('Resumo', style: Theme.of(context).textTheme.titleLarge),
-                  const SizedBox(height: 8),
-                  Card(
-                    child: Column(children: [
-                      _SummaryRow('Subtotal', _summary('subtotal')),
-                      _SummaryRow('Descontos', _summary('discount_total')),
-                      _SummaryRow('Taxa', _summary('service_fee_total')),
-                      _SummaryRow('Total', _summary('total_due'), bold: true),
-                      _SummaryRow('Pago', _summary('paid_total')),
-                      _SummaryRow('Saldo', _summary('remaining_balance'),
-                          bold: true),
-                    ]),
-                  ),
-                  const SizedBox(height: 96),
-                ]),
-              ),
-      );
-}
-
-class _SummaryRow extends StatelessWidget {
-  const _SummaryRow(this.label, this.value, {this.bold = false});
-  final String label;
-  final String value;
-  final bool bold;
-
-  @override
-  Widget build(BuildContext context) => ListTile(
-        dense: true,
-        title: Text(label,
-            style: bold ? const TextStyle(fontWeight: FontWeight.w800) : null),
-        trailing: Text(formatMoney(value),
-            style: bold ? const TextStyle(fontWeight: FontWeight.w800) : null),
-      );
 }
 
 class TableOrderPage extends StatefulWidget {
@@ -838,8 +339,8 @@ class _TableOrderPageState extends State<TableOrderPage> {
     final message = available == null
         ? 'Este produto não possui estoque suficiente para essa quantidade.'
         : requested == null
-            ? 'Só temos $available disponíveis deste produto.'
-            : 'Você tentou adicionar $requested, mas há somente $available disponíveis.';
+            ? 'Só temos ${formatAttendanceQuantity(available)} disponíveis deste produto.'
+            : 'Você tentou adicionar ${formatAttendanceQuantity(requested)}, mas há somente ${formatAttendanceQuantity(available)} disponíveis.';
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));
   }
@@ -908,7 +409,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
         onBarcode: _scanBarcode,
         cartListenable: _cartListenable,
         itemCount: () => '$_itemCount',
-        total: () => formatMoney(
+        total: () => formatAttendanceMoney(
             '${_preview?['total'] ?? _attendance.summary['total_due'] ?? '0.00'}'),
       ),
     ));
@@ -994,11 +495,12 @@ class _TableOrderPageState extends State<TableOrderPage> {
         .expand((order) => order.items)
         .where((item) => item.status == 'confirmed')
         .toList(growable: false);
-    final items = await showDialog<List<_TableItemTransferSelection>>(
-      context: context,
-      builder: (_) => _TableItemTransferPicker(
-        items: eligible,
-        initiallySelected: initiallySelected,
+    final items = await Navigator.of(context).push<List<TableOrderItem>>(
+      MaterialPageRoute(
+        builder: (_) => _TableItemTransferPage(
+          items: eligible,
+          initiallySelected: initiallySelected,
+        ),
       ),
     );
     if (items == null || items.isEmpty || !mounted) return;
@@ -1030,7 +532,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
           children: [
             for (final item in items)
               Text(
-                  '${_tableQuantityText(item.quantity)}x ${item.item.productName}'),
+                  '${formatAttendanceQuantity(item.quantity)}x ${item.productName}'),
           ],
         ),
         actions: [
@@ -1049,7 +551,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
       attendanceId: _attendance.id,
       destinationAttendanceId: target!.attendance!.id,
       items: items
-          .map((item) => {'item': item.item.id, 'quantity': item.quantity})
+          .map((item) => {'item': item.id, 'quantity': item.quantity})
           .toList(growable: false),
       idempotencyKey: createIdempotencyKey(),
     );
@@ -1158,7 +660,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
           builder: (_) => AlertDialog(
             title: Text(item.productName),
             content: Text([
-              'Quantidade: ${item.quantity}',
+              'Quantidade: ${formatAttendanceQuantity(item.quantity)}',
               'Pedido: #${order.id}',
               if (order.createdAt != null)
                 'Pedido criado em: ${_tableHistoryTime(order.createdAt)}',
@@ -1166,9 +668,9 @@ class _TableOrderPageState extends State<TableOrderPage> {
                 'Operador: ${order.createdByName}',
               if (item.confirmedAt != null)
                 'Confirmado em: ${_tableHistoryTime(item.confirmedAt)}',
-              'Status: ${_localizedItemStatus(item.status)}',
-              if (_printStatusLabel(item.printStatus) != null)
-                'Impressão: ${_printStatusLabel(item.printStatus)}',
+              'Status: ${localizedAttendanceStatus(item.status)}',
+              if (localizedPrintStatus(item.printStatus) != null)
+                'Impressão: ${localizedPrintStatus(item.printStatus)}',
               ...item.modifierSnapshot.map((modifier) =>
                   '+ ${modifier['name'] ?? modifier['option_name'] ?? 'Modificador'}'),
               if (item.notes.isNotEmpty) 'Obs: ${item.notes}',
@@ -1446,8 +948,8 @@ class _TableConferencePage extends StatelessWidget {
                             Row(children: [
                               Expanded(
                                   child: Text(
-                                      '${item.quantity}x ${item.productName}')),
-                              Text(formatMoney(
+                                      '${formatAttendanceQuantity(item.quantity)}x ${item.productName}')),
+                              Text(formatAttendanceMoney(
                                   item.lineTotal ?? item.unitPrice)),
                             ]),
                             for (final modifier in item.modifierSnapshot)
@@ -1540,9 +1042,10 @@ class _TableOrderSummaryPanel extends StatelessWidget {
                               draftIndex++)
                             SharedCartItemTile(
                               name: cart[draftIndex].product.name,
-                              quantity: cart[draftIndex].quantity,
-                              amount: _tableLineTotal(cart[draftIndex])
-                                  .toStringAsFixed(2),
+                              quantity: formatAttendanceQuantity(
+                                  cart[draftIndex].quantity),
+                              amount: normalizedAttendanceMoney(
+                                  _tableLineTotal(cart[draftIndex])),
                               details: [
                                 for (final modifier
                                     in cart[draftIndex].modifiers)
@@ -1570,7 +1073,7 @@ class _TableOrderSummaryPanel extends StatelessWidget {
               )
             else if (preview != null)
               Text(
-                'Total projetado: ${formatMoney('${preview!['total']}')}',
+                'Total projetado: ${formatAttendanceMoney(preview!['total'])}',
                 textAlign: TextAlign.end,
                 style: const TextStyle(fontWeight: FontWeight.w800),
               ),
@@ -1587,7 +1090,9 @@ class _TableOrderSummaryPanel extends StatelessWidget {
             SharedTotalsPanel(lines: [
               SharedTotalsLine(
                   label: 'Subtotal',
-                  value: '${attendance.summary['subtotal'] ?? '0.00'}'),
+                  value: '${attendance.summary['subtotal'] ?? '0.00'}',
+                  formattedValue:
+                      formatAttendanceMoney(attendance.summary['subtotal'])),
               if (_tableCartNumber(
                       attendance.summary['promotion_discount_total']) >
                   0)
@@ -1595,6 +1100,8 @@ class _TableOrderSummaryPanel extends StatelessWidget {
                     label: 'Promoções',
                     value:
                         '${attendance.summary['promotion_discount_total'] ?? '0.00'}',
+                    formattedValue: formatAttendanceMoney(
+                        attendance.summary['promotion_discount_total']),
                     negative: true),
               if (_tableCartNumber(attendance.summary['item_discount_total']) >
                   0)
@@ -1602,6 +1109,8 @@ class _TableOrderSummaryPanel extends StatelessWidget {
                     label: 'Descontos por item',
                     value:
                         '${attendance.summary['item_discount_total'] ?? '0.00'}',
+                    formattedValue: formatAttendanceMoney(
+                        attendance.summary['item_discount_total']),
                     negative: true),
               if (_tableCartNumber(
                       attendance.summary['checkout_discount_total']) >
@@ -1610,14 +1119,19 @@ class _TableOrderSummaryPanel extends StatelessWidget {
                     label: 'Desconto da mesa',
                     value:
                         '${attendance.summary['checkout_discount_total'] ?? '0.00'}',
+                    formattedValue: formatAttendanceMoney(
+                        attendance.summary['checkout_discount_total']),
                     negative: true),
               SharedTotalsLine(
                   label: 'Taxa de serviço',
-                  value:
-                      '${attendance.summary['service_fee_total'] ?? '0.00'}'),
+                  value: '${attendance.summary['service_fee_total'] ?? '0.00'}',
+                  formattedValue: formatAttendanceMoney(
+                      attendance.summary['service_fee_total'])),
               SharedTotalsLine(
                   label: 'Total oficial',
                   value: '${attendance.summary['total_due'] ?? '0.00'}',
+                  formattedValue:
+                      formatAttendanceMoney(attendance.summary['total_due']),
                   strong: true),
             ]),
             const SizedBox(height: 8),
@@ -1645,7 +1159,7 @@ class _ConfirmedOrderItemRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cancelled = item.status == 'cancelled' || item.status == 'canceled';
-    final printStatus = _printStatusLabel(item.printStatus);
+    final printStatus = localizedPrintStatus(item.printStatus);
     return Material(
       color: cancelled ? const Color(0x1aea4d4d) : Colors.transparent,
       child: InkWell(
@@ -1658,13 +1172,13 @@ class _ConfirmedOrderItemRow extends StatelessWidget {
             Row(children: [
               Expanded(
                 child: Text(
-                    '${_tableQuantityText(item.quantity)}x ${item.productName}',
+                    '${formatAttendanceQuantity(item.quantity)}x ${item.productName}',
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontWeight: FontWeight.w700)),
               ),
               const SizedBox(width: 8),
-              Text(formatMoney(item.lineTotal ?? item.unitPrice),
+              Text(formatAttendanceMoney(item.lineTotal ?? item.unitPrice),
                   style: const TextStyle(
                       color: Color(0xff3454d1), fontWeight: FontWeight.w800)),
             ]),
@@ -1680,7 +1194,10 @@ class _ConfirmedOrderItemRow extends StatelessWidget {
             else if (printStatus != null)
               Padding(
                 padding: const EdgeInsets.only(top: 3),
-                child: Text(printStatus,
+                child: Text(
+                    item.printStatus == 'printed'
+                        ? '✓ $printStatus'
+                        : printStatus,
                     style: TextStyle(
                         color: item.printStatus == 'printed'
                             ? const Color(0xff17c666)
@@ -1731,7 +1248,7 @@ class _TableMobileSummaryBar extends StatelessWidget {
                           color: Colors.white, fontWeight: FontWeight.w700))
                 else
                   Text(
-                    total == null ? '...' : formatMoney(total!),
+                    total == null ? '...' : formatAttendanceMoney(total!),
                     style: const TextStyle(
                         color: Colors.white, fontWeight: FontWeight.w800),
                   ),
@@ -1768,7 +1285,8 @@ class _TableSaleItemEditorDialogState
   @override
   void initState() {
     super.initState();
-    _quantity = TextEditingController(text: widget.initial.quantity);
+    _quantity = TextEditingController(
+        text: formatAttendanceQuantity(widget.initial.quantity));
     _notes = TextEditingController(text: widget.initial.notes);
     for (final modifier in widget.initial.modifiers) {
       final optionId = int.tryParse('${modifier['option'] ?? ''}');
@@ -1791,7 +1309,7 @@ class _TableSaleItemEditorDialogState
   void _setQuantity(double quantity) {
     if (quantity <= 0) return;
     setState(() {
-      _quantity.text = _tableQuantityText(quantity);
+      _quantity.text = formatAttendanceQuantity(quantity);
       _validation = null;
     });
   }
@@ -1855,18 +1373,18 @@ class _TableSaleItemEditorDialogState
     final required = _tableCartNumber(group.requiredQuantity) * _itemQuantity;
     if (group.requiredQuantity != null && (total - required).abs() > .001) {
       return total < required
-          ? 'Selecione mais ${_tableQuantityText(required - total)} unidade(s) em ${group.name}.'
-          : 'Remova ${_tableQuantityText(total - required)} unidade(s) em ${group.name}.';
+          ? 'Selecione mais ${formatAttendanceQuantity(required - total)} unidade(s) em ${group.name}.'
+          : 'Remova ${formatAttendanceQuantity(total - required)} unidade(s) em ${group.name}.';
     }
     final minimum = _tableCartNumber(group.minTotalQuantity);
     if (minimum > 0 && total < minimum) {
-      return 'Selecione mais ${_tableQuantityText(minimum - total)} unidade(s) em ${group.name}.';
+      return 'Selecione mais ${formatAttendanceQuantity(minimum - total)} unidade(s) em ${group.name}.';
     }
     final maximum = group.maxTotalQuantity == null
         ? null
         : _tableCartNumber(group.maxTotalQuantity);
     if (maximum != null && total > maximum) {
-      return 'Remova ${_tableQuantityText(total - maximum)} unidade(s) em ${group.name}.';
+      return 'Remova ${formatAttendanceQuantity(total - maximum)} unidade(s) em ${group.name}.';
     }
     return null;
   }
@@ -1895,7 +1413,7 @@ class _TableSaleItemEditorDialogState
       }
     }
     Navigator.of(context).pop(widget.initial.copyWith(
-      quantity: _tableQuantityText(_itemQuantity),
+      quantity: formatAttendanceQuantity(_itemQuantity),
       notes: _notes.text.trim(),
       modifiers: _modifierQuantities.entries
           .map((entry) => <String, dynamic>{
@@ -1955,7 +1473,7 @@ class _TableSaleItemEditorDialogState
                               onTap: () => _increase(group, option),
                               title: Text(option.name),
                               subtitle: Text(
-                                  '+ ${formatMoney(option.additionalPrice)}'),
+                                  '+ ${formatAttendanceMoney(option.additionalPrice)}'),
                               leading: Icon(
                                 _modifierQuantities.containsKey(option.id)
                                     ? Icons.add_circle
@@ -1970,7 +1488,7 @@ class _TableSaleItemEditorDialogState
                                   _select(group, option, value ?? false),
                               title: Text(option.name),
                               subtitle: Text(
-                                  '+ ${formatMoney(option.additionalPrice)}'),
+                                  '+ ${formatAttendanceMoney(option.additionalPrice)}'),
                             ),
                     ),
                     if (group.allowOptionQuantity &&
@@ -1980,7 +1498,8 @@ class _TableSaleItemEditorDialogState
                         icon: const Icon(Icons.remove),
                         tooltip: 'Diminuir ${option.name}',
                       ),
-                      Text('${_modifierQuantities[option.id]}'),
+                      Text(formatAttendanceQuantity(
+                          _modifierQuantities[option.id])),
                       IconButton(
                         onPressed: () => _increase(group, option),
                         icon: const Icon(Icons.add),
@@ -2056,8 +1575,8 @@ class _TableTransferDestinationPage extends StatelessWidget {
   }
 }
 
-class _TableItemTransferPicker extends StatefulWidget {
-  const _TableItemTransferPicker({
+class _TableItemTransferPage extends StatefulWidget {
+  const _TableItemTransferPage({
     required this.items,
     required this.initiallySelected,
   });
@@ -2066,334 +1585,69 @@ class _TableItemTransferPicker extends StatefulWidget {
   final Set<int> initiallySelected;
 
   @override
-  State<_TableItemTransferPicker> createState() =>
-      _TableItemTransferPickerState();
+  State<_TableItemTransferPage> createState() => _TableItemTransferPageState();
 }
 
-class _TableItemTransferPickerState extends State<_TableItemTransferPicker> {
-  final Map<int, String> _quantities = {};
+class _TableItemTransferPageState extends State<_TableItemTransferPage> {
+  final Set<int> _selected = {};
 
   @override
   void initState() {
     super.initState();
     for (final item in widget.items) {
-      if (widget.initiallySelected.contains(item.id)) {
-        _quantities[item.id] = item.quantity;
-      }
+      if (widget.initiallySelected.contains(item.id)) _selected.add(item.id);
     }
   }
 
   void _toggle(TableOrderItem item, bool selected) => setState(() {
-        if (selected) {
-          _quantities[item.id] = item.quantity;
-        } else {
-          _quantities.remove(item.id);
-        }
+        selected ? _selected.add(item.id) : _selected.remove(item.id);
       });
 
-  void _setQuantity(TableOrderItem item, double quantity) {
-    final maximum = _tableCartNumber(item.quantity);
-    if (quantity <= 0 || quantity > maximum) return;
-    setState(() => _quantities[item.id] = _tableQuantityText(quantity));
-  }
-
   @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: const Text('Transferir itens'),
-        content: SizedBox(
-          width: 420,
-          child: widget.items.isEmpty
-              ? const Text('Não há itens confirmados para transferir.')
-              : ListView(shrinkWrap: true, children: [
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(title: const Text('TRANSFERIR ITENS')),
+        body: widget.items.isEmpty
+            ? const Center(
+                child: Text('Não há itens confirmados para transferir.'))
+            : ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
                   Wrap(spacing: 8, children: [
                     TextButton(
-                      onPressed: () => setState(() {
-                        for (final item in widget.items) {
-                          _quantities[item.id] = item.quantity;
-                        }
-                      }),
+                      onPressed: () => setState(() => _selected
+                          .addAll(widget.items.map((item) => item.id))),
                       child: const Text('SELECIONAR TODOS'),
                     ),
                     TextButton(
-                      onPressed: () => setState(_quantities.clear),
-                      child: const Text('LIMPAR TODOS'),
+                      onPressed: () => setState(_selected.clear),
+                      child: const Text('DESMARCAR TODOS'),
                     ),
                   ]),
-                  for (final item in widget.items) ...[
+                  const SizedBox(height: 8),
+                  for (final item in widget.items)
                     CheckboxListTile(
-                      value: _quantities.containsKey(item.id),
+                      value: _selected.contains(item.id),
                       onChanged: (selected) => _toggle(item, selected == true),
+                      controlAffinity: ListTileControlAffinity.leading,
                       title: Text(item.productName),
                       subtitle: Text(
-                          'Disponível: ${item.quantity} · ${formatMoney(item.lineTotal ?? item.unitPrice)}'),
-                      controlAffinity: ListTileControlAffinity.leading,
-                    ),
-                    if (_quantities.containsKey(item.id))
-                      Padding(
-                        padding: const EdgeInsets.only(left: 56, bottom: 12),
-                        child: Row(children: [
-                          const Text('Quantidade'),
-                          IconButton(
-                            onPressed: () => _setQuantity(item,
-                                _tableCartNumber(_quantities[item.id]) - 1),
-                            icon: const Icon(Icons.remove_circle_outline),
-                          ),
-                          SizedBox(
-                            width: 72,
-                            child: TextFormField(
-                              key: ValueKey(
-                                  '${item.id}-${_quantities[item.id]}'),
-                              initialValue: _quantities[item.id],
-                              textAlign: TextAlign.center,
-                              keyboardType:
-                                  const TextInputType.numberWithOptions(
-                                      decimal: true),
-                              onChanged: (value) {
-                                final quantity = _tableCartNumber(value);
-                                if (quantity > 0 &&
-                                    quantity <=
-                                        _tableCartNumber(item.quantity)) {
-                                  _quantities[item.id] =
-                                      _tableQuantityText(quantity);
-                                }
-                              },
-                            ),
-                          ),
-                          IconButton(
-                            onPressed: () => _setQuantity(item,
-                                _tableCartNumber(_quantities[item.id]) + 1),
-                            icon: const Icon(Icons.add_circle_outline),
-                          ),
-                        ]),
+                        'Disponível: ${formatAttendanceQuantity(item.quantity)}'
+                        '${_selected.contains(item.id) ? ' · Transferir: ${formatAttendanceQuantity(item.quantity)}' : ''}',
                       ),
-                  ],
-                ]),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('CANCELAR'),
-          ),
-          FilledButton(
-            onPressed: _quantities.isEmpty
+                    ),
+                ],
+              ),
+        bottomNavigationBar: SafeArea(
+          minimum: const EdgeInsets.all(16),
+          child: FilledButton(
+            onPressed: _selected.isEmpty
                 ? null
                 : () => Navigator.of(context).pop(widget.items
-                    .where((item) => _quantities.containsKey(item.id))
-                    .map((item) => _TableItemTransferSelection(
-                        item, _quantities[item.id]!))
+                    .where((item) => _selected.contains(item.id))
                     .toList(growable: false)),
-            child: const Text('SELECIONAR'),
+            child: const Text('CONTINUAR'),
           ),
-        ],
-      );
-}
-
-class _TableItemTransferSelection {
-  const _TableItemTransferSelection(this.item, this.quantity);
-
-  final TableOrderItem item;
-  final String quantity;
-}
-
-class _TableCustomerPicker extends StatefulWidget {
-  const _TableCustomerPicker({
-    required this.controller,
-    required this.canCreate,
-    required this.canReactivate,
-  });
-
-  final AppController controller;
-  final bool canCreate;
-  final bool canReactivate;
-
-  @override
-  State<_TableCustomerPicker> createState() => _TableCustomerPickerState();
-}
-
-class _TableCustomerPickerState extends State<_TableCustomerPicker> {
-  final _search = TextEditingController();
-  List<QuickSaleCustomer> _customers = const [];
-  QuickSaleCustomer? _inactiveCustomer;
-  bool _loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    unawaited(_load());
-  }
-
-  @override
-  void dispose() {
-    _search.dispose();
-    super.dispose();
-  }
-
-  Future<void> _load() async {
-    setState(() => _loading = true);
-    final result = await widget.controller.quickSaleCustomers(_search.text);
-    if (!mounted) return;
-    setState(() {
-      _customers = result?.customers ?? const [];
-      _inactiveCustomer = result?.inactiveIdentity;
-      _loading = false;
-    });
-  }
-
-  Future<void> _create() async {
-    final customer = await showDialog<QuickSaleCustomer>(
-      context: context,
-      builder: (_) => _TableCustomerCreate(controller: widget.controller),
-    );
-    if (customer != null && mounted) Navigator.of(context).pop(customer);
-  }
-
-  Future<void> _reactivate() async {
-    final customer = _inactiveCustomer;
-    if (customer == null || !widget.canReactivate) return;
-    final active =
-        await widget.controller.activateQuickSaleCustomer(customer.id);
-    if (active != null && mounted) Navigator.of(context).pop(active);
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: const Text('Pesquisar cliente'),
-        content: SizedBox(
-          width: 460,
-          height: 400,
-          child: Column(children: [
-            TextField(
-              controller: _search,
-              onChanged: (_) => unawaited(_load()),
-              decoration: const InputDecoration(
-                labelText: 'Nome, telefone, documento ou e-mail',
-                prefixIcon: Icon(Icons.search),
-              ),
-            ),
-            if (_inactiveCustomer case final customer?)
-              ListTile(
-                leading: const Icon(Icons.person_off_outlined),
-                title: Text(customer.name),
-                subtitle: const Text('Cliente inativo'),
-                trailing: widget.canReactivate
-                    ? TextButton(
-                        onPressed: _reactivate,
-                        child: const Text('REATIVAR'),
-                      )
-                    : null,
-              ),
-            Expanded(
-              child: _loading
-                  ? const Center(child: CircularProgressIndicator())
-                  : ListView.builder(
-                      itemCount: _customers.length,
-                      itemBuilder: (_, index) {
-                        final customer = _customers[index];
-                        return ListTile(
-                          title: Text(customer.name),
-                          subtitle: Text([
-                            if (customer.phone.isNotEmpty) customer.phone,
-                            if (customer.document.isNotEmpty) customer.document,
-                          ].join(' | ')),
-                          onTap: () => Navigator.of(context).pop(customer),
-                        );
-                      },
-                    ),
-            ),
-          ]),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('CANCELAR'),
-          ),
-          if (widget.canCreate)
-            FilledButton.icon(
-              onPressed: _create,
-              icon: const Icon(Icons.person_add_alt_1),
-              label: const Text('ADICIONAR'),
-            ),
-        ],
-      );
-}
-
-class _TableCustomerCreate extends StatefulWidget {
-  const _TableCustomerCreate({required this.controller});
-
-  final AppController controller;
-
-  @override
-  State<_TableCustomerCreate> createState() => _TableCustomerCreateState();
-}
-
-class _TableCustomerCreateState extends State<_TableCustomerCreate> {
-  final _name = TextEditingController();
-  final _phone = TextEditingController();
-  final _document = TextEditingController();
-  bool _saving = false;
-
-  @override
-  void dispose() {
-    _name.dispose();
-    _phone.dispose();
-    _document.dispose();
-    super.dispose();
-  }
-
-  Future<void> _save() async {
-    if (_saving || _name.text.trim().isEmpty || _phone.text.trim().isEmpty) {
-      return;
-    }
-    setState(() => _saving = true);
-    QuickSaleCustomer? customer;
-    try {
-      customer = await widget.controller.createQuickSaleCustomer(
-        name: _name.text.trim(),
-        phone: _phone.text.trim(),
-        document: _document.text.trim(),
-      );
-    } on PosApiException catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(error.message)));
-      }
-    }
-    if (!mounted) return;
-    setState(() => _saving = false);
-    if (customer != null) Navigator.of(context).pop(customer);
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: const Text('Adicionar cliente'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(
-            controller: _name,
-            autofocus: true,
-            textCapitalization: TextCapitalization.words,
-            decoration: const InputDecoration(labelText: 'Nome *'),
-          ),
-          TextField(
-            controller: _phone,
-            keyboardType: TextInputType.phone,
-            decoration: const InputDecoration(labelText: 'Telefone *'),
-          ),
-          TextField(
-            controller: _document,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'CPF'),
-          ),
-        ]),
-        actions: [
-          TextButton(
-            onPressed: _saving ? null : () => Navigator.of(context).pop(),
-            child: const Text('CANCELAR'),
-          ),
-          FilledButton(
-            onPressed: _saving ? null : _save,
-            child: Text(_saving ? 'SALVANDO...' : 'SALVAR'),
-          ),
-        ],
       );
 }
 

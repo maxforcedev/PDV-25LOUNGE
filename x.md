@@ -1,1161 +1,1094 @@
-OPENCODE — PADRONIZAÇÃO COMPLETA DO MÓDULO DE MESAS
-REUTILIZAR A MESMA UI/UX DA VENDA RÁPIDA
+OPENCODE — AUDITORIA E PADRONIZAÇÃO COMPLETA DO MÓDULO DE MESAS
 
-OBJETIVO PRINCIPAL
+IMPORTANTE:
 
-Quero que TODO o fluxo operacional de MESAS use a MESMA aparência, estrutura visual, componentes e padrões de interação já aprovados em VENDA RÁPIDA.
+Não fazer correções pontuais somente na tela que estamos vendo.
 
-Não quero apenas "parecido".
+Quero revisar TODO o módulo de MESAS no Flutter e os contratos backend diretamente relacionados.
 
-Quero REUTILIZAÇÃO real dos componentes visuais quando tecnicamente possível.
+A fonte da verdade é o estado REAL atual do projeto.
 
-A regra de negócio continua sendo a da Mesa.
+HEAD analisado anteriormente:
+3e226e8b0f77e7a7b576e6e4a3d9eb09c335a6c1
 
-Ou seja:
+Confirme o HEAD novamente antes de trabalhar.
 
-MESMA UI/UX
-+
-REGRAS/BACKEND DE MESA
-
-A Venda Rápida é a referência visual oficial do POS.
+Não confiar em checkpoint.
 
 ==================================================
-1. PRINCÍPIO DE ARQUITETURA DE UI
+OBJETIVOS
 ==================================================
 
-Sempre que Venda Rápida e Mesa precisarem representar a mesma coisa visualmente:
+1. padronizar TODOS os números exibidos no módulo de Mesas;
+2. dinheiro sempre com 2 casas decimais;
+3. quantidade nunca mostrar zeros decimais desnecessários;
+4. eliminar textos técnicos/em inglês da UI;
+5. encontrar e corrigir telas antigas/inconsistentes dentro do módulo;
+6. transformar seleção de itens para transferência em PÁGINA, não modal;
+7. preservar a página de destino usando EXATAMENTE SharedTablesGrid;
+8. revisar consistência da transferência parcial no backend;
+9. não iniciar pagamentos.
 
-- item;
-- carrinho/resumo;
-- desconto;
-- cliente;
-- taxa;
-- totais;
-- menu;
-- modal;
-- dialog;
-- bottom sheet;
+==================================================
+1. ESCOPO DA AUDITORIA
+==================================================
+
+Revisar pelo menos:
+
+pos/lib/attendance/attendance_models.dart
+
+pos/lib/attendance/attendance_pages.dart
+
+pos/lib/attendance/table_attendance_page.dart
+
+pos/lib/attendance/table_summary_widgets.dart
+
+pos/lib/attendance/shared_tables_grid.dart
+
+e componentes compartilhados chamados pelo fluxo de Mesa.
+
+Também revisar no backend somente os pontos diretamente usados por:
+
+- TableAttendance;
+- TableOrder;
+- TableOrderItem;
+- transferência;
+- produção/impressão;
+- summary/preview.
+
+==================================================
+2. REGRA GLOBAL — DINHEIRO
+==================================================
+
+Em TODO o módulo de Mesas:
+
+NÃO quero exibição:
+
+0
+0.0
+10.5
+20.1
+
+Para VALORES MONETÁRIOS.
+
+Quero sempre padrão monetário:
+
+0.00
+10.50
+20.10
+
+ou, quando estiver utilizando formatter monetário do POS:
+
+R$ 0,00
+R$ 10,50
+R$ 20,10
+
+conforme o componente/contexto atual.
+
+A regra principal:
+
+VALOR MONETÁRIO = SEMPRE 2 CASAS.
+
+==================================================
+3. NÃO FORMATAR DINHEIRO MANUALMENTE EM CADA TELA
+==================================================
+
+Não espalhar:
+
+toStringAsFixed(2)
+
+por dezenas de widgets.
+
+Centralizar/reutilizar formatter já existente no POS.
+
+Hoje já existe:
+
+formatMoney(...)
+
+Utilizar corretamente.
+
+Se houver contexto onde precisamos apenas:
+
+10.00
+
+sem "R$":
+
+criar/reutilizar helper visual único e claro.
+
+Não alterar precisão armazenada no backend.
+
+É apenas apresentação.
+
+==================================================
+4. AUDITAR TODO USO DE VALOR CRU
+==================================================
+
+Pesquisar no módulo de Mesas todos os lugares que exibem diretamente:
+
+summary[...]
+
+item.unitPrice
+
+item.lineTotal
+
+table.balance
+
+table.total
+
+checkoutDiscount
+
+payment.amount
+
+receivedAmount
+
+changeAmount
+
+preview[...]
+
+ou qualquer String monetária recebida da API.
+
+Nenhuma String monetária crua deve ir direto para Text() sem formatter adequado.
+
+==================================================
+5. REGRA GLOBAL — QUANTIDADE
+==================================================
+
+Quantidade NÃO é dinheiro.
+
+Não quero:
+
+1.000
+2.000
+5.000
+
+Quero:
+
+1
+2
+5
+
+Se existir quantidade fracionada real:
+
+1.500 → 1.5
+
+2.250 → 2.25
+
+0.750 → 0.75
+
+Preservar no máximo a precisão necessária do domínio.
+
+==================================================
+6. USAR UM ÚNICO FORMATTER DE QUANTIDADE
+==================================================
+
+Hoje já existe:
+
+_tableQuantityText(...)
+
+que faz boa parte disso.
+
+Generalizar/reutilizar em TODO o fluxo de Mesas.
+
+Não quero:
+
+${item.quantity}
+
+diretamente em UI quando quantity vem como String decimal da API.
+
+Exemplo ERRADO:
+
+Text('${item.quantity}x ${item.productName}')
+
+Exemplo correto conceitual:
+
+Text('${formatQuantity(item.quantity)}x ${item.productName}')
+
+==================================================
+7. AUDITAR QUANTIDADES NO MÓDULO INTEIRO
+==================================================
+
+Verificar:
+
+- resumo;
+- detalhes do item;
+- conferência;
+- transferência;
+- seletor de transferência;
+- catálogo;
 - badge;
-- botão;
-- campo;
-- lista;
+- modificadores;
+- telas antigas;
+- histórico;
+- mensagens;
+- quantidade disponível;
+- quantidade selecionada.
 
-preferir UM COMPONENTE COMPARTILHADO.
-
-NÃO criar cópias independentes só porque uma tela é Mesa e a outra é Venda Rápida.
-
-Exemplo RUIM:
-
-QuickSaleDiscountDialog
-TableDiscountDialog
-TableDiscountDialogV2
-
-Exemplo desejado:
-
-SharedDiscountDialog
-
-Venda Rápida:
-→ injeta estado/callbacks/regras da Venda Rápida
-
-Mesa:
-→ injeta estado/callbacks/regras da Mesa
-
-VISUALMENTE:
-→ mesmo componente
-
-REGRAS:
-→ permanecem separadas.
+Todos devem obedecer ao mesmo formatter.
 
 ==================================================
-2. VENDA RÁPIDA É REFERÊNCIA E ESTÁ APROVADA
+8. TEXTOS EM INGLÊS / STATUS TÉCNICOS
 ==================================================
 
-Arquivo principal de referência:
+NENHUM status cru do backend deve aparecer diretamente na UI.
 
-pos/lib/sales/quick_sale_page.dart
+Não quero:
 
-A Venda Rápida NÃO deve ser redesenhada.
+confirmed
+CONFIRMED
 
-NÃO modificar comportamento aprovado para adaptar à Mesa.
+cancelled
+CANCELLED
 
-Se algum componente privado precisar ser extraído para reutilização:
+pending
 
-- preservar 100% a aparência atual da Venda Rápida;
-- preservar 100% o comportamento atual;
-- preservar callbacks;
-- preservar regras;
-- não causar regressão.
+processing
 
-Mesa deve se adaptar ao padrão da Venda Rápida.
+printed
 
-NÃO o contrário.
+failed
 
-==================================================
-3. OBJETIVO VISUAL DO FLUXO DE MESA
-==================================================
+occupied
 
-Hoje o módulo Mesa tem aparência mais administrativa:
+free
 
-- muitos Cards;
-- muitos botões;
-- vários menus de três pontos;
-- checkboxes permanentes;
-- ações espalhadas;
-- blocos grandes;
-- informações técnicas visíveis demais.
+open
 
-Quero aparência operacional de POS.
+closed
 
-A experiência deve parecer uma continuação natural da Venda Rápida.
+applied
+
+etc.
+
+quando forem exibidos ao operador.
 
 ==================================================
-4. FLUXO GERAL DE MESA
+9. CENTRALIZAR TRADUÇÕES DE STATUS
 ==================================================
 
-HOME
-→ MESAS
-→ selecionar Mesa
-→ abrir catálogo operacional
-
-Catálogo de Mesa:
-→ mesmo padrão visual do catálogo da Venda Rápida
-
-Resumo da Mesa:
-→ mesmo padrão visual do Carrinho da Venda Rápida
-
-Modais:
-→ mesmos componentes visuais
-
-Menus:
-→ mesmo padrão
-
-Itens:
-→ mesma apresentação
-
-Totais:
-→ mesma apresentação
-
-==================================================
-5. TELA DE CATÁLOGO DA MESA
-==================================================
-
-O catálogo da Mesa deve reutilizar o mesmo componente do catálogo da Venda Rápida sempre que possível.
-
-Ideal:
-
-ProductCatalogPanel
-
-ou componente compartilhado equivalente.
-
-A Mesa deve continuar passando:
-
-- catálogo de Mesa;
-- canal TABLE;
-- draft da Mesa;
-- callbacks da Mesa.
-
-Mas visualmente deve ser o mesmo.
-
-Manter:
-
-- busca;
-- categorias;
-- favoritos;
-- scanner;
-- fotos;
-- cards;
-- badges de quantidade selecionada;
-- long press;
-- seleção de produto;
-- estados de estoque.
-
-==================================================
-6. BADGE DE QUANTIDADE NO PRODUTO
-==================================================
-
-Venda Rápida e Mesa devem usar o MESMO componente visual de card/badge.
-
-Badge:
-
-- canto superior direito;
-- Primary #3454D1;
-- texto branco;
-- pequeno;
-- proporcional;
-- não deslocar layout.
-
-Venda Rápida:
-→ quantidade do carrinho atual.
-
-Mesa:
-→ quantidade SOMENTE do draft ainda não enviado.
-
-Itens já confirmados na Mesa NÃO entram no badge.
-
-==================================================
-7. APPBAR DA MESA
-==================================================
-
-A tela operacional deve seguir o padrão enxuto.
+Criar/reutilizar funções de apresentação.
 
 Exemplo:
 
-<   MESA 12                                  ⋮
+confirmed → Confirmado
+cancelled → Cancelado
+pending → Pendente
 
-Somente:
+printed → Impresso
+processing → Impressão em andamento
+failed → Falha na impressão
 
-- botão voltar;
-- nome/número da Mesa;
-- um menu geral.
+occupied → Ocupada
+free → Livre
 
-NÃO colocar vários ícones de ações no AppBar.
+open → Aberta
+closed → Fechada
 
-NÃO colocar:
+Não fazer:
 
-- solicitar conta separado;
-- separar grupo separado;
-- refresh separado;
-- ações duplicadas.
+status.toUpperCase()
 
-==================================================
-8. UM ÚNICO MENU GERAL DA MESA
-==================================================
-
-Usar o MESMO padrão de PopupMenuButton da Venda Rápida.
-
-Preferir componente compartilhado quando aplicável.
-
-Menu geral da Mesa:
-
-- Adicionar cliente
-- Alterar cliente
-- Remover cliente
-- Aplicar desconto
-- Alterar desconto
-- Remover desconto
-- Remover taxa de serviço
-- Restaurar taxa
-- Visualizar conferência
-- Solicitar conta
-- Cancelar solicitação de conta
-- Transferir itens
-- Separar mesa do grupo
-
-Mostrar somente conforme:
-
-- estado da Mesa;
-- permissões;
-- existência do cliente;
-- existência do desconto;
-- existência da taxa;
-- grupo;
-- contexto operacional.
+para mostrar código técnico.
 
 ==================================================
-9. RESUMO DA MESA = MESMO PADRÃO DO CARRINHO
+10. STATUS NORMAIS PODEM NEM SER MOSTRADOS
 ==================================================
 
-Não quero Cards administrativos.
+Principalmente no resumo:
 
-Usar o MESMO padrão visual do Carrinho da Venda Rápida.
+não mostrar "Confirmado" se esse é o estado normal.
+
+Mostrar status apenas quando acrescenta informação.
 
 Exemplo:
 
-Redbull Tropical                          R$ 20,00
-Qtd. 1
+normal:
+2x Coca-Cola       R$ 16,00
+✓ Impresso
 
-Coca-Cola                                 R$ 16,00
-Qtd. 2
-
-+ Limão
-Obs: sem gelo
-
-
-Subtotal                                  R$ 36,00
-Promoções                                - R$ 0,00
-Descontos por item                       - R$ 0,00
-Desconto da mesa                         - R$ 0,00
-Taxa de serviço                            R$ 3,60
-TOTAL OFICIAL                             R$ 39,60
+cancelado:
+fundo vermelho claro
+2x Coca-Cola       R$ 16,00
+CANCELADO
 
 ==================================================
-10. COMPONENTE DE ITEM
+11. AUDITAR MENSAGENS DE ERRO E FEEDBACK
 ==================================================
 
-Venda Rápida e Mesa devem compartilhar o mesmo componente base de apresentação de item sempre que possível.
+Revisar também:
 
-O componente deve receber parâmetros/contexto.
+SnackBars
+dialogs
+tooltips
+empty states
+erros tratados no Flutter
 
-Exemplo conceitual:
+do módulo de Mesas.
 
-SharedCartItemTile(
-  name,
-  quantity,
-  price,
-  modifiers,
-  notes,
-  status?,
-  onTap?,
-  onLongPress?,
-)
+Se estiver mostrando:
 
-Venda Rápida:
-→ item do draft.
+código técnico
+status técnico
+mensagem interna em inglês
 
-Mesa:
-→ draft ou TableOrderItem confirmado.
+traduzir/adaptar para linguagem operacional em português.
 
-Não duplicar layout.
+NÃO traduzir payload/código interno.
+
+Somente UI.
 
 ==================================================
-11. ITENS CONFIRMADOS DA MESA
+12. ENCONTREI UMA TELA ANTIGA NO MESMO MÓDULO
 ==================================================
 
-Mostrar de maneira limpa.
+Existe ainda:
 
-Não mostrar permanentemente:
+TableAttendancePage
 
-- CANCELAR ITEM;
-- TRANSFERIR ITEM;
-- checkbox;
-- três pontos;
-- botões auxiliares.
+com UI antiga.
 
-Ao tocar/pressionar o item confirmado:
+Ela ainda possui coisas como:
 
-abrir o mesmo padrão de bottom sheet/modal de ação usado pelo POS.
+Pedido #...
+Status: ${order.status.toUpperCase()}
+${item.quantity}x ...
+${item.status}
 
-Opções conforme permissão:
+e vários Cards/ações antigas.
 
-- Ver detalhes
-- Aplicar desconto no item
-- Alterar desconto no item
-- Remover desconto no item
-- Cancelar item
-- Transferir item
+Isso conflita com a UI nova de TableOrderPage.
 
 ==================================================
-12. ITEM DO DRAFT
+13. INVESTIGAR SE TableAttendancePage AINDA É USADA
 ==================================================
 
-Item ainda não enviado deve usar o mesmo componente visual da Venda Rápida.
+Pesquisar TODAS as referências de:
 
-Ao tocar/pressionar:
+TableAttendancePage
 
-- editar quantidade;
-- editar modificadores;
-- observação;
-- desconto do item, quando aplicável;
-- remover.
+Antes de decidir.
 
-Reutilizar o mesmo modal/editor da Venda Rápida sempre que possível.
+Se NÃO for mais acessível pelo fluxo atual:
 
-NÃO criar editor duplicado para Mesa se o mesmo componente puder receber callbacks/contexto.
+remover código morto com segurança.
 
-==================================================
-13. MODAL DE EDIÇÃO DO ITEM
-==================================================
+Se ainda for acessível:
 
-Hoje já existem editores separados em partes do código.
+ela deve ser padronizada para não apresentar uma experiência antiga diferente.
 
-Quero revisar isso.
-
-Se SaleItemEditorDialog puder ser usado para Mesa:
-
-→ transformar em componente compartilhado.
-
-Venda Rápida e Mesa devem abrir o MESMO modal visual.
-
-A diferença será apenas:
-
-- origem;
-- callbacks;
-- permissões;
-- persistência;
-- backend utilizado.
+NÃO deixar duas UIs concorrentes para a mesma Mesa.
 
 ==================================================
-14. DESCONTO GERAL — MESMO MODAL
+14. NÃO REMOVER SEM INVESTIGAR
 ==================================================
 
-OBRIGATÓRIO:
+Não apagar TableAttendancePage apenas porque parece antiga.
 
-Mesa deve usar o MESMO componente visual do desconto da Venda Rápida.
+Primeiro:
 
-Não criar modal "parecido".
+- localizar callers;
+- rotas;
+- imports;
+- navegação;
+- referências.
 
-Extrair/generalizar o modal existente se necessário.
+Depois decidir:
 
-Modal:
+A) consolidar no fluxo atual;
 
-DESCONTO
+ou
 
-[R$] [%]
+B) remover se realmente estiver morta.
 
-Valor
-[          ]
-
-Exibir:
-
-- tipo;
-- valor;
-- limite;
-- validação;
-- erro;
-- autorização/PIN quando aplicável.
+Relatar no checkpoint.
 
 ==================================================
-15. REGRA DE DESCONTO CONTINUA SENDO DE MESA
+15. COMPONENTES DUPLICADOS ANTIGOS
 ==================================================
 
-Visual igual.
+Fazer a mesma auditoria para:
 
-Regra NÃO igual.
+_TableCustomerPicker
+_TableCustomerCreate
+_TableAttendancePicker
+_TableItemTransferPicker antigo
+helpers antigos
+dialogs antigos
 
-Venda Rápida:
-→ desconto da venda atual.
+ou quaisquer widgets privados duplicados.
 
-Mesa:
-→ checkout_discount persistente no TableAttendance.
+Se foram substituídos por shared:
 
-Percentual da Mesa deve permanecer percentual.
+remover somente quando sem referência.
+
+==================================================
+16. TRANSFERÊNCIA — NÃO QUERO MODAL DE ITENS
+==================================================
+
+Hoje:
+
+Transferir itens
+→ AlertDialog com seleção dos itens e quantidades
+→ página de destino
+
+Isso precisa mudar.
+
+Quero:
+
+Transferir itens
+→ PÁGINA DE SELEÇÃO DE ITENS
+→ PÁGINA DE SELEÇÃO DA MESA
+→ confirmação
+→ retorno à Mesa.
+
+==================================================
+17. NOVA PÁGINA — SELECIONAR ITENS
+==================================================
+
+Criar uma página real.
+
+AppBar:
+
+<   TRANSFERIR ITENS
+
+Conteúdo:
+
+Selecionar todos
+Desmarcar todos
+
+Lista dos produtos confirmados.
+
+Cada linha:
+
+[checkbox]
+
+Produto
+
+Quantidade disponível
+
+Quantidade a transferir
 
 Exemplo:
 
-Mesa = R$ 100
-Desconto = 10%
+☑ Coca-Cola
+Disponível: 5
 
-→ R$ 10
+      [-] 3 [+]
 
-Entra novo pedido:
+☑ Redbull
+Disponível: 2
 
-Mesa = R$ 200
-
-→ desconto passa a R$ 20.
-
-NÃO congelar o valor em R$ 10.
+      [-] 2 [+]
 
 ==================================================
-16. DESCONTO POR ITEM
+18. NÃO USAR AlertDialog PARA ESSA ETAPA
 ==================================================
 
-Usar o MESMO componente visual de desconto por item da Venda Rápida.
+Remover uso de:
 
-Mesa:
+showDialog<List<_TableItemTransferSelection>>
 
-→ chama regras/endpoints de TableOrderItem.
+para a seleção principal dos itens.
 
-Venda Rápida:
+Usar:
 
-→ mantém fluxo atual.
+Navigator.push
 
-Visualmente deve ser idêntico.
+com página.
 
-==================================================
-17. AUTORIZAÇÃO/PIN
-==================================================
-
-Se o usuário não possuir permissão:
-
-usar o MESMO padrão visual de autorização da Venda Rápida.
-
-Não criar modal de PIN diferente para Mesa.
-
-Pode reutilizar componente visual compartilhado.
-
-A lógica/endpoint de autorização pode ser diferente conforme contexto.
+A tela precisa respirar em celular/Stone.
 
 ==================================================
-18. CLIENTE
+19. SELECIONAR TODOS
 ==================================================
 
-Mesa e Venda Rápida devem usar o mesmo padrão visual para:
+Botão:
 
-- pesquisar cliente;
-- selecionar cliente;
-- cadastrar;
-- remover;
-- trocar;
-- exibir cliente selecionado.
+SELECIONAR TODOS
 
-Se já existir picker/dialog reutilizável:
+deve:
 
-generalizar.
+- marcar todos os itens elegíveis;
+- iniciar quantidade de transferência com a quantidade máxima de cada linha.
 
-Não criar duas experiências visuais diferentes.
+Botão:
 
-==================================================
-19. TAXA DE SERVIÇO
-==================================================
+DESMARCAR TODOS
 
-A ação deve usar o mesmo padrão visual da Venda Rápida:
-
-- remover taxa;
-- restaurar taxa;
-- autorização se necessário.
-
-Não criar botões separados grandes na Mesa.
-
-Fica no menu geral.
+deve limpar seleção.
 
 ==================================================
-20. PEDIDOS ANTERIORES
+20. QUANTIDADE DA TRANSFERÊNCIA
 ==================================================
 
-Mesa possui conceito que Venda Rápida não possui:
+Quantidade exibida também deve usar formatter global.
 
-Pedido #35
-Pedido #37
-Pedido #40
+Nunca:
 
-Isso continua existindo.
+5.000
 
-Mas deve ser apresentado de forma leve.
+Mostrar:
+
+5
+
+Controle:
+
+[-] quantidade [+]
+
+Se quantidade disponível:
+
+5
+
+permitir:
+
+1, 2, 3, 4, 5
+
+ou decimal se a unidade realmente suportar quantidade decimal.
+
+==================================================
+21. CAMPO MANUAL DE QUANTIDADE
+==================================================
+
+Se mantiver TextField:
+
+formatar/validar corretamente.
+
+Não deixar o campo ficar visualmente:
+
+1.000
+
+após edição.
+
+Ao perder foco/confirmar:
+
+normalizar.
+
+==================================================
+22. BOTÃO CONTINUAR
+==================================================
+
+Na parte inferior:
+
+CONTINUAR
+
+Somente habilitado quando existir ao menos um item selecionado com quantidade válida.
+
+==================================================
+23. DESTINO CONTINUA SENDO PÁGINA
+==================================================
+
+Após CONTINUAR:
+
+abrir:
+
+_TableTransferDestinationPage
+
+ou componente/página equivalente.
+
+Ela já usa:
+
+SharedTablesGrid
+
+MANTER.
+
+==================================================
+24. MESMA UI DO HOME DE MESAS
+==================================================
+
+TablesPage e seleção de destino devem continuar usando:
+
+SharedTablesGrid
+SharedTableCard
+
+Não recriar cards.
+
+Não copiar código.
+
+Não fazer "parecido".
+
+MESMO componente.
+
+==================================================
+25. CONFIRMAÇÃO FINAL
+==================================================
+
+Depois de selecionar Mesa destino:
+
+pode haver uma confirmação final simples.
+
+Essa confirmação pode ser dialog pequeno porque é apenas CONFIRMAÇÃO.
 
 Exemplo:
 
-PEDIDO #37
-─────────────────
-Redbull Tropical              R$ 20,00
-Qtd. 1
+TRANSFERIR PARA MESA 12?
 
-PEDIDO #35
-─────────────────
-Coca-Cola                     R$ 16,00
-Qtd. 2
+3x Coca-Cola
+1x Batata
 
-Nada de Cards gigantes.
+CANCELAR | TRANSFERIR
 
-Nada de vários menus visíveis.
+O que NÃO pode ser modal é o fluxo completo de seleção dos itens.
 
 ==================================================
-21. AÇÕES DO PEDIDO
+26. ITEM ÚNICO
 ==================================================
 
-Ao pressionar o cabeçalho:
+Quando usuário tocar:
 
-PEDIDO #37
-
-abrir bottom sheet/modal de ações.
-
-Exemplo:
-
-Cancelar pedido
-
-Somente conforme:
-
-- status;
-- permissão;
-- regras existentes.
-
-Não mostrar botão permanente.
-
-==================================================
-22. DRAFT ATUAL
-==================================================
-
-Separar visualmente:
-
-PEDIDO ATUAL
-
-dos pedidos confirmados.
-
-Exemplo:
-
-PEDIDO ATUAL
-─────────────────
-Coca-Cola
-Qtd. 2
-
-Batata
-Qtd. 1
-
-SALVAR E ENVIAR PEDIDO
-
-Depois de enviar:
-
-- draft limpa;
-- pedido vira histórico;
-- usuário continua na mesma Mesa.
-
-==================================================
-23. BOTÃO PRINCIPAL
-==================================================
-
-Usar o mesmo padrão de botão primário da Venda Rápida.
-
-Na Mesa:
-
-SALVAR E ENVIAR PEDIDO
-
-Não iniciar pagamento nesta missão.
-
-Não colocar:
-
-IR PARA PAGAMENTO
-
-ainda.
-
-==================================================
-24. TOTAIS
-==================================================
-
-Usar o MESMO componente visual dos totais da Venda Rápida.
-
-Se possível:
-
-SharedTotalsPanel
-
-Receber dados por propriedades.
-
-Venda Rápida:
-→ QuickSalePreview.
-
-Mesa:
-→ Table summary/preview.
-
-Não calcular regra financeira no componente.
-
-Somente apresentar valores vindos do backend.
-
-==================================================
-25. CAMPOS FINANCEIROS
-==================================================
-
-Na Mesa mostrar, conforme disponíveis:
-
-Subtotal
-
-Promoções
-
-Descontos por item
-
-Desconto da mesa
-
-Taxa de serviço
-
-TOTAL OFICIAL
-
-Quando futuramente pagamentos entrarem:
-
-Pago
-
-Saldo
-
-Mas nesta missão NÃO começar UI de pagamento.
-
-==================================================
-26. CONFERÊNCIA
-==================================================
-
-Conferência continua sendo função específica de Mesa.
-
-Abrir por menu geral.
-
-Visual deve seguir a mesma linguagem do restante do POS.
-
-Não precisa copiar fluxo de Venda Rápida porque não existe equivalente direto.
-
-Mas:
-
-- mesma tipografia;
-- mesmos espaçamentos;
-- mesmos botões;
-- mesma paleta;
-- mesmos componentes base.
-
-==================================================
-27. CONTA SOLICITADA
-==================================================
-
-Não colocar no AppBar.
-
-Mostrar badge/status discreto no resumo.
-
-Exemplo:
-
-CONTA SOLICITADA
-
-A ação:
-
-Solicitar conta
-Cancelar solicitação
-
-fica no menu superior.
-
-==================================================
-28. TRANSFERÊNCIA
-==================================================
-
-Não mostrar checkbox permanentemente.
-
-Fluxo:
-
-Menu geral
-→ Transferir itens
-→ entrar em modo seleção
-
-ou:
-
-pressionar item
+item
 → Transferir item
 
-Modo de seleção pode mostrar checkbox temporariamente.
+Pode abrir diretamente a PÁGINA de transferência já com aquele item marcado.
 
-Ao sair do modo:
+Não abrir modal.
 
-→ desaparecem.
+A página começa com:
 
-==================================================
-29. SEPARAR GRUPO
-==================================================
+item já selecionado
+quantidade padrão = total disponível
 
-Não colocar ícone fixo no AppBar.
-
-Fica no menu geral.
-
-Só aparece se:
-
-- Mesa estiver em grupo;
-- operador possuir permissão.
+e usuário pode ajustar.
 
 ==================================================
-30. REFRESH
+27. STATUS DE IMPRESSÃO
 ==================================================
 
-Não quero botão de refresh ocupando AppBar.
+Continuar usando o estado REAL exposto pelo backend.
 
-Se atualização manual ainda for útil:
+Hoje print_status vem de:
 
-usar:
+production_jobs
+→ print_jobs
 
-pull-to-refresh
+Não inventar.
 
-ou mecanismo discreto.
-
-Manter consistência com POS.
-
-==================================================
-31. COMPONENTES COMPARTILHADOS
-==================================================
-
-Antes de implementar, identificar no quick_sale_page.dart quais componentes privados podem ser extraídos.
-
-Possíveis candidatos:
-
-- ProductCatalogPanel
-- card do produto
-- badge de quantidade
-- cart item tile
-- cart/resumo
-- totals panel
-- DiscountDialog
-- item discount dialog
-- customer picker
-- authorization/PIN dialog
-- PopupMenu/padrão de menu
-- MobileCartBar
-- SaleItemEditorDialog
-
-NÃO extrair tudo cegamente.
-
-Extrair quando existir uso real em Mesa e Venda Rápida.
+Mas padronizar todos os labels em português.
 
 ==================================================
-32. ONDE COLOCAR COMPONENTES COMPARTILHADOS
+28. SEM PRINT JOB
 ==================================================
 
-Organizar em arquivos claros.
+Hoje:
 
-Exemplo conceitual:
+print_status = null
 
-pos/lib/sales/widgets/
-ou
-pos/lib/shared/pos/
+faz a UI não mostrar nada.
 
-Não criar arquitetura exagerada.
+Definir representação operacional coerente.
 
-O objetivo é:
+Por exemplo:
 
-- reutilização;
-- manutenção;
-- consistência.
+"Não enviado para impressão"
 
-==================================================
-33. NÃO MISTURAR DOMÍNIO COM UI
-==================================================
+SOMENTE se semanticamente `null` realmente significar que não existe print job.
 
-Componentes compartilhados NÃO podem saber:
+Confirmar no domínio primeiro.
 
-"isto é Mesa"
-"isto é Venda Rápida"
-
-Preferir receber:
-
-- callbacks;
-- modelos de apresentação;
-- flags;
-- valores.
-
-Exemplo:
-
-onDiscount()
-onCustomer()
-onRemove()
-onEdit()
-
-e não chamar diretamente:
-
-tableApi
-quickSaleApi
-
-de dentro do widget compartilhado.
+Não tratar null como erro ou pending sem verificar.
 
 ==================================================
-34. BACKEND
+29. REVISAR TRANSFERÊNCIA PARCIAL — IMPORTANTE
 ==================================================
 
-Não alterar backend nesta missão só por causa da padronização visual.
+A implementação atual passou a permitir transferência parcial de item confirmado.
 
-Usar contratos existentes.
+Ela:
 
-Se realmente faltar algum dado necessário:
+- reduz quantity do TableOrderItem original;
+- cria novo TableOrderItem no destino;
+- divide financial_snapshot.
 
-PARE e relate antes de criar endpoint/serializer.
-
-Não inventar contrato novo silenciosamente.
+Antes de considerar pronto, auditar TODOS os vínculos do item original.
 
 ==================================================
-35. REGRAS DE MESA QUE DEVEM PERMANECER
+30. VÍNCULOS QUE PRECISAM SER REVISADOS
 ==================================================
 
-Não alterar:
+Verificar pelo menos:
 
-TableAttendance
+StockMovement
 
-TableOrder
+ProductionJob
 
-TableOrderItem
-
-save_table_order()
-
-cancel_table_order()
-
-cancel_table_item()
-
-transfer_table_items()
-
-set_table_checkout_context()
-
-set_table_item_discount()
-
-set_table_bill_requested()
-
-estoque
-
-produção
+PrintJob
 
 tickets
 
 auditoria
 
-idempotência
+allocations futuras
+
+ou qualquer FK/OneToOne/ManyToMany relacionada ao TableOrderItem.
+
+Problema possível:
+
+item original tinha quantidade 5.
+
+Transfere 3.
+
+original vira quantidade 2.
+
+novo item destino vira quantidade 3.
+
+Mas movimentos/jobs/tickets históricos podem continuar apontando apenas para item original e representar as 5 unidades.
+
+Isso precisa ficar semanticamente consistente.
 
 ==================================================
-36. REGRAS DE VENDA RÁPIDA QUE DEVEM PERMANECER
+31. NÃO CORRIGIR TRANSFERÊNCIA PARCIAL NO ESCURO
 ==================================================
 
-Não alterar comportamento de:
+Primeiro mapear todas as relações de:
 
-- carrinho;
-- preview;
-- desconto;
-- item discount;
-- cliente;
-- taxa;
-- disponibilidade;
+TableOrderItem
+
+e explicar a estratégia.
+
+Se a implementação atual já estiver consistente:
+demonstrar por quê.
+
+Se não:
+corrigir preservando:
+
 - estoque;
-- finalização;
-- pagamento;
-- venda;
-- scanner.
+- produção;
+- impressão;
+- tickets;
+- auditoria;
+- idempotência;
+- financeiro.
 
-A Venda Rápida apenas pode passar a consumir componentes compartilhados.
-
-==================================================
-37. MOBILE / STONE
-==================================================
-
-Prioridade visual:
-
-- celular;
-- Stone;
-- telas compactas.
-
-Evitar:
-
-- textos apertados;
-- menus duplicados;
-- botões pequenos demais;
-- elementos administrativos;
-- Card dentro de Card.
-
-Manter área de toque confortável.
+Não fazer gambiarra.
 
 ==================================================
-38. DESKTOP/TABLET
+32. PREÇOS NO RESUMO
 ==================================================
 
-Em telas maiores:
+Manter:
 
-pode continuar existir layout lado a lado catálogo + resumo.
+quantidade
+produto
+valor da linha
 
-Mas usar os MESMOS componentes compartilhados.
+Sempre formatado.
 
-Não criar outro design completamente diferente.
+Exemplo:
 
-==================================================
-39. CORES
-==================================================
+1x Coca-Cola                         R$ 8,00
 
-Usar identidade atual do CORE:
+NUNCA:
 
-Primary:
-#3454D1
-
-Primary dark:
-#2945B6
-
-Texto:
-#283C50
-
-Surface:
-#FFFFFF
-
-Muted:
-#64748B
-
-Border:
-#E2E8F0
-
-Success:
-#17C666
-
-Warning:
-#FFA21D
-
-Danger:
-#EA4D4D
-
-Não inventar nova paleta.
+1.000x Coca-Cola                     8.0
 
 ==================================================
-40. ALERTAS
+33. TOTAIS
 ==================================================
 
-Manter padrão de feedback já aprovado do POS.
+Todos:
 
-Não criar AlertDialogs genéricos desnecessários se já existir padrão de feedback.
+Subtotal
+Promoções
+Descontos por item
+Desconto da Mesa
+Taxa
+Total
 
-Alertas transitórios:
-aproximadamente 5 segundos conforme padrão existente.
+sempre com formatter monetário.
+
+Não expor:
+
+0.0
+
+em nenhuma hipótese.
 
 ==================================================
-41. NÃO ALTERAR ANDROID
+34. CONFERÊNCIA
 ==================================================
 
-NÃO mexer em:
+Aplicar as mesmas regras:
+
+quantidade:
+1 e não 1.000
+
+dinheiro:
+R$ 10,00 / 10,00 conforme padrão visual
+
+status:
+português
+
+não mostrar código técnico.
+
+==================================================
+35. MAPA/HOME DE MESAS
+==================================================
+
+Revisar:
+
+saldo
+total
+status
+conta solicitada
+grupo
+
+Saldo deve sempre ter duas casas monetárias.
+
+Status deve estar em português.
+
+==================================================
+36. DETALHE DO ITEM
+==================================================
+
+No detalhe:
+
+Quantidade: 1
+
+não:
+
+Quantidade: 1.000
+
+Status traduzido.
+
+Status de impressão traduzido.
+
+Preço, se exibido:
+sempre duas casas.
+
+==================================================
+37. BACKEND PODE MANTER DECIMAL NORMAL
+==================================================
+
+Não alterar banco/model DecimalField apenas para estética.
+
+Exemplo:
+
+backend pode serializar:
+"1.000"
+
+Flutter apresenta:
+"1"
+
+backend pode serializar:
+"10.00"
+
+Flutter apresenta:
+"R$ 10,00"
+
+Separar domínio de apresentação.
+
+==================================================
+38. NÃO ALTERAR VENDA RÁPIDA
+==================================================
+
+Venda Rápida está aprovada.
+
+Não fazer mudanças visuais/funcionais nela por causa desta auditoria.
+
+Helpers realmente genéricos podem ser compartilhados SOMENTE se não causarem regressão.
+
+==================================================
+39. NÃO INICIAR PAGAMENTOS
+==================================================
+
+Ainda não criar tela de:
+
+pagamento
+divisão
+formas
+saldo parcial
+fechamento.
+
+==================================================
+40. NÃO ALTERAR ANDROID
+==================================================
+
+Não mexer:
 
 Gradle
 AGP
 Kotlin
 AndroidManifest
 SDK
-applicationId
 MainActivity
+applicationId
 
 ==================================================
-42. NÃO COMEÇAR PAGAMENTOS
+41. SEM TESTES AUTOMATIZADOS
 ==================================================
 
-Ainda NÃO implementar pagamento de Mesa.
+NÃO criar testes.
 
-Primeiro vamos aprovar:
-
-- catálogo;
-- draft;
-- envio;
-- resumo;
-- cliente;
-- desconto;
-- taxa;
-- cancelamento;
-- transferência;
-- conferência;
-- conta solicitada.
-
-Depois tratamos pagamento.
-
-==================================================
-43. NÃO CRIAR TESTES
-==================================================
-
-NÃO criar testes automatizados.
-
-NÃO alterar testes existentes.
+NÃO alterar testes.
 
 NÃO executar testes automatizados.
 
 ==================================================
-44. NÃO EXECUTAR BUILD COMPLETO
+42. SEM BUILD COMPLETO
 ==================================================
 
 NÃO executar:
 
 flutter build
-
-gradle build
-
 APK build
-
+Gradle build
 Docker build
-
-build completo.
 
 Permitido:
 
 flutter analyze
 
+python manage.py check
+
+python manage.py makemigrations --check --dry-run
+se backend for alterado
+
 git diff --check
 
 ==================================================
-45. NÃO FAZER REFACTOR GIGANTE SEM NECESSIDADE
+43. AUDITORIA FINAL OBRIGATÓRIA
 ==================================================
 
-Quero reutilização, mas não quero uma reescrita total do POS.
+Antes de terminar, fazer busca no módulo de Mesas por padrões como:
 
-Fazer extração incremental e segura.
+.status
+status.toUpperCase
+quantity
+unitPrice
+lineTotal
+summary[
+balance
+total
+showDialog
+AlertDialog
+toStringAsFixed
+'0.0'
+"0.0"
 
-Priorizar componentes usados de verdade por:
+e revisar cada ocorrência que chega à interface.
 
-Venda Rápida + Mesa.
+Não fazer substituição cega.
 
-==================================================
-46. CRITÉRIO DE SUCESSO
-==================================================
-
-Ao abrir:
-
-Venda Rápida → Carrinho
-
-e:
-
-Mesa → Resumo
-
-o usuário deve perceber que são partes do MESMO sistema.
-
-Itens:
-→ mesma aparência.
-
-Desconto:
-→ mesmo modal.
-
-Cliente:
-→ mesmo modal.
-
-Taxa:
-→ mesmo padrão.
-
-Menu:
-→ mesmo padrão.
-
-Totais:
-→ mesmo padrão.
-
-Botões:
-→ mesmo padrão.
-
-Tipografia:
-→ mesma.
-
-Espaçamento:
-→ mesmo.
-
-Somente as ações específicas de Mesa devem diferenciar o contexto.
+Entender contexto de cada ocorrência.
 
 ==================================================
-47. CHECKPOINT FINAL
+44. CRITÉRIO DE SUCESSO VISUAL
 ==================================================
 
-Ao terminar, PARE.
+No módulo de Mesas inteiro:
 
-Informe:
+NUNCA quero ver:
 
-1. arquivos alterados;
+1.000
+2.000
 
-2. quais componentes foram extraídos da Venda Rápida para compartilhamento;
+para unidades inteiras.
 
-3. quais componentes continuam exclusivos da Venda Rápida e por quê;
+NUNCA quero ver:
 
-4. quais componentes continuam exclusivos da Mesa e por quê;
+0.0
+10.5
 
-5. confirmação de que o catálogo de Mesa usa o mesmo componente visual da Venda Rápida;
+para dinheiro.
 
-6. confirmação de que cards de produto usam o mesmo componente;
+NUNCA quero ver:
 
-7. confirmação de que badge de quantidade usa o mesmo componente;
+confirmed
+cancelled
+pending
+processing
+printed
+failed
+open
+closed
 
-8. confirmação de que itens do resumo usam o mesmo componente visual;
+como textos técnicos para operador.
 
-9. confirmação de que o modal de edição do item é compartilhado ou explique por que tecnicamente não pôde ser;
+==================================================
+45. CHECKPOINT
+==================================================
 
-10. confirmação de que o modal de desconto geral é o MESMO componente visual;
+Ao terminar, PARE e informe:
 
-11. confirmação de que R$ / % é o mesmo componente;
+1. HEAD trabalhado;
 
-12. confirmação de que desconto por item usa o mesmo componente visual;
+2. todos os arquivos auditados;
 
-13. confirmação de que autorização/PIN usa o mesmo padrão visual;
+3. todos os arquivos alterados;
 
-14. confirmação de que cliente usa o mesmo picker/modal;
+4. helper único usado para quantidade;
 
-15. confirmação de que taxa usa o mesmo padrão;
+5. exemplos:
+   1.000 → 1
+   1.500 → 1.5
+   2.250 → 2.25;
 
-16. confirmação de que existe somente UM menu geral superior na Mesa;
+6. formatter monetário usado;
 
-17. confirmação de que não existem três-pontinhos espalhados nos itens;
+7. confirmação:
+   0.0 → 0.00
+   10.5 → 10.50
+   onde for valor monetário;
 
-18. confirmação de que item confirmado abre ações por toque/press;
+8. todos os status em inglês encontrados na UI;
 
-19. confirmação de que Pedido abre ações por toque/press;
+9. traduções aplicadas;
 
-20. confirmação de que checkboxes de transferência só aparecem em modo de seleção;
+10. todas as exibições diretas de status removidas;
 
-21. confirmação de que totais usam componente compartilhado ou mesma estrutura visual;
+11. resultado da investigação de TableAttendancePage;
 
-22. confirmação de que percentual da Mesa continua persistente como percentual;
+12. se TableAttendancePage foi removida, consolidada ou mantida e por quê;
 
-23. confirmação de que não alterou regras financeiras;
+13. componentes mortos removidos;
 
-24. confirmação de que não alterou backend;
+14. como ficou a nova página TRANSFERIR ITENS;
 
-25. confirmação de que não alterou comportamento da Venda Rápida;
+15. confirmação de que o seletor de itens não é mais AlertDialog;
 
-26. confirmação de que não iniciou pagamentos de Mesa;
+16. como funciona selecionar todos;
 
-27. resultado de flutter analyze;
+17. como funciona quantidade parcial;
 
-28. resultado de git diff --check;
+18. como item único entra nessa página já selecionado;
 
-29. confirmação de que não executou testes;
+19. confirmação de que seleção de Mesa destino continua usando SharedTablesGrid;
 
-30. confirmação de que não executou builds completos.
+20. confirmação de que Home Mesas também usa o mesmo SharedTablesGrid;
+
+21. resultado da auditoria da transferência parcial;
+
+22. todas as relações encontradas de TableOrderItem relevantes à transferência;
+
+23. como StockMovement fica correto após transferência parcial;
+
+24. como ProductionJob fica correto;
+
+25. como PrintJob fica correto;
+
+26. como tickets ficam corretos;
+
+27. como auditoria/idempotência ficam corretas;
+
+28. comportamento de print_status null;
+
+29. confirmação de que Conferência usa os mesmos formatters;
+
+30. confirmação de que Resumo usa os mesmos formatters;
+
+31. confirmação de que mapa de Mesas usa os mesmos formatters;
+
+32. confirmação de que não iniciou pagamentos;
+
+33. confirmação de que não alterou Venda Rápida;
+
+34. resultado de flutter analyze;
+
+35. resultado de python manage.py check, se backend mudou;
+
+36. resultado de makemigrations --check --dry-run, se aplicável;
+
+37. resultado de git diff --check;
+
+38. confirmação de que não criou/executou testes;
+
+39. confirmação de que não executou build completo.
 
 DEPOIS PARE.
-
-IMPORTANTE:
-
-Nós vamos aprovar visualmente no aparelho antes de qualquer nova etapa.
-
-A fonte da verdade é o estado real do projeto.
-Não confiar em checkpoint anterior.

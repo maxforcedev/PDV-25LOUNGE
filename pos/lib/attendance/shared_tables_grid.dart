@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-import '../cash/cash_models.dart';
 import 'attendance_models.dart';
+import 'attendance_presentation.dart';
 
 class SharedTablesGrid extends StatelessWidget {
   const SharedTablesGrid({
@@ -75,9 +75,7 @@ class SharedTableCard extends StatelessWidget {
     final label = statusLabel ??
         (locked
             ? 'ATENDIMENTO LEGADO'
-            : table.isOpen
-                ? 'OCUPADA'
-                : 'LIVRE');
+            : localizedAttendanceStatus(table.status));
     return Opacity(
       opacity: disabled && !locked ? .55 : 1,
       child: Card(
@@ -100,7 +98,8 @@ class SharedTableCard extends StatelessWidget {
                     style: TextStyle(
                         color: color.shade700, fontWeight: FontWeight.w700)),
                 if (table.capacity > 0) Text('${table.capacity} lugares'),
-                if (table.isOpen) Text('Saldo: ${formatMoney(table.balance)}'),
+                if (table.isOpen)
+                  Text('Saldo: ${formatAttendanceMoney(table.balance)}'),
                 if (table.billRequested)
                   const Text('CONTA SOLICITADA',
                       style: TextStyle(

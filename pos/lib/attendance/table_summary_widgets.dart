@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../cash/cash_models.dart';
+import 'attendance_presentation.dart';
 
 class TableSummaryWidgets extends StatelessWidget {
   const TableSummaryWidgets(this.summary, {super.key});
@@ -23,7 +23,7 @@ class TableSummaryWidgets extends StatelessWidget {
             Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
           Text(label,
               style: TextStyle(fontWeight: bold ? FontWeight.w800 : null)),
-          Text(formatMoney('${value ?? '0.00'}'),
+          Text(formatAttendanceMoney(value),
               style: TextStyle(fontWeight: bold ? FontWeight.w800 : null)),
         ]),
       );

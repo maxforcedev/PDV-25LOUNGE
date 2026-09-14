@@ -78,11 +78,13 @@ class SharedTotalsLine {
   const SharedTotalsLine(
       {required this.label,
       required this.value,
+      this.formattedValue,
       this.negative = false,
       this.strong = false});
 
   final String label;
   final String value;
+  final String? formattedValue;
   final bool negative;
   final bool strong;
 }
@@ -108,7 +110,7 @@ class SharedTotalsPanel extends StatelessWidget {
                                 ? FontWeight.w800
                                 : FontWeight.w400)),
                     Text(
-                        '${line.negative ? '- ' : ''}${formatMoney(line.value)}',
+                        '${line.negative ? '- ' : ''}${line.formattedValue ?? formatMoney(line.value)}',
                         style: TextStyle(
                             fontWeight: line.strong
                                 ? FontWeight.w800

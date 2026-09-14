@@ -1700,13 +1700,20 @@ def close_table_attendance(*, attendance, user, idempotency_key, cash_session_id
 
 @transaction.atomic
 def transfer_table_items(*, attendance, destination_id, items, user, idempotency_key, audit_metadata=None):
-    from .models import TableAttendance, TableAttendanceStatus, TableOrder, TableOrderItem, TablePaymentAllocation
+    from .models import TableAttendance, TableAttendanceStatus, TableOrder, TableOrderItem, TablePayment, TablePaymentAllocation
     locked = {row.pk: row for row in TableAttendance.objects.select_for_update().filter(pk__in=sorted({attendance.pk, destination_id}))}
     source, destination = locked.get(attendance.pk), locked.get(destination_id)
     if not source or not destination or source.branch_id != destination.branch_id:
         raise AttendanceConflict('table_scope_mismatch', 'Os atendimentos devem pertencer à mesma filial.')
+    if source.pk == destination.pk:
+        raise AttendanceConflict('table_transfer_same_attendance', 'Selecione outra mesa como destino.')
     if source.status != TableAttendanceStatus.OPEN or destination.status != TableAttendanceStatus.OPEN:
         raise AttendanceConflict('table_closed', 'A transferência exige mesas abertas.')
+    if TablePayment.objects.filter(
+        attendance__in=(source, destination), status=AttendancePaymentStatus.APPLIED,
+        reversal__isnull=True,
+    ).exists():
+        raise AttendanceConflict('table_payment_transfer_unsupported', 'A transferência exige mesas sem pagamentos aplicados.')
     operation, replayed = _operation(branch=source.branch, operation_type=AttendanceOperationType.TABLE_TRANSFER_ITEMS,
         idempotency_key=idempotency_key, payload={'source': source.pk, 'destination': destination.pk, 'items': items})
     if replayed:
@@ -1720,51 +1727,36 @@ def transfer_table_items(*, attendance, destination_id, items, user, idempotency
         payment__reversal__isnull=True,
     ).exists():
         raise AttendanceConflict('table_item_allocated_transfer_unsupported', 'Itens com pagamento alocado não podem ser transferidos automaticamente.')
-    moved, orders = [], {}
+    moved, moved_items, orders = [], [], {}
     for item in source_items:
         quantity = requested[item.pk]
-        if quantity > item.quantity or item.status == AttendanceOrderItemStatus.CANCELLED:
+        if quantity != item.quantity:
+            raise AttendanceConflict('partial_table_item_transfer_unsupported', 'A transferência exige a quantidade integral do item.')
+        if item.status == AttendanceOrderItemStatus.CANCELLED:
             raise AttendanceConflict('item_not_transferable', 'O item não pode ser transferido.')
-        order = orders.setdefault(item.status, TableOrder.objects.create(attendance=destination, created_by=user,
-            status=AttendanceOrderStatus.CONFIRMED if item.status == AttendanceOrderItemStatus.CONFIRMED else AttendanceOrderStatus.DRAFT))
-        if quantity == item.quantity:
-            item.order = order
-            item.save(update_fields=('order', 'updated_at'))
-            moved.append(item.pk)
-            continue
-
-        # Frozen line-level totals must be divided with the item so that a
-        # partial transfer preserves the source attendance's official totals.
-        ratio = quantity / item.quantity
-
-        def split_snapshot(part):
-            snapshot = json.loads(json.dumps(item.financial_snapshot or {}))
-            for key in ('promotion_benefit', 'manual_discount', 'net_subtotal'):
-                if key in snapshot:
-                    snapshot[key] = str((Decimal(str(snapshot[key])) * part).quantize(CENT, rounding=ROUND_HALF_UP))
-            intent = snapshot.get('manual_discount_intent')
-            if isinstance(intent, dict) and intent.get('type') == 'amount':
-                intent['value'] = str((Decimal(str(intent.get('value', '0.00'))) * part).quantize(CENT, rounding=ROUND_HALF_UP))
-            return snapshot
-
-        remaining = item.quantity - quantity
-        item.quantity = remaining
-        item.financial_snapshot = split_snapshot(Decimal('1.00') - ratio)
-        item.save(update_fields=('quantity', 'financial_snapshot', 'updated_at'))
-        transferred = TableOrderItem.objects.create(
-            order=order, product=item.product, quantity=quantity,
-            product_name=item.product_name, internal_code=item.internal_code,
-            category_id_snapshot=item.category_id_snapshot, category_name_snapshot=item.category_name_snapshot,
-            unit=item.unit, unit_price=item.unit_price, base_unit_price=item.base_unit_price,
-            modifier_unit_total=item.modifier_unit_total, modifier_snapshot=item.modifier_snapshot,
-            financial_snapshot=split_snapshot(ratio), notes=item.notes, unit_cost=item.unit_cost,
-            component_cost_snapshot=item.component_cost_snapshot, status=item.status,
-            confirmed_at=item.confirmed_at, confirmed_by=item.confirmed_by,
-        )
-        moved.append(transferred.pk)
-    operation.result = {'attendance_id': destination.pk, 'item_ids': moved}
+        order = orders.get(item.status)
+        if order is None:
+            order = TableOrder.objects.create(
+                attendance=destination,
+                created_by=user,
+                status=(AttendanceOrderStatus.CONFIRMED
+                        if item.status == AttendanceOrderItemStatus.CONFIRMED
+                        else AttendanceOrderStatus.DRAFT),
+            )
+            orders[item.status] = order
+        source_order_id = item.order_id
+        item.order = order
+        item.save(update_fields=('order', 'updated_at'))
+        moved.append(item.pk)
+        moved_items.append({
+            'item_id': item.pk,
+            'quantity': str(quantity),
+            'source_order_id': source_order_id,
+            'destination_order_id': order.pk,
+        })
+    operation.result = {'attendance_id': destination.pk, 'item_ids': moved, 'items': moved_items}
     operation.save(update_fields=('result', 'updated_at'))
     audit_log(actor=user, action='table_order_item.transfer', obj=destination, company=source.company,
-              branch=source.branch, after={'source_attendance_id': source.pk, 'item_ids': moved},
+               branch=source.branch, after={'source_attendance_id': source.pk, 'items': moved_items},
               metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
     return destination, moved, False
