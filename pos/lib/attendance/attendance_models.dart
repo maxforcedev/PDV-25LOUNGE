@@ -183,6 +183,7 @@ class TableOrderItem {
     this.notes = '',
     this.confirmedAt,
     this.cancellationReason = '',
+    this.printStatus,
   });
 
   factory TableOrderItem.fromJson(Map<String, dynamic> json) => TableOrderItem(
@@ -201,10 +202,12 @@ class TableOrderItem {
         modifierSnapshot:
             (json['modifier_snapshot'] as List<dynamic>? ?? const [])
                 .cast<Map<String, dynamic>>(),
-        financialSnapshot: json['financial_snapshot'] as Map<String, dynamic>? ?? const {},
+        financialSnapshot:
+            json['financial_snapshot'] as Map<String, dynamic>? ?? const {},
         notes: json['notes'] as String? ?? '',
         confirmedAt: json['confirmed_at'] as String?,
         cancellationReason: json['cancellation_reason'] as String? ?? '',
+        printStatus: json['print_status'] as String?,
       );
 
   final int id;
@@ -223,6 +226,7 @@ class TableOrderItem {
   final String notes;
   final String? confirmedAt;
   final String cancellationReason;
+  final String? printStatus;
 }
 
 class TablePayment {

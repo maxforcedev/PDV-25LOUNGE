@@ -1155,7 +1155,10 @@ class POSTableAttendanceView(POSAttendanceView):
         data = TableAttendanceSerializer(attendance).data
         data['summary'] = table_summary(attendance)
         data['orders'] = TableOrderSerializer(
-            attendance.orders.select_related('created_by').prefetch_related('items').all(), many=True,
+            attendance.orders.select_related('created_by').prefetch_related(
+                'items__production_jobs__print_jobs',
+            ).all(),
+            many=True,
         ).data
         return Response(data)
 

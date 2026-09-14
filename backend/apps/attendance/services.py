@@ -1725,13 +1725,43 @@ def transfer_table_items(*, attendance, destination_id, items, user, idempotency
         quantity = requested[item.pk]
         if quantity > item.quantity or item.status == AttendanceOrderItemStatus.CANCELLED:
             raise AttendanceConflict('item_not_transferable', 'O item não pode ser transferido.')
-        if quantity < item.quantity and item.status == AttendanceOrderItemStatus.CONFIRMED:
-            raise AttendanceConflict('confirmed_partial_transfer_unsupported', 'Item confirmado só pode ser transferido integralmente.')
         order = orders.setdefault(item.status, TableOrder.objects.create(attendance=destination, created_by=user,
             status=AttendanceOrderStatus.CONFIRMED if item.status == AttendanceOrderItemStatus.CONFIRMED else AttendanceOrderStatus.DRAFT))
-        item.order = order
-        item.save(update_fields=('order', 'updated_at'))
-        moved.append(item.pk)
+        if quantity == item.quantity:
+            item.order = order
+            item.save(update_fields=('order', 'updated_at'))
+            moved.append(item.pk)
+            continue
+
+        # Frozen line-level totals must be divided with the item so that a
+        # partial transfer preserves the source attendance's official totals.
+        ratio = quantity / item.quantity
+
+        def split_snapshot(part):
+            snapshot = json.loads(json.dumps(item.financial_snapshot or {}))
+            for key in ('promotion_benefit', 'manual_discount', 'net_subtotal'):
+                if key in snapshot:
+                    snapshot[key] = str((Decimal(str(snapshot[key])) * part).quantize(CENT, rounding=ROUND_HALF_UP))
+            intent = snapshot.get('manual_discount_intent')
+            if isinstance(intent, dict) and intent.get('type') == 'amount':
+                intent['value'] = str((Decimal(str(intent.get('value', '0.00'))) * part).quantize(CENT, rounding=ROUND_HALF_UP))
+            return snapshot
+
+        remaining = item.quantity - quantity
+        item.quantity = remaining
+        item.financial_snapshot = split_snapshot(Decimal('1.00') - ratio)
+        item.save(update_fields=('quantity', 'financial_snapshot', 'updated_at'))
+        transferred = TableOrderItem.objects.create(
+            order=order, product=item.product, quantity=quantity,
+            product_name=item.product_name, internal_code=item.internal_code,
+            category_id_snapshot=item.category_id_snapshot, category_name_snapshot=item.category_name_snapshot,
+            unit=item.unit, unit_price=item.unit_price, base_unit_price=item.base_unit_price,
+            modifier_unit_total=item.modifier_unit_total, modifier_snapshot=item.modifier_snapshot,
+            financial_snapshot=split_snapshot(ratio), notes=item.notes, unit_cost=item.unit_cost,
+            component_cost_snapshot=item.component_cost_snapshot, status=item.status,
+            confirmed_at=item.confirmed_at, confirmed_by=item.confirmed_by,
+        )
+        moved.append(transferred.pk)
     operation.result = {'attendance_id': destination.pk, 'item_ids': moved}
     operation.save(update_fields=('result', 'updated_at'))
     audit_log(actor=user, action='table_order_item.transfer', obj=destination, company=source.company,

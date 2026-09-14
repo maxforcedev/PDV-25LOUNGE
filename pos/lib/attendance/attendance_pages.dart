@@ -6,6 +6,7 @@ import '../cash/cash_models.dart';
 import '../core/app_controller.dart';
 import '../sales/sale_models.dart';
 import 'attendance_models.dart';
+import 'shared_tables_grid.dart';
 import 'table_attendance_page.dart';
 
 bool _can(AppController controller, String permission) =>
@@ -97,83 +98,20 @@ class _TablesPageState extends State<TablesPage> {
             ? const Center(child: CircularProgressIndicator())
             : RefreshIndicator(
                 onRefresh: _load,
-                child: GridView.builder(
-                  padding: const EdgeInsets.all(16),
-                  gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                    maxCrossAxisExtent: 230,
-                    mainAxisSpacing: 12,
-                    crossAxisSpacing: 12,
-                    childAspectRatio: 1.2,
-                  ),
-                  itemCount: _tables.length,
-                  itemBuilder: (_, index) {
-                    final table = _tables[index];
-                    final locked = table.legacyOccupied;
-                    final color = locked
-                        ? Colors.orange
-                        : table.isOpen
-                            ? Colors.red
-                            : Colors.green;
-                    return Card(
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(12),
-                        onTap: locked
-                            ? null
-                            : _groupSelection.isNotEmpty
-                                ? () => setState(() =>
-                                    _groupSelection.contains(table.id)
-                                        ? _groupSelection.remove(table.id)
-                                        : _groupSelection.add(table.id))
-                                : () => _open(table),
-                        onLongPress: _canGroup && !locked
-                            ? () => setState(() =>
-                                _groupSelection.contains(table.id)
-                                    ? _groupSelection.remove(table.id)
-                                    : _groupSelection.add(table.id))
-                            : null,
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(table.name,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .titleLarge
-                                        ?.copyWith(
-                                            fontWeight: FontWeight.w800)),
-                                const Spacer(),
-                                Text(
-                                    locked
-                                        ? 'ATENDIMENTO LEGADO'
-                                        : table.isOpen
-                                            ? 'OCUPADA'
-                                            : 'LIVRE',
-                                    style: TextStyle(
-                                        color: color.shade700,
-                                        fontWeight: FontWeight.w700)),
-                                if (table.capacity > 0)
-                                  Text('${table.capacity} lugares'),
-                                if (table.isOpen)
-                                  Text('Saldo: ${formatMoney(table.balance)}'),
-                                if (table.billRequested)
-                                  const Text('CONTA SOLICITADA',
-                                      style: TextStyle(
-                                          fontWeight: FontWeight.w700,
-                                          color: Colors.deepOrange)),
-                                if (table.group != null)
-                                  Text(
-                                      'Grupo: ${table.group!.tableNames.join(', ')}'),
-                                if (_groupSelection.contains(table.id))
-                                  const Align(
-                                      alignment: Alignment.centerRight,
-                                      child: Icon(Icons.check_circle,
-                                          color: Colors.blue)),
-                              ]),
-                        ),
-                      ),
-                    );
-                  },
+                child: SharedTablesGrid(
+                  tables: _tables,
+                  isSelected: (table) => _groupSelection.contains(table.id),
+                  onTap: (table) => _groupSelection.isNotEmpty
+                      ? setState(() => _groupSelection.contains(table.id)
+                          ? _groupSelection.remove(table.id)
+                          : _groupSelection.add(table.id))
+                      : _open(table),
+                  onLongPress: _canGroup
+                      ? (table) => setState(() =>
+                          _groupSelection.contains(table.id)
+                              ? _groupSelection.remove(table.id)
+                              : _groupSelection.add(table.id))
+                      : null,
                 ),
               ),
       );

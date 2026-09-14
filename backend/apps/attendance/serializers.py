@@ -189,9 +189,29 @@ class TableAttendanceSerializer(serializers.ModelSerializer):
 
 class TableOrderItemSerializer(serializers.ModelSerializer):
     line_total = serializers.SerializerMethodField()
+    print_status = serializers.SerializerMethodField()
 
     def get_line_total(self, item):
         return item.unit_price * item.quantity
+
+    def get_print_status(self, item):
+        jobs = [job for job in item.production_jobs.all() if job.event == 'new']
+        print_jobs = [
+            print_job
+            for job in jobs
+            for print_job in job.print_jobs.all()
+            if print_job.reprint_of_id is None
+        ]
+        if not print_jobs:
+            return None
+        statuses = {job.status for job in print_jobs}
+        if statuses == {'printed'}:
+            return 'printed'
+        if 'failed' in statuses:
+            return 'failed'
+        if 'processing' in statuses:
+            return 'processing'
+        return 'pending'
 
     class Meta:
         model = TableOrderItem
@@ -199,7 +219,7 @@ class TableOrderItemSerializer(serializers.ModelSerializer):
             'id', 'order', 'product', 'quantity', 'product_name', 'internal_code', 'line_total',
             'category_id_snapshot', 'category_name_snapshot', 'unit', 'unit_price',
             'base_unit_price', 'modifier_unit_total', 'modifier_snapshot', 'notes',
-            'unit_cost', 'component_cost_snapshot', 'financial_snapshot', 'status', 'confirmed_at',
+            'unit_cost', 'component_cost_snapshot', 'financial_snapshot', 'print_status', 'status', 'confirmed_at',
             'confirmed_by', 'cancelled_at', 'cancelled_by', 'cancellation_reason',
             'created_at', 'updated_at',
         )
