@@ -179,6 +179,7 @@ class TableOrderItem {
     this.categoryId,
     this.categoryName = '',
     this.modifierSnapshot = const [],
+    this.financialSnapshot = const {},
     this.notes = '',
     this.confirmedAt,
     this.cancellationReason = '',
@@ -200,6 +201,7 @@ class TableOrderItem {
         modifierSnapshot:
             (json['modifier_snapshot'] as List<dynamic>? ?? const [])
                 .cast<Map<String, dynamic>>(),
+        financialSnapshot: json['financial_snapshot'] as Map<String, dynamic>? ?? const {},
         notes: json['notes'] as String? ?? '',
         confirmedAt: json['confirmed_at'] as String?,
         cancellationReason: json['cancellation_reason'] as String? ?? '',
@@ -217,6 +219,7 @@ class TableOrderItem {
   final int? categoryId;
   final String categoryName;
   final List<Map<String, dynamic>> modifierSnapshot;
+  final Map<String, dynamic> financialSnapshot;
   final String notes;
   final String? confirmedAt;
   final String cancellationReason;

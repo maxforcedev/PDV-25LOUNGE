@@ -199,7 +199,7 @@ class TableOrderItemSerializer(serializers.ModelSerializer):
             'id', 'order', 'product', 'quantity', 'product_name', 'internal_code', 'line_total',
             'category_id_snapshot', 'category_name_snapshot', 'unit', 'unit_price',
             'base_unit_price', 'modifier_unit_total', 'modifier_snapshot', 'notes',
-            'unit_cost', 'component_cost_snapshot', 'status', 'confirmed_at',
+            'unit_cost', 'component_cost_snapshot', 'financial_snapshot', 'status', 'confirmed_at',
             'confirmed_by', 'cancelled_at', 'cancelled_by', 'cancellation_reason',
             'created_at', 'updated_at',
         )

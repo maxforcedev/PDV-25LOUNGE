@@ -1265,13 +1265,38 @@ class _TableOrderPageState extends State<TableOrderPage> {
     );
   }
 
-  Future<void> _editItemDiscount(TableOrderItem item) async {
-    final discount = await showDialog<QuickSaleDiscountIntent>(
-      context: context,
-      builder: (_) =>
-          const SharedDiscountDialog(initial: QuickSaleDiscountIntent()),
-    );
-    if (discount == null || !mounted) return;
+  QuickSaleDiscountIntent _itemDiscountIntent(TableOrderItem item) {
+    final snapshot = item.financialSnapshot;
+    final intent = snapshot['manual_discount_intent'];
+    if (intent is Map) {
+      return QuickSaleDiscountIntent(
+        type: intent['type'] == 'percentage' ? 'percentage' : 'amount',
+        value: '${intent['value'] ?? snapshot['manual_discount'] ?? '0.00'}',
+      );
+    }
+    return QuickSaleDiscountIntent(
+        value: '${snapshot['manual_discount'] ?? '0.00'}');
+  }
+
+  bool _hasItemManualDiscount(TableOrderItem item) {
+    final intent = _itemDiscountIntent(item);
+    return !intent.isZero ||
+        _tableCartNumber(item.financialSnapshot['manual_discount']) > 0;
+  }
+
+  Future<void> _editItemDiscount(
+    TableOrderItem item, {
+    QuickSaleDiscountIntent? initial,
+    QuickSaleDiscountIntent? discount,
+  }) async {
+    final selectedDiscount = discount ??
+        await showDialog<QuickSaleDiscountIntent>(
+          context: context,
+          builder: (_) => SharedDiscountDialog(
+              initial: initial ?? const QuickSaleDiscountIntent(),
+              prefillInitialValue: initial != null),
+        );
+    if (selectedDiscount == null || !mounted) return;
     final authorization = _can('sales.apply_item_discount')
         ? null
         : await _requestAuthorization('item');
@@ -1283,7 +1308,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
     setState(() => _actionInProgress = true);
     final updated = await widget.controller.setTableOrderItemDiscount(
       itemId: item.id,
-      discount: discount.toJson(),
+      discount: selectedDiscount.toJson(),
       idempotencyKey: createIdempotencyKey(),
       authorization: authorization?.toJson(),
     );
@@ -1337,6 +1362,8 @@ class _TableOrderPageState extends State<TableOrderPage> {
   }
 
   Future<void> _showConfirmedItemActions(TableOrderItem item) async {
+    final hasManualDiscount = _hasItemManualDiscount(item);
+    final currentDiscount = _itemDiscountIntent(item);
     final action = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
@@ -1349,9 +1376,17 @@ class _TableOrderPageState extends State<TableOrderPage> {
           ),
           ListTile(
             leading: Icon(Icons.sell_outlined),
-            title: Text('Aplicar desconto no item'),
+            title: Text(hasManualDiscount
+                ? 'Alterar desconto no item'
+                : 'Aplicar desconto no item'),
             onTap: () => Navigator.of(context).pop('discount'),
           ),
+          if (hasManualDiscount)
+            ListTile(
+              leading: const Icon(Icons.remove_circle_outline),
+              title: const Text('Remover desconto do item'),
+              onTap: () => Navigator.of(context).pop('remove_discount'),
+            ),
           if (_can('tables.transfer_items'))
             ListTile(
               leading: Icon(Icons.drive_file_move_outline),
@@ -1392,7 +1427,17 @@ class _TableOrderPageState extends State<TableOrderPage> {
         );
         break;
       case 'discount':
-        await _editItemDiscount(item);
+        await _editItemDiscount(
+          item,
+          initial: hasManualDiscount ? currentDiscount : null,
+        );
+        break;
+      case 'remove_discount':
+        await _editItemDiscount(
+          item,
+          discount: QuickSaleDiscountIntent(
+              type: currentDiscount.type, value: '0.00'),
+        );
         break;
       case 'transfer':
         await _transferItems([item]);
@@ -1831,10 +1876,29 @@ class _TableOrderSummaryPanel extends StatelessWidget {
               SharedTotalsLine(
                   label: 'Subtotal',
                   value: '${attendance.summary['subtotal'] ?? '0.00'}'),
-              SharedTotalsLine(
-                  label: 'Descontos',
-                  value: '${attendance.summary['discount_total'] ?? '0.00'}',
-                  negative: true),
+              if (_tableCartNumber(
+                      attendance.summary['promotion_discount_total']) >
+                  0)
+                SharedTotalsLine(
+                    label: 'Promoções',
+                    value:
+                        '${attendance.summary['promotion_discount_total'] ?? '0.00'}',
+                    negative: true),
+              if (_tableCartNumber(attendance.summary['item_discount_total']) >
+                  0)
+                SharedTotalsLine(
+                    label: 'Descontos por item',
+                    value:
+                        '${attendance.summary['item_discount_total'] ?? '0.00'}',
+                    negative: true),
+              if (_tableCartNumber(
+                      attendance.summary['checkout_discount_total']) >
+                  0)
+                SharedTotalsLine(
+                    label: 'Desconto da mesa',
+                    value:
+                        '${attendance.summary['checkout_discount_total'] ?? '0.00'}',
+                    negative: true),
               SharedTotalsLine(
                   label: 'Taxa de serviço',
                   value:
@@ -1857,115 +1921,6 @@ class _TableOrderSummaryPanel extends StatelessWidget {
             ),
           ]),
         ),
-      );
-}
-
-class _TableAuthorizationDialog extends StatefulWidget {
-  const _TableAuthorizationDialog({
-    required this.authorizers,
-    required this.onAuthorize,
-  });
-
-  final List<QuickSaleAuthorizer> authorizers;
-  final Future<String?> Function(QuickSaleAuthorization authorization)
-      onAuthorize;
-
-  @override
-  State<_TableAuthorizationDialog> createState() =>
-      _TableAuthorizationDialogState();
-}
-
-class _TableAuthorizationDialogState extends State<_TableAuthorizationDialog> {
-  final _pin = TextEditingController();
-  int? _authorizerId;
-  bool _validating = false;
-  String? _error;
-
-  Future<void> _authorize() async {
-    if (_authorizerId == null || _pin.text.length != 6 || _validating) return;
-    setState(() {
-      _validating = true;
-      _error = null;
-    });
-    final authorization = QuickSaleAuthorization(
-      userId: _authorizerId!,
-      credential: _pin.text,
-    );
-    final error = await widget.onAuthorize(authorization);
-    _pin.clear();
-    if (!mounted) return;
-    if (error == null) {
-      Navigator.of(context).pop(authorization);
-      return;
-    }
-    setState(() {
-      _validating = false;
-      _error = error;
-    });
-  }
-
-  @override
-  void dispose() {
-    _pin.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: const Text('AUTORIZAÇÃO NECESSÁRIA'),
-        content: SizedBox(
-          width: 360,
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            DropdownButtonFormField<int>(
-              initialValue: _authorizerId,
-              isExpanded: true,
-              decoration: const InputDecoration(labelText: 'Autorizador'),
-              items: widget.authorizers
-                  .map((authorizer) => DropdownMenuItem(
-                        value: authorizer.id,
-                        child: Text(authorizer.displayName,
-                            overflow: TextOverflow.ellipsis),
-                      ))
-                  .toList(growable: false),
-              onChanged: (value) => setState(() {
-                _authorizerId = value;
-                _pin.clear();
-                _error = null;
-              }),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _pin,
-              autofocus: true,
-              obscureText: true,
-              keyboardType: TextInputType.number,
-              maxLength: 6,
-              enableSuggestions: false,
-              autocorrect: false,
-              onChanged: (value) {
-                if (!RegExp(r'^\d{0,6}$').hasMatch(value)) _pin.clear();
-                setState(() {});
-              },
-              decoration: InputDecoration(
-                labelText: 'PIN do autorizador',
-                errorText: _error,
-              ),
-            ),
-          ]),
-        ),
-        actions: [
-          TextButton(
-            onPressed: _validating ? null : () => Navigator.of(context).pop(),
-            child: const Text('VOLTAR'),
-          ),
-          FilledButton(
-            onPressed:
-                _authorizerId == null || _pin.text.length != 6 || _validating
-                    ? null
-                    : _authorize,
-            child: Text(_validating ? 'VALIDANDO...' : 'AUTORIZAR'),
-          ),
-        ],
       );
 }
 

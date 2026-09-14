@@ -1013,6 +1013,9 @@ def table_summary(attendance):
     preview, paid, remaining, service_fee_base = table_financial_state(attendance)
     summary = {
         'subtotal': f"{preview['subtotal']:.2f}",
+        'promotion_discount_total': f"{preview['promotion_discount_total']:.2f}",
+        'item_discount_total': f"{preview['item_discount_total']:.2f}",
+        'checkout_discount_total': f"{preview['discount']:.2f}",
         'discount_total': f"{(preview['promotion_discount_total'] + preview['item_discount_total'] + preview['discount']):.2f}",
         'service_fee_base': f'{service_fee_base:.2f}',
         'service_fee_total': f"{preview['service_fee_amount']:.2f}",
@@ -1336,8 +1339,8 @@ def set_table_customer(*, attendance, user, customer_id, idempotency_key, audit_
 
 
 @transaction.atomic
-def set_table_checkout_context(*, attendance, user, discount, discount_authorization,
-                               service_fee_waived, service_fee_authorization, idempotency_key,
+def set_table_checkout_context(*, attendance, user, discount, service_fee_waived, idempotency_key,
+                               discount_authorization=None, service_fee_authorization=None,
                                pos_device=None, pos_permission_codes=None, audit_metadata=None):
     from .models import TableAttendance, TableAttendanceStatus, TablePayment
 
