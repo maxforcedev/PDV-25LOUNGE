@@ -349,6 +349,12 @@ class HttpPosApi implements PosApi, PosCredentialCache {
       throw const PosNetworkException(
           'A conexão demorou demais. Verifique a internet e tente novamente.');
     }
+    if (kDebugMode && response.statusCode >= 400) {
+      debugPrint(
+        '[POS HTTP ERROR] method=$method path=$path '
+        'status=${response.statusCode} body=${response.body}',
+      );
+    }
     final decoded =
         response.body.isEmpty ? <String, dynamic>{} : jsonDecode(response.body);
     final payload =

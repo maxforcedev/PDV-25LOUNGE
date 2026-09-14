@@ -490,7 +490,17 @@ class StockMovement(ProtectedInventoryModel):
                 and self.attendance_order_item_id
                 and not self.sale_id
             )
-            if not self.sale_id and not (is_order_confirmation or is_attendance_confirmation):
+            is_table_confirmation = (
+                self.movement_type == MovementType.SALE
+                and self.domain_origin == MovementDomainOrigin.TABLE_ORDER
+                and self.table_order_item_id
+                and not self.sale_id
+            )
+            if not self.sale_id and not (
+                is_order_confirmation
+                or is_attendance_confirmation
+                or is_table_confirmation
+            ):
                 raise ValidationError({'sale': 'A venda é obrigatória para esta movimentação.'})
             if self.original_movement_id:
                 raise ValidationError({'original_movement': 'Uma baixa não pode estornar outro movimento.'})
@@ -507,7 +517,20 @@ class StockMovement(ProtectedInventoryModel):
                 and self.attendance_order_item_id
                 and not self.sale_id
             )
-            if (not self.sale_id and not (is_order_cancellation or is_attendance_cancellation)) or not self.original_movement_id:
+            is_table_cancellation = (
+                self.movement_type == MovementType.SALE_CANCELLATION
+                and self.domain_origin == MovementDomainOrigin.TABLE_ORDER_CANCELLATION
+                and self.table_order_item_id
+                and not self.sale_id
+            )
+            if (
+                not self.sale_id
+                and not (
+                    is_order_cancellation
+                    or is_attendance_cancellation
+                    or is_table_cancellation
+                )
+            ) or not self.original_movement_id:
                 raise ValidationError({'original_movement': 'O movimento original é obrigatório.'})
             else:
                 original = self.original_movement
@@ -544,6 +567,12 @@ class StockMovement(ProtectedInventoryModel):
                     or original.attendance_order_item_id != self.attendance_order_item_id
                 ):
                     raise ValidationError({'original_movement': 'O item original deve ser a confirmação pendente da comanda.'})
+                if is_table_cancellation and (
+                    original.sale_id
+                    or original.domain_origin != MovementDomainOrigin.TABLE_ORDER
+                    or original.table_order_item_id != self.table_order_item_id
+                ):
+                    raise ValidationError({'original_movement': 'O item original deve ser a confirmação pendente da mesa.'})
                 if original.content_quantity is None and self.quantity != -original.quantity:
                     raise ValidationError({'quantity': 'O estorno deve inverter exatamente a quantidade original.'})
         if self.quantity == 0 and not (exact_positive or exact_negative):

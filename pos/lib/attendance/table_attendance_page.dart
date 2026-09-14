@@ -9,6 +9,10 @@ import '../network/pos_api_error.dart';
 import '../scanner/product_barcode_scanner_page.dart';
 import '../sales/quick_sale_page.dart';
 import '../sales/sale_models.dart';
+import '../sales/shared_authorization_dialog.dart';
+import '../sales/shared_customer_dialog.dart';
+import '../sales/shared_discount_dialog.dart';
+import '../sales/shared_pos_widgets.dart';
 import 'attendance_models.dart';
 import 'table_summary_widgets.dart';
 
@@ -929,6 +933,13 @@ class _TableOrderPageState extends State<TableOrderPage> {
           .fold<int>(0, (count, order) => count + order.items.length) +
       _cart.length;
 
+  Map<int, double> get _draftProductQuantities =>
+      _cart.fold(<int, double>{}, (quantities, item) {
+        quantities[item.product.id] = (quantities[item.product.id] ?? 0) +
+            _tableCartNumber(item.quantity);
+        return quantities;
+      });
+
   Future<void> _edit(int index) async {
     if (_saving) return;
     final initial = _cart[index];
@@ -1027,7 +1038,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
     }
     return showDialog<QuickSaleAuthorization>(
       context: context,
-      builder: (_) => _TableAuthorizationDialog(
+      builder: (_) => SharedAuthorizationDialog(
         authorizers: authorizers,
         onAuthorize: (authorization) =>
             widget.controller.validateQuickSaleDiscountAuthorization(
@@ -1145,83 +1156,16 @@ class _TableOrderPageState extends State<TableOrderPage> {
     if (updated != null) await _load();
   }
 
-  Future<void> _manageCustomer() async {
-    final action = await showDialog<String>(
+  Future<void> _selectTableCustomer() async {
+    final customer = await showDialog<QuickSaleCustomer>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Cliente'),
-        content: Text(_attendance.customerName.isEmpty
-            ? 'Nenhum cliente'
-            : _attendance.customerName),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('VOLTAR'),
-          ),
-          if (_attendance.customerId != null && _can('customers.view'))
-            TextButton(
-              onPressed: () => Navigator.of(context).pop('view'),
-              child: const Text('VER'),
-            ),
-          if (_can('tables.set_customer') && _can('customers.view'))
-            TextButton(
-              onPressed: () => Navigator.of(context).pop('select'),
-              child:
-                  Text(_attendance.customerId == null ? 'PESQUISAR' : 'TROCAR'),
-            ),
-          if (_attendance.customerId == null &&
-              _can('tables.set_customer') &&
-              _can('customers.add'))
-            TextButton(
-              onPressed: () => Navigator.of(context).pop('create'),
-              child: const Text('ADICIONAR'),
-            ),
-          if (_attendance.customerId != null && _can('tables.set_customer'))
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop('remove'),
-              child: const Text('REMOVER'),
-            ),
-        ],
+      builder: (_) => SharedCustomerPickerDialog(
+        controller: widget.controller,
+        canCreate: _can('customers.add'),
+        canReactivate: _can('customers.change'),
       ),
     );
-    if (!mounted || action == null) return;
-    if (action == 'view') {
-      await showDialog<void>(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text('Cliente'),
-          content: Text([
-            _attendance.customerName,
-            if (_attendance.customerId != null)
-              'Código: ${_attendance.customerId}',
-          ].join('\n')),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('FECHAR'),
-            ),
-          ],
-        ),
-      );
-    } else if (action == 'remove') {
-      await _setCustomer(null);
-    } else {
-      final customer = action == 'create'
-          ? await showDialog<QuickSaleCustomer>(
-              context: context,
-              builder: (_) =>
-                  _TableCustomerCreate(controller: widget.controller),
-            )
-          : await showDialog<QuickSaleCustomer>(
-              context: context,
-              builder: (_) => _TableCustomerPicker(
-                controller: widget.controller,
-                canCreate: _can('customers.add'),
-                canReactivate: _can('customers.change'),
-              ),
-            );
-      if (customer != null && mounted) await _setCustomer(customer.id);
-    }
+    if (customer != null && mounted) await _setCustomer(customer.id);
   }
 
   Future<void> _setCheckoutContext({
@@ -1282,13 +1226,14 @@ class _TableOrderPageState extends State<TableOrderPage> {
           discount: const {'type': 'amount', 'value': '0.00'});
       return;
     }
-    final discount = await showDialog<Map<String, dynamic>>(
+    final discount = await showDialog<QuickSaleDiscountIntent>(
       context: context,
-      builder: (_) => _TableItemDiscountDialog(
-        title: 'Aplicar desconto',
-        initialType: _attendance.checkoutDiscountType,
-        initialValue: _attendance.checkoutDiscount,
-      ),
+      builder: (_) => SharedDiscountDialog(
+          initial: QuickSaleDiscountIntent(
+            type: _attendance.checkoutDiscountType,
+            value: _attendance.checkoutDiscount,
+          ),
+          prefillInitialValue: true),
     );
     if (discount == null || !mounted) return;
     final authorization = _can('sales.apply_discount')
@@ -1298,7 +1243,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
       return;
     }
     await _setCheckoutContext(
-      discount: discount,
+      discount: discount.toJson(),
       discountAuthorization: authorization,
     );
   }
@@ -1321,9 +1266,10 @@ class _TableOrderPageState extends State<TableOrderPage> {
   }
 
   Future<void> _editItemDiscount(TableOrderItem item) async {
-    final discount = await showDialog<Map<String, dynamic>>(
+    final discount = await showDialog<QuickSaleDiscountIntent>(
       context: context,
-      builder: (_) => const _TableItemDiscountDialog(),
+      builder: (_) =>
+          const SharedDiscountDialog(initial: QuickSaleDiscountIntent()),
     );
     if (discount == null || !mounted) return;
     final authorization = _can('sales.apply_item_discount')
@@ -1337,7 +1283,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
     setState(() => _actionInProgress = true);
     final updated = await widget.controller.setTableOrderItemDiscount(
       itemId: item.id,
-      discount: discount,
+      discount: discount.toJson(),
       idempotencyKey: createIdempotencyKey(),
       authorization: authorization?.toJson(),
     );
@@ -1366,6 +1312,120 @@ class _TableOrderPageState extends State<TableOrderPage> {
       ) ??
       false;
 
+  Future<void> _showOrderActions(TableOrder order) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (_) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            title: Text('Pedido #${order.id}'),
+            subtitle: Text(order.status.toUpperCase()),
+          ),
+          if (order.status == 'confirmed' && _can('tables.cancel_items'))
+            ListTile(
+              leading: Icon(Icons.cancel_presentation_outlined,
+                  color: Color(0xffea4d4d)),
+              title: Text('Cancelar pedido',
+                  style: TextStyle(color: Color(0xffea4d4d))),
+              onTap: () => Navigator.of(context).pop('cancel'),
+            ),
+        ]),
+      ),
+    );
+    if (action == 'cancel') await _cancelOrder(order);
+  }
+
+  Future<void> _showConfirmedItemActions(TableOrderItem item) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (_) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            leading: const Icon(Icons.receipt_long_outlined),
+            title: const Text('Ver detalhes'),
+            onTap: () => Navigator.of(context).pop('details'),
+          ),
+          ListTile(
+            leading: Icon(Icons.sell_outlined),
+            title: Text('Aplicar desconto no item'),
+            onTap: () => Navigator.of(context).pop('discount'),
+          ),
+          if (_can('tables.transfer_items'))
+            ListTile(
+              leading: Icon(Icons.drive_file_move_outline),
+              title: Text('Transferir item'),
+              onTap: () => Navigator.of(context).pop('transfer'),
+            ),
+          if (_can('tables.cancel_items'))
+            ListTile(
+              leading: Icon(Icons.cancel_outlined, color: Color(0xffea4d4d)),
+              title: Text('Cancelar item',
+                  style: TextStyle(color: Color(0xffea4d4d))),
+              onTap: () => Navigator.of(context).pop('cancel'),
+            ),
+        ]),
+      ),
+    );
+    if (!mounted) return;
+    switch (action) {
+      case 'details':
+        await showDialog<void>(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: Text(item.productName),
+            content: Text([
+              'Qtd. ${item.quantity}',
+              ...item.modifierSnapshot.map((modifier) =>
+                  '+ ${modifier['name'] ?? modifier['option_name'] ?? 'Modificador'}'),
+              if (item.notes.isNotEmpty) 'Obs: ${item.notes}',
+              if (item.cancellationReason.isNotEmpty)
+                'Cancelado: ${item.cancellationReason}',
+            ].join('\n')),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('FECHAR')),
+            ],
+          ),
+        );
+        break;
+      case 'discount':
+        await _editItemDiscount(item);
+        break;
+      case 'transfer':
+        await _transferItems([item]);
+        break;
+      case 'cancel':
+        await _cancelItem(item);
+        break;
+    }
+  }
+
+  Future<void> _showDraftItemActions(int index) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (_) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('Editar item'),
+              onTap: () => Navigator.of(context).pop('edit')),
+          ListTile(
+            leading: Icon(Icons.delete_outline, color: Color(0xffea4d4d)),
+            title: Text('Remover item',
+                style: TextStyle(color: Color(0xffea4d4d))),
+            onTap: () => Navigator.of(context).pop('remove'),
+          ),
+        ]),
+      ),
+    );
+    if (action == 'edit') await _edit(index);
+    if (action == 'remove') await _remove(index);
+  }
+
   @override
   Widget build(BuildContext context) => PopScope(
         canPop: _cart.isEmpty && !_saving,
@@ -1379,14 +1439,93 @@ class _TableOrderPageState extends State<TableOrderPage> {
         },
         child: Scaffold(
           appBar: AppBar(title: Text(_attendance.tableName), actions: [
-            if (_attendance.billRequested)
-              const Padding(
-                padding: EdgeInsets.only(right: 8),
-                child: Center(
-                    child: Text('CONTA SOLICITADA',
-                        style: TextStyle(
-                            fontSize: 11, fontWeight: FontWeight.w800))),
-              ),
+            PopupMenuButton<String>(
+              enabled: !_loading && !_actionInProgress,
+              onSelected: (action) {
+                switch (action) {
+                  case 'customer':
+                    unawaited(_selectTableCustomer());
+                    break;
+                  case 'remove_customer':
+                    unawaited(_setCustomer(null));
+                    break;
+                  case 'discount':
+                    unawaited(_manageCheckoutDiscount());
+                    break;
+                  case 'remove_discount':
+                    unawaited(_setCheckoutContext(
+                        discount: const {'type': 'amount', 'value': '0.00'}));
+                    break;
+                  case 'fee':
+                    unawaited(_toggleServiceFee());
+                    break;
+                  case 'conference':
+                    unawaited(_showConference());
+                    break;
+                  case 'bill':
+                    unawaited(_toggleBill());
+                    break;
+                  case 'transfer':
+                    unawaited(_transferItems());
+                    break;
+                  case 'separate':
+                    unawaited(_separateFromGroup());
+                    break;
+                }
+              },
+              itemBuilder: (_) => [
+                if (_can('customers.view') || _can('tables.set_customer'))
+                  PopupMenuItem(
+                    value: 'customer',
+                    child: Text(_attendance.customerId == null
+                        ? 'Adicionar cliente'
+                        : 'Alterar cliente'),
+                  ),
+                if (_attendance.customerId != null &&
+                    _can('tables.set_customer'))
+                  const PopupMenuItem(
+                      value: 'remove_customer', child: Text('Remover cliente')),
+                if (_attendance.status == 'open') ...[
+                  PopupMenuItem(
+                    value: 'discount',
+                    child: Text(_attendance.checkoutDiscount == '0.00'
+                        ? 'Aplicar desconto'
+                        : 'Alterar desconto'),
+                  ),
+                  if (_attendance.checkoutDiscount != '0.00')
+                    const PopupMenuItem(
+                        value: 'remove_discount',
+                        child: Text('Remover desconto')),
+                  PopupMenuItem(
+                    value: 'fee',
+                    child: Text(_attendance.checkoutServiceFeeWaived
+                        ? 'Restaurar taxa de serviço'
+                        : 'Remover taxa de serviço'),
+                  ),
+                ],
+                const PopupMenuItem(
+                    value: 'conference', child: Text('Visualizar conferência')),
+                if (_attendance.status == 'open' && _can('tables.close'))
+                  PopupMenuItem(
+                    value: 'bill',
+                    child: Text(_attendance.billRequested
+                        ? 'Cancelar solicitação de conta'
+                        : 'Solicitar conta'),
+                  ),
+                if (_attendance.status == 'open' &&
+                    _can('tables.transfer_items') &&
+                    _attendance.orders
+                        .expand((order) => order.items)
+                        .any((item) => item.status == 'confirmed'))
+                  const PopupMenuItem(
+                      value: 'transfer', child: Text('Transferir itens')),
+                if (_attendance.status == 'open' &&
+                    _group != null &&
+                    _can('tables.merge'))
+                  const PopupMenuItem(
+                      value: 'separate', child: Text('Separar mesa do grupo')),
+              ],
+            ),
           ]),
           bottomNavigationBar: MediaQuery.sizeOf(context).width < 900
               ? ValueListenableBuilder<int>(
@@ -1422,6 +1561,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
                     onSearchSubmitted: (_) {},
                     onProduct: _add,
                     onProductLongPress: _addBatch,
+                    selectedQuantities: _draftProductQuantities,
                   );
                   if (constraints.maxWidth < 900) return catalog;
                   return Row(children: [
@@ -1434,33 +1574,13 @@ class _TableOrderPageState extends State<TableOrderPage> {
                                   cart: _cart,
                                   attendance: _attendance,
                                   saving: _saving,
-                                  onEdit: _edit,
-                                  onRemove: (index) =>
-                                      unawaited(_remove(index)),
                                   onSave: _save,
-                                  onConference: _showConference,
                                   preview: _preview,
                                   previewLoading: _previewLoading,
-                                  actionsInProgress: _actionInProgress,
-                                  canManageCustomer: _can('customers.view') ||
-                                      _can('tables.set_customer'),
-                                  canCancelItems: _can('tables.cancel_items'),
-                                  canTransferItems:
-                                      _can('tables.transfer_items'),
-                                  canRequestBill: _can('tables.close'),
-                                  canSeparateFromGroup:
-                                      _group != null && _can('tables.merge'),
-                                  onCustomer: _manageCustomer,
-                                  onCheckoutDiscount: _manageCheckoutDiscount,
-                                  onServiceFee: _toggleServiceFee,
-                                  onBill: _toggleBill,
-                                  onTransferItems: _transferItems,
-                                  onSeparateFromGroup: _separateFromGroup,
-                                  onCancelItem: _cancelItem,
-                                  onTransferItem: (item) =>
-                                      _transferItems([item]),
-                                  onItemDiscount: _editItemDiscount,
-                                  onCancelOrder: _cancelOrder,
+                                  onOrderActions: _showOrderActions,
+                                  onConfirmedItemActions:
+                                      _showConfirmedItemActions,
+                                  onDraftItemActions: _showDraftItemActions,
                                 ))),
                   ]);
                 }),
@@ -1488,29 +1608,12 @@ class _TableOrderPageState extends State<TableOrderPage> {
             cart: _cart,
             attendance: _attendance,
             saving: _saving,
-            onEdit: _edit,
-            onRemove: (index) => unawaited(_remove(index)),
             onSave: _save,
-            onConference: _showConference,
             preview: _preview,
             previewLoading: _previewLoading,
-            actionsInProgress: _actionInProgress,
-            canManageCustomer:
-                _can('customers.view') || _can('tables.set_customer'),
-            canCancelItems: _can('tables.cancel_items'),
-            canTransferItems: _can('tables.transfer_items'),
-            canRequestBill: _can('tables.close'),
-            canSeparateFromGroup: _group != null && _can('tables.merge'),
-            onCustomer: _manageCustomer,
-            onCheckoutDiscount: _manageCheckoutDiscount,
-            onServiceFee: _toggleServiceFee,
-            onBill: _toggleBill,
-            onTransferItems: _transferItems,
-            onSeparateFromGroup: _separateFromGroup,
-            onCancelItem: _cancelItem,
-            onTransferItem: (item) => _transferItems([item]),
-            onItemDiscount: _editItemDiscount,
-            onCancelOrder: _cancelOrder,
+            onOrderActions: _showOrderActions,
+            onConfirmedItemActions: _showConfirmedItemActions,
+            onDraftItemActions: _showDraftItemActions,
           ),
         ),
       ),
@@ -1590,53 +1693,21 @@ class _TableOrderSummaryPanel extends StatelessWidget {
       {required this.cart,
       required this.attendance,
       required this.saving,
-      required this.onEdit,
-      required this.onRemove,
       required this.onSave,
-      required this.onConference,
       required this.preview,
       required this.previewLoading,
-      required this.actionsInProgress,
-      required this.canManageCustomer,
-      required this.canCancelItems,
-      required this.canTransferItems,
-      required this.canRequestBill,
-      required this.canSeparateFromGroup,
-      required this.onCustomer,
-      required this.onCheckoutDiscount,
-      required this.onServiceFee,
-      required this.onBill,
-      required this.onTransferItems,
-      required this.onSeparateFromGroup,
-      required this.onCancelItem,
-      required this.onTransferItem,
-      required this.onItemDiscount,
-      required this.onCancelOrder});
+      required this.onOrderActions,
+      required this.onConfirmedItemActions,
+      required this.onDraftItemActions});
   final List<QuickSaleCartItem> cart;
   final TableAttendance attendance;
   final bool saving;
-  final ValueChanged<int> onEdit;
-  final ValueChanged<int> onRemove;
   final Future<void> Function() onSave;
-  final Future<void> Function() onConference;
   final Map<String, dynamic>? preview;
   final bool previewLoading;
-  final bool actionsInProgress;
-  final bool canManageCustomer;
-  final bool canCancelItems;
-  final bool canTransferItems;
-  final bool canRequestBill;
-  final bool canSeparateFromGroup;
-  final Future<void> Function() onCustomer;
-  final Future<void> Function() onCheckoutDiscount;
-  final Future<void> Function() onServiceFee;
-  final Future<void> Function() onBill;
-  final Future<void> Function() onTransferItems;
-  final Future<void> Function() onSeparateFromGroup;
-  final Future<void> Function(TableOrderItem) onCancelItem;
-  final Future<void> Function(TableOrderItem) onTransferItem;
-  final Future<void> Function(TableOrderItem) onItemDiscount;
-  final Future<void> Function(TableOrder) onCancelOrder;
+  final Future<void> Function(TableOrder) onOrderActions;
+  final Future<void> Function(TableOrderItem) onConfirmedItemActions;
+  final Future<void> Function(int) onDraftItemActions;
 
   @override
   Widget build(BuildContext context) => Material(
@@ -1645,82 +1716,20 @@ class _TableOrderSummaryPanel extends StatelessWidget {
           padding: const EdgeInsets.all(16),
           child:
               Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            Row(children: [
-              Expanded(
-                  child: Text('RESUMO DA MESA',
-                      style: Theme.of(context)
-                          .textTheme
-                          .titleMedium
-                          ?.copyWith(fontWeight: FontWeight.w800))),
-              PopupMenuButton<String>(
-                onSelected: (value) {
-                  switch (value) {
-                    case 'customer':
-                      unawaited(onCustomer());
-                      break;
-                    case 'discount':
-                      unawaited(onCheckoutDiscount());
-                      break;
-                    case 'service_fee':
-                      unawaited(onServiceFee());
-                      break;
-                    case 'conference':
-                      unawaited(onConference());
-                      break;
-                    case 'bill':
-                      unawaited(onBill());
-                      break;
-                    case 'transfer':
-                      unawaited(onTransferItems());
-                      break;
-                    case 'separate':
-                      unawaited(onSeparateFromGroup());
-                      break;
-                  }
-                },
-                itemBuilder: (_) => [
-                  if (canManageCustomer)
-                    const PopupMenuItem(
-                        value: 'customer', child: Text('CLIENTE')),
-                  if (attendance.status == 'open') ...[
-                    const PopupMenuItem(
-                        value: 'discount', child: Text('DESCONTO')),
-                    PopupMenuItem(
-                      value: 'service_fee',
-                      child: Text(attendance.checkoutServiceFeeWaived
-                          ? 'RESTAURAR TAXA'
-                          : 'REMOVER TAXA'),
-                    ),
-                  ],
-                  const PopupMenuItem(
-                    value: 'conference',
-                    child: Text('VISUALIZAR CONFERÊNCIA'),
-                  ),
-                  if (attendance.status == 'open' && canRequestBill)
-                    PopupMenuItem(
-                      value: 'bill',
-                      child: Text(attendance.billRequested
-                          ? 'CANCELAR SOLICITAÇÃO'
-                          : 'SOLICITAR CONTA'),
-                    ),
-                  if (attendance.status == 'open' &&
-                      canTransferItems &&
-                      attendance.orders
-                          .expand((order) => order.items)
-                          .any((item) => item.status == 'confirmed'))
-                    const PopupMenuItem(
-                      value: 'transfer',
-                      child: Text('TRANSFERIR ITENS'),
-                    ),
-                  if (attendance.status == 'open' && canSeparateFromGroup)
-                    const PopupMenuItem(
-                      value: 'separate',
-                      child: Text('SEPARAR DO GRUPO'),
-                    ),
-                ],
-                enabled: !actionsInProgress,
+            Text('RESUMO DA MESA',
+                style: Theme.of(context)
+                    .textTheme
+                    .titleMedium
+                    ?.copyWith(fontWeight: FontWeight.w800)),
+            if (attendance.customerName.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text('Cliente: ${attendance.customerName}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Color(0xff64748b), fontSize: 12)),
               ),
-            ]),
             const SizedBox(height: 8),
             Expanded(
                 child: cart.isEmpty && attendance.orders.isEmpty
@@ -1728,79 +1737,38 @@ class _TableOrderSummaryPanel extends StatelessWidget {
                         child: Text('Adicione produtos para iniciar o pedido.'))
                     : ListView(children: [
                         for (final order in attendance.orders) ...[
-                          Padding(
-                            padding: const EdgeInsets.only(top: 8),
-                            child: Row(children: [
-                              Expanded(
-                                child: Text('PEDIDO #${order.id}',
-                                    style: const TextStyle(
-                                        fontWeight: FontWeight.w800)),
-                              ),
-                              if (order.status == 'confirmed' && canCancelItems)
-                                PopupMenuButton<String>(
-                                  enabled: !actionsInProgress,
-                                  onSelected: (_) =>
-                                      unawaited(onCancelOrder(order)),
-                                  itemBuilder: (_) => const [
-                                    PopupMenuItem(
-                                      value: 'cancel',
-                                      child: Text('CANCELAR PEDIDO'),
-                                    ),
-                                  ],
-                                ),
-                            ]),
+                          InkWell(
+                            onTap: () => unawaited(onOrderActions(order)),
+                            onLongPress: () => unawaited(onOrderActions(order)),
+                            child: Padding(
+                              padding:
+                                  const EdgeInsets.only(top: 12, bottom: 4),
+                              child: Text('PEDIDO #${order.id}',
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.w800)),
+                            ),
                           ),
                           for (final item in order.items)
-                            ListTile(
-                              title:
-                                  Text('${item.quantity}x ${item.productName}'),
-                              subtitle: Text([
-                                item.status.toUpperCase(),
+                            SharedCartItemTile(
+                              name: item.productName,
+                              quantity: item.quantity,
+                              amount: item.lineTotal ?? item.unitPrice,
+                              status: item.status.toUpperCase(),
+                              details: [
                                 for (final modifier in item.modifierSnapshot)
                                   '+ ${modifier['name'] ?? modifier['option_name'] ?? 'Modificador'}',
                                 if (item.notes.isNotEmpty) 'Obs: ${item.notes}',
                                 if (item.cancellationReason.isNotEmpty)
                                   'Cancelado: ${item.cancellationReason}',
-                              ].join('\n')),
-                              trailing: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(formatMoney(
-                                        item.lineTotal ?? item.unitPrice)),
-                                    if (item.status == 'confirmed')
-                                      PopupMenuButton<String>(
-                                        enabled: !actionsInProgress,
-                                        onSelected: (value) {
-                                          switch (value) {
-                                            case 'cancel':
-                                              unawaited(onCancelItem(item));
-                                              break;
-                                            case 'transfer':
-                                              unawaited(onTransferItem(item));
-                                              break;
-                                            case 'discount':
-                                              unawaited(onItemDiscount(item));
-                                              break;
-                                          }
-                                        },
-                                        itemBuilder: (_) => [
-                                          if (canCancelItems)
-                                            const PopupMenuItem(
-                                              value: 'cancel',
-                                              child: Text('CANCELAR ITEM'),
-                                            ),
-                                          if (canTransferItems)
-                                            const PopupMenuItem(
-                                              value: 'transfer',
-                                              child: Text('TRANSFERIR'),
-                                            ),
-                                          const PopupMenuItem(
-                                            value: 'discount',
-                                            child: Text('DESCONTO DO ITEM'),
-                                          ),
-                                        ],
-                                      ),
-                                  ]),
+                              ].join('\n'),
+                              onTap: item.status == 'confirmed'
+                                  ? () =>
+                                      unawaited(onConfirmedItemActions(item))
+                                  : null,
+                              onLongPress: item.status == 'confirmed'
+                                  ? () =>
+                                      unawaited(onConfirmedItemActions(item))
+                                  : null,
                             ),
                           const Divider(height: 1),
                         ],
@@ -1813,11 +1781,27 @@ class _TableOrderSummaryPanel extends StatelessWidget {
                           for (var draftIndex = 0;
                               draftIndex < cart.length;
                               draftIndex++)
-                            _TableDraftItemTile(
-                              item: cart[draftIndex],
-                              saving: saving,
-                              onEdit: () => onEdit(draftIndex),
-                              onRemove: () => onRemove(draftIndex),
+                            SharedCartItemTile(
+                              name: cart[draftIndex].product.name,
+                              quantity: cart[draftIndex].quantity,
+                              amount: _tableLineTotal(cart[draftIndex])
+                                  .toStringAsFixed(2),
+                              details: [
+                                for (final modifier
+                                    in cart[draftIndex].modifiers)
+                                  _tableModifierText(
+                                      cart[draftIndex].product, modifier),
+                                if (cart[draftIndex].notes.isNotEmpty)
+                                  'Obs: ${cart[draftIndex].notes}',
+                              ].join('\n'),
+                              onTap: saving
+                                  ? null
+                                  : () =>
+                                      unawaited(onDraftItemActions(draftIndex)),
+                              onLongPress: saving
+                                  ? null
+                                  : () =>
+                                      unawaited(onDraftItemActions(draftIndex)),
                             ),
                         ],
                       ])),
@@ -1834,7 +1818,32 @@ class _TableOrderSummaryPanel extends StatelessWidget {
                 style: const TextStyle(fontWeight: FontWeight.w800),
               ),
             const SizedBox(height: 4),
-            TableSummaryWidgets(attendance.summary),
+            if (attendance.billRequested)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 8),
+                child: Text('CONTA SOLICITADA',
+                    style: TextStyle(
+                        color: Color(0xffffa21d),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800)),
+              ),
+            SharedTotalsPanel(lines: [
+              SharedTotalsLine(
+                  label: 'Subtotal',
+                  value: '${attendance.summary['subtotal'] ?? '0.00'}'),
+              SharedTotalsLine(
+                  label: 'Descontos',
+                  value: '${attendance.summary['discount_total'] ?? '0.00'}',
+                  negative: true),
+              SharedTotalsLine(
+                  label: 'Taxa de serviço',
+                  value:
+                      '${attendance.summary['service_fee_total'] ?? '0.00'}'),
+              SharedTotalsLine(
+                  label: 'Total oficial',
+                  value: '${attendance.summary['total_due'] ?? '0.00'}',
+                  strong: true),
+            ]),
             const SizedBox(height: 8),
             FilledButton.icon(
               onPressed: saving || cart.isEmpty ? null : () => onSave(),
@@ -1848,46 +1857,6 @@ class _TableOrderSummaryPanel extends StatelessWidget {
             ),
           ]),
         ),
-      );
-}
-
-class _TableDraftItemTile extends StatelessWidget {
-  const _TableDraftItemTile({
-    required this.item,
-    required this.saving,
-    required this.onEdit,
-    required this.onRemove,
-  });
-
-  final QuickSaleCartItem item;
-  final bool saving;
-  final VoidCallback onEdit;
-  final VoidCallback onRemove;
-
-  @override
-  Widget build(BuildContext context) => ListTile(
-        onTap: saving ? null : onEdit,
-        title: Text(item.product.name),
-        subtitle: Text([
-          'Qtd. ${item.quantity}',
-          for (final modifier in item.modifiers)
-            _tableModifierText(item.product, modifier),
-          if (item.notes.isNotEmpty) 'Obs: ${item.notes}',
-        ].join('\n')),
-        leading: SizedBox(
-          width: 76,
-          child: Text(
-            formatMoney(_tableLineTotal(item).toStringAsFixed(2)),
-            style: const TextStyle(fontWeight: FontWeight.w800),
-          ),
-        ),
-        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-          IconButton(
-            onPressed: saving ? null : onRemove,
-            icon: const Icon(Icons.delete_outline),
-          ),
-          const Icon(Icons.chevron_right),
-        ]),
       );
 }
 
@@ -1995,74 +1964,6 @@ class _TableAuthorizationDialogState extends State<_TableAuthorizationDialog> {
                     ? null
                     : _authorize,
             child: Text(_validating ? 'VALIDANDO...' : 'AUTORIZAR'),
-          ),
-        ],
-      );
-}
-
-class _TableItemDiscountDialog extends StatefulWidget {
-  const _TableItemDiscountDialog({
-    this.title = 'Desconto do item',
-    this.initialType = 'amount',
-    this.initialValue = '',
-  });
-
-  final String title;
-  final String initialType;
-  final String initialValue;
-
-  @override
-  State<_TableItemDiscountDialog> createState() =>
-      _TableItemDiscountDialogState();
-}
-
-class _TableItemDiscountDialogState extends State<_TableItemDiscountDialog> {
-  late final _value = TextEditingController(text: widget.initialValue);
-  late String _type = widget.initialType;
-
-  @override
-  void dispose() {
-    _value.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: Text(widget.title),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          SegmentedButton<String>(
-            segments: const [
-              ButtonSegment(value: 'amount', label: Text('R\$')),
-              ButtonSegment(value: 'percentage', label: Text('%')),
-            ],
-            selected: {_type},
-            onSelectionChanged: (value) => setState(() => _type = value.first),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _value,
-            autofocus: true,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: InputDecoration(
-              labelText: _type == 'percentage'
-                  ? 'Percentual do desconto'
-                  : 'Valor do desconto',
-              suffixText: _type == 'percentage' ? '%' : null,
-            ),
-          ),
-        ]),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('CANCELAR'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final value = _value.text.trim().replaceAll(',', '.');
-              if (value.isEmpty) return;
-              Navigator.of(context).pop({'type': _type, 'value': value});
-            },
-            child: const Text('APLICAR'),
           ),
         ],
       );

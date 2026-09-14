@@ -38,7 +38,7 @@ from apps.companies.features import require_branch_feature
 from apps.companies.models import Customer, Status
 from apps.attendance.models import (
     AttendanceCommand, AttendanceCommandStatus, AttendanceOrderItem, AttendancePayment,
-    AttendanceTableGroupMembership, TableAttendance, TableAttendanceStatus, TableOrderItem, TablePayment,
+    AttendanceTableGroupMembership, TableAttendance, TableAttendanceStatus, TableOrder, TableOrderItem, TablePayment,
 )
 from apps.attendance.serializers import (
     AttendanceCancelItemSerializer, AttendanceCommandSerializer, AttendanceConfirmItemSerializer,
