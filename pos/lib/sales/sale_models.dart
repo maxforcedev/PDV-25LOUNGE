@@ -529,6 +529,7 @@ class QuickSaleCheckoutItem {
     required this.id,
     required this.name,
     required this.quantity,
+    required this.availableQuantity,
     required this.unit,
     required this.input,
   });
@@ -537,13 +538,57 @@ class QuickSaleCheckoutItem {
           id: json['id'] as int,
           name: json['product_name'] as String? ?? 'Item',
           quantity: json['quantity'] as String? ?? '0',
+          availableQuantity: json['available_quantity'] as String? ??
+              json['quantity'] as String? ??
+              '0',
           unit: json['unit'] as String? ?? 'un',
           input: Map<String, dynamic>.from(json['input'] as Map? ?? const {}));
   final int id;
   final String name;
   final String quantity;
+  final String availableQuantity;
   final String unit;
   final Map<String, dynamic> input;
+}
+
+/// A persisted operator payment attempt. Its UUID is also the API idempotency key.
+class QuickSalePaymentAttempt {
+  const QuickSalePaymentAttempt({
+    required this.intentId,
+    required this.paymentMethodId,
+    required this.mode,
+    required this.amount,
+    required this.receivedAmount,
+    required this.allocations,
+  });
+
+  factory QuickSalePaymentAttempt.fromJson(Map<String, dynamic> json) =>
+      QuickSalePaymentAttempt(
+        intentId: json['intent_id'] as String,
+        paymentMethodId: json['payment_method_id'] as int,
+        mode: json['mode'] as String,
+        amount: json['amount'] as String?,
+        receivedAmount: json['received_amount'] as String?,
+        allocations: (json['allocations'] as List<dynamic>? ?? const [])
+            .map((row) => Map<String, dynamic>.from(row as Map))
+            .toList(growable: false),
+      );
+
+  final String intentId;
+  final int paymentMethodId;
+  final String mode;
+  final String? amount;
+  final String? receivedAmount;
+  final List<Map<String, dynamic>> allocations;
+
+  Map<String, dynamic> toJson() => {
+        'intent_id': intentId,
+        'payment_method_id': paymentMethodId,
+        'mode': mode,
+        'amount': amount,
+        'received_amount': receivedAmount,
+        'allocations': allocations,
+      };
 }
 
 class QuickSaleCheckoutPayment {

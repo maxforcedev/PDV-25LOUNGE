@@ -80,9 +80,10 @@ from apps.sales.serializers import (
 from apps.sales.services import (
     assess_sale_stock_availability, calculate_preview, catalog_product_operational_states,
     catalog_products_with_available_stock, finalize_sale, validate_discount_authorization,
+    payment_method_presentation,
 )
 from apps.sales.quick_checkout import (
-    QuickCheckoutConflict, cancel_quick_checkout, checkout_balance, create_quick_checkout,
+    QuickCheckoutConflict, cancel_quick_checkout, checkout_available_quantities, checkout_balance, create_quick_checkout,
     finalize_quick_checkout, record_quick_checkout_payment,
     preview_quick_checkout_payment, reverse_quick_checkout_payment, update_quick_checkout,
 )
@@ -897,7 +898,7 @@ class POSAttendanceCheckoutOptionsView(POSAttendanceView):
         ).order_by('name', 'id').values('id', 'code', 'name')
         return Response({
             'payment_methods': [
-                {**method, **_payment_method_presentation(method['code'])}
+                {**method, **payment_method_presentation(method['code'])}
                 for method in methods
             ],
             'cash_binding_mode': mode,
@@ -931,7 +932,10 @@ class POSTableCheckoutOptionsView(POSAttendanceView):
             fixed_cash_available = bool(fixed_register and fixed_register.status == CashRegisterStatus.ACTIVE)
             sessions = sessions.filter(cash_register=fixed_register) if fixed_cash_available else sessions.none()
         methods = PaymentMethod.objects.filter(company_id=device.branch.company_id, status=Status.ACTIVE).order_by('name', 'id').values('id', 'code', 'name')
-        return Response({'payment_methods': list(methods), 'cash_binding_mode': mode,
+        return Response({'payment_methods': [
+            {**method, **payment_method_presentation(method['code'])}
+            for method in methods
+        ], 'cash_binding_mode': mode,
             'fixed_register': {'id': fixed_register.pk, 'name': fixed_register.name} if mode == 'FIXED' and fixed_register else None,
             'cash_required': True, 'fixed_cash_available': fixed_cash_available,
             'cash_sessions': [{'id': session.pk, 'register_name': session.cash_register.name,
@@ -1544,7 +1548,7 @@ class POSSaleCheckoutOptionsView(POSQuickSaleView):
         ).order_by('name', 'id').values('id', 'code', 'name')
         return Response({
             'payment_methods': [
-                {**method, **_payment_method_presentation(method['code'])}
+                {**method, **payment_method_presentation(method['code'])}
                 for method in methods
             ],
             'cash_binding_mode': mode,
@@ -1565,21 +1569,22 @@ class POSSaleCheckoutOptionsView(POSQuickSaleView):
         })
 
 
-def _payment_method_presentation(code):
-    """Stable UI metadata; names remain operator-configurable presentation only."""
-    return {
-        'cash': {'visual_group': 'cash', 'kind': 'cash', 'source': 'manual'},
-        'pix': {'visual_group': 'pix', 'kind': 'pix', 'source': 'manual'},
-        'credit_card': {'visual_group': 'card', 'kind': 'credit', 'source': 'manual'},
-        'debit_card': {'visual_group': 'card', 'kind': 'debit', 'source': 'manual'},
-    }.get(code, {'visual_group': 'other', 'kind': 'other', 'source': 'manual'})
-
-
 def _quick_checkout_payload(checkout, *, permissions=()):
     paid, remaining = checkout_balance(checkout)
-    editable = checkout.status == QuickSaleCheckoutStatus.OPEN and paid == Decimal('0.00')
-    can_finalize = checkout.status == QuickSaleCheckoutStatus.OPEN and remaining == Decimal('0.00')
-    can_reverse = checkout.status == QuickSaleCheckoutStatus.OPEN and 'sales.payments.reverse' in permissions
+    session_status = checkout.cash_session.status if checkout.cash_session_id else None
+    session_open = session_status == CashSessionStatus.OPEN
+    editable = checkout.status == QuickSaleCheckoutStatus.OPEN and paid == Decimal('0.00') and session_open
+    can_finalize = (
+        checkout.status == QuickSaleCheckoutStatus.OPEN
+        and remaining == Decimal('0.00')
+        and session_status in (CashSessionStatus.OPEN, CashSessionStatus.CLOSED)
+    )
+    can_reverse = (
+        checkout.status == QuickSaleCheckoutStatus.OPEN
+        and session_open
+        and 'sales.payments.reverse' in permissions
+    )
+    available_quantities = checkout_available_quantities(checkout)
     return {
         'id': str(checkout.pk),
         'status': checkout.status,
@@ -1589,6 +1594,7 @@ def _quick_checkout_payload(checkout, *, permissions=()):
             if checkout.customer_id else None
         ),
         'cash_session': checkout.cash_session_id,
+        'cash_session_status': session_status,
         'discount_intent': checkout.discount_intent,
         'service_fee_waived': checkout.service_fee_waived,
         'preview': checkout.financial_snapshot,
@@ -1602,7 +1608,11 @@ def _quick_checkout_payload(checkout, *, permissions=()):
         ),
         'capabilities': {
             'can_edit_financials': editable,
-            'can_record_payment': checkout.status == QuickSaleCheckoutStatus.OPEN and remaining > Decimal('0.00'),
+            'can_record_payment': (
+                checkout.status == QuickSaleCheckoutStatus.OPEN
+                and remaining > Decimal('0.00')
+                and session_open
+            ),
             'can_finalize': can_finalize,
             'can_reverse_payment': can_reverse,
         },
@@ -1611,6 +1621,7 @@ def _quick_checkout_payload(checkout, *, permissions=()):
                 'id': item.pk, 'client_item_id': str(item.client_item_id),
                 'product': item.product_id, 'product_name': item.product.name,
                 'unit': item.product.unit, 'quantity': str(item.quantity),
+                'available_quantity': str(available_quantities[item.pk]),
                 'input': item.snapshot['raw'],
             }
             for item in checkout.items.all().order_by('id')
@@ -1620,7 +1631,7 @@ def _quick_checkout_payload(checkout, *, permissions=()):
                 'id': payment.pk, 'payment_method': payment.payment_method_id,
                 'payment_method_name': payment.payment_method_name,
                 'payment_method_code': payment.payment_method_code,
-                **_payment_method_presentation(payment.payment_method_code),
+                **payment_method_presentation(payment.payment_method_code),
                 'amount': str(payment.amount),
                 'received_amount': str(payment.received_amount) if payment.received_amount is not None else None,
                 'change_amount': str(payment.change_amount) if payment.change_amount is not None else None,

@@ -11,9 +11,6 @@ import '../scanner/product_barcode_scanner_page.dart';
 import '../sync/sync_center_page.dart';
 import '../sync/sync_status_button.dart';
 import 'sale_models.dart';
-import 'shared_authorization_dialog.dart';
-import 'shared_customer_dialog.dart';
-import 'shared_discount_dialog.dart';
 import 'shared_sale_item_editor_dialog.dart';
 import 'shared_pos_widgets.dart';
 
@@ -97,6 +94,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
   List<QuickSaleCartItem> _lastValidatedCart = const [];
   final List<_CartMutation> _pendingCartMutations = [];
   final Map<String, Map<String, dynamic>> _cartShortages = {};
+  bool _catalogLocked = false;
 
   List<QuickSaleCartItem> get _cart => _draft.cart;
 
@@ -132,26 +130,6 @@ class _QuickSalePageState extends State<QuickSalePage> {
     _draft.changed();
   }
 
-  bool get _canDiscount =>
-      widget.controller.bootstrapSnapshot?.permissions
-          .contains('sales.apply_discount') ??
-      false;
-  bool get _canItemDiscount =>
-      widget.controller.bootstrapSnapshot?.permissions
-          .contains('sales.apply_item_discount') ??
-      false;
-  bool get _canWaiveFee =>
-      widget.controller.bootstrapSnapshot?.permissions
-          .contains('sales.waive_service_fee') ??
-      false;
-  bool get _canViewCustomers =>
-      widget.controller.bootstrapSnapshot?.permissions
-          .contains('customers.view') ??
-      false;
-  bool get _canAddCustomers =>
-      widget.controller.bootstrapSnapshot?.permissions
-          .contains('customers.add') ??
-      false;
   bool get _cashReady =>
       _checkoutOptions != null && _checkoutOptions!.cashSessions.isNotEmpty;
   bool get _checkoutReady =>
@@ -190,6 +168,54 @@ class _QuickSalePageState extends State<QuickSalePage> {
     if (options == null || !mounted) return;
     final checkout = await widget.controller.recoverQuickSaleCheckout();
     if (!mounted || checkout == null) return;
+    setState(() => _restoreCheckoutDraft(checkout));
+    await _openPayment(checkout, options);
+  }
+
+  void _restoreCheckoutDraft(QuickSaleCheckout checkout) {
+    final productsById = {
+      for (final product in _allCatalog) product.id: product
+    };
+    final items = <QuickSaleCartItem>[];
+    for (final checkoutItem in checkout.items) {
+      final input = checkoutItem.input;
+      final product = productsById[int.tryParse('${input['product']}')];
+      if (product == null) continue;
+      final modifiers = (input['modifiers'] as List? ?? const [])
+          .whereType<Map>()
+          .map((modifier) => Map<String, dynamic>.from(modifier))
+          .toList(growable: false);
+      final discount = input['discount'] is Map
+          ? QuickSaleDiscountIntent.fromJson(
+              Map<String, dynamic>.from(input['discount'] as Map))
+          : const QuickSaleDiscountIntent();
+      items.add(QuickSaleCartItem(
+        clientItemId:
+            input['client_item_id'] as String? ?? createIdempotencyKey(),
+        product: product,
+        quantity: input['quantity'] as String? ?? checkoutItem.quantity,
+        modifiers: modifiers,
+        notes: input['notes'] as String? ?? '',
+        discount: discount,
+      ));
+    }
+    _cart
+      ..clear()
+      ..addAll(items);
+    _lastValidatedCart = List<QuickSaleCartItem>.of(items);
+    _pendingCartMutations.clear();
+    _cartShortages.clear();
+    _preview = checkout.preview;
+    _loadingPreview = false;
+    _draft.customer = checkout.customer;
+    _discount = checkout.discountIntent;
+    _serviceFeeWaived = checkout.serviceFeeWaived;
+    _catalogLocked = !checkout.canEditFinancials;
+    _draft.changed();
+  }
+
+  Future<void> _openPayment(
+      QuickSaleCheckout checkout, QuickSaleCheckoutOptions options) async {
     await Navigator.of(context).push<void>(MaterialPageRoute(
       builder: (_) => SharedPaymentPage(
         controller: widget.controller,
@@ -200,8 +226,24 @@ class _QuickSalePageState extends State<QuickSalePage> {
           unawaited(_loadCheckoutOptions());
           unawaited(_loadCatalog());
         },
+        onCancelled: () async {
+          if (mounted) setState(_resetSaleDraftState);
+          unawaited(_loadCheckoutOptions());
+          unawaited(_loadCatalog());
+        },
       ),
     ));
+    if (!mounted) return;
+    final activeCheckout = await widget.controller.recoverQuickSaleCheckout();
+    if (!mounted) return;
+    setState(() {
+      if (activeCheckout == null) {
+        _catalogLocked = false;
+        _resetSaleDraftState();
+      } else {
+        _restoreCheckoutDraft(activeCheckout);
+      }
+    });
   }
 
   Future<void> _loadCatalog() async {
@@ -290,6 +332,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
   }
 
   Future<void> _barcode({bool showNotFound = true}) async {
+    if (_catalogLocked) return;
     final barcode = _search.text.trim();
     if (barcode.isEmpty) return;
     final product = await widget.controller.quickSaleBarcode(barcode);
@@ -305,6 +348,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
   }
 
   Future<bool> _scanBarcode(String barcode) async {
+    if (_catalogLocked) return false;
     final product = await widget.controller.quickSaleBarcode(barcode);
     if (!mounted) return false;
     if (product == null) {
@@ -419,6 +463,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
 
   Future<bool> _addProduct(QuickSaleProduct product,
       {String quantity = '1'}) async {
+    if (_catalogLocked) return false;
     widget.controller.logPosAction('cart_add');
     if (!product.canSell) {
       _showCatalogStockUnavailable();
@@ -459,6 +504,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
   }
 
   Future<void> _addProductBatch(QuickSaleProduct product) async {
+    if (_catalogLocked) return;
     if (!product.canSell) {
       _showCatalogStockUnavailable();
       return;
@@ -487,6 +533,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
     QuickSaleCartItem? initial,
     bool checkBatchAvailability = false,
   }) async {
+    if (_catalogLocked) return false;
     widget.controller.logPosAction('cart_edit');
     final current = initial ?? (index == null ? null : _cart[index]);
     final item = await showDialog<QuickSaleCartItem>(
@@ -504,13 +551,10 @@ class _QuickSalePageState extends State<QuickSalePage> {
   }
 
   Future<void> _editCartItem(int index) async {
+    if (_catalogLocked) return;
     final result = await showDialog<_CartItemEditResult>(
       context: context,
-      builder: (_) => _EditCartItemDialog(
-        item: _cart[index],
-        requiresItemAuthorization: !_canItemDiscount,
-        requestItemAuthorization: _requestItemDiscountAuthorization,
-      ),
+      builder: (_) => _EditCartItemDialog(item: _cart[index]),
     );
     if (result == null || !mounted) return;
     if (result.delete) {
@@ -519,17 +563,6 @@ class _QuickSalePageState extends State<QuickSalePage> {
       _applyCartMutation(
           _CartMutation.replace(_cart[index].clientItemId, result.item!));
     }
-    setState(() {
-      if (result.itemDiscountAuthorization != null) {
-        _draft.itemDiscountAuthorization = result.itemDiscountAuthorization;
-      }
-      if (_canItemDiscount) {
-        _draft.itemDiscountAuthorization = null;
-      }
-      if (!_cart.any((item) => !item.discount.isZero)) {
-        _draft.itemDiscountAuthorization = null;
-      }
-    });
   }
 
   void _applyCartMutation(_CartMutation mutation) {
@@ -563,6 +596,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
     _lastValidatedCart = const [];
     _pendingCartMutations.clear();
     _cartShortages.clear();
+    _catalogLocked = false;
     _draft.clearAfterSale();
   }
 
@@ -803,139 +837,11 @@ class _QuickSalePageState extends State<QuickSalePage> {
       serviceFeeAuthorization: _draft.serviceFeeAuthorization,
     );
     if (!mounted || checkout == null) return;
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute(
-        builder: (_) => SharedPaymentPage(
-          controller: widget.controller,
-          options: options,
-          checkout: checkout,
-          onCompleted: (result) async {
-            if (mounted) setState(_resetSaleDraftState);
-            unawaited(_loadCheckoutOptions());
-            unawaited(_loadCatalog());
-          },
-        ),
-      ),
-    );
-  }
-
-  Future<void> _selectCustomer() async {
-    final customer = await showDialog<QuickSaleCustomer>(
-      context: context,
-      builder: (_) => SharedCustomerPickerDialog(
-        controller: widget.controller,
-        canCreate: _canAddCustomers,
-      ),
-    );
-    if (customer == null || !mounted) return;
-    setState(() => _draft.customer = customer);
-    _draft.changed();
-  }
-
-  void _removeCustomer() {
-    setState(() => _draft.customer = null);
-    _draft.changed();
-  }
-
-  Future<void> _editSaleDiscount() async {
-    final preview = _preview;
-    if (preview == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text(
-            'Aguarde a atualização dos valores antes de aplicar desconto.'),
-      ));
-      return;
-    }
-    final maximumAmount = [
-      double.tryParse(preview.subtotal.replaceAll(',', '.')) ?? 0,
-      -(double.tryParse(preview.promotionDiscountTotal.replaceAll(',', '.')) ??
-          0),
-      -(double.tryParse(preview.itemDiscountTotal.replaceAll(',', '.')) ?? 0),
-    ].reduce((total, value) => total + value);
-    final discount = await showDialog<QuickSaleDiscountIntent>(
-      context: context,
-      builder: (_) => SharedDiscountDialog(
-        initial: _discount,
-        maximumAmount: maximumAmount < 0 ? 0 : maximumAmount,
-      ),
-    );
-    if (discount == null || !mounted) return;
-    QuickSaleAuthorization? authorization;
-    if (!_canDiscount) {
-      authorization = await _requestDiscountAuthorization();
-      if (authorization == null || !mounted) return;
-    }
-    setState(() {
-      _discount = discount;
-      _draft.discountAuthorization = authorization;
-    });
-    _schedulePreview();
-  }
-
-  void _removeSaleDiscount() {
-    setState(() {
-      _discount = const QuickSaleDiscountIntent();
-      _draft.discountAuthorization = null;
-    });
-    _schedulePreview();
-  }
-
-  Future<QuickSaleAuthorization?> _requestDiscountAuthorization() =>
-      _requestDiscountAuthorizationFor(type: 'sale');
-
-  Future<QuickSaleAuthorization?> _requestItemDiscountAuthorization() =>
-      _requestDiscountAuthorizationFor(type: 'item');
-
-  Future<QuickSaleAuthorization?> _requestDiscountAuthorizationFor(
-      {required String type}) async {
-    // A new approval attempt must not retain a prior approver PIN.
-    if (type == 'item') {
-      _draft.itemDiscountAuthorization = null;
-    } else if (type == 'service_fee') {
-      _draft.serviceFeeAuthorization = null;
-    } else {
-      _draft.discountAuthorization = null;
-    }
-    final authorizers = switch (type) {
-      'item' => await widget.controller.quickSaleItemDiscountAuthorizers(),
-      'service_fee' => await widget.controller.quickSaleServiceFeeAuthorizers(),
-      _ => await widget.controller.quickSaleDiscountAuthorizers(),
-    };
-    if (!mounted || authorizers == null) return null;
-    if (authorizers.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content:
-            Text('Nenhum autorizador elegível está disponível nesta filial.'),
-      ));
-      return null;
-    }
-    return showDialog<QuickSaleAuthorization>(
-      context: context,
-      builder: (_) => SharedAuthorizationDialog(
-        authorizers: authorizers,
-        onAuthorize: (authorization) =>
-            widget.controller.validateQuickSaleDiscountAuthorization(
-          type: type,
-          authorization: authorization,
-        ),
-      ),
-    );
-  }
-
-  Future<void> _toggleServiceFee() async {
-    if (!_serviceFeeWaived && !_canWaiveFee) {
-      final authorization =
-          await _requestDiscountAuthorizationFor(type: 'service_fee');
-      if (authorization == null || !mounted) return;
-      _draft.serviceFeeAuthorization = authorization;
-    } else if (_serviceFeeWaived) {
-      _draft.serviceFeeAuthorization = null;
-    }
-    setState(() => _serviceFeeWaived = !_serviceFeeWaived);
-    _schedulePreview();
+    await _openPayment(checkout, options);
   }
 
   Future<void> _clearCart() async {
+    if (_catalogLocked) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -962,32 +868,15 @@ class _QuickSalePageState extends State<QuickSalePage> {
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => _CartPage(
         draft: _draft,
-        allowDiscount: true,
-        allowCustomer: _canViewCustomers,
-        allowWaiveFee: _serviceFeeWaived ||
-            (_preview != null && _preview!.serviceFeeRate != '0.00'),
-        onCustomer: _selectCustomer,
-        onRemoveCustomer: _removeCustomer,
-        onDiscount: _editSaleDiscount,
-        onRemoveDiscount: _removeSaleDiscount,
-        onServiceFee: _toggleServiceFee,
+        canClear: !_catalogLocked,
         onClear: _clearCart,
         panel: () => _CartPanel(
           cart: _cart,
           shortages: _cartShortages,
           preview: _preview,
           loadingPreview: _loadingPreview,
-          discount: _discount,
           cashReady: _checkoutReady,
-          customer: _draft.customer,
-          allowCustomer: _canViewCustomers,
-          onCustomer: _selectCustomer,
-          onRemoveCustomer: _removeCustomer,
-          allowWaiveFee: _serviceFeeWaived ||
-              (_preview != null && _preview!.serviceFeeRate != '0.00'),
-          serviceFeeWaived: _serviceFeeWaived,
-          onServiceFee: _toggleServiceFee,
-          showServiceFeeMenu: false,
+          editable: !_catalogLocked,
           onEdit: _editCartItem,
           onCheckout: _checkout,
         ),
@@ -1053,6 +942,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
                     onProduct: _addProduct,
                     onProductLongPress: _addProductBatch,
                     selectedQuantities: _selectedQuantities,
+                    editable: !_catalogLocked,
                   );
                   if (constraints.maxWidth < 900) return catalog;
                   return Row(children: [
@@ -1064,18 +954,8 @@ class _QuickSalePageState extends State<QuickSalePage> {
                         shortages: _cartShortages,
                         preview: _preview,
                         loadingPreview: _loadingPreview,
-                        discount: _discount,
                         cashReady: _checkoutReady,
-                        customer: _draft.customer,
-                        allowCustomer: _canViewCustomers,
-                        onCustomer: _selectCustomer,
-                        onRemoveCustomer: _removeCustomer,
-                        allowWaiveFee: _serviceFeeWaived ||
-                            (_preview != null &&
-                                _preview!.serviceFeeRate != '0.00'),
-                        serviceFeeWaived: _serviceFeeWaived,
-                        onServiceFee: _toggleServiceFee,
-                        showServiceFeeMenu: true,
+                        editable: !_catalogLocked,
                         onEdit: _editCartItem,
                         onCheckout: _checkout,
                       ),
@@ -1090,26 +970,12 @@ class _CartPage extends StatelessWidget {
   const _CartPage({
     required this.draft,
     required this.panel,
-    required this.allowDiscount,
-    required this.allowCustomer,
-    required this.allowWaiveFee,
-    required this.onCustomer,
-    required this.onRemoveCustomer,
-    required this.onDiscount,
-    required this.onRemoveDiscount,
-    required this.onServiceFee,
+    required this.canClear,
     required this.onClear,
   });
   final QuickSaleDraft draft;
   final Widget Function() panel;
-  final bool allowDiscount;
-  final bool allowCustomer;
-  final bool allowWaiveFee;
-  final Future<void> Function() onCustomer;
-  final VoidCallback onRemoveCustomer;
-  final Future<void> Function() onDiscount;
-  final VoidCallback onRemoveDiscount;
-  final Future<void> Function() onServiceFee;
+  final bool canClear;
   final Future<void> Function() onClear;
 
   @override
@@ -1117,68 +983,18 @@ class _CartPage extends StatelessWidget {
         appBar: AppBar(
           title: const Text('Carrinho'),
           actions: [
-            PopupMenuButton<String>(
-              onSelected: (action) {
-                switch (action) {
-                  case 'customer':
-                    onCustomer();
-                    break;
-                  case 'remove_customer':
-                    onRemoveCustomer();
-                    break;
-                  case 'discount':
-                    onDiscount();
-                    break;
-                  case 'remove_discount':
-                    onRemoveDiscount();
-                    break;
-                  case 'fee':
-                    unawaited(onServiceFee());
-                    break;
-                  case 'clear':
-                    onClear();
-                    break;
-                }
-              },
-              itemBuilder: (_) => [
-                if (allowCustomer)
+            if (canClear && draft.cart.isNotEmpty)
+              PopupMenuButton<String>(
+                onSelected: (action) {
+                  if (action == 'clear') onClear();
+                },
+                itemBuilder: (_) => const [
                   PopupMenuItem(
-                    value: 'customer',
-                    child: Text(draft.customer == null
-                        ? 'Adicionar cliente'
-                        : 'Alterar cliente'),
-                  ),
-                if (draft.customer != null)
-                  const PopupMenuItem(
-                    value: 'remove_customer',
-                    child: Text('Remover cliente'),
-                  ),
-                if (allowDiscount)
-                  PopupMenuItem(
-                    value: 'discount',
-                    child: Text(draft.discount.isZero
-                        ? 'Aplicar desconto na venda'
-                        : 'Alterar desconto'),
-                  ),
-                if (allowDiscount && !draft.discount.isZero)
-                  const PopupMenuItem(
-                    value: 'remove_discount',
-                    child: Text('Remover desconto'),
-                  ),
-                if (allowWaiveFee)
-                  PopupMenuItem(
-                    value: 'fee',
-                    child: Text(draft.serviceFeeWaived
-                        ? 'Restaurar taxa de serviço'
-                        : 'Isentar taxa de serviço'),
-                  ),
-                if (draft.cart.isNotEmpty)
-                  const PopupMenuItem(
                     value: 'clear',
                     child: Text('Apagar carrinho'),
                   ),
-              ],
-            ),
+                ],
+              ),
           ],
         ),
         body: AnimatedBuilder(animation: draft, builder: (_, __) => panel()),
@@ -1316,6 +1132,7 @@ class ProductCatalogPanel extends StatelessWidget {
     required this.onSearchSubmitted,
     required this.onProduct,
     required this.onProductLongPress,
+    this.editable = true,
     this.selectedQuantities = const {},
     super.key,
   });
@@ -1331,6 +1148,7 @@ class ProductCatalogPanel extends StatelessWidget {
   final ValueChanged<String> onSearchSubmitted;
   final ValueChanged<QuickSaleProduct> onProduct;
   final ValueChanged<QuickSaleProduct> onProductLongPress;
+  final bool editable;
   final Map<int, double> selectedQuantities;
 
   @override
@@ -1341,14 +1159,14 @@ class ProductCatalogPanel extends StatelessWidget {
             Expanded(
                 child: TextField(
               controller: search,
-              onSubmitted: onSearchSubmitted,
+              onSubmitted: editable ? onSearchSubmitted : null,
               decoration: const InputDecoration(
                 labelText: 'Produto, código ou código de barras',
                 prefixIcon: Icon(Icons.search_rounded),
               ),
             )),
             IconButton(
-                onPressed: onBarcode,
+                onPressed: editable ? onBarcode : null,
                 icon: const Icon(Icons.qr_code_scanner_rounded),
                 tooltip: 'Código de barras'),
           ]),
@@ -1425,6 +1243,7 @@ class ProductCatalogPanel extends StatelessWidget {
                               onTap: () => onProduct(products[index]),
                               onLongPress: () =>
                                   onProductLongPress(products[index]),
+                              editable: editable,
                             ),
                           );
                         })),
@@ -1437,12 +1256,14 @@ class ProductCard extends StatefulWidget {
     required this.product,
     required this.onTap,
     required this.onLongPress,
+    this.editable = true,
     this.selectedQuantity = 0,
     super.key,
   });
   final QuickSaleProduct product;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
+  final bool editable;
   final double selectedQuantity;
 
   @override
@@ -1467,6 +1288,7 @@ class _ProductCardState extends State<ProductCard>
   }
 
   void _add() {
+    if (!widget.editable) return;
     _feedback.forward(from: 0);
     widget.onTap();
   }
@@ -1476,8 +1298,8 @@ class _ProductCardState extends State<ProductCard>
         scale: _scale,
         child: InkWell(
           borderRadius: BorderRadius.circular(18),
-          onTap: _add,
-          onLongPress: widget.onLongPress,
+          onTap: widget.editable ? _add : null,
+          onLongPress: widget.editable ? widget.onLongPress : null,
           child: Ink(
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
@@ -1589,16 +1411,8 @@ class _CartPanel extends StatelessWidget {
     required this.shortages,
     required this.preview,
     required this.loadingPreview,
-    required this.discount,
     required this.cashReady,
-    required this.customer,
-    required this.allowCustomer,
-    required this.onCustomer,
-    required this.onRemoveCustomer,
-    required this.allowWaiveFee,
-    required this.serviceFeeWaived,
-    required this.onServiceFee,
-    required this.showServiceFeeMenu,
+    required this.editable,
     required this.onEdit,
     required this.onCheckout,
   });
@@ -1606,16 +1420,8 @@ class _CartPanel extends StatelessWidget {
   final Map<String, Map<String, dynamic>> shortages;
   final QuickSalePreview? preview;
   final bool loadingPreview;
-  final QuickSaleDiscountIntent discount;
   final bool cashReady;
-  final QuickSaleCustomer? customer;
-  final bool allowCustomer;
-  final Future<void> Function() onCustomer;
-  final VoidCallback onRemoveCustomer;
-  final bool allowWaiveFee;
-  final bool serviceFeeWaived;
-  final Future<void> Function() onServiceFee;
-  final bool showServiceFeeMenu;
+  final bool editable;
   final ValueChanged<int> onEdit;
   final VoidCallback onCheckout;
 
@@ -1637,8 +1443,6 @@ class _CartPanel extends StatelessWidget {
     return [
       if (modifiers.isNotEmpty) modifiers.join(' • '),
       if (item.notes.isNotEmpty) 'Obs: ${item.notes}',
-      if (!item.discount.isZero)
-        'Desconto ${item.discount.isPercentage ? "(%)" : "(R\$)"}: ${item.discount.value}',
     ].join('\n');
   }
 
@@ -1702,7 +1506,7 @@ class _CartPanel extends StatelessWidget {
                                   warning: shortage == null
                                       ? null
                                       : 'Estoque disponível: ${shortage['available_quantity']} | No carrinho: ${item.quantity}',
-                                  onTap: () => onEdit(index),
+                                  onTap: editable ? () => onEdit(index) : null,
                                 );
                               },
                             )),
@@ -1723,72 +1527,18 @@ class _CartPanel extends StatelessWidget {
                     const SizedBox(height: 8),
                     SharedTotalsPanel(lines: [
                       SharedTotalsLine(
-                          label: 'Subtotal', value: preview!.subtotal),
-                      if (!discount.isZero)
-                        SharedTotalsLine(
-                          label: discount.isPercentage
-                              ? 'Desconto (${discount.value}%)'
-                              : 'Desconto (R\$)',
-                          value: preview!.discount,
-                          negative: true,
-                        ),
-                      SharedTotalsLine(
-                          label: 'Promoções',
-                          value: preview!.promotionDiscountTotal,
-                          negative: true),
-                      SharedTotalsLine(
-                          label: 'Descontos por item',
-                          value: preview!.itemDiscountTotal,
-                          negative: true),
-                      SharedTotalsLine(
-                          label: 'Taxa de serviço',
-                          value: preview!.serviceFeeAmount),
-                      SharedTotalsLine(
                           label: 'Total oficial',
                           value: preview!.total,
                           strong: true),
                     ]),
                   ],
                   const SizedBox(height: 12),
-                  if (allowCustomer) ...[
-                    if (customer == null)
-                      OutlinedButton.icon(
-                        onPressed: () => unawaited(onCustomer()),
-                        icon: const Icon(Icons.person_add_alt_1_outlined),
-                        label: const Text('ADICIONAR CLIENTE'),
-                      )
-                    else
-                      Row(children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: () => unawaited(onCustomer()),
-                            icon: const Icon(Icons.person_outline),
-                            label: Text(customer!.name,
-                                maxLines: 1, overflow: TextOverflow.ellipsis),
-                          ),
-                        ),
-                        IconButton(
-                          tooltip: 'Remover cliente',
-                          onPressed: onRemoveCustomer,
-                          icon: const Icon(Icons.close),
-                        ),
-                      ]),
-                    const SizedBox(height: 8),
-                  ],
-                  if (showServiceFeeMenu && allowWaiveFee)
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: PopupMenuButton<String>(
-                        tooltip: 'Mais opções',
-                        onSelected: (_) => unawaited(onServiceFee()),
-                        itemBuilder: (_) => [
-                          PopupMenuItem(
-                            value: 'fee',
-                            child: Text(serviceFeeWaived
-                                ? 'Restaurar taxa de serviço'
-                                : 'Isentar taxa de serviço'),
-                          ),
-                        ],
+                  if (!editable)
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        'Itens bloqueados após o primeiro pagamento.',
+                        textAlign: TextAlign.center,
                       ),
                     ),
                   FilledButton(
@@ -1892,118 +1642,6 @@ class _BatchQuantityDialogState extends State<BatchQuantityDialog> {
       );
 }
 
-class _DiscountAuthorizationDialog extends StatefulWidget {
-  const _DiscountAuthorizationDialog({
-    required this.authorizers,
-    required this.onAuthorize,
-  });
-
-  final List<QuickSaleAuthorizer> authorizers;
-  final Future<String?> Function(QuickSaleAuthorization authorization)
-      onAuthorize;
-
-  @override
-  State<_DiscountAuthorizationDialog> createState() =>
-      _DiscountAuthorizationDialogState();
-}
-
-class _DiscountAuthorizationDialogState
-    extends State<_DiscountAuthorizationDialog> {
-  final _pin = TextEditingController();
-  int? _authorizerId;
-  bool _validating = false;
-  String? _error;
-
-  Future<void> _authorize() async {
-    if (_authorizerId == null || _pin.text.length != 6 || _validating) return;
-    setState(() {
-      _validating = true;
-      _error = null;
-    });
-    final authorization = QuickSaleAuthorization(
-      userId: _authorizerId!,
-      credential: _pin.text,
-    );
-    String? error;
-    try {
-      error = await widget.onAuthorize(authorization);
-    } finally {
-      _pin.clear();
-    }
-    if (!mounted) return;
-    if (error == null) {
-      Navigator.of(context).pop(authorization);
-      return;
-    }
-    setState(() {
-      _validating = false;
-      _error = error;
-    });
-  }
-
-  @override
-  void dispose() {
-    _pin.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: const Text('AUTORIZAÇÃO NECESSÁRIA'),
-        content: SizedBox(
-          width: 360,
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            DropdownButtonFormField<int>(
-              initialValue: _authorizerId,
-              isExpanded: true,
-              decoration: const InputDecoration(labelText: 'Autorizador'),
-              items: widget.authorizers
-                  .map((authorizer) => DropdownMenuItem(
-                        value: authorizer.id,
-                        child: Text(authorizer.displayName,
-                            overflow: TextOverflow.ellipsis),
-                      ))
-                  .toList(growable: false),
-              onChanged: (value) => setState(() {
-                _authorizerId = value;
-                _pin.clear();
-                _error = null;
-              }),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _pin,
-              autofocus: true,
-              obscureText: true,
-              keyboardType: TextInputType.number,
-              maxLength: 6,
-              enableSuggestions: false,
-              autocorrect: false,
-              onChanged: (value) {
-                if (!RegExp(r'^\d{0,6}$').hasMatch(value)) _pin.clear();
-                setState(() {});
-              },
-              decoration: InputDecoration(
-                  labelText: 'PIN do autorizador', errorText: _error),
-            ),
-          ]),
-        ),
-        actions: [
-          TextButton(
-            onPressed: _validating ? null : () => Navigator.of(context).pop(),
-            child: const Text('VOLTAR'),
-          ),
-          FilledButton(
-            onPressed:
-                _authorizerId == null || _pin.text.length != 6 || _validating
-                    ? null
-                    : _authorize,
-            child: Text(_validating ? 'VALIDANDO...' : 'AUTORIZAR'),
-          ),
-        ],
-      );
-}
-
 class _ItemNotesDialog extends StatefulWidget {
   const _ItemNotesDialog({required this.initial});
 
@@ -2045,26 +1683,17 @@ class _ItemNotesDialogState extends State<_ItemNotesDialog> {
 }
 
 class _CartItemEditResult {
-  const _CartItemEditResult.item(this.item, {this.itemDiscountAuthorization})
-      : delete = false;
+  const _CartItemEditResult.item(this.item) : delete = false;
   const _CartItemEditResult.delete()
       : item = null,
-        itemDiscountAuthorization = null,
         delete = true;
   final QuickSaleCartItem? item;
-  final QuickSaleAuthorization? itemDiscountAuthorization;
   final bool delete;
 }
 
 class _EditCartItemDialog extends StatefulWidget {
-  const _EditCartItemDialog({
-    required this.item,
-    required this.requiresItemAuthorization,
-    required this.requestItemAuthorization,
-  });
+  const _EditCartItemDialog({required this.item});
   final QuickSaleCartItem item;
-  final bool requiresItemAuthorization;
-  final Future<QuickSaleAuthorization?> Function() requestItemAuthorization;
 
   @override
   State<_EditCartItemDialog> createState() => _EditCartItemDialogState();
@@ -2072,7 +1701,6 @@ class _EditCartItemDialog extends StatefulWidget {
 
 class _EditCartItemDialogState extends State<_EditCartItemDialog> {
   late QuickSaleCartItem _item = widget.item;
-  QuickSaleAuthorization? _itemDiscountAuthorization;
 
   Future<void> _editModifiers() async {
     final updated = await showDialog<QuickSaleCartItem>(
@@ -2091,23 +1719,6 @@ class _EditCartItemDialogState extends State<_EditCartItemDialog> {
     if (value != null && mounted) {
       setState(() => _item = _item.copyWith(notes: value));
     }
-  }
-
-  Future<void> _editDiscount() async {
-    final discount = await showDialog<QuickSaleDiscountIntent>(
-      context: context,
-      builder: (_) => SharedDiscountDialog(initial: _item.discount),
-    );
-    if (discount == null || !mounted) return;
-    QuickSaleAuthorization? authorization;
-    if (widget.requiresItemAuthorization) {
-      authorization = await widget.requestItemAuthorization();
-      if (authorization == null || !mounted) return;
-    }
-    setState(() {
-      _item = _item.copyWith(discount: discount);
-      _itemDiscountAuthorization = authorization;
-    });
   }
 
   Future<void> _delete() async {
@@ -2178,25 +1789,6 @@ class _EditCartItemDialogState extends State<_EditCartItemDialog> {
           ),
           ListTile(
             contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.sell_outlined),
-            title: Text(_item.discount.isZero
-                ? 'Aplicar desconto no item'
-                : 'Alterar desconto no item'),
-            onTap: _editDiscount,
-          ),
-          if (!_item.discount.isZero)
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.remove_circle_outline),
-              title: const Text('Remover desconto do item'),
-              onTap: () => setState(() {
-                _item =
-                    _item.copyWith(discount: const QuickSaleDiscountIntent());
-                _itemDiscountAuthorization = null;
-              }),
-            ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.delete_outline, color: Colors.red),
             title: const Text('Excluir produto',
                 style: TextStyle(color: Colors.red)),
@@ -2208,12 +1800,8 @@ class _EditCartItemDialogState extends State<_EditCartItemDialog> {
               onPressed: () => Navigator.of(context).pop(),
               child: const Text('CANCELAR')),
           FilledButton(
-            onPressed: () => Navigator.of(context).pop(
-              _CartItemEditResult.item(
-                _item,
-                itemDiscountAuthorization: _itemDiscountAuthorization,
-              ),
-            ),
+            onPressed: () =>
+                Navigator.of(context).pop(_CartItemEditResult.item(_item)),
             child: const Text('SALVAR'),
           ),
         ],

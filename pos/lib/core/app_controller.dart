@@ -291,24 +291,79 @@ class AppController extends ChangeNotifier {
     required String checkoutId,
     required int paymentMethodId,
     required String mode,
+    required String paymentIntentId,
     String? amount,
     String? receivedAmount,
     List<Map<String, dynamic>> allocations = const [],
-  }) =>
-      _runQuickCheckoutOperation(
+  }) async {
+    final state = await _quickCheckoutState();
+    final attempts = Map<String, dynamic>.from(
+        state['payment_attempts'] as Map? ?? const {});
+    final stored = attempts[paymentIntentId];
+    final attempt = stored is Map
+        ? QuickSalePaymentAttempt.fromJson(Map<String, dynamic>.from(stored))
+        : QuickSalePaymentAttempt(
+            intentId: paymentIntentId,
+            paymentMethodId: paymentMethodId,
+            mode: mode,
+            amount: amount,
+            receivedAmount: receivedAmount,
+            allocations: allocations,
+          );
+    attempts[attempt.intentId] = attempt.toJson();
+    state['checkout_id'] = checkoutId;
+    state['payment_attempts'] = attempts;
+    // A payment intent is an operator action, not a fingerprint of its value.
+    await _writeQuickCheckoutState(state);
+    try {
+      final checkout = await _api.recordQuickSalePayment(
         checkoutId: checkoutId,
-        operation:
-            'payment:$checkoutId:$paymentMethodId:$mode:$amount:$receivedAmount:${jsonEncode(allocations)}',
-        call: (key) => _api.recordQuickSalePayment(
-          checkoutId: checkoutId,
-          paymentMethodId: paymentMethodId,
-          mode: mode,
-          amount: amount,
-          receivedAmount: receivedAmount,
-          allocations: allocations,
-          idempotencyKey: key,
-        ),
+        paymentMethodId: attempt.paymentMethodId,
+        mode: attempt.mode,
+        amount: attempt.amount,
+        receivedAmount: attempt.receivedAmount,
+        allocations: attempt.allocations,
+        idempotencyKey: attempt.intentId,
       );
+      await _clearQuickSalePaymentAttempt(state, attempt.intentId);
+      return checkout;
+    } on PosApiException catch (error) {
+      if (error.statusCode < 500) {
+        await _clearQuickSalePaymentAttempt(state, attempt.intentId);
+      }
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<QuickSalePaymentAttempt?> pendingQuickSalePayment(
+      String checkoutId) async {
+    final state = await _quickCheckoutState();
+    if (state['checkout_id'] != checkoutId) return null;
+    final attempts = Map<String, dynamic>.from(
+        state['payment_attempts'] as Map? ?? const {});
+    for (final raw in attempts.values) {
+      if (raw is Map) {
+        return QuickSalePaymentAttempt.fromJson(Map<String, dynamic>.from(raw));
+      }
+    }
+    return null;
+  }
+
+  Future<void> _clearQuickSalePaymentAttempt(
+      Map<String, dynamic> state, String intentId) async {
+    final attempts = Map<String, dynamic>.from(
+        state['payment_attempts'] as Map? ?? const {});
+    attempts.remove(intentId);
+    if (attempts.isEmpty) {
+      state.remove('payment_attempts');
+    } else {
+      state['payment_attempts'] = attempts;
+    }
+    await _writeQuickCheckoutState(state);
+  }
 
   Future<QuickSaleCheckout?> updateQuickSaleCheckout({
     required String checkoutId,

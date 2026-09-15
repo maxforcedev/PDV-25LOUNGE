@@ -38,9 +38,32 @@ DEFAULT_PAYMENT_METHODS = (
     (PaymentMethodCode.PIX, 'PIX'),
     (PaymentMethodCode.CREDIT_CARD, 'Cartão de crédito'),
     (PaymentMethodCode.DEBIT_CARD, 'Cartão de débito'),
+    (PaymentMethodCode.FOOD_VOUCHER, 'Vale-alimentação'),
+    (PaymentMethodCode.MEAL_VOUCHER, 'Vale-refeição'),
 )
 MAX_MONEY = Decimal('999999999999.99')
 CENT = Decimal('0.01')
+
+
+PAYMENT_METHOD_PRESENTATIONS = {
+    PaymentMethodCode.CASH: {'visual_group': 'cash', 'kind': 'cash', 'source': 'manual'},
+    PaymentMethodCode.PIX: {'visual_group': 'pix', 'kind': 'pix', 'source': 'manual'},
+    PaymentMethodCode.CREDIT_CARD: {'visual_group': 'card', 'kind': 'credit', 'source': 'manual'},
+    PaymentMethodCode.DEBIT_CARD: {'visual_group': 'card', 'kind': 'debit', 'source': 'manual'},
+    PaymentMethodCode.FOOD_VOUCHER: {'visual_group': 'card', 'kind': 'benefit', 'source': 'manual'},
+    PaymentMethodCode.MEAL_VOUCHER: {'visual_group': 'card', 'kind': 'benefit', 'source': 'manual'},
+    # Accept the short codes used by existing operator-configured VA/VR methods.
+    'va': {'visual_group': 'card', 'kind': 'benefit', 'source': 'manual'},
+    'vr': {'visual_group': 'card', 'kind': 'benefit', 'source': 'manual'},
+    'benefit': {'visual_group': 'card', 'kind': 'benefit', 'source': 'manual'},
+}
+
+
+def payment_method_presentation(code):
+    """Return stable UI metadata; a payment method name is presentation only."""
+    return PAYMENT_METHOD_PRESENTATIONS.get(
+        code, {'visual_group': 'other', 'kind': 'other', 'source': 'manual'},
+    ).copy()
 
 
 def _idempotency_value(value):

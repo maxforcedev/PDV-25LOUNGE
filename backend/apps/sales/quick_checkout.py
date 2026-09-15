@@ -236,6 +236,22 @@ def checkout_balance(checkout, *, lock=False):
     return paid, total - paid
 
 
+def checkout_available_quantities(checkout):
+    """Return quantities still eligible for item-based payment from the payment ledger."""
+    allocated = {
+        row['item_id']: row['quantity'] or Decimal('0.000')
+        for row in QuickSalePaymentAllocation.objects.filter(
+            payment__checkout=checkout,
+            payment__status=QuickSalePaymentStatus.APPLIED,
+            payment__reversal__isnull=True,
+        ).values('item_id').annotate(quantity=Sum('allocated_quantity'))
+    }
+    return {
+        item.pk: item.quantity - allocated.get(item.pk, Decimal('0.000'))
+        for item in checkout.items.order_by('id')
+    }
+
+
 def _lock_checkout_session(checkout_id, *, cash_session_id=None, user=None):
     """Lock the drawer before its checkout so closing and tender writes serialize."""
     checkouts = QuickSaleCheckout.objects.filter(pk=checkout_id)
@@ -334,18 +350,11 @@ def preview_quick_checkout_payment(*, checkout, allocations):
     if checkout.status != QuickSaleCheckoutStatus.OPEN:
         raise QuickCheckoutConflict('checkout_closed', 'O checkout já foi finalizado.')
     total, _resolved = _allocation_amount(checkout, allocations)
-    allocated = {
-        row['item_id']: row['quantity'] or Decimal('0.000')
-        for row in QuickSalePaymentAllocation.objects.filter(
-            payment__checkout=checkout, payment__status=QuickSalePaymentStatus.APPLIED,
-            payment__reversal__isnull=True,
-        ).values('item_id').annotate(quantity=Sum('allocated_quantity'))
-    }
     return {
         'total': str(total),
         'available_quantities': {
-            str(item.pk): str(item.quantity - allocated.get(item.pk, Decimal('0.000')))
-            for item in checkout.items.order_by('id')
+            str(item_id): str(quantity)
+            for item_id, quantity in checkout_available_quantities(checkout).items()
         },
     }
 

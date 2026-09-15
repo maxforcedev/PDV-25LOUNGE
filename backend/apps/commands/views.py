@@ -13,7 +13,7 @@ from apps.cash.models import CashSession, CashSessionStatus
 from apps.companies.selectors import eligible_branch_users, user_has_branch_permission
 from apps.sales.models import PaymentMethod
 from apps.sales.serializers import CalculationOutputSerializer, SaleUserOptionSerializer
-from apps.sales.services import calculate_command_preview
+from apps.sales.services import calculate_command_preview, payment_method_presentation
 from .models import Command, CommandPayment, CommandPaymentStatus, CommandStatus, OrderItem, Table, TableStatus
 from .permissions import CommandFunctionalPermission, TableFunctionalPermission
 from .serializers import (
@@ -419,7 +419,10 @@ class CommandViewSet(viewsets.ReadOnlyModelViewSet):
             branch=request.branch_context, status=CashSessionStatus.OPEN
         ).select_related('cash_register', 'opened_by').order_by('id')
         return Response({
-            'payment_methods': list(methods),
+            'payment_methods': [
+                {**method, **payment_method_presentation(method['code'])}
+                for method in methods
+            ],
             'cash_sessions': [
                 {
                     'id': session.pk,

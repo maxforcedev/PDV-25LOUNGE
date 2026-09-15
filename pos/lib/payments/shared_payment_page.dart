@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../cash/cash_models.dart';
 import '../core/app_controller.dart';
@@ -15,6 +16,7 @@ class SharedPaymentPage extends StatefulWidget {
     required this.options,
     required this.checkout,
     required this.onCompleted,
+    required this.onCancelled,
     super.key,
   });
 
@@ -22,6 +24,7 @@ class SharedPaymentPage extends StatefulWidget {
   final QuickSaleCheckout checkout;
   final QuickSaleCheckoutOptions options;
   final Future<void> Function(QuickSaleResult result) onCompleted;
+  final Future<void> Function() onCancelled;
 
   @override
   State<SharedPaymentPage> createState() => _SharedPaymentPageState();
@@ -48,10 +51,42 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
           !_pix.contains(method))
       .toList(growable: false);
   List<_EqualSplitPart>? _equalSplitParts;
+  QuickSalePaymentAttempt? _pendingPayment;
+  int? _pendingEqualSplitIndex;
   bool get _canDiscount =>
       widget.controller.bootstrapSnapshot?.permissions
           .contains('sales.apply_discount') ??
       false;
+  bool get _canItemDiscount =>
+      widget.controller.bootstrapSnapshot?.permissions
+          .contains('sales.apply_item_discount') ??
+      false;
+  bool get _hasAppliedPayment => _checkout.payments.any((payment) =>
+      !payment.isReversal && !_checkout.hasReversalFor(payment.id));
+
+  @override
+  void initState() {
+    super.initState();
+    _restorePendingPayment();
+  }
+
+  Future<void> _restorePendingPayment() async {
+    final pending =
+        await widget.controller.pendingQuickSalePayment(_checkout.id);
+    if (mounted) setState(() => _pendingPayment = pending);
+  }
+
+  void _replaceCheckout(QuickSaleCheckout checkout,
+      {bool preserveEqualSplit = false}) {
+    setState(() {
+      if (!preserveEqualSplit &&
+          checkout.remainingAmount != _checkout.remainingAmount) {
+        _equalSplitParts = null;
+      }
+      _checkout = checkout;
+    });
+  }
+
   bool get _canWaiveFee =>
       widget.controller.bootstrapSnapshot?.permissions
           .contains('sales.waive_service_fee') ??
@@ -62,31 +97,36 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       false;
 
   Future<void> _updateFinancials({
+    List<Map<String, dynamic>>? items,
     QuickSaleCustomer? customer,
     bool clearCustomer = false,
     QuickSaleDiscountIntent? discount,
     bool? serviceFeeWaived,
     QuickSaleAuthorization? discountAuthorization,
+    QuickSaleAuthorization? itemDiscountAuthorization,
     QuickSaleAuthorization? serviceFeeAuthorization,
   }) async {
     if (!_checkout.canEditFinancials || _working) return;
     setState(() => _working = true);
     final updated = await widget.controller.updateQuickSaleCheckout(
       checkoutId: _checkout.id,
-      items: _checkout.items.map((item) => item.input).toList(growable: false),
+      items: items ??
+          _checkout.items.map((item) => item.input).toList(growable: false),
       cashSessionId: _checkout.cashSessionId,
       customerId: clearCustomer ? null : (customer ?? _checkout.customer)?.id,
       discount: (discount ?? _checkout.discountIntent).toJson(),
       serviceFeeWaived: serviceFeeWaived ?? _checkout.serviceFeeWaived,
       discountAuthorization: discountAuthorization,
+      itemDiscountAuthorization: itemDiscountAuthorization,
       serviceFeeAuthorization: serviceFeeAuthorization,
     );
     if (mounted) setState(() => _working = false);
-    if (updated != null && mounted) setState(() => _checkout = updated);
+    if (updated != null && mounted) _replaceCheckout(updated);
   }
 
   Future<QuickSaleAuthorization?> _requestAuthorization(String type) async {
     final authorizers = switch (type) {
+      'item' => await widget.controller.quickSaleItemDiscountAuthorizers(),
       'service_fee' => await widget.controller.quickSaleServiceFeeAuthorizers(),
       _ => await widget.controller.quickSaleDiscountAuthorizers(),
     };
@@ -128,6 +168,9 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         return;
       case _FinancialEdit.removeCustomer:
         await _updateFinancials(clearCustomer: true);
+        return;
+      case _FinancialEdit.itemDiscount:
+        await _editItemDiscount();
         return;
       case _FinancialEdit.discount:
         final maximumAmount = [
@@ -173,10 +216,54 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     }
   }
 
+  Future<void> _editItemDiscount() async {
+    final item = await showModalBottomSheet<QuickSaleCheckoutItem>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const ListTile(title: Text('DESCONTO POR ITEM')),
+            for (final item in _checkout.items)
+              ListTile(
+                title: Text(item.name),
+                subtitle: Text('Quantidade: ${item.quantity} ${item.unit}'),
+                onTap: () => Navigator.pop(context, item),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (item == null || !mounted) return;
+    final initial = item.input['discount'] is Map
+        ? QuickSaleDiscountIntent.fromJson(
+            Map<String, dynamic>.from(item.input['discount'] as Map))
+        : const QuickSaleDiscountIntent();
+    final discount = await showDialog<QuickSaleDiscountIntent>(
+      context: context,
+      builder: (_) => SharedDiscountDialog(initial: initial),
+    );
+    if (discount == null || !mounted) return;
+    final authorization =
+        _canItemDiscount ? null : await _requestAuthorization('item');
+    if (!_canItemDiscount && authorization == null) return;
+    final items = _checkout.items.map((entry) {
+      final input = Map<String, dynamic>.from(entry.input);
+      if (entry.id == item.id) input['discount'] = discount.toJson();
+      return input;
+    }).toList(growable: false);
+    await _updateFinancials(
+      items: items,
+      itemDiscountAuthorization: authorization,
+    );
+  }
+
   Future<bool> _choose(QuickSalePaymentMethod method,
       {List<Map<String, dynamic>> allocations = const [],
       String? initialAmount,
-      bool amountLocked = false}) async {
+      bool amountLocked = false,
+      bool fromEqualSplit = false,
+      int? equalSplitIndex}) async {
     final payment = await Navigator.of(context).push<_PaymentIntent>(
       MaterialPageRoute(
         builder: (_) => _PaymentEntryPage(
@@ -193,17 +280,53 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     if (payment == null || !mounted || !_checkout.canRecordPayment) {
       return false;
     }
-    setState(() => _working = true);
-    final updated = await widget.controller.recordQuickSalePayment(
-      checkoutId: _checkout.id,
+    final attempt = QuickSalePaymentAttempt(
+      intentId: payment.intentId,
       paymentMethodId: method.id,
       mode: payment.allocations.isEmpty ? 'value' : 'items',
       amount: payment.amount,
       receivedAmount: payment.receivedAmount,
       allocations: payment.allocations,
     );
+    return _recordPayment(
+      attempt,
+      preserveEqualSplit: fromEqualSplit,
+      equalSplitIndex: equalSplitIndex,
+    );
+  }
+
+  Future<bool> _recordPayment(QuickSalePaymentAttempt attempt,
+      {bool preserveEqualSplit = false, int? equalSplitIndex}) async {
+    setState(() {
+      _working = true;
+      _pendingPayment = attempt;
+      _pendingEqualSplitIndex ??= equalSplitIndex;
+    });
+    final updated = await widget.controller.recordQuickSalePayment(
+      checkoutId: _checkout.id,
+      paymentMethodId: attempt.paymentMethodId,
+      mode: attempt.mode,
+      paymentIntentId: attempt.intentId,
+      amount: attempt.amount,
+      receivedAmount: attempt.receivedAmount,
+      allocations: attempt.allocations,
+    );
     if (mounted) setState(() => _working = false);
-    if (updated != null && mounted) setState(() => _checkout = updated);
+    if (updated != null && mounted) {
+      _replaceCheckout(updated,
+          preserveEqualSplit:
+              preserveEqualSplit || _pendingEqualSplitIndex != null);
+      setState(() {
+        final equalSplitIndex = _pendingEqualSplitIndex;
+        if (equalSplitIndex != null && _equalSplitParts != null) {
+          _equalSplitParts![equalSplitIndex].paid = true;
+        }
+        _pendingEqualSplitIndex = null;
+        _pendingPayment = null;
+      });
+    } else {
+      await _restorePendingPayment();
+    }
     return updated != null;
   }
 
@@ -254,7 +377,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     final updated = await widget.controller.reverseQuickSalePayment(
         checkoutId: _checkout.id, paymentId: payment.id);
     if (mounted) setState(() => _working = false);
-    if (updated != null && mounted) setState(() => _checkout = updated);
+    if (updated != null && mounted) _replaceCheckout(updated);
   }
 
   Future<void> _finish() async {
@@ -262,7 +385,10 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     final result =
         await widget.controller.finalizeQuickSaleCheckout(_checkout.id);
     if (mounted) setState(() => _working = false);
-    if (result != null && mounted) await widget.onCompleted(result);
+    if (result != null && mounted) {
+      await widget.onCompleted(result);
+      if (mounted) Navigator.of(context).pop();
+    }
   }
 
   Future<void> _cancel() async {
@@ -284,69 +410,93 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       ),
     );
     if (confirmed != true || !mounted) return;
+    if (_hasAppliedPayment) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Estorne todos os pagamentos antes de cancelar a venda.'),
+      ));
+      return;
+    }
     setState(() => _working = true);
     final cancelled =
         await widget.controller.cancelQuickSaleCheckout(_checkout.id);
     if (!mounted) return;
     setState(() => _working = false);
-    if (cancelled) Navigator.of(context).pop();
+    if (cancelled) {
+      await widget.onCancelled();
+      if (mounted) Navigator.of(context).pop();
+    }
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(
-          title: const Text('Pagamento'),
-          actions: [
-            TextButton(
-              onPressed: _working ? null : _cancel,
-              child: const Text('CANCELAR'),
-            ),
-            if (_checkout.canEditFinancials)
-              PopupMenuButton<_FinancialEdit>(
-                enabled: !_working,
-                tooltip: 'Editar financeiro',
-                icon: const Icon(Icons.more_vert),
-                onSelected: _editFinancials,
-                itemBuilder: (_) => [
-                  const PopupMenuItem(
-                    value: _FinancialEdit.customer,
-                    child: Text('ALTERAR CLIENTE'),
-                  ),
-                  if (_checkout.customer != null)
-                    const PopupMenuItem(
-                      value: _FinancialEdit.removeCustomer,
-                      child: Text('REMOVER CLIENTE'),
-                    ),
-                  const PopupMenuItem(
-                    value: _FinancialEdit.discount,
-                    child: Text('ALTERAR DESCONTO'),
-                  ),
-                  if (!_checkout.discountIntent.isZero)
-                    const PopupMenuItem(
-                      value: _FinancialEdit.removeDiscount,
-                      child: Text('REMOVER DESCONTO'),
-                    ),
-                  PopupMenuItem(
-                    value: _FinancialEdit.serviceFee,
-                    child: Text(_checkout.serviceFeeWaived
-                        ? 'RESTAURAR TAXA DE SERVIÇO'
-                        : 'RETIRAR TAXA DE SERVIÇO'),
-                  ),
-                ],
+  Widget build(BuildContext context) => PopScope(
+        canPop: !_hasAppliedPayment,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text(
+                  'Conclua ou estorne os pagamentos para sair desta venda.'),
+            ));
+          }
+        },
+        child: Scaffold(
+          appBar: AppBar(
+            title: const Text('Pagamento'),
+            actions: [
+              TextButton(
+                onPressed: _working ? null : _cancel,
+                child: const Text('CANCELAR'),
               ),
-          ],
-        ),
-        body: SafeArea(
-          child: LayoutBuilder(builder: (context, constraints) {
-            final content = _content(context);
-            return constraints.maxWidth >= 960
-                ? Row(children: [
-                    Expanded(child: content),
-                    SizedBox(width: 350, child: _summary(context))
-                  ])
-                : Column(
-                    children: [Expanded(child: content), _summary(context)]);
-          }),
+              if (_checkout.canEditFinancials)
+                PopupMenuButton<_FinancialEdit>(
+                  enabled: !_working,
+                  tooltip: 'Editar financeiro',
+                  icon: const Icon(Icons.more_vert),
+                  onSelected: _editFinancials,
+                  itemBuilder: (_) => [
+                    const PopupMenuItem(
+                      value: _FinancialEdit.customer,
+                      child: Text('ALTERAR CLIENTE'),
+                    ),
+                    if (_checkout.customer != null)
+                      const PopupMenuItem(
+                        value: _FinancialEdit.removeCustomer,
+                        child: Text('REMOVER CLIENTE'),
+                      ),
+                    const PopupMenuItem(
+                      value: _FinancialEdit.discount,
+                      child: Text('ALTERAR DESCONTO'),
+                    ),
+                    const PopupMenuItem(
+                      value: _FinancialEdit.itemDiscount,
+                      child: Text('DESCONTO POR ITEM'),
+                    ),
+                    if (!_checkout.discountIntent.isZero)
+                      const PopupMenuItem(
+                        value: _FinancialEdit.removeDiscount,
+                        child: Text('REMOVER DESCONTO'),
+                      ),
+                    PopupMenuItem(
+                      value: _FinancialEdit.serviceFee,
+                      child: Text(_checkout.serviceFeeWaived
+                          ? 'RESTAURAR TAXA DE SERVIÇO'
+                          : 'RETIRAR TAXA DE SERVIÇO'),
+                    ),
+                  ],
+                ),
+            ],
+          ),
+          body: SafeArea(
+            child: LayoutBuilder(builder: (context, constraints) {
+              final content = _content(context);
+              return constraints.maxWidth >= 960
+                  ? Row(children: [
+                      Expanded(child: content),
+                      SizedBox(width: 350, child: _summary(context))
+                    ])
+                  : Column(
+                      children: [Expanded(child: content), _summary(context)]);
+            }),
+          ),
         ),
       );
 
@@ -367,16 +517,31 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
               style: TextStyle(fontWeight: FontWeight.w900)),
           const SizedBox(height: 10),
           _methodGrid(),
+          if (_pendingPayment != null) ...[
+            const SizedBox(height: 12),
+            const Text('Há um pagamento aguardando confirmação.'),
+            OutlinedButton.icon(
+              onPressed: _working || !_checkout.canRecordPayment
+                  ? null
+                  : () => _recordPayment(_pendingPayment!),
+              icon: const Icon(Icons.refresh),
+              label: const Text('TENTAR NOVAMENTE'),
+            ),
+          ],
           const SizedBox(height: 12),
           Wrap(spacing: 8, children: [
             OutlinedButton.icon(
-                onPressed: _working || !_checkout.canRecordPayment
+                onPressed: _working ||
+                        _pendingPayment != null ||
+                        !_checkout.canRecordPayment
                     ? null
                     : _selectItems,
                 icon: const Icon(Icons.format_list_bulleted),
                 label: const Text('PAGAR POR ITENS')),
             OutlinedButton.icon(
-                onPressed: _working || !_checkout.canRecordPayment
+                onPressed: _working ||
+                        _pendingPayment != null ||
+                        !_checkout.canRecordPayment
                     ? null
                     : _selectEqualPart,
                 icon: const Icon(Icons.call_split),
@@ -393,12 +558,28 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       );
 
   Widget _methodGrid() {
+    final directStandardMethods = _methods.length == 4 &&
+        _cash.length == 1 &&
+        _pix.length == 1 &&
+        _cards.length == 2 &&
+        _cards.any((method) => method.kind == 'credit') &&
+        _cards.any((method) => method.kind == 'debit');
     final top = <_MethodTile>[
-      if (_cash.isNotEmpty)
-        _groupTile('Dinheiro', Icons.payments_outlined, _cash),
-      if (_cards.isNotEmpty) _groupTile('Cartão', Icons.credit_card, _cards),
-      if (_pix.isNotEmpty) _groupTile('PIX', Icons.qr_code_2, _pix),
-      if (_others.isNotEmpty) _groupTile('Outros', Icons.more_horiz, _others),
+      if (directStandardMethods)
+        for (final method in [
+          _cash.single,
+          _cards.firstWhere((method) => method.kind == 'credit'),
+          _cards.firstWhere((method) => method.kind == 'debit'),
+          _pix.single,
+        ])
+          _MethodTile(method.name, _icon(method), () => _choose(method))
+      else ...[
+        if (_cash.isNotEmpty)
+          _groupTile('Dinheiro', Icons.payments_outlined, _cash),
+        if (_cards.isNotEmpty) _groupTile('Cartão', Icons.credit_card, _cards),
+        if (_pix.isNotEmpty) _groupTile('PIX', Icons.qr_code_2, _pix),
+        if (_others.isNotEmpty) _groupTile('Outros', Icons.more_horiz, _others),
+      ],
     ];
     return GridView.count(
       crossAxisCount: MediaQuery.sizeOf(context).width < 520 ? 2 : 4,
@@ -408,7 +589,9 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       children: top
           .map((tile) => Card(
               child: InkWell(
-                  onTap: _working || !_checkout.canRecordPayment
+                  onTap: _working ||
+                          _pendingPayment != null ||
+                          !_checkout.canRecordPayment
                       ? null
                       : tile.onTap,
                   child: Column(
@@ -444,11 +627,11 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     setState(() => _equalSplitParts = selection.parts);
     final method = await _pickMethod('Forma para esta parte');
     if (method == null || !mounted) return;
-    final paid = await _choose(method,
-        initialAmount: selection.amount, amountLocked: true);
-    if (paid && mounted) {
-      setState(() => _equalSplitParts![selection.index].paid = true);
-    }
+    await _choose(method,
+        initialAmount: selection.amount,
+        amountLocked: true,
+        fromEqualSplit: true,
+        equalSplitIndex: selection.index);
   }
 
   Widget _history(QuickSaleCheckoutPayment payment) {
@@ -548,12 +731,15 @@ enum _FinancialEdit {
   customer,
   removeCustomer,
   discount,
+  itemDiscount,
   removeDiscount,
   serviceFee
 }
 
 class _PaymentIntent {
-  const _PaymentIntent(this.amount, this.receivedAmount, this.allocations);
+  const _PaymentIntent(
+      this.intentId, this.amount, this.receivedAmount, this.allocations);
+  final String intentId;
   final String amount;
   final String? receivedAmount;
   final List<Map<String, dynamic>> allocations;
@@ -581,6 +767,7 @@ class _PaymentEntryPage extends StatefulWidget {
 }
 
 class _PaymentEntryPageState extends State<_PaymentEntryPage> {
+  late final String _intentId = createIdempotencyKey();
   late final _MoneyEntry _amount = _MoneyEntry(widget.initialAmount ?? '0.00');
   late final _MoneyEntry _received = _MoneyEntry('0.00');
   bool _receiving = false;
@@ -649,8 +836,13 @@ class _PaymentEntryPageState extends State<_PaymentEntryPage> {
                         ? () => Navigator.pop(
                             context,
                             _PaymentIntent(
+                              _intentId,
                               _amount.value,
-                              widget.method.isCash ? _received.value : null,
+                              widget.method.isCash
+                                  ? (_receiving
+                                      ? _received.value
+                                      : _amount.value)
+                                  : null,
                               widget.allocations,
                             ))
                         : null,
@@ -663,7 +855,9 @@ class _PaymentEntryPageState extends State<_PaymentEntryPage> {
   bool get _valid =>
       _amount.cents > 0 &&
       _amount.cents <= _MoneyEntry.centsFor(widget.remaining) &&
-      (!widget.method.isCash || _received.cents >= _amount.cents);
+      (!widget.method.isCash ||
+          !_receiving ||
+          _received.cents >= _amount.cents);
   Widget _keypad() => GridView.count(
           crossAxisCount: 3,
           shrinkWrap: true,
@@ -723,8 +917,26 @@ class _ItemAllocationPage extends StatefulWidget {
 class _ItemAllocationPageState extends State<_ItemAllocationPage> {
   // Quantities use thousandths, matching the checkout allocation precision.
   final Map<int, int> _quantities = {};
+  final Map<int, TextEditingController> _quantityInputs = {};
+  final Map<int, String> _quantityErrors = {};
   QuickSalePaymentPreview? _preview;
   bool _loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    for (final item in widget.checkout.items) {
+      _quantityInputs[item.id] = TextEditingController(text: '0');
+    }
+  }
+
+  @override
+  void dispose() {
+    for (final controller in _quantityInputs.values) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
 
   List<Map<String, dynamic>> get _allocations => _quantities.entries
       .where((entry) => entry.value > 0)
@@ -775,32 +987,74 @@ class _ItemAllocationPageState extends State<_ItemAllocationPage> {
       );
 
   Widget _item(QuickSaleCheckoutItem item) {
-    final max =
-        _quantityUnits(_preview?.availableQuantities[item.id] ?? item.quantity);
+    final max = _quantityUnits(
+        _preview?.availableQuantities[item.id] ?? item.availableQuantity);
     final step = item.unit.toLowerCase() == 'un' ? 1000 : 1;
     final value = _quantities[item.id] ?? 0;
+    final input = _quantityInputs[item.id]!;
+    final error = _quantityErrors[item.id];
+    void setValue(int next) {
+      setState(() {
+        _quantities[item.id] = next;
+        _quantityErrors.remove(item.id);
+        input.text = _quantityValue(next);
+      });
+      _update();
+    }
+
     return Card(
       child: ListTile(
         title: Text(item.name),
-        subtitle: Text('Disponível: ${_quantityValue(max)} ${item.unit}'),
+        subtitle:
+            Text(error ?? 'Disponível: ${_quantityValue(max)} ${item.unit}'),
         trailing: Row(mainAxisSize: MainAxisSize.min, children: [
           IconButton(
-            onPressed: _loading || value == 0
-                ? null
-                : () {
-                    setState(() => _quantities[item.id] = value - step);
-                    _update();
-                  },
+            onPressed:
+                _loading || value == 0 ? null : () => setValue(value - step),
             icon: const Icon(Icons.remove),
           ),
-          Text(_quantityValue(value)),
+          SizedBox(
+            width: 72,
+            child: TextField(
+              controller: input,
+              enabled: !_loading,
+              textAlign: TextAlign.center,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              inputFormatters: [
+                TextInputFormatter.withFunction((oldValue, newValue) =>
+                    RegExp(r'^\d*(?:[\.,]\d{0,3})?$').hasMatch(newValue.text)
+                        ? newValue
+                        : oldValue),
+              ],
+              onChanged: (text) {
+                final validSyntax =
+                    RegExp(r'^\d*(?:[\.,]\d{0,3})?$').hasMatch(text);
+                final next = _quantityUnits(text);
+                final validUnit =
+                    item.unit.toLowerCase() != 'un' || next % 1000 == 0;
+                if (validSyntax && validUnit && next <= max) {
+                  setState(() {
+                    _quantities[item.id] = next;
+                    _quantityErrors.remove(item.id);
+                    _preview = null;
+                  });
+                } else {
+                  setState(() {
+                    _preview = null;
+                    _quantityErrors[item.id] = validUnit
+                        ? 'Informe até ${_quantityValue(max)} ${item.unit}.'
+                        : 'Produtos por unidade exigem quantidade inteira.';
+                  });
+                }
+              },
+              onEditingComplete: _update,
+            ),
+          ),
           IconButton(
             onPressed: _loading || value + step > max
                 ? null
-                : () {
-                    setState(() => _quantities[item.id] = value + step);
-                    _update();
-                  },
+                : () => setValue(value + step),
             icon: const Icon(Icons.add),
           ),
         ]),

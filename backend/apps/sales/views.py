@@ -27,7 +27,10 @@ from .serializers import (
     SaleUserOptionSerializer,
     SaleSerializer, SalesQuerySerializer,
 )
-from .services import calculate_preview, cancel_sale, finalize_sale, detect_promotion_conflict
+from .services import (
+    calculate_preview, cancel_sale, detect_promotion_conflict, finalize_sale,
+    payment_method_presentation,
+)
 
 
 class PromotionViewSet(
@@ -417,7 +420,10 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
             branch=request.branch_context, status=CashSessionStatus.OPEN
         ).select_related('cash_register', 'opened_by').order_by('id')
         return Response({
-            'payment_methods': list(methods),
+            'payment_methods': [
+                {**method, **payment_method_presentation(method['code'])}
+                for method in methods
+            ],
             'cash_sessions': [
                 {
                     'id': session.pk,

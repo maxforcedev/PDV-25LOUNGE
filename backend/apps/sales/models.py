@@ -27,6 +27,8 @@ class PaymentMethodCode(models.TextChoices):
     PIX = 'pix', 'PIX'
     CREDIT_CARD = 'credit_card', 'Cartão de crédito'
     DEBIT_CARD = 'debit_card', 'Cartão de débito'
+    FOOD_VOUCHER = 'food_voucher', 'Vale-alimentação'
+    MEAL_VOUCHER = 'meal_voucher', 'Vale-refeição'
 
 
 class PromotionDiscountType(models.TextChoices):
