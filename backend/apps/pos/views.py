@@ -1635,6 +1635,12 @@ def _quick_checkout_payload(checkout, *, permissions=()):
     }
 
 
+def _quick_checkout_conflict(error):
+    response = DomainValidationError(code=error.code, message=error.message)
+    response.status_code = status.HTTP_409_CONFLICT
+    raise response from error
+
+
 class POSQuickCheckoutView(POSQuickSaleView):
     def _checkout(self, device, checkout_id):
         return get_object_or_404(
@@ -1643,12 +1649,6 @@ class POSQuickCheckoutView(POSQuickSaleView):
             ),
             pk=checkout_id, branch=device.branch, pos_device=device,
         )
-
-    @staticmethod
-    def _conflict(error):
-        response = DomainValidationError(code=error.code, message=error.message)
-        response.status_code = status.HTTP_409_CONFLICT
-        raise response from error
 
     def get(self, request, checkout_id):
         device, _, permissions, _ = self.context(request)
@@ -1676,7 +1676,7 @@ class POSQuickCheckoutView(POSQuickSaleView):
                 audit_metadata=self.audit_metadata(device, operator_session),
             )
         except QuickCheckoutConflict as error:
-            self._conflict(error)
+            _quick_checkout_conflict(error)
         return Response(_quick_checkout_payload(self._checkout(device, checkout.pk), permissions=permissions))
 
 
@@ -1701,12 +1701,27 @@ class POSQuickCheckoutCreateView(POSQuickSaleView):
                 audit_metadata=self.audit_metadata(device, operator_session),
             )
         except QuickCheckoutConflict as error:
-            self._conflict(error)
+            _quick_checkout_conflict(error)
         checkout = self._checkout(device, checkout.pk)
         response = Response(_quick_checkout_payload(checkout, permissions=permissions), status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED)
         if replayed:
             response['Idempotency-Replayed'] = 'true'
         return response
+
+
+class POSQuickCheckoutRecoveryView(POSQuickSaleView):
+    def get(self, request, creation_idempotency_key):
+        device, operator, permissions, _ = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        checkout = get_object_or_404(
+            QuickSaleCheckout.objects.select_related('sale', 'customer', 'cash_session').prefetch_related(
+                'items__product', 'payments__payment_method', 'payments__allocations',
+            ),
+            branch=device.branch, pos_device=device, operator=operator,
+            creation_idempotency_key=creation_idempotency_key,
+        )
+        return Response(_quick_checkout_payload(checkout, permissions=permissions))
 
 
 class POSQuickCheckoutPaymentView(POSQuickCheckoutView):
@@ -1726,7 +1741,7 @@ class POSQuickCheckoutPaymentView(POSQuickCheckoutView):
                 audit_metadata=self.audit_metadata(device, operator_session),
             )
         except QuickCheckoutConflict as error:
-            self._conflict(error)
+            _quick_checkout_conflict(error)
         checkout = self._checkout(device, checkout_id)
         response = Response(_quick_checkout_payload(checkout, permissions=permissions))
         if replayed:
@@ -1747,7 +1762,7 @@ class POSQuickCheckoutPaymentPreviewView(POSQuickCheckoutView):
                 allocations=serializer.validated_data['allocations'],
             )
         except QuickCheckoutConflict as error:
-            self._conflict(error)
+            _quick_checkout_conflict(error)
         return Response(preview)
 
 
@@ -1769,7 +1784,7 @@ class POSQuickCheckoutPaymentReverseView(POSQuickCheckoutView):
                 audit_metadata=self.audit_metadata(device, operator_session),
             )
         except QuickCheckoutConflict as error:
-            self._conflict(error)
+            _quick_checkout_conflict(error)
         checkout = self._checkout(device, checkout_id)
         response = Response(_quick_checkout_payload(checkout, permissions=permissions))
         if replayed:
@@ -1791,7 +1806,7 @@ class POSQuickCheckoutFinalizeView(POSQuickCheckoutView):
                 audit_metadata=self.audit_metadata(device, operator_session),
             )
         except QuickCheckoutConflict as error:
-            self._conflict(error)
+            _quick_checkout_conflict(error)
         request.branch_context = device.branch
         sale = Sale.objects.select_related(
             'company', 'branch', 'cash_session', 'created_by', 'seller_user', 'pos_device',
@@ -1821,7 +1836,7 @@ class POSQuickCheckoutCancelView(POSQuickCheckoutView):
                 audit_metadata=self.audit_metadata(device, operator_session),
             )
         except QuickCheckoutConflict as error:
-            self._conflict(error)
+            _quick_checkout_conflict(error)
         response = Response(_quick_checkout_payload(self._checkout(device, checkout.pk), permissions=permissions))
         if replayed:
             response['Idempotency-Replayed'] = 'true'

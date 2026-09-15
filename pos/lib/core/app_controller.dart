@@ -61,9 +61,13 @@ class AppController extends ChangeNotifier {
   Future<QuickSaleCheckout?> recoverQuickSaleCheckout() async {
     final state = await _quickCheckoutState();
     final id = state['checkout_id'] as String?;
-    if (id == null) return null;
     try {
-      return await _api.getQuickSaleCheckout(id);
+      if (id != null) return await _api.getQuickSaleCheckout(id);
+      final creationKey = state['creation_idempotency_key'] as String?;
+      if (creationKey == null) return null;
+      final checkout = await _api.recoverQuickSaleCheckout(creationKey);
+      await _writeQuickCheckoutState({'checkout_id': checkout.id});
+      return checkout;
     } on PosApiException catch (error) {
       if (error.statusCode < 500) await _writeQuickCheckoutState({});
       _handleApiError(error);
@@ -83,17 +87,66 @@ class AppController extends ChangeNotifier {
     QuickSaleAuthorization? itemDiscountAuthorization,
     QuickSaleAuthorization? serviceFeeAuthorization,
   }) async {
-    final state = await _quickCheckoutState();
+    var state = await _quickCheckoutState();
     final existing = state['checkout_id'] as String?;
     if (existing != null) return recoverQuickSaleCheckout();
-    final key = state['creation_idempotency_key'] as String? ?? createIdempotencyKey();
-    state['creation_idempotency_key'] = key;
-    await _writeQuickCheckoutState(state); // Preserve the key before an uncertain create.
+
+    final request = _quickCheckoutCreationRequest(
+      items: items,
+      cashSessionId: cashSessionId,
+      discount: discount,
+      serviceFeeWaived: serviceFeeWaived,
+      customer: customer,
+      discountAuthorization: discountAuthorization,
+      itemDiscountAuthorization: itemDiscountAuthorization,
+      serviceFeeAuthorization: serviceFeeAuthorization,
+    );
+    var key = state['creation_idempotency_key'] as String?;
+    if (key != null &&
+        jsonEncode(state['creation_request']) != jsonEncode(request)) {
+      try {
+        final checkout = await _api.recoverQuickSaleCheckout(key);
+        await _writeQuickCheckoutState({'checkout_id': checkout.id});
+        return await updateQuickSaleCheckout(
+          checkoutId: checkout.id,
+          items: items,
+          cashSessionId: cashSessionId,
+          discount: discount,
+          serviceFeeWaived: serviceFeeWaived,
+          customerId: customer?.id,
+          discountAuthorization: discountAuthorization,
+          itemDiscountAuthorization: itemDiscountAuthorization,
+          serviceFeeAuthorization: serviceFeeAuthorization,
+        );
+      } on PosApiException catch (error) {
+        if (error.statusCode != 404) {
+          _handleApiError(error);
+          return null;
+        }
+        state = <String, dynamic>{};
+        key = null;
+      } on PosNetworkException catch (error) {
+        _showTransientMessage(error.message);
+        return null;
+      }
+    }
+
+    final creationKey = key ?? createIdempotencyKey();
+    state = {
+      'creation_idempotency_key': creationKey,
+      'creation_request': request,
+    };
+    await _writeQuickCheckoutState(
+        state); // Preserve the immutable request before an uncertain create.
     try {
       final checkout = await _api.createQuickSaleCheckout(
-        items: items, cashSessionId: cashSessionId, discount: discount,
-        serviceFeeWaived: serviceFeeWaived, idempotencyKey: key,
-        customerId: customer?.id, discountAuthorization: discountAuthorization?.toJson(),
+        items: items,
+        cashSessionId: cashSessionId,
+        discount: discount,
+        serviceFeeWaived: serviceFeeWaived,
+        idempotencyKey: creationKey,
+        customerId: customer?.id,
+        discountAuthorization: discountAuthorization?.toJson(),
         itemDiscountAuthorization: itemDiscountAuthorization?.toJson(),
         serviceFeeAuthorization: serviceFeeAuthorization?.toJson(),
       );
@@ -108,6 +161,32 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
+  Map<String, dynamic> _quickCheckoutCreationRequest({
+    required List<Map<String, dynamic>> items,
+    required int cashSessionId,
+    required Map<String, dynamic> discount,
+    required bool serviceFeeWaived,
+    QuickSaleCustomer? customer,
+    QuickSaleAuthorization? discountAuthorization,
+    QuickSaleAuthorization? itemDiscountAuthorization,
+    QuickSaleAuthorization? serviceFeeAuthorization,
+  }) =>
+      Map<String, dynamic>.from(jsonDecode(jsonEncode({
+        'items': items,
+        'cash_session': cashSessionId,
+        'discount': discount,
+        'service_fee_waived': serviceFeeWaived,
+        'customer': customer?.id,
+        if (discountAuthorization != null)
+          'discount_authorization': discountAuthorization.idempotencyIdentity,
+        if (itemDiscountAuthorization != null)
+          'item_discount_authorization':
+              itemDiscountAuthorization.idempotencyIdentity,
+        if (serviceFeeAuthorization != null)
+          'service_fee_authorization':
+              serviceFeeAuthorization.idempotencyIdentity,
+      })) as Map);
+
   Future<QuickSaleCheckout?> recordQuickSalePayment({
     required String checkoutId,
     required int paymentMethodId,
@@ -115,12 +194,18 @@ class AppController extends ChangeNotifier {
     String? amount,
     String? receivedAmount,
     List<Map<String, dynamic>> allocations = const [],
-  }) => _runQuickCheckoutOperation(
+  }) =>
+      _runQuickCheckoutOperation(
         checkoutId: checkoutId,
-        operation: 'payment:$paymentMethodId:$mode:$amount:$receivedAmount:${jsonEncode(allocations)}',
+        operation:
+            'payment:$paymentMethodId:$mode:$amount:$receivedAmount:${jsonEncode(allocations)}',
         call: (key) => _api.recordQuickSalePayment(
-          checkoutId: checkoutId, paymentMethodId: paymentMethodId, mode: mode,
-          amount: amount, receivedAmount: receivedAmount, allocations: allocations,
+          checkoutId: checkoutId,
+          paymentMethodId: paymentMethodId,
+          mode: mode,
+          amount: amount,
+          receivedAmount: receivedAmount,
+          allocations: allocations,
           idempotencyKey: key,
         ),
       );
@@ -138,8 +223,12 @@ class AppController extends ChangeNotifier {
   }) async {
     try {
       return await _api.updateQuickSaleCheckout(
-        checkoutId: checkoutId, items: items, cashSessionId: cashSessionId,
-        discount: discount, serviceFeeWaived: serviceFeeWaived, customerId: customerId,
+        checkoutId: checkoutId,
+        items: items,
+        cashSessionId: cashSessionId,
+        discount: discount,
+        serviceFeeWaived: serviceFeeWaived,
+        customerId: customerId,
         discountAuthorization: discountAuthorization?.toJson(),
         itemDiscountAuthorization: itemDiscountAuthorization?.toJson(),
         serviceFeeAuthorization: serviceFeeAuthorization?.toJson(),
@@ -153,11 +242,18 @@ class AppController extends ChangeNotifier {
   }
 
   Future<QuickSaleCheckout?> reverseQuickSalePayment({
-    required String checkoutId, required String paymentId, String reason = '',
-  }) => _runQuickCheckoutOperation(
-        checkoutId: checkoutId, operation: 'reverse:$paymentId:$reason',
+    required String checkoutId,
+    required String paymentId,
+    String reason = '',
+  }) =>
+      _runQuickCheckoutOperation(
+        checkoutId: checkoutId,
+        operation: 'reverse:$paymentId:$reason',
         call: (key) => _api.reverseQuickSalePayment(
-          checkoutId: checkoutId, paymentId: paymentId, reason: reason, idempotencyKey: key,
+          checkoutId: checkoutId,
+          paymentId: paymentId,
+          reason: reason,
+          idempotencyKey: key,
         ),
       );
 
@@ -167,7 +263,8 @@ class AppController extends ChangeNotifier {
     required Future<QuickSaleCheckout> Function(String key) call,
   }) async {
     final state = await _quickCheckoutState();
-    final pending = Map<String, dynamic>.from(state['pending'] as Map? ?? const {});
+    final pending =
+        Map<String, dynamic>.from(state['pending'] as Map? ?? const {});
     final key = pending[operation] as String? ?? createIdempotencyKey();
     pending[operation] = key;
     state['checkout_id'] = checkoutId;
@@ -193,10 +290,12 @@ class AppController extends ChangeNotifier {
   }
 
   Future<QuickSalePaymentPreview?> previewQuickSalePayment({
-    required String checkoutId, required List<Map<String, dynamic>> allocations,
+    required String checkoutId,
+    required List<Map<String, dynamic>> allocations,
   }) async {
     try {
-      return await _api.previewQuickSalePayment(checkoutId: checkoutId, allocations: allocations);
+      return await _api.previewQuickSalePayment(
+          checkoutId: checkoutId, allocations: allocations);
     } on PosApiException catch (error) {
       _handleApiError(error);
     } on PosNetworkException catch (error) {
@@ -207,19 +306,23 @@ class AppController extends ChangeNotifier {
 
   Future<QuickSaleResult?> finalizeQuickSaleCheckout(String checkoutId) async {
     final state = await _quickCheckoutState();
-    final pending = Map<String, dynamic>.from(state['pending'] as Map? ?? const {});
+    final pending =
+        Map<String, dynamic>.from(state['pending'] as Map? ?? const {});
     const operation = 'finalize';
     final key = pending[operation] as String? ?? createIdempotencyKey();
     pending[operation] = key;
-    await _writeQuickCheckoutState({'checkout_id': checkoutId, 'pending': pending});
+    await _writeQuickCheckoutState(
+        {'checkout_id': checkoutId, 'pending': pending});
     try {
-      final result = await _api.finalizeQuickSaleCheckout(checkoutId: checkoutId, idempotencyKey: key);
+      final result = await _api.finalizeQuickSaleCheckout(
+          checkoutId: checkoutId, idempotencyKey: key);
       await _writeQuickCheckoutState({});
       return result;
     } on PosApiException catch (error) {
       if (error.statusCode < 500) {
         pending.remove(operation);
-        await _writeQuickCheckoutState({'checkout_id': checkoutId, 'pending': pending});
+        await _writeQuickCheckoutState(
+            {'checkout_id': checkoutId, 'pending': pending});
       }
       _handleApiError(error);
     } on PosNetworkException catch (error) {

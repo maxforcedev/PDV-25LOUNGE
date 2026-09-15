@@ -241,6 +241,8 @@ abstract class PosApi {
   }) => throw UnimplementedError();
   Future<QuickSaleCheckout> getQuickSaleCheckout(String checkoutId) =>
       throw UnimplementedError();
+  Future<QuickSaleCheckout> recoverQuickSaleCheckout(String creationIdempotencyKey) =>
+      throw UnimplementedError();
   Future<QuickSaleCheckout> updateQuickSaleCheckout({
     required String checkoutId,
     required List<Map<String, dynamic>> items,
@@ -1108,6 +1110,10 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   @override
   Future<QuickSaleCheckout> getQuickSaleCheckout(String checkoutId) async =>
       QuickSaleCheckout.fromJson(await _request('GET', 'sales/checkouts/$checkoutId/'));
+
+  @override
+  Future<QuickSaleCheckout> recoverQuickSaleCheckout(String creationIdempotencyKey) async =>
+      QuickSaleCheckout.fromJson(await _request('GET', 'sales/checkouts/recover/$creationIdempotencyKey/'));
 
   @override
   Future<QuickSaleCheckout> updateQuickSaleCheckout({
