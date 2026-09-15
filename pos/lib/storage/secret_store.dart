@@ -11,6 +11,18 @@ abstract class SecretStore {
   Future<void> writePendingSaleIntents(String value) async {}
 }
 
+/// Kept outside the base contract so existing in-memory test stores remain valid.
+extension QuickSaleCheckoutSecretStore on SecretStore {
+  Future<String?> readQuickSaleCheckoutState() => this is FlutterSecretStore
+      ? (this as FlutterSecretStore).readQuickSaleCheckoutState()
+      : Future.value(null);
+
+  Future<void> writeQuickSaleCheckoutState(String value) =>
+      this is FlutterSecretStore
+          ? (this as FlutterSecretStore).writeQuickSaleCheckoutState(value)
+          : Future.value();
+}
+
 class FlutterSecretStore implements SecretStore {
   FlutterSecretStore({FlutterSecureStorage? storage})
       : _storage = storage ?? const FlutterSecureStorage();
@@ -18,6 +30,7 @@ class FlutterSecretStore implements SecretStore {
   static const _deviceCredentialKey = 'core_pos.device_credential';
   static const _operatorSessionKey = 'core_pos.operator_session';
   static const _pendingSaleIntentsKey = 'core_pos.pending_sale_intents';
+  static const _quickSaleCheckoutStateKey = 'core_pos.quick_sale_checkout';
 
   final FlutterSecureStorage _storage;
 
@@ -52,4 +65,10 @@ class FlutterSecretStore implements SecretStore {
   @override
   Future<void> writePendingSaleIntents(String value) =>
       _storage.write(key: _pendingSaleIntentsKey, value: value);
+
+  Future<String?> readQuickSaleCheckoutState() =>
+      _storage.read(key: _quickSaleCheckoutStateKey);
+
+  Future<void> writeQuickSaleCheckoutState(String value) =>
+      _storage.write(key: _quickSaleCheckoutStateKey, value: value);
 }

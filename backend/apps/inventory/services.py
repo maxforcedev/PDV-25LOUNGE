@@ -362,9 +362,10 @@ def apply_locked_stock(*, stock, quantity, user, movement_type, reason='', sale=
                        original_movement=None, nature=None, operation_reference=None,
                        effective_unit_cost=None, unit_cost_snapshot=None,
                        domain_origin=MovementDomainOrigin.LEGACY, transfer_item=None,
-                        transfer_resolution=None, loss_record=None,
-                        inventory_count_item=None, content_quantity=None,
-                         order_item=None, attendance_order_item=None, table_order_item=None):
+                          transfer_resolution=None, loss_record=None,
+                          inventory_count_item=None, content_quantity=None,
+                          order_item=None, attendance_order_item=None, table_order_item=None,
+                          reservation=None):
     """Apply a delta to a Stock row already locked by the current transaction."""
     config = _active_fraction_config(stock.product)
     previous = stock.current_quantity
@@ -424,6 +425,15 @@ def apply_locked_stock(*, stock, quantity, user, movement_type, reason='', sale=
         })
     negative_delta = content_quantity < 0 if config else quantity < 0
     negative_final = final_content < 0 if config else final < 0
+    if negative_delta:
+        # Every physical outflow shares this guard; reservation owners are passed
+        # explicitly by their finalization flow and may consume their own commitment.
+        from .reservations import assert_stock_outflow_available
+
+        assert_stock_outflow_available(
+            stock=stock, final_quantity=final, final_content=final_content,
+            reservation=reservation,
+        )
     if negative_final and negative_delta:
         from apps.companies.models import BranchSettings
         allow_negative = BranchSettings.objects.filter(

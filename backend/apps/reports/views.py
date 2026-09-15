@@ -2015,7 +2015,7 @@ class CashReportView(BaseReportView):
     csv_filename = 'relatorio-caixa.csv'
     csv_headers = (
         'id', 'opened_at', 'closed_at', 'status', 'register', 'operator', 'opening',
-        'manual_entries', 'sale_cash', 'consumption_cash', 'cash_reversals',
+        'manual_entries', 'sale_cash', 'consumption_cash', 'cash_reversals', 'quick_checkout_cash',
         'cash_cancellations', 'cash_payments', 'withdrawals', 'expected', 'informed',
         'difference',
     )
@@ -2058,6 +2058,7 @@ class CashReportView(BaseReportView):
             'sale_cash': 'sale_cash',
             'consumption_cash': 'consumption_cash',
             'cash_reversals': 'cash_reversals',
+            'quick_checkout_cash': 'quick_checkout_cash',
             'cash_payments': 'cash_payments',
             'withdrawals': 'withdrawals',
             'expected': 'expected',
@@ -2220,6 +2221,7 @@ class CashReportView(BaseReportView):
                     'complete_session_sale_cash': row.get('sale_cash'),
                     'complete_session_consumption_cash': row.get('consumption_cash'),
                     'complete_session_cash_reversals': row.get('cash_reversals'),
+                    'complete_session_quick_checkout_cash': row.get('quick_checkout_cash'),
                     'complete_session_withdrawals': row.get('withdrawals'),
                     'complete_session_expected': row.get('expected'),
                     'complete_session_informed': row.get('informed'),
@@ -2249,7 +2251,8 @@ class CashReportView(BaseReportView):
                 'session_status', 'session_register', 'session_operator',
                 'complete_session_opening', 'complete_session_manual_entries',
                 'complete_session_sale_cash', 'complete_session_consumption_cash',
-                'complete_session_cash_reversals', 'complete_session_withdrawals',
+                'complete_session_cash_reversals', 'complete_session_quick_checkout_cash',
+                'complete_session_withdrawals',
                 'complete_session_expected', 'complete_session_informed',
                 'complete_session_difference', 'complete_session_sales_count',
                 'complete_session_sales_revenue',

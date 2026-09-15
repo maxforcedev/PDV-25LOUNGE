@@ -877,6 +877,7 @@ class CashSessionReportSerializer(serializers.Serializer):
     consumption_cash = serializers.DecimalField(max_digits=20, decimal_places=2)
     cash_reversals = serializers.DecimalField(max_digits=20, decimal_places=2)
     cash_cancellations = serializers.IntegerField()
+    quick_checkout_cash = serializers.DecimalField(max_digits=20, decimal_places=2)
     cash_payments = serializers.DecimalField(max_digits=20, decimal_places=2)
     withdrawals = serializers.DecimalField(max_digits=20, decimal_places=2)
     expected = serializers.DecimalField(max_digits=20, decimal_places=2)

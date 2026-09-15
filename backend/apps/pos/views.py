@@ -82,23 +82,24 @@ from apps.sales.services import (
     catalog_products_with_available_stock, finalize_sale, validate_discount_authorization,
 )
 from apps.sales.quick_checkout import (
-    QuickCheckoutConflict, checkout_balance, create_quick_checkout,
+    QuickCheckoutConflict, cancel_quick_checkout, checkout_balance, create_quick_checkout,
     finalize_quick_checkout, record_quick_checkout_payment,
-    reverse_quick_checkout_payment,
+    preview_quick_checkout_payment, reverse_quick_checkout_payment, update_quick_checkout,
 )
 
 from .authentication import POSDeviceAuthentication, require_device, require_operator_session
 from .models import (
     POSDevice, POSDeviceSettings, QuickSaleCheckout, QuickSalePayment,
-    QuickSalePaymentStatus,
+    QuickSaleCheckoutStatus, QuickSalePaymentStatus,
 )
 from .serializers import (
     POSAdminDeviceSerializer, POSDeviceSettingsSerializer, POSOpenCashSessionSerializer,
     POSCustomerSerializer, POSDiscountAuthorizationValidationSerializer,
     POSFinalizeSaleSerializer, POSSalePreviewSerializer, POSStockAvailabilitySerializer,
     POSTablePreviewSerializer,
-    POSQuickCheckoutCreateSerializer, POSQuickCheckoutFinalizeSerializer,
-    POSQuickCheckoutPaymentSerializer, POSQuickCheckoutReverseSerializer,
+    POSQuickCheckoutCancelSerializer, POSQuickCheckoutCreateSerializer,
+    POSQuickCheckoutFinalizeSerializer, POSQuickCheckoutUpdateSerializer,
+    POSQuickCheckoutPaymentPreviewSerializer, POSQuickCheckoutPaymentSerializer, POSQuickCheckoutReverseSerializer,
     POSTicketLookupSerializer, POSTicketValidateSerializer,
 )
 from .services import (
@@ -890,7 +891,10 @@ class POSAttendanceCheckoutOptionsView(POSAttendanceView):
             company_id=device.branch.company_id, status=Status.ACTIVE,
         ).order_by('name', 'id').values('id', 'code', 'name')
         return Response({
-            'payment_methods': list(methods),
+            'payment_methods': [
+                {**method, **_payment_method_presentation(method['code'])}
+                for method in methods
+            ],
             'cash_binding_mode': mode,
             'fixed_register': (
                 {'id': fixed_register.pk, 'name': fixed_register.name}
@@ -1534,7 +1538,10 @@ class POSSaleCheckoutOptionsView(POSQuickSaleView):
             company_id=device.branch.company_id, status=Status.ACTIVE,
         ).order_by('name', 'id').values('id', 'code', 'name')
         return Response({
-            'payment_methods': list(methods),
+            'payment_methods': [
+                {**method, **_payment_method_presentation(method['code'])}
+                for method in methods
+            ],
             'cash_binding_mode': mode,
             'fixed_register': (
                 {'id': fixed_register.pk, 'name': fixed_register.name}
@@ -1553,27 +1560,62 @@ class POSSaleCheckoutOptionsView(POSQuickSaleView):
         })
 
 
-def _quick_checkout_payload(checkout):
+def _payment_method_presentation(code):
+    """Stable UI metadata; names remain operator-configurable presentation only."""
+    return {
+        'cash': {'visual_group': 'cash', 'kind': 'cash', 'source': 'manual'},
+        'pix': {'visual_group': 'pix', 'kind': 'pix', 'source': 'manual'},
+        'credit_card': {'visual_group': 'card', 'kind': 'credit', 'source': 'manual'},
+        'debit_card': {'visual_group': 'card', 'kind': 'debit', 'source': 'manual'},
+    }.get(code, {'visual_group': 'other', 'kind': 'other', 'source': 'manual'})
+
+
+def _quick_checkout_payload(checkout, *, permissions=()):
     paid, remaining = checkout_balance(checkout)
+    editable = checkout.status == QuickSaleCheckoutStatus.OPEN and paid == Decimal('0.00')
+    can_finalize = checkout.status == QuickSaleCheckoutStatus.OPEN and remaining == Decimal('0.00')
+    can_reverse = checkout.status == QuickSaleCheckoutStatus.OPEN and 'sales.payments.reverse' in permissions
     return {
         'id': str(checkout.pk),
         'status': checkout.status,
         'sale_id': checkout.sale_id,
+        'customer': (
+            {'id': checkout.customer_id, 'name': checkout.customer.name}
+            if checkout.customer_id else None
+        ),
+        'cash_session': checkout.cash_session_id,
+        'discount_intent': checkout.discount_intent,
+        'service_fee_waived': checkout.service_fee_waived,
         'preview': checkout.financial_snapshot,
         'paid_amount': str(paid),
         'remaining_amount': str(remaining),
+        'operational_status': (
+            'finalized' if checkout.status == QuickSaleCheckoutStatus.FINALIZED else
+            'cancelled' if checkout.status == QuickSaleCheckoutStatus.CANCELLED else
+            'paid' if remaining == Decimal('0.00') else
+            'partial' if paid else 'editing'
+        ),
+        'capabilities': {
+            'can_edit_financials': editable,
+            'can_record_payment': checkout.status == QuickSaleCheckoutStatus.OPEN and remaining > Decimal('0.00'),
+            'can_finalize': can_finalize,
+            'can_reverse_payment': can_reverse,
+        },
         'items': [
             {
                 'id': item.pk, 'client_item_id': str(item.client_item_id),
-                'product': item.product_id, 'quantity': str(item.quantity),
+                'product': item.product_id, 'product_name': item.product.name,
+                'unit': item.product.unit, 'quantity': str(item.quantity),
+                'input': item.snapshot['raw'],
             }
             for item in checkout.items.all().order_by('id')
         ],
         'payments': [
             {
                 'id': payment.pk, 'payment_method': payment.payment_method_id,
-                'payment_method_name': payment.payment_method.name,
-                'payment_method_code': payment.payment_method.code,
+                'payment_method_name': payment.payment_method_name,
+                'payment_method_code': payment.payment_method_code,
+                **_payment_method_presentation(payment.payment_method_code),
                 'amount': str(payment.amount),
                 'received_amount': str(payment.received_amount) if payment.received_amount is not None else None,
                 'change_amount': str(payment.change_amount) if payment.change_amount is not None else None,
@@ -1596,8 +1638,8 @@ def _quick_checkout_payload(checkout):
 class POSQuickCheckoutView(POSQuickSaleView):
     def _checkout(self, device, checkout_id):
         return get_object_or_404(
-            QuickSaleCheckout.objects.select_related('sale').prefetch_related(
-                'items', 'payments__payment_method', 'payments__allocations',
+            QuickSaleCheckout.objects.select_related('sale', 'customer', 'cash_session').prefetch_related(
+                'items__product', 'payments__payment_method', 'payments__allocations',
             ),
             pk=checkout_id, branch=device.branch, pos_device=device,
         )
@@ -1612,7 +1654,30 @@ class POSQuickCheckoutView(POSQuickSaleView):
         device, _, permissions, _ = self.context(request)
         if 'sales.create' not in permissions:
             raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
-        return Response(_quick_checkout_payload(self._checkout(device, checkout_id)))
+        return Response(_quick_checkout_payload(self._checkout(device, checkout_id), permissions=permissions))
+
+    def put(self, request, checkout_id):
+        device, operator, permissions, operator_session = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        serializer = POSQuickCheckoutUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        _pos_sale_session(device, data['cash_session'])
+        try:
+            checkout = update_quick_checkout(
+                checkout=self._checkout(device, checkout_id), user=operator, permissions=permissions,
+                raw_items=self._items(data['items']), discount=data['discount'],
+                service_fee_waived=data['service_fee_waived'], customer_id=data.get('customer'),
+                cash_session_id=data['cash_session'],
+                discount_authorization=data.get('discount_authorization'),
+                item_discount_authorization=data.get('item_discount_authorization'),
+                service_fee_authorization=data.get('service_fee_authorization'),
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+        except QuickCheckoutConflict as error:
+            self._conflict(error)
+        return Response(_quick_checkout_payload(self._checkout(device, checkout.pk), permissions=permissions))
 
 
 class POSQuickCheckoutCreateView(POSQuickSaleView):
@@ -1638,7 +1703,7 @@ class POSQuickCheckoutCreateView(POSQuickSaleView):
         except QuickCheckoutConflict as error:
             self._conflict(error)
         checkout = self._checkout(device, checkout.pk)
-        response = Response(_quick_checkout_payload(checkout), status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED)
+        response = Response(_quick_checkout_payload(checkout, permissions=permissions), status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED)
         if replayed:
             response['Idempotency-Replayed'] = 'true'
         return response
@@ -1663,10 +1728,27 @@ class POSQuickCheckoutPaymentView(POSQuickCheckoutView):
         except QuickCheckoutConflict as error:
             self._conflict(error)
         checkout = self._checkout(device, checkout_id)
-        response = Response(_quick_checkout_payload(checkout))
+        response = Response(_quick_checkout_payload(checkout, permissions=permissions))
         if replayed:
             response['Idempotency-Replayed'] = 'true'
         return response
+
+
+class POSQuickCheckoutPaymentPreviewView(POSQuickCheckoutView):
+    def post(self, request, checkout_id):
+        device, _, permissions, _ = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        serializer = POSQuickCheckoutPaymentPreviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            preview = preview_quick_checkout_payment(
+                checkout=self._checkout(device, checkout_id),
+                allocations=serializer.validated_data['allocations'],
+            )
+        except QuickCheckoutConflict as error:
+            self._conflict(error)
+        return Response(preview)
 
 
 class POSQuickCheckoutPaymentReverseView(POSQuickCheckoutView):
@@ -1674,6 +1756,7 @@ class POSQuickCheckoutPaymentReverseView(POSQuickCheckoutView):
         device, operator, permissions, operator_session = self.context(request)
         if 'sales.create' not in permissions:
             raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        self._require(permissions, 'sales.payments.reverse', 'Você não possui permissão para estornar pagamentos.')
         serializer = POSQuickCheckoutReverseSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payment = get_object_or_404(
@@ -1688,7 +1771,7 @@ class POSQuickCheckoutPaymentReverseView(POSQuickCheckoutView):
         except QuickCheckoutConflict as error:
             self._conflict(error)
         checkout = self._checkout(device, checkout_id)
-        response = Response(_quick_checkout_payload(checkout))
+        response = Response(_quick_checkout_payload(checkout, permissions=permissions))
         if replayed:
             response['Idempotency-Replayed'] = 'true'
         return response
@@ -1721,6 +1804,25 @@ class POSQuickCheckoutFinalizeView(POSQuickCheckoutView):
                 'production_job_count': sum(item.production_jobs.filter(event='new').count() for item in sale.items.all()),
             },
         }, status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED)
+        if replayed:
+            response['Idempotency-Replayed'] = 'true'
+        return response
+
+
+class POSQuickCheckoutCancelView(POSQuickCheckoutView):
+    def post(self, request, checkout_id):
+        device, operator, permissions, operator_session = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        POSQuickCheckoutCancelSerializer(data=request.data).is_valid(raise_exception=True)
+        try:
+            checkout, replayed = cancel_quick_checkout(
+                checkout=self._checkout(device, checkout_id), user=operator,
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+        except QuickCheckoutConflict as error:
+            self._conflict(error)
+        response = Response(_quick_checkout_payload(self._checkout(device, checkout.pk), permissions=permissions))
         if replayed:
             response['Idempotency-Replayed'] = 'true'
         return response

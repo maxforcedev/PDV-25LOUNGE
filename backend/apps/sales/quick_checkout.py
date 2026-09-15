@@ -9,6 +9,11 @@ from django.db.models import Sum
 from apps.base.audit import audit_log
 from apps.cash.models import CashSession, CashSessionStatus
 from apps.companies.models import Customer, Status
+from apps.inventory.reservations import (
+    StockReservationConflict, acquire_checkout_reservation,
+    consume_checkout_reservation, release_checkout_reservation,
+    restore_checkout_reservation_expiry, validate_checkout_reservation,
+)
 from apps.products.models import SalesChannel
 from apps.pos.models import (
     QuickSaleCheckout, QuickSaleCheckoutItem, QuickSalePayment,
@@ -117,11 +122,91 @@ def create_quick_checkout(*, branch, device, user, permissions, cash_session_id,
             checkout=checkout, client_item_id=item['client_item_id'], product_id=item['product'],
             quantity=item['quantity'], snapshot={'raw': _preview_snapshot(item), 'preview': _preview_snapshot(preview['items'][index])},
         )
+    try:
+        acquire_checkout_reservation(checkout)
+    except StockReservationConflict as error:
+        raise QuickCheckoutConflict('stock_unavailable', error.message) from error
     audit_log(actor=user, action='quick_sale_checkout.create', obj=checkout,
               company=branch.company, branch=branch,
               after={'checkout_id': str(checkout.pk), 'total': str(preview['total'])},
               metadata={**(audit_metadata or {}), 'idempotency_key': str(idempotency_key)})
     return checkout, False
+
+
+@transaction.atomic
+def update_quick_checkout(*, checkout, user, permissions, raw_items, discount,
+                          service_fee_waived, customer_id, cash_session_id,
+                          discount_authorization=None, item_discount_authorization=None,
+                          service_fee_authorization=None, audit_metadata=None):
+    checkout = QuickSaleCheckout.objects.select_for_update().select_related(
+        'branch', 'pos_device', 'company',
+    ).get(pk=checkout.pk)
+    paid, _remaining = checkout_balance(checkout, lock=True)
+    if checkout.status != QuickSaleCheckoutStatus.OPEN or paid:
+        raise QuickCheckoutConflict('checkout_not_editable', 'Itens não podem mudar após o primeiro pagamento.')
+    session = CashSession.objects.select_for_update().filter(
+        pk=cash_session_id, branch=checkout.branch, status=CashSessionStatus.OPEN,
+    ).first()
+    if not session:
+        raise ValidationError({'cash_session': 'Informe uma sessão de caixa aberta da filial.'})
+    customer = None
+    if customer_id is not None:
+        customer = Customer.objects.select_for_update().filter(
+            pk=customer_id, company=checkout.company, status=Status.ACTIVE,
+        ).first()
+        if not customer:
+            raise ValidationError({'customer': 'Cliente inválido, inativo ou fora da empresa.'})
+    preview = calculate_preview(
+        company=checkout.company, operation_type=OperationType.SALE, raw_items=raw_items,
+        discount=discount, charged_amount=None, beneficiary_user=None, branch=checkout.branch,
+        channel=SalesChannel.COUNTER, service_fee_waived=service_fee_waived,
+    )
+    unchanged_items = _fingerprint(raw_items) == _fingerprint([
+        item.snapshot['raw'] for item in checkout.items.order_by('id')
+    ])
+    if checkout.discount_intent != preview['discount_intent'] or not checkout.discount_approved_by_id:
+        checkout.discount_approved_by = _discount_approver(
+            checkout.branch, user, preview['discount'], discount_authorization,
+            permission_code='sales.apply_discount', authorization_field='discount_authorization',
+            allow_pos_only=True, pos_device=checkout.pos_device, permission_codes=permissions,
+            device_validated=True,
+        )
+    if not unchanged_items or not checkout.item_discount_approved_by_id:
+        checkout.item_discount_approved_by = _discount_approver(
+            checkout.branch, user, preview['item_discount_total'], item_discount_authorization,
+            permission_code='sales.apply_item_discount', authorization_field='item_discount_authorization',
+            allow_pos_only=True, pos_device=checkout.pos_device, permission_codes=permissions,
+            device_validated=True,
+        )
+    if checkout.service_fee_waived != bool(service_fee_waived) or not checkout.service_fee_waived_by_id:
+        checkout.service_fee_waived_by = _service_fee_waiver(
+            checkout.branch, user, bool(service_fee_waived), service_fee_authorization,
+            allow_pos_only=True, pos_device=checkout.pos_device, permission_codes=permissions,
+            device_validated=True,
+        )
+    QuickSaleCheckoutItem.objects.filter(checkout=checkout).delete()
+    for index, item in enumerate(raw_items):
+        QuickSaleCheckoutItem.objects.create(
+            checkout=checkout, client_item_id=item['client_item_id'], product_id=item['product'],
+            quantity=item['quantity'], snapshot={
+                'raw': _preview_snapshot(item), 'preview': _preview_snapshot(preview['items'][index]),
+            },
+        )
+    checkout.customer = customer
+    checkout.cash_session = session
+    checkout.financial_snapshot = _preview_snapshot(_financial_snapshot(preview))
+    checkout.discount_intent = _preview_snapshot(preview['discount_intent'])
+    checkout.service_fee_waived = bool(service_fee_waived)
+    checkout.save()
+    try:
+        acquire_checkout_reservation(checkout)
+    except StockReservationConflict as error:
+        raise QuickCheckoutConflict('stock_unavailable', error.message) from error
+    audit_log(actor=user, action='quick_sale_checkout.update', obj=checkout,
+              company=checkout.company, branch=checkout.branch,
+              after={'checkout_id': str(checkout.pk), 'total': str(preview['total'])},
+              metadata=audit_metadata or {})
+    return checkout
 
 
 def checkout_balance(checkout, *, lock=False):
@@ -138,6 +223,28 @@ def checkout_balance(checkout, *, lock=False):
         decimal_places=2, max_digits=14,
     )
     return paid, total - paid
+
+
+def _lock_checkout_session(checkout_id):
+    """Lock the drawer before its checkout so closing and tender writes serialize."""
+    session_id = QuickSaleCheckout.objects.filter(pk=checkout_id).values_list(
+        'cash_session_id', flat=True,
+    ).first()
+    if session_id is None:
+        raise QuickCheckoutConflict('cash_session_missing', 'O checkout não possui sessão de caixa.')
+    session = CashSession.objects.select_for_update().filter(pk=session_id).first()
+    if session is None:
+        raise QuickCheckoutConflict('cash_session_missing', 'A sessão de caixa do checkout não existe.')
+    checkout = QuickSaleCheckout.objects.select_for_update().select_related(
+        'branch', 'pos_device', 'company', 'cash_session', 'customer',
+        'discount_approved_by', 'item_discount_approved_by',
+        'service_fee_waived_by', 'sale',
+    ).get(pk=checkout_id)
+    if checkout.cash_session_id != session.pk:
+        raise QuickCheckoutConflict(
+            'cash_session_changed', 'A sessão de caixa do checkout foi alterada.',
+        )
+    return session, checkout
 
 
 def _allocation_amount(checkout, allocations):
@@ -195,10 +302,35 @@ def _allocation_amount(checkout, allocations):
 
 
 @transaction.atomic
-def record_quick_checkout_payment(*, checkout, user, payment_method_id, mode, amount,
-                                  received_amount, allocations, idempotency_key,
-                                  audit_metadata=None):
+def preview_quick_checkout_payment(*, checkout, allocations):
+    """Use the ledger allocation primitive without creating a payment."""
     checkout = QuickSaleCheckout.objects.select_for_update().get(pk=checkout.pk)
+    if checkout.status != QuickSaleCheckoutStatus.OPEN:
+        raise QuickCheckoutConflict('checkout_closed', 'O checkout já foi finalizado.')
+    total, _resolved = _allocation_amount(checkout, allocations)
+    allocated = {
+        row['item_id']: row['quantity'] or Decimal('0.000')
+        for row in QuickSalePaymentAllocation.objects.filter(
+            payment__checkout=checkout, payment__status=QuickSalePaymentStatus.APPLIED,
+            payment__reversal__isnull=True,
+        ).values('item_id').annotate(quantity=Sum('allocated_quantity'))
+    }
+    return {
+        'total': str(total),
+        'available_quantities': {
+            str(item.pk): str(item.quantity - allocated.get(item.pk, Decimal('0.000')))
+            for item in checkout.items.order_by('id')
+        },
+    }
+
+
+@transaction.atomic
+def record_quick_checkout_payment(*, checkout, user, payment_method_id, mode, amount,
+                                   received_amount, allocations, idempotency_key,
+                                   audit_metadata=None):
+    session, checkout = _lock_checkout_session(checkout.pk)
+    if session.status != CashSessionStatus.OPEN:
+        raise QuickCheckoutConflict('cash_session_closed', 'Não é possível registrar pagamento após o fechamento do caixa.')
     payload = {'payment_method': payment_method_id, 'mode': mode, 'amount': str(amount),
                'received_amount': str(received_amount), 'allocations': allocations or []}
     fingerprint = _fingerprint(payload)
@@ -211,6 +343,10 @@ def record_quick_checkout_payment(*, checkout, user, payment_method_id, mode, am
         return existing, True
     if checkout.status != QuickSaleCheckoutStatus.OPEN:
         raise QuickCheckoutConflict('checkout_closed', 'O checkout já foi finalizado.')
+    try:
+        validate_checkout_reservation(checkout, paid=True)
+    except StockReservationConflict as error:
+        raise QuickCheckoutConflict('stock_unavailable', error.message) from error
     method = PaymentMethod.objects.select_for_update().filter(
         pk=payment_method_id, company=checkout.company, status=Status.ACTIVE,
     ).first()
@@ -251,11 +387,21 @@ def record_quick_checkout_payment(*, checkout, user, payment_method_id, mode, am
 
 @transaction.atomic
 def reverse_quick_checkout_payment(*, payment, user, reason, idempotency_key, audit_metadata=None):
-    payment = QuickSalePayment.objects.select_for_update().select_related('checkout').get(pk=payment.pk)
-    if payment.checkout.status != QuickSaleCheckoutStatus.OPEN:
+    payment_hint = QuickSalePayment.objects.filter(pk=payment.pk).values_list(
+        'checkout_id', flat=True,
+    ).first()
+    if payment_hint is None:
+        raise QuickCheckoutConflict('payment_not_found', 'Pagamento não encontrado.')
+    session, checkout = _lock_checkout_session(payment_hint)
+    payment = QuickSalePayment.objects.select_for_update().select_related(
+        'checkout', 'payment_method', 'cash_session',
+    ).get(pk=payment.pk, checkout=checkout)
+    if checkout.status != QuickSaleCheckoutStatus.OPEN:
         raise QuickCheckoutConflict('checkout_closed', 'O checkout já foi finalizado.')
+    if session.status != CashSessionStatus.OPEN:
+        raise QuickCheckoutConflict('cash_session_closed', 'Não é possível estornar após o fechamento do caixa.')
     existing = QuickSalePayment.objects.select_for_update().filter(
-        checkout=payment.checkout, idempotency_key=idempotency_key,
+        checkout=checkout, idempotency_key=idempotency_key,
     ).first()
     if existing:
         if existing.reversal_of_id == payment.pk:
@@ -274,25 +420,52 @@ def reverse_quick_checkout_payment(*, payment, user, reason, idempotency_key, au
     audit_log(actor=user, action='quick_sale_checkout.payment.reverse', obj=reversal,
               company=payment.checkout.company, branch=payment.checkout.branch,
               after={'payment_id': payment.pk, 'reason': reversal.reversal_reason},
-              metadata={**(audit_metadata or {}), 'idempotency_key': str(idempotency_key)})
+               metadata={**(audit_metadata or {}), 'idempotency_key': str(idempotency_key)})
+    paid, _remaining = checkout_balance(checkout, lock=True)
+    if paid == Decimal('0.00'):
+        restore_checkout_reservation_expiry(checkout)
     return reversal, False
 
 
 @transaction.atomic
+def cancel_quick_checkout(*, checkout, user, audit_metadata=None):
+    checkout = QuickSaleCheckout.objects.select_for_update().get(pk=checkout.pk)
+    if checkout.status == QuickSaleCheckoutStatus.CANCELLED:
+        return checkout, True
+    if checkout.status != QuickSaleCheckoutStatus.OPEN:
+        raise QuickCheckoutConflict('checkout_closed', 'O checkout já foi finalizado.')
+    paid, _remaining = checkout_balance(checkout, lock=True)
+    if paid:
+        raise QuickCheckoutConflict('checkout_paid', 'Estorne todos os pagamentos antes de cancelar.')
+    release_checkout_reservation(checkout)
+    checkout.status = QuickSaleCheckoutStatus.CANCELLED
+    checkout.save(update_fields=('status', 'updated_at'))
+    audit_log(actor=user, action='quick_sale_checkout.cancel', obj=checkout,
+              company=checkout.company, branch=checkout.branch,
+              after={'checkout_id': str(checkout.pk)}, metadata=audit_metadata or {})
+    return checkout, False
+
+
+@transaction.atomic
 def finalize_quick_checkout(*, checkout, user, permissions, idempotency_key, audit_metadata=None):
-    checkout = QuickSaleCheckout.objects.select_for_update().select_related(
-        'branch', 'pos_device', 'cash_session', 'customer', 'discount_approved_by',
-        'item_discount_approved_by', 'service_fee_waived_by', 'sale',
-    ).get(pk=checkout.pk)
+    session, checkout = _lock_checkout_session(checkout.pk)
+    # Lock all ledger rows after the session and checkout, including a replay's rows.
+    list(QuickSalePayment.objects.select_for_update().filter(
+        checkout=checkout,
+    ).values_list('pk', flat=True))
     if checkout.status == QuickSaleCheckoutStatus.FINALIZED:
         if checkout.sale:
             return checkout.sale, True
         raise QuickCheckoutConflict('checkout_closed', 'O checkout já foi finalizado.')
-    if checkout.cash_session.status != CashSessionStatus.OPEN:
+    if session.status not in (CashSessionStatus.OPEN, CashSessionStatus.CLOSED):
         raise QuickCheckoutConflict('cash_session_closed', 'Não é possível finalizar após o fechamento do caixa.')
     paid, remaining = checkout_balance(checkout, lock=True)
     if remaining != Decimal('0.00'):
         raise QuickCheckoutConflict('balance_remaining', f'Ainda falta pagar R$ {remaining:.2f}.')
+    try:
+        reservation = validate_checkout_reservation(checkout, paid=True)
+    except StockReservationConflict as error:
+        raise QuickCheckoutConflict('stock_unavailable', error.message) from error
     payments = [
         {'payment_method': payment.payment_method_id, 'amount': payment.amount,
          **({'received_amount': payment.received_amount} if payment.received_amount is not None else {})}
@@ -302,7 +475,7 @@ def finalize_quick_checkout(*, checkout, user, permissions, idempotency_key, aud
     ]
     sale = finalize_sale(
         branch=checkout.branch, user=user, operation_type=OperationType.SALE,
-        cash_session=checkout.cash_session, seller_user=checkout.operator, customer=checkout.customer,
+        cash_session=session, seller_user=checkout.operator, customer=checkout.customer,
         items=[item.snapshot['raw'] for item in checkout.items.order_by('id')], payments=payments,
         discount=checkout.discount_intent,
         service_fee_waived=checkout.service_fee_waived,
@@ -312,7 +485,10 @@ def finalize_quick_checkout(*, checkout, user, permissions, idempotency_key, aud
         frozen_quick_discount_approved_by=checkout.discount_approved_by,
         frozen_quick_item_discount_approved_by=checkout.item_discount_approved_by,
         frozen_quick_service_fee_waived_by=checkout.service_fee_waived_by,
+        allow_closed_cash_session=session.status == CashSessionStatus.CLOSED,
+        stock_reservation=reservation,
     )
+    consume_checkout_reservation(reservation)
     checkout.sale = sale
     checkout.status = QuickSaleCheckoutStatus.FINALIZED
     checkout.finalization_idempotency_key = idempotency_key

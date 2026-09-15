@@ -1347,7 +1347,7 @@ def _active_branch(branch, user, permission_code, *, allow_pos_only=False,
     return branch
 
 
-def _lock_cash_session(raw_session, branch, *, required):
+def _lock_cash_session(raw_session, branch, *, required, allow_closed=False):
     if raw_session in (None, ''):
         if required:
             raise ValidationError({'cash_session': 'Informe uma sessão de caixa aberta.'})
@@ -1358,7 +1358,9 @@ def _lock_cash_session(raw_session, branch, *, required):
         raise ValidationError({'cash_session': 'Sessão de caixa inválida.'})
     if session.branch_id != branch.pk:
         raise ValidationError({'cash_session': 'A sessão deve pertencer à filial atual.'})
-    if session.status != CashSessionStatus.OPEN:
+    if session.status != CashSessionStatus.OPEN and not (
+        allow_closed and session.status == CashSessionStatus.CLOSED
+    ):
         raise ValidationError({'cash_session': 'A sessão de caixa deve estar aberta.'})
     return session
 
@@ -1567,7 +1569,7 @@ def prepare_sale_products(company, raw_items, *, branch, channel, lock):
     )
 
 
-def _lock_required_stocks(branch, requirements, content_requirements=None):
+def _lock_required_stocks(branch, requirements, content_requirements=None, reservation=None):
     content_requirements = content_requirements or {}
     if not requirements:
         return {}
@@ -1580,6 +1582,8 @@ def _lock_required_stocks(branch, requirements, content_requirements=None):
         for stock in Stock.objects.select_for_update().select_related('product')
         .filter(branch=branch, product_id__in=sorted(requirements)).order_by('product_id', 'pk')
     }
+    from apps.inventory.reservations import StockReservationConflict, reserved_totals
+
     for product_id in sorted(requirements):
         if product_id not in stocks:
             # Product rows are already locked, serializing this defensive materialization.
@@ -1587,11 +1591,24 @@ def _lock_required_stocks(branch, requirements, content_requirements=None):
             stocks[product_id] = materialize_stock(
                 product=product, branch=branch,
             )
-        insufficient = stocks[product_id].current_quantity < requirements[product_id]
+        reserved_quantity, reserved_content = reserved_totals(
+            stock_ids=(stocks[product_id].pk,), exclude_reservation=reservation,
+        ).get(stocks[product_id].pk, (Decimal('0'), Decimal('0')))
+        insufficient = (
+            stocks[product_id].current_quantity - reserved_quantity
+            < requirements[product_id]
+        )
         if product_id in content_requirements:
             insufficient = (
                 stocks[product_id].current_content is None
-                or stocks[product_id].current_content < content_requirements[product_id]
+                or stocks[product_id].current_content - reserved_content
+                < content_requirements[product_id]
+            )
+        if insufficient and (
+            reserved_quantity > 0 or reserved_content > 0
+        ):
+            raise StockReservationConflict(
+                f'Estoque reservado impede a saída de {stocks[product_id].product.name}.'
             )
         if not allow_negative and insufficient:
             raise ValidationError({
@@ -1646,14 +1663,23 @@ def catalog_product_operational_states(branch, products):
             product_id__in=direct_ids,
         ).only('product_id', 'tracking_active')
     }
+    from apps.inventory.reservations import reserved_totals
+
+    reservations = reserved_totals(stock_ids=[stock.pk for stock in stocks.values()])
 
     def has_quantity(product_id, required, *, content=False):
         stock = stocks.get(product_id)
         if stock is None:
             return False
+        reserved_quantity, reserved_content = reservations.get(
+            stock.pk, (Decimal('0'), Decimal('0')),
+        )
         if content:
-            return stock.current_content is not None and stock.current_content >= required
-        return stock.current_quantity >= required
+            return (
+                stock.current_content is not None
+                and stock.current_content - reserved_content >= required
+            )
+        return stock.current_quantity - reserved_quantity >= required
 
     states = {}
     for product in products:
@@ -1715,13 +1741,22 @@ def assess_sale_stock_availability(*, company, raw_items, branch,
             product_id__in=content_requirements,
         ).only('product_id', 'content_unit')
     }
+    from apps.inventory.reservations import reserved_totals
+
+    reservations = reserved_totals(stock_ids=[stock.pk for stock in stocks.values()])
     shortages = []
     for product_id in sorted(requirements):
         stock = stocks.get(product_id)
         product = stock.product if stock else products.get(product_id)
         required = requirements[product_id]
+        reserved_quantity, reserved_content = reservations.get(
+            stock.pk, (Decimal('0'), Decimal('0')),
+        ) if stock else (Decimal('0'), Decimal('0'))
         if product_id in content_requirements:
-            available = stock.current_content if stock and stock.current_content is not None else Decimal('0')
+            available = (
+                stock.current_content - reserved_content
+                if stock and stock.current_content is not None else Decimal('0')
+            )
             if available < content_requirements[product_id]:
                 shortages.append({
                     'product': product_id,
@@ -1732,7 +1767,7 @@ def assess_sale_stock_availability(*, company, raw_items, branch,
                     'available_content': available,
                 })
         else:
-            available = stock.current_quantity if stock else Decimal('0')
+            available = stock.current_quantity - reserved_quantity if stock else Decimal('0')
             if available < required:
                 shortages.append({
                     'product': product_id,
@@ -2084,9 +2119,10 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
                           attendance_payment_sources=None, table_payment_sources=None,
                           allow_pos_only=False, audit_metadata=None,
                          pos_permission_codes=None, pos_device_validated=False,
-                         frozen_quick_preview=None, frozen_quick_discount_approved_by=None,
-                         frozen_quick_item_discount_approved_by=None,
-                         frozen_quick_service_fee_waived_by=None):
+                           frozen_quick_preview=None, frozen_quick_discount_approved_by=None,
+                           frozen_quick_item_discount_approved_by=None,
+                           frozen_quick_service_fee_waived_by=None, stock_reservation=None,
+                           allow_closed_cash_session=False):
     permission = 'sales.create_consumption' if operation_type == OperationType.CONSUMPTION else 'sales.create'
     if operation_type not in OperationType.values:
         raise ValidationError({'operation_type': 'Tipo de operação inválido.'})
@@ -2112,6 +2148,8 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         and allow_pos_only and pos_device is not None
     ):
         raise ValidationError({'operation': 'Snapshot de checkout rápido inválido.'})
+    if allow_closed_cash_session and frozen_quick_preview is None:
+        raise ValidationError({'operation': 'Sessão fechada só pode materializar checkout rápido já pago.'})
     branch = _active_branch(
         branch, user, permission, allow_pos_only=allow_pos_only,
         resolved_permission_codes=pos_permission_codes,
@@ -2209,13 +2247,18 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             seller_user = _eligible_sale_user(
                 branch, seller_user, 'sales.create', 'seller_user'
             )
-        session = _lock_cash_session(cash_session, branch, required=True)
+        session = _lock_cash_session(
+            cash_session, branch, required=True,
+            allow_closed=allow_closed_cash_session,
+        )
 
     if confirmed_order_items is None:
         snapshots, requirements, content_requirements, subtotal = _prepare_products(
             company, items, branch=branch, channel=channel
         )
-        stocks = _lock_required_stocks(branch, requirements, content_requirements)
+        stocks = _lock_required_stocks(
+            branch, requirements, content_requirements, reservation=stock_reservation,
+        )
         _reconcile_modifier_component_costs(snapshots, stocks)
     else:
         snapshots, subtotal = _frozen_command_snapshots(confirmed_order_items, branch)
@@ -2425,6 +2468,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
                 -content_requirements[product_id]
                 if product_id in content_requirements else None
             ),
+            reservation=stock_reservation,
         )
     item_snapshots = [
         {

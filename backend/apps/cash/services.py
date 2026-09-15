@@ -347,6 +347,7 @@ def expected_amount_from_components(session, *, totals=None, cash=None):
         + cash['command_cash']
         + cash['attendance_cash']
         + cash['table_cash']
+        + cash['quick_checkout_cash']
     ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
 
@@ -359,6 +360,9 @@ def cash_payment_components(session):
     # the corresponding Sale Payment rows.
     from apps.commands.models import CommandPayment, CommandPaymentStatus
     from apps.attendance.models import AttendancePayment, AttendancePaymentStatus, TablePayment
+    from apps.pos.models import (
+        QuickSaleCheckoutStatus, QuickSalePayment, QuickSalePaymentStatus,
+    )
 
     money = DecimalField(max_digits=20, decimal_places=2)
     payments = Payment.objects.filter(sale__cash_session_id=_pk(session)).filter(
@@ -401,6 +405,17 @@ def cash_payment_components(session):
         status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
         attendance__sale__isnull=True,
     ).aggregate(total=Coalesce(Sum('amount'), Decimal('0.00'), output_field=money))['total']
+    # This tender exists before Sale materialization. Finalized checkouts are
+    # excluded because their Sale Payment rows become the sole cash source.
+    values['quick_checkout_cash'] = QuickSalePayment.objects.filter(
+        cash_session_id=_pk(session),
+        checkout__status=QuickSaleCheckoutStatus.OPEN,
+        status=QuickSalePaymentStatus.APPLIED,
+        reversal__isnull=True,
+    ).filter(
+        Q(payment_method_code=PaymentMethodCode.CASH)
+        | Q(payment_method__code=PaymentMethodCode.CASH)
+    ).aggregate(total=Coalesce(Sum('amount'), Decimal('0.00'), output_field=money))['total']
     values['cash_payments'] = (
         values['sale_cash']
         + values['consumption_cash']
@@ -408,6 +423,7 @@ def cash_payment_components(session):
         + values['command_cash']
         + values['attendance_cash']
         + values['table_cash']
+        + values['quick_checkout_cash']
     )
     return values
 
@@ -492,6 +508,9 @@ def build_session_operational_summary(session, session_sales):
     cash['table_cash'] = getattr(session, 'table_cash', None)
     if cash['table_cash'] is None:
         cash['table_cash'] = cash_payment_components(session)['table_cash']
+    cash['quick_checkout_cash'] = getattr(session, 'quick_checkout_cash', None)
+    if cash['quick_checkout_cash'] is None:
+        cash['quick_checkout_cash'] = cash_payment_components(session)['quick_checkout_cash']
     cash['cash_payments'] = (
         cash['sale_cash']
         + cash['consumption_cash']
@@ -499,6 +518,7 @@ def build_session_operational_summary(session, session_sales):
         + cash['command_cash']
         + cash['attendance_cash']
         + cash['table_cash']
+        + cash['quick_checkout_cash']
     )
     return {
         'status': session.status,
@@ -600,6 +620,7 @@ def session_cash_state(session):
         'command_cash': f'{cash["command_cash"]:.2f}',
         'attendance_cash': f'{cash["attendance_cash"]:.2f}',
         'table_cash': f'{cash["table_cash"]:.2f}',
+        'quick_checkout_cash': f'{cash["quick_checkout_cash"]:.2f}',
         'cash_payments': f'{cash["cash_payments"]:.2f}',
         'expected_amount': f'{expected:.2f}',
         'closing_amount_informed': (
@@ -669,7 +690,28 @@ def close_session(
             cash_session=session, payment_method__code='cash', status=AttendancePaymentStatus.APPLIED,
             reversal__isnull=True, attendance__status=TableAttendanceStatus.OPEN,
         ).values_list('pk', flat=True))
-        if not blocked_payment_ids and not blocked_attendance_payment_ids and not blocked_table_payment_ids:
+        # Keep session -> checkout -> payment locking so a tender cannot be
+        # accepted while this session is being closed.
+        from apps.pos.models import (
+            QuickSaleCheckout, QuickSaleCheckoutStatus, QuickSalePayment,
+        )
+        from apps.sales.quick_checkout import checkout_balance
+
+        quick_checkouts = list(QuickSaleCheckout.objects.select_for_update().filter(
+            cash_session=session, status=QuickSaleCheckoutStatus.OPEN,
+        ).order_by('pk'))
+        list(QuickSalePayment.objects.select_for_update(of=('self',)).filter(
+            checkout__in=quick_checkouts,
+        ).values_list('pk', flat=True))
+        blocked_quick_checkout_ids = []
+        for checkout in quick_checkouts:
+            paid, remaining = checkout_balance(checkout, lock=True)
+            if paid > Decimal('0.00') and remaining > Decimal('0.00'):
+                blocked_quick_checkout_ids.append(str(checkout.pk))
+        if not (
+            blocked_payment_ids or blocked_attendance_payment_ids
+            or blocked_table_payment_ids or blocked_quick_checkout_ids
+        ):
             expected = calculate_expected_amount(session)
             session.status = CashSessionStatus.CLOSED
             session.closed_by = user
@@ -700,16 +742,21 @@ def close_session(
                company=session.branch.company, branch=session.branch,
                 metadata={
                     **(audit_metadata or {}),
-                    'reason': 'open_command_partial_payments',
-                     'command_payment_count': len(blocked_payment_ids) + len(blocked_attendance_payment_ids) + len(blocked_table_payment_ids),
-                     'command_payment_ids': blocked_payment_ids,
-                     'attendance_payment_ids': blocked_attendance_payment_ids,
-                     'table_payment_ids': blocked_table_payment_ids,
-               })
+                    'reason': 'open_partial_payments',
+                    'command_payment_count': (
+                        len(blocked_payment_ids) + len(blocked_attendance_payment_ids)
+                        + len(blocked_table_payment_ids)
+                    ),
+                    'command_payment_ids': blocked_payment_ids,
+                    'attendance_payment_ids': blocked_attendance_payment_ids,
+                    'table_payment_ids': blocked_table_payment_ids,
+                    'quick_checkout_count': len(blocked_quick_checkout_ids),
+                    'quick_checkout_ids': blocked_quick_checkout_ids,
+                })
     raise ValidationError({
         'cash_session': (
-            'Não é possível fechar a sessão: há pagamento parcial de comanda aberta '
-            f'({len(blocked_payment_ids) + len(blocked_attendance_payment_ids) + len(blocked_table_payment_ids)} pendência(s), incluindo Mesas abertas).'
+            'Não é possível fechar a sessão: há pagamentos parciais em aberto '
+            f'({len(blocked_payment_ids) + len(blocked_attendance_payment_ids) + len(blocked_table_payment_ids) + len(blocked_quick_checkout_ids)} pendência(s), incluindo comandas, Mesas ou Venda Rápida).'
         )
     })
 

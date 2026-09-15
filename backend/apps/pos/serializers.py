@@ -200,6 +200,18 @@ class POSQuickCheckoutCreateSerializer(POSSalePreviewSerializer):
     service_fee_authorization = POSDiscountAuthorizationSerializer(required=False)
 
 
+class POSQuickCheckoutUpdateSerializer(POSSalePreviewSerializer):
+    customer = serializers.IntegerField(required=False, allow_null=True)
+    cash_session = serializers.IntegerField(min_value=1)
+    discount_authorization = POSDiscountAuthorizationSerializer(required=False)
+    item_discount_authorization = POSDiscountAuthorizationSerializer(required=False)
+    service_fee_authorization = POSDiscountAuthorizationSerializer(required=False)
+
+
+class POSQuickCheckoutCancelSerializer(serializers.Serializer):
+    pass
+
+
 class POSQuickCheckoutPaymentSerializer(serializers.Serializer):
     payment_method = serializers.IntegerField(min_value=1)
     mode = serializers.ChoiceField(choices=('value', 'remaining', 'items'), default='value')
@@ -230,6 +242,23 @@ class POSQuickCheckoutPaymentSerializer(serializers.Serializer):
             if allocation['item'] < 1 or allocation['allocated_quantity'] <= 0:
                 raise serializers.ValidationError({'allocations': 'Alocações devem ter item e quantidade positiva.'})
         return attrs
+
+
+class POSQuickCheckoutPaymentPreviewSerializer(serializers.Serializer):
+    allocations = serializers.ListField(child=serializers.DictField(), allow_empty=False)
+
+    def validate_allocations(self, allocations):
+        normalized = []
+        for allocation in allocations:
+            try:
+                item = int(allocation['item'])
+                quantity = Decimal(str(allocation['allocated_quantity']))
+            except (KeyError, TypeError, ValueError, ArithmeticError) as error:
+                raise serializers.ValidationError('Alocação de item inválida.') from error
+            if item < 1 or quantity <= 0:
+                raise serializers.ValidationError('Alocações devem ter item e quantidade positiva.')
+            normalized.append({'item': item, 'allocated_quantity': quantity})
+        return normalized
 
 
 class POSQuickCheckoutReverseSerializer(serializers.Serializer):

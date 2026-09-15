@@ -114,6 +114,76 @@ class Stock(BaseModel):
         return f'{self.product} - {self.branch.name}: {self.current_quantity}'
 
 
+class StockReservationStatus(models.TextChoices):
+    ACTIVE = 'ACTIVE', 'Ativa'
+    CONSUMED = 'CONSUMED', 'Consumida'
+    RELEASED = 'RELEASED', 'Liberada'
+    EXPIRED = 'EXPIRED', 'Expirada'
+
+
+class StockReservation(BaseModel):
+    """A logical stock commitment; physical stock remains in StockMovement."""
+    branch = models.ForeignKey(
+        Branch, on_delete=models.PROTECT, related_name='stock_reservations'
+    )
+    source_type = models.CharField(max_length=32)
+    source_reference = models.CharField(max_length=64)
+    status = models.CharField(
+        max_length=10, choices=StockReservationStatus.choices,
+        default=StockReservationStatus.ACTIVE, db_index=True,
+    )
+    expires_at = models.DateTimeField(blank=True, null=True, db_index=True)
+
+    class Meta:
+        ordering = ('created_at', 'pk')
+        constraints = [
+            models.UniqueConstraint(
+                fields=('branch', 'source_type', 'source_reference'),
+                name='inventory_reservation_source_unique',
+            ),
+        ]
+        indexes = [models.Index(fields=('branch', 'status', 'expires_at'))]
+
+
+class StockReservationRequirement(BaseModel):
+    reservation = models.ForeignKey(
+        StockReservation, on_delete=models.PROTECT, related_name='requirements'
+    )
+    stock = models.ForeignKey(
+        Stock, on_delete=models.PROTECT, related_name='reservation_requirements'
+    )
+    quantity = models.DecimalField(max_digits=24, decimal_places=9)
+    content_quantity = models.DecimalField(
+        max_digits=24, decimal_places=9, blank=True, null=True
+    )
+
+    class Meta:
+        ordering = ('stock_id', 'pk')
+        constraints = [
+            models.UniqueConstraint(
+                fields=('reservation', 'stock'),
+                name='inventory_reservation_requirement_stock_unique',
+            ),
+            models.CheckConstraint(
+                condition=Q(quantity__gt=0),
+                name='inventory_reservation_requirement_quantity_positive',
+            ),
+            models.CheckConstraint(
+                condition=Q(content_quantity__isnull=True) | Q(content_quantity__gt=0),
+                name='inventory_reservation_requirement_content_positive',
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.reservation_id and self.stock_id and self.reservation.branch_id != self.stock.branch_id:
+            raise ValidationError({'stock': 'O estoque deve pertencer à filial da reserva.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+
 class MovementType(models.TextChoices):
     ENTRY = 'entry', 'Entrada'
     EXIT = 'exit', 'Saída'
