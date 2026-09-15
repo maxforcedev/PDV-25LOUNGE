@@ -10,6 +10,7 @@ import '../sales/quick_sale_page.dart';
 import '../sales/sale_models.dart';
 import '../sales/shared_customer_dialog.dart';
 import '../sales/shared_pos_widgets.dart';
+import '../sales/shared_sale_item_editor_dialog.dart';
 import 'attendance_models.dart';
 import 'attendance_presentation.dart';
 import 'shared_tables_grid.dart';
@@ -203,8 +204,11 @@ class _TableOrderPageState extends State<TableOrderPage> {
       QuickSaleProduct product, QuickSaleCartItem item) async {
     final configured = await showDialog<QuickSaleCartItem>(
       context: context,
-      builder: (_) =>
-          _TableSaleItemEditorDialog(product: product, initial: item),
+      builder: (_) => SharedSaleItemEditorDialog(
+        product: product,
+        initial: item,
+        showQuantityAndNotes: true,
+      ),
     );
     if (configured != null && mounted && !_saving) {
       await _addCartItem(configured);
@@ -385,8 +389,11 @@ class _TableOrderPageState extends State<TableOrderPage> {
     final initial = _cart[index];
     final item = await showDialog<QuickSaleCartItem>(
       context: context,
-      builder: (_) => _TableSaleItemEditorDialog(
-          product: initial.product, initial: initial),
+      builder: (_) => SharedSaleItemEditorDialog(
+        product: initial.product,
+        initial: initial,
+        showQuantityAndNotes: true,
+      ),
     );
     if (item != null && mounted && !_saving) {
       await _replaceCartItem(initial.clientItemId, item);
@@ -1258,278 +1265,6 @@ class _TableMobileSummaryBar extends StatelessWidget {
             ),
           ),
         ),
-      );
-}
-
-class _TableSaleItemEditorDialog extends StatefulWidget {
-  const _TableSaleItemEditorDialog({
-    required this.product,
-    required this.initial,
-  });
-
-  final QuickSaleProduct product;
-  final QuickSaleCartItem initial;
-
-  @override
-  State<_TableSaleItemEditorDialog> createState() =>
-      _TableSaleItemEditorDialogState();
-}
-
-class _TableSaleItemEditorDialogState
-    extends State<_TableSaleItemEditorDialog> {
-  final Map<int, int> _modifierQuantities = {};
-  late final TextEditingController _quantity;
-  late final TextEditingController _notes;
-  String? _validation;
-
-  @override
-  void initState() {
-    super.initState();
-    _quantity = TextEditingController(
-        text: formatAttendanceQuantity(widget.initial.quantity));
-    _notes = TextEditingController(text: widget.initial.notes);
-    for (final modifier in widget.initial.modifiers) {
-      final optionId = int.tryParse('${modifier['option'] ?? ''}');
-      if (optionId != null) {
-        _modifierQuantities[optionId] =
-            _tableCartNumber(modifier['quantity'] ?? 1).round();
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    _quantity.dispose();
-    _notes.dispose();
-    super.dispose();
-  }
-
-  double get _itemQuantity => _tableCartNumber(_quantity.text);
-
-  void _setQuantity(double quantity) {
-    if (quantity <= 0) return;
-    setState(() {
-      _quantity.text = formatAttendanceQuantity(quantity);
-      _validation = null;
-    });
-  }
-
-  void _select(QuickSaleModifierGroup group, QuickSaleModifierOption option,
-      bool value) {
-    setState(() {
-      if (value) {
-        if (group.maxSelections == 1) {
-          for (final candidate in group.options) {
-            _modifierQuantities.remove(candidate.id);
-          }
-        }
-        _modifierQuantities[option.id] = 1;
-      } else {
-        _modifierQuantities.remove(option.id);
-      }
-      _validation = null;
-    });
-  }
-
-  void _increase(QuickSaleModifierGroup group, QuickSaleModifierOption option) {
-    setState(() {
-      if (group.maxSelections == 1) {
-        for (final candidate in group.options) {
-          _modifierQuantities.remove(candidate.id);
-        }
-      }
-      _modifierQuantities[option.id] =
-          (_modifierQuantities[option.id] ?? 0) + 1;
-      _validation = null;
-    });
-  }
-
-  void _decrease(QuickSaleModifierOption option) {
-    setState(() {
-      final current = _modifierQuantities[option.id] ?? 0;
-      if (current <= 1) {
-        _modifierQuantities.remove(option.id);
-      } else {
-        _modifierQuantities[option.id] = current - 1;
-      }
-      _validation = null;
-    });
-  }
-
-  String? _groupValidation(QuickSaleModifierGroup group) {
-    final selected = group.options
-        .where((option) => _modifierQuantities.containsKey(option.id));
-    final selections = selected.length;
-    final total = selected.fold<double>(
-        0, (sum, option) => sum + (_modifierQuantities[option.id] ?? 0));
-    if (selections < group.minSelections ||
-        (group.required && selections == 0)) {
-      final missing = (group.minSelections - selections).clamp(1, 999);
-      return 'Selecione mais $missing ${missing == 1 ? 'opção' : 'opções'} em ${group.name}.';
-    }
-    if (group.maxSelections != null && selections > group.maxSelections!) {
-      return 'Remova opções em ${group.name} para respeitar o limite.';
-    }
-    final required = _tableCartNumber(group.requiredQuantity) * _itemQuantity;
-    if (group.requiredQuantity != null && (total - required).abs() > .001) {
-      return total < required
-          ? 'Selecione mais ${formatAttendanceQuantity(required - total)} unidade(s) em ${group.name}.'
-          : 'Remova ${formatAttendanceQuantity(total - required)} unidade(s) em ${group.name}.';
-    }
-    final minimum = _tableCartNumber(group.minTotalQuantity);
-    if (minimum > 0 && total < minimum) {
-      return 'Selecione mais ${formatAttendanceQuantity(minimum - total)} unidade(s) em ${group.name}.';
-    }
-    final maximum = group.maxTotalQuantity == null
-        ? null
-        : _tableCartNumber(group.maxTotalQuantity);
-    if (maximum != null && total > maximum) {
-      return 'Remova ${formatAttendanceQuantity(total - maximum)} unidade(s) em ${group.name}.';
-    }
-    return null;
-  }
-
-  void _save() {
-    if (_itemQuantity <= 0) {
-      setState(() => _validation = 'Informe uma quantidade válida.');
-      return;
-    }
-    if (widget.product.unit.toLowerCase() == 'un' &&
-        _itemQuantity != _itemQuantity.roundToDouble()) {
-      setState(() =>
-          _validation = 'Produtos por unidade exigem quantidade inteira.');
-      return;
-    }
-    if (_quantity.text.split(RegExp(r'[,.]')).last.length > 3) {
-      setState(() =>
-          _validation = 'A quantidade aceita no máximo três casas decimais.');
-      return;
-    }
-    for (final group in widget.product.modifierGroups) {
-      final validation = _groupValidation(group);
-      if (validation != null) {
-        setState(() => _validation = validation);
-        return;
-      }
-    }
-    Navigator.of(context).pop(widget.initial.copyWith(
-      quantity: formatAttendanceQuantity(_itemQuantity),
-      notes: _notes.text.trim(),
-      modifiers: _modifierQuantities.entries
-          .map((entry) => <String, dynamic>{
-                'option': entry.key,
-                'quantity': '${entry.value}',
-              })
-          .toList(growable: false),
-    ));
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: Text('Editar ${widget.product.name}'),
-        content: SizedBox(
-          width: 460,
-          child: SingleChildScrollView(
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Row(children: [
-                IconButton(
-                  onPressed: () => _setQuantity(_itemQuantity - 1),
-                  icon: const Icon(Icons.remove_circle_outline),
-                  tooltip: 'Diminuir quantidade',
-                ),
-                Expanded(
-                  child: TextField(
-                    controller: _quantity,
-                    textAlign: TextAlign.center,
-                    keyboardType:
-                        const TextInputType.numberWithOptions(decimal: true),
-                    onChanged: (_) => setState(() => _validation = null),
-                    decoration: const InputDecoration(labelText: 'Quantidade'),
-                  ),
-                ),
-                IconButton(
-                  onPressed: () => _setQuantity(_itemQuantity + 1),
-                  icon: const Icon(Icons.add_circle_outline),
-                  tooltip: 'Aumentar quantidade',
-                ),
-              ]),
-              for (final group in widget.product.modifierGroups) ...[
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Padding(
-                    padding: const EdgeInsets.only(top: 16),
-                    child: Text(
-                      '${group.name}${group.required ? ' *' : ''}',
-                      style: const TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                  ),
-                ),
-                for (final option in group.options)
-                  Row(children: [
-                    Expanded(
-                      child: group.allowOptionQuantity
-                          ? ListTile(
-                              contentPadding: EdgeInsets.zero,
-                              onTap: () => _increase(group, option),
-                              title: Text(option.name),
-                              subtitle: Text(
-                                  '+ ${formatAttendanceMoney(option.additionalPrice)}'),
-                              leading: Icon(
-                                _modifierQuantities.containsKey(option.id)
-                                    ? Icons.add_circle
-                                    : Icons.add_circle_outline,
-                                color: const Color(0xff3454d1),
-                              ),
-                            )
-                          : CheckboxListTile(
-                              contentPadding: EdgeInsets.zero,
-                              value: _modifierQuantities.containsKey(option.id),
-                              onChanged: (value) =>
-                                  _select(group, option, value ?? false),
-                              title: Text(option.name),
-                              subtitle: Text(
-                                  '+ ${formatAttendanceMoney(option.additionalPrice)}'),
-                            ),
-                    ),
-                    if (group.allowOptionQuantity &&
-                        _modifierQuantities.containsKey(option.id)) ...[
-                      IconButton(
-                        onPressed: () => _decrease(option),
-                        icon: const Icon(Icons.remove),
-                        tooltip: 'Diminuir ${option.name}',
-                      ),
-                      Text(formatAttendanceQuantity(
-                          _modifierQuantities[option.id])),
-                      IconButton(
-                        onPressed: () => _increase(group, option),
-                        icon: const Icon(Icons.add),
-                        tooltip: 'Aumentar ${option.name}',
-                      ),
-                    ],
-                  ]),
-              ],
-              TextField(
-                controller: _notes,
-                minLines: 2,
-                maxLines: 4,
-                maxLength: 1000,
-                decoration: const InputDecoration(labelText: 'Observação'),
-              ),
-              if (_validation != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Text(_validation!,
-                      style: const TextStyle(color: Colors.red)),
-                ),
-            ]),
-          ),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('CANCELAR')),
-          FilledButton(onPressed: _save, child: const Text('SALVAR')),
-        ],
       );
 }
 

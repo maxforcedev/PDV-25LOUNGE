@@ -1064,6 +1064,82 @@ def _preview_items(snapshots):
     return items
 
 
+def _frozen_quick_financials(snapshots, frozen_preview):
+    """Apply a previously serialized official POS preview without repricing it."""
+    if not isinstance(frozen_preview, dict):
+        raise ValidationError({'checkout': 'Snapshot financeiro do checkout inválido.'})
+    items = frozen_preview.get('items')
+    financials = frozen_preview.get('financials')
+    if not isinstance(items, list) or not isinstance(financials, dict) or len(items) != len(snapshots):
+        raise ValidationError({'checkout': 'Snapshot financeiro do checkout incompleto.'})
+
+    def money(value, field):
+        return strict_decimal(value, field=field, decimal_places=2, max_digits=14)
+
+    for snapshot, stored in zip(snapshots, items):
+        if str(stored.get('product')) != str(snapshot['product']) or Decimal(str(stored.get('quantity'))) != snapshot['quantity']:
+            raise ValidationError({'checkout': 'Itens do snapshot não correspondem ao checkout.'})
+        subtotal = money(stored.get('subtotal'), 'checkout.items.subtotal')
+        promotion_benefit = money(stored.get('promotion_benefit'), 'checkout.items.promotion_benefit')
+        manual_discount = money(stored.get('manual_discount'), 'checkout.items.manual_discount')
+        net_subtotal = money(stored.get('net_subtotal'), 'checkout.items.net_subtotal')
+        unit_price = money(stored.get('unit_price'), 'checkout.items.unit_price')
+        if subtotal != (unit_price * snapshot['quantity']).quantize(CENT, rounding=ROUND_HALF_UP) or net_subtotal != subtotal - promotion_benefit - manual_discount:
+            raise ValidationError({'checkout': 'Snapshot de item inconsistente.'})
+        promotion_id = stored.get('promotion')
+        promotion = Promotion.objects.filter(pk=promotion_id).first() if promotion_id else None
+        if promotion_id and promotion is None:
+            raise ValidationError({'checkout': 'Promoção histórica do checkout não está disponível.'})
+        snapshot.update({
+            'unit_price': unit_price,
+            'subtotal': subtotal,
+            'promotion': promotion.pk if promotion else None,
+            'promotion_object': promotion,
+            'promotion_name': stored.get('promotion_name'),
+            'promotion_discount_type': stored.get('promotion_discount_type'),
+            'promotion_discount_value': (
+                money(stored['promotion_discount_value'], 'checkout.items.promotion_discount_value')
+                if stored.get('promotion_discount_value') is not None else None
+            ),
+            'promotion_benefit': promotion_benefit,
+            'manual_discount': manual_discount,
+            'manual_discount_intent': normalize_discount_intent(
+                stored.get('manual_discount_intent', manual_discount), field='items.discount',
+            ),
+            'net_subtotal': net_subtotal,
+            'participates_in_service_fee': bool(stored.get('participates_in_service_fee')),
+            'participates_in_commission': bool(stored.get('participates_in_commission')),
+        })
+    subtotal = money(financials.get('subtotal'), 'checkout.subtotal')
+    promotion_total = money(financials.get('promotion_discount_total'), 'checkout.promotion_discount_total')
+    item_total = money(financials.get('item_discount_total'), 'checkout.item_discount_total')
+    discount = money(financials.get('discount'), 'checkout.discount')
+    service_fee_rate = strict_decimal(financials.get('service_fee_rate'), field='checkout.service_fee_rate', decimal_places=2, max_digits=5)
+    service_fee_amount = money(financials.get('service_fee_amount'), 'checkout.service_fee_amount')
+    commission_rate = strict_decimal(financials.get('commission_rate'), field='checkout.commission_rate', decimal_places=2, max_digits=5)
+    commission_amount = money(financials.get('commission_amount'), 'checkout.commission_amount')
+    total = money(financials.get('total'), 'checkout.total')
+    if (
+        subtotal != sum((item['subtotal'] for item in snapshots), Decimal('0.00'))
+        or promotion_total != sum((item['promotion_benefit'] for item in snapshots), Decimal('0.00'))
+        or item_total != sum((item['manual_discount'] for item in snapshots), Decimal('0.00'))
+        or total != subtotal - promotion_total - item_total - discount + service_fee_amount
+    ):
+        raise ValidationError({'checkout': 'Snapshot financeiro inconsistente.'})
+    return {
+        'promotion_discount_total': promotion_total,
+        'item_discount_total': item_total,
+        'discount': discount,
+        'discount_intent': normalize_discount_intent(frozen_preview.get('discount_intent', discount), field='discount'),
+        'service_fee_rate': service_fee_rate,
+        'service_fee_amount': service_fee_amount,
+        'commission_rate': commission_rate,
+        'commission_amount': commission_amount,
+        'charged_amount': None,
+        'total': total,
+    }
+
+
 def calculate_preview(*, company, operation_type, raw_items, discount, charged_amount,
                       beneficiary_user, branch=None, service_fee_waived=False,
                       channel=SalesChannel.COUNTER):
@@ -2006,8 +2082,11 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
                         confirmed_order_items=None, internal_permission_code=None,
                         precomputed_financials=None, payment_sources=None, pos_device=None,
                           attendance_payment_sources=None, table_payment_sources=None,
-                         allow_pos_only=False, audit_metadata=None,
-                        pos_permission_codes=None, pos_device_validated=False):
+                          allow_pos_only=False, audit_metadata=None,
+                         pos_permission_codes=None, pos_device_validated=False,
+                         frozen_quick_preview=None, frozen_quick_discount_approved_by=None,
+                         frozen_quick_item_discount_approved_by=None,
+                         frozen_quick_service_fee_waived_by=None):
     permission = 'sales.create_consumption' if operation_type == OperationType.CONSUMPTION else 'sales.create'
     if operation_type not in OperationType.values:
         raise ValidationError({'operation_type': 'Tipo de operação inválido.'})
@@ -2028,6 +2107,11 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             and confirmed_order_items is not None
         ):
             raise ValidationError({'operation': 'Aprovações persistidas só são válidas ao fechar mesas.'})
+    if frozen_quick_preview is not None and not (
+        operation_type == OperationType.SALE and channel == SalesChannel.COUNTER
+        and allow_pos_only and pos_device is not None
+    ):
+        raise ValidationError({'operation': 'Snapshot de checkout rápido inválido.'})
     branch = _active_branch(
         branch, user, permission, allow_pos_only=allow_pos_only,
         resolved_permission_codes=pos_permission_codes,
@@ -2158,6 +2242,12 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             raise ValidationError({'operation': 'Snapshots financeiros fora do escopo da comanda.'})
         financials = precomputed_financials
         snapshots = financial_snapshots
+    elif frozen_quick_preview is not None:
+        financials = _frozen_quick_financials(snapshots, frozen_quick_preview)
+        subtotal = strict_decimal(
+            frozen_quick_preview['financials'].get('subtotal'), field='checkout.subtotal',
+            decimal_places=2, max_digits=14,
+        )
     else:
         financials = _calculate_sale_financials(
             company=company, branch=branch, operation_type=operation_type,
@@ -2184,7 +2274,17 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         promotion_discount_total = financials['promotion_discount_total']
         item_discount_total = financials['item_discount_total']
         discount_value = financials['discount']
-        if checkout_discount_approved_by is not None:
+        if frozen_quick_preview is not None:
+            discount_approved_by = frozen_quick_discount_approved_by
+            item_discount_approved_by = frozen_quick_item_discount_approved_by
+            service_fee_waived_by = frozen_quick_service_fee_waived_by
+            if discount_value and not discount_approved_by:
+                raise ValidationError({'discount_authorization': 'Snapshot sem aprovação de desconto.'})
+            if item_discount_total and not item_discount_approved_by:
+                raise ValidationError({'item_discount_authorization': 'Snapshot sem aprovação de desconto por item.'})
+            if service_fee_waived and not service_fee_waived_by:
+                raise ValidationError({'service_fee_authorization': 'Snapshot sem aprovação de taxa.'})
+        elif checkout_discount_approved_by is not None:
             if not discount_value:
                 raise ValidationError({'discount': 'Venda sem desconto não possui aprovação persistida.'})
             discount_approved_by = checkout_discount_approved_by
@@ -2198,16 +2298,19 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
                 permission_codes=pos_permission_codes,
                 device_validated=pos_device_validated,
             )
-        item_discount_approved_by = _discount_approver(
-            branch, user, item_discount_total, item_discount_authorization,
-            permission_code='sales.apply_item_discount',
-            authorization_field='item_discount_authorization',
-            allow_pos_only=allow_pos_only,
-            pos_device=pos_device,
-            permission_codes=pos_permission_codes,
-            device_validated=pos_device_validated,
-        )
-        if checkout_service_fee_waived_by is not None:
+        if frozen_quick_preview is None:
+            item_discount_approved_by = _discount_approver(
+                branch, user, item_discount_total, item_discount_authorization,
+                permission_code='sales.apply_item_discount',
+                authorization_field='item_discount_authorization',
+                allow_pos_only=allow_pos_only,
+                pos_device=pos_device,
+                permission_codes=pos_permission_codes,
+                device_validated=pos_device_validated,
+            )
+        if frozen_quick_preview is not None:
+            pass
+        elif checkout_service_fee_waived_by is not None:
             if not service_fee_waived:
                 raise ValidationError({'service_fee_waived': 'Taxa ativa não possui aprovação persistida.'})
             service_fee_waived_by = checkout_service_fee_waived_by

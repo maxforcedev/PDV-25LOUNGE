@@ -191,6 +191,56 @@ class POSFinalizeSaleSerializer(POSSalePreviewSerializer):
     service_fee_authorization = POSDiscountAuthorizationSerializer(required=False)
 
 
+class POSQuickCheckoutCreateSerializer(POSSalePreviewSerializer):
+    customer = serializers.IntegerField(required=False, allow_null=True)
+    idempotency_key = serializers.UUIDField()
+    cash_session = serializers.IntegerField(min_value=1)
+    discount_authorization = POSDiscountAuthorizationSerializer(required=False)
+    item_discount_authorization = POSDiscountAuthorizationSerializer(required=False)
+    service_fee_authorization = POSDiscountAuthorizationSerializer(required=False)
+
+
+class POSQuickCheckoutPaymentSerializer(serializers.Serializer):
+    payment_method = serializers.IntegerField(min_value=1)
+    mode = serializers.ChoiceField(choices=('value', 'remaining', 'items'), default='value')
+    amount = StrictMoneyField(
+        max_digits=14, decimal_places=2, min_value=Decimal('0.01'), required=False,
+    )
+    received_amount = StrictMoneyField(
+        max_digits=14, decimal_places=2, min_value=Decimal('0.01'), required=False,
+        allow_null=True,
+    )
+    allocations = serializers.ListField(child=serializers.DictField(), required=False, default=list)
+    idempotency_key = serializers.UUIDField()
+
+    def validate(self, attrs):
+        mode = attrs['mode']
+        if mode == 'value' and attrs.get('amount') is None:
+            raise serializers.ValidationError({'amount': 'Informe o valor do pagamento.'})
+        if mode == 'items' and not attrs['allocations']:
+            raise serializers.ValidationError({'allocations': 'Informe os itens a pagar.'})
+        if mode != 'items' and attrs['allocations']:
+            raise serializers.ValidationError({'allocations': 'Alocações são exclusivas do pagamento por itens.'})
+        for allocation in attrs['allocations']:
+            try:
+                allocation['item'] = int(allocation['item'])
+                allocation['allocated_quantity'] = Decimal(str(allocation['allocated_quantity']))
+            except (KeyError, TypeError, ValueError, ArithmeticError) as error:
+                raise serializers.ValidationError({'allocations': 'Alocação de item inválida.'}) from error
+            if allocation['item'] < 1 or allocation['allocated_quantity'] <= 0:
+                raise serializers.ValidationError({'allocations': 'Alocações devem ter item e quantidade positiva.'})
+        return attrs
+
+
+class POSQuickCheckoutReverseSerializer(serializers.Serializer):
+    idempotency_key = serializers.UUIDField()
+    reason = serializers.CharField(max_length=1000, required=False, allow_blank=True, default='')
+
+
+class POSQuickCheckoutFinalizeSerializer(serializers.Serializer):
+    idempotency_key = serializers.UUIDField()
+
+
 class POSCustomerSerializer(serializers.ModelSerializer):
     phone = serializers.CharField(required=True, allow_blank=False, max_length=20)
     document = serializers.CharField(required=False, allow_blank=True, max_length=20)

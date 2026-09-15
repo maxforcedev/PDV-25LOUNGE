@@ -81,14 +81,24 @@ from apps.sales.services import (
     assess_sale_stock_availability, calculate_preview, catalog_product_operational_states,
     catalog_products_with_available_stock, finalize_sale, validate_discount_authorization,
 )
+from apps.sales.quick_checkout import (
+    QuickCheckoutConflict, checkout_balance, create_quick_checkout,
+    finalize_quick_checkout, record_quick_checkout_payment,
+    reverse_quick_checkout_payment,
+)
 
 from .authentication import POSDeviceAuthentication, require_device, require_operator_session
-from .models import POSDevice, POSDeviceSettings
+from .models import (
+    POSDevice, POSDeviceSettings, QuickSaleCheckout, QuickSalePayment,
+    QuickSalePaymentStatus,
+)
 from .serializers import (
     POSAdminDeviceSerializer, POSDeviceSettingsSerializer, POSOpenCashSessionSerializer,
     POSCustomerSerializer, POSDiscountAuthorizationValidationSerializer,
     POSFinalizeSaleSerializer, POSSalePreviewSerializer, POSStockAvailabilitySerializer,
     POSTablePreviewSerializer,
+    POSQuickCheckoutCreateSerializer, POSQuickCheckoutFinalizeSerializer,
+    POSQuickCheckoutPaymentSerializer, POSQuickCheckoutReverseSerializer,
     POSTicketLookupSerializer, POSTicketValidateSerializer,
 )
 from .services import (
@@ -1541,6 +1551,179 @@ class POSSaleCheckoutOptionsView(POSQuickSaleView):
                 for session in sessions
             ],
         })
+
+
+def _quick_checkout_payload(checkout):
+    paid, remaining = checkout_balance(checkout)
+    return {
+        'id': str(checkout.pk),
+        'status': checkout.status,
+        'sale_id': checkout.sale_id,
+        'preview': checkout.financial_snapshot,
+        'paid_amount': str(paid),
+        'remaining_amount': str(remaining),
+        'items': [
+            {
+                'id': item.pk, 'client_item_id': str(item.client_item_id),
+                'product': item.product_id, 'quantity': str(item.quantity),
+            }
+            for item in checkout.items.all().order_by('id')
+        ],
+        'payments': [
+            {
+                'id': payment.pk, 'payment_method': payment.payment_method_id,
+                'payment_method_name': payment.payment_method.name,
+                'payment_method_code': payment.payment_method.code,
+                'amount': str(payment.amount),
+                'received_amount': str(payment.received_amount) if payment.received_amount is not None else None,
+                'change_amount': str(payment.change_amount) if payment.change_amount is not None else None,
+                'status': payment.status, 'reversal_of': payment.reversal_of_id,
+                'reversal_reason': payment.reversal_reason,
+                'allocations': [
+                    {
+                        'item': allocation.item_id, 'amount': str(allocation.amount),
+                        'allocated_quantity': str(allocation.allocated_quantity),
+                    }
+                    for allocation in payment.allocations.all()
+                ],
+                'created_at': payment.created_at,
+            }
+            for payment in checkout.payments.select_related('payment_method').prefetch_related('allocations').order_by('id')
+        ],
+    }
+
+
+class POSQuickCheckoutView(POSQuickSaleView):
+    def _checkout(self, device, checkout_id):
+        return get_object_or_404(
+            QuickSaleCheckout.objects.select_related('sale').prefetch_related(
+                'items', 'payments__payment_method', 'payments__allocations',
+            ),
+            pk=checkout_id, branch=device.branch, pos_device=device,
+        )
+
+    @staticmethod
+    def _conflict(error):
+        response = DomainValidationError(code=error.code, message=error.message)
+        response.status_code = status.HTTP_409_CONFLICT
+        raise response from error
+
+    def get(self, request, checkout_id):
+        device, _, permissions, _ = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        return Response(_quick_checkout_payload(self._checkout(device, checkout_id)))
+
+
+class POSQuickCheckoutCreateView(POSQuickSaleView):
+    def post(self, request):
+        device, operator, permissions, operator_session = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        serializer = POSQuickCheckoutCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        _pos_sale_session(device, data['cash_session'])
+        try:
+            checkout, replayed = create_quick_checkout(
+                branch=device.branch, device=device, user=operator, permissions=permissions,
+                cash_session_id=data['cash_session'], raw_items=self._items(data['items']),
+                discount=data['discount'], service_fee_waived=data['service_fee_waived'],
+                customer_id=data.get('customer'), idempotency_key=data['idempotency_key'],
+                discount_authorization=data.get('discount_authorization'),
+                item_discount_authorization=data.get('item_discount_authorization'),
+                service_fee_authorization=data.get('service_fee_authorization'),
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+        except QuickCheckoutConflict as error:
+            self._conflict(error)
+        checkout = self._checkout(device, checkout.pk)
+        response = Response(_quick_checkout_payload(checkout), status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED)
+        if replayed:
+            response['Idempotency-Replayed'] = 'true'
+        return response
+
+
+class POSQuickCheckoutPaymentView(POSQuickCheckoutView):
+    def post(self, request, checkout_id):
+        device, operator, permissions, operator_session = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        serializer = POSQuickCheckoutPaymentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        try:
+            _payment, replayed = record_quick_checkout_payment(
+                checkout=self._checkout(device, checkout_id), user=operator,
+                payment_method_id=data['payment_method'], mode=data['mode'], amount=data.get('amount'),
+                received_amount=data.get('received_amount'), allocations=data['allocations'],
+                idempotency_key=data['idempotency_key'],
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+        except QuickCheckoutConflict as error:
+            self._conflict(error)
+        checkout = self._checkout(device, checkout_id)
+        response = Response(_quick_checkout_payload(checkout))
+        if replayed:
+            response['Idempotency-Replayed'] = 'true'
+        return response
+
+
+class POSQuickCheckoutPaymentReverseView(POSQuickCheckoutView):
+    def post(self, request, checkout_id, payment_id):
+        device, operator, permissions, operator_session = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        serializer = POSQuickCheckoutReverseSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payment = get_object_or_404(
+            QuickSalePayment.objects.filter(checkout=self._checkout(device, checkout_id)), pk=payment_id,
+        )
+        try:
+            _reversal, replayed = reverse_quick_checkout_payment(
+                payment=payment, user=operator, reason=serializer.validated_data['reason'],
+                idempotency_key=serializer.validated_data['idempotency_key'],
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+        except QuickCheckoutConflict as error:
+            self._conflict(error)
+        checkout = self._checkout(device, checkout_id)
+        response = Response(_quick_checkout_payload(checkout))
+        if replayed:
+            response['Idempotency-Replayed'] = 'true'
+        return response
+
+
+class POSQuickCheckoutFinalizeView(POSQuickCheckoutView):
+    def post(self, request, checkout_id):
+        device, operator, permissions, operator_session = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        serializer = POSQuickCheckoutFinalizeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            sale, replayed = finalize_quick_checkout(
+                checkout=self._checkout(device, checkout_id), user=operator, permissions=permissions,
+                idempotency_key=serializer.validated_data['idempotency_key'],
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+        except QuickCheckoutConflict as error:
+            self._conflict(error)
+        request.branch_context = device.branch
+        sale = Sale.objects.select_related(
+            'company', 'branch', 'cash_session', 'created_by', 'seller_user', 'pos_device',
+        ).prefetch_related('items__product', 'payments__payment_method').get(pk=sale.pk)
+        response = Response({
+            'sale': SaleSerializer(sale, context={'request': request}).data,
+            'cash_state': cash_state_for_device(device, permissions, operator),
+            'effects': {
+                'tickets': list(sale.items.filter(product__emits_ticket=True).values_list('sale_ticket__number', flat=True)),
+                'production_job_count': sum(item.production_jobs.filter(event='new').count() for item in sale.items.all()),
+            },
+        }, status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED)
+        if replayed:
+            response['Idempotency-Replayed'] = 'true'
+        return response
 
 
 class POSFinalizeSaleView(POSQuickSaleView):

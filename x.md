@@ -1,1094 +1,895 @@
-OPENCODE — AUDITORIA E PADRONIZAÇÃO COMPLETA DO MÓDULO DE MESAS
+```text
+OPENCODE — NOVO FLUXO COMPARTILHADO DE PAGAMENTOS DO CORE POS — FASE 1: VENDA RÁPIDA
 
-IMPORTANTE:
+OBJETIVO
 
-Não fazer correções pontuais somente na tela que estamos vendo.
+Refazer o fluxo de pagamento da Venda Rápida para se tornar a base compartilhada de pagamentos do CORE POS.
 
-Quero revisar TODO o módulo de MESAS no Flutter e os contratos backend diretamente relacionados.
+Essa experiência será reutilizada futuramente por:
 
-A fonte da verdade é o estado REAL atual do projeto.
+- Venda Rápida
+- Mesas
+- Comandas cashless/pós-pagas
+- Comandas pré-pagas, reaproveitando os componentes de cobrança, mas com regra de crédito própria
 
-HEAD analisado anteriormente:
-3e226e8b0f77e7a7b576e6e4a3d9eb09c335a6c1
+NESTA MISSÃO:
+- implementar e integrar PRIMEIRO na Venda Rápida;
+- estruturar componentes realmente compartilháveis;
+- NÃO integrar em Mesas ainda;
+- NÃO criar Comandas ainda.
 
-Confirme o HEAD novamente antes de trabalhar.
+O estado atual do projeto é a fonte da verdade.
 
-Não confiar em checkpoint.
-
-==================================================
-OBJETIVOS
-==================================================
-
-1. padronizar TODOS os números exibidos no módulo de Mesas;
-2. dinheiro sempre com 2 casas decimais;
-3. quantidade nunca mostrar zeros decimais desnecessários;
-4. eliminar textos técnicos/em inglês da UI;
-5. encontrar e corrigir telas antigas/inconsistentes dentro do módulo;
-6. transformar seleção de itens para transferência em PÁGINA, não modal;
-7. preservar a página de destino usando EXATAMENTE SharedTablesGrid;
-8. revisar consistência da transferência parcial no backend;
-9. não iniciar pagamentos.
-
-==================================================
-1. ESCOPO DA AUDITORIA
-==================================================
-
-Revisar pelo menos:
-
-pos/lib/attendance/attendance_models.dart
-
-pos/lib/attendance/attendance_pages.dart
-
-pos/lib/attendance/table_attendance_page.dart
-
-pos/lib/attendance/table_summary_widgets.dart
-
-pos/lib/attendance/shared_tables_grid.dart
-
-e componentes compartilhados chamados pelo fluxo de Mesa.
-
-Também revisar no backend somente os pontos diretamente usados por:
-
-- TableAttendance;
-- TableOrder;
-- TableOrderItem;
-- transferência;
-- produção/impressão;
-- summary/preview.
+Antes de alterar qualquer coisa:
+1. confirme o HEAD atual;
+2. inspecione o fluxo atual de checkout/pagamentos da Venda Rápida;
+3. inspecione as APIs/backend atuais de:
+   - formas de pagamento;
+   - caixa;
+   - finalização da Venda Rápida;
+   - pagamentos;
+   - Stone/Cielo/providers, se já existirem;
+   - descontos;
+   - taxa de serviço;
+4. preserve regras financeiras existentes;
+5. não invente cálculos no Flutter que já pertencem ao backend.
 
 ==================================================
-2. REGRA GLOBAL — DINHEIRO
+REGRA CENTRAL DO NOVO PAGAMENTO
 ==================================================
 
-Em TODO o módulo de Mesas:
-
-NÃO quero exibição:
-
-0
-0.0
-10.5
-20.1
-
-Para VALORES MONETÁRIOS.
-
-Quero sempre padrão monetário:
-
-0.00
-10.50
-20.10
-
-ou, quando estiver utilizando formatter monetário do POS:
-
-R$ 0,00
-R$ 10,50
-R$ 20,10
-
-conforme o componente/contexto atual.
-
-A regra principal:
-
-VALOR MONETÁRIO = SEMPRE 2 CASAS.
-
-==================================================
-3. NÃO FORMATAR DINHEIRO MANUALMENTE EM CADA TELA
-==================================================
-
-Não espalhar:
-
-toStringAsFixed(2)
-
-por dezenas de widgets.
-
-Centralizar/reutilizar formatter já existente no POS.
-
-Hoje já existe:
-
-formatMoney(...)
-
-Utilizar corretamente.
-
-Se houver contexto onde precisamos apenas:
-
-10.00
-
-sem "R$":
-
-criar/reutilizar helper visual único e claro.
-
-Não alterar precisão armazenada no backend.
-
-É apenas apresentação.
-
-==================================================
-4. AUDITAR TODO USO DE VALOR CRU
-==================================================
-
-Pesquisar no módulo de Mesas todos os lugares que exibem diretamente:
-
-summary[...]
-
-item.unitPrice
-
-item.lineTotal
-
-table.balance
-
-table.total
-
-checkoutDiscount
-
-payment.amount
-
-receivedAmount
-
-changeAmount
-
-preview[...]
-
-ou qualquer String monetária recebida da API.
-
-Nenhuma String monetária crua deve ir direto para Text() sem formatter adequado.
-
-==================================================
-5. REGRA GLOBAL — QUANTIDADE
-==================================================
-
-Quantidade NÃO é dinheiro.
-
-Não quero:
-
-1.000
-2.000
-5.000
-
-Quero:
-
-1
-2
-5
-
-Se existir quantidade fracionada real:
-
-1.500 → 1.5
-
-2.250 → 2.25
-
-0.750 → 0.75
-
-Preservar no máximo a precisão necessária do domínio.
-
-==================================================
-6. USAR UM ÚNICO FORMATTER DE QUANTIDADE
-==================================================
-
-Hoje já existe:
-
-_tableQuantityText(...)
-
-que faz boa parte disso.
-
-Generalizar/reutilizar em TODO o fluxo de Mesas.
-
-Não quero:
-
-${item.quantity}
-
-diretamente em UI quando quantity vem como String decimal da API.
-
-Exemplo ERRADO:
-
-Text('${item.quantity}x ${item.productName}')
-
-Exemplo correto conceitual:
-
-Text('${formatQuantity(item.quantity)}x ${item.productName}')
-
-==================================================
-7. AUDITAR QUANTIDADES NO MÓDULO INTEIRO
-==================================================
-
-Verificar:
-
-- resumo;
-- detalhes do item;
-- conferência;
-- transferência;
-- seletor de transferência;
-- catálogo;
-- badge;
-- modificadores;
-- telas antigas;
-- histórico;
-- mensagens;
-- quantidade disponível;
-- quantidade selecionada.
-
-Todos devem obedecer ao mesmo formatter.
-
-==================================================
-8. TEXTOS EM INGLÊS / STATUS TÉCNICOS
-==================================================
-
-NENHUM status cru do backend deve aparecer diretamente na UI.
-
-Não quero:
-
-confirmed
-CONFIRMED
-
-cancelled
-CANCELLED
-
-pending
-
-processing
-
-printed
-
-failed
-
-occupied
-
-free
-
-open
-
-closed
-
-applied
-
-etc.
-
-quando forem exibidos ao operador.
-
-==================================================
-9. CENTRALIZAR TRADUÇÕES DE STATUS
-==================================================
-
-Criar/reutilizar funções de apresentação.
+NÃO queremos o modelo:
+
+montar vários pagamentos
+→ depois clicar em finalizar
+→ só então cobrar todos em sequência.
+
+Queremos:
+
+escolher forma
+→ informar o valor
+→ cobrar AGORA
+→ aprovado
+→ registrar AGORA
+→ atualizar pago/saldo
+→ continuar na mesma tela para o próximo pagamento.
 
 Exemplo:
 
-confirmed → Confirmado
-cancelled → Cancelado
-pending → Pendente
+Conta: R$ 100,00
 
-printed → Impresso
-processing → Impressão em andamento
-failed → Falha na impressão
+Cliente 1:
+R$ 30,00 no débito
+→ cobrar imediatamente
+→ aprovado
+→ PAGO R$ 30,00
+→ FALTA R$ 70,00
 
-occupied → Ocupada
-free → Livre
+Cliente 2:
+R$ 20,00 no Pix
+→ cobrar imediatamente
+→ aprovado
+→ PAGO R$ 50,00
+→ FALTA R$ 50,00
 
-open → Aberta
-closed → Fechada
+Cliente 3:
+R$ 50,00 no crédito
+→ cobrar imediatamente
+→ aprovado
+→ PAGO R$ 100,00
+→ FALTA R$ 0,00
 
-Não fazer:
+Não criar uma fila de pagamentos pendentes para cobrar depois.
 
-status.toUpperCase()
-
-para mostrar código técnico.
+Uma tentativa recusada/cancelada NÃO pode aumentar o valor pago.
 
 ==================================================
-10. STATUS NORMAIS PODEM NEM SER MOSTRADOS
+1. TELA PRINCIPAL DE PAGAMENTO
 ==================================================
 
-Principalmente no resumo:
+Criar uma experiência de pagamento em tela própria.
 
-não mostrar "Confirmado" se esse é o estado normal.
+Exemplo conceitual:
 
-Mostrar status apenas quando acrescenta informação.
+<  PAGAMENTO — VENDA RÁPIDA                      ⋮
+
+FORMAS DE PAGAMENTO
+
+[ DINHEIRO ] [ CARTÃO ] [ PIX ] [ OUTROS ]
+
+PAGAMENTOS REALIZADOS
+
+✓ Débito
+  R$ 30,00
+  18:42
+
+✓ Pix
+  R$ 20,00
+  18:45
+
+RESUMO
+
+Subtotal                         R$ 100,00
+Promoções                        -R$ 10,00
+Desconto                          R$ 0,00
+Taxa                              R$ 9,00
+
+TOTAL                             R$ 99,00
+PAGO                              R$ 50,00
+
+FALTA                             R$ 49,00
+
+A informação mais importante durante o recebimento é:
+
+FALTA
+R$ xx,xx
+
+Dar destaque visual a ela.
+
+==================================================
+2. FORMAS DE PAGAMENTO NO TOPO
+==================================================
+
+As formas de pagamento devem ficar FIXAS NA PARTE SUPERIOR da tela.
+
+Elas NÃO devem ser hardcoded.
+
+Usar SOMENTE as formas disponíveis retornadas pela API/configuração da filial/caixa.
+
+REGRA DO GRID:
+
+grid com até 4 opções principais.
+
+Se existirem até 4 grupos relevantes:
+→ mostrar os 4 diretamente.
 
 Exemplo:
 
-normal:
-2x Coca-Cola       R$ 16,00
-✓ Impresso
+DINHEIRO | CARTÃO | PIX | VR
 
-cancelado:
-fundo vermelho claro
-2x Coca-Cola       R$ 16,00
-CANCELADO
+Se houver mais de 4 possibilidades:
+→ priorizar os grupos principais:
 
-==================================================
-11. AUDITAR MENSAGENS DE ERRO E FEEDBACK
-==================================================
+DINHEIRO | CARTÃO | PIX | OUTROS
 
-Revisar também:
-
-SnackBars
-dialogs
-tooltips
-empty states
-erros tratados no Flutter
-
-do módulo de Mesas.
-
-Se estiver mostrando:
-
-código técnico
-status técnico
-mensagem interna em inglês
-
-traduzir/adaptar para linguagem operacional em português.
-
-NÃO traduzir payload/código interno.
-
-Somente UI.
-
-==================================================
-12. ENCONTREI UMA TELA ANTIGA NO MESMO MÓDULO
-==================================================
-
-Existe ainda:
-
-TableAttendancePage
-
-com UI antiga.
-
-Ela ainda possui coisas como:
-
-Pedido #...
-Status: ${order.status.toUpperCase()}
-${item.quantity}x ...
-${item.status}
-
-e vários Cards/ações antigas.
-
-Isso conflita com a UI nova de TableOrderPage.
-
-==================================================
-13. INVESTIGAR SE TableAttendancePage AINDA É USADA
-==================================================
-
-Pesquisar TODAS as referências de:
-
-TableAttendancePage
-
-Antes de decidir.
-
-Se NÃO for mais acessível pelo fluxo atual:
-
-remover código morto com segurança.
-
-Se ainda for acessível:
-
-ela deve ser padronizada para não apresentar uma experiência antiga diferente.
-
-NÃO deixar duas UIs concorrentes para a mesma Mesa.
-
-==================================================
-14. NÃO REMOVER SEM INVESTIGAR
-==================================================
-
-Não apagar TableAttendancePage apenas porque parece antiga.
-
-Primeiro:
-
-- localizar callers;
-- rotas;
-- imports;
-- navegação;
-- referências.
-
-Depois decidir:
-
-A) consolidar no fluxo atual;
-
-ou
-
-B) remover se realmente estiver morta.
-
-Relatar no checkpoint.
-
-==================================================
-15. COMPONENTES DUPLICADOS ANTIGOS
-==================================================
-
-Fazer a mesma auditoria para:
-
-_TableCustomerPicker
-_TableCustomerCreate
-_TableAttendancePicker
-_TableItemTransferPicker antigo
-helpers antigos
-dialogs antigos
-
-ou quaisquer widgets privados duplicados.
-
-Se foram substituídos por shared:
-
-remover somente quando sem referência.
-
-==================================================
-16. TRANSFERÊNCIA — NÃO QUERO MODAL DE ITENS
-==================================================
-
-Hoje:
-
-Transferir itens
-→ AlertDialog com seleção dos itens e quantidades
-→ página de destino
-
-Isso precisa mudar.
-
-Quero:
-
-Transferir itens
-→ PÁGINA DE SELEÇÃO DE ITENS
-→ PÁGINA DE SELEÇÃO DA MESA
-→ confirmação
-→ retorno à Mesa.
-
-==================================================
-17. NOVA PÁGINA — SELECIONAR ITENS
-==================================================
-
-Criar uma página real.
-
-AppBar:
-
-<   TRANSFERIR ITENS
-
-Conteúdo:
-
-Selecionar todos
-Desmarcar todos
-
-Lista dos produtos confirmados.
-
-Cada linha:
-
-[checkbox]
-
-Produto
-
-Quantidade disponível
-
-Quantidade a transferir
+Mas SOMENTE se cada grupo existir na API.
 
 Exemplo:
+se Pix não estiver disponível, NÃO mostrar Pix apenas para preencher espaço.
 
-☑ Coca-Cola
-Disponível: 5
+Não mostrar forma desabilitada.
 
-      [-] 3 [+]
-
-☑ Redbull
-Disponível: 2
-
-      [-] 2 [+]
+"OUTROS" deve existir apenas quando houver formas disponíveis que não caibam nas opções principais.
 
 ==================================================
-18. NÃO USAR AlertDialog PARA ESSA ETAPA
+3. AGRUPAMENTO DE CARTÃO
 ==================================================
 
-Remover uso de:
-
-showDialog<List<_TableItemTransferSelection>>
-
-para a seleção principal dos itens.
-
-Usar:
-
-Navigator.push
-
-com página.
-
-A tela precisa respirar em celular/Stone.
-
-==================================================
-19. SELECIONAR TODOS
-==================================================
-
-Botão:
-
-SELECIONAR TODOS
-
-deve:
-
-- marcar todos os itens elegíveis;
-- iniciar quantidade de transferência com a quantidade máxima de cada linha.
-
-Botão:
-
-DESMARCAR TODOS
-
-deve limpar seleção.
-
-==================================================
-20. QUANTIDADE DA TRANSFERÊNCIA
-==================================================
-
-Quantidade exibida também deve usar formatter global.
-
-Nunca:
-
-5.000
+No topo, Crédito/Débito/VA/VR NÃO precisam ocupar quatro cards separados quando fizer sentido agrupá-los.
 
 Mostrar:
 
-5
+[ CARTÃO ]
 
-Controle:
+Ao tocar em CARTÃO:
 
-[-] quantidade [+]
+abrir seletor com SOMENTE os tipos disponíveis via API:
 
-Se quantidade disponível:
+[ CRÉDITO ]
+[ DÉBITO ]
+[ VA ]
+[ VR ]
 
-5
+Se só houver Crédito e Débito:
 
-permitir:
+[ CRÉDITO ]
+[ DÉBITO ]
 
-1, 2, 3, 4, 5
+Não mostrar VA ou VR inexistente.
 
-ou decimal se a unidade realmente suportar quantidade decimal.
+Não inventar subtipos.
 
-==================================================
-21. CAMPO MANUAL DE QUANTIDADE
-==================================================
+Após escolher, por exemplo:
 
-Se mantiver TextField:
+DÉBITO
 
-formatar/validar corretamente.
-
-Não deixar o campo ficar visualmente:
-
-1.000
-
-após edição.
-
-Ao perder foco/confirmar:
-
-normalizar.
+abrir entrada de valor em tela grande.
 
 ==================================================
-22. BOTÃO CONTINUAR
+4. ENTRADA DE VALOR — TELA GRANDE
 ==================================================
 
-Na parte inferior:
+Dinheiro, Pix, Crédito, Débito, VA, VR e demais formas monetárias devem reutilizar o MESMO componente de entrada de valor.
 
-CONTINUAR
+NÃO usar pequeno AlertDialog para digitação.
 
-Somente habilitado quando existir ao menos um item selecionado com quantidade válida.
-
-==================================================
-23. DESTINO CONTINUA SENDO PÁGINA
-==================================================
-
-Após CONTINUAR:
-
-abrir:
-
-_TableTransferDestinationPage
-
-ou componente/página equivalente.
-
-Ela já usa:
-
-SharedTablesGrid
-
-MANTER.
-
-==================================================
-24. MESMA UI DO HOME DE MESAS
-==================================================
-
-TablesPage e seleção de destino devem continuar usando:
-
-SharedTablesGrid
-SharedTableCard
-
-Não recriar cards.
-
-Não copiar código.
-
-Não fazer "parecido".
-
-MESMO componente.
-
-==================================================
-25. CONFIRMAÇÃO FINAL
-==================================================
-
-Depois de selecionar Mesa destino:
-
-pode haver uma confirmação final simples.
-
-Essa confirmação pode ser dialog pequeno porque é apenas CONFIRMAÇÃO.
+Usar página/área de tela cheia preservando o menu superior/AppBar.
 
 Exemplo:
 
-TRANSFERIR PARA MESA 12?
+< DÉBITO
 
-3x Coca-Cola
-1x Batata
+FALTA
+R$ 190,00
 
-CANCELAR | TRANSFERIR
+VALOR A PAGAR
 
-O que NÃO pode ser modal é o fluxo completo de seleção dos itens.
+        R$ 30,00
 
-==================================================
-26. ITEM ÚNICO
-==================================================
 
-Quando usuário tocar:
+[ R$ 5 ] [ R$ 10 ] [ R$ 20 ] [ R$ 50 ]
 
-item
-→ Transferir item
 
-Pode abrir diretamente a PÁGINA de transferência já com aquele item marcado.
+┌───────┬───────┬───────┐
+│   1   │   2   │   3   │
+├───────┼───────┼───────┤
+│   4   │   5   │   6   │
+├───────┼───────┼───────┤
+│   7   │   8   │   9   │
+├───────┼───────┼───────┤
+│  00   │   0   │   ⌫   │
+└───────┴───────┴───────┘
 
-Não abrir modal.
+[ PAGAR SALDO R$ 190,00 ]
 
-A página começa com:
-
-item já selecionado
-quantidade padrão = total disponível
-
-e usuário pode ajustar.
+[ COBRAR R$ 30,00 ]
 
 ==================================================
-27. STATUS DE IMPRESSÃO
+5. ATALHOS DE VALOR
 ==================================================
 
-Continuar usando o estado REAL exposto pelo backend.
+O teclado numérico deve possuir atalhos fixos:
 
-Hoje print_status vem de:
+R$ 5
+R$ 10
+R$ 20
+R$ 50
 
-production_jobs
-→ print_jobs
+Ao tocar:
+- preencher o valor correspondente;
+- permitir editar depois pelo teclado.
 
-Não inventar.
+Esses atalhos devem ser componentes configuráveis/reutilizáveis, mesmo que inicialmente sejam:
 
-Mas padronizar todos os labels em português.
+5 / 10 / 20 / 50.
 
-==================================================
-28. SEM PRINT JOB
-==================================================
+Também ter ação:
 
-Hoje:
+PAGAR SALDO R$ xx,xx
 
-print_status = null
-
-faz a UI não mostrar nada.
-
-Definir representação operacional coerente.
-
-Por exemplo:
-
-"Não enviado para impressão"
-
-SOMENTE se semanticamente `null` realmente significar que não existe print job.
-
-Confirmar no domínio primeiro.
-
-Não tratar null como erro ou pending sem verificar.
+que preenche o saldo restante exato.
 
 ==================================================
-29. REVISAR TRANSFERÊNCIA PARCIAL — IMPORTANTE
+6. DINHEIRO
 ==================================================
 
-A implementação atual passou a permitir transferência parcial de item confirmado.
+Fluxo:
 
-Ela:
+DINHEIRO
+→ entrada de valor em tela grande
+→ confirmar
+→ registrar pagamento imediatamente
+→ atualizar histórico/PAGO/FALTA
+→ voltar para a tela principal de pagamento.
 
-- reduz quantity do TableOrderItem original;
-- cria novo TableOrderItem no destino;
-- divide financial_snapshot.
+Se houver fluxo de "valor recebido/troco" já existente ou suportado pelo backend, preservar.
 
-Antes de considerar pronto, auditar TODOS os vínculos do item original.
+Não quebrar regra de caixa.
 
-==================================================
-30. VÍNCULOS QUE PRECISAM SER REVISADOS
-==================================================
+O fluxo deve ficar preparado para:
 
-Verificar pelo menos:
+Valor a pagar: R$ 30,00
+Recebido: R$ 50,00
+Troco: R$ 20,00
 
-StockMovement
-
-ProductionJob
-
-PrintJob
-
-tickets
-
-auditoria
-
-allocations futuras
-
-ou qualquer FK/OneToOne/ManyToMany relacionada ao TableOrderItem.
-
-Problema possível:
-
-item original tinha quantidade 5.
-
-Transfere 3.
-
-original vira quantidade 2.
-
-novo item destino vira quantidade 3.
-
-Mas movimentos/jobs/tickets históricos podem continuar apontando apenas para item original e representar as 5 unidades.
-
-Isso precisa ficar semanticamente consistente.
+Mas não inventar nova regra financeira se o backend atual não suportar.
 
 ==================================================
-31. NÃO CORRIGIR TRANSFERÊNCIA PARCIAL NO ESCURO
+7. PIX
 ==================================================
 
-Primeiro mapear todas as relações de:
+Fluxo:
 
-TableOrderItem
-
-e explicar a estratégia.
-
-Se a implementação atual já estiver consistente:
-demonstrar por quê.
-
-Se não:
-corrigir preservando:
-
-- estoque;
-- produção;
-- impressão;
-- tickets;
-- auditoria;
-- idempotência;
-- financeiro.
-
-Não fazer gambiarra.
+PIX
+→ teclado numérico em tela grande
+→ valor
+→ CONFIRMAR/COBRAR
+→ iniciar cobrança Pix
+→ aguardar resultado do provider quando integrado
+→ somente após aprovação registrar como pago
+→ retornar à tela principal.
 
 ==================================================
-32. PREÇOS NO RESUMO
+8. CARTÃO
 ==================================================
 
-Manter:
+Fluxo:
 
-quantidade
-produto
-valor da linha
+CARTÃO
+→ selecionar subtipo disponível:
 
-Sempre formatado.
+Crédito
+Débito
+VA
+VR
+etc.
+
+→ teclado numérico em tela grande
+→ informar valor
+→ cobrar imediatamente
+→ aguardar provider/maquininha
+→ aprovado = registrar
+→ recusado/cancelado = não registrar valor pago
+→ voltar para a tela principal.
+
+A integração deve ficar desacoplada da UI.
+
+Não criar UI específica Stone dentro do componente compartilhado.
+
+A camada de pagamento deve trabalhar com provider/capability.
+
+==================================================
+9. OUTROS
+==================================================
+
+Se houver mais formas retornadas pela API:
+
+OUTROS
+→ abrir página/seletor grande
+→ mostrar somente formas realmente ativas.
+
+Exemplo possível, APENAS se existirem:
+
+VA
+VR
+Voucher
+Convênio
+Cortesia
+Outras formas cadastradas
+
+Após selecionar uma forma monetária:
+→ reutilizar SharedPaymentNumericEntry.
+
+==================================================
+10. PAGAMENTOS REALIZADOS
+==================================================
+
+Logo abaixo do grid superior mostrar os pagamentos já EFETIVAMENTE APLICADOS.
 
 Exemplo:
 
-1x Coca-Cola                         R$ 8,00
+PAGAMENTOS REALIZADOS
 
-NUNCA:
+✓ Dinheiro
+  R$ 30,00
+  18:52
 
-1.000x Coca-Cola                     8.0
+✓ Débito
+  R$ 50,00
+  18:54
+
+✓ Pix
+  R$ 20,00
+  18:56
+
+Mostrar informações disponíveis e seguras:
+- forma;
+- valor;
+- horário;
+- eventualmente operador.
+
+Não mostrar tentativa recusada como pagamento efetuado.
+
+A arquitetura deve permitir futuramente abrir detalhes:
+- provider;
+- NSU;
+- autorização;
+- operador;
+- estorno;
+- itens alocados.
+
+Não precisa implementar tudo isso nesta fase se o backend ainda não disponibilizar.
 
 ==================================================
-33. TOTAIS
+11. RESUMO FINANCEIRO
 ==================================================
 
-Todos:
+Depois de "Pagamentos realizados", mostrar:
 
 Subtotal
 Promoções
-Descontos por item
-Desconto da Mesa
-Taxa
+Descontos
+Taxa de serviço
 Total
+Pago
+Falta
 
-sempre com formatter monetário.
+Usar sempre valores oficiais retornados/calculados pelo backend.
 
-Não expor:
+Não recalcular regras comerciais complexas no Flutter.
 
-0.0
-
-em nenhuma hipótese.
-
-==================================================
-34. CONFERÊNCIA
-==================================================
-
-Aplicar as mesmas regras:
-
-quantidade:
-1 e não 1.000
-
-dinheiro:
-R$ 10,00 / 10,00 conforme padrão visual
-
-status:
-português
-
-não mostrar código técnico.
+Money sempre no padrão oficial do POS.
 
 ==================================================
-35. MAPA/HOME DE MESAS
+12. MENU SUPERIOR — AÇÕES FINANCEIRAS
 ==================================================
 
-Revisar:
-
-saldo
-total
-status
-conta solicitada
-grupo
-
-Saldo deve sempre ter duas casas monetárias.
-
-Status deve estar em português.
-
-==================================================
-36. DETALHE DO ITEM
-==================================================
-
-No detalhe:
-
-Quantidade: 1
-
-não:
-
-Quantidade: 1.000
-
-Status traduzido.
-
-Status de impressão traduzido.
-
-Preço, se exibido:
-sempre duas casas.
-
-==================================================
-37. BACKEND PODE MANTER DECIMAL NORMAL
-==================================================
-
-Não alterar banco/model DecimalField apenas para estética.
+As ações de preço/financeiro que foram retiradas do catálogo devem ficar no menu superior da TELA DE PAGAMENTO.
 
 Exemplo:
 
-backend pode serializar:
-"1.000"
+⋮
 
-Flutter apresenta:
-"1"
+Aplicar desconto
+Alterar desconto
+Remover desconto
 
-backend pode serializar:
-"10.00"
+Desconto por item
+(quando aplicável e permitido)
 
-Flutter apresenta:
-"R$ 10,00"
+Isentar taxa de serviço
+Restaurar taxa de serviço
 
-Separar domínio de apresentação.
+Outras ações financeiras já existentes e pertinentes.
 
-==================================================
-38. NÃO ALTERAR VENDA RÁPIDA
-==================================================
+IMPORTANTE:
 
-Venda Rápida está aprovada.
+- não devolver essas ações ao catálogo;
+- catálogo serve para lançamento de produtos;
+- Pagamento concentra ajustes financeiros.
 
-Não fazer mudanças visuais/funcionais nela por causa desta auditoria.
+Reutilizar:
+- SharedDiscountDialog;
+- SharedAuthorizationDialog;
+- demais componentes já aprovados.
 
-Helpers realmente genéricos podem ser compartilhados SOMENTE se não causarem regressão.
+Não criar modal visual diferente desnecessariamente.
 
-==================================================
-39. NÃO INICIAR PAGAMENTOS
-==================================================
-
-Ainda não criar tela de:
-
-pagamento
-divisão
-formas
-saldo parcial
-fechamento.
+Permissões continuam respeitadas.
 
 ==================================================
-40. NÃO ALTERAR ANDROID
+13. PAGAR POR VALOR / POR ITENS / DIVIDIR IGUAL
 ==================================================
 
-Não mexer:
+A arquitetura do pagamento compartilhado deve suportar modos:
 
-Gradle
-AGP
-Kotlin
-AndroidManifest
-SDK
-MainActivity
-applicationId
+POR VALOR
+POR ITENS
+DIVIDIR IGUAL
+
+Na primeira integração com Venda Rápida, implementar o que for seguro com o domínio atual.
+
+O importante é NÃO acoplar a forma de pagamento ao tipo de divisão.
+
+Conceito:
+
+O QUE ESTOU PAGANDO?
+↓
+COMO ESTOU PAGANDO?
+
+Exemplo:
+
+POR ITENS
+↓
+seleciona itens
+↓
+total selecionado = R$ 20,00
+↓
+escolhe DINHEIRO / CARTÃO / PIX
+↓
+cobra imediatamente R$ 20,00.
 
 ==================================================
-41. SEM TESTES AUTOMATIZADOS
+14. PAGAMENTO POR ITENS
 ==================================================
 
-NÃO criar testes.
+Exemplo:
 
-NÃO alterar testes.
+Coca lata                 R$ 8,00
+Black Label             R$ 200,00
+Biscoito                  R$ 12,00
 
-NÃO executar testes automatizados.
+Selecionar apenas:
+
+[x] Biscoito              R$ 12,00
+
+TOTAL SELECIONADO         R$ 12,00
+
+ou:
+
+[x] Coca                  R$ 8,00
+[x] Biscoito             R$ 12,00
+
+TOTAL SELECIONADO        R$ 20,00
 
 ==================================================
-42. SEM BUILD COMPLETO
+15. QUANTIDADE NO PAGAMENTO POR ITENS
 ==================================================
+
+Se houver:
+
+5x Coca lata
+R$ 8,00 cada
+
+deve ser possível pagar parte da quantidade:
+
+Disponível para pagamento: 5
+
+[-] 2 [+]
+
+Selecionado:
+2x Coca
+R$ 16,00
+
+Isso é ALOCAÇÃO DE PAGAMENTO.
+
+NÃO dividir fisicamente o TableOrderItem nem criar lógica semelhante à transferência parcial.
+
+Pagamento por quantidade e transferência parcial são problemas diferentes.
+
+==================================================
+16. TAXA DE SERVIÇO NO PAGAMENTO POR ITENS
+==================================================
+
+REQUISITO IMPORTANTE:
+
+Quando a venda/mesa/comanda possuir taxa de serviço aplicável, o pagamento POR ITENS deve incluir a parcela correta da taxa correspondente aos itens selecionados.
+
+Exemplo simples:
+
+Biscoito                      R$ 12,00
+Taxa aplicável: 10%
+
+Selecionou Biscoito para pagar:
+
+Itens                         R$ 12,00
+Taxa correspondente            R$ 1,20
+
+TOTAL A PAGAR                 R$ 13,20
+
+IMPORTANTE:
+NÃO implementar cálculo ingênuo fixo de "item x 10%" no Flutter.
+
+A taxa oficial, base elegível, descontos, promoções, arredondamentos, itens não elegíveis, isenções e demais regras devem continuar sendo responsabilidade do backend/motor financeiro.
+
+O frontend deve pedir/receber o valor oficial para a seleção de itens.
+
+Se o backend atual NÃO possuir contrato suficiente para calcular uma seleção parcial de itens + taxa corretamente:
+
+PARE nessa parte e informe no checkpoint:
+- qual contrato está faltando;
+- qual endpoint/model/serviço atual existe;
+- qual mudança backend mínima é necessária.
+
+NÃO inventar resultado local.
+
+O mesmo vale para descontos/proporções financeiras associados à seleção.
+
+==================================================
+17. POR VALOR NÃO "QUITA" ITENS AUTOMATICAMENTE
+==================================================
+
+Regra obrigatória:
+
+Pagamento POR VALOR não deve inventar quais itens foram pagos.
+
+Exemplo:
+
+TOTAL                         R$ 220,00
+Pago por itens                 R$ 20,00
+Pago por valor                 R$ 30,00
+
+PAGO                           R$ 50,00
+FALTA                         R$ 170,00
+
+Somente pagamentos POR ITENS geram alocação explícita em itens.
+
+==================================================
+18. DIVIDIR IGUAL
+==================================================
+
+Deixar arquitetura preparada para:
+
+SALDO R$ 300,00
+
+DIVIDIR ENTRE
+[-] 3 [+]
+
+R$ 100,00 POR PARTE
+
+A cobrança continua sendo imediata:
+
+primeira parte
+→ cobra R$ 100
+→ aprovado
+→ atualiza saldo
+→ próxima parte.
+
+Não criar:
+Pessoa 1
+Pessoa 2
+Pessoa 3
+
+como entidades obrigatórias.
+
+Não criar comandas escondidas.
+
+É uma ferramenta de cálculo/alocação de pagamento.
+
+==================================================
+19. COMPONENTES COMPARTILHADOS
+==================================================
+
+Estruturar para reutilização real.
+
+Exemplo conceitual, adapte aos padrões atuais do projeto:
+
+payments/
+  shared_payment_page.dart
+  shared_payment_method_grid.dart
+  shared_payment_numeric_entry.dart
+  shared_payment_history.dart
+  shared_payment_summary.dart
+  shared_payment_item_selector.dart
+  shared_card_type_selector.dart
+
+NÃO é obrigatório usar esses nomes.
+
+Mas a responsabilidade deve ficar separada.
+
+Não criar futuramente:
+
+QuickSalePaymentUI
+TablePaymentUI
+CommandPaymentUI
+
+com três cópias.
+
+Queremos uma fonte visual compartilhada.
+
+==================================================
+20. CONTEXTO DE PAGAMENTO
+==================================================
+
+Preparar contrato neutro para o componente saber:
+
+- origem;
+- total;
+- pago;
+- saldo;
+- itens elegíveis;
+- formas disponíveis;
+- capacidades;
+- permissões;
+- taxa;
+- descontos;
+- ações disponíveis.
+
+Exemplo conceitual:
+
+PaymentContext
+
+sourceType:
+- QUICK_SALE
+- TABLE
+- COMMAND
+
+Mas NÃO colocar lógica de Mesa/Comanda dentro do widget compartilhado.
+
+Nesta fase só QUICK_SALE será integrado.
+
+==================================================
+21. PONTO CRÍTICO — VENDA RÁPIDA ATUAL
+==================================================
+
+Audite cuidadosamente o fluxo atual.
+
+Se hoje a Venda Rápida só cria/finaliza a venda quando recebe uma lista completa de payments, isso NÃO atende o novo requisito.
+
+Precisamos permitir:
+
+checkout/venda em andamento
+→ pagamento 1 aplicado
+→ ainda existe saldo
+→ pagamento 2 aplicado
+→ ainda existe saldo
+→ ...
+→ saldo zero
+→ finalizar venda.
+
+NÃO faça gambiarra mantendo pagamentos apenas em memória no Flutter se uma cobrança real já ocorreu.
+
+Uma cobrança aprovada precisa ter persistência/idempotência/auditoria compatíveis com o backend.
+
+Antes de alterar o domínio, identifique:
+- modelo atual;
+- endpoint atual;
+- como pagamentos são persistidos;
+- quando estoque/venda/tickets são efetivados;
+- como evitar cobrança aprovada sem registro da venda;
+- como recuperar o fluxo após fechamento/crash do app;
+- idempotência.
+
+Se for necessária uma mudança de domínio/backend maior, implemente de forma coerente com a arquitetura existente e relate claramente.
+
+NÃO simular o novo fluxo apenas visualmente.
+
+==================================================
+22. ESTADOS DE COBRANÇA
+==================================================
+
+O fluxo compartilhado precisa suportar visualmente:
+
+PRONTO
+PROCESSANDO
+APROVADO
+RECUSADO
+CANCELADO
+ERRO
+
+Textos exibidos ao operador sempre em português.
+
+Exemplo:
+
+Aguardando pagamento na maquininha...
+
+Pagamento aprovado.
+
+Pagamento não aprovado.
+Nenhum valor foi registrado.
+
+==================================================
+23. CONCORRÊNCIA / DUPLO CLIQUE
+==================================================
+
+Enquanto uma cobrança estiver sendo enviada:
+
+- bloquear novo CONFIRMAR;
+- impedir duplo envio;
+- preservar idempotency key;
+- não permitir duas cobranças concorrentes acidentais;
+- deixar claro visualmente que está processando.
+
+==================================================
+24. VENDA SÓ CONCLUI COM SALDO ZERO
+==================================================
+
+Venda Rápida:
+
+saldo > 0
+→ permanecer no pagamento.
+
+saldo = 0
+→ permitir/concluir finalização da venda conforme regra oficial.
+
+Não permitir finalizar Venda Rápida com saldo devedor, salvo se existir uma regra explícita já suportada para isso.
+
+==================================================
+25. NÃO MEXER EM MESAS AGORA
+==================================================
+
+Não integrar esse novo Payment Flow em Mesas nesta missão.
+
+Não alterar:
+- fluxo operacional de Mesas;
+- transferência;
+- conferência;
+- resumo de Mesa;
+- pedidos Mesa.
+
+Apenas desenhar os componentes compartilhados para que Mesa possa usá-los depois.
+
+==================================================
+26. NÃO MEXER EM COMANDAS AGORA
+==================================================
+
+Não implementar Comanda nesta missão.
+
+Somente deixar arquitetura desacoplada.
+
+==================================================
+27. NÃO ALTERAR ANDROID
+==================================================
+
+Não tocar em:
+
+- Gradle;
+- AGP;
+- Kotlin;
+- AndroidManifest sem necessidade direta;
+- configuração de build Android.
+
+==================================================
+28. TESTES / BUILDS
+==================================================
+
+NÃO criar testes automatizados.
+
+NÃO alterar testes existentes.
 
 NÃO executar:
+- flutter test;
+- pytest;
+- suíte automatizada;
+- flutter build;
+- APK;
+- Gradle build;
+- build completo.
 
-flutter build
-APK build
-Gradle build
-Docker build
+Validações permitidas:
 
-Permitido:
-
-flutter analyze
-
-python manage.py check
-
-python manage.py makemigrations --check --dry-run
-se backend for alterado
-
-git diff --check
+- flutter analyze;
+- python manage.py check;
+- python manage.py makemigrations --check --dry-run, se backend for alterado;
+- git diff --check.
 
 ==================================================
-43. AUDITORIA FINAL OBRIGATÓRIA
+29. NÃO FAZER REFACTOR FORA DO ESCOPO
 ==================================================
 
-Antes de terminar, fazer busca no módulo de Mesas por padrões como:
+Não aproveitar a missão para reestruturar módulos sem relação direta.
 
-.status
-status.toUpperCase
-quantity
-unitPrice
-lineTotal
-summary[
-balance
-total
-showDialog
-AlertDialog
-toStringAsFixed
-'0.0'
-"0.0"
+Não alterar a Venda Rápida além do necessário para o novo pagamento.
 
-e revisar cada ocorrência que chega à interface.
-
-Não fazer substituição cega.
-
-Entender contexto de cada ocorrência.
+Preservar:
+- catálogo aprovado;
+- ProductCatalogPanel;
+- ProductCard;
+- editor compartilhado de item;
+- scanner;
+- estoque;
+- modificadores;
+- carrinho;
+- visual aprovado fora da área de pagamento.
 
 ==================================================
-44. CRITÉRIO DE SUCESSO VISUAL
+30. CHECKPOINT FINAL OBRIGATÓRIO
 ==================================================
 
-No módulo de Mesas inteiro:
+Ao terminar, informe:
 
-NUNCA quero ver:
+1. HEAD usado.
+2. Arquivos alterados.
+3. Como funcionava o pagamento antigo da Venda Rápida.
+4. Como ficou o novo fluxo imediato.
+5. Onde ficaram os componentes compartilhados.
+6. Como as formas de pagamento são obtidas da API.
+7. Como funciona a regra dos 4 cards.
+8. Como CARTÃO agrupa Crédito/Débito/VA/VR.
+9. Como OUTROS é montado.
+10. Como funciona o teclado numérico.
+11. Confirmação dos atalhos R$5 / R$10 / R$20 / R$50.
+12. Como funciona PAGAR SALDO.
+13. Como Dinheiro funciona.
+14. Como Pix funciona.
+15. Como Cartão/provider funciona.
+16. Como pagamentos aprovados são persistidos imediatamente.
+17. Como recusados/cancelados são tratados.
+18. Como PAGO/FALTA são recalculados.
+19. Como o histórico de pagamentos é exibido.
+20. Como descontos/taxa foram movidos para o menu superior do pagamento.
+21. Como ficou pagamento POR ITENS.
+22. Como quantidade parcial de item é alocada.
+23. Como a taxa de serviço é calculada/alocada no pagamento por itens.
+24. Se foi necessária mudança de backend para item + taxa.
+25. Como POR VALOR permanece sem alocação automática de item.
+26. Estado de DIVIDIR IGUAL nesta fase.
+27. Como idempotência e duplo clique foram protegidos.
+28. Como recuperação após erro/crash funciona quando já houve cobrança aprovada.
+29. Confirmação de que Mesas não foi integrada ainda.
+30. Confirmação de que Comandas não foi implementada.
+31. Resultado do flutter analyze, se executado.
+32. Resultado dos checks Django, se executados.
+33. Resultado do git diff --check.
+34. Confirmação de que nenhum teste automatizado foi criado, alterado ou executado.
+35. Confirmação de que nenhum build completo foi executado.
+36. Qualquer bloqueio de domínio que ainda precise de decisão nossa.
 
-1.000
-2.000
+Depois do checkpoint:
 
-para unidades inteiras.
+PARE.
 
-NUNCA quero ver:
-
-0.0
-10.5
-
-para dinheiro.
-
-NUNCA quero ver:
-
-confirmed
-cancelled
-pending
-processing
-printed
-failed
-open
-closed
-
-como textos técnicos para operador.
-
-==================================================
-45. CHECKPOINT
-==================================================
-
-Ao terminar, PARE e informe:
-
-1. HEAD trabalhado;
-
-2. todos os arquivos auditados;
-
-3. todos os arquivos alterados;
-
-4. helper único usado para quantidade;
-
-5. exemplos:
-   1.000 → 1
-   1.500 → 1.5
-   2.250 → 2.25;
-
-6. formatter monetário usado;
-
-7. confirmação:
-   0.0 → 0.00
-   10.5 → 10.50
-   onde for valor monetário;
-
-8. todos os status em inglês encontrados na UI;
-
-9. traduções aplicadas;
-
-10. todas as exibições diretas de status removidas;
-
-11. resultado da investigação de TableAttendancePage;
-
-12. se TableAttendancePage foi removida, consolidada ou mantida e por quê;
-
-13. componentes mortos removidos;
-
-14. como ficou a nova página TRANSFERIR ITENS;
-
-15. confirmação de que o seletor de itens não é mais AlertDialog;
-
-16. como funciona selecionar todos;
-
-17. como funciona quantidade parcial;
-
-18. como item único entra nessa página já selecionado;
-
-19. confirmação de que seleção de Mesa destino continua usando SharedTablesGrid;
-
-20. confirmação de que Home Mesas também usa o mesmo SharedTablesGrid;
-
-21. resultado da auditoria da transferência parcial;
-
-22. todas as relações encontradas de TableOrderItem relevantes à transferência;
-
-23. como StockMovement fica correto após transferência parcial;
-
-24. como ProductionJob fica correto;
-
-25. como PrintJob fica correto;
-
-26. como tickets ficam corretos;
-
-27. como auditoria/idempotência ficam corretas;
-
-28. comportamento de print_status null;
-
-29. confirmação de que Conferência usa os mesmos formatters;
-
-30. confirmação de que Resumo usa os mesmos formatters;
-
-31. confirmação de que mapa de Mesas usa os mesmos formatters;
-
-32. confirmação de que não iniciou pagamentos;
-
-33. confirmação de que não alterou Venda Rápida;
-
-34. resultado de flutter analyze;
-
-35. resultado de python manage.py check, se backend mudou;
-
-36. resultado de makemigrations --check --dry-run, se aplicável;
-
-37. resultado de git diff --check;
-
-38. confirmação de que não criou/executou testes;
-
-39. confirmação de que não executou build completo.
-
-DEPOIS PARE.
+Não iniciar integração em Mesas.
+Não iniciar Comandas.
+Não continuar para outra fase sem aprovação.
+```

@@ -13,6 +13,7 @@ import 'sale_models.dart';
 import 'shared_authorization_dialog.dart';
 import 'shared_customer_dialog.dart';
 import 'shared_discount_dialog.dart';
+import 'shared_sale_item_editor_dialog.dart';
 import 'shared_pos_widgets.dart';
 
 class _PreviewIntent {
@@ -446,7 +447,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
     final current = initial ?? (index == null ? null : _cart[index]);
     final item = await showDialog<QuickSaleCartItem>(
       context: context,
-      builder: (_) => SaleItemEditorDialog(
+      builder: (_) => SharedSaleItemEditorDialog(
         product: product,
         initial: current,
       ),
@@ -2086,7 +2087,7 @@ class _EditCartItemDialogState extends State<_EditCartItemDialog> {
     final updated = await showDialog<QuickSaleCartItem>(
       context: context,
       builder: (_) =>
-          SaleItemEditorDialog(product: _item.product, initial: _item),
+          SharedSaleItemEditorDialog(product: _item.product, initial: _item),
     );
     if (updated != null && mounted) setState(() => _item = updated);
   }
@@ -2224,224 +2225,6 @@ class _EditCartItemDialogState extends State<_EditCartItemDialog> {
             ),
             child: const Text('SALVAR'),
           ),
-        ],
-      );
-}
-
-class SaleItemEditorDialog extends StatefulWidget {
-  const SaleItemEditorDialog({required this.product, this.initial, super.key});
-  final QuickSaleProduct product;
-  final QuickSaleCartItem? initial;
-  @override
-  State<SaleItemEditorDialog> createState() => _ItemEditorDialogState();
-}
-
-class _ItemEditorDialogState extends State<SaleItemEditorDialog> {
-  final Map<int, int> _quantities = {};
-  String? _validation;
-
-  @override
-  void initState() {
-    super.initState();
-    for (final modifier
-        in widget.initial?.modifiers ?? const <Map<String, dynamic>>[]) {
-      final option = modifier['option'] as int?;
-      if (option != null) {
-        _quantities[option] = int.tryParse('${modifier['quantity']}') ?? 1;
-      }
-    }
-  }
-
-  void _toggle(QuickSaleModifierGroup group, QuickSaleModifierOption option,
-      bool selected) {
-    setState(() {
-      if (selected) {
-        if (group.maxSelections == 1) {
-          for (final candidate in group.options) {
-            _quantities.remove(candidate.id);
-          }
-        }
-        _quantities[option.id] = 1;
-      } else {
-        _quantities.remove(option.id);
-      }
-      _validation = null;
-    });
-  }
-
-  void _increase(QuickSaleModifierGroup group, QuickSaleModifierOption option) {
-    setState(() {
-      if (group.maxSelections == 1) {
-        for (final candidate in group.options) {
-          _quantities.remove(candidate.id);
-        }
-      }
-      _quantities[option.id] = (_quantities[option.id] ?? 0) + 1;
-      _validation = null;
-    });
-  }
-
-  void _decrease(QuickSaleModifierOption option) {
-    setState(() {
-      final current = _quantities[option.id] ?? 0;
-      if (current <= 1) {
-        _quantities.remove(option.id);
-      } else {
-        _quantities[option.id] = current - 1;
-      }
-      _validation = null;
-    });
-  }
-
-  int? _selectedOptionFor(QuickSaleModifierGroup group) {
-    for (final option in group.options) {
-      if (_quantities.containsKey(option.id)) return option.id;
-    }
-    return null;
-  }
-
-  double _number(String? value) =>
-      double.tryParse((value ?? '0').replaceAll(',', '.')) ?? 0;
-
-  String _formatQuantity(double value) =>
-      value == value.roundToDouble() ? '${value.toInt()}' : value.toString();
-
-  String? _groupValidation(QuickSaleModifierGroup group) {
-    final selected =
-        group.options.where((option) => _quantities.containsKey(option.id));
-    final selectionCount = selected.length;
-    final totalQuantity = selected.fold<double>(
-      0,
-      (total, option) => total + (_quantities[option.id] ?? 0),
-    );
-    if (selectionCount < group.minSelections ||
-        (group.required && selectionCount == 0)) {
-      final missing = (group.minSelections - selectionCount).clamp(1, 999);
-      return 'Selecione mais $missing ${missing == 1 ? 'opção' : 'opções'} em ${group.name}.';
-    }
-    if (group.maxSelections != null && selectionCount > group.maxSelections!) {
-      return 'Remova ${selectionCount - group.maxSelections!} ${selectionCount - group.maxSelections! == 1 ? 'opção' : 'opções'} em ${group.name}.';
-    }
-    final required = _number(group.requiredQuantity) *
-        (int.tryParse(widget.initial?.quantity ?? '1') ?? 1);
-    if (group.requiredQuantity != null && totalQuantity != required) {
-      final difference = (required - totalQuantity).abs();
-      return totalQuantity < required
-          ? 'Selecione mais ${_formatQuantity(difference)} unidade(s) em ${group.name}.'
-          : 'Remova ${_formatQuantity(difference)} unidade(s) em ${group.name}.';
-    }
-    final minimum = _number(group.minTotalQuantity);
-    if (minimum > 0 && totalQuantity < minimum) {
-      return 'Selecione mais ${_formatQuantity(minimum - totalQuantity)} unidade(s) em ${group.name}.';
-    }
-    final maximum =
-        group.maxTotalQuantity == null ? null : _number(group.maxTotalQuantity);
-    if (maximum != null && totalQuantity > maximum) {
-      return 'Remova ${_formatQuantity(totalQuantity - maximum)} unidade(s) em ${group.name}.';
-    }
-    return null;
-  }
-
-  void _save() {
-    for (final group in widget.product.modifierGroups) {
-      final validation = _groupValidation(group);
-      if (validation != null) {
-        setState(() => _validation = validation);
-        return;
-      }
-    }
-    Navigator.of(context).pop(QuickSaleCartItem(
-      clientItemId: widget.initial?.clientItemId ?? createIdempotencyKey(),
-      product: widget.product,
-      quantity: widget.initial?.quantity ?? '1',
-      notes: widget.initial?.notes ?? '',
-      discount: widget.initial?.discount ?? const QuickSaleDiscountIntent(),
-      modifiers: _quantities.entries
-          .map((entry) => {'option': entry.key, 'quantity': '${entry.value}'})
-          .toList(growable: false),
-    ));
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: Text(widget.initial == null
-            ? 'Adicionar ${widget.product.name}'
-            : 'Editar ${widget.product.name}'),
-        content: SizedBox(
-            width: 460,
-            child: SingleChildScrollView(
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-              for (final group in widget.product.modifierGroups) ...[
-                Align(
-                    alignment: Alignment.centerLeft,
-                    child: Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Text(
-                          '${group.name}${group.required ? ' *' : ''}',
-                          style: const TextStyle(fontWeight: FontWeight.w800),
-                        ))),
-                for (final option in group.options)
-                  Row(children: [
-                    Expanded(
-                        child: group.allowOptionQuantity
-                            ? ListTile(
-                                contentPadding: EdgeInsets.zero,
-                                onTap: () => _increase(group, option),
-                                leading: Icon(
-                                  _quantities.containsKey(option.id)
-                                      ? Icons.add_circle
-                                      : Icons.add_circle_outline,
-                                  color: const Color(0xff3454d1),
-                                ),
-                                title: Text(option.name),
-                                subtitle:
-                                    Text(formatMoney(option.additionalPrice)),
-                              )
-                            : group.maxSelections == 1
-                                ? RadioListTile<int>(
-                                    contentPadding: EdgeInsets.zero,
-                                    value: option.id,
-                                    groupValue: _selectedOptionFor(group),
-                                    onChanged: (value) =>
-                                        _toggle(group, option, value != null),
-                                    title: Text(option.name),
-                                    subtitle: Text(
-                                        formatMoney(option.additionalPrice)),
-                                  )
-                                : CheckboxListTile(
-                                    contentPadding: EdgeInsets.zero,
-                                    value: _quantities.containsKey(option.id),
-                                    onChanged: (value) =>
-                                        _toggle(group, option, value ?? false),
-                                    title: Text(option.name),
-                                    subtitle: Text(
-                                        formatMoney(option.additionalPrice)),
-                                  )),
-                    if (group.allowOptionQuantity &&
-                        _quantities.containsKey(option.id)) ...[
-                      IconButton(
-                          onPressed: () => _decrease(option),
-                          icon: const Icon(Icons.remove)),
-                      Text('${_quantities[option.id]}'),
-                      IconButton(
-                          onPressed: () => _increase(group, option),
-                          icon: const Icon(Icons.add)),
-                    ],
-                  ]),
-              ],
-              if (_validation != null)
-                Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: Text(_validation!,
-                        style: const TextStyle(color: Colors.red))),
-            ]))),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('CANCELAR')),
-          FilledButton(
-              onPressed: _save,
-              child: Text(widget.initial == null ? 'ADICIONAR' : 'SALVAR')),
         ],
       );
 }

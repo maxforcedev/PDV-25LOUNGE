@@ -1,6 +1,7 @@
 import uuid
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
@@ -194,3 +195,173 @@ class POSDeviceSettings(BaseModel):
     def save(self, *args, **kwargs):
         self.full_clean()
         return super().save(*args, **kwargs)
+
+
+class QuickSaleCheckoutStatus(models.TextChoices):
+    OPEN = 'open', 'Em edição'
+    PAID = 'paid', 'Pago'
+    FINALIZED = 'finalized', 'Finalizado'
+    CANCELLED = 'cancelled', 'Cancelado'
+
+
+class QuickSalePaymentStatus(models.TextChoices):
+    APPLIED = 'applied', 'Manual aplicado'
+    REVERSED = 'reversed', 'Estorno'
+
+
+class QuickSaleCheckout(BaseModel):
+    """Persistent POS counter checkout. Monetary data is the official preview snapshot."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    company = models.ForeignKey('companies.Company', on_delete=models.PROTECT, related_name='quick_sale_checkouts')
+    branch = models.ForeignKey('companies.Branch', on_delete=models.PROTECT, related_name='quick_sale_checkouts')
+    pos_device = models.ForeignKey(POSDevice, on_delete=models.PROTECT, related_name='quick_sale_checkouts')
+    operator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='quick_sale_checkouts')
+    customer = models.ForeignKey('companies.Customer', on_delete=models.PROTECT, related_name='quick_sale_checkouts', blank=True, null=True)
+    cash_session = models.ForeignKey('cash.CashSession', on_delete=models.PROTECT, related_name='quick_sale_checkouts', blank=True, null=True)
+    sale = models.OneToOneField('sales.Sale', on_delete=models.PROTECT, related_name='quick_sale_checkout', blank=True, null=True)
+    status = models.CharField(max_length=10, choices=QuickSaleCheckoutStatus.choices, default=QuickSaleCheckoutStatus.OPEN, db_index=True)
+    discount_intent = models.JSONField(default=dict, blank=True)
+    service_fee_waived = models.BooleanField(default=False)
+    discount_approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='approved_quick_sale_discounts', blank=True, null=True)
+    item_discount_approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='approved_quick_sale_item_discounts', blank=True, null=True)
+    service_fee_waived_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='approved_quick_sale_service_fee_waivers', blank=True, null=True)
+    financial_snapshot = models.JSONField(default=dict, blank=True)
+    creation_idempotency_key = models.UUIDField(blank=True, null=True, editable=False)
+    creation_request_fingerprint = models.CharField(max_length=64, blank=True, default='', editable=False)
+    finalization_idempotency_key = models.UUIDField(blank=True, null=True, editable=False)
+
+    class Meta:
+        ordering = ('-updated_at', '-created_at')
+        indexes = [models.Index(fields=('branch', 'operator', 'status'))]
+        constraints = [
+            models.UniqueConstraint(
+                fields=('pos_device', 'creation_idempotency_key'),
+                name='pos_quick_sale_checkout_creation_idempotency_unique',
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
+            errors['branch'] = 'A filial deve pertencer à empresa do checkout.'
+        if self.pos_device_id and self.branch_id and self.pos_device.branch_id != self.branch_id:
+            errors['pos_device'] = 'O dispositivo deve pertencer à filial do checkout.'
+        if self.customer_id and (
+            self.customer.company_id != self.company_id or self.customer.status != 'active'
+        ):
+            errors['customer'] = 'O cliente deve estar ativo e pertencer à empresa.'
+        if self.cash_session_id and self.cash_session.branch_id != self.branch_id:
+            errors['cash_session'] = 'A sessão de caixa deve pertencer à filial.'
+        if self.status == QuickSaleCheckoutStatus.FINALIZED and not self.sale_id:
+            errors['sale'] = 'Checkout finalizado exige venda.'
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+
+class QuickSaleCheckoutItem(BaseModel):
+    checkout = models.ForeignKey(QuickSaleCheckout, on_delete=models.PROTECT, related_name='items')
+    client_item_id = models.UUIDField()
+    product = models.ForeignKey('products.Product', on_delete=models.PROTECT, related_name='quick_sale_checkout_items')
+    quantity = models.DecimalField(max_digits=14, decimal_places=3)
+    snapshot = models.JSONField(default=dict)
+
+    class Meta:
+        ordering = ('id',)
+        constraints = [
+            models.UniqueConstraint(fields=('checkout', 'client_item_id'), name='pos_quick_sale_checkout_item_client_unique'),
+            models.CheckConstraint(condition=Q(quantity__gt=0), name='pos_quick_sale_checkout_item_quantity_positive'),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError('Itens de checkout são imutáveis.')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError('Itens de checkout não podem ser excluídos.')
+
+
+class QuickSalePayment(BaseModel):
+    """Manual tender ledger. Reversals are new rows and never delete the original."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    checkout = models.ForeignKey(QuickSaleCheckout, on_delete=models.PROTECT, related_name='payments')
+    payment_method = models.ForeignKey('sales.PaymentMethod', on_delete=models.PROTECT, related_name='quick_sale_payments')
+    payment_method_name = models.CharField(max_length=100)
+    payment_method_code = models.CharField(max_length=50)
+    source_type = models.CharField(max_length=20, default='manual', editable=False)
+    status = models.CharField(max_length=10, choices=QuickSalePaymentStatus.choices, default=QuickSalePaymentStatus.APPLIED)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    received_amount = models.DecimalField(max_digits=14, decimal_places=2, blank=True, null=True)
+    change_amount = models.DecimalField(max_digits=14, decimal_places=2, blank=True, null=True)
+    cash_session = models.ForeignKey('cash.CashSession', on_delete=models.PROTECT, related_name='quick_sale_payments', blank=True, null=True)
+    operator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='quick_sale_payments')
+    idempotency_key = models.UUIDField(editable=False)
+    request_fingerprint = models.CharField(max_length=64, editable=False)
+    reversal_of = models.OneToOneField('self', on_delete=models.PROTECT, related_name='reversal', blank=True, null=True)
+    reversal_reason = models.TextField(blank=True, default='')
+
+    class Meta:
+        ordering = ('created_at', 'id')
+        constraints = [
+            models.UniqueConstraint(fields=('checkout', 'idempotency_key'), name='pos_quick_sale_payment_idempotency_unique'),
+            models.CheckConstraint(condition=Q(amount__gt=0), name='pos_quick_sale_payment_amount_positive'),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.checkout_id and self.payment_method_id and self.payment_method.company_id != self.checkout.company_id:
+            errors['payment_method'] = 'A forma de pagamento deve pertencer à empresa do checkout.'
+        if self.cash_session_id and self.cash_session.branch_id != self.checkout.branch_id:
+            errors['cash_session'] = 'A sessão de caixa deve pertencer à filial do checkout.'
+        if self.payment_method_id and self.payment_method.code == 'cash':
+            if self.cash_session_id is None:
+                errors['cash_session'] = 'Dinheiro exige sessão de caixa.'
+            if self.received_amount is None or self.received_amount < self.amount:
+                errors['received_amount'] = 'Dinheiro exige valor recebido igual ou maior ao aplicado.'
+        elif self.cash_session_id is not None or self.received_amount is not None or self.change_amount is not None:
+            errors['payment_method'] = 'Somente dinheiro aceita sessão, recebido e troco.'
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        # UUID primary keys are assigned before the first save, so truthiness alone
+        # cannot distinguish a new immutable ledger row from an update.
+        if self.pk and type(self).objects.filter(pk=self.pk).exists():
+            raise ValidationError('Pagamentos de checkout são imutáveis.')
+        if self.payment_method_id:
+            self.payment_method_name = self.payment_method.name
+            self.payment_method_code = self.payment_method.code
+            if self.payment_method.code == 'cash' and self.received_amount is not None:
+                self.change_amount = self.received_amount - self.amount
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError('Pagamentos de checkout não podem ser excluídos.')
+
+
+class QuickSalePaymentAllocation(BaseModel):
+    payment = models.ForeignKey(QuickSalePayment, on_delete=models.PROTECT, related_name='allocations')
+    item = models.ForeignKey(QuickSaleCheckoutItem, on_delete=models.PROTECT, related_name='payment_allocations')
+    allocated_quantity = models.DecimalField(max_digits=14, decimal_places=3)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=Q(allocated_quantity__gt=0), name='pos_quick_sale_allocation_quantity_positive'),
+            models.CheckConstraint(condition=Q(amount__gt=0), name='pos_quick_sale_allocation_amount_positive'),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError('Alocações de pagamento são imutáveis.')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError('Alocações de pagamento não podem ser excluídas.')
