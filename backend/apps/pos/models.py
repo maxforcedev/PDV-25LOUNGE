@@ -235,7 +235,7 @@ class QuickSaleCheckout(BaseModel):
         indexes = [models.Index(fields=('branch', 'operator', 'status'))]
         constraints = [
             models.UniqueConstraint(
-                fields=('pos_device', 'creation_idempotency_key'),
+                fields=('pos_device', 'operator', 'creation_idempotency_key'),
                 name='pos_quick_sale_checkout_creation_idempotency_unique',
             ),
         ]

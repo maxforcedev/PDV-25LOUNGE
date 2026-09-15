@@ -11,19 +11,25 @@ abstract class SecretStore {
   Future<void> writePendingSaleIntents(String value) async {}
 }
 
-/// Kept outside the base contract so existing in-memory test stores remain valid.
-extension QuickSaleCheckoutSecretStore on SecretStore {
-  Future<String?> readQuickSaleCheckoutState() => this is FlutterSecretStore
-      ? (this as FlutterSecretStore).readQuickSaleCheckoutState()
-      : Future.value(null);
-
-  Future<void> writeQuickSaleCheckoutState(String value) =>
-      this is FlutterSecretStore
-          ? (this as FlutterSecretStore).writeQuickSaleCheckoutState(value)
-          : Future.value();
+abstract interface class QuickSaleCheckoutStateStore {
+  Future<String?> readQuickSaleCheckoutState();
+  Future<void> writeQuickSaleCheckoutState(String value);
 }
 
-class FlutterSecretStore implements SecretStore {
+/// Optional so existing secret-store implementations remain valid.
+extension QuickSaleCheckoutSecretStore on SecretStore {
+  Future<String?> readQuickSaleCheckoutState() =>
+      this is QuickSaleCheckoutStateStore
+          ? (this as QuickSaleCheckoutStateStore).readQuickSaleCheckoutState()
+          : Future.value(null);
+
+  Future<void> writeQuickSaleCheckoutState(String value) => this
+          is QuickSaleCheckoutStateStore
+      ? (this as QuickSaleCheckoutStateStore).writeQuickSaleCheckoutState(value)
+      : Future.value();
+}
+
+class FlutterSecretStore implements SecretStore, QuickSaleCheckoutStateStore {
   FlutterSecretStore({FlutterSecureStorage? storage})
       : _storage = storage ?? const FlutterSecureStorage();
 
@@ -66,9 +72,11 @@ class FlutterSecretStore implements SecretStore {
   Future<void> writePendingSaleIntents(String value) =>
       _storage.write(key: _pendingSaleIntentsKey, value: value);
 
+  @override
   Future<String?> readQuickSaleCheckoutState() =>
       _storage.read(key: _quickSaleCheckoutStateKey);
 
+  @override
   Future<void> writeQuickSaleCheckoutState(String value) =>
       _storage.write(key: _quickSaleCheckoutStateKey, value: value);
 }

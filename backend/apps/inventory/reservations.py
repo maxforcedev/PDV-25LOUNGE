@@ -166,13 +166,24 @@ def acquire_checkout_reservation(checkout, *, renew=True):
     return reservation
 
 
-def validate_checkout_reservation(checkout, *, paid=False):
+def validate_checkout_reservation(checkout, *, paid=False, renew_if_unpaid=False):
     reservation = StockReservation.objects.select_for_update().filter(
         branch=checkout.branch, source_type=QUICK_SALE_CHECKOUT_SOURCE,
         source_reference=str(checkout.pk),
     ).first()
-    if not reservation or _expire_if_due(reservation).status != StockReservationStatus.ACTIVE:
-        raise StockReservationConflict('A reserva do checkout expirou ou não está ativa.')
+    if not reservation:
+        raise StockReservationConflict('A reserva do checkout não está ativa.')
+    reservation = _expire_if_due(reservation)
+    if reservation.status != StockReservationStatus.ACTIVE:
+        if reservation.status == StockReservationStatus.EXPIRED and renew_if_unpaid:
+            reservation = acquire_checkout_reservation(checkout)
+        elif reservation.status == StockReservationStatus.EXPIRED:
+            raise StockReservationConflict(
+                'A reserva do checkout expirou e não pode ser renovada após pagamento. '
+                'Estorne os pagamentos antes de tentar novamente.'
+            )
+        else:
+            raise StockReservationConflict('A reserva do checkout não está ativa.')
     quantities, contents = checkout_requirements(checkout)
     stocks, expected = _lock_requirement_stocks(checkout.branch, quantities, contents)
     stocks_by_id = {stock.pk: stock for stock in stocks.values()}

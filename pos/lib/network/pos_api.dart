@@ -238,10 +238,12 @@ abstract class PosApi {
     Map<String, dynamic>? discountAuthorization,
     Map<String, dynamic>? itemDiscountAuthorization,
     Map<String, dynamic>? serviceFeeAuthorization,
-  }) => throw UnimplementedError();
+  }) =>
+      throw UnimplementedError();
   Future<QuickSaleCheckout> getQuickSaleCheckout(String checkoutId) =>
       throw UnimplementedError();
-  Future<QuickSaleCheckout> recoverQuickSaleCheckout(String creationIdempotencyKey) =>
+  Future<QuickSaleCheckout> recoverQuickSaleCheckout(
+          String creationIdempotencyKey) =>
       throw UnimplementedError();
   Future<QuickSaleCheckout> updateQuickSaleCheckout({
     required String checkoutId,
@@ -253,7 +255,8 @@ abstract class PosApi {
     Map<String, dynamic>? discountAuthorization,
     Map<String, dynamic>? itemDiscountAuthorization,
     Map<String, dynamic>? serviceFeeAuthorization,
-  }) => throw UnimplementedError();
+  }) =>
+      throw UnimplementedError();
   Future<QuickSaleCheckout> recordQuickSalePayment({
     required String checkoutId,
     required int paymentMethodId,
@@ -262,21 +265,29 @@ abstract class PosApi {
     String? amount,
     String? receivedAmount,
     List<Map<String, dynamic>> allocations = const [],
-  }) => throw UnimplementedError();
+  }) =>
+      throw UnimplementedError();
   Future<QuickSaleCheckout> reverseQuickSalePayment({
     required String checkoutId,
     required String paymentId,
     required String idempotencyKey,
     String reason = '',
-  }) => throw UnimplementedError();
+  }) =>
+      throw UnimplementedError();
+  Future<QuickSaleCheckout> cancelQuickSaleCheckout({
+    required String checkoutId,
+  }) =>
+      throw UnimplementedError();
   Future<QuickSalePaymentPreview> previewQuickSalePayment({
     required String checkoutId,
     required List<Map<String, dynamic>> allocations,
-  }) => throw UnimplementedError();
+  }) =>
+      throw UnimplementedError();
   Future<QuickSaleResult> finalizeQuickSaleCheckout({
     required String checkoutId,
     required String idempotencyKey,
-  }) => throw UnimplementedError();
+  }) =>
+      throw UnimplementedError();
   Future<QuickSaleResult> finalizeQuickSale({
     required String idempotencyKey,
     required List<Map<String, dynamic>> items,
@@ -1085,7 +1096,7 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   @override
   Future<QuickSaleCheckoutOptions> quickSaleCheckoutOptions() async =>
       QuickSaleCheckoutOptions.fromJson(
-           await _request('GET', 'sales/checkout-options/'));
+          await _request('GET', 'sales/checkout-options/'));
 
   @override
   Future<QuickSaleCheckout> createQuickSaleCheckout({
@@ -1098,22 +1109,33 @@ class HttpPosApi implements PosApi, PosCredentialCache {
     Map<String, dynamic>? discountAuthorization,
     Map<String, dynamic>? itemDiscountAuthorization,
     Map<String, dynamic>? serviceFeeAuthorization,
-  }) async => QuickSaleCheckout.fromJson(await _request('POST', 'sales/checkouts/', body: {
-        'items': items, 'cash_session': cashSessionId, 'discount': discount,
-        'service_fee_waived': serviceFeeWaived, 'idempotency_key': idempotencyKey,
+  }) async =>
+      QuickSaleCheckout.fromJson(
+          await _request('POST', 'sales/checkouts/', body: {
+        'items': items,
+        'cash_session': cashSessionId,
+        'discount': discount,
+        'service_fee_waived': serviceFeeWaived,
+        'idempotency_key': idempotencyKey,
         if (customerId != null) 'customer': customerId,
-        if (discountAuthorization != null) 'discount_authorization': discountAuthorization,
-        if (itemDiscountAuthorization != null) 'item_discount_authorization': itemDiscountAuthorization,
-        if (serviceFeeAuthorization != null) 'service_fee_authorization': serviceFeeAuthorization,
+        if (discountAuthorization != null)
+          'discount_authorization': discountAuthorization,
+        if (itemDiscountAuthorization != null)
+          'item_discount_authorization': itemDiscountAuthorization,
+        if (serviceFeeAuthorization != null)
+          'service_fee_authorization': serviceFeeAuthorization,
       }));
 
   @override
   Future<QuickSaleCheckout> getQuickSaleCheckout(String checkoutId) async =>
-      QuickSaleCheckout.fromJson(await _request('GET', 'sales/checkouts/$checkoutId/'));
+      QuickSaleCheckout.fromJson(
+          await _request('GET', 'sales/checkouts/$checkoutId/'));
 
   @override
-  Future<QuickSaleCheckout> recoverQuickSaleCheckout(String creationIdempotencyKey) async =>
-      QuickSaleCheckout.fromJson(await _request('GET', 'sales/checkouts/recover/$creationIdempotencyKey/'));
+  Future<QuickSaleCheckout> recoverQuickSaleCheckout(
+          String creationIdempotencyKey) async =>
+      QuickSaleCheckout.fromJson(await _request(
+          'GET', 'sales/checkouts/recover/$creationIdempotencyKey/'));
 
   @override
   Future<QuickSaleCheckout> updateQuickSaleCheckout({
@@ -1126,47 +1148,84 @@ class HttpPosApi implements PosApi, PosCredentialCache {
     Map<String, dynamic>? discountAuthorization,
     Map<String, dynamic>? itemDiscountAuthorization,
     Map<String, dynamic>? serviceFeeAuthorization,
-  }) async => QuickSaleCheckout.fromJson(await _request('PUT', 'sales/checkouts/$checkoutId/', body: {
-        'items': items, 'cash_session': cashSessionId, 'discount': discount,
+  }) async =>
+      QuickSaleCheckout.fromJson(
+          await _request('PUT', 'sales/checkouts/$checkoutId/', body: {
+        'items': items,
+        'cash_session': cashSessionId,
+        'discount': discount,
         'service_fee_waived': serviceFeeWaived,
         if (customerId != null) 'customer': customerId,
-        if (discountAuthorization != null) 'discount_authorization': discountAuthorization,
-        if (itemDiscountAuthorization != null) 'item_discount_authorization': itemDiscountAuthorization,
-        if (serviceFeeAuthorization != null) 'service_fee_authorization': serviceFeeAuthorization,
+        if (discountAuthorization != null)
+          'discount_authorization': discountAuthorization,
+        if (itemDiscountAuthorization != null)
+          'item_discount_authorization': itemDiscountAuthorization,
+        if (serviceFeeAuthorization != null)
+          'service_fee_authorization': serviceFeeAuthorization,
       }));
 
   @override
   Future<QuickSaleCheckout> recordQuickSalePayment({
-    required String checkoutId, required int paymentMethodId, required String mode,
-    required String idempotencyKey, String? amount, String? receivedAmount,
+    required String checkoutId,
+    required int paymentMethodId,
+    required String mode,
+    required String idempotencyKey,
+    String? amount,
+    String? receivedAmount,
     List<Map<String, dynamic>> allocations = const [],
-  }) async => QuickSaleCheckout.fromJson(await _request('POST', 'sales/checkouts/$checkoutId/payments/', body: {
-        'payment_method': paymentMethodId, 'mode': mode, 'idempotency_key': idempotencyKey,
-        if (amount != null) 'amount': amount,
-        if (receivedAmount != null) 'received_amount': receivedAmount,
-        if (allocations.isNotEmpty) 'allocations': allocations,
-      }));
+  }) async =>
+      QuickSaleCheckout.fromJson(await _request(
+          'POST', 'sales/checkouts/$checkoutId/payments/',
+          body: {
+            'payment_method': paymentMethodId,
+            'mode': mode,
+            'idempotency_key': idempotencyKey,
+            if (amount != null) 'amount': amount,
+            if (receivedAmount != null) 'received_amount': receivedAmount,
+            if (allocations.isNotEmpty) 'allocations': allocations,
+          }));
 
   @override
   Future<QuickSaleCheckout> reverseQuickSalePayment({
-    required String checkoutId, required String paymentId, required String idempotencyKey,
+    required String checkoutId,
+    required String paymentId,
+    required String idempotencyKey,
     String reason = '',
-  }) async => QuickSaleCheckout.fromJson(await _request('POST',
-      'sales/checkouts/$checkoutId/payments/$paymentId/reverse/', body: {
-        'idempotency_key': idempotencyKey, 'reason': reason,
-      }));
+  }) async =>
+      QuickSaleCheckout.fromJson(await _request(
+          'POST', 'sales/checkouts/$checkoutId/payments/$paymentId/reverse/',
+          body: {
+            'idempotency_key': idempotencyKey,
+            'reason': reason,
+          }));
+
+  @override
+  Future<QuickSaleCheckout> cancelQuickSaleCheckout({
+    required String checkoutId,
+  }) async =>
+      QuickSaleCheckout.fromJson(await _request(
+        'POST',
+        'sales/checkouts/$checkoutId/cancel/',
+        body: const {},
+      ));
 
   @override
   Future<QuickSalePaymentPreview> previewQuickSalePayment({
-    required String checkoutId, required List<Map<String, dynamic>> allocations,
-  }) async => QuickSalePaymentPreview.fromJson(await _request('POST',
-      'sales/checkouts/$checkoutId/payment-preview/', body: {'allocations': allocations}));
+    required String checkoutId,
+    required List<Map<String, dynamic>> allocations,
+  }) async =>
+      QuickSalePaymentPreview.fromJson(await _request(
+          'POST', 'sales/checkouts/$checkoutId/payment-preview/',
+          body: {'allocations': allocations}));
 
   @override
   Future<QuickSaleResult> finalizeQuickSaleCheckout({
-    required String checkoutId, required String idempotencyKey,
-  }) async => QuickSaleResult.fromJson(await _request('POST',
-      'sales/checkouts/$checkoutId/finalize/', body: {'idempotency_key': idempotencyKey}));
+    required String checkoutId,
+    required String idempotencyKey,
+  }) async =>
+      QuickSaleResult.fromJson(await _request(
+          'POST', 'sales/checkouts/$checkoutId/finalize/',
+          body: {'idempotency_key': idempotencyKey}));
 
   @override
   Future<QuickSaleResult> finalizeQuickSale({

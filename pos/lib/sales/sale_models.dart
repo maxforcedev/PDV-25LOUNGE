@@ -363,19 +363,19 @@ class QuickSalePreview {
         Map<String, dynamic>.from(json['financials'] as Map? ?? const {});
     final values = {...json, ...financials};
     return QuickSalePreview(
-        items: (json['items'] as List<dynamic>? ?? const [])
-            .cast<Map<String, dynamic>>()
-            .map(QuickSalePreviewItem.fromJson)
-            .toList(growable: false),
-        subtotal: values['subtotal'] as String? ?? '0.00',
-        promotionDiscountTotal:
-            values['promotion_discount_total'] as String? ?? '0.00',
-        itemDiscountTotal: values['item_discount_total'] as String? ?? '0.00',
-        discount: values['discount'] as String? ?? '0.00',
-        serviceFeeRate: values['service_fee_rate'] as String? ?? '0.00',
-        serviceFeeAmount: values['service_fee_amount'] as String? ?? '0.00',
-        total: values['total'] as String? ?? '0.00',
-      );
+      items: (json['items'] as List<dynamic>? ?? const [])
+          .cast<Map<String, dynamic>>()
+          .map(QuickSalePreviewItem.fromJson)
+          .toList(growable: false),
+      subtotal: values['subtotal'] as String? ?? '0.00',
+      promotionDiscountTotal:
+          values['promotion_discount_total'] as String? ?? '0.00',
+      itemDiscountTotal: values['item_discount_total'] as String? ?? '0.00',
+      discount: values['discount'] as String? ?? '0.00',
+      serviceFeeRate: values['service_fee_rate'] as String? ?? '0.00',
+      serviceFeeAmount: values['service_fee_amount'] as String? ?? '0.00',
+      total: values['total'] as String? ?? '0.00',
+    );
   }
 
   final List<QuickSalePreviewItem> items;
@@ -476,7 +476,8 @@ class QuickSaleCheckout {
       QuickSaleCheckout(
         id: json['id'] as String,
         status: json['operational_status'] as String? ??
-            json['status'] as String? ?? 'editing',
+            json['status'] as String? ??
+            'editing',
         preview: QuickSalePreview.fromJson(
             json['preview'] as Map<String, dynamic>? ?? const {}),
         paidAmount: json['paid_amount'] as String? ?? '0.00',
@@ -493,14 +494,13 @@ class QuickSaleCheckout {
             .cast<Map<String, dynamic>>()
             .map(QuickSaleCheckoutPayment.fromJson)
             .toList(growable: false),
-        canEditFinancials:
-            json['capabilities']?['can_edit_financials'] == true,
+        canEditFinancials: json['capabilities']?['can_edit_financials'] == true,
         canRecordPayment: json['capabilities']?['can_record_payment'] == true,
         canFinalize: json['capabilities']?['can_finalize'] == true,
-        canReversePayment:
-            json['capabilities']?['can_reverse_payment'] == true,
+        canReversePayment: json['capabilities']?['can_reverse_payment'] == true,
         customer: json['customer'] is Map<String, dynamic>
-            ? QuickSaleCustomer.fromJson(json['customer'] as Map<String, dynamic>)
+            ? QuickSaleCustomer.fromJson(
+                json['customer'] as Map<String, dynamic>)
             : null,
       );
 
@@ -519,6 +519,9 @@ class QuickSaleCheckout {
   final bool canFinalize;
   final bool canReversePayment;
   final QuickSaleCustomer? customer;
+
+  bool hasReversalFor(String paymentId) =>
+      payments.any((payment) => payment.reversalOf == paymentId);
 }
 
 class QuickSaleCheckoutItem {
@@ -529,10 +532,13 @@ class QuickSaleCheckoutItem {
     required this.unit,
     required this.input,
   });
-  factory QuickSaleCheckoutItem.fromJson(Map<String, dynamic> json) => QuickSaleCheckoutItem(
-      id: json['id'] as int, name: json['product_name'] as String? ?? 'Item',
-      quantity: json['quantity'] as String? ?? '0', unit: json['unit'] as String? ?? 'un',
-      input: Map<String, dynamic>.from(json['input'] as Map? ?? const {}));
+  factory QuickSaleCheckoutItem.fromJson(Map<String, dynamic> json) =>
+      QuickSaleCheckoutItem(
+          id: json['id'] as int,
+          name: json['product_name'] as String? ?? 'Item',
+          quantity: json['quantity'] as String? ?? '0',
+          unit: json['unit'] as String? ?? 'un',
+          input: Map<String, dynamic>.from(json['input'] as Map? ?? const {}));
   final int id;
   final String name;
   final String quantity;
@@ -541,11 +547,23 @@ class QuickSaleCheckoutItem {
 }
 
 class QuickSaleCheckoutPayment {
-  const QuickSaleCheckoutPayment({required this.id, required this.methodName, required this.amount, required this.status, this.receivedAmount, this.changeAmount, this.reversalOf});
-  factory QuickSaleCheckoutPayment.fromJson(Map<String, dynamic> json) => QuickSaleCheckoutPayment(
-      id: json['id'] as String, methodName: json['payment_method_name'] as String? ?? 'Pagamento',
-      amount: json['amount'] as String? ?? '0.00', status: json['status'] as String? ?? '',
-      receivedAmount: json['received_amount'] as String?, changeAmount: json['change_amount'] as String?, reversalOf: json['reversal_of'] as String?);
+  const QuickSaleCheckoutPayment(
+      {required this.id,
+      required this.methodName,
+      required this.amount,
+      required this.status,
+      this.receivedAmount,
+      this.changeAmount,
+      this.reversalOf});
+  factory QuickSaleCheckoutPayment.fromJson(Map<String, dynamic> json) =>
+      QuickSaleCheckoutPayment(
+          id: json['id'] as String,
+          methodName: json['payment_method_name'] as String? ?? 'Pagamento',
+          amount: json['amount'] as String? ?? '0.00',
+          status: json['status'] as String? ?? '',
+          receivedAmount: json['received_amount'] as String?,
+          changeAmount: json['change_amount'] as String?,
+          reversalOf: json['reversal_of'] as String?);
   final String id;
   final String methodName;
   final String amount;
@@ -557,10 +575,15 @@ class QuickSaleCheckoutPayment {
 }
 
 class QuickSalePaymentPreview {
-  const QuickSalePaymentPreview({required this.total, required this.availableQuantities});
-  factory QuickSalePaymentPreview.fromJson(Map<String, dynamic> json) => QuickSalePaymentPreview(
-      total: json['total'] as String? ?? '0.00',
-      availableQuantities: (json['available_quantities'] as Map<String, dynamic>? ?? const {}).map((key, value) => MapEntry(int.parse(key), '$value')));
+  const QuickSalePaymentPreview(
+      {required this.total, required this.availableQuantities});
+  factory QuickSalePaymentPreview.fromJson(Map<String, dynamic> json) =>
+      QuickSalePaymentPreview(
+          total: json['total'] as String? ?? '0.00',
+          availableQuantities:
+              (json['available_quantities'] as Map<String, dynamic>? ??
+                      const {})
+                  .map((key, value) => MapEntry(int.parse(key), '$value')));
   final String total;
   final Map<int, String> availableQuantities;
 }
