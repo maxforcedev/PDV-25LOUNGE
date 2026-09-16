@@ -38,8 +38,6 @@ DEFAULT_PAYMENT_METHODS = (
     (PaymentMethodCode.PIX, 'PIX'),
     (PaymentMethodCode.CREDIT_CARD, 'Cartão de crédito'),
     (PaymentMethodCode.DEBIT_CARD, 'Cartão de débito'),
-    (PaymentMethodCode.FOOD_VOUCHER, 'Vale-alimentação'),
-    (PaymentMethodCode.MEAL_VOUCHER, 'Vale-refeição'),
 )
 MAX_MONEY = Decimal('999999999999.99')
 CENT = Decimal('0.01')

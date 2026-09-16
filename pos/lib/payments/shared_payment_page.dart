@@ -274,6 +274,11 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
           allocations: allocations,
           initialAmount: initialAmount,
           amountLocked: allocations.isNotEmpty || amountLocked,
+          amountContext: fromEqualSplit
+              ? _PaymentAmountContext.equalSplit
+              : allocations.isNotEmpty
+                  ? _PaymentAmountContext.items
+                  : _PaymentAmountContext.value,
         ),
       ),
     );
@@ -745,6 +750,8 @@ class _PaymentIntent {
   final List<Map<String, dynamic>> allocations;
 }
 
+enum _PaymentAmountContext { value, items, equalSplit }
+
 class _PaymentEntryPage extends StatefulWidget {
   const _PaymentEntryPage({
     required this.method,
@@ -753,6 +760,7 @@ class _PaymentEntryPage extends StatefulWidget {
     required this.checkout,
     required this.allocations,
     required this.amountLocked,
+    required this.amountContext,
     this.initialAmount,
   });
   final QuickSalePaymentMethod method;
@@ -762,6 +770,7 @@ class _PaymentEntryPage extends StatefulWidget {
   final List<Map<String, dynamic>> allocations;
   final String? initialAmount;
   final bool amountLocked;
+  final _PaymentAmountContext amountContext;
   @override
   State<_PaymentEntryPage> createState() => _PaymentEntryPageState();
 }
@@ -788,9 +797,13 @@ class _PaymentEntryPageState extends State<_PaymentEntryPage> {
                   Text(
                     _receiving
                         ? 'VALOR RECEBIDO'
-                        : widget.amountLocked
-                            ? 'VALOR OFICIAL DOS ITENS'
-                            : 'VALOR APLICADO',
+                        : switch (widget.amountContext) {
+                            _PaymentAmountContext.items =>
+                              'VALOR OFICIAL DOS ITENS',
+                            _PaymentAmountContext.equalSplit =>
+                              'VALOR DA PARTE',
+                            _PaymentAmountContext.value => 'VALOR APLICADO',
+                          },
                     textAlign: TextAlign.center,
                   ),
                   Text(
