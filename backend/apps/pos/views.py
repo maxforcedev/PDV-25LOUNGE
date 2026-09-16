@@ -17,7 +17,10 @@ from rest_framework.views import APIView
 from apps.base.audit import audit_log, model_snapshot
 from apps.base.exceptions import DomainValidationError
 from apps.base.pagination import StandardPagination
-from apps.cash.models import CashMovement, CashRegister, CashRegisterStatus, CashSession, WithdrawalCategory
+from apps.cash.models import (
+    CashMovement, CashRegister, CashRegisterStatus, CashSession,
+    CashSessionStatus, WithdrawalCategory,
+)
 from apps.cash.serializers import (
     CashBeneficiarySerializer, CashMovementSerializer, CashSessionSerializer, CloseSessionSerializer,
     ManualEntryRequestSerializer, WithdrawalRequestSerializer,
