@@ -277,7 +277,7 @@ def _lock_checkout_session(checkout_id, *, cash_session_id=None, user=None):
         raise QuickCheckoutConflict('cash_session_missing', 'A sessão de caixa do checkout não existe.')
     if cash_session_id is not None and cash_session_id not in sessions:
         raise ValidationError({'cash_session': 'Informe uma sessão de caixa aberta da filial.'})
-    checkout = checkouts.select_for_update().select_related(
+    checkout = checkouts.select_for_update(of=('self',)).select_related(
         'branch', 'pos_device', 'company', 'cash_session', 'customer',
         'discount_approved_by', 'item_discount_approved_by',
         'service_fee_waived_by', 'sale',
@@ -431,7 +431,7 @@ def reverse_quick_checkout_payment(*, payment, user, reason, idempotency_key, au
         raise QuickCheckoutConflict('payment_not_found', 'Pagamento não encontrado.')
     session, checkout, _sessions = _lock_checkout_session(payment_hint, user=user)
     checkout_balance(checkout, lock=True)
-    payment = QuickSalePayment.objects.select_for_update().select_related(
+    payment = QuickSalePayment.objects.select_for_update(of=('self',)).select_related(
         'checkout', 'payment_method', 'cash_session',
     ).get(pk=payment.pk, checkout=checkout)
     if checkout.status != QuickSaleCheckoutStatus.OPEN:
