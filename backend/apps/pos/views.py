@@ -1657,14 +1657,21 @@ def _quick_checkout_conflict(error):
     raise response from error
 
 
+def _get_quick_checkout(device, operator, checkout_id):
+    """Load a checkout only inside its device, branch, and operator scope."""
+    return get_object_or_404(
+        QuickSaleCheckout.objects.select_related(
+            'sale', 'customer', 'cash_session',
+        ).prefetch_related(
+            'items__product', 'payments__payment_method', 'payments__allocations',
+        ),
+        pk=checkout_id, branch=device.branch, pos_device=device, operator=operator,
+    )
+
+
 class POSQuickCheckoutView(POSQuickSaleView):
     def _checkout(self, device, operator, checkout_id):
-        return get_object_or_404(
-            QuickSaleCheckout.objects.select_related('sale', 'customer', 'cash_session').prefetch_related(
-                'items__product', 'payments__payment_method', 'payments__allocations',
-            ),
-            pk=checkout_id, branch=device.branch, pos_device=device, operator=operator,
-        )
+        return _get_quick_checkout(device, operator, checkout_id)
 
     def get(self, request, checkout_id):
         device, operator, permissions, _ = self.context(request)
@@ -1715,7 +1722,7 @@ class POSQuickCheckoutCreateView(POSQuickSaleView):
             )
         except QuickCheckoutConflict as error:
             _quick_checkout_conflict(error)
-        checkout = self._checkout(device, operator, checkout.pk)
+        checkout = _get_quick_checkout(device, operator, checkout.pk)
         response = Response(_quick_checkout_payload(checkout, permissions=permissions), status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED)
         if replayed:
             response['Idempotency-Replayed'] = 'true'
