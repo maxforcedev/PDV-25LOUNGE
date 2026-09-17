@@ -457,7 +457,7 @@ def reverse_quick_checkout_payment(*, payment, user, reason, idempotency_key, au
     )
     audit_log(actor=user, action='quick_sale_checkout.payment.reverse', obj=reversal,
               company=payment.checkout.company, branch=payment.checkout.branch,
-              after={'payment_id': payment.pk, 'reason': reversal.reversal_reason},
+               after={'payment_id': str(payment.pk), 'reason': reversal.reversal_reason},
                metadata={**(audit_metadata or {}), 'idempotency_key': str(idempotency_key)})
     paid, _remaining = checkout_balance(checkout)
     if paid == Decimal('0.00'):

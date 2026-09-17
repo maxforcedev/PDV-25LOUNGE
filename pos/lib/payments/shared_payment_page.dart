@@ -959,6 +959,17 @@ class _ItemAllocationPageState extends State<_ItemAllocationPage> {
           })
       .toList(growable: false);
 
+  bool get _previewExceedsRemaining =>
+      _preview != null &&
+      _MoneyEntry.centsFor(_preview!.total) >
+          _MoneyEntry.centsFor(widget.checkout.remainingAmount);
+
+  bool get _canContinue =>
+      _preview != null &&
+      !_loading &&
+      _MoneyEntry.centsFor(_preview!.total) > 0 &&
+      !_previewExceedsRemaining;
+
   Future<void> _update() async {
     final rows = _allocations;
     if (rows.isEmpty) {
@@ -986,11 +997,23 @@ class _ItemAllocationPageState extends State<_ItemAllocationPage> {
           if (_preview != null)
             Padding(
               padding: const EdgeInsets.all(12),
-              child: Text('TOTAL OFICIAL ${formatMoney(_preview!.total)}',
-                  style: const TextStyle(fontWeight: FontWeight.w900)),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('TOTAL OFICIAL ${formatMoney(_preview!.total)}',
+                      style: const TextStyle(fontWeight: FontWeight.w900)),
+                  if (_previewExceedsRemaining) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                        'Os itens selecionados somam ${formatMoney(_preview!.total)}, mas faltam ${formatMoney(widget.checkout.remainingAmount)}.'),
+                    const Text(
+                        'Reduza os itens selecionados ou pague o saldo restante por valor.'),
+                  ],
+                ],
+              ),
             ),
           FilledButton(
-            onPressed: _preview == null || _loading
+            onPressed: !_canContinue
                 ? null
                 : () => Navigator.pop(context,
                     _ItemPaymentSelection(_allocations, _preview!.total)),
