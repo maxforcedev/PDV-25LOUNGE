@@ -602,25 +602,28 @@ class QuickSaleCheckoutPayment {
       {required this.id,
       required this.methodName,
       required this.amount,
-      required this.status,
-      this.receivedAmount,
-      this.changeAmount,
-      this.reversalOf});
+       required this.status,
+       this.receivedAmount,
+       this.changeAmount,
+       this.idempotencyKey,
+       this.reversalOf});
   factory QuickSaleCheckoutPayment.fromJson(Map<String, dynamic> json) =>
       QuickSaleCheckoutPayment(
           id: json['id'] as String,
           methodName: json['payment_method_name'] as String? ?? 'Pagamento',
           amount: json['amount'] as String? ?? '0.00',
-          status: json['status'] as String? ?? '',
-          receivedAmount: json['received_amount'] as String?,
-          changeAmount: json['change_amount'] as String?,
-          reversalOf: json['reversal_of'] as String?);
+           status: json['status'] as String? ?? '',
+           receivedAmount: json['received_amount'] as String?,
+           changeAmount: json['change_amount'] as String?,
+           idempotencyKey: json['idempotency_key'] as String?,
+           reversalOf: json['reversal_of'] as String?);
   final String id;
   final String methodName;
   final String amount;
   final String status;
   final String? receivedAmount;
   final String? changeAmount;
+  final String? idempotencyKey;
   final String? reversalOf;
   bool get isReversal => reversalOf != null || status == 'reversed';
 }

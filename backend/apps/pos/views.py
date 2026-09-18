@@ -1643,6 +1643,7 @@ def _quick_checkout_payload(checkout, *, permissions=()):
                 'amount': str(payment.amount),
                 'received_amount': str(payment.received_amount) if payment.received_amount is not None else None,
                 'change_amount': str(payment.change_amount) if payment.change_amount is not None else None,
+                'idempotency_key': str(payment.idempotency_key),
                 'status': payment.status, 'reversal_of': payment.reversal_of_id,
                 'reversal_reason': payment.reversal_reason,
                 'allocations': [
