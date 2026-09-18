@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../cash/cash_models.dart';
+import 'sale_presentation.dart';
 
 class SharedCartItemTile extends StatelessWidget {
   const SharedCartItemTile({
@@ -59,7 +60,8 @@ class SharedCartItemTile extends StatelessWidget {
                 child:
                     Text(details, maxLines: 3, overflow: TextOverflow.ellipsis),
               ),
-            Text('Qtd. $quantity', style: const TextStyle(fontSize: 12)),
+            Text('Qtd. ${formatQuantity(quantity)}',
+                style: const TextStyle(fontSize: 12)),
             if (warning != null)
               Padding(
                 padding: const EdgeInsets.only(top: 4),

@@ -11,6 +11,7 @@ import '../scanner/product_barcode_scanner_page.dart';
 import '../sync/sync_center_page.dart';
 import '../sync/sync_status_button.dart';
 import 'sale_models.dart';
+import 'sale_presentation.dart';
 import 'shared_sale_item_editor_dialog.dart';
 import 'shared_pos_widgets.dart';
 
@@ -180,8 +181,13 @@ class _QuickSalePageState extends State<QuickSalePage> {
     final items = <QuickSaleCartItem>[];
     for (final checkoutItem in checkout.items) {
       final input = checkoutItem.input;
-      final product = productsById[int.tryParse('${input['product']}')];
-      if (product == null) continue;
+      final product = productsById[int.tryParse('${input['product']}')] ??
+          checkoutItem.recoveryProduct;
+      if (product == null) {
+        widget.controller.showTransientMessage(
+            'Não foi possível restaurar todos os dados desta venda. Tente novamente.');
+        return;
+      }
       final modifiers = (input['modifiers'] as List? ?? const [])
           .whereType<Map>()
           .map((modifier) => Map<String, dynamic>.from(modifier))
@@ -217,16 +223,13 @@ class _QuickSalePageState extends State<QuickSalePage> {
 
   Future<void> _openPayment(
       QuickSaleCheckout checkout, QuickSaleCheckoutOptions options) async {
-    await Navigator.of(context).push<void>(MaterialPageRoute(
+    final result =
+        await Navigator.of(context).push<QuickSaleResult>(MaterialPageRoute(
       builder: (_) => SharedPaymentPage(
         controller: widget.controller,
         options: options,
         checkout: checkout,
-        onCompleted: (result) async {
-          if (mounted) setState(_resetSaleDraftState);
-          unawaited(_loadCheckoutOptions());
-          unawaited(_loadCatalog());
-        },
+        onCompleted: (_) async {},
         onCancelled: () async {
           if (mounted) setState(_resetSaleDraftState);
           unawaited(_loadCheckoutOptions());
@@ -235,6 +238,15 @@ class _QuickSalePageState extends State<QuickSalePage> {
       ),
     ));
     if (!mounted) return;
+    if (result != null) {
+      setState(_resetSaleDraftState);
+      unawaited(_loadCheckoutOptions());
+      unawaited(_loadCatalog());
+      await Navigator.of(context).push<void>(MaterialPageRoute(
+        builder: (_) => QuickSaleCompletedPage(result: result),
+      ));
+      return;
+    }
     final activeCheckout = await widget.controller.recoverQuickSaleCheckout();
     if (!mounted) return;
     setState(() {
@@ -367,10 +379,10 @@ class _QuickSalePageState extends State<QuickSalePage> {
 
   String _scannerItemCount() {
     final quantity = _cart.fold<double>(
-        0, (total, item) => total + (double.tryParse(item.quantity) ?? 0));
-    return quantity == quantity.roundToDouble()
-        ? quantity.toInt().toString()
-        : quantity.toStringAsFixed(3).replaceFirst(RegExp(r'0+$'), '');
+        0,
+        (total, item) =>
+            total + (double.tryParse(item.quantity.replaceAll(',', '.')) ?? 0));
+    return formatQuantity(quantity);
   }
 
   Future<void> _openBarcodeScanner() async {
@@ -408,11 +420,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
   String _formatStockNumber(Object? value) {
     final number = _stockNumber(value);
     if (number == null) return '$value';
-    var formatted = number.toStringAsFixed(3).replaceFirst(RegExp(r'0+$'), '');
-    if (formatted.endsWith('.')) {
-      formatted = formatted.substring(0, formatted.length - 1);
-    }
-    return formatted.replaceAll('.', ',');
+    return formatQuantity(number);
   }
 
   String _formatStockQuantity(Object? quantity, String unit) {
@@ -491,15 +499,13 @@ class _QuickSalePageState extends State<QuickSalePage> {
       _applyCartMutation(_CartMutation.add(item));
       return true;
     }
-    final currentQuantity = double.tryParse(existing.quantity) ?? 0;
-    final addedQuantity = double.tryParse(quantity) ?? 0;
+    final currentQuantity =
+        double.tryParse(existing.quantity.replaceAll(',', '.')) ?? 0;
+    final addedQuantity = double.tryParse(quantity.replaceAll(',', '.')) ?? 0;
     final mergedQuantity = currentQuantity + addedQuantity;
     _applyCartMutation(_CartMutation.replace(
       existing.clientItemId,
-      existing.copyWith(
-          quantity: mergedQuantity == mergedQuantity.roundToDouble()
-              ? '${mergedQuantity.toInt()}'
-              : mergedQuantity.toStringAsFixed(3)),
+      existing.copyWith(quantity: formatQuantityForApi(mergedQuantity)),
     ));
     return true;
   }
@@ -512,7 +518,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
     }
     final quantity = await showDialog<String>(
       context: context,
-      builder: (_) => BatchQuantityDialog(productName: product.name),
+      builder: (_) => BatchQuantityDialog(product: product),
     );
     if (quantity == null || !mounted) return;
     final item = QuickSaleCartItem(
@@ -961,6 +967,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
                         editable: !_catalogLocked,
                         onEdit: _editCartItem,
                         onCheckout: _checkout,
+                        onClear: _clearCart,
                       ),
                     ),
                   ]);
@@ -1001,6 +1008,74 @@ class _CartPage extends StatelessWidget {
           ],
         ),
         body: AnimatedBuilder(animation: draft, builder: (_, __) => panel()),
+      );
+}
+
+class QuickSaleCompletedPage extends StatelessWidget {
+  const QuickSaleCompletedPage({required this.result, super.key});
+
+  final QuickSaleResult result;
+
+  @override
+  Widget build(BuildContext context) => PopScope(
+        onPopInvokedWithResult: (_, __) {},
+        child: Scaffold(
+          appBar: AppBar(title: const Text('Venda concluída')),
+          body: SafeArea(
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 440),
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Icon(Icons.check_circle_rounded,
+                          size: 72, color: Color(0xff16803c)),
+                      const SizedBox(height: 20),
+                      Text('VENDA CONCLUÍDA',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context)
+                              .textTheme
+                              .headlineSmall
+                              ?.copyWith(fontWeight: FontWeight.w900)),
+                      const SizedBox(height: 12),
+                      Text('Venda #${result.saleNumber}',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 6),
+                      Text(formatMoney(result.total),
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context)
+                              .textTheme
+                              .displaySmall
+                              ?.copyWith(fontWeight: FontWeight.w900)),
+                      if (result.productionJobCount > 0) ...[
+                        const SizedBox(height: 16),
+                        const Text('Pedido enviado para produção.',
+                            textAlign: TextAlign.center),
+                      ],
+                      if (result.ticketNumbers.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Text('Tickets: ${result.ticketNumbers.join(', ')}',
+                            textAlign: TextAlign.center),
+                      ],
+                      const SizedBox(height: 28),
+                      FilledButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 12),
+                          child: Text('NOVA VENDA'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
       );
 }
 
@@ -1381,10 +1456,7 @@ class _ProductCardState extends State<ProductCard>
       );
 }
 
-String _selectedQuantityText(double quantity) {
-  if (quantity == quantity.roundToDouble()) return quantity.toInt().toString();
-  return quantity.toStringAsFixed(3).replaceFirst(RegExp(r'0+$'), '');
-}
+String _selectedQuantityText(double quantity) => formatQuantity(quantity);
 
 class _ProductImage extends StatelessWidget {
   const _ProductImage({this.url});
@@ -1418,6 +1490,7 @@ class _CartPanel extends StatelessWidget {
     required this.editable,
     required this.onEdit,
     required this.onCheckout,
+    this.onClear,
   });
   final List<QuickSaleCartItem> cart;
   final Map<String, Map<String, dynamic>> shortages;
@@ -1427,6 +1500,7 @@ class _CartPanel extends StatelessWidget {
   final bool editable;
   final ValueChanged<int> onEdit;
   final VoidCallback onCheckout;
+  final Future<void> Function()? onClear;
 
   String _itemDetails(QuickSaleCartItem item) {
     final modifiers = <String>[];
@@ -1440,7 +1514,8 @@ class _CartPanel extends StatelessWidget {
         }
       }
       if (option != null) {
-        modifiers.add('${selected['quantity'] ?? '1'}x ${option.name}');
+        modifiers.add(
+            '${formatQuantity(selected['quantity'] ?? '1')}x ${option.name}');
       }
     }
     return [
@@ -1483,7 +1558,15 @@ class _CartPanel extends StatelessWidget {
             child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const SizedBox(height: 4),
+                  if (onClear != null && editable && cart.isNotEmpty)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                        onPressed: () => onClear!(),
+                        icon: const Icon(Icons.delete_outline),
+                        label: const Text('APAGAR CARRINHO'),
+                      ),
+                    ),
                   Expanded(
                       child: cart.isEmpty
                           ? const Center(
@@ -1508,8 +1591,10 @@ class _CartPanel extends StatelessWidget {
                                   details: details,
                                   warning: shortage == null
                                       ? null
-                                      : 'Estoque disponível: ${shortage['available_quantity']} | No carrinho: ${item.quantity}',
-                                  onTap: editable ? () => onEdit(index) : null,
+                                      : 'Estoque disponível: ${formatQuantity(shortage['available_quantity'])} | No carrinho: ${formatQuantity(item.quantity)}',
+                                  onTap: editable && !item.product.recoveryOnly
+                                      ? () => onEdit(index)
+                                      : null,
                                 );
                               },
                             )),
@@ -1557,9 +1642,17 @@ class _CartPanel extends StatelessWidget {
 }
 
 class BatchQuantityDialog extends StatefulWidget {
-  const BatchQuantityDialog({required this.productName, super.key});
+  const BatchQuantityDialog({
+    this.product,
+    this.productName,
+    super.key,
+  }) : assert(product != null || productName != null);
 
-  final String productName;
+  final QuickSaleProduct? product;
+  final String? productName;
+
+  String get name => product?.name ?? productName!;
+  String get unit => product?.unit ?? 'un';
 
   @override
   State<BatchQuantityDialog> createState() => _BatchQuantityDialogState();
@@ -1568,13 +1661,20 @@ class BatchQuantityDialog extends StatefulWidget {
 class _BatchQuantityDialogState extends State<BatchQuantityDialog> {
   final _quantity = TextEditingController(text: '1');
 
+  double get _parsed =>
+      double.tryParse(_quantity.text.trim().replaceAll(',', '.')) ?? 0;
   bool get _valid =>
-      (double.tryParse(_quantity.text.trim().replaceAll(',', '.')) ?? 0) > 0;
+      _parsed > 0 &&
+      (widget.unit.toLowerCase() != 'un' ||
+          _parsed == _parsed.roundToDouble()) &&
+      _quantity.text.split(RegExp(r'[,.]')).last.length <= 3;
 
   void _adjust(int delta) {
-    final current = int.tryParse(_quantity.text.trim()) ?? 1;
+    final current = _parsed == 0 ? 1 : _parsed;
     final next = current + delta;
-    if (next > 0) setState(() => _quantity.text = '$next');
+    if (next > 0) {
+      setState(() => _quantity.text = formatQuantityForApi(next.toDouble()));
+    }
   }
 
   @override
@@ -1591,7 +1691,7 @@ class _BatchQuantityDialogState extends State<BatchQuantityDialog> {
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             Align(
               alignment: Alignment.centerLeft,
-              child: Text(widget.productName,
+              child: Text(widget.name,
                   style: const TextStyle(fontWeight: FontWeight.w800)),
             ),
             const SizedBox(height: 16),
@@ -1616,7 +1716,10 @@ class _BatchQuantityDialogState extends State<BatchQuantityDialog> {
                       const TextInputType.numberWithOptions(decimal: true),
                   decoration: InputDecoration(
                     errorText: _quantity.text.isNotEmpty && !_valid
-                        ? 'Informe uma quantidade válida.'
+                        ? widget.unit.toLowerCase() == 'un' &&
+                                _parsed != _parsed.roundToDouble()
+                            ? 'Produtos por unidade exigem quantidade inteira.'
+                            : 'Informe uma quantidade válida.'
                         : null,
                   ),
                 ),
@@ -1637,9 +1740,9 @@ class _BatchQuantityDialogState extends State<BatchQuantityDialog> {
           FilledButton(
             onPressed: !_valid
                 ? null
-                : () => Navigator.of(context)
-                    .pop(_quantity.text.trim().replaceAll(',', '.')),
-            child: Text('ADICIONAR ${_quantity.text.trim()}'),
+                : () =>
+                    Navigator.of(context).pop(formatQuantityForApi(_parsed)),
+            child: Text('ADICIONAR ${formatQuantity(_quantity.text)}'),
           ),
         ],
       );
@@ -1759,20 +1862,28 @@ class _EditCartItemDialogState extends State<_EditCartItemDialog> {
           Row(mainAxisAlignment: MainAxisAlignment.center, children: [
             IconButton(
               onPressed: () {
-                final value = (int.tryParse(_item.quantity) ?? 1) - 1;
+                final value =
+                    (double.tryParse(_item.quantity.replaceAll(',', '.')) ??
+                            1) -
+                        1;
                 if (value > 0) {
-                  setState(() => _item = _item.copyWith(quantity: '$value'));
+                  setState(() => _item =
+                      _item.copyWith(quantity: formatQuantityForApi(value)));
                 }
               },
               icon: const Icon(Icons.remove_circle_outline),
             ),
-            Text(_item.quantity,
+            Text(formatQuantity(_item.quantity),
                 style:
                     const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
             IconButton(
-              onPressed: () => setState(() => _item = _item.copyWith(
-                    quantity: '${(int.tryParse(_item.quantity) ?? 1) + 1}',
-                  )),
+              onPressed: () => setState(() {
+                final value =
+                    (double.tryParse(_item.quantity.replaceAll(',', '.')) ??
+                            1) +
+                        1;
+                _item = _item.copyWith(quantity: formatQuantityForApi(value));
+              }),
               icon: const Icon(Icons.add_circle_outline),
             ),
           ]),

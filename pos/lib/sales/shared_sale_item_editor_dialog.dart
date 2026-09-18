@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../cash/cash_models.dart';
 import 'sale_models.dart';
+import 'sale_presentation.dart';
 
 class SharedSaleItemEditorDialog extends StatefulWidget {
   const SharedSaleItemEditorDialog({
@@ -117,7 +118,7 @@ class _SharedSaleItemEditorDialogState
 
   String _formatItemQuantity(double value) => value == value.roundToDouble()
       ? '${value.toInt()}'
-      : value.toStringAsFixed(3).replaceFirst(RegExp(r'0+$'), '');
+      : formatQuantityForApi(value);
 
   String? _groupValidation(QuickSaleModifierGroup group) {
     final selected =
@@ -138,7 +139,7 @@ class _SharedSaleItemEditorDialogState
     final required = _number(group.requiredQuantity) *
         (widget.showQuantityAndNotes
             ? _itemQuantity
-            : (int.tryParse(widget.initial?.quantity ?? '1') ?? 1));
+            : _number(widget.initial?.quantity));
     if (group.requiredQuantity != null && totalQuantity != required) {
       final difference = (required - totalQuantity).abs();
       final formatted = widget.showQuantityAndNotes

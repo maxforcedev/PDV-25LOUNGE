@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../cash/cash_models.dart';
 import '../core/app_controller.dart';
 import '../sales/sale_models.dart';
+import '../sales/sale_presentation.dart';
 import '../sales/shared_authorization_dialog.dart';
 import '../sales/shared_customer_dialog.dart';
 import '../sales/shared_discount_dialog.dart';
@@ -227,7 +228,8 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
             for (final item in _checkout.items)
               ListTile(
                 title: Text(item.name),
-                subtitle: Text('Quantidade: ${item.quantity} ${item.unit}'),
+                subtitle: Text(
+                    'Quantidade: ${formatQuantity(item.quantity)} ${item.unit}'),
                 onTap: () => Navigator.pop(context, item),
               ),
           ],
@@ -392,7 +394,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     if (mounted) setState(() => _working = false);
     if (result != null && mounted) {
       await widget.onCompleted(result);
-      if (mounted) Navigator.of(context).pop();
+      if (mounted) Navigator.of(context).pop(result);
     }
   }
 
@@ -557,7 +559,9 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
           const Text('PAGAMENTOS REALIZADOS',
               style: TextStyle(fontWeight: FontWeight.w900)),
           const SizedBox(height: 8),
-          if (_checkout.payments.where((payment) => !payment.isReversal).isEmpty)
+          if (_checkout.payments
+              .where((payment) => !payment.isReversal)
+              .isEmpty)
             const Text('Nenhum pagamento registrado.'),
           for (final payment
               in _checkout.payments.where((payment) => !payment.isReversal))
@@ -645,10 +649,12 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
   Widget _history(QuickSaleCheckoutPayment payment) {
     final reversed = _checkout.hasReversalFor(payment.id);
     final subtitle = reversed
-        ? 'Estornado'
-        : payment.receivedAmount == null
-            ? 'Confirmado'
-            : 'Recebido ${formatMoney(payment.receivedAmount!)}  Troco ${formatMoney(payment.changeAmount ?? '0.00')}';
+        ? quickSaleStatusLabel('reversed')
+        : payment.status != 'applied'
+            ? quickSaleStatusLabel(payment.status)
+            : payment.receivedAmount == null
+                ? quickSaleStatusLabel(payment.status)
+                : 'Recebido ${formatMoney(payment.receivedAmount!)}  Troco ${formatMoney(payment.changeAmount ?? '0.00')}';
     return Card(
       child: ListTile(
         leading: Icon(reversed ? Icons.undo : Icons.check_circle_outline,
@@ -968,10 +974,12 @@ class _ItemAllocationPageState extends State<_ItemAllocationPage> {
   bool get _canContinue =>
       _preview != null &&
       !_loading &&
+      _quantityErrors.isEmpty &&
       _MoneyEntry.centsFor(_preview!.total) > 0 &&
       !_previewExceedsRemaining;
 
   Future<void> _update() async {
+    if (_quantityErrors.isNotEmpty) return;
     final rows = _allocations;
     if (rows.isEmpty) {
       setState(() => _preview = null);
@@ -1034,7 +1042,7 @@ class _ItemAllocationPageState extends State<_ItemAllocationPage> {
       setState(() {
         _quantities[item.id] = next;
         _quantityErrors.remove(item.id);
-        input.text = _quantityValue(next);
+        input.text = formatQuantity(_quantityValue(next));
       });
       _update();
     }
@@ -1042,8 +1050,8 @@ class _ItemAllocationPageState extends State<_ItemAllocationPage> {
     return Card(
       child: ListTile(
         title: Text(item.name),
-        subtitle:
-            Text(error ?? 'Disponível: ${_quantityValue(max)} ${item.unit}'),
+        subtitle: Text(error ??
+            'Disponível: ${formatQuantity(_quantityValue(max))} ${item.unit}'),
         trailing: Row(mainAxisSize: MainAxisSize.min, children: [
           IconButton(
             onPressed:

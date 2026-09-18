@@ -111,8 +111,8 @@ class AppController extends ChangeNotifier {
   Future<void> _reconcileQuickCheckoutState(
       QuickSaleCheckout checkout, Map<String, dynamic> state) async {
     if (state['checkout_id'] != checkout.id) return;
-    final pending = Map<String, dynamic>.from(
-        state['pending'] as Map? ?? const {});
+    final pending =
+        Map<String, dynamic>.from(state['pending'] as Map? ?? const {});
     final attempts = Map<String, dynamic>.from(
         state['payment_attempts'] as Map? ?? const {});
     var changed = false;
@@ -126,7 +126,8 @@ class AppController extends ChangeNotifier {
       }
     }
     final appliedPaymentKeys = checkout.payments
-        .where((payment) => !payment.isReversal && payment.idempotencyKey != null)
+        .where(
+            (payment) => !payment.isReversal && payment.idempotencyKey != null)
         .map((payment) => payment.idempotencyKey!)
         .toSet();
     for (final entry in attempts.entries.toList()) {
@@ -174,7 +175,8 @@ class AppController extends ChangeNotifier {
       await _writeQuickCheckoutState({'checkout_id': checkout.id});
       return checkout;
     } on PosApiException catch (error) {
-      if (error.statusCode < 500) await _writeQuickCheckoutState({});
+      // Only an authoritative absence proves this operator checkout is gone.
+      if (error.statusCode == 404) await _writeQuickCheckoutState({});
       _handleApiError(error);
     } on PosNetworkException catch (error) {
       _showTransientMessage(error.message);
@@ -354,7 +356,8 @@ class AppController extends ChangeNotifier {
   Object? _canonicalizeJson(Object? value) {
     if (value is Map) {
       final entries = value.entries
-          .map((entry) => MapEntry('${entry.key}', _canonicalizeJson(entry.value)))
+          .map((entry) =>
+              MapEntry('${entry.key}', _canonicalizeJson(entry.value)))
           .toList()
         ..sort((left, right) => left.key.compareTo(right.key));
       return Map<String, Object?>.fromEntries(entries);
@@ -424,7 +427,8 @@ class AppController extends ChangeNotifier {
   }) =>
       _quickCheckoutItemsChanged(checkout, items) ||
       checkout.cashSessionId != cashSessionId ||
-      _canonicalJson(checkout.discountIntent.toJson()) != _canonicalJson(discount) ||
+      _canonicalJson(checkout.discountIntent.toJson()) !=
+          _canonicalJson(discount) ||
       checkout.serviceFeeWaived != serviceFeeWaived ||
       checkout.customer?.id != customerId;
 
@@ -602,7 +606,13 @@ class AppController extends ChangeNotifier {
       return false;
     }
     try {
-      await _api.cancelQuickSaleCheckout(checkoutId: checkoutId);
+      final checkout =
+          await _api.cancelQuickSaleCheckout(checkoutId: checkoutId);
+      if (checkout.status != 'cancelled') {
+        _showTransientMessage(
+            'O cancelamento não foi confirmado pelo servidor. A venda foi preservada.');
+        return false;
+      }
       await _writeQuickCheckoutState({});
       return true;
     } on PosApiException catch (error) {
@@ -624,8 +634,8 @@ class AppController extends ChangeNotifier {
           'Há uma operação financeira aguardando confirmação. Resolva a operação antes de apagar a venda.');
       return false;
     }
-    final hasAppliedPayment = checkout.payments.any(
-        (payment) => !payment.isReversal && !checkout.hasReversalFor(payment.id));
+    final hasAppliedPayment = checkout.payments.any((payment) =>
+        !payment.isReversal && !checkout.hasReversalFor(payment.id));
     if (hasAppliedPayment) {
       _showTransientMessage(
           'Existem pagamentos aplicados nesta venda. Estorne os pagamentos antes de apagar o carrinho.');

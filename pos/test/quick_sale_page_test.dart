@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:core_pos/auth/auth_models.dart';
 import 'package:core_pos/bootstrap/bootstrap_models.dart';
+import 'package:core_pos/cash/cash_models.dart';
 import 'package:core_pos/core/app_controller.dart';
 import 'package:core_pos/network/pos_api.dart';
 import 'package:core_pos/pairing/pairing_models.dart';
@@ -56,8 +57,9 @@ void main() {
       {AppController? existingController}) async {
     await tester.binding.setSurfaceSize(const Size(1200, 1000));
     addTearDown(() => tester.binding.setSurfaceSize(null));
-    await tester.pumpWidget(
-        MaterialApp(home: QuickSalePage(controller: existingController ?? controller(api))));
+    await tester.pumpWidget(MaterialApp(
+        home:
+            QuickSalePage(controller: existingController ?? controller(api))));
     await tester.pumpAndSettle();
   }
 
@@ -257,6 +259,55 @@ void main() {
     expect(find.text('Pagamento'), findsNothing);
     expect(find.text('Qtd. 1'), findsOneWidget);
   });
+
+  testWidgets('recovers an official item absent from the normal catalog',
+      (tester) async {
+    final storage = _MemorySecretStore()
+      ..quickSaleCheckoutState = jsonEncode({
+        'operators': {
+          'operator-1': {'checkout_id': 'checkout-a'},
+        },
+      });
+    final api = _QuickSaleApi(
+      (_) async => const QuickSaleStockAvailability(
+        available: true,
+        enforced: true,
+        shortages: [],
+      ),
+      catalog: const [],
+      recoveredCheckout: _recoveredCheckoutWithoutCatalogProduct,
+    );
+    final restored = controller(api, storage)
+      ..selectedOperator = const PosOperator(
+          id: 'operator-1', displayName: 'Operador', initials: 'OP');
+
+    await open(tester, api, existingController: restored);
+
+    expect(find.text('Coca'), findsOneWidget);
+    expect(find.text('Qtd. 1'), findsOneWidget);
+    expect(find.text('R\$ 10,00'), findsWidgets);
+    expect(find.text('IR PARA PAGAMENTO'), findsOneWidget);
+  });
+
+  testWidgets('shows the official completed-sale confirmation', (tester) async {
+    await tester.pumpWidget(MaterialApp(
+      home: QuickSaleCompletedPage(
+        result: QuickSaleResult(
+          saleNumber: 'V000123',
+          total: '22.00',
+          cash: const CashOverview(mode: 'FLEXIBLE', enabled: true),
+          ticketNumbers: const [11, 12],
+          productionJobCount: 1,
+        ),
+      ),
+    ));
+
+    expect(find.text('VENDA CONCLUÍDA'), findsOneWidget);
+    expect(find.text('Venda #V000123'), findsOneWidget);
+    expect(find.text('R\$ 22,00'), findsOneWidget);
+    expect(find.text('Pedido enviado para produção.'), findsOneWidget);
+    expect(find.text('NOVA VENDA'), findsOneWidget);
+  });
 }
 
 final _recoveredCheckout = QuickSaleCheckout(
@@ -292,6 +343,59 @@ final _recoveredCheckout = QuickSaleCheckout(
         'modifiers': [],
         'notes': '',
       },
+    ),
+  ],
+  payments: const [],
+  canEditFinancials: true,
+  canRecordPayment: true,
+  canPayByItems: true,
+  canFinalize: false,
+  canReversePayment: true,
+);
+
+final _recoveredCheckoutWithoutCatalogProduct = QuickSaleCheckout(
+  id: 'checkout-a',
+  status: 'editing',
+  preview: const QuickSalePreview(
+    items: [],
+    subtotal: '10.00',
+    promotionDiscountTotal: '0.00',
+    itemDiscountTotal: '0.00',
+    discount: '0.00',
+    serviceFeeRate: '0.00',
+    serviceFeeAmount: '0.00',
+    total: '10.00',
+  ),
+  paidAmount: '0.00',
+  remainingAmount: '10.00',
+  hasPaymentHistory: false,
+  cashSessionId: 1,
+  discountIntent: const QuickSaleDiscountIntent(),
+  serviceFeeWaived: false,
+  items: const [
+    QuickSaleCheckoutItem(
+      id: 1,
+      name: 'Coca',
+      quantity: '1.000',
+      availableQuantity: '0.000',
+      unit: 'un',
+      input: {
+        'client_item_id': 'item-a',
+        'product': 1,
+        'quantity': '1.000',
+        'modifiers': [],
+        'notes': '',
+      },
+      recoveryProduct: QuickSaleProduct(
+        id: 1,
+        name: 'Coca',
+        internalCode: 'COCA',
+        price: '10.00',
+        favorite: false,
+        emitsTicket: false,
+        modifierGroups: [],
+        recoveryOnly: true,
+      ),
     ),
   ],
   payments: const [],

@@ -1631,6 +1631,35 @@ def _quick_checkout_payload(checkout, *, permissions=()):
                 'unit': item.product.unit, 'quantity': str(item.quantity),
                 'available_quantity': str(available_quantities[item.pk]),
                 'input': item.snapshot['raw'],
+                # This immutable snapshot lets recovery render reserved or no
+                # longer listed products without recalculating the checkout.
+                'recovery_product': {
+                    'id': item.product_id,
+                    'name': item.snapshot['preview'].get('product_name', item.product.name),
+                    'internal_code': item.snapshot['preview'].get('internal_code', item.product.internal_code),
+                    'price': str(item.snapshot['preview'].get('base_unit_price', item.product.sale_price)),
+                    'unit': item.snapshot['preview'].get('unit', item.product.unit),
+                    'favorite': False,
+                    'emits_ticket': False,
+                    'can_sell': False,
+                    'recovery_only': True,
+                    'modifier_groups': [
+                        {
+                            'id': modifier['group_id'],
+                            'name': modifier['group_name'],
+                            'is_required': False,
+                            'min_selections': 0,
+                            'allow_option_quantity': False,
+                            'min_total_quantity': '0',
+                            'options': [{
+                                'id': modifier['option_id'],
+                                'name': modifier['option_name'],
+                                'additional_price': modifier['additional_price'],
+                            }],
+                        }
+                        for modifier in item.snapshot['preview'].get('modifier_snapshot', [])
+                    ],
+                },
             }
             for item in checkout.items.all().order_by('id')
         ],

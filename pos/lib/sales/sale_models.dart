@@ -186,6 +186,7 @@ class QuickSaleProduct {
     this.stockAvailable = true,
     this.canSell = true,
     this.availabilityReason,
+    this.recoveryOnly = false,
   });
 
   factory QuickSaleProduct.fromJson(Map<String, dynamic> json) =>
@@ -207,6 +208,7 @@ class QuickSaleProduct {
         stockAvailable: json['stock_available'] as bool? ?? true,
         canSell: json['can_sell'] as bool? ?? true,
         availabilityReason: json['availability_reason'] as String?,
+        recoveryOnly: json['recovery_only'] as bool? ?? false,
         modifierGroups: (json['modifier_groups'] as List<dynamic>? ?? const [])
             .cast<Map<String, dynamic>>()
             .map(QuickSaleModifierGroup.fromJson)
@@ -230,6 +232,7 @@ class QuickSaleProduct {
   final bool stockAvailable;
   final bool canSell;
   final String? availabilityReason;
+  final bool recoveryOnly;
 }
 
 class QuickSaleAuthorizer {
@@ -538,6 +541,7 @@ class QuickSaleCheckoutItem {
     required this.availableQuantity,
     required this.unit,
     required this.input,
+    this.recoveryProduct,
   });
   factory QuickSaleCheckoutItem.fromJson(Map<String, dynamic> json) =>
       QuickSaleCheckoutItem(
@@ -548,13 +552,18 @@ class QuickSaleCheckoutItem {
               json['quantity'] as String? ??
               '0',
           unit: json['unit'] as String? ?? 'un',
-          input: Map<String, dynamic>.from(json['input'] as Map? ?? const {}));
+          input: Map<String, dynamic>.from(json['input'] as Map? ?? const {}),
+          recoveryProduct: json['recovery_product'] is Map
+              ? QuickSaleProduct.fromJson(
+                  Map<String, dynamic>.from(json['recovery_product'] as Map))
+              : null);
   final int id;
   final String name;
   final String quantity;
   final String availableQuantity;
   final String unit;
   final Map<String, dynamic> input;
+  final QuickSaleProduct? recoveryProduct;
 }
 
 /// A persisted operator payment attempt. Its UUID is also the API idempotency key.
@@ -602,21 +611,21 @@ class QuickSaleCheckoutPayment {
       {required this.id,
       required this.methodName,
       required this.amount,
-       required this.status,
-       this.receivedAmount,
-       this.changeAmount,
-       this.idempotencyKey,
-       this.reversalOf});
+      required this.status,
+      this.receivedAmount,
+      this.changeAmount,
+      this.idempotencyKey,
+      this.reversalOf});
   factory QuickSaleCheckoutPayment.fromJson(Map<String, dynamic> json) =>
       QuickSaleCheckoutPayment(
           id: json['id'] as String,
           methodName: json['payment_method_name'] as String? ?? 'Pagamento',
           amount: json['amount'] as String? ?? '0.00',
-           status: json['status'] as String? ?? '',
-           receivedAmount: json['received_amount'] as String?,
-           changeAmount: json['change_amount'] as String?,
-           idempotencyKey: json['idempotency_key'] as String?,
-           reversalOf: json['reversal_of'] as String?);
+          status: json['status'] as String? ?? '',
+          receivedAmount: json['received_amount'] as String?,
+          changeAmount: json['change_amount'] as String?,
+          idempotencyKey: json['idempotency_key'] as String?,
+          reversalOf: json['reversal_of'] as String?);
   final String id;
   final String methodName;
   final String amount;
