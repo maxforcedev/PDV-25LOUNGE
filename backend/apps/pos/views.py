@@ -86,7 +86,8 @@ from apps.sales.services import (
     payment_method_presentation,
 )
 from apps.sales.quick_checkout import (
-    QuickCheckoutConflict, cancel_quick_checkout, checkout_available_quantities, checkout_balance, create_quick_checkout,
+    QuickCheckoutConflict, cancel_quick_checkout, checkout_available_quantities, checkout_balance,
+    checkout_can_pay_by_items, create_quick_checkout,
     finalize_quick_checkout, record_quick_checkout_payment,
     preview_quick_checkout_payment, reverse_quick_checkout_payment, update_quick_checkout,
 )
@@ -1588,6 +1589,11 @@ def _quick_checkout_payload(checkout, *, permissions=()):
         and 'sales.payments.reverse' in permissions
     )
     available_quantities = checkout_available_quantities(checkout)
+    can_record_payment = (
+        checkout.status == QuickSaleCheckoutStatus.OPEN
+        and remaining > Decimal('0.00')
+        and session_open
+    )
     return {
         'id': str(checkout.pk),
         'status': checkout.status,
@@ -1611,11 +1617,8 @@ def _quick_checkout_payload(checkout, *, permissions=()):
         ),
         'capabilities': {
             'can_edit_financials': editable,
-            'can_record_payment': (
-                checkout.status == QuickSaleCheckoutStatus.OPEN
-                and remaining > Decimal('0.00')
-                and session_open
-            ),
+            'can_record_payment': can_record_payment,
+            'can_pay_by_items': can_record_payment and checkout_can_pay_by_items(checkout, remaining),
             'can_finalize': can_finalize,
             'can_reverse_payment': can_reverse,
         },
@@ -1649,7 +1652,7 @@ def _quick_checkout_payload(checkout, *, permissions=()):
                 ],
                 'created_at': payment.created_at,
             }
-            for payment in checkout.payments.select_related('payment_method').prefetch_related('allocations').order_by('id')
+            for payment in checkout.payments.select_related('payment_method').prefetch_related('allocations').order_by('created_at', 'id')
         ],
     }
 

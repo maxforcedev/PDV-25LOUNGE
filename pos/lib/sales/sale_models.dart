@@ -467,6 +467,7 @@ class QuickSaleCheckout {
     required this.payments,
     required this.canEditFinancials,
     required this.canRecordPayment,
+    required this.canPayByItems,
     required this.canFinalize,
     required this.canReversePayment,
     this.customer,
@@ -496,6 +497,7 @@ class QuickSaleCheckout {
             .toList(growable: false),
         canEditFinancials: json['capabilities']?['can_edit_financials'] == true,
         canRecordPayment: json['capabilities']?['can_record_payment'] == true,
+        canPayByItems: json['capabilities']?['can_pay_by_items'] == true,
         canFinalize: json['capabilities']?['can_finalize'] == true,
         canReversePayment: json['capabilities']?['can_reverse_payment'] == true,
         customer: json['customer'] is Map<String, dynamic>
@@ -516,6 +518,7 @@ class QuickSaleCheckout {
   final List<QuickSaleCheckoutPayment> payments;
   final bool canEditFinancials;
   final bool canRecordPayment;
+  final bool canPayByItems;
   final bool canFinalize;
   final bool canReversePayment;
   final QuickSaleCustomer? customer;

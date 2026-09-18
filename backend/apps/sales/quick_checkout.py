@@ -174,6 +174,11 @@ def update_quick_checkout(*, checkout, user, permissions, raw_items, discount,
     unchanged_items = _fingerprint(raw_items) == _fingerprint([
         item.snapshot['raw'] for item in checkout.items.order_by('id')
     ])
+    if not unchanged_items and QuickSalePayment.objects.filter(checkout=checkout).exists():
+        raise QuickCheckoutConflict(
+            'checkout_requires_new_instance',
+            'Um checkout com histórico de pagamentos não pode receber outros itens.',
+        )
     if checkout.discount_intent != preview['discount_intent'] or not checkout.discount_approved_by_id:
         checkout.discount_approved_by = _discount_approver(
             checkout.branch, user, preview['discount'], discount_authorization,
@@ -194,14 +199,15 @@ def update_quick_checkout(*, checkout, user, permissions, raw_items, discount,
             allow_pos_only=True, pos_device=checkout.pos_device, permission_codes=permissions,
             device_validated=True,
         )
-    QuickSaleCheckoutItem.objects.filter(checkout=checkout).delete()
-    for index, item in enumerate(raw_items):
-        QuickSaleCheckoutItem.objects.create(
-            checkout=checkout, client_item_id=item['client_item_id'], product_id=item['product'],
-            quantity=item['quantity'], snapshot={
-                'raw': _preview_snapshot(item), 'preview': _preview_snapshot(preview['items'][index]),
-            },
-        )
+    if not unchanged_items:
+        QuickSaleCheckoutItem.objects.filter(checkout=checkout).delete()
+        for index, item in enumerate(raw_items):
+            QuickSaleCheckoutItem.objects.create(
+                checkout=checkout, client_item_id=item['client_item_id'], product_id=item['product'],
+                quantity=item['quantity'], snapshot={
+                    'raw': _preview_snapshot(item), 'preview': _preview_snapshot(preview['items'][index]),
+                },
+            )
     checkout.customer = customer
     checkout.cash_session = session
     checkout.financial_snapshot = _preview_snapshot(_financial_snapshot(preview))
@@ -289,17 +295,18 @@ def _lock_checkout_session(checkout_id, *, cash_session_id=None, user=None):
     return sessions[session_id], checkout, sessions
 
 
-def _allocation_amount(checkout, allocations):
+def _allocation_amount(checkout, allocations, *, lock_items=True):
     if not allocations:
         raise ValidationError({'allocations': 'Pagamento por itens exige ao menos uma alocação.'})
     item_ids = [row.get('item') for row in allocations]
     if len(item_ids) != len(set(item_ids)):
         raise ValidationError({'allocations': 'Informe cada item apenas uma vez por pagamento.'})
-    items = {
-        item.pk: item for item in QuickSaleCheckoutItem.objects.select_for_update().filter(
-            checkout=checkout, pk__in=item_ids,
-        )
-    }
+    items_queryset = QuickSaleCheckoutItem.objects.filter(
+        checkout=checkout, pk__in=item_ids,
+    )
+    if lock_items:
+        items_queryset = items_queryset.select_for_update()
+    items = {item.pk: item for item in items_queryset}
     if len(items) != len(item_ids):
         raise ValidationError({'allocations': 'Itens devem pertencer ao checkout.'})
     snapshots = checkout.financial_snapshot['items']
@@ -341,6 +348,38 @@ def _allocation_amount(checkout, allocations):
         resolved.append({'item': item, 'allocated_quantity': quantity, 'amount': amount})
         total += amount
     return total, resolved
+
+
+def checkout_can_pay_by_items(checkout, remaining):
+    """Return whether an official item allocation can fit in the current balance."""
+    if remaining <= Decimal('0.00'):
+        return False
+    available_quantities = checkout_available_quantities(checkout)
+    for item in QuickSaleCheckoutItem.objects.select_related('product').filter(
+        checkout=checkout,
+    ).order_by('id'):
+        available = available_quantities.get(item.pk, Decimal('0.000'))
+        step = 1000 if item.product.unit.lower() == 'un' else 1
+        maximum_units = int(available * 1000) // step
+        if maximum_units < 1:
+            continue
+        low, high = 1, maximum_units
+        first_positive = None
+        while low <= high:
+            units = (low + high) // 2
+            amount, _resolved = _allocation_amount(
+                checkout,
+                [{'item': item.pk, 'allocated_quantity': Decimal(units * step) / 1000}],
+                lock_items=False,
+            )
+            if amount > Decimal('0.00'):
+                first_positive = amount
+                high = units - 1
+            else:
+                low = units + 1
+        if first_positive is not None and first_positive <= remaining:
+            return True
+    return False
 
 
 @transaction.atomic

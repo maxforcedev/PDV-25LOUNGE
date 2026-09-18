@@ -144,22 +144,37 @@ class AppController extends ChangeNotifier {
     required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
     QuickSaleCustomer? customer,
+    int? customerId,
     QuickSaleAuthorization? discountAuthorization,
     QuickSaleAuthorization? itemDiscountAuthorization,
     QuickSaleAuthorization? serviceFeeAuthorization,
   }) async {
+    final resolvedCustomerId = customer?.id ?? customerId;
     var state = await _quickCheckoutState();
     final existing = state['checkout_id'] as String?;
     if (existing != null) {
       final checkout = await recoverQuickSaleCheckout();
       if (checkout == null || !checkout.canEditFinancials) return checkout;
+      if (_quickCheckoutRequiresNewInstance(checkout, items)) {
+        if (!await cancelQuickSaleCheckout(checkout.id)) return null;
+        return createQuickSaleCheckout(
+          items: items,
+          cashSessionId: cashSessionId,
+          discount: discount,
+          serviceFeeWaived: serviceFeeWaived,
+          customerId: resolvedCustomerId,
+          discountAuthorization: discountAuthorization,
+          itemDiscountAuthorization: itemDiscountAuthorization,
+          serviceFeeAuthorization: serviceFeeAuthorization,
+        );
+      }
       if (_quickCheckoutNeedsUpdate(
         checkout: checkout,
         items: items,
         cashSessionId: cashSessionId,
         discount: discount,
         serviceFeeWaived: serviceFeeWaived,
-        customerId: customer?.id,
+        customerId: resolvedCustomerId,
       )) {
         return updateQuickSaleCheckout(
           checkoutId: checkout.id,
@@ -167,7 +182,7 @@ class AppController extends ChangeNotifier {
           cashSessionId: cashSessionId,
           discount: discount,
           serviceFeeWaived: serviceFeeWaived,
-          customerId: customer?.id,
+          customerId: resolvedCustomerId,
           discountAuthorization: discountAuthorization,
           itemDiscountAuthorization: itemDiscountAuthorization,
           serviceFeeAuthorization: serviceFeeAuthorization,
@@ -181,7 +196,7 @@ class AppController extends ChangeNotifier {
       cashSessionId: cashSessionId,
       discount: discount,
       serviceFeeWaived: serviceFeeWaived,
-      customer: customer,
+      customerId: resolvedCustomerId,
       discountAuthorization: discountAuthorization,
       itemDiscountAuthorization: itemDiscountAuthorization,
       serviceFeeAuthorization: serviceFeeAuthorization,
@@ -191,18 +206,35 @@ class AppController extends ChangeNotifier {
         jsonEncode(state['creation_request']) != jsonEncode(request)) {
       try {
         final checkout = await _api.recoverQuickSaleCheckout(key);
-        await _writeQuickCheckoutState({'checkout_id': checkout.id});
-        return await updateQuickSaleCheckout(
-          checkoutId: checkout.id,
-          items: items,
-          cashSessionId: cashSessionId,
-          discount: discount,
-          serviceFeeWaived: serviceFeeWaived,
-          customerId: customer?.id,
-          discountAuthorization: discountAuthorization,
-          itemDiscountAuthorization: itemDiscountAuthorization,
-          serviceFeeAuthorization: serviceFeeAuthorization,
-        );
+        if (_isTerminalQuickSaleCheckout(checkout)) {
+          state = <String, dynamic>{};
+          key = null;
+        } else if (_quickCheckoutRequiresNewInstance(checkout, items)) {
+          if (!await cancelQuickSaleCheckout(checkout.id)) return null;
+          return await createQuickSaleCheckout(
+            items: items,
+            cashSessionId: cashSessionId,
+            discount: discount,
+            serviceFeeWaived: serviceFeeWaived,
+            customerId: resolvedCustomerId,
+            discountAuthorization: discountAuthorization,
+            itemDiscountAuthorization: itemDiscountAuthorization,
+            serviceFeeAuthorization: serviceFeeAuthorization,
+          );
+        } else {
+          await _writeQuickCheckoutState({'checkout_id': checkout.id});
+          return await updateQuickSaleCheckout(
+            checkoutId: checkout.id,
+            items: items,
+            cashSessionId: cashSessionId,
+            discount: discount,
+            serviceFeeWaived: serviceFeeWaived,
+            customerId: resolvedCustomerId,
+            discountAuthorization: discountAuthorization,
+            itemDiscountAuthorization: itemDiscountAuthorization,
+            serviceFeeAuthorization: serviceFeeAuthorization,
+          );
+        }
       } on PosApiException catch (error) {
         if (error.statusCode != 404) {
           _handleApiError(error);
@@ -230,7 +262,7 @@ class AppController extends ChangeNotifier {
         discount: discount,
         serviceFeeWaived: serviceFeeWaived,
         idempotencyKey: creationKey,
-        customerId: customer?.id,
+        customerId: resolvedCustomerId,
         discountAuthorization: discountAuthorization?.toJson(),
         itemDiscountAuthorization: itemDiscountAuthorization?.toJson(),
         serviceFeeAuthorization: serviceFeeAuthorization?.toJson(),
@@ -251,7 +283,7 @@ class AppController extends ChangeNotifier {
     required int cashSessionId,
     required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
-    QuickSaleCustomer? customer,
+    int? customerId,
     QuickSaleAuthorization? discountAuthorization,
     QuickSaleAuthorization? itemDiscountAuthorization,
     QuickSaleAuthorization? serviceFeeAuthorization,
@@ -261,7 +293,7 @@ class AppController extends ChangeNotifier {
         'cash_session': cashSessionId,
         'discount': discount,
         'service_fee_waived': serviceFeeWaived,
-        'customer': customer?.id,
+        'customer': customerId,
         if (discountAuthorization != null)
           'discount_authorization': discountAuthorization.idempotencyIdentity,
         if (itemDiscountAuthorization != null)
@@ -272,6 +304,15 @@ class AppController extends ChangeNotifier {
               serviceFeeAuthorization.idempotencyIdentity,
       })) as Map);
 
+  bool _quickCheckoutItemsChanged(
+          QuickSaleCheckout checkout, List<Map<String, dynamic>> items) =>
+      jsonEncode(checkout.items.map((item) => item.input).toList()) !=
+      jsonEncode(items);
+
+  bool _quickCheckoutRequiresNewInstance(
+          QuickSaleCheckout checkout, List<Map<String, dynamic>> items) =>
+      _quickCheckoutItemsChanged(checkout, items) && checkout.payments.isNotEmpty;
+
   bool _quickCheckoutNeedsUpdate({
     required QuickSaleCheckout checkout,
     required List<Map<String, dynamic>> items,
@@ -280,8 +321,7 @@ class AppController extends ChangeNotifier {
     required bool serviceFeeWaived,
     required int? customerId,
   }) =>
-      jsonEncode(checkout.items.map((item) => item.input).toList()) !=
-          jsonEncode(items) ||
+      _quickCheckoutItemsChanged(checkout, items) ||
       checkout.cashSessionId != cashSessionId ||
       jsonEncode(checkout.discountIntent.toJson()) != jsonEncode(discount) ||
       checkout.serviceFeeWaived != serviceFeeWaived ||
@@ -376,6 +416,25 @@ class AppController extends ChangeNotifier {
     QuickSaleAuthorization? itemDiscountAuthorization,
     QuickSaleAuthorization? serviceFeeAuthorization,
   }) async {
+    final state = await _quickCheckoutState();
+    if (state['checkout_id'] == checkoutId) {
+      final checkout = await recoverQuickSaleCheckout();
+      if (checkout != null &&
+          checkout.canEditFinancials &&
+          _quickCheckoutRequiresNewInstance(checkout, items)) {
+        if (!await cancelQuickSaleCheckout(checkout.id)) return null;
+        return createQuickSaleCheckout(
+          items: items,
+          cashSessionId: cashSessionId,
+          discount: discount,
+          serviceFeeWaived: serviceFeeWaived,
+          customerId: customerId,
+          discountAuthorization: discountAuthorization,
+          itemDiscountAuthorization: itemDiscountAuthorization,
+          serviceFeeAuthorization: serviceFeeAuthorization,
+        );
+      }
+    }
     try {
       return await _api.updateQuickSaleCheckout(
         checkoutId: checkoutId,

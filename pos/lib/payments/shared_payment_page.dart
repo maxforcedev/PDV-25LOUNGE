@@ -535,14 +535,15 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
           ],
           const SizedBox(height: 12),
           Wrap(spacing: 8, children: [
-            OutlinedButton.icon(
-                onPressed: _working ||
-                        _pendingPayment != null ||
-                        !_checkout.canRecordPayment
-                    ? null
-                    : _selectItems,
-                icon: const Icon(Icons.format_list_bulleted),
-                label: const Text('PAGAR POR ITENS')),
+            if (_checkout.canPayByItems)
+              OutlinedButton.icon(
+                  onPressed: _working ||
+                          _pendingPayment != null ||
+                          !_checkout.canRecordPayment
+                      ? null
+                      : _selectItems,
+                  icon: const Icon(Icons.format_list_bulleted),
+                  label: const Text('PAGAR POR ITENS')),
             OutlinedButton.icon(
                 onPressed: _working ||
                         _pendingPayment != null ||
@@ -556,9 +557,11 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
           const Text('PAGAMENTOS REALIZADOS',
               style: TextStyle(fontWeight: FontWeight.w900)),
           const SizedBox(height: 8),
-          if (_checkout.payments.isEmpty)
+          if (_checkout.payments.where((payment) => !payment.isReversal).isEmpty)
             const Text('Nenhum pagamento registrado.'),
-          for (final payment in _checkout.payments) _history(payment),
+          for (final payment
+              in _checkout.payments.where((payment) => !payment.isReversal))
+            _history(payment),
         ],
       );
 
@@ -640,14 +643,12 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
   }
 
   Widget _history(QuickSaleCheckoutPayment payment) {
-    final reversed = payment.isReversal || _checkout.hasReversalFor(payment.id);
-    final subtitle = payment.isReversal
-        ? 'Estorno'
-        : reversed
-            ? 'Estornado'
-            : payment.receivedAmount == null
-                ? 'Confirmado'
-                : 'Recebido ${formatMoney(payment.receivedAmount!)}  Troco ${formatMoney(payment.changeAmount ?? '0.00')}';
+    final reversed = _checkout.hasReversalFor(payment.id);
+    final subtitle = reversed
+        ? 'Estornado'
+        : payment.receivedAmount == null
+            ? 'Confirmado'
+            : 'Recebido ${formatMoney(payment.receivedAmount!)}  Troco ${formatMoney(payment.changeAmount ?? '0.00')}';
     return Card(
       child: ListTile(
         leading: Icon(reversed ? Icons.undo : Icons.check_circle_outline,
