@@ -295,7 +295,7 @@ def _lock_checkout_session(checkout_id, *, cash_session_id=None, user=None):
     return sessions[session_id], checkout, sessions
 
 
-def _allocation_amount(checkout, allocations, *, lock_items=True):
+def _allocation_amount(checkout, allocations, *, lock_items=True, allow_zero_amount=False):
     if not allocations:
         raise ValidationError({'allocations': 'Pagamento por itens exige ao menos uma alocação.'})
     item_ids = [row.get('item') for row in allocations]
@@ -343,7 +343,7 @@ def _allocation_amount(checkout, allocations, *, lock_items=True):
             raise QuickCheckoutConflict('item_overallocated', 'A quantidade alocada excede a quantidade disponível do item.')
         cumulative = ((allocated_quantity + quantity) * final_amounts[item.pk] / item.quantity).quantize(CENT, rounding=ROUND_HALF_UP)
         amount = cumulative - allocated_amount
-        if amount <= 0:
+        if amount <= 0 and not allow_zero_amount:
             raise QuickCheckoutConflict('item_allocation_mismatch', 'A alocação não gera valor a pagar.')
         resolved.append({'item': item, 'allocated_quantity': quantity, 'amount': amount})
         total += amount
@@ -370,7 +370,7 @@ def checkout_can_pay_by_items(checkout, remaining):
             amount, _resolved = _allocation_amount(
                 checkout,
                 [{'item': item.pk, 'allocated_quantity': Decimal(units * step) / 1000}],
-                lock_items=False,
+                lock_items=False, allow_zero_amount=True,
             )
             if amount > Decimal('0.00'):
                 first_positive = amount

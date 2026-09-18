@@ -156,8 +156,9 @@ class AppController extends ChangeNotifier {
       final checkout = await recoverQuickSaleCheckout();
       if (checkout == null || !checkout.canEditFinancials) return checkout;
       if (_quickCheckoutRequiresNewInstance(checkout, items)) {
-        if (!await cancelQuickSaleCheckout(checkout.id)) return null;
-        return createQuickSaleCheckout(
+        return _replaceHistoricalQuickCheckout(
+          checkout: checkout,
+          state: state,
           items: items,
           cashSessionId: cashSessionId,
           discount: discount,
@@ -203,15 +204,16 @@ class AppController extends ChangeNotifier {
     );
     var key = state['creation_idempotency_key'] as String?;
     if (key != null &&
-        jsonEncode(state['creation_request']) != jsonEncode(request)) {
+        _canonicalJson(state['creation_request']) != _canonicalJson(request)) {
       try {
         final checkout = await _api.recoverQuickSaleCheckout(key);
         if (_isTerminalQuickSaleCheckout(checkout)) {
           state = <String, dynamic>{};
           key = null;
         } else if (_quickCheckoutRequiresNewInstance(checkout, items)) {
-          if (!await cancelQuickSaleCheckout(checkout.id)) return null;
-          return await createQuickSaleCheckout(
+          return await _replaceHistoricalQuickCheckout(
+            checkout: checkout,
+            state: state,
             items: items,
             cashSessionId: cashSessionId,
             discount: discount,
@@ -304,14 +306,68 @@ class AppController extends ChangeNotifier {
               serviceFeeAuthorization.idempotencyIdentity,
       })) as Map);
 
+  Object? _canonicalizeJson(Object? value) {
+    if (value is Map) {
+      final entries = value.entries
+          .map((entry) => MapEntry('${entry.key}', _canonicalizeJson(entry.value)))
+          .toList()
+        ..sort((left, right) => left.key.compareTo(right.key));
+      return Map<String, Object?>.fromEntries(entries);
+    }
+    if (value is Iterable) {
+      return value.map(_canonicalizeJson).toList(growable: false);
+    }
+    return value;
+  }
+
+  String _canonicalJson(Object? value) => jsonEncode(_canonicalizeJson(value));
+
   bool _quickCheckoutItemsChanged(
           QuickSaleCheckout checkout, List<Map<String, dynamic>> items) =>
-      jsonEncode(checkout.items.map((item) => item.input).toList()) !=
-      jsonEncode(items);
+      _canonicalJson(checkout.items.map((item) => item.input).toList()) !=
+      _canonicalJson(items);
 
   bool _quickCheckoutRequiresNewInstance(
           QuickSaleCheckout checkout, List<Map<String, dynamic>> items) =>
-      _quickCheckoutItemsChanged(checkout, items) && checkout.payments.isNotEmpty;
+      _quickCheckoutItemsChanged(checkout, items) && checkout.hasPaymentHistory;
+
+  bool _hasUncertainQuickCheckoutOperation(Map<String, dynamic> state) =>
+      (state['payment_attempts'] as Map?)?.isNotEmpty == true ||
+      (state['pending'] as Map?)?.isNotEmpty == true;
+
+  Future<QuickSaleCheckout?> _replaceHistoricalQuickCheckout({
+    required QuickSaleCheckout checkout,
+    required Map<String, dynamic> state,
+    required List<Map<String, dynamic>> items,
+    required int cashSessionId,
+    required Map<String, dynamic> discount,
+    required bool serviceFeeWaived,
+    required int? customerId,
+    QuickSaleAuthorization? discountAuthorization,
+    QuickSaleAuthorization? itemDiscountAuthorization,
+    QuickSaleAuthorization? serviceFeeAuthorization,
+  }) async {
+    if (!checkout.canEditFinancials ||
+        !_quickCheckoutRequiresNewInstance(checkout, items)) {
+      return checkout;
+    }
+    if (_hasUncertainQuickCheckoutOperation(state)) {
+      _showTransientMessage(
+          'Conclua a operação de pagamento pendente antes de alterar os itens.');
+      return checkout;
+    }
+    if (!await cancelQuickSaleCheckout(checkout.id)) return null;
+    return createQuickSaleCheckout(
+      items: items,
+      cashSessionId: cashSessionId,
+      discount: discount,
+      serviceFeeWaived: serviceFeeWaived,
+      customerId: customerId,
+      discountAuthorization: discountAuthorization,
+      itemDiscountAuthorization: itemDiscountAuthorization,
+      serviceFeeAuthorization: serviceFeeAuthorization,
+    );
+  }
 
   bool _quickCheckoutNeedsUpdate({
     required QuickSaleCheckout checkout,
@@ -323,7 +379,7 @@ class AppController extends ChangeNotifier {
   }) =>
       _quickCheckoutItemsChanged(checkout, items) ||
       checkout.cashSessionId != cashSessionId ||
-      jsonEncode(checkout.discountIntent.toJson()) != jsonEncode(discount) ||
+      _canonicalJson(checkout.discountIntent.toJson()) != _canonicalJson(discount) ||
       checkout.serviceFeeWaived != serviceFeeWaived ||
       checkout.customer?.id != customerId;
 
@@ -422,8 +478,9 @@ class AppController extends ChangeNotifier {
       if (checkout != null &&
           checkout.canEditFinancials &&
           _quickCheckoutRequiresNewInstance(checkout, items)) {
-        if (!await cancelQuickSaleCheckout(checkout.id)) return null;
-        return createQuickSaleCheckout(
+        return _replaceHistoricalQuickCheckout(
+          checkout: checkout,
+          state: state,
           items: items,
           cashSessionId: cashSessionId,
           discount: discount,
@@ -448,6 +505,24 @@ class AppController extends ChangeNotifier {
         serviceFeeAuthorization: serviceFeeAuthorization?.toJson(),
       );
     } on PosApiException catch (error) {
+      if (error.code == 'checkout_requires_new_instance' &&
+          state['checkout_id'] == checkoutId) {
+        final checkout = await recoverQuickSaleCheckout();
+        if (checkout != null) {
+          return _replaceHistoricalQuickCheckout(
+            checkout: checkout,
+            state: state,
+            items: items,
+            cashSessionId: cashSessionId,
+            discount: discount,
+            serviceFeeWaived: serviceFeeWaived,
+            customerId: customerId,
+            discountAuthorization: discountAuthorization,
+            itemDiscountAuthorization: itemDiscountAuthorization,
+            serviceFeeAuthorization: serviceFeeAuthorization,
+          );
+        }
+      }
       _handleApiError(error);
     } on PosNetworkException catch (error) {
       _showTransientMessage(error.message);

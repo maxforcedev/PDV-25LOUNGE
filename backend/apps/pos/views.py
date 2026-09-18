@@ -1589,6 +1589,7 @@ def _quick_checkout_payload(checkout, *, permissions=()):
         and 'sales.payments.reverse' in permissions
     )
     available_quantities = checkout_available_quantities(checkout)
+    has_payment_history = QuickSalePayment.objects.filter(checkout=checkout).exists()
     can_record_payment = (
         checkout.status == QuickSaleCheckoutStatus.OPEN
         and remaining > Decimal('0.00')
@@ -1609,6 +1610,7 @@ def _quick_checkout_payload(checkout, *, permissions=()):
         'preview': checkout.financial_snapshot,
         'paid_amount': str(paid),
         'remaining_amount': str(remaining),
+        'has_payment_history': has_payment_history,
         'operational_status': (
             'finalized' if checkout.status == QuickSaleCheckoutStatus.FINALIZED else
             'cancelled' if checkout.status == QuickSaleCheckoutStatus.CANCELLED else

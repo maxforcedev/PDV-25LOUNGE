@@ -460,6 +460,7 @@ class QuickSaleCheckout {
     required this.preview,
     required this.paidAmount,
     required this.remainingAmount,
+    required this.hasPaymentHistory,
     required this.cashSessionId,
     required this.discountIntent,
     required this.serviceFeeWaived,
@@ -483,6 +484,7 @@ class QuickSaleCheckout {
             json['preview'] as Map<String, dynamic>? ?? const {}),
         paidAmount: json['paid_amount'] as String? ?? '0.00',
         remainingAmount: json['remaining_amount'] as String? ?? '0.00',
+        hasPaymentHistory: json['has_payment_history'] as bool? ?? false,
         cashSessionId: json['cash_session'] as int,
         discountIntent: QuickSaleDiscountIntent.fromJson(
             json['discount_intent'] as Map<String, dynamic>? ?? const {}),
@@ -511,6 +513,7 @@ class QuickSaleCheckout {
   final QuickSalePreview preview;
   final String paidAmount;
   final String remainingAmount;
+  final bool hasPaymentHistory;
   final int cashSessionId;
   final QuickSaleDiscountIntent discountIntent;
   final bool serviceFeeWaived;
