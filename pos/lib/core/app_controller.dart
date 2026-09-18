@@ -108,6 +108,49 @@ class AppController extends ChangeNotifier {
   bool _isTerminalQuickSaleCheckout(QuickSaleCheckout checkout) =>
       checkout.status == 'finalized' || checkout.status == 'cancelled';
 
+  Future<void> _reconcileQuickCheckoutState(
+      QuickSaleCheckout checkout, Map<String, dynamic> state) async {
+    if (state['checkout_id'] != checkout.id) return;
+    final pending = Map<String, dynamic>.from(
+        state['pending'] as Map? ?? const {});
+    final attempts = Map<String, dynamic>.from(
+        state['payment_attempts'] as Map? ?? const {});
+    var changed = false;
+    for (final operation in pending.keys.toList()) {
+      final parts = operation.split(':');
+      if (parts.length >= 3 &&
+          parts.first == 'reverse' &&
+          checkout.hasReversalFor(parts[1])) {
+        pending.remove(operation);
+        changed = true;
+      }
+    }
+    final appliedPaymentKeys = checkout.payments
+        .where((payment) => !payment.isReversal && payment.idempotencyKey != null)
+        .map((payment) => payment.idempotencyKey!)
+        .toSet();
+    for (final entry in attempts.entries.toList()) {
+      final raw = entry.value;
+      final intentId = raw is Map ? raw['intent_id'] as String? : null;
+      if (appliedPaymentKeys.contains(intentId ?? entry.key)) {
+        attempts.remove(entry.key);
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    if (pending.isEmpty) {
+      state.remove('pending');
+    } else {
+      state['pending'] = pending;
+    }
+    if (attempts.isEmpty) {
+      state.remove('payment_attempts');
+    } else {
+      state['payment_attempts'] = attempts;
+    }
+    await _writeQuickCheckoutState(state);
+  }
+
   Future<QuickSaleCheckout?> recoverQuickSaleCheckout() async {
     final state = await _quickCheckoutState();
     final id = state['checkout_id'] as String?;
@@ -118,6 +161,7 @@ class AppController extends ChangeNotifier {
           await _writeQuickCheckoutState({});
           return null;
         }
+        await _reconcileQuickCheckoutState(checkout, state);
         return checkout;
       }
       final creationKey = state['creation_idempotency_key'] as String?;
@@ -154,6 +198,7 @@ class AppController extends ChangeNotifier {
     final existing = state['checkout_id'] as String?;
     if (existing != null) {
       final checkout = await recoverQuickSaleCheckout();
+      state = await _quickCheckoutState();
       if (checkout == null || !checkout.canEditFinancials) return checkout;
       if (_quickCheckoutRequiresNewInstance(checkout, items)) {
         return _replaceHistoricalQuickCheckout(
@@ -472,9 +517,10 @@ class AppController extends ChangeNotifier {
     QuickSaleAuthorization? itemDiscountAuthorization,
     QuickSaleAuthorization? serviceFeeAuthorization,
   }) async {
-    final state = await _quickCheckoutState();
+    var state = await _quickCheckoutState();
     if (state['checkout_id'] == checkoutId) {
       final checkout = await recoverQuickSaleCheckout();
+      state = await _quickCheckoutState();
       if (checkout != null &&
           checkout.canEditFinancials &&
           _quickCheckoutRequiresNewInstance(checkout, items)) {
@@ -508,6 +554,7 @@ class AppController extends ChangeNotifier {
       if (error.code == 'checkout_requires_new_instance' &&
           state['checkout_id'] == checkoutId) {
         final checkout = await recoverQuickSaleCheckout();
+        state = await _quickCheckoutState();
         if (checkout != null) {
           return _replaceHistoricalQuickCheckout(
             checkout: checkout,
@@ -547,6 +594,13 @@ class AppController extends ChangeNotifier {
       );
 
   Future<bool> cancelQuickSaleCheckout(String checkoutId) async {
+    final state = await _quickCheckoutState();
+    if (state['checkout_id'] == checkoutId &&
+        _hasUncertainQuickCheckoutOperation(state)) {
+      _showTransientMessage(
+          'Conclua a operação de pagamento pendente antes de cancelar a venda.');
+      return false;
+    }
     try {
       await _api.cancelQuickSaleCheckout(checkoutId: checkoutId);
       await _writeQuickCheckoutState({});
@@ -557,6 +611,27 @@ class AppController extends ChangeNotifier {
       _showTransientMessage(error.message);
     }
     return false;
+  }
+
+  Future<bool> discardQuickSaleCheckout() async {
+    final initialState = await _quickCheckoutState();
+    if (initialState.isEmpty) return true;
+    final checkout = await recoverQuickSaleCheckout();
+    final state = await _quickCheckoutState();
+    if (checkout == null) return state.isEmpty;
+    if (_hasUncertainQuickCheckoutOperation(state)) {
+      _showTransientMessage(
+          'Há uma operação financeira aguardando confirmação. Resolva a operação antes de apagar a venda.');
+      return false;
+    }
+    final hasAppliedPayment = checkout.payments.any(
+        (payment) => !payment.isReversal && !checkout.hasReversalFor(payment.id));
+    if (hasAppliedPayment) {
+      _showTransientMessage(
+          'Existem pagamentos aplicados nesta venda. Estorne os pagamentos antes de apagar o carrinho.');
+      return false;
+    }
+    return cancelQuickSaleCheckout(checkout.id);
   }
 
   Future<QuickSaleCheckout?> _runQuickCheckoutOperation({

@@ -203,12 +203,13 @@ void main() {
   });
 }
 
-class MemorySecretStore implements SecretStore {
+class MemorySecretStore implements SecretStore, QuickSaleCheckoutStateStore {
   MemorySecretStore({this.deviceCredential});
 
   String? deviceCredential;
   String? operatorSession;
   String? pendingSaleIntents;
+  String? quickSaleCheckoutState;
 
   @override
   Future<void> clearDeviceCredential() async => deviceCredential = null;
@@ -236,6 +237,13 @@ class MemorySecretStore implements SecretStore {
   @override
   Future<void> writePendingSaleIntents(String value) async =>
       pendingSaleIntents = value;
+
+  @override
+  Future<String?> readQuickSaleCheckoutState() async => quickSaleCheckoutState;
+
+  @override
+  Future<void> writeQuickSaleCheckoutState(String value) async =>
+      quickSaleCheckoutState = value;
 }
 
 class FakePosApi implements PosApi {

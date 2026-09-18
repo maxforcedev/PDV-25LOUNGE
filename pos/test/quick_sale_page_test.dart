@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:core_pos/auth/auth_models.dart';
 import 'package:core_pos/bootstrap/bootstrap_models.dart';
 import 'package:core_pos/core/app_controller.dart';
 import 'package:core_pos/network/pos_api.dart';
@@ -21,10 +23,10 @@ void main() {
     modifierGroups: [],
   );
 
-  AppController controller(_QuickSaleApi api) {
+  AppController controller(_QuickSaleApi api, [_MemorySecretStore? storage]) {
     final controller = AppController(
       api: api,
-      secrets: _MemorySecretStore(),
+      secrets: storage ?? _MemorySecretStore(),
       device: const DeviceDescriptor(
         name: 'Test',
         type: 'POS',
@@ -50,11 +52,12 @@ void main() {
     return controller;
   }
 
-  Future<void> open(WidgetTester tester, _QuickSaleApi api) async {
+  Future<void> open(WidgetTester tester, _QuickSaleApi api,
+      {AppController? existingController}) async {
     await tester.binding.setSurfaceSize(const Size(1200, 1000));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
-        MaterialApp(home: QuickSalePage(controller: controller(api))));
+        MaterialApp(home: QuickSalePage(controller: existingController ?? controller(api))));
     await tester.pumpAndSettle();
   }
 
@@ -227,10 +230,81 @@ void main() {
 
     expect(find.text('Qtd. 2'), findsOneWidget);
   });
+
+  testWidgets('recovers the cart without opening payment automatically',
+      (tester) async {
+    final storage = _MemorySecretStore()
+      ..quickSaleCheckoutState = jsonEncode({
+        'operators': {
+          'operator-1': {'checkout_id': 'checkout-a'},
+        },
+      });
+    final api = _QuickSaleApi(
+      (_) async => const QuickSaleStockAvailability(
+        available: true,
+        enforced: true,
+        shortages: [],
+      ),
+      recoveredCheckout: _recoveredCheckout,
+    );
+    final restored = controller(api, storage)
+      ..selectedOperator = const PosOperator(
+          id: 'operator-1', displayName: 'Operador', initials: 'OP');
+
+    await open(tester, api, existingController: restored);
+
+    expect(find.text('Venda em andamento recuperada.'), findsOneWidget);
+    expect(find.text('Pagamento'), findsNothing);
+    expect(find.text('Qtd. 1'), findsOneWidget);
+  });
 }
 
+final _recoveredCheckout = QuickSaleCheckout(
+  id: 'checkout-a',
+  status: 'editing',
+  preview: const QuickSalePreview(
+    items: [],
+    subtotal: '10.00',
+    promotionDiscountTotal: '0.00',
+    itemDiscountTotal: '0.00',
+    discount: '0.00',
+    serviceFeeRate: '0.00',
+    serviceFeeAmount: '0.00',
+    total: '10.00',
+  ),
+  paidAmount: '0.00',
+  remainingAmount: '10.00',
+  hasPaymentHistory: false,
+  cashSessionId: 1,
+  discountIntent: const QuickSaleDiscountIntent(),
+  serviceFeeWaived: false,
+  items: const [
+    QuickSaleCheckoutItem(
+      id: 1,
+      name: 'Coca',
+      quantity: '1',
+      availableQuantity: '1',
+      unit: 'un',
+      input: {
+        'client_item_id': 'item-a',
+        'product': 1,
+        'quantity': '1',
+        'modifiers': [],
+        'notes': '',
+      },
+    ),
+  ],
+  payments: const [],
+  canEditFinancials: true,
+  canRecordPayment: true,
+  canPayByItems: true,
+  canFinalize: false,
+  canReversePayment: true,
+);
+
 class _QuickSaleApi implements PosApi {
-  _QuickSaleApi(this.availability, {List<QuickSaleProduct>? catalog})
+  _QuickSaleApi(this.availability,
+      {List<QuickSaleProduct>? catalog, this.recoveredCheckout})
       : catalog = catalog ??
             const [
               QuickSaleProduct(
@@ -246,6 +320,7 @@ class _QuickSaleApi implements PosApi {
   final Future<QuickSaleStockAvailability> Function(List<Map<String, dynamic>>)
       availability;
   final List<QuickSaleProduct> catalog;
+  final QuickSaleCheckout? recoveredCheckout;
   var previewCalls = 0;
 
   @override
@@ -264,6 +339,10 @@ class _QuickSaleApi implements PosApi {
         cashRequired: true,
         fixedCashAvailable: true,
       );
+
+  @override
+  Future<QuickSaleCheckout> getQuickSaleCheckout(String checkoutId) async =>
+      recoveredCheckout!;
 
   @override
   Future<QuickSaleStockAvailability> quickSaleStockAvailability(
@@ -292,7 +371,9 @@ class _QuickSaleApi implements PosApi {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
-class _MemorySecretStore implements SecretStore {
+class _MemorySecretStore implements SecretStore, QuickSaleCheckoutStateStore {
+  String? quickSaleCheckoutState;
+
   @override
   Future<void> clearDeviceCredential() async {}
   @override
@@ -305,6 +386,11 @@ class _MemorySecretStore implements SecretStore {
   Future<void> writeDeviceCredential(String credential) async {}
   @override
   Future<void> writeOperatorSession(String token) async {}
+  @override
+  Future<String?> readQuickSaleCheckoutState() async => quickSaleCheckoutState;
+  @override
+  Future<void> writeQuickSaleCheckoutState(String value) async =>
+      quickSaleCheckoutState = value;
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

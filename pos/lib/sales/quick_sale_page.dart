@@ -164,12 +164,13 @@ class _QuickSalePageState extends State<QuickSalePage> {
   }
 
   Future<void> _resumeCheckout() async {
-    final options = _checkoutOptions;
-    if (options == null || !mounted) return;
+    if (!mounted) return;
     final checkout = await widget.controller.recoverQuickSaleCheckout();
     if (!mounted || checkout == null) return;
     setState(() => _restoreCheckoutDraft(checkout));
-    await _openPayment(checkout, options);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Venda em andamento recuperada.')),
+    );
   }
 
   void _restoreCheckoutDraft(QuickSaleCheckout checkout) {
@@ -861,6 +862,8 @@ class _QuickSalePageState extends State<QuickSalePage> {
       ),
     );
     if (confirmed != true || !mounted) return;
+    final discarded = await widget.controller.discardQuickSaleCheckout();
+    if (!mounted || !discarded) return;
     setState(_resetSaleDraftState);
   }
 
