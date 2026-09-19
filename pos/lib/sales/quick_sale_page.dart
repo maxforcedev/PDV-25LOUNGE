@@ -875,7 +875,8 @@ class _QuickSalePageState extends State<QuickSalePage> {
   }
 
   Future<void> _showMobileCart() async {
-    await Navigator.of(context).push(MaterialPageRoute(
+    final result =
+        await Navigator.of(context).push<_MobileCartResult>(MaterialPageRoute(
       builder: (_) => _CartPage(
         draft: _draft,
         canClear: !_catalogLocked,
@@ -888,10 +889,12 @@ class _QuickSalePageState extends State<QuickSalePage> {
           cashReady: _checkoutReady,
           editable: !_catalogLocked,
           onEdit: _editCartItem,
-          onCheckout: _checkout,
+          onCheckout: () =>
+              Navigator.of(context).pop(_MobileCartResult.checkout),
         ),
       ),
     ));
+    if (result == _MobileCartResult.checkout && mounted) await _checkout();
   }
 
   @override
@@ -976,6 +979,8 @@ class _QuickSalePageState extends State<QuickSalePage> {
         ),
       );
 }
+
+enum _MobileCartResult { checkout }
 
 class _CartPage extends StatelessWidget {
   const _CartPage({

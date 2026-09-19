@@ -36,9 +36,6 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
   bool _working = false;
 
   List<QuickSalePaymentMethod> get _methods => widget.options.paymentMethods;
-  List<QuickSalePaymentMethod> get _cards => _methods
-      .where((method) => method.visualGroup == 'card')
-      .toList(growable: false);
   List<QuickSalePaymentMethod> get _cash => _methods
       .where((method) => method.kind == 'cash' || method.visualGroup == 'cash')
       .toList(growable: false);
@@ -469,6 +466,29 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     }
   }
 
+  bool get _compactHeader => MediaQuery.sizeOf(context).width < 620;
+
+  Widget _headerAction({
+    required String label,
+    required String tooltip,
+    required IconData icon,
+    required VoidCallback? onPressed,
+  }) =>
+      _compactHeader
+          ? IconButton(
+              onPressed: onPressed,
+              tooltip: tooltip,
+              icon: Icon(icon),
+            )
+          : TextButton.icon(
+              onPressed: onPressed,
+              icon: Icon(icon, size: 18),
+              label: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 76),
+                child: Text(label, overflow: TextOverflow.ellipsis),
+              ),
+            );
+
   @override
   Widget build(BuildContext context) => PopScope(
         canPop: !_hasAppliedPayment,
@@ -484,26 +504,25 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
           appBar: AppBar(
             title: const Text('PAGAMENTO'),
             actions: [
-              if (_checkout.canEditFinancials)
-                TextButton.icon(
-                  onPressed: _working
-                      ? null
-                      : () => _editFinancials(_FinancialEdit.customer),
-                  icon: const Icon(Icons.person_outline, size: 18),
-                  label: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 72),
-                    child: Text(_checkout.customer?.name ?? 'CLIENTE',
-                        overflow: TextOverflow.ellipsis),
-                  ),
-                ),
-              TextButton.icon(
+              _headerAction(
+                label: _checkout.customer?.name ?? 'CLIENTE',
+                tooltip: _checkout.customer == null
+                    ? 'Cliente'
+                    : 'Cliente: ${_checkout.customer!.name}',
+                icon: Icons.person_outline,
+                onPressed: _working || !_checkout.canEditFinancials
+                    ? null
+                    : () => _editFinancials(_FinancialEdit.customer),
+              ),
+              _headerAction(
+                label: 'DIVIDIR',
+                tooltip: 'Dividir pagamento',
+                icon: Icons.call_split,
                 onPressed: _working ||
                         _pendingPayment != null ||
                         !_checkout.canRecordPayment
                     ? null
                     : _showSplitSelector,
-                icon: const Icon(Icons.call_split, size: 18),
-                label: const Text('DIVIDIR'),
               ),
               PopupMenuButton<_PaymentAction>(
                 enabled: !_working,
@@ -581,14 +600,6 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         child:
             Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           PaymentBalanceCard(checkout: _checkout),
-          if (!_checkout.canEditFinancials)
-            const Padding(
-              padding: EdgeInsets.only(top: 6),
-              child: Text(
-                  'Edição financeira bloqueada após o primeiro pagamento.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 12)),
-            ),
           const SizedBox(height: 10),
           const Text('FORMAS DE PAGAMENTO',
               style: TextStyle(fontWeight: FontWeight.w900)),
@@ -630,10 +641,6 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       ..._pix.map((method) => method.id),
       ...credit.map((method) => method.id),
     };
-    final cards = _cards
-        .where((method) => !groupedIds.contains(method.id))
-        .toList(growable: false);
-    groupedIds.addAll(cards.map((method) => method.id));
     final others = _methods
         .where((method) => !groupedIds.contains(method.id))
         .toList(growable: false);
@@ -643,29 +650,34 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       if (debit.isNotEmpty) _groupTile('Débito', Icons.credit_card, debit),
       if (_pix.isNotEmpty) _groupTile('PIX', Icons.qr_code_2, _pix),
       if (credit.isNotEmpty) _groupTile('Crédito', Icons.credit_card, credit),
-      if (cards.isNotEmpty) _groupTile('Cartão', Icons.credit_card, cards),
       if (others.isNotEmpty) _groupTile('Outros', Icons.more_horiz, others),
     ];
-    final rows = (tiles.length / 2).ceil().clamp(1, 3).toDouble();
+    const extent = 56.0;
+    const spacing = 8.0;
+    final rows = (tiles.length / 2).ceil().clamp(1, 3);
     return SizedBox(
-      height: rows * 76,
-      child: GridView.count(
-        crossAxisCount: 2,
-        mainAxisSpacing: 8,
-        crossAxisSpacing: 8,
+      height: rows * extent + (rows - 1) * spacing,
+      child: GridView.builder(
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 2,
+          mainAxisExtent: extent,
+          mainAxisSpacing: spacing,
+          crossAxisSpacing: spacing,
+        ),
         physics: const NeverScrollableScrollPhysics(),
-        children: [
-          for (final tile in tiles)
-            PaymentMethodButton(
-              label: tile.label,
-              icon: tile.icon,
-              onTap: _working ||
-                      _pendingPayment != null ||
-                      !_checkout.canRecordPayment
-                  ? null
-                  : tile.onTap,
-            ),
-        ],
+        itemCount: tiles.length,
+        itemBuilder: (_, index) {
+          final tile = tiles[index];
+          return PaymentMethodButton(
+            label: tile.label,
+            icon: tile.icon,
+            onTap: _working ||
+                    _pendingPayment != null ||
+                    !_checkout.canRecordPayment
+                ? null
+                : tile.onTap,
+          );
+        },
       ),
     );
   }

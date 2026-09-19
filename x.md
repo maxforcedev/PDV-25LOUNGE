@@ -1,779 +1,745 @@
-ALTERE A UI/UX DA TELA DE PAGAMENTO DA VENDA RÁPIDA DO CORE POS.
+CORRIJA SOMENTE OS PONTOS AINDA PENDENTES DA VENDA RÁPIDA / PAGAMENTOS.
 
 PARTA DO HEAD ATUAL.
 
-IMPORTANTE: ESTA MISSÃO É PRINCIPALMENTE DE UI/UX E NAVEGAÇÃO.
+NÃO refaça o módulo.
+NÃO mexa no motor financeiro.
+NÃO mexa na idempotência.
+NÃO mexa em Mesa ainda.
+NÃO mexa em Comanda legado.
+NÃO mexa em Stone/Cielo/PagBank.
+NÃO criar novos testes automatizados — o teste funcional será feito manualmente.
 
-NÃO alterar a lógica financeira já existente.
-
-NÃO alterar:
-
-* idempotência;
-* ledger de pagamentos;
-* estornos;
-* recovery financeiro;
-* regras de pagamento;
-* backend financeiro;
-* Stone;
-* Cielo;
-* PagBank;
-* Mesa/Comanda;
-* estoque;
-* impressão.
-
-A ideia é REORGANIZAR a interface existente, reutilizando o motor atual.
+A missão é corrigir os bugs de UI/UX e NAVEGAÇÃO que ainda existem.
 
 ==================================================
 
-1. OBJETIVO PRINCIPAL
+1. REMOVER TEXTO "EDIÇÃO FINANCEIRA BLOQUEADA"
    ==================================================
 
-A tela de pagamento atual exige rolagem vertical para encontrar:
+Hoje, depois do primeiro pagamento, aparece na tela:
 
-* formas de pagamento;
-* pagamentos realizados;
-* total;
-* saldo restante;
-* finalizar.
+`Edição financeira bloqueada após o primeiro pagamento.`
 
-ISSO NÃO É BOM PARA UM POS.
+REMOVER ESSA MENSAGEM DA UI.
 
-Quero uma tela de pagamento OPERACIONAL, FIXA e COMPACTA.
+IMPORTANTE:
 
-Na utilização normal, tudo importante deve estar disponível SEM PRECISAR DESCER O DEDO.
+NÃO remover a proteção financeira.
 
-A referência conceitual é:
+A regra atual do backend é correta:
+
+após existir pagamento aplicado:
+
+`can_edit_financials = false`
+
+Continuar respeitando isso.
+
+O que deve desaparecer é SOMENTE o texto ocupando espaço.
+
+As ações financeiras que não puderem mais ser executadas devem:
+
+* ficar desabilitadas;
+* ou não estar disponíveis conforme a UX definida;
+
+sem exibir aquela mensagem permanentemente.
+
+==================================================
+2. DIMINUIR O CARD FALTA / PAGO
+===============================
+
+Hoje o bloco:
+
+`FALTA`
+`R$ XX,XX`
+
+está grande demais para uma tela operacional de POS.
+
+Quero algo bem mais compacto.
+
+Exemplo conceitual:
 
 ```text
-┌──────────────────────────────────┐
-│ ← PAGAMENTO      Cliente Dividir ⋮│
-├──────────────────────────────────┤
-│                                  │
-│             FALTA                │
-│           R$ 33,00               │
-│                                  │
-├────────────────┬─────────────────┤
-│    DINHEIRO    │     DÉBITO      │
-├────────────────┼─────────────────┤
-│      PIX       │     CRÉDITO     │
-├──────────────────────────────────┤
-│ PAGAMENTOS REALIZADOS            │
-│ ✓ Dinheiro             R$ 10,00  │
-│ ✓ Pix                  R$ 15,00  │
-├──────────────────────────────────┤
-│ TOTAL                 R$ 47,00   │
-│ PAGO                  R$ 25,00   │
-│ FALTA                 R$ 22,00   │
-├──────────────────────────────────┤
-│       [ FINALIZAR VENDA ]        │
-└──────────────────────────────────┘
+FALTA            R$ 33,00
 ```
 
-NÃO copie literalmente esse desenho.
-
-Adapte para a identidade visual atual do CORE POS.
-
-==================================================
-2. TELA NÃO DEVE DEPENDER DE SCROLL VERTICAL
-============================================
-
-A tela principal de pagamento deve ser montada pensando principalmente em:
-
-* Stone/POS Android;
-* celulares;
-* tablets pequenos;
-* uso rápido no balcão.
-
-No estado normal, NÃO deve ser necessário usar `ListView` vertical para acessar as funções principais.
-
-Priorizar:
-
-* `Column`;
-* áreas com tamanhos controlados;
-* `Expanded`;
-* `Flexible`;
-* layout responsivo;
-* footer fixo.
-
-Se houver conteúdo excepcionalmente grande, como muitos pagamentos realizados, somente a SUBÁREA correspondente poderá possuir scroll interno.
-
-A PÁGINA INTEIRA não deve ficar rolando.
-
-==================================================
-3. HEADER COMPACTO
-==================
-
-Topo fixo e baixo.
-
-Esquerda:
-
-`← PAGAMENTO`
-
-Direita:
-
-* Cliente
-* Dividir
-* menu `⋮`
-
-Pode usar ícones + labels compactas conforme espaço disponível.
-
-Não criar header gigante.
-
-==================================================
-4. CLIENTE
-==========
-
-A ação CLIENTE continua utilizando o seletor/cadastro já existente.
-
-Não duplicar lógica.
-
-Somente reposicionar essa ação no header.
-
-Se já houver cliente:
-
-mostrar de forma compacta que existe um cliente selecionado.
-
-Exemplo:
-
-`👤 João`
-
-==================================================
-5. DIVIDIR
-==========
-
-A ação DIVIDIR deve concentrar as funções existentes de divisão.
-
-Ao tocar, abrir BottomSheet/Dialog compacto:
-
-```text
-DIVIDIR PAGAMENTO
-
-[ DIVIDIR IGUAL ]
-Dividir o saldo entre pessoas.
-
-[ PAGAR POR ITENS ]
-Escolher quais itens serão pagos.
-```
-
-Reutilizar as funcionalidades já existentes.
-
-NÃO reimplementar o cálculo.
-
-==================================================
-6. MENU DE AÇÕES SECUNDÁRIAS
-============================
-
-Usar `⋮` para ações que não precisam ocupar espaço permanente.
-
-Exemplos conforme permissões/capabilities existentes:
-
-* aplicar desconto;
-* editar/remover cliente;
-* remover taxa de serviço;
-* entrada de caixa;
-* sangria/retirada;
-* cancelar venda.
-
-NÃO inventar permissões novas.
-
-Respeitar o RBAC atual.
-
-Se uma ação não estiver implementada/permitida nesse fluxo, não criar artificialmente só para preencher menu.
-
-==================================================
-7. DESTAQUE PRINCIPAL = SALDO RESTANTE
-======================================
-
-O maior destaque visual da tela deve ser o estado financeiro atual.
-
-Enquanto houver saldo:
+ou:
 
 ```text
 FALTA
 R$ 33,00
 ```
 
-Quando saldo for zero:
+mas com altura bem menor que a atual.
+
+Reduzir:
+
+* padding vertical;
+* tamanho exagerado da tipografia;
+* espaço desperdiçado.
+
+Continuar deixando o saldo como destaque visual.
+
+Quando quitado:
 
 ```text
-PAGO
-R$ 47,00
+PAGO             R$ 47,00
 ```
 
-Usar `remainingAmount` e valores oficiais do checkout.
-
-Não calcular saldo paralelo na UI.
+NÃO perder destaque, apenas ficar compacto.
 
 ==================================================
-8. FORMAS DE PAGAMENTO EM GRID FIXO
-===================================
+3. DIMINUIR OS BOTÕES DE PAGAMENTO
+==================================
 
-Mostrar os meios principais em grid 2x2:
+Os botões de:
 
-```text
-DINHEIRO      DÉBITO
+* DINHEIRO;
+* DÉBITO;
+* PIX;
+* CRÉDITO;
 
-PIX           CRÉDITO
+estão grandes demais.
+
+Diminuir altura e espaçamento para caber confortavelmente na tela da maquininha.
+
+Eles ainda devem continuar:
+
+* touch-friendly;
+* fáceis de identificar;
+* com ícone;
+* com label.
+
+Mas não precisam ocupar blocos enormes.
+
+Objetivo aproximado:
+
+2 colunas x 2 linhas compactas.
+
+==================================================
+4. CORRIGIR O GRID DE PAGAMENTO
+===============================
+
+BUG CONFIRMADO.
+
+Hoje existe algo equivalente a:
+
+```dart
+SizedBox(
+  height: rows * 76,
+  child: GridView.count(
+    crossAxisCount: 2,
+    physics: NeverScrollableScrollPhysics(),
+  ),
+)
 ```
 
-Cada botão deve ser:
+O problema é que `GridView.count` usa células com proporção padrão e a altura reservada não corresponde à altura real.
 
-* grande o suficiente para toque;
-* visualmente identificável;
-* rápido de localizar;
-* consistente com a paleta CORE.
+Na prática a primeira linha aparece:
 
-Usar os `paymentMethods` atuais.
+```text
+DINHEIRO     DÉBITO
+```
 
-Não hardcodar IDs.
+e a segunda:
 
-Classificar usando os atributos existentes:
+```text
+PIX          CRÉDITO
+```
+
+pode ficar cortada.
+
+Isso explica o comportamento observado de só aparecer:
+
+* Dinheiro;
+* Débito.
+
+CORRIGIR ESTRUTURALMENTE.
+
+NÃO apenas aumentar o `SizedBox` arbitrariamente.
+
+Use uma solução com altura explícita das células, como:
+
+* `SliverGridDelegateWithFixedCrossAxisCount` + `mainAxisExtent`;
+* ou `Row/Column` para esse grid pequeno.
+
+O resultado visual precisa ser:
+
+```text
+[ DINHEIRO ] [ DÉBITO  ]
+[ PIX      ] [ CRÉDITO ]
+```
+
+todos completamente visíveis ao mesmo tempo.
+
+==================================================
+5. FORMAS DE PAGAMENTO DEVEM VIR DA API
+=======================================
+
+NÃO hardcodar IDs nem assumir que existem apenas quatro métodos.
+
+O endpoint atual:
+
+`sales/checkout-options/`
+
+já retorna:
+
+`payment_methods`
+
+com TODOS os `PaymentMethod` ativos da empresa.
+
+Continuar usando a API como fonte de verdade.
+
+Os principais devem ser agrupados visualmente por:
 
 * `kind`;
-* `visualGroup`;
+* `visual_group`;
 * `code`.
 
-Se houver outros meios:
+Exibir:
 
-mostrar botão:
+* Dinheiro;
+* Débito;
+* PIX;
+* Crédito.
+
+Se existirem outros métodos ativos, como:
+
+* VA;
+* VR;
+* vouchers;
+* métodos customizados;
+
+mostrar:
 
 `OUTROS`
 
-e abrir uma lista/modal com os demais.
+e dentro listar TODAS as demais formas retornadas pela API.
+
+Nenhum método ativo recebido pela API pode simplesmente desaparecer da interface.
 
 ==================================================
-9. NÃO ESCONDER O FLUXO DE PAGAMENTO PARCIAL
-============================================
+6. NÃO CONFUNDIR MÉTODO AUSENTE NA API COM BUG DE UI
+====================================================
 
-Depois de aplicar um pagamento:
+O frontend deve renderizar tudo que recebeu.
 
-o usuário deve permanecer na mesma tela.
+Se a API retornar:
+
+4 métodos
+
+a UI deve disponibilizar os 4.
+
+Se a API retornar:
+
+2 métodos
+
+a UI deve disponibilizar os 2.
+
+NÃO inventar método no Flutter.
+
+Mas revisar o backend atual porque existe:
+
+`ensure_default_payment_methods()`
+
+e os métodos padrão são:
+
+* cash;
+* pix;
+* credit_card;
+* debit_card.
+
+Se um método padrão já existir como INATIVO, a função atual aparentemente não o reativa.
+
+NÃO faça alteração destrutiva automaticamente sem entender o domínio.
+
+Mas informe no checkpoint se:
+
+* os quatro defaults estão garantidos como ativos;
+  OU
+* apenas são criados quando inexistentes e um método inativo permanece inativo.
+
+Não mascarar isso no Flutter.
+
+==================================================
+7. HEADER SUPERIOR PRECISA SER SEMPRE ESTÁVEL
+=============================================
+
+BUG OBSERVADO:
+
+o menu superior da tela de pagamento às vezes aparece completo e às vezes muda/desaparece.
+
+A causa atual inclui ações condicionais.
+
+Especialmente:
+
+`CLIENTE`
+
+só aparece quando:
+
+`canEditFinancials == true`.
+
+Quando ocorre o primeiro pagamento:
+
+`canEditFinancials = false`
+
+e o botão desaparece.
+
+NÃO QUERO O HEADER MUDANDO DE ESTRUTURA.
+
+O header deve manter sempre o mesmo layout.
+
+Em tela estreita:
+
+```text
+← PAGAMENTO                👤   ⇄   ⋮
+```
+
+Ações:
+
+* Cliente;
+* Dividir;
+* menu.
+
+Se uma ação estiver proibida pelo estado atual:
+
+MANTER o ícone no mesmo lugar, porém desabilitado quando necessário.
+
+Não remover o elemento e fazer o AppBar mudar de tamanho/disposição.
+
+==================================================
+8. HEADER RESPONSIVO
+====================
+
+Na maquininha/celular:
+
+usar prioritariamente ÍCONES.
 
 Exemplo:
 
-Total: R$ 47,00
-
-Dinheiro: R$ 10,00
-
-Então a tela imediatamente muda para:
-
 ```text
-FALTA
-R$ 37,00
+← PAGAMENTO        👤  ⇄  ⋮
 ```
 
-e permite escolher outro meio.
+Com:
 
-Isso já existe no motor atual.
+* tooltip;
+* semantics.
 
-Somente melhorar a apresentação.
-
-==================================================
-10. PAGAMENTOS REALIZADOS
-=========================
-
-Criar uma área compacta:
-
-`PAGAMENTOS REALIZADOS`
-
-Mostrar os pagamentos aplicados.
-
-Exemplo:
+Em telas maiores pode usar:
 
 ```text
-✓ Dinheiro               R$ 10,00
-  Confirmado                  ↩
-
-✓ Pix                    R$ 15,00
-  Confirmado                  ↩
+← PAGAMENTO    👤 CLIENTE    ⇄ DIVIDIR    ⋮
 ```
 
-O botão/ícone de estorno deve permanecer acessível quando permitido.
+Usar `LayoutBuilder` ou largura disponível.
 
-NÃO apagar pagamentos estornados da história.
+Não deixar:
 
-Pagamento estornado deve aparecer como:
+`PAGAMENTO | CLIENTE | DIVIDIR | ⋮`
 
-`Estornado`
-
-e não desaparecer.
+espremido numa tela pequena.
 
 ==================================================
-11. MUITOS PAGAMENTOS
-=====================
+9. CANCELAR VENDA NÃO PODE VOLTAR PARA CARRINHO
+===============================================
 
-Se houver muitos pagamentos, NÃO aumentar infinitamente a tela.
+BUG CONFIRMADO.
 
-A área `PAGAMENTOS REALIZADOS` deve ter altura máxima.
-
-Se ultrapassar:
-
-scroll somente nessa área
-
-OU
-
-mostrar os mais recentes +:
-
-`VER TODOS (N)`
-
-e abrir modal/bottom sheet.
-
-Escolha a solução mais coerente com a estrutura atual.
-
-A tela principal continua fixa.
-
-==================================================
-12. RESUMO INFERIOR COMPACTO
-============================
-
-No rodapé da área de conteúdo sempre mostrar pelo menos:
+No mobile, a pilha atual pode ficar:
 
 ```text
-Total       R$ XX,XX
-Pago        R$ XX,XX
-Falta       R$ XX,XX
-```
-
-Usar os valores oficiais.
-
-Não recalcular.
-
-Se for necessário mostrar:
-
-* subtotal;
-* promoções;
-* desconto;
-* taxa de serviço;
-
-não ocupar a tela inteira.
-
-Criar uma expansão compacta:
-
-`VER DETALHES`
-
-ou seta.
-
-Exemplo recolhido:
-
-```text
-TOTAL    R$ 47,00
-PAGO     R$ 25,00
-FALTA    R$ 22,00          ⌃
-```
-
-Expandido:
-
-```text
-Subtotal                 R$ 50,00
-Promoções               - R$ 3,00
-Desconto                - R$ 2,00
-Taxa de serviço           R$ 2,00
-
-Total                     R$ 47,00
-Pago                      R$ 25,00
-Falta                     R$ 22,00
-```
-
-==================================================
-13. CTA PRINCIPAL FIXO
-======================
-
-No final da tela deve existir área fixa para ação principal.
-
-Enquanto ainda houver saldo:
-
-o operador continua escolhendo pagamentos.
-
-Quando:
-
-`remainingAmount == 0`
-
-mostrar com destaque:
-
-`FINALIZAR VENDA`
-
-Esse botão deve permanecer visível sem necessidade de scroll.
-
-==================================================
-14. VALOR RECEBIDO / TROCO
-==========================
-
-Dinheiro continua abrindo o fluxo existente de:
-
-* valor do pagamento;
-* valor recebido;
-* troco.
-
-Não alterar regras.
-
-Melhorar somente apresentação se necessário para combinar com a nova UI.
-
-Depois da confirmação:
-
-voltar para a TELA FIXA DE PAGAMENTO atualizada.
-
-==================================================
-15. CRÉDITO / DÉBITO / PIX
-==========================
-
-Hoje podem ser pagamentos manuais.
-
-Manter exatamente o comportamento atual.
-
-A UI deve ficar preparada para futuramente o mesmo botão chamar:
-
-* Stone;
-* Cielo;
-* outro provider;
-
-sem redesenhar a tela.
-
-NÃO implementar adquirente nesta missão.
-
-==================================================
-16. STATUS SEM TEXTO TÉCNICO
-============================
-
-Continuar utilizando a apresentação em português já adicionada.
-
-Nunca exibir:
-
-* applied;
-* reversed;
-* cancelled;
-* editing;
-* paid;
-* partial;
-* finalized.
-
-Mostrar labels amigáveis:
-
-* Confirmado;
-* Estornado;
-* Cancelada;
-* Em andamento;
-* Pago;
-* Pagamento parcial;
-* Finalizada.
-
-==================================================
-17. QUANTIDADES
-===============
-
-Continuar usando o formatter visual já criado.
-
-Não voltar a exibir:
-
-`1.000`
-
-quando é:
-
-`1`
-
-ou:
-
-`1.500`
-
-quando deve aparecer:
-
-`1,5`.
-
-==================================================
-18. CORRIGIR VALIDAÇÃO DE CASAS DECIMAIS
-========================================
-
-Existe uma validação incorreta encontrada anteriormente.
-
-Trechos semelhantes a:
-
-```dart
-text.split(RegExp(r'[,.]')).last.length <= 3
-```
-
-tratam:
-
-`1000`
-
-como se tivesse 4 casas decimais.
-
-CORRIGIR.
-
-A validação deve limitar somente a PARTE DECIMAL quando realmente existir separador.
-
-Exemplos:
-
-```text
-1        válido
-100      válido
-1000     válido
-100000   válido dentro dos limites de domínio
-
-1,1      válido
-1,12     válido
-1,123    válido
-1,1234   inválido
-```
-
-Corrigir onde isso existir na Venda Rápida/componentes compartilhados.
-
-==================================================
-19. APAGAR CARRINHO — NAVEGAÇÃO OBRIGATÓRIA
-===========================================
-
-BUG ATUAL:
-
-ao apagar o carrinho, a interface pode continuar na página de carrinho vazia.
-
-NÃO QUERO ISSO.
-
-Fluxo obrigatório:
-
-```text
-Carrinho
+CATÁLOGO
 ↓
-APAGAR CARRINHO
+CARRINHO
 ↓
-confirma
+PAGAMENTO
+```
+
+Ao cancelar:
+
+```text
+Navigator.pop()
+```
+
+faz:
+
+```text
+PAGAMENTO
 ↓
-backend confirma CANCELLED
+CARRINHO
+```
+
+ISSO ESTÁ ERRADO.
+
+Resultado obrigatório após cancelamento confirmado:
+
+```text
+PAGAMENTO
+↓
+cancelamento backend confirmado
+↓
+checkout CANCELLED
 ↓
 storage limpo
 ↓
 draft limpo
 ↓
-CATÁLOGO DA VENDA RÁPIDA
+CATÁLOGO
 ```
 
-Após apagar:
-
-* não permanecer no carrinho;
-* não abrir Pagamento;
-* não mostrar tela vazia de carrinho.
-
-O destino deve ser o CATÁLOGO.
+Não voltar para Carrinho.
 
 ==================================================
-20. NOVA VENDA — NAVEGAÇÃO OBRIGATÓRIA
-======================================
+10. NOVA VENDA NÃO PODE VOLTAR PARA CARRINHO
+============================================
 
-BUG ATUAL:
+BUG CONFIRMADO.
 
-na tela:
+Hoje pode existir:
 
-`VENDA CONCLUÍDA`
+```text
+CATÁLOGO
+↓
+CARRINHO
+↓
+PAGAMENTO
+↓
+VENDA CONCLUÍDA
+```
 
-ao tocar:
+E `NOVA VENDA` faz apenas:
 
-`NOVA VENDA`
+```dart
+Navigator.pop()
+```
 
-o sistema ainda pode retornar para a página do carrinho.
+voltando ao Carrinho.
 
-NÃO QUERO.
+CORRIGIR.
 
-Fluxo obrigatório:
+Resultado obrigatório:
 
 ```text
 VENDA CONCLUÍDA
 ↓
 NOVA VENDA
 ↓
-CATÁLOGO DA VENDA RÁPIDA
+CATÁLOGO
 ```
 
-Estado:
+Com:
 
 * carrinho vazio;
 * checkout anterior finalizado;
-* storage do checkout anterior limpo;
-* sem cliente antigo;
-* sem desconto antigo;
-* sem Pagamento aberto;
-* catálogo visível;
-* pronto para adicionar novo produto.
+* storage limpo;
+* cliente zerado;
+* desconto zerado;
+* nenhuma tela de pagamento anterior;
+* catálogo pronto para uso.
 
 ==================================================
-21. VOLTAR NA TELA VENDA CONCLUÍDA
-==================================
+11. BACK DA VENDA CONCLUÍDA TAMBÉM VAI PARA CATÁLOGO
+====================================================
 
-O botão físico/back do Android nessa tela também não deve levar para o carrinho antigo/vazio.
+O botão físico/back do Android na tela:
 
-Deve retornar ao CATÁLOGO limpo.
+`VENDA CONCLUÍDA`
 
-`NOVA VENDA` e `BACK` após conclusão possuem o mesmo destino operacional:
+deve ter o mesmo destino operacional de:
+
+`NOVA VENDA`.
+
+Ou seja:
 
 CATÁLOGO.
 
+Nunca:
+
+* Carrinho;
+* Pagamento;
+* checkout antigo.
+
 ==================================================
-22. ESTADO PRINCIPAL DO MÓDULO
-==============================
+12. CORRIGIR A NAVEGAÇÃO ESTRUTURALMENTE
+========================================
 
-Definir claramente:
+NÃO quero uma sequência frágil de vários:
 
-O estado base da Venda Rápida é:
+`Navigator.pop()`
 
-`CATÁLOGO`
+ou `popUntil()` tentando adivinhar rotas.
 
-Não:
+O problema nasce porque no mobile o Pagamento é aberto enquanto o Carrinho continua abaixo dele.
 
-`CARRINHO`.
+A arquitetura deve ficar coerente.
 
-Carrinho é uma visualização temporária da venda atual.
+Uma solução aceitável:
+
+```text
+CATÁLOGO
+↓
+CARRINHO
+↓
+IR PARA PAGAMENTO
+↓
+FECHA CARRINHO
+↓
+ABRE PAGAMENTO
+```
+
+Assim a pilha fica:
+
+```text
+CATÁLOGO
+↓
+PAGAMENTO
+```
+
+E então:
+
+```text
+Cancelar
+→ CATÁLOGO
+```
+
+e:
+
+```text
+Finalizar
+→ Venda concluída
+→ Nova venda
+→ CATÁLOGO
+```
+
+automaticamente.
+
+Escolha a implementação mais segura para a arquitetura atual, mas corrija A CAUSA da pilha errada.
+
+==================================================
+13. APAGAR CARRINHO CONTINUA INDO PARA CATÁLOGO
+===============================================
+
+A correção atual de:
+
+```text
+CARRINHO
+→ APAGAR
+→ CANCELLED
+→ CATÁLOGO
+```
+
+deve permanecer.
+
+NÃO regredir isso ao alterar a navegação.
+
+==================================================
+14. O ESTADO BASE DA VENDA RÁPIDA É O CATÁLOGO
+==============================================
+
+Regra definitiva:
+
+```text
+entrar na Venda Rápida
+→ CATÁLOGO
+
+apagar carrinho
+→ CATÁLOGO
+
+cancelar venda
+→ CATÁLOGO
+
+finalizar + Nova Venda
+→ CATÁLOGO
+
+Back após Venda Concluída
+→ CATÁLOGO
+```
+
+Carrinho é uma subtela temporária.
+
+Não é destino pós-operação.
+
+==================================================
+15. TELA PRINCIPAL CONTINUA SEM SCROLL GLOBAL
+=============================================
+
+Preservar o conceito da mudança anterior.
+
+A página principal de Pagamento NÃO deve voltar a usar scroll vertical global.
+
+Continuar com:
+
+* header;
+* saldo compacto;
+* grid compacto;
+* histórico;
+* resumo;
+* CTA.
+
+Somente o histórico pode ter scroll interno se necessário.
+
+==================================================
+16. PAGAMENTOS REALIZADOS
+=========================
+
+Manter a área compacta.
+
+Não deixar ela crescer infinitamente.
+
+Histórico pode usar:
+
+`Expanded + ListView`
+
+dentro da própria região.
+
+Continuar mostrando:
+
+* método;
+* valor;
+* status;
+* estorno.
+
+Não alterar ledger nem lógica de estorno.
+
+==================================================
+17. RESUMO
+==========
+
+Manter:
+
+* Total;
+* Pago;
+* Falta.
+
+Compactos.
+
+Detalhes adicionais continuam expansíveis.
+
+Não aumentar novamente a altura do rodapé.
+
+==================================================
+18. FINALIZAR VENDA
+===================
+
+Manter o botão:
+
+`FINALIZAR VENDA`
+
+fixo e acessível quando:
+
+`canFinalize == true`.
+
+Não precisa rolar.
+
+Não alterar a lógica de finalização/idempotência.
+
+==================================================
+19. PREPARAÇÃO PARA MESAS
+=========================
+
+NÃO implementar pagamentos de Mesa agora.
+
+Mas preservar os componentes:
+
+`shared_payment_widgets.dart`
+
+e evitar novos componentes específicos de QuickSale quando não for necessário.
+
+Estamos prestes a voltar para o novo módulo de Mesas.
+
+Mesa deverá usar OS MESMOS componentes visuais de pagamento.
 
 Portanto:
 
-```text
-entrada no módulo
-→ catálogo
+* PaymentMethodButton;
+* PaymentHistoryItem;
+* resumo;
+* saldo;
+* grid;
+* header visual;
 
-nova venda
-→ catálogo
+devem continuar reutilizáveis.
 
-apagar carrinho
-→ catálogo
-
-venda finalizada + nova venda
-→ catálogo
-```
+Não duplicar uma futura UI de pagamento para Mesa.
 
 ==================================================
-23. PREPARAR COMPONENTES PARA MESAS
-===================================
+20. NÃO ALTERAR
+===============
 
-IMPORTANTE.
+NÃO mexer em:
 
-Depois desta missão vamos voltar para o NOVO MÓDULO DE MESAS.
-
-A tela de pagamento de Mesa deve reutilizar OS MESMOS ELEMENTOS desta tela.
-
-Então NÃO crie widgets excessivamente específicos de QuickSale onde não for necessário.
-
-Extrair/reutilizar componentes visuais coerentes, por exemplo:
-
-* PaymentHeader
-* RemainingAmountCard
-* PaymentMethodGrid
-* PaymentHistory
-* PaymentHistoryItem
-* PaymentFinancialSummary
-* PaymentPrimaryAction
-* PaymentSplitSelector
-
-Os nomes exatos ficam a critério da arquitetura encontrada.
-
-NÃO refatorar todo motor agora.
-
-Mas deixe os COMPONENTES VISUAIS reutilizáveis.
+* idempotência;
+* payment attempts;
+* pending finalize;
+* recovery financeiro;
+* ledger;
+* reversal;
+* regras de pagamento;
+* backend financeiro além da análise pontual dos métodos ativos;
+* Mesa;
+* Comanda legado;
+* Stone;
+* Cielo;
+* PagBank;
+* fiscal;
+* impressão;
+* estoque.
 
 ==================================================
-24. IMPORTANTE SOBRE SHARED PAYMENT
-===================================
-
-Hoje existe:
-
-`SharedPaymentPage`
-
-Ela ainda é bastante ligada a:
-
-`QuickSaleCheckout`.
-
-NÃO precisa refatorar toda arquitetura para Mesa nesta missão.
-
-Mas:
-
-* não duplicar componentes;
-* não criar uma nova tela paralela;
-* manter os blocos visuais separados da regra específica da Venda Rápida quando possível.
-
-Na próxima etapa vamos adaptar esses mesmos componentes ao fluxo de Mesa.
-
-==================================================
-25. RESPONSIVIDADE
-==================
-
-Essa UI precisa funcionar principalmente em orientação/tela de POS.
-
-Usar `LayoutBuilder`/constraints conforme necessário.
-
-Em tela mais larga pode aproveitar espaço lateral.
-
-Em tela estreita deve continuar SEM scroll da página principal.
-
-Não usar tamanhos fixos absurdos que só funcionem no aparelho atual.
-
-==================================================
-26. IDENTIDADE VISUAL CORE
-==========================
-
-Manter identidade atual.
-
-Primary:
-
-`#3454D1`
-
-Não redesenhar o aplicativo inteiro.
-
-Usar:
-
-* surfaces claras;
-* bordas suaves;
-* hierarquia tipográfica forte;
-* botões touch-friendly;
-* espaçamento compacto;
-* estados semânticos existentes.
-
-Tela operacional, não dashboard administrativo.
-
-==================================================
-27. NÃO CRIAR TESTES AUTOMATIZADOS NOVOS
-========================================
-
-O teste funcional dessa UI será feito manualmente pelo proprietário do projeto.
-
-NÃO gastar esta missão criando novos testes Widget/integrados.
-
-Pode ajustar algum teste existente se a mudança estrutural quebrar compilação, mas NÃO criar nova bateria de testes.
-
-==================================================
-28. CHECKS
+21. TESTES
 ==========
 
-Executar somente o necessário para garantir integridade da alteração Flutter:
+NÃO criar novos testes automatizados nesta missão.
+
+O teste funcional será feito manualmente.
+
+Pode apenas corrigir testes existentes caso alguma mudança necessária faça um teste atual não compilar.
+
+==================================================
+22. CHECKS
+==========
+
+Executar:
 
 * `flutter analyze`
 * `git diff --check`
 
-NÃO rodar Android/Gradle.
-
-NÃO fazer alterações extras para perseguir problemas fora deste escopo.
+Não rodar Gradle/Android build.
 
 ==================================================
-29. CHECKPOINT FINAL
+23. CHECKPOINT FINAL
 ====================
 
-Ao terminar informar:
+Ao terminar informar objetivamente:
 
-1. arquivos alterados;
-2. como ficou o layout estático;
-3. como evitou scroll da página principal;
-4. como ficou o header;
-5. como ficou o card FALTA/PAGO;
-6. como ficou o grid de pagamentos;
-7. como ficou pagamentos realizados;
-8. como ficou resumo financeiro;
-9. como ficou CTA FINALIZAR VENDA;
-10. correção de `1000` na validação decimal;
-11. comportamento após APAGAR CARRINHO;
-12. comportamento após NOVA VENDA;
-13. comportamento do botão voltar após venda concluída;
-14. quais componentes visuais foram deixados reutilizáveis para Mesa;
-15. resultado do `flutter analyze`;
-16. resultado do `git diff --check`;
-17. resumo objetivo do diff.
+1. por que a mensagem "Edição financeira bloqueada" aparecia;
+2. confirmar que o texto foi removido sem remover a proteção;
+3. como reduziu FALTA/PAGO;
+4. como reduziu os botões;
+5. causa do PIX/Crédito não aparecerem;
+6. como o grid foi corrigido;
+7. quais métodos estão chegando da API;
+8. se os defaults inativos permanecem inativos ou são reativados;
+9. como ficou OUTROS;
+10. causa do header desaparecer/mudar;
+11. como tornou o header estável;
+12. comportamento do header em tela estreita;
+13. causa estrutural de Cancelar voltar para Carrinho;
+14. causa estrutural de Nova Venda voltar para Carrinho;
+15. como ficou a pilha de navegação;
+16. destino após Cancelar Venda;
+17. destino após Apagar Carrinho;
+18. destino após Nova Venda;
+19. destino do Back após Venda Concluída;
+20. confirmar que a tela principal continua sem scroll global;
+21. componentes preservados para futuro uso em Mesa;
+22. resultado do `flutter analyze`;
+23. resultado do `git diff --check`;
+24. arquivos alterados;
+25. resumo objetivo do diff.
 
 DEPOIS PARE.
 
-NÃO mexa em Mesa ainda.
-
-NÃO mexa no motor financeiro.
-
-NÃO mexa na idempotência.
+NÃO INICIE O MÓDULO DE MESAS AINDA.

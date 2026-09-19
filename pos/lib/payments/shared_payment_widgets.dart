@@ -29,15 +29,15 @@ class PaymentBalanceCard extends StatelessWidget {
         border: Border.all(color: color.withValues(alpha: .28)),
       ),
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 18),
-        child: Column(children: [
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 14),
+        child: Row(children: [
           Text(paid ? 'PAGO' : 'FALTA',
               style: TextStyle(color: color, fontWeight: FontWeight.w900)),
-          const SizedBox(height: 2),
+          const Spacer(),
           Text(formatMoney(amount),
               style: Theme.of(context)
                   .textTheme
-                  .headlineMedium
+                  .titleLarge
                   ?.copyWith(color: color, fontWeight: FontWeight.w900)),
         ]),
       ),
@@ -65,7 +65,7 @@ class PaymentMethodButton extends StatelessWidget {
           onTap: onTap,
           borderRadius: BorderRadius.circular(14),
           child: Ink(
-            height: 68,
+            height: 56,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(14),
               border: Border.all(color: const Color(0xffdbe4ff)),
