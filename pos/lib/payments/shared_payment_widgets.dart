@@ -88,17 +88,17 @@ class PaymentHistoryItem extends StatelessWidget {
   const PaymentHistoryItem({
     required this.payment,
     required this.reversed,
-    required this.canReverse,
     required this.working,
     required this.onReverse,
+    this.reversalReason,
     super.key,
   });
 
   final QuickSaleCheckoutPayment payment;
   final bool reversed;
-  final bool canReverse;
   final bool working;
   final VoidCallback onReverse;
+  final String? reversalReason;
 
   @override
   Widget build(BuildContext context) {
@@ -131,11 +131,17 @@ class PaymentHistoryItem extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                         fontSize: 12, color: Color(0xff64748b))),
+                if (reversalReason != null && reversalReason!.isNotEmpty)
+                  Text('Motivo: $reversalReason',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 12, color: Color(0xff64748b))),
               ]),
         ),
         Text(formatMoney(payment.amount),
             style: const TextStyle(fontWeight: FontWeight.w800)),
-        if (!reversed && canReverse)
+        if (!reversed)
           IconButton(
             onPressed: working ? null : onReverse,
             tooltip: 'Estornar',
@@ -144,6 +150,60 @@ class PaymentHistoryItem extends StatelessWidget {
       ]),
     );
   }
+}
+
+class PaymentReversalDialog extends StatefulWidget {
+  const PaymentReversalDialog({required this.payment, super.key});
+
+  final QuickSaleCheckoutPayment payment;
+
+  @override
+  State<PaymentReversalDialog> createState() => _PaymentReversalDialogState();
+}
+
+class _PaymentReversalDialogState extends State<PaymentReversalDialog> {
+  final _reason = TextEditingController();
+
+  @override
+  void dispose() {
+    _reason.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('ESTORNAR PAGAMENTO?'),
+        content: SizedBox(
+          width: 360,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(widget.payment.methodName,
+                  style: const TextStyle(fontWeight: FontWeight.w800)),
+            ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(formatMoney(widget.payment.amount)),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _reason,
+              maxLength: 1000,
+              maxLines: 2,
+              decoration: const InputDecoration(labelText: 'Motivo (opcional)'),
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('VOLTAR')),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(_reason.text.trim()),
+            child: const Text('ESTORNAR PAGAMENTO'),
+          ),
+        ],
+      );
 }
 
 class PaymentFinancialSummary extends StatelessWidget {

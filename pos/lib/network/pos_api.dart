@@ -223,6 +223,7 @@ abstract class PosApi {
   Future<List<QuickSaleAuthorizer>> quickSaleDiscountAuthorizers();
   Future<List<QuickSaleAuthorizer>> quickSaleItemDiscountAuthorizers();
   Future<List<QuickSaleAuthorizer>> quickSaleServiceFeeAuthorizers();
+  Future<List<QuickSaleAuthorizer>> quickSalePaymentReverseAuthorizers();
   Future<void> validateQuickSaleDiscountAuthorization({
     required String type,
     required Map<String, dynamic> authorization,
@@ -272,6 +273,7 @@ abstract class PosApi {
     required String paymentId,
     required String idempotencyKey,
     String reason = '',
+    Map<String, dynamic>? authorization,
   }) =>
       throw UnimplementedError();
   Future<QuickSaleCheckout> cancelQuickSaleCheckout({
@@ -1083,6 +1085,15 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   }
 
   @override
+  Future<List<QuickSaleAuthorizer>> quickSalePaymentReverseAuthorizers() async {
+    final payload = await _request('GET', 'sales/payment-reverse-authorizers/');
+    return (payload['authorizers'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(QuickSaleAuthorizer.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
   Future<void> validateQuickSaleDiscountAuthorization({
     required String type,
     required Map<String, dynamic> authorization,
@@ -1191,12 +1202,14 @@ class HttpPosApi implements PosApi, PosCredentialCache {
     required String paymentId,
     required String idempotencyKey,
     String reason = '',
+    Map<String, dynamic>? authorization,
   }) async =>
       QuickSaleCheckout.fromJson(await _request(
           'POST', 'sales/checkouts/$checkoutId/payments/$paymentId/reverse/',
           body: {
             'idempotency_key': idempotencyKey,
             'reason': reason,
+            if (authorization != null) 'authorization': authorization,
           }));
 
   @override

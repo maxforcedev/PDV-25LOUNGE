@@ -387,34 +387,81 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
           {List<QuickSalePaymentMethod>? methods}) =>
       showModalBottomSheet<QuickSalePaymentMethod>(
         context: context,
+        isScrollControlled: true,
         builder: (context) => SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(title,
-                      style: Theme.of(context)
-                          .textTheme
-                          .titleLarge
-                          ?.copyWith(fontWeight: FontWeight.w900)),
-                  const SizedBox(height: 12),
-                  for (final method in methods ?? _methods)
-                    ListTile(
-                      leading: Icon(_icon(method)),
-                      title: Text(method.name),
-                      onTap: () => Navigator.pop(context, method),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+                maxHeight: MediaQuery.sizeOf(context).height * .7),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(title,
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleLarge
+                            ?.copyWith(fontWeight: FontWeight.w900)),
+                    const SizedBox(height: 12),
+                    Expanded(
+                      child: ListView(
+                        children: [
+                          for (final method in methods ?? _methods)
+                            ListTile(
+                              leading: Icon(_icon(method)),
+                              title: Text(method.name),
+                              onTap: () => Navigator.pop(context, method),
+                            ),
+                        ],
+                      ),
                     ),
-                ]),
+                  ]),
+            ),
           ),
         ),
       );
 
   Future<void> _reverse(QuickSaleCheckoutPayment payment) async {
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (_) => PaymentReversalDialog(payment: payment),
+    );
+    if (reason == null || !mounted) return;
+    QuickSaleAuthorization? authorization;
+    final canReverseDirectly = widget.controller.bootstrapSnapshot?.permissions
+            .contains('sales.payments.reverse') ??
+        false;
+    if (!canReverseDirectly) {
+      final authorizers =
+          await widget.controller.quickSalePaymentReverseAuthorizers();
+      if (!mounted || authorizers == null) return;
+      if (authorizers.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content:
+              Text('Nenhum autorizador elegível está disponível nesta filial.'),
+        ));
+        return;
+      }
+      authorization = await showDialog<QuickSaleAuthorization>(
+        context: context,
+        builder: (_) => SharedAuthorizationDialog(
+          authorizers: authorizers,
+          onAuthorize: (value) =>
+              widget.controller.validateQuickSaleDiscountAuthorization(
+            type: 'payment_reverse',
+            authorization: value,
+          ),
+        ),
+      );
+      if (authorization == null || !mounted) return;
+    }
     setState(() => _working = true);
     final updated = await widget.controller.reverseQuickSalePayment(
-        checkoutId: _checkout.id, paymentId: payment.id);
+      checkoutId: _checkout.id,
+      paymentId: payment.id,
+      reason: reason,
+      authorization: authorization,
+    );
     if (mounted) setState(() => _working = false);
     if (updated != null && mounted) _replaceCheckout(updated);
   }
@@ -726,9 +773,9 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         return PaymentHistoryItem(
           payment: payment,
           reversed: _checkout.hasReversalFor(payment.id),
-          canReverse: _checkout.canReversePayment,
           working: _working,
           onReverse: () => _reverse(payment),
+          reversalReason: _checkout.reversalFor(payment.id)?.reversalReason,
         );
       },
     );

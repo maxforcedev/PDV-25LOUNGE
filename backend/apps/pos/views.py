@@ -1502,6 +1502,16 @@ class POSServiceFeeAuthorizersView(POSQuickSaleView):
         })
 
 
+class POSPaymentReverseAuthorizersView(POSQuickSaleView):
+    def get(self, request):
+        device, _, permissions, _ = self.context(request)
+        if 'sales.create' not in permissions:
+            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
+        return Response({
+            'authorizers': _authorizer_options(device.branch, 'sales.payments.reverse'),
+        })
+
+
 class POSDiscountAuthorizationValidationView(POSQuickSaleView):
     def post(self, request):
         device, operator, permissions, _ = self.context(request)
@@ -1514,6 +1524,7 @@ class POSDiscountAuthorizationValidationView(POSQuickSaleView):
             'sale': 'sales.apply_discount',
             'item': 'sales.apply_item_discount',
             'service_fee': 'sales.waive_service_fee',
+            'payment_reverse': 'sales.payments.reverse',
         }[data['type']]
         try:
             validate_discount_authorization(
@@ -1825,17 +1836,35 @@ class POSQuickCheckoutPaymentReverseView(POSQuickCheckoutView):
     def post(self, request, checkout_id, payment_id):
         device, operator, permissions, operator_session = self.context(request)
         self._require(permissions, 'sales.create', 'Você não possui permissão para realizar vendas nesta filial.')
-        self._require(permissions, 'sales.payments.reverse', 'Você não possui permissão para estornar pagamentos.')
         serializer = POSQuickCheckoutReverseSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        authorizer = operator
+        delegated = 'sales.payments.reverse' not in permissions
+        if delegated:
+            try:
+                authorizer = validate_discount_authorization(
+                    device.branch, data.get('authorization'),
+                    permission_code='sales.payments.reverse', authorization_field='authorization',
+                    allow_pos_only=True, pos_device=device, requester=operator,
+                    device_validated=True,
+                )
+            except DjangoValidationError as error:
+                messages = error.message_dict.get('authorization', error.messages)
+                raise DomainValidationError(
+                    code='payment_reverse_authorization_invalid', message=messages[0],
+                )
         payment = get_object_or_404(
             QuickSalePayment.objects.filter(checkout=self._checkout(device, operator, checkout_id)), pk=payment_id,
         )
         try:
             _reversal, replayed = reverse_quick_checkout_payment(
-                payment=payment, user=operator, reason=serializer.validated_data['reason'],
-                idempotency_key=serializer.validated_data['idempotency_key'],
-                audit_metadata=self.audit_metadata(device, operator_session),
+                payment=payment, user=operator, authorized_by=authorizer, reason=data['reason'],
+                idempotency_key=data['idempotency_key'], audit_metadata={
+                    **self.audit_metadata(device, operator_session),
+                    'authorization_mode': 'delegated' if delegated else 'direct',
+                    'authorizer_user_id': authorizer.pk,
+                },
             )
         except QuickCheckoutConflict as error:
             _quick_checkout_conflict(error)

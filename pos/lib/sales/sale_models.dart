@@ -531,6 +531,13 @@ class QuickSaleCheckout {
 
   bool hasReversalFor(String paymentId) =>
       payments.any((payment) => payment.reversalOf == paymentId);
+
+  QuickSaleCheckoutPayment? reversalFor(String paymentId) {
+    for (final payment in payments) {
+      if (payment.reversalOf == paymentId) return payment;
+    }
+    return null;
+  }
 }
 
 class QuickSaleCheckoutItem {
@@ -615,7 +622,8 @@ class QuickSaleCheckoutPayment {
       this.receivedAmount,
       this.changeAmount,
       this.idempotencyKey,
-      this.reversalOf});
+      this.reversalOf,
+      this.reversalReason});
   factory QuickSaleCheckoutPayment.fromJson(Map<String, dynamic> json) =>
       QuickSaleCheckoutPayment(
           id: json['id'] as String,
@@ -625,7 +633,8 @@ class QuickSaleCheckoutPayment {
           receivedAmount: json['received_amount'] as String?,
           changeAmount: json['change_amount'] as String?,
           idempotencyKey: json['idempotency_key'] as String?,
-          reversalOf: json['reversal_of'] as String?);
+          reversalOf: json['reversal_of'] as String?,
+          reversalReason: json['reversal_reason'] as String?);
   final String id;
   final String methodName;
   final String amount;
@@ -634,6 +643,7 @@ class QuickSaleCheckoutPayment {
   final String? changeAmount;
   final String? idempotencyKey;
   final String? reversalOf;
+  final String? reversalReason;
   bool get isReversal => reversalOf != null || status == 'reversed';
 }
 

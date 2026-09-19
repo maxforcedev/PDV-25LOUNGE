@@ -462,7 +462,7 @@ def record_quick_checkout_payment(*, checkout, user, payment_method_id, mode, am
 
 
 @transaction.atomic
-def reverse_quick_checkout_payment(*, payment, user, reason, idempotency_key, audit_metadata=None):
+def reverse_quick_checkout_payment(*, payment, user, reason, idempotency_key, authorized_by=None, audit_metadata=None):
     payment_hint = QuickSalePayment.objects.filter(pk=payment.pk).values_list(
         'checkout_id', flat=True,
     ).first()
@@ -495,9 +495,14 @@ def reverse_quick_checkout_payment(*, payment, user, reason, idempotency_key, au
         reversal_of=payment, reversal_reason=(reason or '').strip(),
     )
     audit_log(actor=user, action='quick_sale_checkout.payment.reverse', obj=reversal,
-              company=payment.checkout.company, branch=payment.checkout.branch,
-               after={'payment_id': str(payment.pk), 'reason': reversal.reversal_reason},
-               metadata={**(audit_metadata or {}), 'idempotency_key': str(idempotency_key)})
+               company=payment.checkout.company, branch=payment.checkout.branch,
+                after={'payment_id': str(payment.pk), 'reason': reversal.reversal_reason},
+                metadata={
+                    **(audit_metadata or {}),
+                    'idempotency_key': str(idempotency_key),
+                    **({'authorizer_user_id': authorized_by.pk}
+                       if authorized_by is not None and authorized_by.pk != user.pk else {}),
+                })
     paid, _remaining = checkout_balance(checkout)
     if paid == Decimal('0.00'):
         restore_checkout_reservation_expiry(checkout)

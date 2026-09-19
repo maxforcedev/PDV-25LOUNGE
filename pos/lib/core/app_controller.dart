@@ -585,6 +585,7 @@ class AppController extends ChangeNotifier {
     required String checkoutId,
     required String paymentId,
     String reason = '',
+    QuickSaleAuthorization? authorization,
   }) =>
       _runQuickCheckoutOperation(
         checkoutId: checkoutId,
@@ -593,6 +594,7 @@ class AppController extends ChangeNotifier {
           checkoutId: checkoutId,
           paymentId: paymentId,
           reason: reason,
+          authorization: authorization?.toJson(),
           idempotencyKey: key,
         ),
       );
@@ -1527,6 +1529,18 @@ class AppController extends ChangeNotifier {
   Future<List<QuickSaleAuthorizer>?> quickSaleServiceFeeAuthorizers() async {
     try {
       return await _api.quickSaleServiceFeeAuthorizers();
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<List<QuickSaleAuthorizer>?>
+      quickSalePaymentReverseAuthorizers() async {
+    try {
+      return await _api.quickSalePaymentReverseAuthorizers();
     } on PosApiException catch (error) {
       _handleApiError(error);
     } on PosNetworkException catch (error) {

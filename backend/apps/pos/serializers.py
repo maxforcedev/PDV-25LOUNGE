@@ -172,7 +172,7 @@ class POSDiscountAuthorizationSerializer(serializers.Serializer):
 
 
 class POSDiscountAuthorizationValidationSerializer(POSDiscountAuthorizationSerializer):
-    type = serializers.ChoiceField(choices=('sale', 'item', 'service_fee'))
+    type = serializers.ChoiceField(choices=('sale', 'item', 'service_fee', 'payment_reverse'))
 
     def to_internal_value(self, data):
         expected = {'type', 'user', 'method', 'credential'}
@@ -264,6 +264,7 @@ class POSQuickCheckoutPaymentPreviewSerializer(serializers.Serializer):
 class POSQuickCheckoutReverseSerializer(serializers.Serializer):
     idempotency_key = serializers.UUIDField()
     reason = serializers.CharField(max_length=1000, required=False, allow_blank=True, default='')
+    authorization = POSDiscountAuthorizationSerializer(required=False)
 
 
 class POSQuickCheckoutFinalizeSerializer(serializers.Serializer):
