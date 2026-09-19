@@ -16,6 +16,11 @@ abstract interface class QuickSaleCheckoutStateStore {
   Future<void> writeQuickSaleCheckoutState(String value);
 }
 
+abstract interface class TablePaymentStateStore {
+  Future<String?> readTablePaymentState();
+  Future<void> writeTablePaymentState(String value);
+}
+
 /// Optional so existing secret-store implementations remain valid.
 extension QuickSaleCheckoutSecretStore on SecretStore {
   Future<String?> readQuickSaleCheckoutState() =>
@@ -29,7 +34,21 @@ extension QuickSaleCheckoutSecretStore on SecretStore {
       : Future.value();
 }
 
-class FlutterSecretStore implements SecretStore, QuickSaleCheckoutStateStore {
+extension TablePaymentSecretStore on SecretStore {
+  Future<String?> readTablePaymentState() => this is TablePaymentStateStore
+      ? (this as TablePaymentStateStore).readTablePaymentState()
+      : Future.value(null);
+  Future<void> writeTablePaymentState(String value) =>
+      this is TablePaymentStateStore
+          ? (this as TablePaymentStateStore).writeTablePaymentState(value)
+          : Future.value();
+}
+
+class FlutterSecretStore
+    implements
+        SecretStore,
+        QuickSaleCheckoutStateStore,
+        TablePaymentStateStore {
   FlutterSecretStore({FlutterSecureStorage? storage})
       : _storage = storage ?? const FlutterSecureStorage();
 
@@ -37,6 +56,7 @@ class FlutterSecretStore implements SecretStore, QuickSaleCheckoutStateStore {
   static const _operatorSessionKey = 'core_pos.operator_session';
   static const _pendingSaleIntentsKey = 'core_pos.pending_sale_intents';
   static const _quickSaleCheckoutStateKey = 'core_pos.quick_sale_checkout';
+  static const _tablePaymentStateKey = 'core_pos.table_payment_state';
 
   final FlutterSecureStorage _storage;
 
@@ -79,4 +99,12 @@ class FlutterSecretStore implements SecretStore, QuickSaleCheckoutStateStore {
   @override
   Future<void> writeQuickSaleCheckoutState(String value) =>
       _storage.write(key: _quickSaleCheckoutStateKey, value: value);
+
+  @override
+  Future<String?> readTablePaymentState() =>
+      _storage.read(key: _tablePaymentStateKey);
+
+  @override
+  Future<void> writeTablePaymentState(String value) =>
+      _storage.write(key: _tablePaymentStateKey, value: value);
 }

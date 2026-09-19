@@ -1178,6 +1178,40 @@ class AppController extends ChangeNotifier {
             allocations: allocations,
           ));
 
+  Future<Map<String, dynamic>> tablePaymentPending(int attendanceId) async {
+    final raw = await _secrets.readTablePaymentState();
+    if (raw == null || selectedOperator == null) return const {};
+    try {
+      final root = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+      return Map<String, dynamic>.from((root[selectedOperator!.id] as Map? ??
+              const {})['$attendanceId'] as Map? ??
+          const {});
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  Future<void> writeTablePaymentPending(
+      int attendanceId, Map<String, dynamic> value) async {
+    if (selectedOperator == null) return;
+    final raw = await _secrets.readTablePaymentState();
+    final root = raw == null
+        ? <String, dynamic>{}
+        : Map<String, dynamic>.from(jsonDecode(raw) as Map);
+    final operator = Map<String, dynamic>.from(
+        root[selectedOperator!.id] as Map? ?? const {});
+    if (value.isEmpty) {
+      operator.remove('$attendanceId');
+    } else {
+      operator['$attendanceId'] = value;
+    }
+    if (operator.isEmpty)
+      root.remove(selectedOperator!.id);
+    else
+      root[selectedOperator!.id] = operator;
+    await _secrets.writeTablePaymentState(jsonEncode(root));
+  }
+
   Future<TablePayment?> recordTablePayment({
     required int attendanceId,
     required int paymentMethodId,
