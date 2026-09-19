@@ -1163,6 +1163,94 @@ class AppController extends ChangeNotifier {
             serviceFeeAuthorization: serviceFeeAuthorization,
           ));
 
+  Future<QuickSaleCheckoutOptions?> tableCheckoutOptions() =>
+      _attendance(_api.tableCheckoutOptions);
+
+  Future<TablePaymentLedger?> tablePaymentLedger(int attendanceId) =>
+      _attendance(() => _api.tablePaymentLedger(attendanceId));
+
+  Future<TablePayment?> recordTablePayment({
+    required int attendanceId,
+    required int paymentMethodId,
+    required String mode,
+    required String idempotencyKey,
+    String? amount,
+    String? receivedAmount,
+    int? cashSessionId,
+    List<Map<String, dynamic>> allocations = const [],
+  }) =>
+      _attendance(() => _api.recordTablePayment(
+            attendanceId: attendanceId,
+            paymentMethodId: paymentMethodId,
+            mode: mode,
+            idempotencyKey: idempotencyKey,
+            amount: amount,
+            receivedAmount: receivedAmount,
+            cashSessionId: cashSessionId,
+            allocations: allocations,
+          ));
+
+  Future<TablePayment?> reverseTablePayment({
+    required int paymentId,
+    required String idempotencyKey,
+    String reason = '',
+    QuickSaleAuthorization? authorization,
+  }) =>
+      _attendance(() => _api.reverseTablePayment(
+            paymentId: paymentId,
+            idempotencyKey: idempotencyKey,
+            reason: reason,
+            authorization: authorization?.toJson(),
+          ));
+
+  Future<TableAttendance?> closeTableAttendance({
+    required int attendanceId,
+    required String idempotencyKey,
+    int? cashSessionId,
+  }) =>
+      _attendance(() => _api.closeTableAttendance(
+            attendanceId: attendanceId,
+            idempotencyKey: idempotencyKey,
+            cashSessionId: cashSessionId,
+          ));
+
+  Future<List<QuickSaleAuthorizer>?> tablePaymentReverseAuthorizers() =>
+      _attendance(_api.tablePaymentReverseAuthorizers);
+
+  Future<String?> validateTablePaymentAuthorization(
+      QuickSaleAuthorization authorization) async {
+    try {
+      await _api.validateTablePaymentAuthorization(
+        authorization: authorization.toJson(),
+      );
+      return null;
+    } on PosApiException catch (error) {
+      return error.message;
+    } on PosNetworkException catch (error) {
+      return error.message;
+    }
+  }
+
+  Future<List<QuickSaleAuthorizer>?> tableFinancialAuthorizers(String type) =>
+      _attendance(() => _api.tableFinancialAuthorizers(type));
+
+  Future<String?> validateTableFinancialAuthorization({
+    required String type,
+    required QuickSaleAuthorization authorization,
+  }) async {
+    try {
+      await _api.validateTableFinancialAuthorization(
+        type: type,
+        authorization: authorization.toJson(),
+      );
+      return null;
+    } on PosApiException catch (error) {
+      return error.message;
+    } on PosNetworkException catch (error) {
+      return error.message;
+    }
+  }
+
   Future<TableAttendance?> transferTableItems({
     required int attendanceId,
     required int destinationAttendanceId,

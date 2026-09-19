@@ -8,6 +8,8 @@ import '../sales/sale_presentation.dart';
 import '../sales/shared_authorization_dialog.dart';
 import '../sales/shared_customer_dialog.dart';
 import '../sales/shared_discount_dialog.dart';
+import 'payment_contract.dart';
+import 'quick_sale_payment_adapter.dart';
 import 'shared_payment_widgets.dart';
 
 /// Reusable persistent-checkout UI. Hosts provide a checkout snapshot and POS API controller.
@@ -424,7 +426,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
   Future<void> _reverse(QuickSaleCheckoutPayment payment) async {
     final reason = await showDialog<String>(
       context: context,
-      builder: (_) => PaymentReversalDialog(payment: payment),
+      builder: (_) => PaymentReversalDialog(payment: _paymentDisplay(payment)),
     );
     if (reason == null || !mounted) return;
     QuickSaleAuthorization? authorization;
@@ -646,7 +648,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
         child:
             Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          PaymentBalanceCard(checkout: _checkout),
+          PaymentBalanceCard(summary: _summaryData),
           const SizedBox(height: 10),
           const Text('FORMAS DE PAGAMENTO',
               style: TextStyle(fontWeight: FontWeight.w900)),
@@ -771,7 +773,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       itemBuilder: (_, index) {
         final payment = payments[index];
         return PaymentHistoryItem(
-          payment: payment,
+          payment: _paymentDisplay(payment),
           reversed: _checkout.hasReversalFor(payment.id),
           working: _working,
           onReverse: () => _reverse(payment),
@@ -782,7 +784,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
   }
 
   Widget _summary(BuildContext context) => PaymentFinancialSummary(
-        checkout: _checkout,
+        summary: _summaryData,
         showDetails: _showSummaryDetails,
         onToggleDetails: () =>
             setState(() => _showSummaryDetails = !_showSummaryDetails),
@@ -805,6 +807,13 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         'card' || 'credit' || 'debit' || 'benefit' => Icons.credit_card,
         _ => Icons.account_balance_wallet_outlined
       };
+
+  PaymentDisplayEntry _paymentDisplay(QuickSaleCheckoutPayment payment) =>
+      _adapter.payment(payment);
+
+  PaymentSummaryData get _summaryData => _adapter.summary;
+
+  QuickSalePaymentAdapter get _adapter => QuickSalePaymentAdapter(_checkout);
 }
 
 class _MethodTile {

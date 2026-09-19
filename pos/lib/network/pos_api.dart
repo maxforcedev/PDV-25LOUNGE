@@ -144,6 +144,38 @@ abstract class PosApi {
     Map<String, dynamic>? serviceFeeAuthorization,
   }) =>
       throw UnimplementedError();
+  Future<QuickSaleCheckoutOptions> tableCheckoutOptions();
+  Future<TablePaymentLedger> tablePaymentLedger(int attendanceId);
+  Future<TablePayment> recordTablePayment({
+    required int attendanceId,
+    required int paymentMethodId,
+    required String mode,
+    required String idempotencyKey,
+    String? amount,
+    String? receivedAmount,
+    int? cashSessionId,
+    List<Map<String, dynamic>> allocations = const [],
+  });
+  Future<TablePayment> reverseTablePayment({
+    required int paymentId,
+    required String idempotencyKey,
+    String reason = '',
+    Map<String, dynamic>? authorization,
+  });
+  Future<TableAttendance> closeTableAttendance({
+    required int attendanceId,
+    required String idempotencyKey,
+    int? cashSessionId,
+  });
+  Future<List<QuickSaleAuthorizer>> tablePaymentReverseAuthorizers();
+  Future<void> validateTablePaymentAuthorization({
+    required Map<String, dynamic> authorization,
+  });
+  Future<List<QuickSaleAuthorizer>> tableFinancialAuthorizers(String type);
+  Future<void> validateTableFinancialAuthorization({
+    required String type,
+    required Map<String, dynamic> authorization,
+  });
   Future<TableAttendance> transferTableItems({
     required int attendanceId,
     required int destinationAttendanceId,
@@ -850,6 +882,115 @@ class HttpPosApi implements PosApi, PosCredentialCache {
         TableAttendance.fromJson(payload['attendance'] as Map<String, dynamic>);
     return attendance
         .withSummary(payload['summary'] as Map<String, dynamic>? ?? const {});
+  }
+
+  @override
+  Future<QuickSaleCheckoutOptions> tableCheckoutOptions() async =>
+      QuickSaleCheckoutOptions.fromJson(
+          await _request('GET', 'tables/checkout-options/'));
+
+  @override
+  Future<TablePaymentLedger> tablePaymentLedger(int attendanceId) async =>
+      TablePaymentLedger.fromJson(
+          await _request('GET', 'table-attendances/$attendanceId/payments/'));
+
+  @override
+  Future<TablePayment> recordTablePayment({
+    required int attendanceId,
+    required int paymentMethodId,
+    required String mode,
+    required String idempotencyKey,
+    String? amount,
+    String? receivedAmount,
+    int? cashSessionId,
+    List<Map<String, dynamic>> allocations = const [],
+  }) async =>
+      TablePayment.fromJson(await _request(
+        'POST',
+        'table-attendances/$attendanceId/payments/',
+        body: {
+          'payment_method': paymentMethodId,
+          'mode': mode,
+          'idempotency_key': idempotencyKey,
+          if (amount != null) 'amount': amount,
+          if (receivedAmount != null) 'received_amount': receivedAmount,
+          if (cashSessionId != null) 'cash_session': cashSessionId,
+          if (allocations.isNotEmpty) 'allocations': allocations,
+        },
+      ));
+
+  @override
+  Future<TablePayment> reverseTablePayment({
+    required int paymentId,
+    required String idempotencyKey,
+    String reason = '',
+    Map<String, dynamic>? authorization,
+  }) async =>
+      TablePayment.fromJson(await _request(
+        'POST',
+        'table-payments/$paymentId/reverse/',
+        body: {
+          'idempotency_key': idempotencyKey,
+          'reason': reason,
+          if (authorization != null) 'authorization': authorization,
+        },
+      ));
+
+  @override
+  Future<TableAttendance> closeTableAttendance({
+    required int attendanceId,
+    required String idempotencyKey,
+    int? cashSessionId,
+  }) async =>
+      TableAttendance.fromJson(await _request(
+        'POST',
+        'table-attendances/$attendanceId/close/',
+        body: {
+          'idempotency_key': idempotencyKey,
+          if (cashSessionId != null) 'cash_session': cashSessionId,
+        },
+      ));
+
+  @override
+  Future<List<QuickSaleAuthorizer>> tablePaymentReverseAuthorizers() async {
+    final payload =
+        await _request('GET', 'tables/payment-reverse-authorizers/');
+    return (payload['authorizers'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(QuickSaleAuthorizer.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<void> validateTablePaymentAuthorization({
+    required Map<String, dynamic> authorization,
+  }) async {
+    await _request('POST', 'tables/payment-authorizations/validate/', body: {
+      'type': 'table_payment_reverse',
+      ...authorization,
+    });
+  }
+
+  @override
+  Future<List<QuickSaleAuthorizer>> tableFinancialAuthorizers(
+      String type) async {
+    final payload =
+        await _request('GET', 'tables/financial-authorizers/?type=$type');
+    return (payload['authorizers'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(QuickSaleAuthorizer.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<void> validateTableFinancialAuthorization({
+    required String type,
+    required Map<String, dynamic> authorization,
+  }) async {
+    await _request('POST', 'tables/financial-authorizations/validate/', body: {
+      'type': type,
+      ...authorization,
+    });
   }
 
   @override

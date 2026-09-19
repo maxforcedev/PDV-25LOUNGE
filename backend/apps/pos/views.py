@@ -943,7 +943,84 @@ class POSTableCheckoutOptionsView(POSAttendanceView):
             'fixed_register': {'id': fixed_register.pk, 'name': fixed_register.name} if mode == 'FIXED' and fixed_register else None,
             'cash_required': True, 'fixed_cash_available': fixed_cash_available,
             'cash_sessions': [{'id': session.pk, 'register_name': session.cash_register.name,
-                'opened_by_name': session.opened_by.get_full_name().strip() or session.opened_by.email} for session in sessions]})
+                 'opened_by_name': session.opened_by.get_full_name().strip() or session.opened_by.email} for session in sessions]})
+
+
+class POSTablePaymentReverseAuthorizersView(POSAttendanceView):
+    def get(self, request):
+        device, _, permissions, _ = self.context(request)
+        if 'tables.payments.view' not in permissions:
+            raise PermissionDenied('Você não possui permissão para consultar pagamentos de Mesa.')
+        return Response({
+            'authorizers': _authorizer_options(device.branch, 'tables.payments.reverse'),
+        })
+
+
+class POSTablePaymentAuthorizationValidationView(POSAttendanceView):
+    def post(self, request):
+        device, operator, permissions, _ = self.context(request)
+        if 'tables.payments.view' not in permissions:
+            raise PermissionDenied('Você não possui permissão para consultar pagamentos de Mesa.')
+        serializer = POSDiscountAuthorizationValidationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        if data['type'] != 'table_payment_reverse':
+            raise ValidationError({'type': 'Tipo de autorização inválido para pagamentos de Mesa.'})
+        try:
+            validate_discount_authorization(
+                device.branch, data, permission_code='tables.payments.reverse',
+                authorization_field='authorization', allow_pos_only=True,
+                pos_device=device, requester=operator, device_validated=True,
+            )
+        except DjangoValidationError as error:
+            messages = error.message_dict.get('authorization', error.messages)
+            raise DomainValidationError(
+                code='table_payment_reverse_authorization_invalid', message=messages[0],
+            )
+        return Response({'valid': True})
+
+
+class POSTableFinancialAuthorizersView(POSAttendanceView):
+    _permissions = {
+        'sale': 'sales.apply_discount',
+        'service_fee': 'sales.waive_service_fee',
+    }
+
+    def get(self, request):
+        device, _, permissions, _ = self.context(request)
+        if 'tables.add_items' not in permissions:
+            raise PermissionDenied('Você não possui permissão para alterar o contexto financeiro da Mesa.')
+        permission_code = self._permissions.get(request.query_params.get('type'))
+        if permission_code is None:
+            raise ValidationError({'type': 'Tipo de autorização financeira inválido.'})
+        return Response({'authorizers': _authorizer_options(device.branch, permission_code)})
+
+
+class POSTableFinancialAuthorizationValidationView(POSAttendanceView):
+    _permissions = POSTableFinancialAuthorizersView._permissions
+
+    def post(self, request):
+        device, operator, permissions, _ = self.context(request)
+        if 'tables.add_items' not in permissions:
+            raise PermissionDenied('Você não possui permissão para alterar o contexto financeiro da Mesa.')
+        serializer = POSDiscountAuthorizationValidationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        permission_code = self._permissions.get(data['type'])
+        if permission_code is None:
+            raise ValidationError({'type': 'Tipo de autorização financeira inválido.'})
+        try:
+            validate_discount_authorization(
+                device.branch, data, permission_code=permission_code,
+                authorization_field='authorization', allow_pos_only=True,
+                pos_device=device, requester=operator, device_validated=True,
+            )
+        except DjangoValidationError as error:
+            messages = error.message_dict.get('authorization', error.messages)
+            raise DomainValidationError(
+                code='table_financial_authorization_invalid', message=messages[0],
+            )
+        return Response({'valid': True})
 
 
 class POSAttendanceCommandDetailView(POSAttendanceView):
@@ -1319,7 +1396,10 @@ class POSTableAttendancePaymentsView(POSTableAttendanceView):
         device, _, permissions, _ = self.context(request)
         self._require(permissions, 'tables.payments.view', 'Você não possui permissão para consultar pagamentos.')
         attendance = self._attendance(device, attendance_id)
-        return Response({'summary': table_summary(attendance), 'payments': TablePaymentSerializer(attendance.payments.select_related('payment_method', 'cash_session').prefetch_related('allocations'), many=True).data})
+        return Response({'summary': table_summary(attendance), 'payments': TablePaymentSerializer(
+            attendance.payments.select_related('payment_method', 'cash_session').prefetch_related('allocations').order_by('created_at', 'id'),
+            many=True,
+        ).data})
 
     def post(self, request, attendance_id):
         device, operator, permissions, operator_session = self.context(request)
@@ -1328,6 +1408,8 @@ class POSTableAttendancePaymentsView(POSTableAttendanceView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         attendance = self._attendance(device, attendance_id)
+        if data.get('cash_session') is not None:
+            _pos_sale_session(device, data['cash_session'])
         try:
             payment, replayed = record_table_payment(attendance=attendance, user=operator, payment_method_id=data['payment_method'], amount=data.get('amount'), mode=data['mode'],
                 received_amount=data.get('received_amount'), cash_session_id=data.get('cash_session'), allocations=data.get('allocations'),
@@ -1345,12 +1427,35 @@ class POSTableAttendancePaymentsView(POSTableAttendanceView):
 class POSTableAttendancePaymentReverseView(POSAttendanceView):
     def post(self, request, payment_id):
         device, operator, permissions, operator_session = self.context(request)
-        self._require(permissions, 'tables.payments.reverse', 'Você não possui permissão para estornar pagamentos.')
+        self._require(permissions, 'tables.payments.view', 'Você não possui permissão para consultar pagamentos.')
         serializer = AttendanceReversePaymentSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        authorizer = operator
+        delegated = 'tables.payments.reverse' not in permissions
+        if delegated:
+            try:
+                authorizer = validate_discount_authorization(
+                    device.branch, data.get('authorization'),
+                    permission_code='tables.payments.reverse', authorization_field='authorization',
+                    allow_pos_only=True, pos_device=device, requester=operator,
+                    device_validated=True,
+                )
+            except DjangoValidationError as error:
+                messages = error.message_dict.get('authorization', error.messages)
+                raise DomainValidationError(
+                    code='table_payment_reverse_authorization_invalid', message=messages[0],
+                )
         payment = get_object_or_404(TablePayment.objects.select_related('attendance'), pk=payment_id, attendance__branch=device.branch)
         try:
-            reversal, replayed = reverse_table_payment(payment=payment, user=operator, audit_metadata=self.audit_metadata(device, operator_session), **serializer.validated_data)
+            reversal, replayed = reverse_table_payment(
+                payment=payment, user=operator, reason=data['reason'],
+                idempotency_key=data['idempotency_key'], audit_metadata={
+                    **self.audit_metadata(device, operator_session),
+                    'authorization_mode': 'delegated' if delegated else 'direct',
+                    'authorizer_user_id': authorizer.pk,
+                },
+            )
         except AttendanceConflict as error:
             self._domain(error)
         response = Response(TablePaymentSerializer(reversal).data, status=status.HTTP_201_CREATED)
@@ -1381,6 +1486,8 @@ class POSTableAttendanceCloseView(POSTableAttendanceView):
         self._require(permissions, 'tables.close', 'Você não possui permissão para fechar mesas.')
         serializer = TableCloseSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        if serializer.validated_data.get('cash_session') is not None:
+            _pos_sale_session(device, serializer.validated_data['cash_session'])
         try:
             attendance, replayed = close_table_attendance(attendance=self._attendance(device, attendance_id), user=operator,
                 idempotency_key=serializer.validated_data['idempotency_key'], cash_session_id=serializer.validated_data.get('cash_session'), audit_metadata=self.audit_metadata(device, operator_session))

@@ -1,26 +1,25 @@
 import 'package:flutter/material.dart';
 
 import '../cash/cash_models.dart';
-import '../sales/sale_models.dart';
 import '../sales/sale_presentation.dart';
 import '../sales/shared_pos_widgets.dart';
+import 'payment_contract.dart';
 
 class PaymentBalanceCard extends StatelessWidget {
   const PaymentBalanceCard({
-    required this.checkout,
+    required this.summary,
     super.key,
   });
 
-  final QuickSaleCheckout checkout;
+  final PaymentSummaryData summary;
 
   bool get _isPaid =>
-      (double.tryParse(checkout.remainingAmount.replaceAll(',', '.')) ?? 0) ==
-      0;
+      (double.tryParse(summary.remaining.replaceAll(',', '.')) ?? 0) == 0;
 
   @override
   Widget build(BuildContext context) {
     final paid = _isPaid;
-    final amount = paid ? checkout.paidAmount : checkout.remainingAmount;
+    final amount = paid ? summary.paid : summary.remaining;
     final color = paid ? const Color(0xff16803c) : const Color(0xff3454d1);
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -94,7 +93,7 @@ class PaymentHistoryItem extends StatelessWidget {
     super.key,
   });
 
-  final QuickSaleCheckoutPayment payment;
+  final PaymentDisplayEntry payment;
   final bool reversed;
   final bool working;
   final VoidCallback onReverse;
@@ -155,7 +154,7 @@ class PaymentHistoryItem extends StatelessWidget {
 class PaymentReversalDialog extends StatefulWidget {
   const PaymentReversalDialog({required this.payment, super.key});
 
-  final QuickSaleCheckoutPayment payment;
+  final PaymentDisplayEntry payment;
 
   @override
   State<PaymentReversalDialog> createState() => _PaymentReversalDialogState();
@@ -208,14 +207,14 @@ class _PaymentReversalDialogState extends State<PaymentReversalDialog> {
 
 class PaymentFinancialSummary extends StatelessWidget {
   const PaymentFinancialSummary({
-    required this.checkout,
+    required this.summary,
     required this.showDetails,
     required this.onToggleDetails,
     required this.primaryAction,
     super.key,
   });
 
-  final QuickSaleCheckout checkout;
+  final PaymentSummaryData summary;
   final bool showDetails;
   final VoidCallback onToggleDetails;
   final Widget? primaryAction;
@@ -228,23 +227,11 @@ class PaymentFinancialSummary extends StatelessWidget {
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             if (showDetails)
               SharedTotalsPanel(lines: [
-                SharedTotalsLine(
-                    label: 'Subtotal', value: checkout.preview.subtotal),
-                SharedTotalsLine(
-                    label: 'Promoções',
-                    value: checkout.preview.promotionDiscountTotal,
-                    negative: true),
-                SharedTotalsLine(
-                    label: 'Descontos por item',
-                    value: checkout.preview.itemDiscountTotal,
-                    negative: true),
-                SharedTotalsLine(
-                    label: 'Desconto da venda',
-                    value: checkout.preview.discount,
-                    negative: true),
-                SharedTotalsLine(
-                    label: 'Taxa de serviço',
-                    value: checkout.preview.serviceFeeAmount),
+                for (final line in summary.details)
+                  SharedTotalsLine(
+                      label: line.label,
+                      value: line.value,
+                      negative: line.negative),
               ]),
             Row(children: [
               const Text('RESUMO',
@@ -258,12 +245,10 @@ class PaymentFinancialSummary extends StatelessWidget {
             ]),
             SharedTotalsPanel(lines: [
               SharedTotalsLine(
-                  label: 'Total', value: checkout.preview.total, strong: true),
-              SharedTotalsLine(label: 'Pago', value: checkout.paidAmount),
+                  label: 'Total', value: summary.total, strong: true),
+              SharedTotalsLine(label: 'Pago', value: summary.paid),
               SharedTotalsLine(
-                  label: 'Falta',
-                  value: checkout.remainingAmount,
-                  strong: true),
+                  label: 'Falta', value: summary.remaining, strong: true),
             ]),
             if (primaryAction != null) ...[
               const SizedBox(height: 10),

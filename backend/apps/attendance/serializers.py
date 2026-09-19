@@ -161,6 +161,7 @@ class AttendancePaymentInputSerializer(serializers.Serializer):
 class AttendanceReversePaymentSerializer(serializers.Serializer):
     idempotency_key = serializers.UUIDField()
     reason = serializers.CharField(max_length=1000, required=False, allow_blank=True, default='')
+    authorization = serializers.DictField(required=False)
 
 
 class AttendanceFinalizeSerializer(serializers.Serializer):

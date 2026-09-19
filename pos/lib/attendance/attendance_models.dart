@@ -239,7 +239,11 @@ class TablePayment {
     this.paymentMethodCode = '',
     this.receivedAmount,
     this.changeAmount,
+    this.cashSessionId,
     this.operatorId,
+    this.idempotencyKey,
+    this.reversalOf,
+    this.reversalReason,
     this.allocations = const [],
     this.createdAt,
   });
@@ -253,7 +257,11 @@ class TablePayment {
         paymentMethodCode: json['payment_method_code'] as String? ?? '',
         receivedAmount: json['received_amount']?.toString(),
         changeAmount: json['change_amount']?.toString(),
+        cashSessionId: json['cash_session'] as int?,
         operatorId: json['operator'] as int?,
+        idempotencyKey: json['idempotency_key'] as String?,
+        reversalOf: json['reversal_of'] as int?,
+        reversalReason: json['reversal_reason'] as String?,
         allocations: (json['allocations'] as List<dynamic>? ?? const [])
             .cast<Map<String, dynamic>>(),
         createdAt: json['created_at'] as String?,
@@ -267,9 +275,31 @@ class TablePayment {
   final String paymentMethodCode;
   final String? receivedAmount;
   final String? changeAmount;
+  final int? cashSessionId;
   final int? operatorId;
+  final String? idempotencyKey;
+  final int? reversalOf;
+  final String? reversalReason;
   final List<Map<String, dynamic>> allocations;
   final String? createdAt;
+
+  bool get isReversal => reversalOf != null || status == 'reversed';
+}
+
+class TablePaymentLedger {
+  const TablePaymentLedger({required this.summary, required this.payments});
+
+  factory TablePaymentLedger.fromJson(Map<String, dynamic> json) =>
+      TablePaymentLedger(
+        summary: json['summary'] as Map<String, dynamic>? ?? const {},
+        payments: (json['payments'] as List<dynamic>? ?? const [])
+            .cast<Map<String, dynamic>>()
+            .map(TablePayment.fromJson)
+            .toList(growable: false),
+      );
+
+  final Map<String, dynamic> summary;
+  final List<TablePayment> payments;
 }
 
 class AttendanceTableGroup {

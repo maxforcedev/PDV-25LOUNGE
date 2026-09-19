@@ -11,6 +11,7 @@ import '../sales/sale_models.dart';
 import '../sales/shared_customer_dialog.dart';
 import '../sales/shared_pos_widgets.dart';
 import '../sales/shared_sale_item_editor_dialog.dart';
+import '../payments/table_payment_page.dart';
 import 'attendance_models.dart';
 import 'attendance_presentation.dart';
 import 'shared_tables_grid.dart';
@@ -496,6 +497,29 @@ class _TableOrderPageState extends State<TableOrderPage> {
     if (updated != null) await _load();
   }
 
+  Future<void> _openPayments() async {
+    if (_cart.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Envie os itens novos antes de registrar pagamentos.'),
+      ));
+      return;
+    }
+    final closed =
+        await Navigator.of(context).push<TableAttendance>(MaterialPageRoute(
+      builder: (_) => TablePaymentPage(
+        controller: widget.controller,
+        attendance: _attendance,
+        onClosed: (_) async {},
+      ),
+    ));
+    if (!mounted) return;
+    if (closed?.status == 'closed') {
+      Navigator.of(context).pop(closed);
+      return;
+    }
+    await _load();
+  }
+
   Future<void> _transferItems({Set<int> initiallySelected = const {}}) async {
     if (_actionInProgress) return;
     final eligible = _attendance.orders
@@ -737,6 +761,14 @@ class _TableOrderPageState extends State<TableOrderPage> {
         },
         child: Scaffold(
           appBar: AppBar(title: Text(_attendance.tableName), actions: [
+            IconButton(
+              tooltip: 'Pagamento',
+              icon: const Icon(Icons.payments_outlined),
+              onPressed:
+                  _loading || _actionInProgress || !_can('tables.payments.view')
+                      ? null
+                      : _openPayments,
+            ),
             PopupMenuButton<String>(
               enabled: !_loading && !_actionInProgress,
               onSelected: (action) {
