@@ -1,3 +1,20 @@
+import '../sales/sale_models.dart';
+
+enum PaymentMethodGroup { cash, debit, pix, credit, other }
+
+PaymentMethodGroup paymentMethodGroup(QuickSalePaymentMethod method) {
+  final code = method.code.toLowerCase();
+  if (method.kind == 'cash' || method.visualGroup == 'cash')
+    return PaymentMethodGroup.cash;
+  if (method.kind == 'pix' || method.visualGroup == 'pix')
+    return PaymentMethodGroup.pix;
+  if (method.kind == 'debit' || code.contains('debit'))
+    return PaymentMethodGroup.debit;
+  if (method.kind == 'credit' || code.contains('credit'))
+    return PaymentMethodGroup.credit;
+  return PaymentMethodGroup.other;
+}
+
 class PaymentDisplayEntry {
   const PaymentDisplayEntry({
     required this.id,

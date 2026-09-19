@@ -51,7 +51,7 @@ from apps.attendance.serializers import (
     AttendancePaymentSerializer, AttendanceReversePaymentSerializer, AttendanceTransferCommandSerializer,
     AttendanceTransferItemsSerializer, AttendanceBillRequestSerializer, AttendanceTableGroupSerializer,
     TableAttendanceOpenSerializer, TableAttendanceSerializer, TableOrderSerializer, TableOrderItemSerializer,
-    TablePaymentInputSerializer, TablePaymentSerializer,
+    TablePaymentInputSerializer, TablePaymentPreviewSerializer, TablePaymentSerializer,
     TableTransferItemsSerializer, TableAttendanceCustomerSerializer, TableCancelOrderItemSerializer,
     TableCheckoutContextSerializer, TableCloseSerializer, TableItemDiscountSerializer,
 )
@@ -65,7 +65,7 @@ from apps.attendance.services import (
     transfer_command as transfer_attendance_command,
     transfer_items as transfer_attendance_items,
     open_table_attendance, save_table_order, table_summary, cancel_table_item,
-    record_table_payment, reverse_table_payment, set_table_bill_requested, close_table_attendance,
+    record_table_payment, preview_table_payment_allocations, reverse_table_payment, set_table_bill_requested, close_table_attendance,
     transfer_table_items,
     cancel_table_order, set_table_customer, set_table_checkout_context, preview_table_order,
     set_table_item_discount,
@@ -1422,6 +1422,22 @@ class POSTableAttendancePaymentsView(POSTableAttendanceView):
         if replayed:
             response['Idempotency-Replayed'] = 'true'
         return response
+
+
+class POSTableAttendancePaymentPreviewView(POSTableAttendanceView):
+    def post(self, request, attendance_id):
+        device, operator, permissions, _ = self.context(request)
+        self._require(permissions, 'tables.payments.record', 'Você não possui permissão para registrar pagamentos.')
+        serializer = TablePaymentPreviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            preview = preview_table_payment_allocations(
+                attendance=self._attendance(device, attendance_id),
+                allocations=serializer.validated_data['allocations'],
+            )
+        except AttendanceConflict as error:
+            self._domain(error)
+        return Response(preview)
 
 
 class POSTableAttendancePaymentReverseView(POSAttendanceView):

@@ -302,6 +302,26 @@ class TablePaymentLedger {
   final List<TablePayment> payments;
 }
 
+class TablePaymentPreview {
+  const TablePaymentPreview({
+    required this.total,
+    required this.remainingBalance,
+    required this.availableQuantities,
+  });
+
+  factory TablePaymentPreview.fromJson(Map<String, dynamic> json) =>
+      TablePaymentPreview(
+        total: '${json['total'] ?? '0.00'}',
+        remainingBalance: '${json['remaining_balance'] ?? '0.00'}',
+        availableQuantities: (json['available_quantities'] as Map? ?? const {})
+            .map((key, value) => MapEntry(int.parse('$key'), '$value')),
+      );
+
+  final String total;
+  final String remainingBalance;
+  final Map<int, String> availableQuantities;
+}
+
 class AttendanceTableGroup {
   const AttendanceTableGroup({
     required this.id,

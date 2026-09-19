@@ -1169,6 +1169,15 @@ class AppController extends ChangeNotifier {
   Future<TablePaymentLedger?> tablePaymentLedger(int attendanceId) =>
       _attendance(() => _api.tablePaymentLedger(attendanceId));
 
+  Future<TablePaymentPreview?> previewTablePayment({
+    required int attendanceId,
+    required List<Map<String, dynamic>> allocations,
+  }) =>
+      _attendance(() => _api.previewTablePayment(
+            attendanceId: attendanceId,
+            allocations: allocations,
+          ));
+
   Future<TablePayment?> recordTablePayment({
     required int attendanceId,
     required int paymentMethodId,

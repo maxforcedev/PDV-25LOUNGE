@@ -76,6 +76,11 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
       _attendance = results[0] as TableAttendance? ?? _attendance;
       _ledger = results[1] as TablePaymentLedger? ?? _ledger;
       _options = results[2] as QuickSaleCheckoutOptions? ?? _options;
+      if (_pending != null &&
+          (_ledger?.payments ?? const []).any((payment) =>
+              payment.idempotencyKey == _pending!.idempotencyKey)) {
+        _pending = null;
+      }
       _loading = false;
     });
   }
@@ -96,7 +101,7 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
   }
 
   Future<void> _selectMethod(QuickSalePaymentMethod method) async {
-    if (!_canRecord || _working) return;
+    if (!_canRecord || _working || _pending != null) return;
     final action = await showModalBottomSheet<String>(
       context: context,
       builder: (context) => SafeArea(
@@ -461,12 +466,12 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
   Widget _methodGrid() {
     final groups = <String, List<QuickSalePaymentMethod>>{};
     for (final method in _methods) {
-      final group = switch (method.visualGroup) {
-        'cash' => 'Dinheiro',
-        'debit' => 'Débito',
-        'pix' => 'PIX',
-        'credit' => 'Crédito',
-        _ => 'Outros',
+      final group = switch (paymentMethodGroup(method)) {
+        PaymentMethodGroup.cash => 'Dinheiro',
+        PaymentMethodGroup.debit => 'Débito',
+        PaymentMethodGroup.pix => 'PIX',
+        PaymentMethodGroup.credit => 'Crédito',
+        PaymentMethodGroup.other => 'Outros',
       };
       groups.putIfAbsent(group, () => []).add(method);
     }
@@ -487,7 +492,7 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
           return PaymentMethodButton(
             label: entry.key,
             icon: _methodIcon(entry.value.first),
-            onTap: !_canRecord || _working
+            onTap: !_canRecord || _working || _pending != null
                 ? null
                 : () async {
                     final method = entry.value.length == 1

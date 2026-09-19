@@ -1030,6 +1030,13 @@ def table_summary(attendance):
 def table_equal_split_state(attendance, remaining=None):
     from .models import TablePaymentAllocation
     if attendance.equal_split_total is None or not attendance.equal_split_people_count:
+        if attendance.people_count and remaining is not None and remaining > Decimal('0.00'):
+            cents = int(remaining * 100)
+            base, remainder = divmod(cents, attendance.people_count)
+            return {'active': True, 'cycle': attendance.equal_split_cycle + 1,
+                    'total': f'{remaining:.2f}', 'people_count': attendance.people_count,
+                    'paid_people': [], 'remaining_people': list(range(1, attendance.people_count + 1)),
+                    'next_person': 1, 'next_amount': f'{Decimal(base + (1 if remainder else 0)) / Decimal("100"):.2f}'}
         return {'active': False, 'cycle': attendance.equal_split_cycle, 'total': None, 'people_count': None,
                 'paid_people': [], 'remaining_people': [], 'next_person': None, 'next_amount': None}
     paid = sorted(set(TablePaymentAllocation.objects.filter(
@@ -1047,6 +1054,27 @@ def table_equal_split_state(attendance, remaining=None):
             'total': f'{attendance.equal_split_total:.2f}', 'people_count': attendance.equal_split_people_count,
             'paid_people': paid, 'remaining_people': remaining_people, 'next_person': next_person,
             'next_amount': f'{next_amount:.2f}' if next_amount is not None else None}
+
+
+@transaction.atomic
+def preview_table_payment_allocations(*, attendance, allocations):
+    from .models import TableAttendance, TableOrderItem, TablePaymentAllocation
+    attendance = TableAttendance.objects.select_for_update().get(pk=attendance.pk)
+    if attendance.status != TableAttendanceStatus.OPEN:
+        raise AttendanceConflict('table_closed', 'Pagamentos exigem mesa aberta.')
+    preview, _paid, remaining, _base = table_financial_state(attendance, lock=True)
+    total = _table_allocation_amount(attendance, allocations, preview)
+    if total > remaining:
+        raise AttendanceConflict('table_overpayment', f'O pagamento excede o saldo de R$ {remaining:.2f}.')
+    paid = dict(TablePaymentAllocation.objects.filter(
+        payment__attendance=attendance, payment__status=AttendancePaymentStatus.APPLIED,
+        payment__reversal__isnull=True, item_id__isnull=False,
+    ).values('item_id').annotate(total=Coalesce(Sum('allocated_quantity'), Value(Decimal('0.000')), output_field=DecimalField(max_digits=14, decimal_places=3))).values_list('item_id', 'total'))
+    available = {
+        str(item.pk): f'{item.quantity - paid.get(item.pk, Decimal("0.000")):.3f}'
+        for item in TableOrderItem.objects.filter(order__attendance=attendance, status=AttendanceOrderItemStatus.CONFIRMED)
+    }
+    return {'total': f'{total:.2f}', 'remaining_balance': f'{remaining:.2f}', 'available_quantities': available}
 
 
 @transaction.atomic

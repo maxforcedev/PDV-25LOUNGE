@@ -146,6 +146,10 @@ abstract class PosApi {
       throw UnimplementedError();
   Future<QuickSaleCheckoutOptions> tableCheckoutOptions();
   Future<TablePaymentLedger> tablePaymentLedger(int attendanceId);
+  Future<TablePaymentPreview> previewTablePayment({
+    required int attendanceId,
+    required List<Map<String, dynamic>> allocations,
+  });
   Future<TablePayment> recordTablePayment({
     required int attendanceId,
     required int paymentMethodId,
@@ -893,6 +897,17 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   Future<TablePaymentLedger> tablePaymentLedger(int attendanceId) async =>
       TablePaymentLedger.fromJson(
           await _request('GET', 'table-attendances/$attendanceId/payments/'));
+
+  @override
+  Future<TablePaymentPreview> previewTablePayment({
+    required int attendanceId,
+    required List<Map<String, dynamic>> allocations,
+  }) async =>
+      TablePaymentPreview.fromJson(await _request(
+        'POST',
+        'table-attendances/$attendanceId/payment-preview/',
+        body: {'allocations': allocations},
+      ));
 
   @override
   Future<TablePayment> recordTablePayment({

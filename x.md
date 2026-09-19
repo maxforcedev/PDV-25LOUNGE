@@ -1,1159 +1,1044 @@
-VAMOS RETOMAR O NOVO MÓDULO DE MESAS.
+# CORE PDV — Correção e Finalização do Fluxo de Pagamentos do Novo Módulo de Mesas
 
-PELO ESTADO ATUAL DO PROJETO, A PARTE OPERACIONAL DE MESAS JÁ ESTÁ IMPLEMENTADA E O PRÓXIMO PASSO É CONCLUIR A PARTE DE PAGAMENTOS.
+CORRIJA E FINALIZE O FLUXO DE PAGAMENTOS DO NOVO MÓDULO DE MESAS.
+
+PARTA DO HEAD ATUAL DA MAIN.
+
+O ÚLTIMO COMMIT IMPLEMENTOU A BASE DE PAGAMENTOS DE MESA, MAS A AUDITORIA DO CÓDIGO ENCONTROU PENDÊNCIAS FUNCIONAIS E DE RBAC QUE BLOQUEIAM O USO REAL.
 
 IMPORTANTE:
 
-A TELA DE PAGAMENTOS DE MESA NÃO DEVE SER UMA NOVA IMPLEMENTAÇÃO PARALELA.
+- NÃO iniciar Stone/Cielo/PagBank.
+- NÃO mexer em Comanda legado.
+- NÃO recriar o motor financeiro.
+- NÃO duplicar lógica financeira no Flutter.
+- NÃO remover idempotência.
+- NÃO alterar estoque/produção/impressão/fiscal fora do necessário.
+- NÃO criar nova bateria de testes automatizados.
+- O teste funcional final será feito manualmente.
+- Corrija somente o necessário para fechar MESAS + PAGAMENTOS.
 
-ELA DEVE REUTILIZAR OS MESMOS ELEMENTOS, COMPONENTES E COMPORTAMENTOS QUE JÁ CRIAMOS E VALIDAMOS NA VENDA RÁPIDA.
+---
 
-PARTA DO HEAD ATUAL.
+## 1. BLOQUEADOR PRINCIPAL: ACESSO À TELA DE PAGAMENTO
 
-==================================================
+Hoje existe botão de pagamento no `TableOrderPage`, mas ele depende de:
 
-1. OBJETIVO
-   ==================================================
+`tables.payments.view`
 
-Implementar o fluxo completo de PAGAMENTO DO NOVO MÓDULO DE MESAS reutilizando a estrutura criada na Venda Rápida.
+A implementação atual faz algo equivalente a:
 
-A arquitetura desejada é:
-
-```text
-                    CORE PAYMENT UI
-                           │
-             ┌─────────────┴─────────────┐
-             │                           │
-       VENDA RÁPIDA                    MESA
-             │                           │
-   QuickSale Adapter              Table Adapter
-             │                           │
-             └──── Shared Payment ───────┘
+```dart
+onPressed:
+    !_can('tables.payments.view')
+        ? null
+        : _openPayments
 ```
 
-NÃO criar duas experiências diferentes.
+O problema é que as migrations das permissões de Mesa adicionaram as permissões novas praticamente somente ao perfil:
 
-Dinheiro, PIX, Crédito, Débito, Outros, histórico, estorno, divisão, pagamento por itens, resumo e confirmação devem usar OS MESMOS elementos.
+`Administrador`
 
-==================================================
-2. NÃO CRIAR UMA CÓPIA DA TELA
-==============================
+Por isso perfis operacionais como:
 
-NÃO quero algo como:
+- Gerente
+- Operador de Caixa
 
-`TablePaymentPage`
+podem não conseguir sequer abrir a tela de pagamentos.
 
-copiando todo o conteúdo de:
+CORRIGIR O RBAC PADRÃO.
 
-`SharedPaymentPage`.
+---
 
-Evitar duplicação.
+## 2. PERMISSÕES PADRÃO DE MESAS
 
-Hoje já existem elementos compartilhados como:
+Atualizar os perfis SISTEMA padrão e criar migration/data migration segura para os perfis já existentes.
 
-* `PaymentBalanceCard`
-* `PaymentMethodButton`
-* `PaymentHistoryItem`
-* `PaymentFinancialSummary`
-* `PaymentReversalDialog`
-* fluxo de autorização por PIN
-* seletor de formas
-* entrada de valor
-* dinheiro/troco
-* divisão
+### ADMINISTRADOR
 
-Refatorar apenas o necessário para que esses componentes possam trabalhar tanto com:
+Continua com todas as permissões de Mesa.
 
-`QuickSaleCheckout`
+### GERENTE
 
-quanto com:
+Deve possuir por padrão:
 
-`TableAttendance / TablePayment`.
+- `tables.view`
+- `tables.open`
+- `tables.set_customer`
+- `tables.add_items`
+- `tables.cancel_items`
+- `tables.payments.view`
+- `tables.payments.record`
+- `tables.payments.reverse`
+- `tables.transfer`
+- `tables.transfer_items`
+- `tables.merge`
+- `tables.close`
 
-==================================================
-3. CRIAR UM CONTRATO/ADAPTER DE PAGAMENTO
-=========================================
+Não precisa necessariamente receber `tables.manage` se isso continuar sendo administração estrutural/configuração.
 
-Hoje parte do Shared Payment ainda depende diretamente de:
+### OPERADOR DE CAIXA
 
-* `QuickSaleCheckout`
-* `QuickSaleCheckoutPayment`
+Deve possuir por padrão:
 
-Desacoplar a camada visual do domínio da Venda Rápida.
+- `tables.view`
+- `tables.open`
+- `tables.set_customer`
+- `tables.add_items`
+- `tables.payments.view`
+- `tables.payments.record`
+- `tables.close`
 
-Criar uma abstração equivalente a:
+NÃO adicionar por padrão ao Operador:
 
-```text
-PaymentState / PaymentContext / PaymentAdapter
-```
+- `tables.payments.reverse`
+- `tables.transfer`
+- `tables.transfer_items`
+- `tables.merge`
+- `tables.manage`
 
-O nome fica a critério da arquitetura.
+Estorno continua usando autorização por PIN quando o operador não possui a permissão.
 
-Esse contrato deve fornecer para a UI:
+NÃO simplesmente adicionar todas as permissões para todo mundo.
 
-* total;
-* valor pago;
-* valor restante;
-* status;
-* cliente;
-* formas de pagamento;
-* pagamentos realizados;
-* capabilities;
-* possibilidade de editar financeiro;
-* possibilidade de registrar pagamento;
-* possibilidade de pagar por itens;
-* possibilidade de finalizar;
-* estorno;
-* atualização;
-* finalização.
+Preservar RBAC granular.
 
-E operações como:
+---
 
-```text
-recordPayment()
-reversePayment()
-refresh()
-finalize()
-updateFinancialContext()
-```
+## 3. EXISTING TENANTS / PERFIS JÁ CRIADOS
 
-NÃO colocar regra financeira dentro desse adapter.
+Não basta alterar apenas `DEFAULT_PROFILE_PERMISSIONS`.
 
-Ele apenas traduz o domínio para a UI compartilhada.
+Criar migration/data migration idempotente para atualizar os perfis SISTEMA já existentes.
 
-==================================================
-4. QUICK SALE NÃO PODE REGREDIR
-===============================
+Não sobrescrever customizações de perfis personalizados.
 
-Criar um adapter para a Venda Rápida usando o comportamento atual.
+A alteração deve atingir somente os perfis padrão `is_system=True` correspondentes.
 
-Exemplo conceitual:
+---
+
+## 4. CORRIGIR DÉBITO / CRÉDITO NO GRID
+
+BUG CONFIRMADO.
+
+O backend retorna:
 
 ```text
-QuickSalePaymentAdapter
-        ↓
-SharedPaymentPage
+cash        → visual_group= cash / kind=cash
+pix         → visual_group= pix  / kind=pix
+credit_card → visual_group= card / kind=credit
+debit_card  → visual_group= card / kind=debit
+VA/VR       → visual_group= card / kind=benefit
 ```
 
-A Venda Rápida deve continuar exatamente com:
-
-* pagamento parcial;
-* Dinheiro;
-* PIX;
-* Crédito;
-* Débito;
-* Outros;
-* troco;
-* divisão;
-* pagamento por itens;
-* estorno;
-* autorização de estorno;
-* motivo opcional;
-* histórico;
-* finalização;
-* navegação já corrigida;
-* idempotência;
-* recovery.
-
-NÃO alterar comportamento funcional validado da Venda Rápida só para encaixar Mesa.
-
-==================================================
-5. CRIAR ADAPTER DA MESA
-========================
-
-Criar equivalente a:
-
-```text
-TablePaymentAdapter
-       ↓
-SharedPaymentPage
-```
-
-A origem financeira da Mesa deve ser:
-
-* `TableAttendance`
-* `TablePayment`
-* `TablePaymentAllocation`
-* `table_summary()`
-* endpoints existentes de Mesa.
-
-A UI NÃO deve fingir que Mesa é um `QuickSaleCheckout`.
-
-Adaptar corretamente os dois domínios.
-
-==================================================
-6. BACKEND DE MESA JÁ EXISTE
-============================
-
-ANTES DE CRIAR NOVA ROTA OU NOVA REGRA:
-
-REUTILIZE O BACKEND EXISTENTE.
-
-Já existem estruturas para:
-
-* `TableAttendance`
-* `TablePayment`
-* `TablePaymentAllocation`
-* pagamento parcial;
-* pagamento por valor;
-* pagamento do saldo;
-* pagamento por itens;
-* divisão igual;
-* dinheiro/troco;
-* estorno append-only;
-* fechamento da Mesa;
-* consolidação final em Sale.
-
-NÃO duplicar lógica financeira no Flutter.
-
-==================================================
-7. OPÇÕES DE PAGAMENTO DA MESA
-==============================
-
-Já existe endpoint equivalente a:
-
-`tables/checkout-options/`
-
-Ele já retorna:
-
-* `payment_methods`
-* `cash_sessions`
-* `cash_binding_mode`
-* `fixed_register`
-* `cash_required`
-* `fixed_cash_available`
-
-e já usa o mesmo:
-
-`payment_method_presentation()`
-
-da Venda Rápida.
-
-Portanto os mesmos grupos devem funcionar:
-
-```text
-DINHEIRO
-DÉBITO
-PIX
-CRÉDITO
-OUTROS
-```
-
-Nenhum ID hardcodado.
-
-Tudo vindo da API.
-
-==================================================
-8. TELA VISUAL DEVE SER A MESMA
-===============================
-
-A tela de Mesa deve ter a mesma experiência operacional criada para Venda Rápida:
-
-```text
-← PAGAMENTO          CLIENTE / DIVIDIR / ⋮
-
-FALTA                     R$ XX,XX
-
-[ DINHEIRO ] [ DÉBITO  ]
-[ PIX      ] [ CRÉDITO ]
-[ OUTROS ]
-
-PAGAMENTOS REALIZADOS
-
-✓ Dinheiro                 R$ XX,XX
-✓ Crédito                  R$ XX,XX
-
-TOTAL
-PAGO
-FALTA
-
-[ FINALIZAR / FECHAR MESA ]
-```
-
-Sem criar outro design.
-
-Pode mudar somente textos específicos do contexto.
-
-==================================================
-9. SEM SCROLL GLOBAL
-====================
-
-Preservar a decisão atual da UI:
-
-A tela principal de Pagamento NÃO deve depender de scroll vertical global.
-
-Continuar usando:
-
-* header compacto;
-* saldo compacto;
-* grid de meios;
-* histórico com scroll interno;
-* resumo fixo;
-* CTA.
-
-==================================================
-10. PAGAMENTO POR VALOR
-=======================
-
-Mesa já suporta:
-
-`mode = value`
-
-Usar a mesma experiência da Venda Rápida.
-
-Exemplo:
-
-```text
-FALTA R$ 100
-
-Dinheiro
-↓
-Valor aplicado:
-R$ 30
-
-Confirmar
-```
+Mas `TablePaymentPage` atualmente classifica somente `visualGroup`.
 
 Resultado:
 
-```text
-PAGO  R$ 30
-FALTA R$ 70
-```
+Crédito e Débito caem em `OUTROS`.
 
-Sem fechar a Mesa.
+CORRIGIR para usar a mesma regra da Venda Rápida.
 
-==================================================
-11. PAGAR SALDO
-===============
-
-Mesa já suporta:
-
-`mode = remaining`
-
-Quando fizer sentido na UI, permitir pagar exatamente o saldo restante.
-
-Reutilizar o comportamento visual existente.
-
-==================================================
-12. PAGAMENTO PARCIAL
-=====================
-
-Mesa precisa aceitar múltiplos pagamentos.
-
-Exemplo:
+Resultado esperado:
 
 ```text
-Total      R$ 100
-Dinheiro   R$ 20
-PIX        R$ 30
-Crédito    R$ 50
+[ DINHEIRO ] [ DÉBITO  ]
+[ PIX      ] [ CRÉDITO ]
+[ OUTROS, se existir ]
 ```
 
-A Mesa só poderá ser fechada quando:
+Use:
 
-`remaining_balance == 0`
+- `kind`
+- `visualGroup`
+- `code`
 
-segundo o backend.
+de forma consistente.
 
-==================================================
-13. DINHEIRO / TROCO
-====================
+Não hardcodar IDs.
 
-Reutilizar a MESMA entrada de Dinheiro da Venda Rápida.
+VA/VR/benefícios/customizados ficam em `OUTROS`.
 
-Mostrar:
+---
 
-* valor aplicado;
-* valor recebido;
-* troco.
+## 5. MESA E VENDA RÁPIDA DEVEM USAR A MESMA CLASSIFICAÇÃO
 
-Exemplo:
+Não manter duas regras diferentes para agrupar formas de pagamento.
+
+Extrair/reutilizar uma função/abstração compartilhada para determinar:
+
+- Dinheiro
+- Débito
+- PIX
+- Crédito
+- Outros
+
+Assim, quando uma classificação mudar, muda nos dois fluxos.
+
+---
+
+## 6. ESTADO INCERTO / PENDING PAYMENT
+
+Hoje Mesa mantém `_pending` quando um pagamento falha ou fica incerto.
+
+Isso é bom.
+
+Mas existe um problema:
+
+ENQUANTO `_pending != null`, ainda é possível iniciar outro pagamento.
+
+ISSO NÃO PODE ACONTECER.
+
+Quando existir pagamento pendente/incerto:
+
+desabilitar:
+
+- Dinheiro
+- Débito
+- PIX
+- Crédito
+- Outros
+- Dividir
+- Pagar por itens
+- qualquer novo pagamento
+
+Deixar disponível somente:
+
+- TENTAR NOVAMENTE
+- ATUALIZAR / RECONCILIAR
+
+---
+
+## 7. RECONCILIAÇÃO DO PENDING
+
+Ao atualizar a tela com `_pending != null`:
+
+carregar:
+
+`tablePaymentLedger(attendanceId)`
+
+e procurar se já existe pagamento com:
+
+`idempotency_key == pending.idempotencyKey`
+
+Se existir:
+
+- considerar a tentativa confirmada;
+- limpar `_pending`;
+- atualizar resumo;
+- não reenviar pagamento.
+
+Se não existir:
+
+- manter pending;
+- permitir retry usando A MESMA idempotency key.
+
+NUNCA gerar nova chave para retry da mesma tentativa.
+
+---
+
+## 8. PERSISTÊNCIA DE ESTADO INCERTO
+
+Analisar o comportamento atual em fechamento/reabertura da tela.
+
+Se `_pending` existir apenas em memória e puder ser perdido ao sair do app/tela após timeout, implementar persistência mínima equivalente ao padrão robusto da Venda Rápida.
+
+Precisamos evitar:
 
 ```text
-VALOR APLICADO
-R$ 40
-
-VALOR RECEBIDO
-R$ 50
-
-TROCO
-R$ 10
+timeout
+↓
+app fecha
+↓
+operador abre novamente
+↓
+não sabe se pagamento foi realizado
+↓
+registra outro
 ```
 
-Mesa já possui:
+O backend continua sendo a fonte da verdade.
 
-* `received_amount`
-* `change_amount`
-* `cash_session`
+---
 
-NÃO recalcular regra financeira no Flutter.
+## 9. PAGAR POR ITENS PRECISA DE PREVIEW OFICIAL
 
-==================================================
-14. DIVIDIR IGUAL
-=================
+Hoje o usuário seleciona itens e a UI apenas diz:
 
-Mesa já possui suporte de backend específico para:
+> O valor dos itens será calculado oficialmente pela Mesa.
 
-`mode = equal_people`
+Isso não é suficiente.
 
-e possui:
-
-* `people_count`
-* `equal_split_total`
-* `equal_split_people_count`
-* `equal_split_cycle`
-* `person_number`
-
-A ação:
-
-`DIVIDIR`
-
-deve reutilizar a mesma entrada visual da Venda Rápida.
-
-Para Mesa, quando escolher:
-
-`DIVIDIR IGUAL`
-
-usar o motor oficial da Mesa.
-
-Exemplo:
-
-Mesa R$ 100 / 4 pessoas:
+Fluxo correto:
 
 ```text
-Pessoa 1     R$ 25
-Pessoa 2     R$ 25
-Pessoa 3     R$ 25
-Pessoa 4     R$ 25
+PAGAR POR ITENS
+↓
+seleciona itens/quantidades
+↓
+BACKEND calcula valor oficial
+↓
+UI mostra:
+VALOR DOS ITENS
+R$ XX,XX
+↓
+seleciona/confirma forma
 ```
 
-Respeitar o estado retornado por:
+NÃO calcular valor financeiro no Flutter.
 
-`table_summary()['equal_split']`
+Criar/reutilizar endpoint de preview de pagamento por itens, usando a MESMA lógica interna de:
 
-Não manter contagem paralela apenas no Flutter.
+`_table_allocation_amount()`
 
-==================================================
-15. PAGAMENTO POR ITENS
-=======================
+sem persistir pagamento.
 
-Mesa já possui:
+Não duplicar cálculo.
 
-`mode = items`
+---
 
-e:
+## 10. PREVIEW DE ITENS DEVE CONSIDERAR
 
-`TablePaymentAllocation`.
+O valor oficial precisa considerar:
 
-Implementar usando o MESMO fluxo visual de:
+- preço congelado;
+- modificadores;
+- promoções;
+- desconto por item;
+- desconto da conta;
+- taxa de serviço;
+- quantidades já pagas;
+- alocações existentes;
+- quantidade disponível restante.
 
-`PAGAR POR ITENS`
+Apenas backend decide o valor.
 
-já existente na Venda Rápida.
+---
 
-Mas os dados vêm dos itens confirmados da Mesa.
+## 11. DIVIDIR IGUAL
 
-Exemplo:
+Hoje Mesa possui backend com:
 
-```text
-☑ 2x Coca
-☑ 1x Pizza
-☐ 1x Água
-```
+- `equal_split`
+- `next_person`
+- `next_amount`
+- `paid_people`
+- `remaining_people`
+- `people_count`
 
-Backend deve calcular o valor oficial.
-
-NÃO somar preços manualmente no Flutter para definir valor financeiro final.
-
-==================================================
-16. ITENS JÁ PAGOS / PARCIALMENTE PAGOS
-=======================================
-
-Respeitar alocações existentes.
-
-Não permitir pagar quantidade superior à disponível.
-
-O backend já possui proteção de:
-
-`table_item_overallocated`
-
-A UI deve refletir quantidade ainda disponível de forma amigável.
-
-==================================================
-17. CLIENTE
-===========
-
-A Mesa já pode ter cliente.
-
-A tela compartilhada deve mostrar Cliente da mesma forma que Venda Rápida.
-
-Reutilizar:
-
-`SharedCustomerDialog`
-
-quando aplicável.
-
-Não duplicar seletor de cliente.
-
-==================================================
-18. DESCONTO / TAXA
-===================
-
-Mesa possui contexto financeiro próprio:
-
-* `checkout_discount`
-* `checkout_discount_type`
-* `checkout_service_fee_waived`
-
-Já existe:
-
-`table-attendances/{id}/checkout-context/`
-
-Usar isso.
-
-Antes do primeiro pagamento:
-
-permitir alterar conforme permissões/autorização.
-
-Depois do primeiro pagamento aplicado:
-
-o contexto financeiro fica bloqueado.
-
-NÃO mostrar mensagem gigante permanente de "edição financeira bloqueada".
-
-Manter a mesma UX da Venda Rápida:
-
-ação indisponível/desabilitada.
-
-==================================================
-19. AUTORIZAÇÃO DE DESCONTO/TAXA
-================================
-
-Reutilizar o mesmo:
-
-`SharedAuthorizationDialog`
-
-com PIN POS.
-
-Não criar outro modal.
-
-Respeitar as permissões existentes:
-
-* `sales.apply_discount`
-* `sales.waive_service_fee`
-
-e o mecanismo de autorização já usado pela Venda Rápida.
-
-==================================================
-20. HISTÓRICO DE PAGAMENTOS
-===========================
-
-Usar o MESMO componente visual:
-
-`PaymentHistoryItem`
-
-ou sua abstração compartilhada após refatoração.
-
-Exemplo:
-
-```text
-PAGAMENTOS REALIZADOS
-
-✓ Dinheiro             R$ 20,00
-  Confirmado
-
-✓ PIX                  R$ 30,00
-  Confirmado
-```
-
-Mostrar:
-
-* método;
-* valor;
-* recebido/troco quando relevante;
-* status;
-* estorno;
-* motivo quando existir.
-
-==================================================
-21. ESTORNO DE MESA
-===================
-
-Mesa possui:
-
-`tables.payments.reverse`
-
-O fluxo deve ser O MESMO da Venda Rápida.
-
-Pagamento aplicado:
-
-```text
-✓ Dinheiro             R$ 20,00
-                           ↩
-```
+A UI precisa usar isso.
 
 Ao tocar:
 
+`DIVIDIR IGUAL`
+
+mostrar algo como:
+
 ```text
-ESTORNAR PAGAMENTO?
+DIVIDIR IGUAL
 
-Dinheiro
-R$ 20,00
+Pessoa 2 de 4
 
-Motivo (opcional)
+VALOR DA PARTE
+R$ 25,00
 
-[ VOLTAR ]
-[ ESTORNAR PAGAMENTO ]
+[ DINHEIRO ] [ DÉBITO ]
+[ PIX      ] [ CRÉDITO ]
 ```
 
-==================================================
-22. ESTORNO COM PERMISSÃO
-=========================
+Não mostrar apenas:
+
+> O valor será calculado oficialmente.
+
+---
+
+## 12. NEXT_AMOUNT É FONTE DA VERDADE
+
+Usar o valor oficial retornado pelo backend.
+
+Não dividir:
+
+`total / people_count`
+
+manualmente no Flutter.
+
+Isso é importante para centavos/resíduos.
+
+Exemplo:
+
+```text
+R$ 100,01 / 3
+```
+
+O backend decide:
+
+- pessoa 1
+- pessoa 2
+- pessoa 3
+
+e o Flutter apenas apresenta.
+
+---
+
+## 13. DINHEIRO EM DIVIDIR IGUAL
+
+Como o valor da parte já estará conhecido oficialmente:
+
+permitir informar:
+
+```text
+VALOR DA PARTE
+R$ 25,00
+
+VALOR RECEBIDO
+R$ 30,00
+
+TROCO
+R$ 5,00
+```
+
+Sem adivinhação.
+
+---
+
+## 14. DINHEIRO EM PAGAR POR ITENS
+
+Mesma regra.
+
+Primeiro:
+
+backend calcula valor oficial dos itens.
+
+Depois:
+
+```text
+VALOR DOS ITENS
+R$ 42,50
+
+VALOR RECEBIDO
+R$ 50,00
+
+TROCO
+R$ 7,50
+```
+
+---
+
+## 15. VALIDAR RECEBIDO >= APLICADO NO FLUTTER
+
+BUG ATUAL:
+
+Mesa permite habilitar confirmar dinheiro com:
+
+```text
+Aplicado R$ 50
+Recebido R$ 10
+```
+
+e só o backend rejeita.
+
+Corrigir.
+
+O botão CONFIRMAR deve permanecer desabilitado se:
+
+`received_amount < applied_amount`
+
+O backend continua validando também.
+
+---
+
+## 16. MOSTRAR TROCO ANTES DE CONFIRMAR
+
+Reutilizar a experiência da Venda Rápida.
+
+Sempre que método for Dinheiro:
+
+mostrar:
+
+- aplicado;
+- recebido;
+- troco.
+
+Atualizar troco em tempo real.
+
+---
+
+## 17. PAGAR SALDO
+
+BUG ATUAL:
+
+No modo:
+
+`remaining`
+
+o campo aparece editável.
+
+Porém o backend ignora o `amount` digitado e usa o saldo oficial.
+
+Isso pode fazer o operador visualizar uma coisa e pagar outra.
+
+CORRIGIR.
+
+PAGAR SALDO deve mostrar:
+
+```text
+PAGAR SALDO
+
+R$ 87,50
+```
+
+Valor travado.
+
+Sem campo editável.
+
+Backend continua usando `mode=remaining`.
+
+---
+
+## 18. PAGAR POR VALOR
+
+Somente o modo:
+
+`value`
+
+deve permitir editar o valor aplicado manualmente.
+
+Não permitir:
+
+- zero;
+- negativo;
+- maior que saldo.
+
+---
+
+## 19. HEADER DE PAGAMENTO DE MESA
+
+Quero a mesma lógica visual da Venda Rápida.
+
+Em tela pequena:
+
+```text
+← PAGAMENTO        👤  ⇄  ⋮
+```
+
+Onde:
+
+- 👤 = Cliente
+- ⇄ = Dividir
+- ⋮ = opções financeiras
+
+Em tela maior pode mostrar labels.
+
+Não quero Mesa com experiência diferente sem necessidade.
+
+---
+
+## 20. BOTÃO DIVIDIR NO HEADER
+
+Hoje Mesa pede:
+
+```text
+forma de pagamento
+→ modo
+```
+
+Enquanto Venda Rápida possui:
+
+```text
+DIVIDIR
+→ dividir igual / pagar por itens.
+```
+
+Padronizar.
+
+Header:
+
+`DIVIDIR`
+
+abre:
+
+```text
+DIVIDIR IGUAL
+PAGAR POR ITENS
+```
+
+Depois o usuário escolhe a forma de pagamento.
+
+Evitar duas UX diferentes para a mesma operação.
+
+---
+
+## 21. PAGAMENTO NORMAL
+
+Ao tocar diretamente:
+
+- Dinheiro
+- Débito
+- PIX
+- Crédito
+
+fluxo normal deve ser:
+
+`PAGAR POR VALOR`
+
+com opção de:
+
+`PAGAR SALDO`
+
+na própria entrada.
+
+Não precisa abrir modal intermediário perguntando modalidade em todas as formas.
+
+Seguir a experiência que já funciona na Venda Rápida.
+
+---
+
+## 22. COMPONENTES COMPARTILHADOS
+
+Hoje existem:
+
+- `payment_contract.dart`
+- `quick_sale_payment_adapter.dart`
+- `table_payment_adapter.dart`
+- `shared_payment_widgets.dart`
+- `shared_payment_page.dart`
+- `table_payment_page.dart`
+
+A refatoração ficou pela metade.
+
+Não quero copiar toda a tela novamente.
+
+Reutilizar o máximo possível da composição e comportamento.
+
+Se for adequado, extrair um shell/controller compartilhado para:
+
+- header;
+- grid;
+- pending;
+- histórico;
+- resumo;
+- reversal;
+- selector de formas;
+- entrada dinheiro;
+- entrada de valor.
+
+Mesa e Quick Sale mudam apenas adapter e ações específicas.
+
+NÃO fazer uma mega-refatoração desnecessária se isso colocar Venda Rápida em risco.
+
+Prioridade:
+
+não duplicar comportamento financeiro/UX.
+
+---
+
+## 23. DESCONTO DA MESA
+
+Hoje Mesa criou um AlertDialog próprio simples.
+
+Venda Rápida já possui:
+
+`SharedDiscountDialog`
+
+REUTILIZAR.
+
+Mesa já possui:
+
+- `checkout_discount`
+- `checkout_discount_type`
+
+Portanto permitir corretamente:
+
+- valor;
+- percentual.
+
+Não criar um segundo editor inferior.
+
+---
+
+## 24. DESCONTO / TAXA ANTES DO PAGAMENTO
+
+Continuar permitindo editar:
+
+- cliente;
+- desconto;
+- taxa de serviço;
+
+antes do primeiro pagamento.
+
+Respeitar autorização por PIN quando necessário.
+
+---
+
+## 25. BLOQUEIO APÓS PRIMEIRO PAGAMENTO
+
+Depois do primeiro pagamento aplicado:
+
+bloquear edição financeira.
+
+Não mostrar texto gigante de “edição financeira bloqueada”.
+
+Apenas:
+
+- desabilitar ações;
+- manter layout estável.
+
+---
+
+## 26. ESTORNO
+
+Preservar o fluxo atual corrigido.
+
+Pagamento não estornado:
+
+ação ESTORNAR continua acessível.
 
 Se operador possui:
 
 `tables.payments.reverse`
 
-executar diretamente após confirmação.
+→ confirmação → estorno.
 
-Motivo opcional.
+Se não possui:
 
-==================================================
-23. ESTORNO SEM PERMISSÃO
-=========================
-
-NÃO esconder o botão.
-
-Fazer igual à Venda Rápida:
-
-```text
-ESTORNAR
-↓
-não possui permissão
-↓
-AUTORIZAÇÃO NECESSÁRIA
-↓
-autorizador
-↓
-PIN de 6 dígitos
-↓
-estorno
-```
-
-Reutilizar:
-
-* `eligible_pos_authorizers()`
-* `validate_pos_authorization()`
-* `SharedAuthorizationDialog`
-* rate limit;
-* auditoria.
-
-A permissão requerida nesse contexto é:
-
-`tables.payments.reverse`
-
-==================================================
-24. SE NECESSÁRIO, AJUSTAR BACKEND DO ESTORNO DE MESA
-=====================================================
-
-Hoje o endpoint de Mesa aparentemente exige diretamente:
-
-`tables.payments.reverse`
-
-Se necessário, aplicar o mesmo padrão de autorização delegada que acabamos de implementar em:
-
-`sales.payments.reverse`.
-
-NÃO duplicar a infraestrutura.
-
-Generalizar/reutilizar a solução.
-
-==================================================
-25. MOTIVO DO ESTORNO
-=====================
+→ seleciona autorizador  
+→ PIN 6 dígitos  
+→ backend valida  
+→ estorno.
 
 Motivo continua OPCIONAL.
 
-Se existir:
+---
 
-mostrar no histórico.
-
-Se vazio:
-
-não mostrar linha de motivo.
-
-Mesa já possui:
-
-`reversal_reason`.
-
-Garantir que o model Flutter também carregue isso.
-
-==================================================
-26. LEDGER APPEND-ONLY
-======================
-
-Não apagar pagamentos.
-
-Estorno gera reversão vinculada por:
-
-`reversal_of`.
-
-Pagamento original continua no histórico.
-
-Manter:
-
-* imutabilidade;
-* auditoria;
-* idempotência.
-
-==================================================
-27. IDEMPOTÊNCIA DE PAGAMENTO DE MESA
-=====================================
+## 27. HISTÓRICO / REVERSAL
 
 Preservar:
 
-* `idempotency_key`
-* `request_fingerprint`
-* proteção de replay.
+- pagamento original no histórico;
+- reversal append-only;
+- `reversal_of`;
+- `reversal_reason`;
+- motivo mostrado somente quando preenchido.
 
-IMPORTANTE:
+---
 
-O Flutter deve manter a idempotency key durante retry de uma MESMA tentativa.
+## 28. FECHAMENTO DA MESA
 
-Não gerar nova chave automaticamente depois de timeout se o resultado for incerto.
-
-Adotar o mesmo padrão robusto que usamos na Venda Rápida.
-
-==================================================
-28. ESTADO INCERTO / RETRY
-==========================
-
-Mesa deve ter comportamento seguro para:
-
-* timeout;
-* queda de conexão;
-* resposta 5xx;
-* retry.
-
-NUNCA assumir que pagamento falhou apenas porque a resposta não chegou.
-
-Se necessário, criar persistência/recovery equivalente ao padrão da Venda Rápida.
-
-NÃO permitir duplicidade financeira.
-
-==================================================
-29. RESUMO FINANCEIRO
-=====================
-
-Usar os dados oficiais de:
-
-`table_summary()`
-
-como fonte.
-
-Ele já retorna:
-
-* subtotal;
-* promotion_discount_total;
-* item_discount_total;
-* checkout_discount_total;
-* discount_total;
-* service_fee_base;
-* service_fee_total;
-* total_due;
-* paid_total;
-* remaining_balance;
-* equal_split.
-
-A UI deve mostrar de forma compacta:
-
-```text
-Total       R$ XX
-Pago        R$ XX
-Falta       R$ XX
-```
-
-E detalhes expansíveis se necessário.
-
-==================================================
-30. NÃO RECALCULAR FINANCEIRO NO FLUTTER
-========================================
-
-REGRA IMPORTANTE:
-
-O Flutter não é fonte da verdade financeira.
-
-Nunca criar cálculo paralelo de:
-
-* desconto;
-* taxa;
-* total;
-* saldo;
-* rateio financeiro;
-* pagamento por itens.
-
-Usar resultados oficiais do backend.
-
-==================================================
-31. FINALIZAR / FECHAR MESA
-===========================
-
-Quando:
-
-`remaining_balance == 0`
-
-habilitar CTA:
+Só permitir:
 
 `FECHAR MESA`
 
-ou equivalente coerente com a UX.
+quando:
 
-Usar endpoint existente de fechamento da Mesa.
+`remaining_balance == 0`
 
-O fechamento já consolida:
+segundo estado oficial do backend.
 
-`TableAttendance → Sale`
+Não calcular isso localmente.
 
-Não criar nova venda manualmente no Flutter.
+---
 
-==================================================
-32. CAIXA NA FINALIZAÇÃO
-========================
+## 29. SELEÇÃO DE CAIXA NO FECHAMENTO
 
-Respeitar a regra existente de:
+Revisar `_close()`.
 
-`cash_session`.
+Hoje, se existem várias sessões de caixa abertas, a UI pode pedir caixa novamente mesmo quando pagamentos em dinheiro da Mesa já determinam a sessão.
 
-Se os pagamentos em dinheiro já determinarem a sessão, usar a lógica oficial.
+Usar a lógica oficial:
 
-Se o backend solicitar uma sessão para consolidar a venda, usar as opções retornadas.
+Se pagamentos em dinheiro já possuem sessão válida única:
 
-Não criar regra nova.
+→ não perguntar novamente.
 
-==================================================
-33. RESULTADO DO FECHAMENTO
-===========================
+Se nenhum pagamento determinou sessão e o backend precisa de uma sessão para consolidar:
 
-Depois do backend confirmar fechamento:
+→ selecionar caixa.
 
-* atualizar Mesa;
-* status CLOSED;
-* sair da tela de pagamento;
-* voltar para a visão/lista de Mesas;
-* atualizar grid de Mesas;
-* Mesa deve aparecer disponível conforme estado oficial.
+Se modo FIXED já determina caixa:
 
-Não voltar para uma tela financeira antiga.
+→ não perguntar.
 
-==================================================
-34. NAVEGAÇÃO
-=============
+Evitar pergunta redundante.
 
-A navegação de Mesa deve ser responsabilidade do módulo de Mesa.
+---
 
-`SharedPaymentPage` não deve saber que precisa ir para Catálogo ou Lista de Mesas.
+## 30. NAVEGAÇÃO APÓS FECHAR
 
-Exemplo:
+Preservar:
 
 ```text
-SharedPaymentPage
-      ↓
-PaymentResult
-      ↓
-Table module decide destino
+Mesa
+↓
+Pagamento
+↓
+FECHAR MESA
+↓
+backend fecha
+↓
+TableAttendance CLOSED
+↓
+volta para lista de Mesas
+↓
+grid atualiza
+↓
+Mesa disponível
 ```
 
-Venda Rápida:
+Não voltar para tela financeira antiga.
+
+---
+
+## 31. PAGAMENTO PARCIAL
+
+Preservar:
 
 ```text
-finalizou
-→ Venda concluída
-→ Catálogo
+Mesa R$100
+Dinheiro R$30
+PIX R$20
+Crédito R$50
 ```
 
-Mesa:
+Resumo sempre vindo do backend:
+
+- Total
+- Pago
+- Falta
+
+---
+
+## 32. FORMAS DE PAGAMENTO VIA API
+
+Continuar usando:
+
+`tables/checkout-options/`
+
+Nenhuma forma deve ser inventada no Flutter.
+
+Todos os métodos ativos recebidos devem estar acessíveis.
+
+---
+
+## 33. MUITOS MÉTODOS / OUTROS
+
+Preservar bottom sheet rolável.
+
+VA, VR, vouchers e métodos customizados devem aparecer em:
+
+`OUTROS`
+
+quando aplicável.
+
+---
+
+## 34. CAIXA / POS DEVICE
+
+Preservar validações já adicionadas de:
+
+`_pos_sale_session()`
+
+Não permitir que device opere sessão de caixa incompatível.
+
+---
+
+## 35. NÃO MISTURAR COM COMANDA LEGADO
+
+O fluxo novo usa somente:
+
+- `TableAttendance`
+- `TablePayment`
+- `TablePaymentAllocation`
+
+Não mexer no fluxo antigo:
+
+`AttendanceCommand / Command`.
+
+---
+
+## 36. NÃO REGREDIR VENDA RÁPIDA
+
+Venda Rápida deve continuar funcionando exatamente como antes.
+
+Verificar especialmente:
+
+- Dinheiro;
+- Débito;
+- PIX;
+- Crédito;
+- Outros;
+- parcial;
+- pagar por itens;
+- dividir;
+- estorno;
+- autorização PIN;
+- pending/retry;
+- finalização;
+- navegação para catálogo.
+
+---
+
+## 37. TESTE FUNCIONAL SERÁ MANUAL
+
+NÃO criar nova bateria de testes Widget/E2E.
+
+O proprietário do projeto fará o teste funcional.
+
+Pode atualizar testes existentes somente quando necessário para manter integridade do código.
+
+---
+
+## 38. CHECKS
+
+Executar:
+
+- `flutter analyze`
+- `git diff --check`
+- Django system check
+- migrations check
+
+Se alterar backend financeiro/serializers/views, executar os checks backend relevantes.
+
+Não gastar a missão corrigindo dívidas antigas não relacionadas.
+
+---
+
+## 39. CENÁRIOS QUE DEVEM FICAR PRONTOS
+
+### CENÁRIO A
 
 ```text
-fechou
-→ Mesas
+Operador de Caixa
+→ abre Mesa
+→ adiciona itens
+→ abre PAGAMENTO
 ```
 
-==================================================
-35. NÃO MISTURAR MESA COM COMANDA LEGADO
-========================================
-
-Usar SOMENTE o novo domínio:
-
-`TableAttendance`
-
-NÃO implementar pagamento usando:
-
-* legacy Command;
-* AttendanceCommand antigo;
-* fluxo de Comanda legado.
-
-Não tocar no módulo legado nesta missão.
-
-==================================================
-36. NÃO DUPLICAR API ANTIGA DE COMANDA
-======================================
-
-Já existem endpoints antigos de:
-
-`commands/.../payments`
-
-Não usar isso para o novo fluxo de Mesa.
-
-Mesa nova usa:
-
-`TableAttendance`
-+
-`TablePayment`.
-
-==================================================
-37. CAPABILITIES / PERMISSÕES
-=============================
-
-Respeitar:
-
-* `tables.payments.view`
-* `tables.payments.record`
-* `tables.payments.reverse`
-* `tables.close`
-* permissões financeiras existentes;
-* entitlements da filial/tenant.
-
-A UI deve apresentar/desabilitar ações coerentemente.
-
-Não confiar somente na UI.
-
-Backend continua validando.
-
-==================================================
-38. COMPONENTES COMPARTILHADOS
-==============================
-
-Ao final, quero algo próximo a:
+### CENÁRIO B
 
 ```text
-payments/
-    shared_payment_page.dart
-    shared_payment_widgets.dart
-    payment_contract.dart
-    quick_sale_payment_adapter.dart
-    table_payment_adapter.dart
+R$100
+Dinheiro R$30
+PIX R$70
+→ saldo zero
+→ Fecha Mesa
 ```
 
-OS NOMES NÃO SÃO OBRIGATÓRIOS.
-
-O importante é a separação.
-
-Não criar arquitetura artificialmente complexa.
-
-==================================================
-39. NÃO IMPLEMENTAR PROVIDERS AGORA
-===================================
-
-Stone/Cielo/PagBank continuam fora desta missão.
-
-Os botões continuam pagamentos manuais.
-
-Mas a arquitetura compartilhada deve permanecer preparada para providers futuros.
-
-==================================================
-40. NÃO ALTERAR
-===============
-
-NÃO mexer desnecessariamente em:
-
-* Venda Rápida fora da refatoração necessária;
-* estoque;
-* impressão;
-* produção;
-* tickets;
-* fiscal;
-* Stone;
-* Cielo;
-* PagBank;
-* Platform Admin;
-* Comanda legado;
-* SaaS;
-* billing.
-
-==================================================
-41. NÃO CRIAR TESTES AUTOMATIZADOS NOVOS
-========================================
-
-O teste funcional será feito manualmente pelo proprietário do projeto.
-
-NÃO gastar esta missão criando bateria de testes Widget/E2E.
-
-Pode ajustar algum teste existente caso a refatoração faça ele deixar de compilar.
-
-==================================================
-42. CHECKS
-==========
-
-Executar no mínimo:
-
-* `flutter analyze`
-* `git diff --check`
-
-Como haverá integração com backend de Mesa:
-
-executar também os checks backend necessários para garantir:
-
-* serializers;
-* migrations;
-* system check;
-* integridade das rotas modificadas.
-
-NÃO fazer alterações aleatórias para corrigir dívidas antigas fora desta missão.
-
-==================================================
-43. CENÁRIOS QUE PRECISAM FICAR POSSÍVEIS
-=========================================
-
-Ao terminar, a implementação deve permitir manualmente:
-
-### Cenário 1
+### CENÁRIO C
 
 ```text
-Mesa R$ 100
-↓
-Dinheiro R$ 30
-↓
-PIX R$ 70
-↓
-Pago R$ 100
-↓
-Fecha Mesa
+R$100 / 4 pessoas
+→ DIVIDIR
+→ DIVIDIR IGUAL
+→ Pessoa 1 R$25
+→ Pessoa 2 R$25
+→ Pessoa 3 R$25
+→ Pessoa 4 R$25
 ```
 
-### Cenário 2
+### CENÁRIO D
 
 ```text
-Mesa R$ 100
-4 pessoas
-↓
-Dividir igual
-↓
-4 pagamentos de R$ 25
-↓
-Fecha Mesa
+PAGAR POR ITENS
+→ seleciona Pizza + Coca
+→ backend retorna valor oficial
+→ operador vê valor
+→ escolhe pagamento
 ```
 
-### Cenário 3
+### CENÁRIO E
 
 ```text
-Pizza R$ 60
-Coca R$ 10
-Coca R$ 10
-
-Pagar por itens
-↓
-Pizza
-↓
-R$ 60
-↓
-Saldo R$ 20
+Dinheiro
+Aplicado R$40
+Recebido R$50
+Troco R$10
 ```
 
-### Cenário 4
+### CENÁRIO F
 
 ```text
-Pagamento R$ 50 incorreto
-↓
-Estornar
-↓
-operador tem permissão
-↓
-Confirma
-↓
-saldo volta
+PAGAR SALDO R$70
+→ valor travado
+→ não editável
 ```
 
-### Cenário 5
+### CENÁRIO G
 
 ```text
-Pagamento R$ 50 incorreto
-↓
-operador NÃO tem tables.payments.reverse
-↓
-seleciona autorizador
-↓
-PIN
-↓
-estorno
+pagamento sofre timeout
+→ fica PENDING
+→ novos pagamentos bloqueados
+→ refresh/reconciliação
+→ se já entrou, limpa pending
+→ se não entrou, retry mesma idempotency key
 ```
 
-### Cenário 6
+### CENÁRIO H
 
 ```text
-Dinheiro R$ 40
-Recebido R$ 50
-↓
-Troco R$ 10
+Estorno
+→ operador sem permissão
+→ Gerente/Administrador
+→ PIN
+→ estorno
 ```
 
-### Cenário 7
+### CENÁRIO I
 
 ```text
-muitos meios de pagamento ativos
-↓
-OUTROS
-↓
-lista rolável
-↓
-seleciona método
+Dinheiro / Débito / PIX / Crédito
+visíveis separadamente
+
+VA / VR / customizados
+→ OUTROS
 ```
 
-==================================================
-44. CHECKPOINT FINAL
-====================
+---
 
-Ao concluir informar:
+## 40. CHECKPOINT FINAL
 
-1. arquitetura usada para compartilhar Pagamentos;
-2. qual contrato/adapter foi criado;
-3. como Venda Rápida foi adaptada sem regressão;
-4. como Mesa foi adaptada;
-5. endpoints de Mesa utilizados;
-6. como opções de pagamento são carregadas;
-7. funcionamento de Dinheiro;
-8. funcionamento de PIX;
-9. funcionamento de Débito;
-10. funcionamento de Crédito;
-11. funcionamento de Outros;
-12. pagamento parcial;
-13. pagar saldo;
-14. divisão igual;
-15. pagar por itens;
-16. histórico;
-17. estorno com permissão;
-18. estorno com autorização por PIN;
-19. motivo opcional;
-20. tratamento de `reversal_reason`;
-21. idempotência dos pagamentos de Mesa;
-22. comportamento em retry/estado incerto;
-23. contexto financeiro/desconto/taxa;
-24. quando financeiro é bloqueado;
-25. resumo Total/Pago/Falta;
-26. fechamento da Mesa;
-27. destino após fechar Mesa;
-28. componentes efetivamente compartilhados;
-29. confirmação de que Comanda legado não foi alterado;
+AO TERMINAR, INFORMAR:
+
+1. causa de a tela de pagamento estar inacessível;
+2. permissões padrão adicionadas ao Gerente;
+3. permissões padrão adicionadas ao Operador de Caixa;
+4. migration criada para perfis sistema existentes;
+5. confirmação de que perfis personalizados não foram sobrescritos;
+6. como Débito/Crédito foram corrigidos;
+7. como ficou OUTROS;
+8. como pending bloqueia novos pagamentos;
+9. como funciona reconciliação por idempotency_key;
+10. se pending foi persistido e como;
+11. como ficou preview oficial de pagar por itens;
+12. como ficou dividir igual;
+13. como `next_amount` é usado;
+14. como ficou dinheiro em pagar por itens;
+15. como ficou dinheiro em dividir igual;
+16. validação recebido >= aplicado;
+17. cálculo visual de troco;
+18. como ficou PAGAR SALDO;
+19. como ficou o header compartilhado;
+20. como ficou o botão DIVIDIR;
+21. como Mesa e Venda Rápida compartilham comportamento;
+22. como ficou desconto por valor/percentual;
+23. bloqueio financeiro após pagamento;
+24. confirmação de estorno com autorização;
+25. fechamento da Mesa;
+26. seleção de caixa no fechamento;
+27. navegação após fechamento;
+28. confirmação de que Comanda legado não foi alterado;
+29. confirmação de que Venda Rápida não regrediu;
 30. arquivos alterados;
 31. `flutter analyze`;
 32. `git diff --check`;
-33. checks backend;
-34. resumo objetivo do diff.
+33. Django system check;
+34. migrations check;
+35. resumo objetivo do diff.
 
 DEPOIS PARE.
 
-NÃO INICIE STONE/CIELO/PAGBANK.
-
 NÃO INICIE OUTRA FASE.
 
-QUERO PRIMEIRO TESTAR MANUALMENTE O PAGAMENTO DE MESA COMPLETO.
+NÃO IMPLEMENTE STONE/CIELO/PAGBANK.
+
+QUERO TESTAR MANUALMENTE MESAS + PAGAMENTOS ANTES DE SEGUIR.

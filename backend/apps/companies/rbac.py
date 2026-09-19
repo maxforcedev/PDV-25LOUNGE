@@ -232,7 +232,11 @@ DEFAULT_PROFILE_PERMISSIONS = {
             'reports.view_operational_result', 'reports.view_stock_consumption',
             'reports.view_products', 'reports.view_receipts', 'reports.view_team',
             'reports.view_discounts', 'reports.view_cancellations', 'reports.view_prices',
-            'reports.export', 'commissions.view',
+             'reports.export', 'commissions.view',
+            'tables.view', 'tables.open', 'tables.set_customer', 'tables.add_items',
+            'tables.cancel_items', 'tables.payments.view', 'tables.payments.record',
+            'tables.payments.reverse', 'tables.transfer', 'tables.transfer_items',
+            'tables.merge', 'tables.close',
         }
     ),
     'Operador de Caixa': frozenset(
@@ -256,7 +260,9 @@ DEFAULT_PROFILE_PERMISSIONS = {
             'reports.view_consumptions',
             'reports.view_cash',
             'reports.view_withdrawals',
-            'sales.waive_service_fee',
+             'sales.waive_service_fee',
+            'tables.view', 'tables.open', 'tables.set_customer', 'tables.add_items',
+            'tables.payments.view', 'tables.payments.record', 'tables.close',
         }
     ),
     'Operador de Estoque': frozenset(

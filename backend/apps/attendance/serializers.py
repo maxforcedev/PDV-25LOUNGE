@@ -286,6 +286,24 @@ class TablePaymentInputSerializer(AttendancePaymentInputSerializer):
         return attrs
 
 
+class TablePaymentPreviewSerializer(serializers.Serializer):
+    allocations = serializers.ListField(child=serializers.DictField(), allow_empty=False)
+
+    def validate_allocations(self, values):
+        seen = set()
+        for value in values:
+            try:
+                item = int(value['item'])
+                quantity = Decimal(str(value['allocated_quantity']))
+            except (KeyError, TypeError, ValueError, InvalidOperation) as error:
+                raise serializers.ValidationError('Item ou quantidade inválidos.') from error
+            if item < 1 or quantity <= 0 or quantity.as_tuple().exponent < -3 or item in seen:
+                raise serializers.ValidationError('Itens devem ser únicos e ter quantidade positiva.')
+            value['item'], value['allocated_quantity'] = item, quantity
+            seen.add(item)
+        return values
+
+
 class TableTransferItemsSerializer(serializers.Serializer):
     destination_attendance = serializers.IntegerField(min_value=1)
     items = serializers.ListField(child=serializers.DictField(), allow_empty=False)

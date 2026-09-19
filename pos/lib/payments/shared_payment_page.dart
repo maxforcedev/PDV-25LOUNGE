@@ -39,10 +39,10 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
 
   List<QuickSalePaymentMethod> get _methods => widget.options.paymentMethods;
   List<QuickSalePaymentMethod> get _cash => _methods
-      .where((method) => method.kind == 'cash' || method.visualGroup == 'cash')
+      .where((method) => paymentMethodGroup(method) == PaymentMethodGroup.cash)
       .toList(growable: false);
   List<QuickSalePaymentMethod> get _pix => _methods
-      .where((method) => method.kind == 'pix' || method.visualGroup == 'pix')
+      .where((method) => paymentMethodGroup(method) == PaymentMethodGroup.pix)
       .toList(growable: false);
   List<_EqualSplitPart>? _equalSplitParts;
   QuickSalePaymentAttempt? _pendingPayment;
@@ -675,14 +675,12 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
 
   Widget _methodGrid() {
     final debit = _methods
-        .where((method) =>
-            method.kind == 'debit' ||
-            method.code.toLowerCase().contains('debit'))
+        .where(
+            (method) => paymentMethodGroup(method) == PaymentMethodGroup.debit)
         .toList(growable: false);
     final credit = _methods
-        .where((method) =>
-            method.kind == 'credit' ||
-            method.code.toLowerCase().contains('credit'))
+        .where(
+            (method) => paymentMethodGroup(method) == PaymentMethodGroup.credit)
         .toList(growable: false);
     final groupedIds = <int>{
       ..._cash.map((method) => method.id),
