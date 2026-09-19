@@ -181,7 +181,8 @@ class _SharedSaleItemEditorDialogState
             _validation = 'Produtos por unidade exigem quantidade inteira.');
         return;
       }
-      if (_quantity.text.split(RegExp(r'[,.]')).last.length > 3) {
+      final separator = RegExp(r'[,.]').firstMatch(_quantity.text);
+      if (separator != null && _quantity.text.length - separator.end > 3) {
         setState(() =>
             _validation = 'A quantidade aceita no máximo três casas decimais.');
         return;

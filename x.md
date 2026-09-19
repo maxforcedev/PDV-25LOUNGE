@@ -1,952 +1,779 @@
-FAÇA UMA REVISÃO E CORREÇÃO COMPLETA, MAS ESTRITAMENTE FOCADA, DO MÓDULO VENDA RÁPIDA + CARRINHO + PAGAMENTOS DO CORE POS.
+ALTERE A UI/UX DA TELA DE PAGAMENTO DA VENDA RÁPIDA DO CORE POS.
 
-PARTA DO HEAD ATUAL DO PROJETO.
+PARTA DO HEAD ATUAL.
 
-IMPORTANTE SOBRE ESCOPO:
+IMPORTANTE: ESTA MISSÃO É PRINCIPALMENTE DE UI/UX E NAVEGAÇÃO.
 
-NÃO mexer em Comanda legado.
-O módulo legado de Comanda ainda será removido/substituído pelo novo módulo de Mesas.
+NÃO alterar a lógica financeira já existente.
 
-NÃO mexer em Platform Admin nesta missão.
+NÃO alterar:
 
-NÃO mexer em:
-
+* idempotência;
+* ledger de pagamentos;
+* estornos;
+* recovery financeiro;
+* regras de pagamento;
+* backend financeiro;
 * Stone;
 * Cielo;
 * PagBank;
-* Android;
-* Gradle;
-* fiscal;
-* impressão;
-* outros módulos não relacionados.
+* Mesa/Comanda;
+* estoque;
+* impressão.
 
-FOCO EXCLUSIVO:
-
-* Venda Rápida;
-* carrinho;
-* recovery;
-* QuickSaleCheckout;
-* pagamentos da Venda Rápida;
-* cancelamento/descarte;
-* finalização;
-* estado persistido;
-* UI/UX dessas telas;
-* testes Flutter relacionados.
-
-NÃO fazer refatoração geral.
+A ideia é REORGANIZAR a interface existente, reutilizando o motor atual.
 
 ==================================================
 
-1. CORRIGIR RECOVERY QUE APAGA STORAGE EM QUALQUER HTTP < 500
+1. OBJETIVO PRINCIPAL
    ==================================================
 
-BUG JÁ CONFIRMADO EM:
+A tela de pagamento atual exige rolagem vertical para encontrar:
 
-`pos/lib/core/app_controller.dart`
+* formas de pagamento;
+* pagamentos realizados;
+* total;
+* saldo restante;
+* finalizar.
 
-Hoje `recoverQuickSaleCheckout()` possui comportamento equivalente a:
+ISSO NÃO É BOM PARA UM POS.
 
-```dart
-on PosApiException catch (error) {
-  if (error.statusCode < 500) {
-    await _writeQuickCheckoutState({});
-  }
-}
+Quero uma tela de pagamento OPERACIONAL, FIXA e COMPACTA.
+
+Na utilização normal, tudo importante deve estar disponível SEM PRECISAR DESCER O DEDO.
+
+A referência conceitual é:
+
+```text
+┌──────────────────────────────────┐
+│ ← PAGAMENTO      Cliente Dividir ⋮│
+├──────────────────────────────────┤
+│                                  │
+│             FALTA                │
+│           R$ 33,00               │
+│                                  │
+├────────────────┬─────────────────┤
+│    DINHEIRO    │     DÉBITO      │
+├────────────────┼─────────────────┤
+│      PIX       │     CRÉDITO     │
+├──────────────────────────────────┤
+│ PAGAMENTOS REALIZADOS            │
+│ ✓ Dinheiro             R$ 10,00  │
+│ ✓ Pix                  R$ 15,00  │
+├──────────────────────────────────┤
+│ TOTAL                 R$ 47,00   │
+│ PAGO                  R$ 25,00   │
+│ FALTA                 R$ 22,00   │
+├──────────────────────────────────┤
+│       [ FINALIZAR VENDA ]        │
+└──────────────────────────────────┘
 ```
 
-ISSO É ERRADO.
+NÃO copie literalmente esse desenho.
 
-Um:
-
-* 401;
-* 403;
-* 409;
-* 422;
-* 429;
-
-não prova que o checkout deixou de existir.
-
-Isso pode gerar:
-
-checkout ainda OPEN no backend
-+
-reserva de estoque ativa
-+
-storage local apagado
-=====================
-
-checkout órfão.
-
-CORRIGIR.
-
-O estado local do checkout só pode ser descartado automaticamente quando houver prova autoritativa de que ele não deve mais ser recuperado.
-
-Exemplos aceitáveis:
-
-A) backend retornou o checkout e ele está terminal:
-
-* CANCELLED;
-* FINALIZED.
-
-B) endpoint de recovery/detail retornou 404 que realmente representa ausência daquele checkout naquele escopo.
-
-NÃO usar mais genericamente:
-
-`statusCode < 500`
-
-para apagar o QuickSaleCheckoutState.
-
-Em:
-
-* 401;
-* 403;
-* 409;
-* 422;
-* 429;
-* 5xx;
-* erro de rede;
-
-PRESERVAR o estado local.
-
-Mostrar o erro, mas NÃO esquecer a venda.
-
-Não alterar indiscriminadamente a semântica das intents de pagamento já existente.
-Esta regra é especificamente sobre esquecer o CHECKOUT persistido.
+Adapte para a identidade visual atual do CORE POS.
 
 ==================================================
-2. CANCELAMENTO SÓ PODE LIMPAR STORAGE SE BACKEND CONFIRMAR CANCELLED
-=====================================================================
+2. TELA NÃO DEVE DEPENDER DE SCROLL VERTICAL
+============================================
 
-Hoje `cancelQuickSaleCheckout()` faz aproximadamente:
+A tela principal de pagamento deve ser montada pensando principalmente em:
 
-```dart
-await _api.cancelQuickSaleCheckout(...);
-await _writeQuickCheckoutState({});
-return true;
-```
+* Stone/POS Android;
+* celulares;
+* tablets pequenos;
+* uso rápido no balcão.
 
-Isso confia apenas no HTTP success.
+No estado normal, NÃO deve ser necessário usar `ListView` vertical para acessar as funções principais.
 
-CORRIGIR.
+Priorizar:
 
-Capturar o `QuickSaleCheckout` retornado pela API.
+* `Column`;
+* áreas com tamanhos controlados;
+* `Expanded`;
+* `Flexible`;
+* layout responsivo;
+* footer fixo.
 
-Só considerar cancelamento concluído se o backend retornar estado terminal esperado:
+Se houver conteúdo excepcionalmente grande, como muitos pagamentos realizados, somente a SUBÁREA correspondente poderá possuir scroll interno.
 
-`cancelled`
-
-Se resposta vier com:
-
-* editing;
-* partial;
-* paid;
-* qualquer estado não cancelado;
-
-NÃO limpar storage.
-
-NÃO retornar sucesso.
-
-NÃO limpar carrinho.
-
-Informar erro de inconsistência ao operador.
-
-Fluxo obrigatório:
-
-POST cancel
--> resposta oficial
--> checkout.status == cancelled
--> limpar storage
--> retornar true
-
-Caso contrário:
-
--> preservar storage
--> retornar false.
+A PÁGINA INTEIRA não deve ficar rolando.
 
 ==================================================
-3. TESTE COMPLETO DO BUG ORIGINAL
-=================================
+3. HEADER COMPACTO
+==================
 
-O teste atual de discard NÃO é suficiente.
+Topo fixo e baixo.
 
-O fake atual chega a devolver um checkout ainda `editing` em:
+Esquerda:
 
-`cancelQuickSaleCheckout()`
+`← PAGAMENTO`
 
-e mesmo assim o teste considera o descarte bem-sucedido.
+Direita:
 
-CORRIGIR ESSE TESTE.
+* Cliente
+* Dividir
+* menu `⋮`
 
-O fake/backend simulado deve realmente mudar:
+Pode usar ícones + labels compactas conforme espaço disponível.
 
-editing
--> cancelled
-
-Adicionar teste Widget/integrado Flutter reproduzindo exatamente:
-
-Produto A
--> criar Checkout A
--> abrir Pagamento
--> voltar
--> APAGAR CARRINHO
--> backend confirma CANCELLED
--> sair da Venda Rápida
--> entrar novamente em Venda Rápida
-
-RESULTADO OBRIGATÓRIO:
-
-* Produto A não reaparece;
-* carrinho vazio;
-* checkout A não é recuperado;
-* Pagamento não abre;
-* storage do operador não possui checkout A;
-* checkout A foi realmente cancelado;
-* nova venda poderá gerar Checkout B.
-
-Este teste deve usar `QuickSaleCheckoutStateStore` real em memória.
+Não criar header gigante.
 
 ==================================================
-4. BUG REAL — RECOVERY COM TOTAL CORRETO E 0 ITENS
-==================================================
+4. CLIENTE
+==========
 
-BUG REPRODUZIDO NO APP:
+A ação CLIENTE continua utilizando o seletor/cadastro já existente.
 
-1. adiciono produto;
-2. checkout é criado;
-3. saio da Venda Rápida;
-4. entro novamente;
-5. aparece:
+Não duplicar lógica.
 
-"Venda em andamento recuperada."
+Somente reposicionar essa ação no header.
 
-e o valor correto, por exemplo:
+Se já houver cliente:
 
-R$ 22,00
-
-PORÉM:
-
-* aparece "0 itens";
-* ao tocar no carrinho ele está vazio;
-* não aparece menu superior do carrinho;
-* não consigo avançar novamente para Pagamento.
-
-A CAUSA FOI IDENTIFICADA.
-
-Em:
-
-`pos/lib/sales/quick_sale_page.dart`
-
-`_restoreCheckoutDraft()` monta:
-
-```dart
-final productsById = {
-  for (final product in _allCatalog) product.id: product
-};
-```
-
-e depois:
-
-```dart
-final product = productsById[...];
-
-if (product == null) continue;
-```
-
-ISSO NÃO É ACEITÁVEL PARA RECOVERY.
-
-O checkout persistido é a fonte oficial daquela venda.
-
-Recovery NÃO pode depender de o produto ainda aparecer no catálogo operacional atual.
-
-Um produto pode não estar no `_allCatalog` porque:
-
-* a própria reserva do checkout consumiu a disponibilidade;
-* `show_out_of_stock_products` está false;
-* condição operacional mudou;
-* filtro de catálogo;
-* produto deixou de ser exibido;
-* catálogo falhou parcialmente.
-
-Mesmo assim o checkout continua contendo o item.
-
-NÃO DESCARTAR SILENCIOSAMENTE O ITEM.
-
-==================================================
-5. CHECKOUT RECUPERADO DEVE SER AUTOSSUFICIENTE
-===============================================
-
-Corrigir a arquitetura do recovery.
-
-Quando recuperamos `QuickSaleCheckout`, precisamos possuir dados suficientes para reconstruir visualmente os itens da venda SEM depender da lista atual do catálogo.
-
-Não resolver com:
-
-```dart
-if (product == null) continue;
-```
-
-Não resolver inventando produto incompleto se isso puder perder:
-
-* preço;
-* unidade;
-* modificadores;
-* nomes dos modificadores;
-* código;
-* snapshots;
-* regras necessárias para continuar a venda.
-
-Use a solução mais coerente com a arquitetura atual.
-
-É aceitável, por exemplo:
-
-* enriquecer o payload oficial de `QuickSaleCheckout.items`;
-* incluir snapshot de produto necessário ao recovery;
-* ou implementar resolução específica dos produtos pertencentes ao checkout que não dependa do filtro normal do catálogo.
-
-PRESERVAR snapshots históricos.
-
-O carrinho recuperado deve refletir exatamente o checkout oficial.
-
-==================================================
-6. RECOVERY NÃO PODE MUDAR O FINANCEIRO
-=======================================
-
-Ao recuperar:
-
-* não recalcular preço automaticamente;
-* não reaplicar promoção atual;
-* não mudar desconto;
-* não mudar taxa;
-* não mudar total.
-
-O `financial_snapshot` oficial do checkout continua sendo a fonte de verdade.
+mostrar de forma compacta que existe um cliente selecionado.
 
 Exemplo:
 
-antes de sair:
-
-1 Coca
-Total R$ 22,00
-
-depois de voltar:
-
-1 Coca
-Total R$ 22,00
-
-Mesmo que preço ou promoção do catálogo tenham mudado.
+`👤 João`
 
 ==================================================
-7. CONTADOR DO CARRINHO DEVE VOLTAR CORRETAMENTE
-================================================
+5. DIVIDIR
+==========
 
-Hoje o usuário reproduziu:
+A ação DIVIDIR deve concentrar as funções existentes de divisão.
 
-Venda recuperada
-R$ 22,00
-0 itens
+Ao tocar, abrir BottomSheet/Dialog compacto:
 
-Isso não pode acontecer.
+```text
+DIVIDIR PAGAMENTO
 
-Após recovery:
+[ DIVIDIR IGUAL ]
+Dividir o saldo entre pessoas.
 
-* `_cart` deve possuir os itens oficiais;
-* `MobileCartBar` deve ser atualizado;
-* contador deve refletir o carrinho restaurado;
-* carrinho deve abrir com os produtos;
-* botão de Pagamento deve continuar disponível se permitido.
+[ PAGAR POR ITENS ]
+Escolher quais itens serão pagos.
+```
 
-NÃO usar `preview.items` como fonte de quantidade do carrinho.
+Reutilizar as funcionalidades já existentes.
 
-A fonte é o carrinho restaurado a partir do checkout.
+NÃO reimplementar o cálculo.
 
 ==================================================
-8. TESTE OBRIGATÓRIO — PRODUTO AUSENTE DO CATÁLOGO NORMAL
-=========================================================
+6. MENU DE AÇÕES SECUNDÁRIAS
+============================
 
-Adicionar teste específico:
+Usar `⋮` para ações que não precisam ocupar espaço permanente.
 
-Checkout A contém Produto A.
+Exemplos conforme permissões/capabilities existentes:
 
-Ao reabrir Venda Rápida:
+* aplicar desconto;
+* editar/remover cliente;
+* remover taxa de serviço;
+* entrada de caixa;
+* sangria/retirada;
+* cancelar venda.
 
-o endpoint/lista normal de catálogo NÃO contém Produto A.
+NÃO inventar permissões novas.
 
-Porém o checkout recuperado contém Produto A.
+Respeitar o RBAC atual.
 
-RESULTADO:
-
-* Produto A aparece no carrinho recuperado;
-* contador não fica 0;
-* nome correto;
-* quantidade correta;
-* total correto;
-* não é descartado silenciosamente;
-* é possível seguir para Pagamento quando as capabilities permitirem.
-
-Esse teste é ESSENCIAL porque o teste atual só funciona quando o produto recuperado também existe no catálogo fake.
+Se uma ação não estiver implementada/permitida nesse fluxo, não criar artificialmente só para preencher menu.
 
 ==================================================
-9. REVISAR TODA FORMATAÇÃO DE QUANTIDADE
-========================================
+7. DESTAQUE PRINCIPAL = SALDO RESTANTE
+======================================
 
-Hoje existem vários pontos que exibem valor bruto vindo do backend.
+O maior destaque visual da tela deve ser o estado financeiro atual.
 
-Exemplo errado:
+Enquanto houver saldo:
+
+```text
+FALTA
+R$ 33,00
+```
+
+Quando saldo for zero:
+
+```text
+PAGO
+R$ 47,00
+```
+
+Usar `remainingAmount` e valores oficiais do checkout.
+
+Não calcular saldo paralelo na UI.
+
+==================================================
+8. FORMAS DE PAGAMENTO EM GRID FIXO
+===================================
+
+Mostrar os meios principais em grid 2x2:
+
+```text
+DINHEIRO      DÉBITO
+
+PIX           CRÉDITO
+```
+
+Cada botão deve ser:
+
+* grande o suficiente para toque;
+* visualmente identificável;
+* rápido de localizar;
+* consistente com a paleta CORE.
+
+Usar os `paymentMethods` atuais.
+
+Não hardcodar IDs.
+
+Classificar usando os atributos existentes:
+
+* `kind`;
+* `visualGroup`;
+* `code`.
+
+Se houver outros meios:
+
+mostrar botão:
+
+`OUTROS`
+
+e abrir uma lista/modal com os demais.
+
+==================================================
+9. NÃO ESCONDER O FLUXO DE PAGAMENTO PARCIAL
+============================================
+
+Depois de aplicar um pagamento:
+
+o usuário deve permanecer na mesma tela.
+
+Exemplo:
+
+Total: R$ 47,00
+
+Dinheiro: R$ 10,00
+
+Então a tela imediatamente muda para:
+
+```text
+FALTA
+R$ 37,00
+```
+
+e permite escolher outro meio.
+
+Isso já existe no motor atual.
+
+Somente melhorar a apresentação.
+
+==================================================
+10. PAGAMENTOS REALIZADOS
+=========================
+
+Criar uma área compacta:
+
+`PAGAMENTOS REALIZADOS`
+
+Mostrar os pagamentos aplicados.
+
+Exemplo:
+
+```text
+✓ Dinheiro               R$ 10,00
+  Confirmado                  ↩
+
+✓ Pix                    R$ 15,00
+  Confirmado                  ↩
+```
+
+O botão/ícone de estorno deve permanecer acessível quando permitido.
+
+NÃO apagar pagamentos estornados da história.
+
+Pagamento estornado deve aparecer como:
+
+`Estornado`
+
+e não desaparecer.
+
+==================================================
+11. MUITOS PAGAMENTOS
+=====================
+
+Se houver muitos pagamentos, NÃO aumentar infinitamente a tela.
+
+A área `PAGAMENTOS REALIZADOS` deve ter altura máxima.
+
+Se ultrapassar:
+
+scroll somente nessa área
+
+OU
+
+mostrar os mais recentes +:
+
+`VER TODOS (N)`
+
+e abrir modal/bottom sheet.
+
+Escolha a solução mais coerente com a estrutura atual.
+
+A tela principal continua fixa.
+
+==================================================
+12. RESUMO INFERIOR COMPACTO
+============================
+
+No rodapé da área de conteúdo sempre mostrar pelo menos:
+
+```text
+Total       R$ XX,XX
+Pago        R$ XX,XX
+Falta       R$ XX,XX
+```
+
+Usar os valores oficiais.
+
+Não recalcular.
+
+Se for necessário mostrar:
+
+* subtotal;
+* promoções;
+* desconto;
+* taxa de serviço;
+
+não ocupar a tela inteira.
+
+Criar uma expansão compacta:
+
+`VER DETALHES`
+
+ou seta.
+
+Exemplo recolhido:
+
+```text
+TOTAL    R$ 47,00
+PAGO     R$ 25,00
+FALTA    R$ 22,00          ⌃
+```
+
+Expandido:
+
+```text
+Subtotal                 R$ 50,00
+Promoções               - R$ 3,00
+Desconto                - R$ 2,00
+Taxa de serviço           R$ 2,00
+
+Total                     R$ 47,00
+Pago                      R$ 25,00
+Falta                     R$ 22,00
+```
+
+==================================================
+13. CTA PRINCIPAL FIXO
+======================
+
+No final da tela deve existir área fixa para ação principal.
+
+Enquanto ainda houver saldo:
+
+o operador continua escolhendo pagamentos.
+
+Quando:
+
+`remainingAmount == 0`
+
+mostrar com destaque:
+
+`FINALIZAR VENDA`
+
+Esse botão deve permanecer visível sem necessidade de scroll.
+
+==================================================
+14. VALOR RECEBIDO / TROCO
+==========================
+
+Dinheiro continua abrindo o fluxo existente de:
+
+* valor do pagamento;
+* valor recebido;
+* troco.
+
+Não alterar regras.
+
+Melhorar somente apresentação se necessário para combinar com a nova UI.
+
+Depois da confirmação:
+
+voltar para a TELA FIXA DE PAGAMENTO atualizada.
+
+==================================================
+15. CRÉDITO / DÉBITO / PIX
+==========================
+
+Hoje podem ser pagamentos manuais.
+
+Manter exatamente o comportamento atual.
+
+A UI deve ficar preparada para futuramente o mesmo botão chamar:
+
+* Stone;
+* Cielo;
+* outro provider;
+
+sem redesenhar a tela.
+
+NÃO implementar adquirente nesta missão.
+
+==================================================
+16. STATUS SEM TEXTO TÉCNICO
+============================
+
+Continuar utilizando a apresentação em português já adicionada.
+
+Nunca exibir:
+
+* applied;
+* reversed;
+* cancelled;
+* editing;
+* paid;
+* partial;
+* finalized.
+
+Mostrar labels amigáveis:
+
+* Confirmado;
+* Estornado;
+* Cancelada;
+* Em andamento;
+* Pago;
+* Pagamento parcial;
+* Finalizada.
+
+==================================================
+17. QUANTIDADES
+===============
+
+Continuar usando o formatter visual já criado.
+
+Não voltar a exibir:
 
 `1.000`
 
-para representar uma unidade.
-
-O operador deve ver:
+quando é:
 
 `1`
 
-Outro exemplo:
+ou:
 
 `1.500`
 
-deve ser exibido como:
+quando deve aparecer:
 
-`1,5`
+`1,5`.
 
-no padrão visual brasileiro.
+==================================================
+18. CORRIGIR VALIDAÇÃO DE CASAS DECIMAIS
+========================================
 
-Criar/reutilizar uma função única de apresentação de quantidade.
+Existe uma validação incorreta encontrada anteriormente.
+
+Trechos semelhantes a:
+
+```dart
+text.split(RegExp(r'[,.]')).last.length <= 3
+```
+
+tratam:
+
+`1000`
+
+como se tivesse 4 casas decimais.
+
+CORRIGIR.
+
+A validação deve limitar somente a PARTE DECIMAL quando realmente existir separador.
 
 Exemplos:
 
-1.000 -> 1
-2.000 -> 2
-1.500 -> 1,5
-0.500 -> 0,5
-1.250 -> 1,25
+```text
+1        válido
+100      válido
+1000     válido
+100000   válido dentro dos limites de domínio
 
-Máximo de casas conforme precisão operacional necessária, removendo zeros à direita.
-
-NÃO alterar o valor enviado para API.
-
-Somente apresentação.
-
-Aplicar em TODAS as superfícies da Venda Rápida/Pagamentos:
-
-* `SharedCartItemTile`;
-* Qtd. do carrinho;
-* produto recuperado;
-* modificadores;
-* warnings de estoque;
-* quantidade disponível;
-* quantidade selecionada;
-* pagamento por itens;
-* desconto por item;
-* scanner/carrinho;
-* editor de quantidade;
-* qualquer outra exibição encontrada.
-
-==================================================
-10. MODIFICADORES TAMBÉM NÃO PODEM MOSTRAR 1.000x
-=================================================
-
-Hoje `_itemDetails()` pode usar diretamente:
-
-```dart
-selected['quantity']
+1,1      válido
+1,12     válido
+1,123    válido
+1,1234   inválido
 ```
 
-Podendo resultar em:
-
-`1.000x Adicional`
-
-Corrigir para:
-
-`1x Adicional`
-
-ou:
-
-`1,5x ...`
-
-quando fracionamento fizer sentido.
+Corrigir onde isso existir na Venda Rápida/componentes compartilhados.
 
 ==================================================
-11. PAGAMENTO POR ITENS DEVE USAR FORMATO PT-BR
-===============================================
-
-Hoje `_quantityValue()` do fluxo "Pagar por itens" produz decimal com `.`.
-
-Exemplo:
-
-`1.5`
-
-Na UI brasileira deve aparecer:
-
-`1,5`
-
-Sem alterar o payload oficial enviado à API.
-
-Separar:
-
-valor canônico/API
-de
-valor de apresentação.
-
-==================================================
-12. BUG DE PRODUTOS FRACIONADOS NO EDITOR DO CARRINHO
-=====================================================
-
-Revisar:
-
-`_EditCartItemDialog`
-
-Hoje existem trechos equivalentes a:
-
-```dart
-int.tryParse(_item.quantity)
-```
-
-Isso é incorreto para produtos fracionados.
-
-Exemplo:
-
-quantidade = `1.500`
-
-`int.tryParse()` falha.
-
-O código cai em fallback e pode transformar incorretamente a quantidade em 1, 2 etc.
-
-CORRIGIR.
-
-Produtos:
-
-* UN;
-* KG;
-* G;
-* L;
-* ML;
-* qualquer unidade fracionável;
-
-devem respeitar suas regras de quantidade.
-
-UN continua exigindo inteiro quando essa for a regra oficial.
-
-Não introduzir float impreciso para payload financeiro/quantidade oficial.
-
-==================================================
-13. NUNCA EXIBIR STATUS TÉCNICO EM INGLÊS
-=========================================
-
-Auditar TODA Venda Rápida e Pagamentos.
-
-Nunca mostrar diretamente ao usuário:
-
-* `cancelled`;
-* `finalized`;
-* `editing`;
-* `partial`;
-* `paid`;
-* `applied`;
-* `reversed`;
-* ou outros enums técnicos.
-
-Criar/reutilizar apresentação centralizada.
-
-Exemplo:
-
-`editing` -> `Em andamento`
-`partial` -> `Pagamento parcial`
-`paid` -> `Pago`
-`finalized` -> `Finalizada`
-`cancelled` -> `Cancelada`
-`applied` -> `Confirmado`
-`reversed` -> `Estornado`
-
-Backend continua usando os valores canônicos em inglês.
-
-Somente UI deve traduzir.
-
-PROCURAR os locais em que status bruto esteja chegando à interface.
-
-==================================================
-14. NÃO MISTURAR STATUS DE DOMÍNIO COM LABEL
-============================================
-
-NÃO trocar enums do backend para português.
-
-Backend continua:
-
-`cancelled`
-
-Flutter usa:
-
-`cancelled`
-
-para lógica.
-
-Somente quando for desenhar texto:
-
-`Cancelada`.
-
-==================================================
-15. FINALIZAÇÃO DA VENDA ESTÁ COM UX ERRADA
+19. APAGAR CARRINHO — NAVEGAÇÃO OBRIGATÓRIA
 ===========================================
 
-BUG REPRODUZIDO:
+BUG ATUAL:
 
-1. pago a Venda Rápida;
-2. toco FINALIZAR VENDA;
-3. backend conclui;
-4. Flutter fecha a tela de Pagamento;
-5. volta para o carrinho vazio;
-6. não aparece nenhuma confirmação de venda.
+ao apagar o carrinho, a interface pode continuar na página de carrinho vazia.
 
-Isso está confirmado no código atual.
+NÃO QUERO ISSO.
 
-Em:
+Fluxo obrigatório:
 
-`pos/lib/payments/shared_payment_page.dart`
+```text
+Carrinho
+↓
+APAGAR CARRINHO
+↓
+confirma
+↓
+backend confirma CANCELLED
+↓
+storage limpo
+↓
+draft limpo
+↓
+CATÁLOGO DA VENDA RÁPIDA
+```
 
-`_finish()`:
+Após apagar:
 
-* chama `finalizeQuickSaleCheckout`;
-* chama `onCompleted`;
-* faz `Navigator.pop()`.
+* não permanecer no carrinho;
+* não abrir Pagamento;
+* não mostrar tela vazia de carrinho.
 
-Em `QuickSalePage`, `onCompleted` apenas limpa o draft/recarrega catálogo.
-
-CORRIGIR.
+O destino deve ser o CATÁLOGO.
 
 ==================================================
-16. CRIAR TELA "VENDA CONCLUÍDA"
-================================
+20. NOVA VENDA — NAVEGAÇÃO OBRIGATÓRIA
+======================================
 
-Após `finalizeQuickSaleCheckout()` retornar SUCESSO OFICIAL do backend:
+BUG ATUAL:
 
-mostrar uma página/tela própria.
+na tela:
 
-Layout esperado:
+`VENDA CONCLUÍDA`
 
-ícone de sucesso
+ao tocar:
 
+`NOVA VENDA`
+
+o sistema ainda pode retornar para a página do carrinho.
+
+NÃO QUERO.
+
+Fluxo obrigatório:
+
+```text
 VENDA CONCLUÍDA
-
-Venda #XXXXXX
-
-R$ XX,XX
-
-Se houver produção:
-
-"Pedido enviado para produção."
-
-Se houver tickets, pode mostrar informação resumida dos tickets sem poluir.
-
-Botão principal grande:
-
+↓
 NOVA VENDA
+↓
+CATÁLOGO DA VENDA RÁPIDA
+```
 
-Usar dados que JÁ EXISTEM em:
-
-`QuickSaleResult`
-
-* `saleNumber`;
-* `total`;
-* `ticketNumbers`;
-* `productionJobCount`.
-
-Não criar chamada extra desnecessária.
-
-==================================================
-17. BOTÃO "NOVA VENDA"
-======================
-
-Ao tocar:
-
-NOVA VENDA
-
-deve ir para o CATÁLOGO da Venda Rápida.
-
-Estado esperado:
+Estado:
 
 * carrinho vazio;
-* checkout antigo removido do storage;
-* nenhum pagamento antigo;
-* nenhum pending antigo já reconciliado;
-* cliente vazio;
-* desconto zerado;
-* service fee padrão;
-* catálogo carregado;
-* pronto para adicionar produto.
-
-NÃO voltar para:
-
-* Pagamento antigo;
-* carrinho vazio isolado;
-* tela de sucesso novamente.
+* checkout anterior finalizado;
+* storage do checkout anterior limpo;
+* sem cliente antigo;
+* sem desconto antigo;
+* sem Pagamento aberto;
+* catálogo visível;
+* pronto para adicionar novo produto.
 
 ==================================================
-18. BACK DA TELA DE VENDA CONCLUÍDA
+21. VOLTAR NA TELA VENDA CONCLUÍDA
+==================================
+
+O botão físico/back do Android nessa tela também não deve levar para o carrinho antigo/vazio.
+
+Deve retornar ao CATÁLOGO limpo.
+
+`NOVA VENDA` e `BACK` após conclusão possuem o mesmo destino operacional:
+
+CATÁLOGO.
+
+==================================================
+22. ESTADO PRINCIPAL DO MÓDULO
+==============================
+
+Definir claramente:
+
+O estado base da Venda Rápida é:
+
+`CATÁLOGO`
+
+Não:
+
+`CARRINHO`.
+
+Carrinho é uma visualização temporária da venda atual.
+
+Portanto:
+
+```text
+entrada no módulo
+→ catálogo
+
+nova venda
+→ catálogo
+
+apagar carrinho
+→ catálogo
+
+venda finalizada + nova venda
+→ catálogo
+```
+
+==================================================
+23. PREPARAR COMPONENTES PARA MESAS
 ===================================
 
-Pressionar voltar na tela de sucesso NÃO pode ressuscitar:
+IMPORTANTE.
 
-* checkout finalizado;
-* Pagamento;
-* carrinho anterior.
+Depois desta missão vamos voltar para o NOVO MÓDULO DE MESAS.
 
-Pode ter o mesmo comportamento lógico de "NOVA VENDA", retornando ao catálogo limpo.
+A tela de pagamento de Mesa deve reutilizar OS MESMOS ELEMENTOS desta tela.
 
-==================================================
-19. SUCESSO SÓ APÓS BACKEND CONFIRMAR
-=====================================
+Então NÃO crie widgets excessivamente específicos de QuickSale onde não for necessário.
 
-NÃO mostrar "VENDA CONCLUÍDA" antes de:
+Extrair/reutilizar componentes visuais coerentes, por exemplo:
 
-`finalizeQuickSaleCheckout()`
+* PaymentHeader
+* RemainingAmountCard
+* PaymentMethodGrid
+* PaymentHistory
+* PaymentHistoryItem
+* PaymentFinancialSummary
+* PaymentPrimaryAction
+* PaymentSplitSelector
 
-retornar `QuickSaleResult`.
+Os nomes exatos ficam a critério da arquitetura encontrada.
 
-Se ocorrer:
+NÃO refatorar todo motor agora.
 
-* timeout;
-* erro de rede;
-* 5xx;
-* resposta incerta;
-
-NÃO mostrar sucesso.
-
-Preservar:
-
-* pending finalize;
-* idempotency key;
-* checkout;
-* mecanismo de recovery.
-
-O operador nunca pode ver sucesso se ainda não sabemos se a venda foi concluída.
+Mas deixe os COMPONENTES VISUAIS reutilizáveis.
 
 ==================================================
-20. FINALIZAÇÃO IDEMPOTENTE CONTINUA INTACTA
-============================================
+24. IMPORTANTE SOBRE SHARED PAYMENT
+===================================
 
-NÃO remover nem simplificar a lógica atual de:
+Hoje existe:
 
-* idempotency key de finalização;
-* pending `finalize`;
-* retry;
-* recovery;
-* ledger.
+`SharedPaymentPage`
 
-A correção aqui é UI/UX e lifecycle.
+Ela ainda é bastante ligada a:
 
-==================================================
-21. REVISAR ESTADOS VAZIOS E BOTÕES BLOQUEADOS
-==============================================
+`QuickSaleCheckout`.
 
-Auditar a Venda Rápida inteira para estados incoerentes como:
+NÃO precisa refatorar toda arquitetura para Mesa nesta missão.
 
-* total > 0 e carrinho com 0 itens;
-* checkout possui itens e UI mostra carrinho vazio;
-* carrinho possui itens e botão Pagamento não aparece sem motivo;
-* menu "Apagar carrinho" desaparece apesar de checkout possuir itens;
-* carrinho recuperado sem header/actions;
-* botão de pagamento desabilitado por estado visual incorreto;
-* checkout recuperado mas `_preview` não sincronizado;
-* loading permanente;
-* texto antigo depois de mutação;
-* contadores desatualizados.
+Mas:
 
-Não mascarar estado inconsistente.
+* não duplicar componentes;
+* não criar uma nova tela paralela;
+* manter os blocos visuais separados da regra específica da Venda Rápida quando possível.
 
-Se checkout oficial possui item, a UI deve representar o mesmo item.
+Na próxima etapa vamos adaptar esses mesmos componentes ao fluxo de Mesa.
 
 ==================================================
-22. REVISAR UI/UX DA VENDA RÁPIDA/PAGAMENTO
-===========================================
+25. RESPONSIVIDADE
+==================
 
-Faça busca estática pelas telas relacionadas e corrija inconsistências comprovadas de apresentação, incluindo:
+Essa UI precisa funcionar principalmente em orientação/tela de POS.
 
-* zeros desnecessários;
-* decimal usando ponto;
-* status em inglês;
-* pluralização errada;
-* contador desatualizado;
-* valor bruto do backend;
-* botões que desaparecem por estado derivado incorreto;
-* páginas vazias sem ação possível;
-* mensagem de sucesso ausente;
-* loading sem término;
-* labels técnicas.
+Usar `LayoutBuilder`/constraints conforme necessário.
 
-NÃO redesenhar o módulo inteiro.
+Em tela mais larga pode aproveitar espaço lateral.
 
-Manter identidade visual atual do CORE.
+Em tela estreita deve continuar SEM scroll da página principal.
+
+Não usar tamanhos fixos absurdos que só funcionem no aparelho atual.
 
 ==================================================
-23. TESTES OBRIGATÓRIOS
-=======================
+26. IDENTIDADE VISUAL CORE
+==========================
 
-Adicionar/corrigir testes para:
+Manter identidade atual.
 
-A)
-Recovery normal:
+Primary:
 
-Produto A
--> sair
--> entrar
+`#3454D1`
 
-Resultado:
+Não redesenhar o aplicativo inteiro.
 
-Produto A restaurado;
-contador correto;
-total correto;
-Pagamento não abre automaticamente.
+Usar:
 
-B)
-Recovery com Produto A ausente do catálogo normal.
+* surfaces claras;
+* bordas suaves;
+* hierarquia tipográfica forte;
+* botões touch-friendly;
+* espaçamento compacto;
+* estados semânticos existentes.
 
-Resultado:
-
-Produto A NÃO desaparece.
-
-C)
-Pagamento
--> voltar
--> apagar
--> cancelar backend
--> sair
--> entrar.
-
-Resultado:
-
-não recupera venda.
-
-D)
-backend responde ao cancelamento com estado diferente de `cancelled`.
-
-Resultado:
-
-storage permanece;
-carrinho permanece;
-descarte retorna false.
-
-E)
-recovery recebe 401/403/409/429.
-
-Resultado:
-
-storage permanece.
-
-F)
-recovery recebe condição autoritativa de checkout terminal/ausente.
-
-Resultado:
-
-storage é limpo conforme a regra definida.
-
-G)
-quantidade:
-
-`1.000` -> UI `1`
-`1.500` -> UI `1,5`
-
-H)
-produto fracionado permanece com quantidade correta ao editar.
-
-I)
-finalização:
-
-backend retorna:
-
-saleNumber = V000123
-total = 22.00
-
-Resultado:
-
-exibe:
-
-VENDA CONCLUÍDA
-Venda #V000123
-R$ 22,00
-NOVA VENDA
-
-J)
-tocar NOVA VENDA:
-
-volta ao catálogo;
-nenhum checkout anterior é recuperado.
-
-K)
-finalização com erro/rede incerta:
-
-NÃO mostra tela de sucesso;
-preserva retry/idempotência.
+Tela operacional, não dashboard administrativo.
 
 ==================================================
-24. NÃO ALTERAR
-===============
+27. NÃO CRIAR TESTES AUTOMATIZADOS NOVOS
+========================================
 
-NÃO mexer em:
+O teste funcional dessa UI será feito manualmente pelo proprietário do projeto.
 
-* Comanda legado;
-* novo módulo de Mesa fora do necessário;
-* Platform Admin;
-* estoque estrutural;
-* regras financeiras;
-* Stone;
-* Cielo;
-* PagBank;
-* API fiscal;
-* impressão;
-* permissões gerais.
+NÃO gastar esta missão criando novos testes Widget/integrados.
 
-NÃO substituir a idempotência existente.
-
-NÃO apagar storage inteiro.
-
-NÃO apagar estado de outro operador.
-
-NÃO apagar ledger.
-
-NÃO apagar reversal.
-
-NÃO transformar recovery em "começar nova venda sempre".
+Pode ajustar algum teste existente se a mudança estrutural quebrar compilação, mas NÃO criar nova bateria de testes.
 
 ==================================================
-25. CHECKS
+28. CHECKS
 ==========
 
-Executar:
+Executar somente o necessário para garantir integridade da alteração Flutter:
 
 * `flutter analyze`
-* `flutter test` dos testes relacionados a Venda Rápida/Pagamentos
 * `git diff --check`
 
-NÃO rodar build Android/Gradle.
+NÃO rodar Android/Gradle.
+
+NÃO fazer alterações extras para perseguir problemas fora deste escopo.
 
 ==================================================
-26. CHECKPOINT FINAL
+29. CHECKPOINT FINAL
 ====================
 
-No final informar:
+Ao terminar informar:
 
-1. causa do storage ser apagado em 4xx;
-2. regra nova para esquecer checkout;
-3. como cancelamento agora confirma `cancelled`;
-4. causa exata do "R$ 22,00 / 0 itens";
-5. como o recovery deixou de depender do catálogo normal;
-6. como preserva snapshot financeiro;
-7. como ficou contador após recovery;
-8. formatter único de quantidade;
-9. locais corrigidos de `1.000`;
-10. status técnicos traduzidos;
-11. correção de produtos fracionados;
-12. implementação da tela VENDA CONCLUÍDA;
-13. comportamento do botão NOVA VENDA;
-14. comportamento do botão voltar após sucesso;
-15. garantia de que sucesso só aparece após confirmação backend;
-16. testes adicionados;
-17. resultado do `flutter analyze`;
-18. resultado dos testes;
-19. resultado do `git diff --check`;
-20. arquivos alterados;
-21. resumo objetivo do diff.
+1. arquivos alterados;
+2. como ficou o layout estático;
+3. como evitou scroll da página principal;
+4. como ficou o header;
+5. como ficou o card FALTA/PAGO;
+6. como ficou o grid de pagamentos;
+7. como ficou pagamentos realizados;
+8. como ficou resumo financeiro;
+9. como ficou CTA FINALIZAR VENDA;
+10. correção de `1000` na validação decimal;
+11. comportamento após APAGAR CARRINHO;
+12. comportamento após NOVA VENDA;
+13. comportamento do botão voltar após venda concluída;
+14. quais componentes visuais foram deixados reutilizáveis para Mesa;
+15. resultado do `flutter analyze`;
+16. resultado do `git diff --check`;
+17. resumo objetivo do diff.
 
 DEPOIS PARE.
 
-NÃO aproveite para mexer em módulos fora do escopo.
+NÃO mexa em Mesa ainda.
+
+NÃO mexa no motor financeiro.
+
+NÃO mexa na idempotência.

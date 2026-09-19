@@ -847,8 +847,8 @@ class _QuickSalePageState extends State<QuickSalePage> {
     await _openPayment(checkout, options);
   }
 
-  Future<void> _clearCart() async {
-    if (_catalogLocked) return;
+  Future<bool> _clearCart() async {
+    if (_catalogLocked) return false;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -867,10 +867,11 @@ class _QuickSalePageState extends State<QuickSalePage> {
         ],
       ),
     );
-    if (confirmed != true || !mounted) return;
+    if (confirmed != true || !mounted) return false;
     final discarded = await widget.controller.discardQuickSaleCheckout();
-    if (!mounted || !discarded) return;
+    if (!mounted || !discarded) return false;
     setState(_resetSaleDraftState);
+    return true;
   }
 
   Future<void> _showMobileCart() async {
@@ -986,7 +987,7 @@ class _CartPage extends StatelessWidget {
   final QuickSaleDraft draft;
   final Widget Function() panel;
   final bool canClear;
-  final Future<void> Function() onClear;
+  final Future<bool> Function() onClear;
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -995,8 +996,10 @@ class _CartPage extends StatelessWidget {
           actions: [
             if (canClear && draft.cart.isNotEmpty)
               PopupMenuButton<String>(
-                onSelected: (action) {
-                  if (action == 'clear') onClear();
+                onSelected: (action) async {
+                  if (action == 'clear' && await onClear() && context.mounted) {
+                    Navigator.of(context).pop();
+                  }
                 },
                 itemBuilder: (_) => const [
                   PopupMenuItem(
@@ -1500,7 +1503,7 @@ class _CartPanel extends StatelessWidget {
   final bool editable;
   final ValueChanged<int> onEdit;
   final VoidCallback onCheckout;
-  final Future<void> Function()? onClear;
+  final Future<bool> Function()? onClear;
 
   String _itemDetails(QuickSaleCartItem item) {
     final modifiers = <String>[];
@@ -1667,7 +1670,12 @@ class _BatchQuantityDialogState extends State<BatchQuantityDialog> {
       _parsed > 0 &&
       (widget.unit.toLowerCase() != 'un' ||
           _parsed == _parsed.roundToDouble()) &&
-      _quantity.text.split(RegExp(r'[,.]')).last.length <= 3;
+      _hasAtMostThreeDecimals(_quantity.text);
+
+  bool _hasAtMostThreeDecimals(String value) {
+    final separator = RegExp(r'[,.]').firstMatch(value);
+    return separator == null || value.length - separator.end <= 3;
+  }
 
   void _adjust(int delta) {
     final current = _parsed == 0 ? 1 : _parsed;

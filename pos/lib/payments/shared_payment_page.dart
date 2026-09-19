@@ -8,7 +8,7 @@ import '../sales/sale_presentation.dart';
 import '../sales/shared_authorization_dialog.dart';
 import '../sales/shared_customer_dialog.dart';
 import '../sales/shared_discount_dialog.dart';
-import '../sales/shared_pos_widgets.dart';
+import 'shared_payment_widgets.dart';
 
 /// Reusable persistent-checkout UI. Hosts provide a checkout snapshot and POS API controller.
 class SharedPaymentPage extends StatefulWidget {
@@ -45,15 +45,10 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
   List<QuickSalePaymentMethod> get _pix => _methods
       .where((method) => method.kind == 'pix' || method.visualGroup == 'pix')
       .toList(growable: false);
-  List<QuickSalePaymentMethod> get _others => _methods
-      .where((method) =>
-          !_cash.contains(method) &&
-          !_cards.contains(method) &&
-          !_pix.contains(method))
-      .toList(growable: false);
   List<_EqualSplitPart>? _equalSplitParts;
   QuickSalePaymentAttempt? _pendingPayment;
   int? _pendingEqualSplitIndex;
+  bool _showSummaryDetails = false;
   bool get _canDiscount =>
       widget.controller.bootstrapSnapshot?.permissions
           .contains('sales.apply_discount') ??
@@ -351,6 +346,46 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     }
   }
 
+  Future<void> _showSplitSelector() => showModalBottomSheet<void>(
+        context: context,
+        builder: (context) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text('DIVIDIR PAGAMENTO',
+                    style: TextStyle(fontWeight: FontWeight.w900)),
+              ),
+              const SizedBox(height: 8),
+              ListTile(
+                leading: const Icon(Icons.call_split),
+                title: const Text('DIVIDIR IGUAL'),
+                subtitle: const Text('Dividir o saldo entre pessoas.'),
+                enabled: _checkout.canRecordPayment &&
+                    !_working &&
+                    _pendingPayment == null,
+                onTap: () {
+                  Navigator.pop(context);
+                  _selectEqualPart();
+                },
+              ),
+              if (_checkout.canPayByItems)
+                ListTile(
+                  leading: const Icon(Icons.format_list_bulleted),
+                  title: const Text('PAGAR POR ITENS'),
+                  subtitle: const Text('Escolher quais itens serão pagos.'),
+                  enabled: !_working && _pendingPayment == null,
+                  onTap: () {
+                    Navigator.pop(context);
+                    _selectItems();
+                  },
+                ),
+            ]),
+          ),
+        ),
+      );
+
   Future<QuickSalePaymentMethod?> _pickMethod(String title,
           {List<QuickSalePaymentMethod>? methods}) =>
       showModalBottomSheet<QuickSalePaymentMethod>(
@@ -447,49 +482,83 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         },
         child: Scaffold(
           appBar: AppBar(
-            title: const Text('Pagamento'),
+            title: const Text('PAGAMENTO'),
             actions: [
-              TextButton(
-                onPressed: _working ? null : _cancel,
-                child: const Text('CANCELAR'),
-              ),
               if (_checkout.canEditFinancials)
-                PopupMenuButton<_FinancialEdit>(
-                  enabled: !_working,
-                  tooltip: 'Editar financeiro',
-                  icon: const Icon(Icons.more_vert),
-                  onSelected: _editFinancials,
-                  itemBuilder: (_) => [
+                TextButton.icon(
+                  onPressed: _working
+                      ? null
+                      : () => _editFinancials(_FinancialEdit.customer),
+                  icon: const Icon(Icons.person_outline, size: 18),
+                  label: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 72),
+                    child: Text(_checkout.customer?.name ?? 'CLIENTE',
+                        overflow: TextOverflow.ellipsis),
+                  ),
+                ),
+              TextButton.icon(
+                onPressed: _working ||
+                        _pendingPayment != null ||
+                        !_checkout.canRecordPayment
+                    ? null
+                    : _showSplitSelector,
+                icon: const Icon(Icons.call_split, size: 18),
+                label: const Text('DIVIDIR'),
+              ),
+              PopupMenuButton<_PaymentAction>(
+                enabled: !_working,
+                tooltip: 'Editar financeiro',
+                icon: const Icon(Icons.more_vert),
+                onSelected: (action) {
+                  switch (action) {
+                    case _PaymentAction.cancel:
+                      _cancel();
+                    case _PaymentAction.removeCustomer:
+                      _editFinancials(_FinancialEdit.removeCustomer);
+                    case _PaymentAction.discount:
+                      _editFinancials(_FinancialEdit.discount);
+                    case _PaymentAction.itemDiscount:
+                      _editFinancials(_FinancialEdit.itemDiscount);
+                    case _PaymentAction.removeDiscount:
+                      _editFinancials(_FinancialEdit.removeDiscount);
+                    case _PaymentAction.serviceFee:
+                      _editFinancials(_FinancialEdit.serviceFee);
+                  }
+                },
+                itemBuilder: (_) => [
+                  if (_checkout.canEditFinancials && _checkout.customer != null)
                     const PopupMenuItem(
-                      value: _FinancialEdit.customer,
-                      child: Text('ALTERAR CLIENTE'),
+                      value: _PaymentAction.removeCustomer,
+                      child: Text('REMOVER CLIENTE'),
                     ),
-                    if (_checkout.customer != null)
-                      const PopupMenuItem(
-                        value: _FinancialEdit.removeCustomer,
-                        child: Text('REMOVER CLIENTE'),
-                      ),
+                  if (_checkout.canEditFinancials) ...[
                     const PopupMenuItem(
-                      value: _FinancialEdit.discount,
+                      value: _PaymentAction.discount,
                       child: Text('ALTERAR DESCONTO'),
                     ),
                     const PopupMenuItem(
-                      value: _FinancialEdit.itemDiscount,
+                      value: _PaymentAction.itemDiscount,
                       child: Text('DESCONTO POR ITEM'),
                     ),
                     if (!_checkout.discountIntent.isZero)
                       const PopupMenuItem(
-                        value: _FinancialEdit.removeDiscount,
+                        value: _PaymentAction.removeDiscount,
                         child: Text('REMOVER DESCONTO'),
                       ),
                     PopupMenuItem(
-                      value: _FinancialEdit.serviceFee,
+                      value: _PaymentAction.serviceFee,
                       child: Text(_checkout.serviceFeeWaived
                           ? 'RESTAURAR TAXA DE SERVIÇO'
                           : 'RETIRAR TAXA DE SERVIÇO'),
                     ),
                   ],
-                ),
+                  const PopupMenuDivider(),
+                  const PopupMenuItem(
+                    value: _PaymentAction.cancel,
+                    child: Text('CANCELAR VENDA'),
+                  ),
+                ],
+              ),
             ],
           ),
           body: SafeArea(
@@ -507,114 +576,97 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         ),
       );
 
-  Widget _content(BuildContext context) => ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          Text('FALTA', style: Theme.of(context).textTheme.labelLarge),
-          Text(formatMoney(_checkout.remainingAmount),
-              style: Theme.of(context).textTheme.displaySmall?.copyWith(
-                  fontWeight: FontWeight.w900, color: const Color(0xff3454d1))),
-          if (!_checkout.canEditFinancials) ...[
-            const SizedBox(height: 8),
-            const Text(
-                'Edição financeira bloqueada após o primeiro pagamento.'),
-          ],
-          const SizedBox(height: 20),
+  Widget _content(BuildContext context) => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+        child:
+            Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          PaymentBalanceCard(checkout: _checkout),
+          if (!_checkout.canEditFinancials)
+            const Padding(
+              padding: EdgeInsets.only(top: 6),
+              child: Text(
+                  'Edição financeira bloqueada após o primeiro pagamento.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 12)),
+            ),
+          const SizedBox(height: 10),
           const Text('FORMAS DE PAGAMENTO',
               style: TextStyle(fontWeight: FontWeight.w900)),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
           _methodGrid(),
-          if (_pendingPayment != null) ...[
-            const SizedBox(height: 12),
-            const Text('Há um pagamento aguardando confirmação.'),
-            OutlinedButton.icon(
-              onPressed: _working || !_checkout.canRecordPayment
-                  ? null
-                  : () => _recordPayment(_pendingPayment!),
-              icon: const Icon(Icons.refresh),
-              label: const Text('TENTAR NOVAMENTE'),
-            ),
-          ],
-          const SizedBox(height: 12),
-          Wrap(spacing: 8, children: [
-            if (_checkout.canPayByItems)
-              OutlinedButton.icon(
-                  onPressed: _working ||
-                          _pendingPayment != null ||
-                          !_checkout.canRecordPayment
-                      ? null
-                      : _selectItems,
-                  icon: const Icon(Icons.format_list_bulleted),
-                  label: const Text('PAGAR POR ITENS')),
-            OutlinedButton.icon(
-                onPressed: _working ||
-                        _pendingPayment != null ||
-                        !_checkout.canRecordPayment
+          if (_pendingPayment != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: OutlinedButton.icon(
+                onPressed: _working || !_checkout.canRecordPayment
                     ? null
-                    : _selectEqualPart,
-                icon: const Icon(Icons.call_split),
-                label: const Text('DIVIDIR IGUAL')),
-          ]),
-          const SizedBox(height: 24),
+                    : () => _recordPayment(_pendingPayment!),
+                icon: const Icon(Icons.refresh),
+                label: const Text('TENTAR NOVAMENTE'),
+              ),
+            ),
+          const SizedBox(height: 10),
           const Text('PAGAMENTOS REALIZADOS',
               style: TextStyle(fontWeight: FontWeight.w900)),
-          const SizedBox(height: 8),
-          if (_checkout.payments
-              .where((payment) => !payment.isReversal)
-              .isEmpty)
-            const Text('Nenhum pagamento registrado.'),
-          for (final payment
-              in _checkout.payments.where((payment) => !payment.isReversal))
-            _history(payment),
-        ],
+          const SizedBox(height: 4),
+          Expanded(child: _paymentHistory()),
+        ]),
       );
 
   Widget _methodGrid() {
-    final directStandardMethods = _methods.length == 4 &&
-        _cash.length == 1 &&
-        _pix.length == 1 &&
-        _cards.length == 2 &&
-        _cards.any((method) => method.kind == 'credit') &&
-        _cards.any((method) => method.kind == 'debit');
-    final top = <_MethodTile>[
-      if (directStandardMethods)
-        for (final method in [
-          _cash.single,
-          _cards.firstWhere((method) => method.kind == 'credit'),
-          _cards.firstWhere((method) => method.kind == 'debit'),
-          _pix.single,
-        ])
-          _MethodTile(method.name, _icon(method), () => _choose(method))
-      else ...[
-        if (_cash.isNotEmpty)
-          _groupTile('Dinheiro', Icons.payments_outlined, _cash),
-        if (_cards.isNotEmpty) _groupTile('Cartão', Icons.credit_card, _cards),
-        if (_pix.isNotEmpty) _groupTile('PIX', Icons.qr_code_2, _pix),
-        if (_others.isNotEmpty) _groupTile('Outros', Icons.more_horiz, _others),
-      ],
+    final debit = _methods
+        .where((method) =>
+            method.kind == 'debit' ||
+            method.code.toLowerCase().contains('debit'))
+        .toList(growable: false);
+    final credit = _methods
+        .where((method) =>
+            method.kind == 'credit' ||
+            method.code.toLowerCase().contains('credit'))
+        .toList(growable: false);
+    final groupedIds = <int>{
+      ..._cash.map((method) => method.id),
+      ...debit.map((method) => method.id),
+      ..._pix.map((method) => method.id),
+      ...credit.map((method) => method.id),
+    };
+    final cards = _cards
+        .where((method) => !groupedIds.contains(method.id))
+        .toList(growable: false);
+    groupedIds.addAll(cards.map((method) => method.id));
+    final others = _methods
+        .where((method) => !groupedIds.contains(method.id))
+        .toList(growable: false);
+    final tiles = <_MethodTile>[
+      if (_cash.isNotEmpty)
+        _groupTile('Dinheiro', Icons.payments_outlined, _cash),
+      if (debit.isNotEmpty) _groupTile('Débito', Icons.credit_card, debit),
+      if (_pix.isNotEmpty) _groupTile('PIX', Icons.qr_code_2, _pix),
+      if (credit.isNotEmpty) _groupTile('Crédito', Icons.credit_card, credit),
+      if (cards.isNotEmpty) _groupTile('Cartão', Icons.credit_card, cards),
+      if (others.isNotEmpty) _groupTile('Outros', Icons.more_horiz, others),
     ];
-    return GridView.count(
-      crossAxisCount: MediaQuery.sizeOf(context).width < 520 ? 2 : 4,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      childAspectRatio: 1.7,
-      children: top
-          .map((tile) => Card(
-              child: InkWell(
-                  onTap: _working ||
-                          _pendingPayment != null ||
-                          !_checkout.canRecordPayment
-                      ? null
-                      : tile.onTap,
-                  child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(tile.icon),
-                        const SizedBox(height: 5),
-                        Text(tile.label,
-                            style: const TextStyle(fontWeight: FontWeight.w800))
-                      ]))))
-          .toList(),
+    final rows = (tiles.length / 2).ceil().clamp(1, 3).toDouble();
+    return SizedBox(
+      height: rows * 76,
+      child: GridView.count(
+        crossAxisCount: 2,
+        mainAxisSpacing: 8,
+        crossAxisSpacing: 8,
+        physics: const NeverScrollableScrollPhysics(),
+        children: [
+          for (final tile in tiles)
+            PaymentMethodButton(
+              label: tile.label,
+              icon: tile.icon,
+              onTap: _working ||
+                      _pendingPayment != null ||
+                      !_checkout.canRecordPayment
+                  ? null
+                  : tile.onTap,
+            ),
+        ],
+      ),
     );
   }
 
@@ -646,82 +698,46 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         equalSplitIndex: selection.index);
   }
 
-  Widget _history(QuickSaleCheckoutPayment payment) {
-    final reversed = _checkout.hasReversalFor(payment.id);
-    final subtitle = reversed
-        ? quickSaleStatusLabel('reversed')
-        : payment.status != 'applied'
-            ? quickSaleStatusLabel(payment.status)
-            : payment.receivedAmount == null
-                ? quickSaleStatusLabel(payment.status)
-                : 'Recebido ${formatMoney(payment.receivedAmount!)}  Troco ${formatMoney(payment.changeAmount ?? '0.00')}';
-    return Card(
-      child: ListTile(
-        leading: Icon(reversed ? Icons.undo : Icons.check_circle_outline,
-            color: reversed ? Colors.red : const Color(0xff16803c)),
-        title: Text(payment.methodName),
-        subtitle: Text(subtitle),
-        trailing: reversed || !_checkout.canReversePayment
-            ? Text(formatMoney(payment.amount))
-            : Row(mainAxisSize: MainAxisSize.min, children: [
-                Text(formatMoney(payment.amount)),
-                IconButton(
-                    onPressed: _working ? null : () => _reverse(payment),
-                    tooltip: 'Estornar',
-                    icon: const Icon(Icons.undo))
-              ]),
-      ),
+  Widget _paymentHistory() {
+    final payments = _checkout.payments
+        .where((payment) => !payment.isReversal)
+        .toList(growable: false);
+    if (payments.isEmpty) {
+      return const Center(child: Text('Nenhum pagamento registrado.'));
+    }
+    return ListView.separated(
+      padding: EdgeInsets.zero,
+      itemCount: payments.length,
+      separatorBuilder: (_, __) => const Divider(height: 1),
+      itemBuilder: (_, index) {
+        final payment = payments[index];
+        return PaymentHistoryItem(
+          payment: payment,
+          reversed: _checkout.hasReversalFor(payment.id),
+          canReverse: _checkout.canReversePayment,
+          working: _working,
+          onReverse: () => _reverse(payment),
+        );
+      },
     );
   }
 
-  Widget _summary(BuildContext context) => Material(
-        color: Colors.white,
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Text('RESUMO',
-                    style: TextStyle(fontWeight: FontWeight.w900)),
-                const SizedBox(height: 12),
-                SharedTotalsPanel(lines: [
-                  SharedTotalsLine(
-                      label: 'Subtotal', value: _checkout.preview.subtotal),
-                  SharedTotalsLine(
-                      label: 'Promoções',
-                      value: _checkout.preview.promotionDiscountTotal,
-                      negative: true),
-                  SharedTotalsLine(
-                      label: 'Descontos por item',
-                      value: _checkout.preview.itemDiscountTotal,
-                      negative: true),
-                  SharedTotalsLine(
-                      label: 'Desconto da venda',
-                      value: _checkout.preview.discount,
-                      negative: true),
-                  SharedTotalsLine(
-                      label: 'Taxa de serviço',
-                      value: _checkout.preview.serviceFeeAmount),
-                  SharedTotalsLine(
-                      label: 'Total',
-                      value: _checkout.preview.total,
-                      strong: true),
-                  SharedTotalsLine(label: 'Pago', value: _checkout.paidAmount),
-                  SharedTotalsLine(
-                      label: 'Falta',
-                      value: _checkout.remainingAmount,
-                      strong: true),
-                ]),
-                const SizedBox(height: 16),
-                if (_checkout.canFinalize)
-                  FilledButton(
-                      onPressed: _working ? null : _finish,
-                      child: _working
-                          ? const CircularProgressIndicator()
-                          : const Text('FINALIZAR VENDA')),
-              ]),
-        ),
+  Widget _summary(BuildContext context) => PaymentFinancialSummary(
+        checkout: _checkout,
+        showDetails: _showSummaryDetails,
+        onToggleDetails: () =>
+            setState(() => _showSummaryDetails = !_showSummaryDetails),
+        primaryAction: _checkout.canFinalize
+            ? FilledButton(
+                onPressed: _working ? null : _finish,
+                child: _working
+                    ? const SizedBox(
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator())
+                    : const Text('FINALIZAR VENDA'),
+              )
+            : null,
       );
 
   IconData _icon(QuickSalePaymentMethod method) => switch (method.kind) {
@@ -746,6 +762,15 @@ enum _FinancialEdit {
   itemDiscount,
   removeDiscount,
   serviceFee
+}
+
+enum _PaymentAction {
+  cancel,
+  removeCustomer,
+  discount,
+  itemDiscount,
+  removeDiscount,
+  serviceFee,
 }
 
 class _PaymentIntent {
