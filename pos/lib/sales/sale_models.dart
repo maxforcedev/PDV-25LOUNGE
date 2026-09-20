@@ -464,7 +464,6 @@ class QuickSaleCheckout {
     required this.paidAmount,
     required this.remainingAmount,
     required this.hasPaymentHistory,
-    required this.cashSessionId,
     required this.discountIntent,
     required this.serviceFeeWaived,
     required this.items,
@@ -488,7 +487,6 @@ class QuickSaleCheckout {
         paidAmount: json['paid_amount'] as String? ?? '0.00',
         remainingAmount: json['remaining_amount'] as String? ?? '0.00',
         hasPaymentHistory: json['has_payment_history'] as bool? ?? false,
-        cashSessionId: json['cash_session'] as int,
         discountIntent: QuickSaleDiscountIntent.fromJson(
             json['discount_intent'] as Map<String, dynamic>? ?? const {}),
         serviceFeeWaived: json['service_fee_waived'] as bool? ?? false,
@@ -517,7 +515,6 @@ class QuickSaleCheckout {
   final String paidAmount;
   final String remainingAmount;
   final bool hasPaymentHistory;
-  final int cashSessionId;
   final QuickSaleDiscountIntent discountIntent;
   final bool serviceFeeWaived;
   final List<QuickSaleCheckoutItem> items;
@@ -677,9 +674,9 @@ class QuickSaleCashSession {
 class QuickSaleCheckoutOptions {
   const QuickSaleCheckoutOptions({
     required this.paymentMethods,
-    required this.cashSessions,
     required this.cashBindingMode,
     required this.cashRequired,
+    required this.cashReady,
     required this.fixedCashAvailable,
     this.fixedRegisterName,
   });
@@ -690,23 +687,43 @@ class QuickSaleCheckoutOptions {
             .cast<Map<String, dynamic>>()
             .map(QuickSalePaymentMethod.fromJson)
             .toList(growable: false),
-        cashSessions: (json['cash_sessions'] as List<dynamic>? ?? const [])
-            .cast<Map<String, dynamic>>()
-            .map(QuickSaleCashSession.fromJson)
-            .toList(growable: false),
         cashBindingMode: json['cash_binding_mode'] as String? ?? 'FLEXIBLE',
         cashRequired: json['cash_required'] as bool? ?? true,
+        cashReady: json['cash_ready'] as bool? ?? false,
         fixedCashAvailable: json['fixed_cash_available'] as bool? ?? true,
         fixedRegisterName: (json['fixed_register']
             as Map<String, dynamic>?)?['name'] as String?,
       );
 
   final List<QuickSalePaymentMethod> paymentMethods;
-  final List<QuickSaleCashSession> cashSessions;
   final String cashBindingMode;
   final bool cashRequired;
+  final bool cashReady;
   final bool fixedCashAvailable;
   final String? fixedRegisterName;
+}
+
+/// Legacy command checkout still selects a cash session explicitly.
+class LegacyCheckoutOptions {
+  const LegacyCheckoutOptions({
+    required this.paymentMethods,
+    this.cashSessions = const [],
+  });
+
+  factory LegacyCheckoutOptions.fromJson(Map<String, dynamic> json) =>
+      LegacyCheckoutOptions(
+        paymentMethods: (json['payment_methods'] as List<dynamic>? ?? const [])
+            .cast<Map<String, dynamic>>()
+            .map(QuickSalePaymentMethod.fromJson)
+            .toList(growable: false),
+        cashSessions: (json['cash_sessions'] as List<dynamic>? ?? const [])
+            .cast<Map<String, dynamic>>()
+            .map(QuickSaleCashSession.fromJson)
+            .toList(growable: false),
+      );
+
+  final List<QuickSalePaymentMethod> paymentMethods;
+  final List<QuickSaleCashSession> cashSessions;
 }
 
 class QuickSaleResult {

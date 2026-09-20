@@ -256,7 +256,7 @@ class TablePaymentSerializer(serializers.ModelSerializer):
         model = TablePayment
         fields = (
             'id', 'attendance', 'payment_method', 'payment_method_name', 'payment_method_code', 'amount', 'received_amount',
-            'change_amount', 'cash_session', 'operator', 'status', 'idempotency_key',
+            'change_amount', 'operator', 'status', 'idempotency_key',
             'reversal_of', 'reversal_reason', 'allocations', 'created_at',
         )
         read_only_fields = fields
@@ -271,6 +271,7 @@ class TableAttendanceOpenSerializer(serializers.Serializer):
 
 
 class TablePaymentInputSerializer(AttendancePaymentInputSerializer):
+    cash_session = None
     amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0.01'), required=False)
     mode = serializers.ChoiceField(choices=('value', 'remaining', 'equal_people', 'items'), required=False, default='value')
     allocations = serializers.ListField(child=serializers.DictField(), required=False, default=list)
@@ -350,4 +351,3 @@ class TableCheckoutContextSerializer(serializers.Serializer):
 
 class TableCloseSerializer(serializers.Serializer):
     idempotency_key = serializers.UUIDField()
-    cash_session = serializers.IntegerField(min_value=1, required=False, allow_null=True)

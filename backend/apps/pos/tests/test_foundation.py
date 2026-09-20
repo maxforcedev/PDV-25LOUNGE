@@ -25,7 +25,7 @@ from apps.companies.services import (
 )
 from apps.pos.models import (
     AuthenticationChallenge, BranchPOSSettings, POSDevice, POSDeviceSettings,
-    POSOperatorPinAttempt, POSOperatorSession, POSRequestRateLimit,
+    POSOperatorPinAttempt, POSOperatorSession, POSRequestRateLimit, QuickSalePayment,
 )
 from apps.pos.services import (
     _mask_email, authenticate_device, authenticate_operator_session,
@@ -910,6 +910,71 @@ class POSFoundationIntegrationTests(TestCase):
             format='json',
         )
         self.assertEqual(blocked_entry.status_code, 403, blocked_entry.data)
+
+    def test_pos_cash_context_is_persisted_and_flexible_session_can_be_selected(self):
+        operator, paired = self.login_pos_operator()
+        first = CashRegister.objects.create(branch=self.branch, name='Balcão')
+        second = CashRegister.objects.create(branch=self.branch, name='Pista')
+        BranchPOSSettings.objects.create(
+            branch=self.branch, cash_binding_mode='FLEXIBLE',
+        )
+
+        opened = self.client.post(
+            reverse('pos:cash-session-open'),
+            {'register': first.pk, 'opening_amount': '10.00'}, format='json',
+        )
+
+        self.assertEqual(opened.status_code, 201, opened.data)
+        device = POSDevice.objects.get(pk=paired.data['device']['id'])
+        self.assertEqual(device.active_cash_session_id, opened.data['id'])
+        other_session = open_session(
+            second, '0.00', operator, self.branch, allow_pos_only=True,
+        )
+        selected = self.client.post(
+            reverse('pos:cash-session-select'), {'register': second.pk}, format='json',
+        )
+
+        self.assertEqual(selected.status_code, 200, selected.data)
+        device.refresh_from_db()
+        self.assertEqual(device.active_cash_session_id, other_session.pk)
+        self.assertTrue(selected.data['cash_state']['active_session'])
+
+    def test_quick_checkout_binds_non_cash_tender_to_active_device_session(self):
+        _operator, _paired = self.login_pos_operator()
+        register = CashRegister.objects.create(branch=self.branch, name='Quick checkout cash')
+        BranchPOSSettings.objects.create(branch=self.branch, cash_binding_mode='FLEXIBLE')
+        opened = self.client.post(
+            reverse('pos:cash-session-open'),
+            {'register': register.pk, 'opening_amount': '0.00'}, format='json',
+        )
+        self.assertEqual(opened.status_code, 201, opened.data)
+        payload = self.pos_sale_payload(SimpleNamespace(pk=opened.data['id']))
+        checkout = self.client.post(
+            reverse('pos:quick-checkout-create'),
+            {key: value for key, value in payload.items() if key not in {'cash_session', 'payments'}},
+            format='json',
+        )
+        self.assertEqual(checkout.status_code, 201, checkout.data)
+        non_cash_method = next(
+            method for method in ensure_default_payment_methods(self.company)
+            if method.code != 'cash'
+        )
+        recorded = self.client.post(
+            reverse('pos:quick-checkout-payment', args=[checkout.data['id']]),
+            {
+                'payment_method': non_cash_method.pk,
+                'mode': 'value',
+                'amount': '20.00',
+                'idempotency_key': str(uuid4()),
+            },
+            format='json',
+        )
+
+        self.assertEqual(recorded.status_code, 200, recorded.data)
+        self.assertEqual(
+            QuickSalePayment.objects.get(checkout_id=checkout.data['id']).cash_session_id,
+            opened.data['id'],
+        )
 
     def test_pos_superuser_without_effective_sales_create_cannot_start_sale(self):
         operator, _ = self.login_pos_operator()

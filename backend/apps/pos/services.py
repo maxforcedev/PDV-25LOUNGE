@@ -728,6 +728,33 @@ def effective_cash_settings(device):
     return mode, register
 
 
+def current_pos_cash_session(device, *, for_update=False):
+    """Return the only cash session POS financial operations may use."""
+    devices = POSDevice.objects
+    if for_update:
+        devices = devices.select_for_update()
+    device = devices.select_related(
+        'branch__company', 'active_cash_session__cash_register',
+    ).get(pk=device.pk)
+    session = device.active_cash_session
+    if session is None:
+        _error('pos_cash_not_ready', 'Nenhum caixa está aberto neste POS.', status_code=409)
+    if (
+        session.branch_id != device.branch_id
+        or session.status != CashSessionStatus.OPEN
+        or session.cash_register.status != CashRegisterStatus.ACTIVE
+    ):
+        _error('pos_cash_not_ready', 'O caixa ativo deste POS não está disponível.', status_code=409)
+    mode, fixed_register = effective_cash_settings(device)
+    if mode == 'FIXED' and (
+        fixed_register is None
+        or fixed_register.status != CashRegisterStatus.ACTIVE
+        or session.cash_register_id != fixed_register.pk
+    ):
+        _error('pos_fixed_cash_required', 'Este dispositivo só pode operar no caixa fixo configurado.', status_code=409)
+    return session
+
+
 def _cash_session_data(session, *, include_opening_amount, permission_codes, operator):
     if not session:
         return None
@@ -779,16 +806,14 @@ def _cash_register_data(register, *, include_opening_amount, permission_codes, o
 
 
 def cash_state_for_device(device, permission_codes, operator=None):
-    """Build the POS cash state without inferring a selected flexible register."""
+    """Build the POS cash state from the persisted device context."""
     mode, configured_register = effective_cash_settings(device)
-    open_sessions = CashSession.objects.filter(
-        status=CashSessionStatus.OPEN,
-    ).select_related('cash_register', 'opened_by')
-    registers = CashRegister.objects.filter(
-        branch=device.branch,
-    ).prefetch_related(Prefetch(
-        'sessions', queryset=open_sessions, to_attr='pos_open_sessions',
-    ))
+    active_session_id = device.active_cash_session_id
+    active_session = CashSession.objects.filter(
+        pk=active_session_id, branch=device.branch, status=CashSessionStatus.OPEN,
+        cash_register__status=CashRegisterStatus.ACTIVE,
+    ).select_related('cash_register', 'opened_by').first()
+    registers = CashRegister.objects.filter(branch=device.branch)
     include_opening_amount = 'cash_registers.view' in permission_codes
     state = {
         'mode': mode,
@@ -801,6 +826,14 @@ def cash_state_for_device(device, permission_codes, operator=None):
                 'cash_registers.close', 'cash_registers.administer_others',
             })),
         },
+        'active_register': (
+            {'id': active_session.cash_register_id, 'name': active_session.cash_register.name}
+            if active_session else None
+        ),
+        'active_session': _cash_session_data(
+            active_session, include_opening_amount=include_opening_amount,
+            permission_codes=permission_codes, operator=operator,
+        ),
     }
     if mode == 'FIXED':
         register = registers.filter(pk=getattr(configured_register, 'pk', None)).first()
@@ -809,19 +842,25 @@ def cash_state_for_device(device, permission_codes, operator=None):
             'name': register.name,
             'status': register.status,
         } if register else None)
-        sessions = getattr(register, 'pos_open_sessions', ()) if register else ()
         state['session'] = _cash_session_data(
-            sessions[0] if sessions else None,
+            active_session if register and active_session and active_session.cash_register_id == register.pk else None,
             include_opening_amount=include_opening_amount,
             permission_codes=permission_codes,
             operator=operator,
         )
         return state
     state['registers'] = [
-        _cash_register_data(
-            register, include_opening_amount=include_opening_amount,
-            permission_codes=permission_codes, operator=operator,
-        )
+        {
+            **_cash_register_data(
+                register, include_opening_amount=include_opening_amount,
+                permission_codes=permission_codes, operator=operator,
+            ),
+            'session': _cash_session_data(
+                active_session if active_session and active_session.cash_register_id == register.pk else None,
+                include_opening_amount=include_opening_amount,
+                permission_codes=permission_codes, operator=operator,
+            ),
+        }
         for register in registers.filter(status=CashRegisterStatus.ACTIVE).order_by('name', 'pk')
     ]
     return state

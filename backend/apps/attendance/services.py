@@ -1427,10 +1427,10 @@ def set_table_checkout_context(*, attendance, user, discount, service_fee_waived
 
 
 @transaction.atomic
-def record_table_payment(*, attendance, user, payment_method_id, amount=None, mode='value', idempotency_key=None,
-                         cash_session_id=None, received_amount=None, allocations=None,
+def record_table_payment(*, attendance, user, payment_method_id, pos_device, amount=None, mode='value', idempotency_key=None,
+                         received_amount=None, allocations=None,
                          discount=None, discount_authorization=None, service_fee_waived=None,
-                         service_fee_authorization=None, pos_device=None, pos_permission_codes=None,
+                         service_fee_authorization=None, pos_permission_codes=None,
                          audit_metadata=None):
     from .models import TableAttendance, TableAttendanceStatus, TablePayment, TablePaymentAllocation
     received_amount = strict_decimal(received_amount, field='received_amount', decimal_places=2, max_digits=14, allow_none=True)
@@ -1438,7 +1438,7 @@ def record_table_payment(*, attendance, user, payment_method_id, amount=None, mo
     if attendance.status != TableAttendanceStatus.OPEN:
         raise AttendanceConflict('table_closed', 'Pagamentos exigem mesa aberta.')
     request_payload = {'attendance': attendance.pk, 'mode': mode, 'payment_method': payment_method_id,
-        'amount': str(amount) if amount is not None else None, 'cash_session': cash_session_id,
+        'amount': str(amount) if amount is not None else None,
         'received_amount': str(received_amount) if received_amount is not None else None,
         'allocations': allocations or [], 'discount': str(discount) if discount is not None else None,
         'service_fee_waived': service_fee_waived}
@@ -1453,13 +1453,14 @@ def record_table_payment(*, attendance, user, payment_method_id, amount=None, mo
     method = PaymentMethod.objects.select_for_update().filter(pk=payment_method_id, company=attendance.company, status=Status.ACTIVE).first()
     if not method:
         raise ValidationError({'payment_method': 'Forma de pagamento inválida ou inativa.'})
-    session = None
-    if method.code == PaymentMethodCode.CASH:
-        session = CashSession.objects.select_for_update().filter(pk=cash_session_id, branch=attendance.branch, status=CashSessionStatus.OPEN).first()
-        if not session:
-            raise ValidationError({'cash_session': 'Dinheiro exige sessão de caixa aberta na filial.'})
-    elif cash_session_id is not None or received_amount is not None:
-        raise ValidationError({'payment_method': 'Somente dinheiro aceita sessão, recebido e troco.'})
+    if pos_device.branch_id != attendance.branch_id:
+        raise ValidationError({'pos_device': 'O dispositivo deve pertencer à filial da mesa.'})
+    # Keep the POS cash dependency local: pos.views imports this service.
+    from apps.pos.services import current_pos_cash_session
+
+    session = current_pos_cash_session(pos_device, for_update=True)
+    if method.code != PaymentMethodCode.CASH and received_amount is not None:
+        raise ValidationError({'payment_method': 'Somente dinheiro aceita recebido e troco.'})
     requested_discount = strict_decimal(discount if discount is not None else attendance.checkout_discount, field='discount', decimal_places=2, max_digits=14)
     requested_waiver = attendance.checkout_service_fee_waived if service_fee_waived is None else bool(service_fee_waived)
     has_payment = TablePayment.objects.select_for_update().filter(attendance=attendance, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True).exists()
@@ -1510,7 +1511,7 @@ def record_table_payment(*, attendance, user, payment_method_id, amount=None, mo
         raise ValidationError({'received_amount': 'Dinheiro exige valor recebido igual ou maior ao aplicado.'})
     operation, replayed = _operation(branch=attendance.branch, operation_type=AttendanceOperationType.TABLE_PAYMENT,
         idempotency_key=idempotency_key, payload={'attendance': attendance.pk, 'payment_method': payment_method_id,
-        'mode': mode, 'amount': str(amount), 'cash_session': cash_session_id, 'received_amount': str(received_amount) if received_amount is not None else None, 'allocations': allocations or []})
+        'mode': mode, 'amount': str(amount), 'cash_session': session.pk, 'received_amount': str(received_amount) if received_amount is not None else None, 'allocations': allocations or []})
     if replayed:
         return TablePayment.objects.get(pk=operation.result['payment_id']), True
     if amount > remaining:
@@ -1671,7 +1672,7 @@ def set_table_bill_requested(*, attendance, user, requested, idempotency_key, au
 
 
 @transaction.atomic
-def close_table_attendance(*, attendance, user, idempotency_key, cash_session_id=None, audit_metadata=None):
+def close_table_attendance(*, attendance, user, idempotency_key, pos_device, audit_metadata=None):
     from .models import TableAttendance, TableAttendanceStatus, TableOrderItem, TablePayment
     attendance = TableAttendance.objects.select_for_update().get(pk=attendance.pk)
     operation, replayed = _operation(branch=attendance.branch, operation_type=AttendanceOperationType.TABLE_CLOSE,
@@ -1689,21 +1690,34 @@ def close_table_attendance(*, attendance, user, idempotency_key, cash_session_id
     payments = list(TablePayment.objects.select_for_update().select_related('payment_method', 'cash_session').filter(
         attendance=attendance, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
     ).order_by('pk'))
+    historical_payments = list(TablePayment.objects.select_for_update().filter(
+        attendance=attendance, reversal_of__isnull=True,
+    ))
+    cash_session = None
+    if historical_payments:
+        if pos_device.branch_id != attendance.branch_id:
+            raise ValidationError({'pos_device': 'O dispositivo deve pertencer à filial da mesa.'})
+        # Keep the POS cash dependency local: pos.views imports this service.
+        from apps.pos.services import current_pos_cash_session
+
+        cash_session = current_pos_cash_session(pos_device, for_update=True)
+        if any(payment.cash_session_id != cash_session.pk for payment in historical_payments):
+            raise AttendanceConflict(
+                'table_cash_session_mismatch',
+                'Os pagamentos da mesa pertencem a outro contexto de caixa.',
+            )
     if not confirmed and not payments:
         sale = None
     else:
         if not confirmed or (preview['total'] > Decimal('0.00') and not payments):
             raise AttendanceConflict('table_not_finalizable', 'A mesa precisa possuir itens e pagamentos válidos para fechar.')
-        cash_sessions = {payment.cash_session for payment in payments if payment.cash_session_id}
-        if len(cash_sessions) > 1:
-            raise AttendanceConflict('table_cash_session_mismatch', 'Os pagamentos em dinheiro pertencem a sessões de caixa diferentes.')
-        cash_session = next(iter(cash_sessions), None)
-        if cash_session is None and cash_session_id is not None:
-            cash_session = CashSession.objects.select_for_update().filter(
-                pk=cash_session_id, branch=attendance.branch, status=CashSessionStatus.OPEN,
-            ).first()
         if cash_session is None:
-            raise ValidationError({'cash_session': 'Informe a sessão de caixa aberta que consolidará a Mesa.'})
+            if pos_device.branch_id != attendance.branch_id:
+                raise ValidationError({'pos_device': 'O dispositivo deve pertencer à filial da mesa.'})
+            # Keep the POS cash dependency local: pos.views imports this service.
+            from apps.pos.services import current_pos_cash_session
+
+            cash_session = current_pos_cash_session(pos_device, for_update=True)
         sale = finalize_sale(
         branch=attendance.branch, user=user, operation_type=OperationType.SALE, cash_session=cash_session,
         items=None, payments=[{'payment_method': payment.payment_method_id, 'amount': payment.amount, 'received_amount': payment.received_amount} for payment in payments],
@@ -1712,7 +1726,7 @@ def close_table_attendance(*, attendance, user, idempotency_key, cash_session_id
         checkout_service_fee_waived_by=attendance.checkout_service_fee_waived_by,
         idempotency_key=idempotency_key, channel=SalesChannel.TABLE, seller_user=attendance.seller_user or attendance.opened_by, customer=attendance.customer,
         confirmed_order_items=confirmed, internal_permission_code='tables.close', precomputed_financials=preview,
-            table_payment_sources=payments, pos_device=None, audit_metadata=audit_metadata,
+            table_payment_sources=payments, pos_device=pos_device, audit_metadata=audit_metadata,
         )
     attendance.status, attendance.closed_at, attendance.closed_by = TableAttendanceStatus.CLOSED, timezone.now(), user
     attendance.sale = sale

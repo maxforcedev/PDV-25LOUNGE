@@ -132,7 +132,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
   }
 
   bool get _cashReady =>
-      _checkoutOptions != null && _checkoutOptions!.cashSessions.isNotEmpty;
+      _checkoutOptions != null && _checkoutOptions!.cashReady;
   bool get _checkoutReady =>
       _cashReady && _checkoutOptions!.paymentMethods.isNotEmpty;
   bool get _canOpenCash =>
@@ -319,29 +319,6 @@ class _QuickSalePageState extends State<QuickSalePage> {
       builder: (_) => CashPage(controller: widget.controller),
     ));
     if (mounted) await _loadCheckoutOptions();
-  }
-
-  Future<QuickSaleCashSession?> _pickCashSession(
-      QuickSaleCheckoutOptions options) async {
-    if (options.cashSessions.length == 1) return options.cashSessions.single;
-    return showDialog<QuickSaleCashSession>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Selecione o caixa'),
-        content: SizedBox(
-          width: 360,
-          child: ListView(
-            shrinkWrap: true,
-            children: options.cashSessions
-                .map((session) => ListTile(
-                      title: Text(session.registerName),
-                      onTap: () => Navigator.pop(context, session),
-                    ))
-                .toList(growable: false),
-          ),
-        ),
-      ),
-    );
   }
 
   Future<void> _barcode({bool showNotFound = true}) async {
@@ -831,11 +808,8 @@ class _QuickSalePageState extends State<QuickSalePage> {
     if (!_checkoutReady || _cart.isEmpty || _preview == null) return;
     widget.controller.logPosAction('checkout_open');
     final options = _checkoutOptions!;
-    final cashSession = await _pickCashSession(options);
-    if (!mounted || cashSession == null) return;
     final checkout = await widget.controller.createQuickSaleCheckout(
       items: _cart.map((item) => item.toJson()).toList(growable: false),
-      cashSessionId: cashSession.id,
       discount: _discount.toJson(),
       serviceFeeWaived: _serviceFeeWaived,
       customer: _draft.customer,

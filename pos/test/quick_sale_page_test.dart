@@ -326,7 +326,6 @@ final _recoveredCheckout = QuickSaleCheckout(
   paidAmount: '0.00',
   remainingAmount: '10.00',
   hasPaymentHistory: false,
-  cashSessionId: 1,
   discountIntent: const QuickSaleDiscountIntent(),
   serviceFeeWaived: false,
   items: const [
@@ -369,7 +368,6 @@ final _recoveredCheckoutWithoutCatalogProduct = QuickSaleCheckout(
   paidAmount: '0.00',
   remainingAmount: '10.00',
   hasPaymentHistory: false,
-  cashSessionId: 1,
   discountIntent: const QuickSaleDiscountIntent(),
   serviceFeeWaived: false,
   items: const [
@@ -438,9 +436,9 @@ class _QuickSaleApi implements PosApi {
         paymentMethods: [
           QuickSalePaymentMethod(id: 1, code: 'cash', name: 'Dinheiro')
         ],
-        cashSessions: [QuickSaleCashSession(id: 1, registerName: 'Caixa')],
         cashBindingMode: 'FLEXIBLE',
         cashRequired: true,
+        cashReady: true,
         fixedCashAvailable: true,
       );
 

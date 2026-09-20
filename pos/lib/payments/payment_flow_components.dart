@@ -260,45 +260,6 @@ class PaymentMethodPicker extends StatelessWidget {
       );
 }
 
-class PaymentCashSessionPicker extends StatelessWidget {
-  const PaymentCashSessionPicker({
-    required this.title,
-    required this.sessions,
-    super.key,
-  });
-
-  final String title;
-  final List<QuickSaleCashSession> sessions;
-
-  static Future<int?> show(
-    BuildContext context, {
-    required String title,
-    required List<QuickSaleCashSession> sessions,
-  }) =>
-      showDialog<int>(
-        context: context,
-        builder: (_) =>
-            PaymentCashSessionPicker(title: title, sessions: sessions),
-      );
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: Text(title),
-        content: SizedBox(
-          width: 360,
-          child: ListView(
-            shrinkWrap: true,
-            children: sessions
-                .map((session) => ListTile(
-                      title: Text(session.registerName),
-                      onTap: () => Navigator.pop(context, session.id),
-                    ))
-                .toList(growable: false),
-          ),
-        ),
-      );
-}
-
 class PaymentHistoryList extends StatelessWidget {
   const PaymentHistoryList({
     required this.entries,
@@ -353,14 +314,12 @@ class PaymentEntryResult {
     required this.intentId,
     required this.amount,
     required this.receivedAmount,
-    required this.cashSessionId,
     required this.payingRemaining,
   });
 
   final String intentId;
   final String amount;
   final String? receivedAmount;
-  final int? cashSessionId;
   final bool payingRemaining;
 }
 
@@ -371,7 +330,6 @@ class PaymentEntryPage extends StatefulWidget {
     required this.amountContext,
     this.initialAmount,
     this.amountLocked = false,
-    this.cashSessionId,
     super.key,
   });
 
@@ -380,7 +338,6 @@ class PaymentEntryPage extends StatefulWidget {
   final String? initialAmount;
   final bool amountLocked;
   final PaymentAmountContext amountContext;
-  final int? cashSessionId;
 
   @override
   State<PaymentEntryPage> createState() => _PaymentEntryPageState();
@@ -643,9 +600,6 @@ class _PaymentEntryPageState extends State<PaymentEntryPage> {
                                     ? (_receiving
                                         ? _received.value
                                         : _amount.value)
-                                    : null,
-                                cashSessionId: widget.method.isCash
-                                    ? widget.cashSessionId
                                     : null,
                                 payingRemaining: _payingRemaining,
                               ),

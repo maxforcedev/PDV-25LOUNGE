@@ -99,6 +99,7 @@ from .models import (
 )
 from .serializers import (
     POSAdminDeviceSerializer, POSDeviceSettingsSerializer, POSOpenCashSessionSerializer,
+    POSSelectCashSessionSerializer,
     POSCustomerSerializer, POSDiscountAuthorizationValidationSerializer,
     POSFinalizeSaleSerializer, POSSalePreviewSerializer, POSStockAvailabilitySerializer,
     POSTablePreviewSerializer,
@@ -109,7 +110,7 @@ from .serializers import (
 )
 from .services import (
     assert_branch_device_limit, authenticate_operator, cash_state_for_device, confirm_pairing,
-    effective_cash_settings, effective_settings, identify_branch, logout_operator, modules_for,
+    current_pos_cash_session, effective_cash_settings, effective_settings, identify_branch, logout_operator, modules_for,
     pos_operator_queryset, request_otp, set_device_status,
     eligible_pos_authorizers,
     request_pos_pin_reset, set_pos_pin, version_gate,
@@ -392,29 +393,6 @@ def _visible_pos_catalog(device, queryset):
     if effective_settings(device).get('show_out_of_stock_products', True):
         return products
     return catalog_products_with_available_stock(device.branch, products)
-
-
-def _pos_sale_session(device, session_id):
-    """Resolve an open session while enforcing the device cash binding."""
-    session = get_object_or_404(
-        CashSession.objects.select_related('cash_register'),
-        pk=session_id,
-        branch=device.branch,
-        status='open',
-    )
-    mode, fixed_register = effective_cash_settings(device)
-    if mode == 'FIXED':
-        if fixed_register is None or fixed_register.status != CashRegisterStatus.ACTIVE:
-            raise DomainValidationError(
-                code='pos_fixed_cash_unconfigured',
-                message='O caixa fixo deste dispositivo não está configurado ou ativo.',
-            )
-        if session.cash_register_id != fixed_register.pk:
-            raise DomainValidationError(
-                code='pos_fixed_cash_required',
-                message='Este dispositivo só pode vender no caixa fixo configurado.',
-            )
-    return session
 
 
 class POSTicketValidatorView(POSCashView):
@@ -888,15 +866,12 @@ class POSAttendanceCheckoutOptionsView(POSAttendanceView):
         from apps.sales.models import PaymentMethod
 
         mode, fixed_register = effective_cash_settings(device)
+        cash_state = cash_state_for_device(device, permissions)
         sessions = CashSession.objects.filter(
-            branch=device.branch, status='open',
+            branch=device.branch, status=CashSessionStatus.OPEN,
         ).select_related('cash_register', 'opened_by').order_by('id')
-        fixed_cash_available = True
         if mode == 'FIXED':
-            fixed_cash_available = bool(
-                fixed_register and fixed_register.status == CashRegisterStatus.ACTIVE
-            )
-            sessions = sessions.filter(cash_register=fixed_register) if fixed_cash_available else sessions.none()
+            sessions = sessions.filter(cash_register=fixed_register)
         methods = PaymentMethod.objects.filter(
             company_id=device.branch.company_id, status=Status.ACTIVE,
         ).order_by('name', 'id').values('id', 'code', 'name')
@@ -910,8 +885,10 @@ class POSAttendanceCheckoutOptionsView(POSAttendanceView):
                 {'id': fixed_register.pk, 'name': fixed_register.name}
                 if mode == 'FIXED' and fixed_register else None
             ),
-            'cash_required': True,
-            'fixed_cash_available': fixed_cash_available,
+            'cash_required': True, 'cash_ready': cash_state['active_session'] is not None,
+            'active_cash_session': cash_state['active_session'],
+            'active_cash_register': cash_state['active_register'],
+            'fixed_cash_available': bool(fixed_register and fixed_register.status == CashRegisterStatus.ACTIVE),
             'cash_sessions': [
                 {
                     'id': session.pk,
@@ -930,20 +907,17 @@ class POSTableCheckoutOptionsView(POSAttendanceView):
             raise PermissionDenied('Você não possui permissão para consultar opções de recebimento de Mesa.')
         from apps.sales.models import PaymentMethod
         mode, fixed_register = effective_cash_settings(device)
-        sessions = CashSession.objects.filter(branch=device.branch, status='open').select_related('cash_register', 'opened_by').order_by('id')
-        fixed_cash_available = True
-        if mode == 'FIXED':
-            fixed_cash_available = bool(fixed_register and fixed_register.status == CashRegisterStatus.ACTIVE)
-            sessions = sessions.filter(cash_register=fixed_register) if fixed_cash_available else sessions.none()
+        cash_state = cash_state_for_device(device, permissions)
         methods = PaymentMethod.objects.filter(company_id=device.branch.company_id, status=Status.ACTIVE).order_by('name', 'id').values('id', 'code', 'name')
         return Response({'payment_methods': [
             {**method, **payment_method_presentation(method['code'])}
             for method in methods
         ], 'cash_binding_mode': mode,
             'fixed_register': {'id': fixed_register.pk, 'name': fixed_register.name} if mode == 'FIXED' and fixed_register else None,
-            'cash_required': True, 'fixed_cash_available': fixed_cash_available,
-            'cash_sessions': [{'id': session.pk, 'register_name': session.cash_register.name,
-                 'opened_by_name': session.opened_by.get_full_name().strip() or session.opened_by.email} for session in sessions]})
+            'cash_required': True, 'cash_ready': cash_state['active_session'] is not None,
+            'active_cash_session': cash_state['active_session'],
+            'active_cash_register': cash_state['active_register'],
+            'fixed_cash_available': bool(fixed_register and fixed_register.status == CashRegisterStatus.ACTIVE)})
 
 
 class POSTablePaymentReverseAuthorizersView(POSAttendanceView):
@@ -1408,11 +1382,9 @@ class POSTableAttendancePaymentsView(POSTableAttendanceView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         attendance = self._attendance(device, attendance_id)
-        if data.get('cash_session') is not None:
-            _pos_sale_session(device, data['cash_session'])
         try:
             payment, replayed = record_table_payment(attendance=attendance, user=operator, payment_method_id=data['payment_method'], amount=data.get('amount'), mode=data['mode'],
-                received_amount=data.get('received_amount'), cash_session_id=data.get('cash_session'), allocations=data.get('allocations'),
+                received_amount=data.get('received_amount'), allocations=data.get('allocations'),
                 idempotency_key=data['idempotency_key'], discount=data.get('discount'), discount_authorization=data.get('discount_authorization'),
                 service_fee_waived=data.get('service_fee_waived'), service_fee_authorization=data.get('service_fee_authorization'),
                 pos_device=device, pos_permission_codes=permissions, audit_metadata=self.audit_metadata(device, operator_session))
@@ -1502,11 +1474,9 @@ class POSTableAttendanceCloseView(POSTableAttendanceView):
         self._require(permissions, 'tables.close', 'Você não possui permissão para fechar mesas.')
         serializer = TableCloseSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        if serializer.validated_data.get('cash_session') is not None:
-            _pos_sale_session(device, serializer.validated_data['cash_session'])
         try:
             attendance, replayed = close_table_attendance(attendance=self._attendance(device, attendance_id), user=operator,
-                idempotency_key=serializer.validated_data['idempotency_key'], cash_session_id=serializer.validated_data.get('cash_session'), audit_metadata=self.audit_metadata(device, operator_session))
+                idempotency_key=serializer.validated_data['idempotency_key'], pos_device=device, audit_metadata=self.audit_metadata(device, operator_session))
         except AttendanceConflict as error:
             self._domain(error)
         return Response(TableAttendanceSerializer(attendance).data, headers={'Idempotency-Replayed': 'true'} if replayed else None)
@@ -1672,15 +1642,7 @@ class POSSaleCheckoutOptionsView(POSQuickSaleView):
         from apps.sales.models import PaymentMethod
 
         mode, fixed_register = effective_cash_settings(device)
-        sessions = CashSession.objects.filter(
-            branch=device.branch, status='open',
-        ).select_related('cash_register', 'opened_by').order_by('id')
-        fixed_cash_available = True
-        if mode == 'FIXED':
-            fixed_cash_available = bool(
-                fixed_register and fixed_register.status == CashRegisterStatus.ACTIVE
-            )
-            sessions = sessions.filter(cash_register=fixed_register) if fixed_cash_available else sessions.none()
+        cash_state = cash_state_for_device(device, permissions)
         methods = PaymentMethod.objects.filter(
             company_id=device.branch.company_id, status=Status.ACTIVE,
         ).order_by('name', 'id').values('id', 'code', 'name')
@@ -1695,15 +1657,10 @@ class POSSaleCheckoutOptionsView(POSQuickSaleView):
                 if mode == 'FIXED' and fixed_register else None
             ),
             'cash_required': True,
-            'fixed_cash_available': fixed_cash_available,
-            'cash_sessions': [
-                {
-                    'id': session.pk,
-                    'register_name': session.cash_register.name,
-                    'opened_by_name': session.opened_by.get_full_name().strip() or session.opened_by.email,
-                }
-                for session in sessions
-            ],
+            'cash_ready': cash_state['active_session'] is not None,
+            'active_cash_session': cash_state['active_session'],
+            'active_cash_register': cash_state['active_register'],
+            'fixed_cash_available': bool(fixed_register and fixed_register.status == CashRegisterStatus.ACTIVE),
         })
 
 
@@ -1856,13 +1813,12 @@ class POSQuickCheckoutView(POSQuickSaleView):
         serializer = POSQuickCheckoutUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        _pos_sale_session(device, data['cash_session'])
         try:
             checkout = update_quick_checkout(
                 checkout=self._checkout(device, operator, checkout_id), user=operator, permissions=permissions,
                 raw_items=self._items(data['items']), discount=data['discount'],
                 service_fee_waived=data['service_fee_waived'], customer_id=data.get('customer'),
-                cash_session_id=data['cash_session'],
+                pos_device=device,
                 discount_authorization=data.get('discount_authorization'),
                 item_discount_authorization=data.get('item_discount_authorization'),
                 service_fee_authorization=data.get('service_fee_authorization'),
@@ -1880,11 +1836,10 @@ class POSQuickCheckoutCreateView(POSQuickSaleView):
         serializer = POSQuickCheckoutCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        _pos_sale_session(device, data['cash_session'])
         try:
             checkout, replayed = create_quick_checkout(
-                branch=device.branch, device=device, user=operator, permissions=permissions,
-                cash_session_id=data['cash_session'], raw_items=self._items(data['items']),
+                branch=device.branch, pos_device=device, user=operator, permissions=permissions,
+                raw_items=self._items(data['items']),
                 discount=data['discount'], service_fee_waived=data['service_fee_waived'],
                 customer_id=data.get('customer'), idempotency_key=data['idempotency_key'],
                 discount_authorization=data.get('discount_authorization'),
@@ -1923,10 +1878,12 @@ class POSQuickCheckoutPaymentView(POSQuickCheckoutView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         try:
+            session = current_pos_cash_session(device, for_update=True)
             _payment, replayed = record_quick_checkout_payment(
                 checkout=self._checkout(device, operator, checkout_id), user=operator,
                 payment_method_id=data['payment_method'], mode=data['mode'], amount=data.get('amount'),
                 received_amount=data.get('received_amount'), allocations=data['allocations'],
+                active_cash_session_id=session.pk,
                 idempotency_key=data['idempotency_key'],
                 audit_metadata=self.audit_metadata(device, operator_session),
             )
@@ -2055,7 +2012,7 @@ class POSFinalizeSaleView(POSQuickSaleView):
         serializer = POSFinalizeSaleSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        session = _pos_sale_session(device, data['cash_session'])
+        session = current_pos_cash_session(device, for_update=True)
         customer = None
         if data.get('customer') is not None:
             customer = Customer.objects.filter(
@@ -2161,17 +2118,60 @@ class POSCashSessionOpenView(POSCashView):
                 CashRegister, pk=requested_register, branch=device.branch,
                 status=CashRegisterStatus.ACTIVE,
             )
-        session = open_session(
-            cash_register=register,
-            opening_amount=serializer.validated_data['opening_amount'],
-            user=operator,
-            current_branch=device.branch,
-            allow_pos_only=True,
-            audit_metadata=self.audit_metadata(device, operator_session),
-        )
+        with transaction.atomic():
+            session = open_session(
+                cash_register=register,
+                opening_amount=serializer.validated_data['opening_amount'],
+                user=operator,
+                current_branch=device.branch,
+                allow_pos_only=True,
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+            POSDevice.objects.select_for_update().filter(pk=device.pk).update(
+                active_cash_session=session,
+            )
         data = CashSessionSerializer(session).data
         data['cash_state'] = self.mutation_state(device, permissions, session, operator)
         return Response(data, status=status.HTTP_201_CREATED)
+
+
+class POSCashSessionSelectView(POSCashView):
+    def post(self, request):
+        device, operator, permissions, operator_session = self.context(request)
+        require_branch_feature(device.branch, 'cash_register')
+        serializer = POSSelectCashSessionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        mode, _configured_register = effective_cash_settings(device)
+        if mode != 'FLEXIBLE':
+            raise DomainValidationError(
+                code='fixed_cash_register',
+                message='Este dispositivo usa o caixa configurado para ele.',
+            )
+        with transaction.atomic():
+            session = CashSession.objects.select_for_update().select_related(
+                'cash_register', 'opened_by',
+            ).filter(
+                cash_register_id=serializer.validated_data['register'],
+                branch=device.branch, status=CashSessionStatus.OPEN,
+                cash_register__status=CashRegisterStatus.ACTIVE,
+            ).first()
+            if session is None:
+                raise DomainValidationError(
+                    code='cash_session_unavailable',
+                    message='Este caixa não possui uma sessão aberta disponível.',
+                    status_code=status.HTTP_409_CONFLICT,
+                )
+            POSDevice.objects.select_for_update().filter(pk=device.pk).update(
+                active_cash_session=session,
+            )
+            audit_log(
+                actor=operator, action='pos.cash_session.select', obj=session,
+                company=device.branch.company, branch=device.branch,
+                metadata=self.audit_metadata(device, operator_session),
+            )
+        data = CashSessionSerializer(session).data
+        data['cash_state'] = self.mutation_state(device, permissions, session, operator)
+        return Response(data)
 
 
 class POSCashSessionSummaryView(POSCashView):
@@ -2274,14 +2274,18 @@ class POSCashSessionCloseView(POSCashView):
         session = self.session_for_device(session_id, device)
         serializer = CloseSessionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        session = close_session(
-            cash_session=session,
-            **serializer.validated_data,
-            user=operator,
-            current_branch=device.branch,
-            allow_pos_only=True,
-            audit_metadata=self.audit_metadata(device, operator_session),
-        )
+        with transaction.atomic():
+            session = close_session(
+                cash_session=session,
+                **serializer.validated_data,
+                user=operator,
+                current_branch=device.branch,
+                allow_pos_only=True,
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+            POSDevice.objects.filter(active_cash_session=session).update(
+                active_cash_session=None,
+            )
         data = CashSessionSerializer(session).data
         data['cash_state'] = self.mutation_state(device, permissions, session, operator)
         return Response(data)

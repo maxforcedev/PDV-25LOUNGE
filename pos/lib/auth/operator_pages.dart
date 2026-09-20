@@ -29,7 +29,8 @@ class _OperatorAccessPageState extends State<OperatorAccessPage> {
   Widget build(BuildContext context) {
     final controller = widget.controller;
     final operator = controller.selectedOperator;
-    final canEnter = operator != null && _pin.text.length == 6 && !controller.busy;
+    final canEnter =
+        operator != null && _pin.text.length == 6 && !controller.busy;
 
     return Scaffold(
       body: SafeArea(
@@ -54,7 +55,10 @@ class _OperatorAccessPageState extends State<OperatorAccessPage> {
                         borderRadius: BorderRadius.circular(24),
                         border: Border.all(color: const Color(0xffe2e8f0)),
                         boxShadow: const [
-                          BoxShadow(color: Color(0x0f283c50), blurRadius: 24, offset: Offset(0, 10)),
+                          BoxShadow(
+                              color: Color(0x0f283c50),
+                              blurRadius: 24,
+                              offset: Offset(0, 10)),
                         ],
                       ),
                       child: Column(
@@ -62,19 +66,24 @@ class _OperatorAccessPageState extends State<OperatorAccessPage> {
                         children: [
                           Text(
                             'Acesse o caixa',
-                            style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800),
+                            style: Theme.of(context)
+                                .textTheme
+                                .headlineSmall
+                                ?.copyWith(fontWeight: FontWeight.w800),
                           ),
                           const SizedBox(height: 8),
                           const Text(
                             'Selecione o operador e informe seu PIN de acesso.',
-                            style: TextStyle(color: Color(0xff64748b), height: 1.45),
+                            style: TextStyle(
+                                color: Color(0xff64748b), height: 1.45),
                           ),
                           const SizedBox(height: 24),
                           DropdownButtonFormField<PosOperator>(
                             key: ValueKey(operator?.id ?? 'no-operator'),
                             initialValue: operator,
                             isExpanded: true,
-                            decoration: const InputDecoration(labelText: 'Operador'),
+                            decoration:
+                                const InputDecoration(labelText: 'Operador'),
                             hint: const Text('Selecione seu perfil'),
                             items: controller.operators
                                 .map(
@@ -82,9 +91,14 @@ class _OperatorAccessPageState extends State<OperatorAccessPage> {
                                     value: item,
                                     child: Row(
                                       children: [
-                                        CircleAvatar(radius: 16, child: Text(item.initials)),
+                                        CircleAvatar(
+                                            radius: 16,
+                                            child: Text(item.initials)),
                                         const SizedBox(width: 12),
-                                        Expanded(child: Text(item.displayName, overflow: TextOverflow.ellipsis)),
+                                        Expanded(
+                                            child: Text(item.displayName,
+                                                overflow:
+                                                    TextOverflow.ellipsis)),
                                       ],
                                     ),
                                   ),
@@ -109,7 +123,9 @@ class _OperatorAccessPageState extends State<OperatorAccessPage> {
                             textInputAction: TextInputAction.done,
                             obscureText: true,
                             maxLength: 6,
-                            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly
+                            ],
                             decoration: const InputDecoration(
                               labelText: 'PIN de 6 dígitos',
                               counterText: '',
@@ -124,19 +140,25 @@ class _OperatorAccessPageState extends State<OperatorAccessPage> {
                                 ? const SizedBox(
                                     height: 22,
                                     width: 22,
-                                    child: CircularProgressIndicator(strokeWidth: 2.4, color: Colors.white),
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2.4, color: Colors.white),
                                   )
                                 : const Text('ENTRAR'),
                           ),
                           const SizedBox(height: 10),
                           TextButton.icon(
-                            onPressed: controller.busy ? null : controller.recoverPairedDevice,
+                            onPressed: controller.busy
+                                ? null
+                                : controller.recoverPairedDevice,
                             icon: const Icon(Icons.sync_rounded, size: 18),
                             label: const Text('Atualizar operadores'),
                           ),
                           TextButton.icon(
-                            onPressed: operator == null || controller.busy ? null : controller.requestSelectedOperatorPinReset,
-                            icon: const Icon(Icons.lock_reset_rounded, size: 18),
+                            onPressed: operator == null || controller.busy
+                                ? null
+                                : controller.requestSelectedOperatorPinReset,
+                            icon:
+                                const Icon(Icons.lock_reset_rounded, size: 18),
                             label: const Text('Redefinir PIN'),
                           ),
                         ],
@@ -156,11 +178,13 @@ class _OperatorAccessPageState extends State<OperatorAccessPage> {
     if (operator == null) return;
     setState(_pin.clear);
     widget.controller.selectOperator(operator);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _pinFocus.requestFocus());
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _pinFocus.requestFocus());
   }
 
   Future<void> _login() async {
-    if (widget.controller.selectedOperator == null || _pin.text.length != 6) return;
+    if (widget.controller.selectedOperator == null || _pin.text.length != 6)
+      return;
     try {
       await widget.controller.login(_pin.text);
     } finally {

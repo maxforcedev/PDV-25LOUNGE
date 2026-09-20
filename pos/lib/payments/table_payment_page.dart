@@ -35,7 +35,6 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
   _TablePaymentRequest? _pending;
   final Map<int, String> _reverseKeys = {};
   String? _closeKey;
-  int? _cashSessionId;
   bool _loading = true;
   bool _working = false;
   bool _details = false;
@@ -87,10 +86,6 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
               payment.idempotencyKey == _pending!.idempotencyKey)) {
         _pending = null;
       }
-      _cashSessionId ??= _activePayments
-          .map((payment) => payment.cashSessionId)
-          .whereType<int>()
-          .firstOrNull;
       _loading = false;
     });
     if (_pending == null)
@@ -124,8 +119,6 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
     List<Map<String, dynamic>> allocations = const [],
     String? officialAmount,
   }) async {
-    final cashSessionId = await _resolveCashSession(method);
-    if (method.isCash && cashSessionId == null) return;
     if (!mounted) return;
     final entry = await Navigator.of(context).push<PaymentEntryResult>(
       MaterialPageRoute(
@@ -143,7 +136,6 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
                         : mode == 'remaining'
                             ? PaymentAmountContext.remaining
                             : PaymentAmountContext.value,
-                cashSessionId: cashSessionId,
               )),
     );
     if (entry == null || !mounted) return;
@@ -153,33 +145,9 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
       idempotencyKey: entry.intentId,
       amount: entry.amount,
       receivedAmount: entry.receivedAmount,
-      cashSessionId: entry.cashSessionId,
       allocations: allocations,
     );
     await _record(request);
-  }
-
-  Future<int?> _resolveCashSession(QuickSalePaymentMethod method) async {
-    if (!method.isCash) return null;
-    if (_cashSessionId != null) return _cashSessionId;
-    final options = _options;
-    if (options == null || options.cashSessions.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Nenhuma sessão de caixa elegível está disponível.'),
-      ));
-      return null;
-    }
-    final sessions = options.cashSessions;
-    final sessionId = options.cashBindingMode == 'FIXED' || sessions.length == 1
-        ? sessions.first.id
-        : await PaymentCashSessionPicker.show(
-            context,
-            title: 'SELECIONE O CAIXA',
-            sessions: sessions,
-          );
-    if (sessionId != null && mounted)
-      setState(() => _cashSessionId = sessionId);
-    return sessionId;
   }
 
   Future<void> _record(_TablePaymentRequest request) async {
@@ -196,7 +164,6 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
       idempotencyKey: request.idempotencyKey,
       amount: request.amount,
       receivedAmount: request.receivedAmount,
-      cashSessionId: request.cashSessionId,
       allocations: request.allocations,
     );
     if (!mounted) return;
@@ -253,24 +220,10 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
   }
 
   Future<void> _close() async {
-    var sessionId = _cashSessionId;
-    final sessions = _options?.cashSessions ?? const [];
-    if (sessionId == null && sessions.isNotEmpty) {
-      sessionId = _options!.cashBindingMode == 'FIXED' || sessions.length == 1
-          ? sessions.first.id
-          : await PaymentCashSessionPicker.show(
-              context,
-              title: 'CAIXA PARA FECHAMENTO',
-              sessions: sessions,
-            );
-      if (sessionId == null || !mounted) return;
-      setState(() => _cashSessionId = sessionId);
-    }
     setState(() => _working = true);
     final closed = await widget.controller.closeTableAttendance(
       attendanceId: _attendance.id,
       idempotencyKey: _closeKey ??= createIdempotencyKey(),
-      cashSessionId: sessionId,
     );
     if (!mounted) return;
     setState(() => _working = false);
@@ -605,7 +558,6 @@ class _TablePaymentRequest {
     required this.allocations,
     this.amount,
     this.receivedAmount,
-    this.cashSessionId,
   });
 
   final QuickSalePaymentMethod method;
@@ -613,7 +565,6 @@ class _TablePaymentRequest {
   final String idempotencyKey;
   final String? amount;
   final String? receivedAmount;
-  final int? cashSessionId;
   final List<Map<String, dynamic>> allocations;
 
   Map<String, dynamic> toJson() => {
@@ -622,7 +573,6 @@ class _TablePaymentRequest {
         'idempotency_key': idempotencyKey,
         'amount': amount,
         'received_amount': receivedAmount,
-        'cash_session_id': cashSessionId,
         'allocations': allocations,
       };
 
@@ -639,179 +589,11 @@ class _TablePaymentRequest {
       idempotencyKey: key,
       amount: json['amount'] as String?,
       receivedAmount: json['received_amount'] as String?,
-      cashSessionId: json['cash_session_id'] as int?,
       allocations: (json['allocations'] as List? ?? const [])
           .map((value) => Map<String, dynamic>.from(value as Map))
           .toList(growable: false),
     );
   }
-}
-
-class _TablePaymentDialog extends StatefulWidget {
-  const _TablePaymentDialog({
-    required this.method,
-    required this.mode,
-    required this.remaining,
-    required this.sessions,
-    required this.allocations,
-  });
-
-  final QuickSalePaymentMethod method;
-  final String mode;
-  final String remaining;
-  final List<QuickSaleCashSession> sessions;
-  final List<Map<String, dynamic>> allocations;
-
-  @override
-  State<_TablePaymentDialog> createState() => _TablePaymentDialogState();
-}
-
-class _TablePaymentDialogState extends State<_TablePaymentDialog> {
-  late final _amount = TextEditingController(
-      text: widget.mode == 'remaining' ? widget.remaining : '');
-  final _received = TextEditingController();
-  int? _sessionId;
-
-  @override
-  void initState() {
-    super.initState();
-    _sessionId = widget.sessions.length == 1 ? widget.sessions.single.id : null;
-    if (widget.method.isCash && widget.mode == 'remaining') {
-      _received.text = widget.remaining;
-    }
-  }
-
-  @override
-  void dispose() {
-    _amount.dispose();
-    _received.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: Text(
-            widget.mode == 'items' ? 'PAGAR POR ITENS' : widget.method.name),
-        content: SizedBox(
-          width: 360,
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            if (widget.mode == 'equal_people')
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                    'O valor da próxima pessoa será calculado oficialmente pela Mesa.'),
-              )
-            else if (widget.mode == 'items')
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                    'O valor dos itens será calculado oficialmente pela Mesa.'),
-              )
-            else
-              TextField(
-                controller: _amount,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(labelText: 'Valor aplicado'),
-              ),
-            if (widget.method.isCash) ...[
-              const SizedBox(height: 10),
-              DropdownButtonFormField<int>(
-                initialValue: _sessionId,
-                isExpanded: true,
-                decoration: const InputDecoration(labelText: 'Caixa'),
-                items: widget.sessions
-                    .map((session) => DropdownMenuItem(
-                          value: session.id,
-                          child: Text(session.registerName),
-                        ))
-                    .toList(growable: false),
-                onChanged: (value) => setState(() => _sessionId = value),
-              ),
-              TextField(
-                controller: _received,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(labelText: 'Valor recebido'),
-              ),
-            ],
-          ]),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('VOLTAR')),
-          FilledButton(
-            onPressed: _valid
-                ? () => Navigator.pop(
-                      context,
-                      _TablePaymentRequest(
-                        method: widget.method,
-                        mode: widget.mode,
-                        idempotencyKey: createIdempotencyKey(),
-                        amount:
-                            widget.mode == 'value' || widget.mode == 'remaining'
-                                ? _normalizedMoney(_amount.text)
-                                : null,
-                        receivedAmount: widget.method.isCash
-                            ? _normalizedMoney(_received.text)
-                            : null,
-                        cashSessionId: widget.method.isCash ? _sessionId : null,
-                        allocations: widget.allocations,
-                      ),
-                    )
-                : null,
-            child: const Text('CONFIRMAR PAGAMENTO'),
-          ),
-        ],
-      );
-
-  bool get _valid {
-    final cashValid = !widget.method.isCash ||
-        (_sessionId != null && _cents(_received.text) > 0);
-    if (!cashValid) return false;
-    if (widget.mode == 'equal_people' || widget.mode == 'items') return true;
-    return _cents(_amount.text) > 0;
-  }
-}
-
-class _CashSessionDialog extends StatefulWidget {
-  const _CashSessionDialog({required this.sessions});
-  final List<QuickSaleCashSession> sessions;
-
-  @override
-  State<_CashSessionDialog> createState() => _CashSessionDialogState();
-}
-
-class _CashSessionDialogState extends State<_CashSessionDialog> {
-  int? _selected;
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: const Text('CAIXA PARA FECHAMENTO'),
-        content: DropdownButtonFormField<int>(
-          initialValue: _selected,
-          isExpanded: true,
-          items: widget.sessions
-              .map((session) => DropdownMenuItem(
-                    value: session.id,
-                    child: Text(session.registerName),
-                  ))
-              .toList(growable: false),
-          onChanged: (value) => setState(() => _selected = value),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('VOLTAR')),
-          FilledButton(
-            onPressed: _selected == null
-                ? null
-                : () => Navigator.pop(context, _selected),
-            child: const Text('FECHAR MESA'),
-          ),
-        ],
-      );
 }
 
 class _TableItemAllocationPage extends StatefulWidget {
@@ -905,9 +687,6 @@ int _cents(String value) {
       (int.tryParse('${bits.length > 1 ? bits[1] : ''}00'.substring(0, 2)) ??
           0);
 }
-
-String _normalizedMoney(String value) =>
-    '${_cents(value) ~/ 100}.${(_cents(value) % 100).toString().padLeft(2, '0')}';
 
 int _quantityUnits(String value) {
   final bits = value.replaceAll(',', '.').split('.');

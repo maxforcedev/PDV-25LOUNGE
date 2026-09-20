@@ -82,6 +82,8 @@ class CashOverview {
     this.canOpen = false,
     this.register,
     this.session,
+    this.activeRegister,
+    this.activeSession,
     this.registers = const [],
   });
 
@@ -99,6 +101,14 @@ class CashOverview {
       session: json['session'] is Map<String, dynamic>
           ? CashSessionInfo.fromJson(json['session'] as Map<String, dynamic>)
           : null,
+      activeRegister: json['active_register'] is Map<String, dynamic>
+          ? CashRegisterInfo.fromJson(
+              json['active_register'] as Map<String, dynamic>)
+          : null,
+      activeSession: json['active_session'] is Map<String, dynamic>
+          ? CashSessionInfo.fromJson(
+              json['active_session'] as Map<String, dynamic>)
+          : null,
       registers: (json['registers'] as List<dynamic>? ?? const [])
           .cast<Map<String, dynamic>>()
           .map(CashRegisterInfo.fromJson)
@@ -112,9 +122,12 @@ class CashOverview {
   final bool canOpen;
   final CashRegisterInfo? register;
   final CashSessionInfo? session;
+  final CashRegisterInfo? activeRegister;
+  final CashSessionInfo? activeSession;
   final List<CashRegisterInfo> registers;
 
   bool get isFixed => mode == 'FIXED';
+  bool get cashReady => activeSession != null;
   List<CashRegisterInfo> get openRegisters =>
       registers.where((item) => item.session != null).toList(growable: false);
 }

@@ -147,7 +147,6 @@ QuickSaleCheckout _checkout({
       paidAmount: '0.00',
       remainingAmount: '10.00',
       hasPaymentHistory: payments.isNotEmpty,
-      cashSessionId: 1,
       discountIntent: const QuickSaleDiscountIntent(),
       serviceFeeWaived: false,
       items: const [],

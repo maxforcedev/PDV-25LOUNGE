@@ -100,7 +100,6 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       checkoutId: _checkout.id,
       items: items ??
           _checkout.items.map((item) => item.input).toList(growable: false),
-      cashSessionId: _checkout.cashSessionId,
       customerId: clearCustomer ? null : (customer ?? _checkout.customer)?.id,
       discount: (discount ?? _checkout.discountIntent).toJson(),
       serviceFeeWaived: serviceFeeWaived ?? _checkout.serviceFeeWaived,

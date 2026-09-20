@@ -32,7 +32,8 @@ class _PairingIdentifierPageState extends State<PairingIdentifierPage> {
   @override
   Widget build(BuildContext context) => _PairingFrame(
         title: 'Parear este dispositivo',
-        subtitle: 'Informe os dados da filial para começar a configurar este terminal.',
+        subtitle:
+            'Informe os dados da filial para começar a configurar este terminal.',
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -63,7 +64,8 @@ class _PairingIdentifierPageState extends State<PairingIdentifierPage> {
                 foregroundColor: _primary,
                 minimumSize: const Size.fromHeight(50),
                 side: const BorderSide(color: _border),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
               ),
             ),
             const SizedBox(height: 20),
@@ -109,7 +111,9 @@ class PairingChannelPage extends StatelessWidget {
               (channel) => Padding(
                 padding: const EdgeInsets.only(bottom: 12),
                 child: OutlinedButton.icon(
-                  onPressed: controller.busy ? null : () => controller.requestOtp(channel),
+                  onPressed: controller.busy
+                      ? null
+                      : () => controller.requestOtp(channel),
                   icon: const Icon(Icons.mark_email_read_outlined),
                   label: Text('${_channelLabel(channel)}: ${channel.masked}'),
                   style: OutlinedButton.styleFrom(
@@ -117,7 +121,8 @@ class PairingChannelPage extends StatelessWidget {
                     foregroundColor: _ink,
                     minimumSize: const Size.fromHeight(58),
                     side: const BorderSide(color: _border),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
                   ),
                 ),
               ),
@@ -152,7 +157,8 @@ class _PairingOtpPageState extends State<PairingOtpPage> {
   @override
   Widget build(BuildContext context) => _PairingFrame(
         title: 'Confirme o código',
-        subtitle: 'Enviamos um código para ${widget.controller.challenge!.destination}.',
+        subtitle:
+            'Enviamos um código para ${widget.controller.challenge!.destination}.',
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -164,7 +170,8 @@ class _PairingOtpPageState extends State<PairingOtpPage> {
               maxLength: 6,
               obscureText: true,
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700, letterSpacing: 8),
+              style: const TextStyle(
+                  fontSize: 22, fontWeight: FontWeight.w700, letterSpacing: 8),
               decoration: const InputDecoration(
                 counterText: '',
                 labelText: 'Código de seis dígitos',
@@ -219,7 +226,8 @@ class _PairingFrame extends StatelessWidget {
                 final padding = isTablet ? 32.0 : 20.0;
                 return Center(
                   child: SingleChildScrollView(
-                    padding: EdgeInsets.symmetric(horizontal: padding, vertical: 24),
+                    padding:
+                        EdgeInsets.symmetric(horizontal: padding, vertical: 24),
                     child: ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 440),
                       child: TweenAnimationBuilder<double>(
@@ -245,15 +253,28 @@ class _PairingFrame extends StatelessWidget {
                                 borderRadius: BorderRadius.circular(24),
                                 border: Border.all(color: _border),
                                 boxShadow: const [
-                                  BoxShadow(color: Color(0x0f283c50), blurRadius: 24, offset: Offset(0, 10)),
+                                  BoxShadow(
+                                      color: Color(0x0f283c50),
+                                      blurRadius: 24,
+                                      offset: Offset(0, 10)),
                                 ],
                               ),
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
-                                  Text(title, style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800, color: _ink)),
+                                  Text(title,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .headlineSmall
+                                          ?.copyWith(
+                                              fontWeight: FontWeight.w800,
+                                              color: _ink)),
                                   const SizedBox(height: 8),
-                                  Text(subtitle, style: const TextStyle(color: _muted, fontSize: 15, height: 1.45)),
+                                  Text(subtitle,
+                                      style: const TextStyle(
+                                          color: _muted,
+                                          fontSize: 15,
+                                          height: 1.45)),
                                   const SizedBox(height: 28),
                                   child,
                                 ],
@@ -273,7 +294,8 @@ class _PairingFrame extends StatelessWidget {
 }
 
 class _PrimaryAction extends StatelessWidget {
-  const _PrimaryAction({required this.label, required this.loading, required this.onPressed});
+  const _PrimaryAction(
+      {required this.label, required this.loading, required this.onPressed});
 
   final String label;
   final bool loading;
@@ -282,9 +304,14 @@ class _PrimaryAction extends StatelessWidget {
   @override
   Widget build(BuildContext context) => FilledButton(
         onPressed: loading ? null : onPressed,
-        style: FilledButton.styleFrom(backgroundColor: _primary, disabledBackgroundColor: _primaryDark),
+        style: FilledButton.styleFrom(
+            backgroundColor: _primary, disabledBackgroundColor: _primaryDark),
         child: loading
-            ? const SizedBox(height: 22, width: 22, child: CircularProgressIndicator(strokeWidth: 2.4, color: Colors.white))
+            ? const SizedBox(
+                height: 22,
+                width: 22,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2.4, color: Colors.white))
             : Text(label),
       );
 }

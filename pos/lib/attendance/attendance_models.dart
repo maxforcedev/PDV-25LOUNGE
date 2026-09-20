@@ -239,7 +239,6 @@ class TablePayment {
     this.paymentMethodCode = '',
     this.receivedAmount,
     this.changeAmount,
-    this.cashSessionId,
     this.operatorId,
     this.idempotencyKey,
     this.reversalOf,
@@ -257,7 +256,6 @@ class TablePayment {
         paymentMethodCode: json['payment_method_code'] as String? ?? '',
         receivedAmount: json['received_amount']?.toString(),
         changeAmount: json['change_amount']?.toString(),
-        cashSessionId: json['cash_session'] as int?,
         operatorId: json['operator'] as int?,
         idempotencyKey: json['idempotency_key'] as String?,
         reversalOf: json['reversal_of'] as int?,
@@ -275,7 +273,6 @@ class TablePayment {
   final String paymentMethodCode;
   final String? receivedAmount;
   final String? changeAmount;
-  final int? cashSessionId;
   final int? operatorId;
   final String? idempotencyKey;
   final int? reversalOf;

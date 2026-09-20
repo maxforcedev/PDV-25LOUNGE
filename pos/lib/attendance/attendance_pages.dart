@@ -752,7 +752,7 @@ class _PaymentInput {
 
 class _PaymentDialog extends StatefulWidget {
   const _PaymentDialog({required this.options, required this.balance});
-  final QuickSaleCheckoutOptions options;
+  final LegacyCheckoutOptions options;
   final String balance;
   @override
   State<_PaymentDialog> createState() => _PaymentDialogState();
@@ -902,7 +902,7 @@ Future<String?> _reasonDialog(BuildContext context, String title) async {
 }
 
 Future<QuickSaleCashSession?> _pickSession(
-    BuildContext context, QuickSaleCheckoutOptions options) async {
+    BuildContext context, LegacyCheckoutOptions options) async {
   if (options.cashSessions.length == 1) return options.cashSessions.single;
   return showDialog<QuickSaleCashSession>(
       context: context,

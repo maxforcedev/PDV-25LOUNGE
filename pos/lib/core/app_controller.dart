@@ -186,7 +186,6 @@ class AppController extends ChangeNotifier {
 
   Future<QuickSaleCheckout?> createQuickSaleCheckout({
     required List<Map<String, dynamic>> items,
-    required int cashSessionId,
     required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
     QuickSaleCustomer? customer,
@@ -207,7 +206,6 @@ class AppController extends ChangeNotifier {
           checkout: checkout,
           state: state,
           items: items,
-          cashSessionId: cashSessionId,
           discount: discount,
           serviceFeeWaived: serviceFeeWaived,
           customerId: resolvedCustomerId,
@@ -219,7 +217,6 @@ class AppController extends ChangeNotifier {
       if (_quickCheckoutNeedsUpdate(
         checkout: checkout,
         items: items,
-        cashSessionId: cashSessionId,
         discount: discount,
         serviceFeeWaived: serviceFeeWaived,
         customerId: resolvedCustomerId,
@@ -227,7 +224,6 @@ class AppController extends ChangeNotifier {
         return updateQuickSaleCheckout(
           checkoutId: checkout.id,
           items: items,
-          cashSessionId: cashSessionId,
           discount: discount,
           serviceFeeWaived: serviceFeeWaived,
           customerId: resolvedCustomerId,
@@ -241,7 +237,6 @@ class AppController extends ChangeNotifier {
 
     final request = _quickCheckoutCreationRequest(
       items: items,
-      cashSessionId: cashSessionId,
       discount: discount,
       serviceFeeWaived: serviceFeeWaived,
       customerId: resolvedCustomerId,
@@ -262,7 +257,6 @@ class AppController extends ChangeNotifier {
             checkout: checkout,
             state: state,
             items: items,
-            cashSessionId: cashSessionId,
             discount: discount,
             serviceFeeWaived: serviceFeeWaived,
             customerId: resolvedCustomerId,
@@ -275,7 +269,6 @@ class AppController extends ChangeNotifier {
           return await updateQuickSaleCheckout(
             checkoutId: checkout.id,
             items: items,
-            cashSessionId: cashSessionId,
             discount: discount,
             serviceFeeWaived: serviceFeeWaived,
             customerId: resolvedCustomerId,
@@ -307,7 +300,6 @@ class AppController extends ChangeNotifier {
     try {
       final checkout = await _api.createQuickSaleCheckout(
         items: items,
-        cashSessionId: cashSessionId,
         discount: discount,
         serviceFeeWaived: serviceFeeWaived,
         idempotencyKey: creationKey,
@@ -329,7 +321,6 @@ class AppController extends ChangeNotifier {
 
   Map<String, dynamic> _quickCheckoutCreationRequest({
     required List<Map<String, dynamic>> items,
-    required int cashSessionId,
     required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
     int? customerId,
@@ -339,7 +330,6 @@ class AppController extends ChangeNotifier {
   }) =>
       Map<String, dynamic>.from(jsonDecode(jsonEncode({
         'items': items,
-        'cash_session': cashSessionId,
         'discount': discount,
         'service_fee_waived': serviceFeeWaived,
         'customer': customerId,
@@ -387,7 +377,6 @@ class AppController extends ChangeNotifier {
     required QuickSaleCheckout checkout,
     required Map<String, dynamic> state,
     required List<Map<String, dynamic>> items,
-    required int cashSessionId,
     required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
     required int? customerId,
@@ -407,7 +396,6 @@ class AppController extends ChangeNotifier {
     if (!await cancelQuickSaleCheckout(checkout.id)) return null;
     return createQuickSaleCheckout(
       items: items,
-      cashSessionId: cashSessionId,
       discount: discount,
       serviceFeeWaived: serviceFeeWaived,
       customerId: customerId,
@@ -420,13 +408,11 @@ class AppController extends ChangeNotifier {
   bool _quickCheckoutNeedsUpdate({
     required QuickSaleCheckout checkout,
     required List<Map<String, dynamic>> items,
-    required int cashSessionId,
     required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
     required int? customerId,
   }) =>
       _quickCheckoutItemsChanged(checkout, items) ||
-      checkout.cashSessionId != cashSessionId ||
       _canonicalJson(checkout.discountIntent.toJson()) !=
           _canonicalJson(discount) ||
       checkout.serviceFeeWaived != serviceFeeWaived ||
@@ -513,7 +499,6 @@ class AppController extends ChangeNotifier {
   Future<QuickSaleCheckout?> updateQuickSaleCheckout({
     required String checkoutId,
     required List<Map<String, dynamic>> items,
-    required int cashSessionId,
     required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
     int? customerId,
@@ -532,7 +517,6 @@ class AppController extends ChangeNotifier {
           checkout: checkout,
           state: state,
           items: items,
-          cashSessionId: cashSessionId,
           discount: discount,
           serviceFeeWaived: serviceFeeWaived,
           customerId: customerId,
@@ -546,7 +530,6 @@ class AppController extends ChangeNotifier {
       return await _api.updateQuickSaleCheckout(
         checkoutId: checkoutId,
         items: items,
-        cashSessionId: cashSessionId,
         discount: discount,
         serviceFeeWaived: serviceFeeWaived,
         customerId: customerId,
@@ -564,7 +547,6 @@ class AppController extends ChangeNotifier {
             checkout: checkout,
             state: state,
             items: items,
-            cashSessionId: cashSessionId,
             discount: discount,
             serviceFeeWaived: serviceFeeWaived,
             customerId: customerId,
@@ -953,6 +935,11 @@ class AppController extends ChangeNotifier {
         'Caixa aberto com sucesso.',
       );
 
+  Future<bool> selectCashSession(int registerId) => _runCashAction(
+        () => _api.selectCashSession(registerId: registerId),
+        'Caixa ativo atualizado.',
+      );
+
   Future<bool> recordCashEntry({
     required int sessionId,
     required String amount,
@@ -1219,7 +1206,6 @@ class AppController extends ChangeNotifier {
     required String idempotencyKey,
     String? amount,
     String? receivedAmount,
-    int? cashSessionId,
     List<Map<String, dynamic>> allocations = const [],
   }) =>
       _attendance(() => _api.recordTablePayment(
@@ -1229,7 +1215,6 @@ class AppController extends ChangeNotifier {
             idempotencyKey: idempotencyKey,
             amount: amount,
             receivedAmount: receivedAmount,
-            cashSessionId: cashSessionId,
             allocations: allocations,
           ));
 
@@ -1249,12 +1234,10 @@ class AppController extends ChangeNotifier {
   Future<TableAttendance?> closeTableAttendance({
     required int attendanceId,
     required String idempotencyKey,
-    int? cashSessionId,
   }) =>
       _attendance(() => _api.closeTableAttendance(
             attendanceId: attendanceId,
             idempotencyKey: idempotencyKey,
-            cashSessionId: cashSessionId,
           ));
 
   Future<List<QuickSaleAuthorizer>?> tablePaymentReverseAuthorizers() =>
@@ -1321,7 +1304,7 @@ class AppController extends ChangeNotifier {
   Future<List<QuickSaleProduct>?> attendanceCatalog({String? search}) =>
       _attendance(() => _api.attendanceCatalog(search: search));
 
-  Future<QuickSaleCheckoutOptions?> attendanceCheckoutOptions() =>
+  Future<LegacyCheckoutOptions?> attendanceCheckoutOptions() =>
       _attendance(_api.attendanceCheckoutOptions);
 
   Future<AttendanceCommand?> openAttendanceCommand({

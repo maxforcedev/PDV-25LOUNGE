@@ -54,6 +54,12 @@ class POSDevice(BaseModel):
     revoked_at = models.DateTimeField(blank=True, null=True)
     replaced_at = models.DateTimeField(blank=True, null=True)
     replaced_by = models.ForeignKey('self', on_delete=models.PROTECT, blank=True, null=True, related_name='replaces')
+    # The physical drawer selected for this device. It is deliberately not an
+    # operator, checkout, or payment concern.
+    active_cash_session = models.ForeignKey(
+        'cash.CashSession', on_delete=models.SET_NULL, blank=True, null=True,
+        related_name='active_on_pos_devices',
+    )
 
     class Meta:
         ordering = ('branch__name', 'name')
@@ -319,13 +325,13 @@ class QuickSalePayment(BaseModel):
             errors['payment_method'] = 'A forma de pagamento deve pertencer à empresa do checkout.'
         if self.cash_session_id and self.cash_session.branch_id != self.checkout.branch_id:
             errors['cash_session'] = 'A sessão de caixa deve pertencer à filial do checkout.'
+        if self.reversal_of_id is None and self.cash_session_id is None:
+            errors['cash_session'] = 'Pagamento de checkout exige sessão de caixa.'
         if self.payment_method_id and self.payment_method.code == 'cash':
-            if self.cash_session_id is None:
-                errors['cash_session'] = 'Dinheiro exige sessão de caixa.'
             if self.received_amount is None or self.received_amount < self.amount:
                 errors['received_amount'] = 'Dinheiro exige valor recebido igual ou maior ao aplicado.'
-        elif self.cash_session_id is not None or self.received_amount is not None or self.change_amount is not None:
-            errors['payment_method'] = 'Somente dinheiro aceita sessão, recebido e troco.'
+        elif self.received_amount is not None or self.change_amount is not None:
+            errors['payment_method'] = 'Somente dinheiro aceita recebido ou troco.'
         if errors:
             raise ValidationError(errors)
 

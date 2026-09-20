@@ -39,6 +39,7 @@ abstract class PosApi {
   Future<CashOverview> cashOverview();
   Future<CashOverview> openCashSession(
       {required String openingAmount, int? registerId});
+  Future<CashOverview> selectCashSession({required int registerId});
   Future<CashSessionSummary> cashSessionSummary(int sessionId);
   Future<CashOverview> recordCashEntry(
       {required int sessionId,
@@ -157,7 +158,6 @@ abstract class PosApi {
     required String idempotencyKey,
     String? amount,
     String? receivedAmount,
-    int? cashSessionId,
     List<Map<String, dynamic>> allocations = const [],
   });
   Future<TablePayment> reverseTablePayment({
@@ -169,7 +169,6 @@ abstract class PosApi {
   Future<TableAttendance> closeTableAttendance({
     required int attendanceId,
     required String idempotencyKey,
-    int? cashSessionId,
   });
   Future<List<QuickSaleAuthorizer>> tablePaymentReverseAuthorizers();
   Future<void> validateTablePaymentAuthorization({
@@ -189,7 +188,7 @@ abstract class PosApi {
       throw UnimplementedError();
   Future<List<AttendanceCommand>> attendanceCommands({String? query});
   Future<List<QuickSaleProduct>> attendanceCatalog({String? search});
-  Future<QuickSaleCheckoutOptions> attendanceCheckoutOptions();
+  Future<LegacyCheckoutOptions> attendanceCheckoutOptions();
   Future<AttendanceCommandDetail> attendanceCommandDetail(int commandId);
   Future<AttendanceCommand> setAttendanceBillRequested({
     required int commandId,
@@ -267,7 +266,6 @@ abstract class PosApi {
   Future<QuickSaleCheckoutOptions> quickSaleCheckoutOptions();
   Future<QuickSaleCheckout> createQuickSaleCheckout({
     required List<Map<String, dynamic>> items,
-    required int cashSessionId,
     required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
     required String idempotencyKey,
@@ -285,7 +283,6 @@ abstract class PosApi {
   Future<QuickSaleCheckout> updateQuickSaleCheckout({
     required String checkoutId,
     required List<Map<String, dynamic>> items,
-    required int cashSessionId,
     required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
     int? customerId,
@@ -570,6 +567,12 @@ class HttpPosApi implements PosApi, PosCredentialCache {
       _cashState(await _request('POST', 'cash/sessions/open/', body: {
         'opening_amount': openingAmount,
         if (registerId != null) 'register': registerId,
+      }));
+
+  @override
+  Future<CashOverview> selectCashSession({required int registerId}) async =>
+      _cashState(await _request('POST', 'cash/sessions/select/', body: {
+        'register': registerId,
       }));
 
   @override
@@ -929,7 +932,6 @@ class HttpPosApi implements PosApi, PosCredentialCache {
           'idempotency_key': idempotencyKey,
           if (amount != null) 'amount': amount,
           if (receivedAmount != null) 'received_amount': receivedAmount,
-          if (cashSessionId != null) 'cash_session': cashSessionId,
           if (allocations.isNotEmpty) 'allocations': allocations,
         },
       ));
@@ -955,14 +957,12 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   Future<TableAttendance> closeTableAttendance({
     required int attendanceId,
     required String idempotencyKey,
-    int? cashSessionId,
   }) async =>
       TableAttendance.fromJson(await _request(
         'POST',
         'table-attendances/$attendanceId/close/',
         body: {
           'idempotency_key': idempotencyKey,
-          if (cashSessionId != null) 'cash_session': cashSessionId,
         },
       ));
 
@@ -1053,8 +1053,8 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   }
 
   @override
-  Future<QuickSaleCheckoutOptions> attendanceCheckoutOptions() async =>
-      QuickSaleCheckoutOptions.fromJson(
+  Future<LegacyCheckoutOptions> attendanceCheckoutOptions() async =>
+      LegacyCheckoutOptions.fromJson(
           await _request('GET', 'commands/checkout-options/'));
 
   @override
@@ -1268,7 +1268,6 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   @override
   Future<QuickSaleCheckout> createQuickSaleCheckout({
     required List<Map<String, dynamic>> items,
-    required int cashSessionId,
     required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
     required String idempotencyKey,
@@ -1280,7 +1279,6 @@ class HttpPosApi implements PosApi, PosCredentialCache {
       QuickSaleCheckout.fromJson(
           await _request('POST', 'sales/checkouts/', body: {
         'items': items,
-        'cash_session': cashSessionId,
         'discount': discount,
         'service_fee_waived': serviceFeeWaived,
         'idempotency_key': idempotencyKey,
@@ -1308,7 +1306,6 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   Future<QuickSaleCheckout> updateQuickSaleCheckout({
     required String checkoutId,
     required List<Map<String, dynamic>> items,
-    required int cashSessionId,
     required Map<String, dynamic> discount,
     required bool serviceFeeWaived,
     int? customerId,
@@ -1319,7 +1316,6 @@ class HttpPosApi implements PosApi, PosCredentialCache {
       QuickSaleCheckout.fromJson(
           await _request('PUT', 'sales/checkouts/$checkoutId/', body: {
         'items': items,
-        'cash_session': cashSessionId,
         'discount': discount,
         'service_fee_waived': serviceFeeWaived,
         if (customerId != null) 'customer': customerId,

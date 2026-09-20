@@ -10,9 +10,12 @@ class AppConfig {
       'POS_API_BASE_URL',
       defaultValue: 'http://10.0.2.2:18000',
     );
-    const appVersion = String.fromEnvironment('POS_APP_VERSION', defaultValue: '1.0.0');
-    const deviceName = String.fromEnvironment('POS_DEVICE_NAME', defaultValue: 'Android POS');
-    const deviceType = String.fromEnvironment('POS_DEVICE_TYPE', defaultValue: 'POS');
+    const appVersion =
+        String.fromEnvironment('POS_APP_VERSION', defaultValue: '1.0.0');
+    const deviceName =
+        String.fromEnvironment('POS_DEVICE_NAME', defaultValue: 'Android POS');
+    const deviceType =
+        String.fromEnvironment('POS_DEVICE_TYPE', defaultValue: 'POS');
     return AppConfig(
       apiBaseUrl: baseUrl,
       device: DeviceDescriptor(

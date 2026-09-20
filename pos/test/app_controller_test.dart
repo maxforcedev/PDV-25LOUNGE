@@ -167,7 +167,7 @@ void main() {
       cashOverviewResponse: const CashOverview(
         mode: 'FIXED',
         enabled: true,
-        session: CashSessionInfo(
+        activeSession: CashSessionInfo(
           id: 1,
           registerId: 1,
           registerName: 'Caixa',

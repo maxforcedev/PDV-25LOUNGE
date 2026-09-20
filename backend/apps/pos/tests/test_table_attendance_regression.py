@@ -6,13 +6,15 @@ from django.test import TestCase
 from apps.accounts.models import User
 from apps.attendance.models import AttendanceCommand, TableAttendance, TableAttendanceStatus
 from apps.attendance.services import (
-    close_table_attendance, open_table_attendance, record_table_payment, save_table_order,
+    AttendanceConflict, close_table_attendance, open_table_attendance,
+    record_table_payment, save_table_order,
 )
 from apps.cash.models import CashRegister
 from apps.cash.services import open_session
 from apps.commands.services import create_table
 from apps.companies.services import create_company_with_matrix
 from apps.inventory.models import Stock
+from apps.pos.models import POSDevice
 from apps.products.models import Category, InventoryBehavior, Product, ProductBranchConfig, Unit
 from apps.sales.services import ensure_default_payment_methods
 
@@ -32,12 +34,16 @@ class TableAttendanceRegressionTests(TestCase):
         Stock.objects.create(product=self.product, branch=self.branch, current_quantity=Decimal('20.000'), average_unit_cost=Decimal('2.00'), last_unit_cost=Decimal('2.00'))
         register = CashRegister.objects.create(branch=self.branch, name='Table cash')
         self.cash_session = open_session(register, Decimal('0.00'), self.user, self.branch)
+        self.device = POSDevice.objects.create(
+            branch=self.branch, name='Table POS', status=POSDevice.Status.ACTIVE,
+            active_cash_session=self.cash_session,
+        )
         self.cash_method = next(method for method in ensure_default_payment_methods(self.company) if method.code == 'cash')
 
     def test_empty_table_closes_without_sale_or_command(self):
         table = create_table(branch=self.branch, name='Empty table', user=self.user)
         attendance, _ = open_table_attendance(branch=self.branch, table_id=table.pk, user=self.user, idempotency_key=uuid4())
-        closed, _ = close_table_attendance(attendance=attendance, user=self.user, idempotency_key=uuid4())
+        closed, _ = close_table_attendance(attendance=attendance, user=self.user, idempotency_key=uuid4(), pos_device=self.device)
         self.assertEqual(closed.status, TableAttendanceStatus.CLOSED)
         self.assertIsNone(closed.sale_id)
         self.assertFalse(AttendanceCommand.objects.filter(table=table).exists())
@@ -46,9 +52,31 @@ class TableAttendanceRegressionTests(TestCase):
         table = create_table(branch=self.branch, name='Paid table', user=self.user)
         attendance, _ = open_table_attendance(branch=self.branch, table_id=table.pk, user=self.user, idempotency_key=uuid4())
         save_table_order(attendance=attendance, user=self.user, items=[{'product': self.product.pk, 'quantity': Decimal('1.000')}], idempotency_key=uuid4())
-        payment, _ = record_table_payment(attendance=attendance, user=self.user, payment_method_id=self.cash_method.pk, amount=Decimal('10.00'), received_amount=Decimal('10.00'), cash_session_id=self.cash_session.pk, idempotency_key=uuid4())
+        payment, _ = record_table_payment(attendance=attendance, user=self.user, payment_method_id=self.cash_method.pk, pos_device=self.device, amount=Decimal('10.00'), received_amount=Decimal('10.00'), idempotency_key=uuid4())
         self.assertEqual(payment.change_amount, Decimal('0.00'))
-        closed, _ = close_table_attendance(attendance=attendance, user=self.user, idempotency_key=uuid4())
+        closed, _ = close_table_attendance(attendance=attendance, user=self.user, idempotency_key=uuid4(), pos_device=self.device)
         self.assertEqual(closed.status, TableAttendanceStatus.CLOSED)
         self.assertIsNotNone(closed.sale_id)
         self.assertFalse(AttendanceCommand.objects.filter(table=table).exists())
+
+    def test_close_rejects_historical_non_cash_payment_from_another_device_context(self):
+        table = create_table(branch=self.branch, name='Context table', user=self.user)
+        attendance, _ = open_table_attendance(branch=self.branch, table_id=table.pk, user=self.user, idempotency_key=uuid4())
+        save_table_order(attendance=attendance, user=self.user, items=[{'product': self.product.pk, 'quantity': Decimal('1.000')}], idempotency_key=uuid4())
+        card_method = next(method for method in ensure_default_payment_methods(self.company) if method.code != 'cash')
+        payment, _ = record_table_payment(
+            attendance=attendance, user=self.user, payment_method_id=card_method.pk,
+            pos_device=self.device, amount=Decimal('10.00'), idempotency_key=uuid4(),
+        )
+        self.assertEqual(payment.cash_session_id, self.cash_session.pk)
+        other_register = CashRegister.objects.create(branch=self.branch, name='Other table cash')
+        other_session = open_session(other_register, Decimal('0.00'), self.user, self.branch)
+        self.device.active_cash_session = other_session
+        self.device.save(update_fields=('active_cash_session', 'updated_at'))
+
+        with self.assertRaises(AttendanceConflict) as error:
+            close_table_attendance(
+                attendance=attendance, user=self.user, idempotency_key=uuid4(), pos_device=self.device,
+            )
+
+        self.assertEqual(error.exception.code, 'table_cash_session_mismatch')

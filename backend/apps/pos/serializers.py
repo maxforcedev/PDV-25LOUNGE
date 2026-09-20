@@ -121,6 +121,10 @@ class POSOpenCashSessionSerializer(serializers.Serializer):
     )
 
 
+class POSSelectCashSessionSerializer(serializers.Serializer):
+    register = serializers.IntegerField(min_value=1)
+
+
 class POSCartItemSerializer(ItemInputSerializer):
     client_item_id = serializers.UUIDField()
     notes = serializers.CharField(
@@ -184,7 +188,6 @@ class POSDiscountAuthorizationValidationSerializer(POSDiscountAuthorizationSeria
 class POSFinalizeSaleSerializer(POSSalePreviewSerializer):
     customer = serializers.IntegerField(required=False, allow_null=True)
     idempotency_key = serializers.UUIDField()
-    cash_session = serializers.IntegerField(min_value=1)
     payments = PaymentInputSerializer(many=True, allow_empty=False)
     discount_authorization = POSDiscountAuthorizationSerializer(required=False)
     item_discount_authorization = POSDiscountAuthorizationSerializer(required=False)
@@ -194,7 +197,6 @@ class POSFinalizeSaleSerializer(POSSalePreviewSerializer):
 class POSQuickCheckoutCreateSerializer(POSSalePreviewSerializer):
     customer = serializers.IntegerField(required=False, allow_null=True)
     idempotency_key = serializers.UUIDField()
-    cash_session = serializers.IntegerField(min_value=1)
     discount_authorization = POSDiscountAuthorizationSerializer(required=False)
     item_discount_authorization = POSDiscountAuthorizationSerializer(required=False)
     service_fee_authorization = POSDiscountAuthorizationSerializer(required=False)
@@ -202,7 +204,6 @@ class POSQuickCheckoutCreateSerializer(POSSalePreviewSerializer):
 
 class POSQuickCheckoutUpdateSerializer(POSSalePreviewSerializer):
     customer = serializers.IntegerField(required=False, allow_null=True)
-    cash_session = serializers.IntegerField(min_value=1)
     discount_authorization = POSDiscountAuthorizationSerializer(required=False)
     item_discount_authorization = POSDiscountAuthorizationSerializer(required=False)
     service_fee_authorization = POSDiscountAuthorizationSerializer(required=False)

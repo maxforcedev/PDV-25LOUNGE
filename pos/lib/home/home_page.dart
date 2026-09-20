@@ -241,7 +241,7 @@ class _ModuleCard extends StatelessWidget {
                             ? 'Atendimentos por mesa'
                             : module.key == 'commands'
                                 ? 'Contas e consumo'
-                        : 'Em breve',
+                                : 'Em breve',
                 style: const TextStyle(color: Color(0xff64748b), fontSize: 12)),
           ]),
         ),

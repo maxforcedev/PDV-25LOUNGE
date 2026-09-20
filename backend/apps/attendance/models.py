@@ -428,11 +428,13 @@ class TablePayment(BaseModel):
             errors['payment_method'] = 'A forma de pagamento deve pertencer à empresa.'
         if self.attendance_id and self.cash_session_id and self.cash_session.branch_id != self.attendance.branch_id:
             errors['cash_session'] = 'A sessão deve pertencer à filial.'
+        if self.reversal_of_id is None and self.cash_session_id is None:
+            errors['cash_session'] = 'Pagamento de mesa exige sessão de caixa.'
         if self.payment_method_id and self.payment_method.code == 'cash':
             if self.received_amount is None or self.received_amount < self.amount:
                 errors['received_amount'] = 'Dinheiro exige valor recebido igual ou maior ao aplicado.'
-        elif self.received_amount is not None or self.change_amount is not None or self.cash_session_id:
-            errors['payment_method'] = 'Somente dinheiro aceita recebido, troco ou sessão de caixa.'
+        elif self.received_amount is not None or self.change_amount is not None:
+            errors['payment_method'] = 'Somente dinheiro aceita recebido ou troco.'
         if errors:
             raise ValidationError(errors)
 

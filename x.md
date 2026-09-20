@@ -1,558 +1,436 @@
-CONTINUE A CORREÇÃO DO MÓDULO DE MESAS A PARTIR DO HEAD ATUAL.
+CORREÇÃO DE ARQUITETURA IMPORTANTE.
 
-FONTE DE VERDADE: ESTADO ATUAL DO PROJETO.
+A FONTE DE VERDADE É O ESTADO ATUAL DO PROJETO.
 
-HÁ TRÊS AJUSTES DE PRODUTO/ARQUITETURA OBRIGATÓRIOS.
+A DECISÃO ANTERIOR SOBRE CASH SESSION PRECISA SER CORRIGIDA.
 
 ==================================================
-1. REMOVER SELETOR DE CAIXA DE DENTRO DO DINHEIRO
+REGRA DEFINITIVA
 ==================================================
 
-NÃO quero dropdown:
+CASH SESSION NÃO PERTENCE:
+
+- à Venda Rápida;
+- à Mesa;
+- ao método Dinheiro;
+- à tela de Pagamento.
+
+CASH SESSION PERTENCE EXCLUSIVAMENTE AO MÓDULO:
 
 CAIXA
-[ Caixa 01 ▼ ]
 
-dentro da tela de pagamento em Dinheiro.
+dentro do CORE POS.
 
-Hoje isso acontece na Mesa porque `TablePaymentPage` envia:
+Venda Rápida e Mesa apenas utilizam automaticamente
+o caixa operacional que já está aberto/ativo no POS.
 
-`cashSessions`
+==================================================
+1. FLUXO CORRETO
+==================================================
 
-para o componente compartilhado:
+Usuário:
 
-`PaymentEntryPage`
+CAIXA
+↓
+seleciona/abre caixa quando necessário
+↓
+CashSession fica ATIVA para este POS/device
+↓
+volta ao Home
+↓
+Venda Rápida / Mesa / demais operações
+↓
+usam automaticamente essa CashSession.
 
-e `PaymentEntryPage` possui conhecimento de sessão de caixa.
+NUNCA perguntar novamente qual caixa usar dentro de:
 
-REMOVER ISSO.
+- Venda Rápida;
+- Mesa;
+- Pagamento;
+- Dinheiro;
+- fechamento da Mesa.
 
-O componente compartilhado de entrada de pagamento NÃO deve saber escolher caixa.
+==================================================
+2. CAIXA FIXO
+==================================================
 
-A experiência de Dinheiro deve ser:
+Se `cash_binding_mode = FIXED`:
+
+o POS já possui CashRegister configurado.
+
+Na área CAIXA:
+
+- mostrar esse caixa;
+- permitir abrir a sessão;
+- sessão aberta torna-se a CashSession operacional ativa.
+
+Venda e Mesa usam automaticamente essa sessão.
+
+==================================================
+3. CAIXA FLEXÍVEL
+==================================================
+
+Se `cash_binding_mode = FLEXIBLE`:
+
+a escolha do CashRegister acontece NA TELA CAIXA.
+
+Exemplo:
+
+CAIXA
+
+[ Caixa Balcão ▼ ]
+
+[ ABRIR CAIXA ]
+
+Depois da abertura/seleção:
+
+CAIXA ATIVO
+Caixa Balcão
+
+Essa seleção deve tornar-se contexto operacional do POS/device.
+
+NÃO manter isso somente como `_selectedRegisterId`
+local dentro de `CashPage`.
+
+==================================================
+4. PERSISTÊNCIA DO CAIXA ATIVO
+==================================================
+
+Hoje `_selectedRegisterId` em CashPage é estado local da tela.
+
+Isso não é suficiente.
+
+O caixa/sessão operacional ativa precisa sobreviver:
+
+- navegação entre módulos;
+- troca de página;
+- rebuild;
+- restart do app quando a sessão continuar válida.
+
+Preferencialmente o backend/device deve ser a fonte de verdade.
+
+Não depender apenas de variável local Flutter.
+
+==================================================
+5. CONTEXTO POR DEVICE
+==================================================
+
+O caixa operacional deve pertencer ao contexto do POSDevice.
+
+Não ao checkout.
+
+Não à Mesa.
+
+Não ao PaymentEntryPage.
+
+Trocar de operador no mesmo POS não deve, por si só,
+trocar o caixa físico ativo daquele dispositivo.
+
+Preservar permissões do operador para operações de Caixa.
+
+==================================================
+6. SEM CASH SESSION ATIVA
+==================================================
+
+Se não houver uma CashSession operacional aberta:
+
+Venda Rápida e Mesa NÃO devem apresentar seletor de caixa.
+
+Devem bloquear a operação que exige caixa e apresentar algo como:
+
+"Nenhum caixa está aberto neste POS."
+
+[ IR PARA CAIXA ]
+
+O usuário abre/seleciona o caixa na área CAIXA
+e depois retorna.
+
+==================================================
+7. PAYMENT ENTRY
+==================================================
+
+`PaymentEntryPage` NÃO deve conhecer:
+
+- CashSession;
+- CashRegister;
+- lista de caixas;
+- seletor de caixa.
+
+Remover `cashSessionId` do contrato visual se ele estiver ali
+somente por causa dessa arquitetura antiga.
+
+PaymentEntryPage cuida apenas de:
+
+- método;
+- valor aplicado;
+- valor recebido;
+- troco;
+- pagar saldo;
+- confirmação.
+
+==================================================
+8. VENDA RÁPIDA
+==================================================
+
+Hoje Venda Rápida ainda possui `_pickCashSession()`
+antes da criação do checkout.
+
+REMOVER ESSA ESCOLHA DO FLUXO DA VENDA.
+
+Não quero:
+
+VENDA
+→ selecionar caixa
+→ checkout.
+
+Quero:
+
+CAIXA já está aberto
+→ VENDA
+→ checkout automaticamente vinculado ao caixa ativo.
+
+==================================================
+9. MESA
+==================================================
+
+Remover da Mesa:
+
+- `_resolveCashSession()`;
+- `PaymentCashSessionPicker`;
+- escolha de sessão ao tocar Dinheiro;
+- escolha de sessão ao fechar Mesa.
+
+Mesa usa automaticamente o contexto de Caixa ativo.
+
+==================================================
+10. FECHAMENTO DA MESA
+==================================================
+
+FECHAR MESA não pergunta caixa.
+
+O backend deve usar a sessão operacional correta já associada
+às operações/pagamentos.
+
+Se existir inconsistência histórica de sessão,
+o backend deve rejeitar explicitamente.
+
+Não pedir ao operador para escolher um caixa arbitrariamente
+no momento do fechamento.
+
+==================================================
+11. BACKEND
+==================================================
+
+Revisar os contratos atuais.
+
+Hoje existem fluxos que recebem:
+
+`cash_session`
+
+do client.
+
+Para operações POS novas, evoluir para resolução server-side
+da sessão operacional ativa do POSDevice.
+
+Conceitualmente:
+
+`current_pos_cash_session(device)`
+
+em vez de:
+
+`_pos_sale_session(device, session_id)`
+
+Não precisa necessariamente usar esse nome.
+
+Objetivo:
+
+o client NÃO escolhe uma sessão arbitrária para cada venda.
+
+==================================================
+12. SEGURANÇA
+==================================================
+
+O backend deve validar:
+
+- sessão existe;
+- status OPEN;
+- filial correta;
+- CashRegister ativo;
+- compatível com o POSDevice;
+- FIXED respeita caixa configurado;
+- FLEXIBLE respeita caixa operacional escolhido pelo device.
+
+Nunca confiar apenas em um ID enviado pelo Flutter.
+
+==================================================
+13. CHECKOUT OPTIONS
+==================================================
+
+Venda Rápida e Mesa não precisam receber uma lista de:
+
+`cash_sessions`
+
+para escolher pagamento.
+
+Checkout options pode informar apenas o estado necessário, por exemplo:
+
+- cash_ready
+- active_cash_session
+- active_cash_register
+
+se a UI realmente precisar apresentar status.
+
+Não utilizar isso como seletor financeiro.
+
+==================================================
+14. TELA CAIXA É A DONA DO CONTEXTO
+==================================================
+
+A área CAIXA passa a ser responsável por:
+
+- selecionar register em FLEXIBLE;
+- abrir sessão;
+- definir sessão ativa;
+- visualizar sessão;
+- entradas;
+- retiradas;
+- fechamento;
+- trocar contexto quando permitido.
+
+Ao fechar a sessão ativa:
+
+o POS imediatamente deixa de estar apto a criar novas
+operações que exigem caixa.
+
+==================================================
+15. HOME / STATUS
+==================================================
+
+Se já existir espaço apropriado, deixar o AppController/bootstrap
+conhecer o estado:
+
+CAIXA ABERTO
+ou
+CAIXA FECHADO
+
+Isso permite os módulos consumirem a mesma fonte de verdade.
+
+Não criar estado de caixa independente em Venda Rápida e Mesa.
+
+==================================================
+16. NÃO CONFUNDIR DINHEIRO COM CAIXA
+==================================================
+
+Método:
 
 DINHEIRO
 
-FALTA R$ XX,XX
+é somente uma forma de pagamento.
 
-VALOR APLICADO
-R$ XX,XX
+CashSession:
 
-[ INFORMAR VALOR RECEBIDO ]
-
-VALOR RECEBIDO
-R$ XX,XX
-
-TROCO
-R$ XX,XX
-
-[ CONFIRMAR PAGAMENTO MANUAL ]
-
-SEM seletor de caixa.
-
-==================================================
-2. CAIXA É CONTEXTO OPERACIONAL, NÃO ELEMENTO DO DINHEIRO
-==================================================
-
-Venda Rápida já trabalha dessa maneira:
-
-o caixa é resolvido antes do fluxo de Pagamento.
-
-Depois:
-
-PaymentEntryPage
-→ apenas registra o valor.
-
-Mesa deve seguir o mesmo princípio.
-
-Para Mesa, resolver `cash_session_id` FORA de `PaymentEntryPage`.
-
-Usar as regras existentes de:
-
-- `cash_binding_mode`
-- `fixed_register`
-- sessões abertas elegíveis
-- configuração do POS/device.
-
-Regra:
-
-FIXED:
-→ usar automaticamente a sessão elegível do caixa configurado.
-
-Somente uma sessão elegível:
-→ usar automaticamente.
-
-FLEXIBLE + várias sessões:
-→ se realmente precisar de escolha humana, escolher UMA VEZ no contexto de entrada da página de Pagamento, e não dentro de cada pagamento em Dinheiro.
-
-Essa sessão fica no contexto do pagamento da Mesa.
-
-NÃO perguntar novamente a cada pagamento em dinheiro.
-
-Não mover regra de validação financeira para Flutter.
-
-Backend continua validando a sessão.
-
-==================================================
-3. PaymentEntryPage NÃO DEVE RECEBER LISTA DE CAIXAS
-==================================================
-
-Remover do componente compartilhado, se possível:
-
-`cashSessions`
-
-e o `DropdownButtonFormField` de Caixa.
-
-O componente pode receber, caso necessário para o resultado interno:
-
-um `cashSessionId` já resolvido pelo contexto.
-
-Mas não deve permitir selecionar caixa.
-
-Idealmente:
-
-PaymentEntryPage
-→ valor / recebido / troco
-
-Context Adapter
-→ resolve sessão operacional.
-
-==================================================
-4. PAGAMENTO NÃO DEVE FICAR NO MENU SUPERIOR DA MESA
-==================================================
-
-Hoje em:
-
-`table_attendance_page.dart`
-
-existe no AppBar:
-
-ícone `payments_outlined`
-
-com tooltip:
-
-`Pagamento`
-
-REMOVER esse acesso do AppBar.
-
-Não quero o Pagamento no menu superior da Mesa.
-
-==================================================
-5. PAGAMENTO DEVE FICAR NO RESUMO DA MESA
-==================================================
-
-Na lateral / página:
-
-`RESUMO DA MESA`
-
-já existe:
-
-- itens;
-- subtotal;
-- promoções;
-- descontos;
-- taxa;
-- total oficial;
-- SALVAR E ENVIAR PEDIDO.
-
-Adicionar o botão:
-
-PAGAMENTO
-
-IMEDIATAMENTE ANTES de:
-
-SALVAR E ENVIAR PEDIDO.
-
-Resultado:
-
-RESUMO DA MESA
-
-...
-
-Subtotal
-Descontos
-Taxa
-Total oficial
-
-[ PAGAMENTO ]
-
-[ SALVAR E ENVIAR PEDIDO ]
-
-==================================================
-6. MESMO LOCAL NO DESKTOP E MOBILE
-==================================================
-
-O `_TableOrderSummaryPanel` é usado:
-
-- na lateral do desktop;
-- na página de resumo mobile.
-
-Portanto o botão PAGAMENTO deve fazer parte do próprio:
-
-`_TableOrderSummaryPanel`
-
-e não ser inserido separadamente em apenas um layout.
-
-Adicionar callbacks/capabilities ao painel, por exemplo conceitualmente:
-
-`canOpenPayment`
-`onPayment`
-
-Não precisa seguir exatamente esses nomes.
-
-==================================================
-7. REGRA PARA ITENS AINDA NÃO ENVIADOS
-==================================================
-
-Preservar a regra atual:
-
-não registrar pagamento enquanto existirem itens novos ainda não enviados.
+é o turno/contexto operacional do caixa.
 
 Portanto:
 
-se `cart.isNotEmpty`
+PIX
+CRÉDITO
+DÉBITO
+DINHEIRO
 
-o botão PAGAMENTO pode aparecer desabilitado.
+pertencem todos à operação que está acontecendo
+dentro do caixa ativo do POS.
 
-Não remover a proteção backend/fluxo existente.
-
-Depois que:
-
-SALVAR E ENVIAR PEDIDO
-
-for concluído:
-
-PAGAMENTO fica habilitado.
-
-Se necessário, tooltip/mensagem curta:
-
-`Envie os itens novos antes de registrar pagamentos.`
+Não selecionar CashSession apenas porque o método é Dinheiro.
 
 ==================================================
-8. PERMISSÃO
+17. PRESERVAR UI COMPARTILHADA
 ==================================================
 
-O botão PAGAMENTO depende de:
+Preservar tudo que já foi corretamente compartilhado entre
+Venda Rápida e Mesa:
 
-`tables.payments.view`
+- PaymentPageLayout
+- PaymentHeaderActions
+- PaymentMethodGrid
+- PaymentSplitSelector
+- PaymentMethodPicker
+- PaymentEntryPage
+- PaymentItemAllocationPage
+- PaymentEqualSplitPage
+- PaymentHistoryList
+- PaymentBalanceCard
+- PaymentFinancialSummary
+- PaymentHistoryItem
+- PaymentReversalDialog
+- SharedAuthorizationDialog
+- SharedDiscountDialog
+- SharedCustomerPickerDialog
 
-Se não possuir a permissão:
-
-não permitir acesso.
-
-Manter também validação backend.
-
-==================================================
-9. COMPARAR NOVAMENTE VENDA RÁPIDA × MESA
-==================================================
-
-Além dos ajustes acima, revise os dois fluxos.
-
-REGRA:
-
-não quero duas implementações que apenas parecem iguais.
-
-Quero os mesmos componentes onde a interação é a mesma.
-
-Hoje já estão compartilhados e DEVEM continuar compartilhados:
-
-- `PaymentPageLayout`
-- `PaymentHeaderActions`
-- `PaymentMethodGrid`
-- `PaymentSplitSelector`
-- `PaymentEntryPage`
-- `PaymentItemAllocationPage`
-- `PaymentBalanceCard`
-- `PaymentFinancialSummary`
-- `PaymentHistoryItem`
-- `PaymentReversalDialog`
-- `SharedAuthorizationDialog`
-- `SharedDiscountDialog`
-- `SharedCustomerPickerDialog`
-
-NÃO regredir isso.
+Não regredir essa arquitetura.
 
 ==================================================
-10. DIVIDIR IGUAL AINDA ESTÁ DIFERENTE
+18. PRESERVAR BOTÃO PAGAMENTO DA MESA
 ==================================================
 
-Hoje:
+Manter:
 
-VENDA RÁPIDA
-→ abre `_EqualSplitPage`
-→ escolhe quantidade de pessoas
-→ escolhe uma parte
-→ escolhe forma
-→ pagamento
+RESUMO DA MESA
+...
+TOTAL
+[ PAGAMENTO ]
+[ SALVAR E ENVIAR PEDIDO ]
 
-MESA
-→ lê `next_person`
-→ lê `next_amount`
-→ abre seletor de forma diretamente
-→ pagamento
-
-Os domínios realmente são diferentes.
-
-Mas a EXPERIÊNCIA VISUAL deve reutilizar o mesmo elemento.
-
-Criar/generalizar um componente compartilhado equivalente a:
-
-`PaymentEqualSplitPage`
-
-que consiga receber o contexto.
-
-Venda Rápida:
-
-- permite definir quantidade de pessoas;
-- usa suas partes calculadas pelo checkout atual.
-
-Mesa:
-
-- quantidade vem da Mesa;
-- usa `next_person`;
-- usa `next_amount`;
-- não recalcula financeiramente no Flutter.
-
-Mas visualmente:
-
-DIVIDIR IGUAL
-
-Pessoa/Parte X de Y
-
-R$ XX,XX
-
-[ PAGAR ESTA PARTE ]
-
-deve seguir o mesmo padrão.
+Não devolver Pagamento para o AppBar.
 
 ==================================================
-11. SELETOR DE FORMA DE PAGAMENTO
+19. LIMPEZA
 ==================================================
 
-Hoje `_pickMethod()` ainda existe separadamente em:
+Após migrar o contexto de Caixa:
 
-- Venda Rápida;
-- Mesa.
+remover seletores/helpers mortos relacionados a escolha
+de CashSession dentro dos fluxos financeiros.
 
-Extrair um único seletor compartilhado.
+Incluindo, se ficarem sem uso:
 
-Exemplo conceitual:
+- PaymentCashSessionPicker;
+- `_pickCashSession`;
+- `_resolveCashSession`;
+- `_CashSessionDialog`;
 
-`PaymentMethodPicker`
-
-Ele recebe:
-
-- título;
-- métodos;
-- callback/resultado.
-
-Usar nos dois contextos.
+e equivalentes.
 
 ==================================================
-12. HISTÓRICO
+20. CHECKPOINT
 ==================================================
 
-Os dois já usam:
+Ao terminar informe:
 
-`PaymentHistoryItem`
-
-mas cada página recria praticamente a mesma:
-
-`ListView.separated`
-
-Avaliar extrair:
-
-`PaymentHistoryList`
-
-recebendo uma lista de `PaymentDisplayEntry`.
-
-O adapter de cada domínio transforma:
-
-QuickSaleCheckoutPayment
-→ PaymentDisplayEntry
-
-TablePayment
-→ PaymentDisplayEntry
-
-A apresentação deve ser única.
-
-==================================================
-13. RESUMO
-==================================================
-
-Os dois já usam:
-
-`PaymentFinancialSummary`
-
-Isso está correto.
-
-Se ainda houver composição duplicada idêntica em volta dele, extrair somente se simplificar.
-
-Não fazer abstração artificial.
-
-==================================================
-14. CLASSIFICAÇÃO/ÍCONE DE FORMAS
-==================================================
-
-Não manter `_methodIcon()` diferente espalhado em vários arquivos.
-
-A classificação já foi centralizada em:
-
-`paymentMethodGroup()`
-
-Centralizar também a representação visual necessária para:
-
-- cash
-- debit
-- pix
-- credit
-- other
-
-para evitar Venda Rápida e Mesa divergirem novamente.
-
-==================================================
-15. REMOVER CÓDIGO ANTIGO/MORTO
-==================================================
-
-Após a nova extração, ainda existem implementações antigas no código.
-
-Em `shared_payment_page.dart` ainda aparecem estruturas antigas como:
-
-- `_PaymentEntryPage`
-- `_ItemAllocationPage`
-- `_MoneyEntry`
-
-quando o fluxo ativo já usa os elementos compartilhados novos.
-
-Em `table_payment_page.dart` ainda existem:
-
-- `_TablePaymentDialog`
-- `_TableItemAllocationPage`
-
-mesmo com o fluxo novo usando:
-
-- `PaymentEntryPage`
-- `PaymentItemAllocationPage`
-
-Confirmar que não possuem chamadas ativas.
-
-Se estiverem realmente mortas:
-
-REMOVER.
-
-Não deixar duas implementações do mesmo fluxo dentro do projeto.
-
-==================================================
-16. O QUE PODE SER DIFERENTE
-==================================================
-
-As diferenças de contexto DEVEM continuar.
-
-VENDA RÁPIDA:
-
-- `QuickSaleCheckout`
-- `sales.*`
-- finaliza Venda
-- volta ao Catálogo
-- regras QuickSale.
-
-MESA:
-
-- `TableAttendance`
-- `TablePayment`
-- `tables.*`
-- Fecha Mesa
-- volta ao Grid de Mesas
-- `table_summary`
-- equal split oficial da Mesa.
-
-Isso NÃO precisa ser artificialmente unificado.
-
-Compartilhar UI/interação.
-
-Separar domínio/regra.
-
-==================================================
-17. CRITÉRIO DE ACEITE
-==================================================
-
-Ao abrir Pagamento de Venda Rápida e Pagamento de Mesa:
-
-quero reconhecer exatamente o mesmo sistema de pagamento CORE.
-
-Diferenças somente onde o contexto exige.
-
-Principalmente:
-
-MESMO:
-- header
-- formas
-- entrada de pagamento
-- Dinheiro
-- valor recebido
-- troco
-- Pagar Saldo
-- Dividir
-- Pagar por Itens
-- histórico
-- estorno
-- desconto
-- resumo
-- pending/retry
-- responsividade.
-
-DIFERENTE:
-- dados
-- endpoints
-- permissões
-- fechamento/finalização
-- regras de domínio.
-
-==================================================
-18. NÃO ESQUECER DAS PENDÊNCIAS ANTERIORES
-==================================================
-
-Preservar/corrigir também:
-
-- pending seguro;
-- pending não pode ser apagado quando checkout-options falhar;
-- Mesa deve usar `mode=remaining` quando contexto for PAGAR SALDO;
-- `next_person/next_amount`;
-- `equal_split.active` semanticamente correto;
-- fechamento da Mesa usando sessão já determinada pelos pagamentos quando aplicável.
-
-==================================================
-19. CHECKPOINT
-==================================================
-
-Ao concluir informe:
-
-1. como removeu o seletor de caixa do Dinheiro;
-2. onde a Mesa resolve cash_session agora;
-3. confirmação de que PaymentEntryPage não escolhe caixa;
-4. confirmação de que Pagamento saiu do AppBar da Mesa;
-5. confirmação de que Pagamento está no RESUMO DA MESA;
-6. posição exata em relação a SALVAR E ENVIAR PEDIDO;
-7. comportamento desktop;
-8. comportamento mobile;
-9. comportamento quando há itens não enviados;
-10. quais elementos Venda Rápida/Mesa estão compartilhando;
-11. o que ainda precisa permanecer específico por contexto;
-12. como Dividir Igual foi unificado visualmente;
-13. como seletor de método foi compartilhado;
-14. se histórico foi compartilhado;
-15. se ícones/classificação foram centralizados;
-16. quais classes antigas/mortas foram removidas;
-17. confirmação de não regressão da Venda Rápida;
-18. flutter analyze;
-19. git diff --check;
-20. Django system check;
-21. migrations check.
+1. onde agora vive o estado da CashSession ativa;
+2. como FIXED funciona;
+3. como FLEXIBLE funciona;
+4. como a escolha feita em Caixa persiste;
+5. como Venda Rápida obtém automaticamente a sessão;
+6. como Mesa obtém automaticamente a sessão;
+7. como pagamento em Dinheiro funciona sem seletor;
+8. como PIX/Crédito/Débito ficam vinculados ao mesmo contexto operacional;
+9. comportamento sem caixa aberto;
+10. comportamento ao fechar o caixa;
+11. endpoints/backend alterados;
+12. campos `cash_session` removidos do client onde aplicável;
+13. segurança da resolução server-side;
+14. código morto removido;
+15. confirmação de que Pagamento continua no Resumo da Mesa;
+16. confirmação de não regressão da Venda Rápida;
+17. flutter analyze;
+18. git diff --check;
+19. Django system check;
+20. migrations check.
 
 DEPOIS PARE.
 
+NÃO INICIE STONE/CIELO/PAGBANK.
 NÃO INICIE OUTRA FASE.
-
-NÃO IMPLEMENTE STONE/CIELO/PAGBANK.
-
+NÃO ALTERE COMANDA LEGADO.
 O TESTE FUNCIONAL SERÁ FEITO MANUALMENTE.

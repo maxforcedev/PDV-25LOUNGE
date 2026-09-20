@@ -133,18 +133,16 @@ class _CashPageState extends State<CashPage> {
         },
       );
 
-  CashSessionInfo? _currentSession(CashOverview cash) {
-    if (cash.isFixed) return cash.session;
-    return cash.registers
-        .where((item) => item.id == _selectedRegisterId)
-        .firstOrNull
-        ?.session;
-  }
+  CashSessionInfo? _currentSession(CashOverview cash) => cash.activeSession;
 
-  void _selectRegister(int? id) {
+  Future<void> _selectRegister(int? id) async {
+    if (id == null) return;
     setState(() {
       _selectedRegisterId = id;
     });
+    // Selecting an already open flexible drawer persists on the POS device.
+    await widget.controller.selectCashSession(id);
+    if (!mounted) return;
     _synchronizeSummary();
   }
 
@@ -212,11 +210,7 @@ class _CashPageState extends State<CashPage> {
     final opened = await widget.controller.openCashSession(
         openingAmount: request.openingAmount, registerId: request.registerId);
     if (!mounted || !opened) return;
-    if (!snapshot.cash.isFixed) {
-      setState(() {
-        _selectedRegisterId = request.registerId;
-      });
-    }
+    if (!snapshot.cash.isFixed) _selectedRegisterId = request.registerId;
     _synchronizeSummary();
   }
 
