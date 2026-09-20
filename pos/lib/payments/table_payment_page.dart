@@ -6,7 +6,9 @@ import '../core/app_controller.dart';
 import '../sales/sale_models.dart';
 import '../sales/shared_authorization_dialog.dart';
 import '../sales/shared_customer_dialog.dart';
+import '../sales/shared_discount_dialog.dart';
 import 'payment_contract.dart';
+import 'payment_flow_components.dart';
 import 'shared_payment_widgets.dart';
 import 'table_payment_adapter.dart';
 
@@ -70,12 +72,15 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
       widget.controller.tableAttendanceDetail(_attendance.id),
       widget.controller.tablePaymentLedger(_attendance.id),
       widget.controller.tableCheckoutOptions(),
+      widget.controller.tablePaymentPending(_attendance.id),
     ]);
     if (!mounted) return;
     setState(() {
       _attendance = results[0] as TableAttendance? ?? _attendance;
       _ledger = results[1] as TablePaymentLedger? ?? _ledger;
       _options = results[2] as QuickSaleCheckoutOptions? ?? _options;
+      _pending ??= _TablePaymentRequest.fromJson(
+          Map<String, dynamic>.from(results[3] as Map), _methods);
       if (_pending != null &&
           (_ledger?.payments ?? const []).any((payment) =>
               payment.idempotencyKey == _pending!.idempotencyKey)) {
@@ -83,6 +88,9 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
       }
       _loading = false;
     });
+    if (_pending == null)
+      await widget.controller
+          .writeTablePaymentPending(_attendance.id, const {});
   }
 
   PaymentSummaryData get _summaryData => _adapter.summary;
@@ -102,69 +110,42 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
 
   Future<void> _selectMethod(QuickSalePaymentMethod method) async {
     if (!_canRecord || _working || _pending != null) return;
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          ListTile(
-            leading: const Icon(Icons.edit_outlined),
-            title: const Text('PAGAR POR VALOR'),
-            onTap: () => Navigator.pop(context, 'value'),
-          ),
-          ListTile(
-            leading: const Icon(Icons.done_all_outlined),
-            title: const Text('PAGAR SALDO'),
-            onTap: () => Navigator.pop(context, 'remaining'),
-          ),
-          if (_attendance.peopleCount != null)
-            ListTile(
-              leading: const Icon(Icons.call_split_outlined),
-              title: const Text('DIVIDIR IGUAL'),
-              subtitle: Text('${_attendance.peopleCount} pessoas'),
-              onTap: () => Navigator.pop(context, 'equal_people'),
-            ),
-          ListTile(
-            leading: const Icon(Icons.format_list_bulleted),
-            title: const Text('PAGAR POR ITENS'),
-            onTap: () => Navigator.pop(context, 'items'),
-          ),
-        ]),
-      ),
-    );
-    if (action == null || !mounted) return;
-    if (action == 'items') {
-      final allocations =
-          await Navigator.of(context).push<List<Map<String, dynamic>>>(
-        MaterialPageRoute(
-          builder: (_) => _TableItemAllocationPage(
-            attendance: _attendance,
-            payments: _ledger?.payments ?? const [],
-          ),
-        ),
-      );
-      if (allocations == null || allocations.isEmpty || !mounted) return;
-      await _requestPayment(method, mode: action, allocations: allocations);
-      return;
-    }
-    await _requestPayment(method, mode: action);
+    await _requestPayment(method, mode: 'value');
   }
 
   Future<void> _requestPayment(
     QuickSalePaymentMethod method, {
     required String mode,
     List<Map<String, dynamic>> allocations = const [],
+    String? officialAmount,
   }) async {
-    final request = await showDialog<_TablePaymentRequest>(
-      context: context,
-      builder: (_) => _TablePaymentDialog(
-        method: method,
-        mode: mode,
-        remaining: _money('remaining_balance'),
-        sessions: _options?.cashSessions ?? const [],
-        allocations: allocations,
-      ),
+    final entry = await Navigator.of(context).push<PaymentEntryResult>(
+      MaterialPageRoute(
+          builder: (_) => PaymentEntryPage(
+                method: method,
+                remaining: _money('remaining_balance'),
+                initialAmount: mode == 'equal_people'
+                    ? '${(_summary['equal_split'] as Map? ?? const {})['next_amount'] ?? '0.00'}'
+                    : officialAmount,
+                amountLocked: mode == 'equal_people' || mode == 'items',
+                amountContext: mode == 'equal_people'
+                    ? PaymentAmountContext.equalSplit
+                    : mode == 'items'
+                        ? PaymentAmountContext.items
+                        : PaymentAmountContext.value,
+                cashSessions: _options?.cashSessions ?? const [],
+              )),
     );
-    if (request == null || !mounted) return;
+    if (entry == null || !mounted) return;
+    final request = _TablePaymentRequest(
+      method: method,
+      mode: mode,
+      idempotencyKey: entry.intentId,
+      amount: entry.amount,
+      receivedAmount: entry.receivedAmount,
+      cashSessionId: entry.cashSessionId,
+      allocations: allocations,
+    );
     await _record(request);
   }
 
@@ -173,6 +154,8 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
       _working = true;
       _pending = request;
     });
+    await widget.controller
+        .writeTablePaymentPending(_attendance.id, request.toJson());
     final payment = await widget.controller.recordTablePayment(
       attendanceId: _attendance.id,
       paymentMethodId: request.method.id,
@@ -187,6 +170,8 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
     setState(() => _working = false);
     if (payment != null) {
       setState(() => _pending = null);
+      await widget.controller
+          .writeTablePaymentPending(_attendance.id, const {});
       await _refresh();
     }
   }
@@ -279,6 +264,84 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
     if (updated != null && mounted) await _refresh();
   }
 
+  Future<void> _showSplitSelector() => showModalBottomSheet<void>(
+        context: context,
+        builder: (_) => PaymentSplitSelector(
+          canPayByItems: true,
+          enabled: _canRecord && !_working && _pending == null,
+          onEqualSplit: () {
+            Navigator.pop(context);
+            _selectEqualSplit();
+          },
+          onItems: () {
+            Navigator.pop(context);
+            _selectItems();
+          },
+        ),
+      );
+
+  Future<void> _selectEqualSplit() async {
+    final split =
+        Map<String, dynamic>.from(_summary['equal_split'] as Map? ?? const {});
+    final person = split['next_person'];
+    final amount = '${split['next_amount'] ?? '0.00'}';
+    if (person == null || _cents(amount) == 0) return;
+    final method =
+        await _pickMethod(_methods, title: 'Forma para pessoa $person');
+    if (method != null && mounted)
+      await _requestPayment(method, mode: 'equal_people');
+  }
+
+  Future<void> _selectItems() async {
+    final payments = _ledger?.payments ?? const <TablePayment>[];
+    int allocated(TableOrderItem item) => payments
+        .where((payment) => !payment.isReversal && !_hasReversal(payment.id))
+        .expand((payment) => payment.allocations)
+        .where((allocation) => allocation['item'] == item.id)
+        .fold(
+            0,
+            (total, allocation) =>
+                total +
+                _quantityUnits('${allocation['allocated_quantity'] ?? '0'}'));
+    final items = _attendance.orders
+        .expand((order) => order.items)
+        .where((item) => item.status == 'confirmed')
+        .map((item) => PaymentAllocationItem(
+              id: item.id,
+              name: item.productName,
+              quantity: item.quantity,
+              availableQuantity: _quantityValue(
+                  _quantityUnits(item.quantity) - allocated(item)),
+              unit: item.unit,
+            ))
+        .toList(growable: false);
+    final selection =
+        await Navigator.of(context).push<PaymentAllocationSelection>(
+      MaterialPageRoute(
+          builder: (_) => PaymentItemAllocationPage(
+                items: items,
+                remaining: _money('remaining_balance'),
+                preview: (allocations) async {
+                  final preview = await widget.controller.previewTablePayment(
+                      attendanceId: _attendance.id, allocations: allocations);
+                  return preview == null
+                      ? null
+                      : PaymentAllocationPreview(
+                          total: preview.total,
+                          availableQuantities: preview.availableQuantities);
+                },
+              )),
+    );
+    if (selection == null || !mounted) return;
+    final method = await _pickMethod(_methods, title: 'Forma para os itens');
+    if (method != null && mounted) {
+      await _requestPayment(method,
+          mode: 'items',
+          allocations: selection.allocations,
+          officialAmount: selection.total);
+    }
+  }
+
   Future<QuickSaleAuthorization?> _financialAuthorization(
       String type, String permission) async {
     if (_can(permission)) return null;
@@ -305,42 +368,29 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
   }
 
   Future<void> _editDiscount() async {
-    final controller =
-        TextEditingController(text: _attendance.checkoutDiscount);
-    final value = await showDialog<String>(
+    final discount = await showDialog<QuickSaleDiscountIntent>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('DESCONTO DA MESA'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: const InputDecoration(labelText: 'Valor do desconto'),
+      builder: (_) => SharedDiscountDialog(
+        initial: QuickSaleDiscountIntent(
+          type: _attendance.checkoutDiscountType,
+          value: _attendance.checkoutDiscount,
         ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('VOLTAR')),
-          FilledButton(
-            onPressed: () =>
-                Navigator.pop(context, _normalizedMoney(controller.text)),
-            child: const Text('APLICAR'),
-          ),
-        ],
+        maximumAmount: _cents(_summaryData.total) / 100,
+        prefillInitialValue: true,
       ),
     );
-    controller.dispose();
-    if (value == null || !mounted) return;
-    final authorization = _cents(value) > 0
+    if (discount == null || !mounted) return;
+    final authorization = _cents(discount.value) > 0
         ? await _financialAuthorization('sale', 'sales.apply_discount')
         : null;
     if (!mounted ||
-        (_cents(value) > 0 &&
+        (_cents(discount.value) > 0 &&
             authorization == null &&
             !_can('sales.apply_discount'))) {
       return;
     }
-    await _updateFinancialContext(value, _attendance.checkoutServiceFeeWaived,
+    await _updateFinancialContext(
+        discount.toJson(), _attendance.checkoutServiceFeeWaived,
         discountAuthorization: authorization);
   }
 
@@ -354,11 +404,13 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
         (waive && authorization == null && !_can('sales.waive_service_fee'))) {
       return;
     }
-    await _updateFinancialContext(_attendance.checkoutDiscount, waive,
-        serviceFeeAuthorization: authorization);
+    await _updateFinancialContext({
+      'type': _attendance.checkoutDiscountType,
+      'value': _attendance.checkoutDiscount,
+    }, waive, serviceFeeAuthorization: authorization);
   }
 
-  Future<void> _updateFinancialContext(String discount, bool serviceFeeWaived,
+  Future<void> _updateFinancialContext(Object discount, bool serviceFeeWaived,
       {QuickSaleAuthorization? discountAuthorization,
       QuickSaleAuthorization? serviceFeeAuthorization}) async {
     setState(() => _working = true);
@@ -385,129 +437,74 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
         appBar: AppBar(
           title: const Text('PAGAMENTO'),
           actions: [
-            IconButton(
-              tooltip: _attendance.customerName.isEmpty
-                  ? 'Cliente'
+            PaymentHeaderActions(
+              customerLabel: _attendance.customerName.isEmpty
+                  ? 'CLIENTE'
                   : _attendance.customerName,
-              icon: const Icon(Icons.person_outline),
-              onPressed: _financialEditable && _can('tables.set_customer')
-                  ? _setCustomer
-                  : null,
-            ),
-            IconButton(
-              tooltip: 'Atualizar',
-              icon: const Icon(Icons.refresh),
-              onPressed: _working ? null : _refresh,
-            ),
-            PopupMenuButton<String>(
-              enabled: _financialEditable && !_working,
-              onSelected: (action) {
-                if (action == 'discount') _editDiscount();
-                if (action == 'fee') _toggleServiceFee();
-              },
-              itemBuilder: (_) => [
-                const PopupMenuItem(
-                    value: 'discount', child: Text('ALTERAR DESCONTO')),
-                PopupMenuItem(
-                  value: 'fee',
-                  child: Text(_attendance.checkoutServiceFeeWaived
-                      ? 'RESTAURAR TAXA DE SERVIÇO'
-                      : 'RETIRAR TAXA DE SERVIÇO'),
-                ),
-              ],
+              canEditCustomer: _financialEditable &&
+                  _can('tables.set_customer') &&
+                  !_working,
+              canSplit: _canRecord && !_working && _pending == null,
+              onCustomer: _setCustomer,
+              onSplit: _showSplitSelector,
+              menu: PopupMenuButton<String>(
+                enabled: !_working,
+                onSelected: (action) {
+                  if (action == 'refresh') _refresh();
+                  if (action == 'discount') _editDiscount();
+                  if (action == 'fee') _toggleServiceFee();
+                },
+                itemBuilder: (_) => [
+                  const PopupMenuItem(
+                      value: 'refresh', child: Text('ATUALIZAR')),
+                  if (_financialEditable) ...[
+                    const PopupMenuItem(
+                        value: 'discount', child: Text('ALTERAR DESCONTO')),
+                    PopupMenuItem(
+                      value: 'fee',
+                      child: Text(_attendance.checkoutServiceFeeWaived
+                          ? 'RESTAURAR TAXA DE SERVIÇO'
+                          : 'RETIRAR TAXA DE SERVIÇO'),
+                    ),
+                  ],
+                ],
+              ),
             ),
           ],
         ),
         body: _loading
             ? const Center(child: CircularProgressIndicator())
-            : SafeArea(
-                child: LayoutBuilder(builder: (context, constraints) {
-                  final content = _content();
-                  return constraints.maxWidth >= 960
-                      ? Row(children: [
-                          Expanded(child: content),
-                          SizedBox(width: 350, child: _summaryPanel()),
-                        ])
-                      : Column(children: [
-                          Expanded(child: content),
-                          _summaryPanel(),
-                        ]);
-                }),
+            : PaymentPageLayout(
+                summary: _summaryData,
+                methodGrid: _methodGrid(),
+                pendingAction: _pending == null
+                    ? null
+                    : OutlinedButton.icon(
+                        onPressed: _working ? null : () => _record(_pending!),
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('TENTAR NOVAMENTE'),
+                      ),
+                history: _history(),
+                summaryPanel: _summaryPanel(),
               ),
-      );
-
-  Widget _content() => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-        child:
-            Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          PaymentBalanceCard(summary: _summaryData),
-          const SizedBox(height: 10),
-          const Text('FORMAS DE PAGAMENTO',
-              style: TextStyle(fontWeight: FontWeight.w900)),
-          const SizedBox(height: 8),
-          _methodGrid(),
-          if (_pending != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: OutlinedButton.icon(
-                onPressed: _working ? null : () => _record(_pending!),
-                icon: const Icon(Icons.refresh),
-                label: const Text('TENTAR NOVAMENTE'),
-              ),
-            ),
-          const SizedBox(height: 10),
-          const Text('PAGAMENTOS REALIZADOS',
-              style: TextStyle(fontWeight: FontWeight.w900)),
-          const SizedBox(height: 4),
-          Expanded(child: _history()),
-        ]),
       );
 
   Widget _methodGrid() {
-    final groups = <String, List<QuickSalePaymentMethod>>{};
-    for (final method in _methods) {
-      final group = switch (paymentMethodGroup(method)) {
-        PaymentMethodGroup.cash => 'Dinheiro',
-        PaymentMethodGroup.debit => 'Débito',
-        PaymentMethodGroup.pix => 'PIX',
-        PaymentMethodGroup.credit => 'Crédito',
-        PaymentMethodGroup.other => 'Outros',
-      };
-      groups.putIfAbsent(group, () => []).add(method);
-    }
-    final entries = groups.entries.toList(growable: false);
-    return SizedBox(
-      height: ((entries.length + 1) ~/ 2) * 64.0,
-      child: GridView.builder(
-        physics: const NeverScrollableScrollPhysics(),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 2,
-          mainAxisExtent: 56,
-          mainAxisSpacing: 8,
-          crossAxisSpacing: 8,
-        ),
-        itemCount: entries.length,
-        itemBuilder: (_, index) {
-          final entry = entries[index];
-          return PaymentMethodButton(
-            label: entry.key,
-            icon: _methodIcon(entry.value.first),
-            onTap: !_canRecord || _working || _pending != null
-                ? null
-                : () async {
-                    final method = entry.value.length == 1
-                        ? entry.value.single
-                        : await _pickMethod(entry.value);
-                    if (method != null && mounted) await _selectMethod(method);
-                  },
-          );
-        },
-      ),
+    return PaymentMethodGrid(
+      methods: _methods,
+      enabled: _canRecord && !_working && _pending == null,
+      onSelect: (methods) async {
+        final method = methods.length == 1
+            ? methods.single
+            : await _pickMethod(methods, title: 'Formas de pagamento');
+        if (method != null && mounted) await _selectMethod(method);
+      },
     );
   }
 
   Future<QuickSalePaymentMethod?> _pickMethod(
-          List<QuickSalePaymentMethod> methods) =>
+          List<QuickSalePaymentMethod> methods,
+          {String title = 'FORMAS DE PAGAMENTO'}) =>
       showModalBottomSheet<QuickSalePaymentMethod>(
         context: context,
         isScrollControlled: true,
@@ -516,11 +513,11 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
             constraints: BoxConstraints(
                 maxHeight: MediaQuery.sizeOf(context).height * .7),
             child: ListView(children: [
-              const Padding(
-                padding: EdgeInsets.all(16),
-                child: Text('FORMAS DE PAGAMENTO',
-                    style:
-                        TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(title,
+                    style: const TextStyle(
+                        fontSize: 20, fontWeight: FontWeight.w900)),
               ),
               for (final method in methods)
                 ListTile(
@@ -595,6 +592,36 @@ class _TablePaymentRequest {
   final String? receivedAmount;
   final int? cashSessionId;
   final List<Map<String, dynamic>> allocations;
+
+  Map<String, dynamic> toJson() => {
+        'payment_method_id': method.id,
+        'mode': mode,
+        'idempotency_key': idempotencyKey,
+        'amount': amount,
+        'received_amount': receivedAmount,
+        'cash_session_id': cashSessionId,
+        'allocations': allocations,
+      };
+
+  static _TablePaymentRequest? fromJson(
+      Map<String, dynamic> json, List<QuickSalePaymentMethod> methods) {
+    if (json.isEmpty) return null;
+    final methodId = json['payment_method_id'] as int?;
+    final method = methods.where((value) => value.id == methodId).firstOrNull;
+    final key = json['idempotency_key'] as String?;
+    if (method == null || key == null) return null;
+    return _TablePaymentRequest(
+      method: method,
+      mode: json['mode'] as String? ?? 'value',
+      idempotencyKey: key,
+      amount: json['amount'] as String?,
+      receivedAmount: json['received_amount'] as String?,
+      cashSessionId: json['cash_session_id'] as int?,
+      allocations: (json['allocations'] as List? ?? const [])
+          .map((value) => Map<String, dynamic>.from(value as Map))
+          .toList(growable: false),
+    );
+  }
 }
 
 class _TablePaymentDialog extends StatefulWidget {
