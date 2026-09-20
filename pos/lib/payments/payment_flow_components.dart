@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../cash/cash_models.dart';
+import '../cash/cash_models.dart' show createIdempotencyKey, formatMoney;
 import '../sales/sale_models.dart';
 import 'payment_contract.dart';
 import 'shared_payment_widgets.dart';
@@ -160,7 +160,7 @@ class PaymentMethodGrid extends StatelessWidget {
               PaymentMethodGroup.credit => 'Crédito',
               PaymentMethodGroup.other => 'Outros',
             },
-            icon: _methodIcon(entry.value.first),
+            icon: paymentMethodIcon(entry.value.first),
             onTap: enabled ? () => onSelect(entry.value) : null,
           );
         },
@@ -214,6 +214,138 @@ class PaymentSplitSelector extends StatelessWidget {
       );
 }
 
+class PaymentMethodPicker extends StatelessWidget {
+  const PaymentMethodPicker({
+    required this.title,
+    required this.methods,
+    super.key,
+  });
+
+  final String title;
+  final List<QuickSalePaymentMethod> methods;
+
+  static Future<QuickSalePaymentMethod?> show(
+    BuildContext context, {
+    required String title,
+    required List<QuickSalePaymentMethod> methods,
+  }) =>
+      showModalBottomSheet<QuickSalePaymentMethod>(
+        context: context,
+        isScrollControlled: true,
+        builder: (_) => PaymentMethodPicker(title: title, methods: methods),
+      );
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+        child: ConstrainedBox(
+          constraints:
+              BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * .7),
+          child: ListView(children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(title,
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleLarge
+                      ?.copyWith(fontWeight: FontWeight.w900)),
+            ),
+            for (final method in methods)
+              ListTile(
+                leading: Icon(paymentMethodIcon(method)),
+                title: Text(method.name),
+                onTap: () => Navigator.pop(context, method),
+              ),
+          ]),
+        ),
+      );
+}
+
+class PaymentCashSessionPicker extends StatelessWidget {
+  const PaymentCashSessionPicker({
+    required this.title,
+    required this.sessions,
+    super.key,
+  });
+
+  final String title;
+  final List<QuickSaleCashSession> sessions;
+
+  static Future<int?> show(
+    BuildContext context, {
+    required String title,
+    required List<QuickSaleCashSession> sessions,
+  }) =>
+      showDialog<int>(
+        context: context,
+        builder: (_) =>
+            PaymentCashSessionPicker(title: title, sessions: sessions),
+      );
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: Text(title),
+        content: SizedBox(
+          width: 360,
+          child: ListView(
+            shrinkWrap: true,
+            children: sessions
+                .map((session) => ListTile(
+                      title: Text(session.registerName),
+                      onTap: () => Navigator.pop(context, session.id),
+                    ))
+                .toList(growable: false),
+          ),
+        ),
+      );
+}
+
+class PaymentHistoryList extends StatelessWidget {
+  const PaymentHistoryList({
+    required this.entries,
+    super.key,
+  });
+
+  final List<PaymentHistoryEntry> entries;
+
+  @override
+  Widget build(BuildContext context) {
+    if (entries.isEmpty) {
+      return const Center(child: Text('Nenhum pagamento registrado.'));
+    }
+    return ListView.separated(
+      padding: EdgeInsets.zero,
+      itemCount: entries.length,
+      separatorBuilder: (_, __) => const Divider(height: 1),
+      itemBuilder: (_, index) {
+        final entry = entries[index];
+        return PaymentHistoryItem(
+          payment: entry.payment,
+          reversed: entry.reversed,
+          reversalReason: entry.reversalReason,
+          working: entry.working,
+          onReverse: entry.onReverse,
+        );
+      },
+    );
+  }
+}
+
+class PaymentHistoryEntry {
+  const PaymentHistoryEntry({
+    required this.payment,
+    required this.reversed,
+    required this.working,
+    required this.onReverse,
+    this.reversalReason,
+  });
+
+  final PaymentDisplayEntry payment;
+  final bool reversed;
+  final bool working;
+  final VoidCallback onReverse;
+  final String? reversalReason;
+}
+
 enum PaymentAmountContext { value, items, equalSplit, remaining }
 
 class PaymentEntryResult {
@@ -222,12 +354,14 @@ class PaymentEntryResult {
     required this.amount,
     required this.receivedAmount,
     required this.cashSessionId,
+    required this.payingRemaining,
   });
 
   final String intentId;
   final String amount;
   final String? receivedAmount;
   final int? cashSessionId;
+  final bool payingRemaining;
 }
 
 class PaymentEntryPage extends StatefulWidget {
@@ -237,7 +371,7 @@ class PaymentEntryPage extends StatefulWidget {
     required this.amountContext,
     this.initialAmount,
     this.amountLocked = false,
-    this.cashSessions = const [],
+    this.cashSessionId,
     super.key,
   });
 
@@ -246,10 +380,181 @@ class PaymentEntryPage extends StatefulWidget {
   final String? initialAmount;
   final bool amountLocked;
   final PaymentAmountContext amountContext;
-  final List<QuickSaleCashSession> cashSessions;
+  final int? cashSessionId;
 
   @override
   State<PaymentEntryPage> createState() => _PaymentEntryPageState();
+}
+
+class PaymentEqualSplitPart {
+  PaymentEqualSplitPart(this.cents, {this.paid = false});
+
+  final int cents;
+  bool paid;
+
+  PaymentEqualSplitPart copy() => PaymentEqualSplitPart(cents, paid: paid);
+  String get amount =>
+      '${cents ~/ 100}.${(cents % 100).toString().padLeft(2, '0')}';
+}
+
+class PaymentEqualSplitSelection {
+  const PaymentEqualSplitSelection({
+    required this.amount,
+    this.parts,
+    this.index,
+  });
+
+  final String amount;
+  final List<PaymentEqualSplitPart>? parts;
+  final int? index;
+}
+
+class PaymentEqualSplitPage extends StatefulWidget {
+  const PaymentEqualSplitPage({
+    required this.remaining,
+    this.initialParts,
+    this.officialPerson,
+    this.officialPeopleCount,
+    this.officialAmount,
+    super.key,
+  });
+
+  final String remaining;
+  final List<PaymentEqualSplitPart>? initialParts;
+  final int? officialPerson;
+  final int? officialPeopleCount;
+  final String? officialAmount;
+
+  bool get isOfficial => officialPerson != null;
+
+  @override
+  State<PaymentEqualSplitPage> createState() => _PaymentEqualSplitPageState();
+}
+
+class _PaymentEqualSplitPageState extends State<PaymentEqualSplitPage> {
+  late List<PaymentEqualSplitPart> _parts;
+  late int _people;
+
+  @override
+  void initState() {
+    super.initState();
+    _parts = widget.initialParts?.map((part) => part.copy()).toList() ??
+        _partsFor(_PaymentMoneyEntry.centsFor(widget.remaining), 2);
+    _people = _parts.length;
+  }
+
+  List<PaymentEqualSplitPart> _partsFor(int cents, int people) {
+    final base = cents ~/ people;
+    final remainder = cents % people;
+    return List.generate(people,
+        (index) => PaymentEqualSplitPart(base + (index < remainder ? 1 : 0)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.isOfficial) {
+      final person = widget.officialPerson!;
+      final people = widget.officialPeopleCount ?? person;
+      final amount = widget.officialAmount ?? '0.00';
+      return Scaffold(
+        appBar: AppBar(title: const Text('DIVIDIR IGUAL')),
+        body: Padding(
+          padding: const EdgeInsets.all(24),
+          child: _partCard(
+            context,
+            label: 'PESSOA $person DE $people',
+            amount: amount,
+            onPay: () => Navigator.pop(
+              context,
+              PaymentEqualSplitSelection(amount: amount),
+            ),
+          ),
+        ),
+      );
+    }
+
+    final hasPaidPart = _parts.any((part) => part.paid);
+    final total = _parts.fold(0, (sum, part) => sum + part.cents);
+    return Scaffold(
+      appBar: AppBar(title: const Text('DIVIDIR IGUAL')),
+      body: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(children: [
+          Text('DIVIDIR ENTRE: $_people'),
+          Slider(
+            value: _people.toDouble(),
+            min: 2,
+            max: 12,
+            divisions: 10,
+            label: '$_people',
+            onChanged: hasPaidPart
+                ? null
+                : (value) => setState(() {
+                      _people = value.round();
+                      _parts = _partsFor(total, _people);
+                    }),
+          ),
+          Text('Total: ${formatMoney(_moneyValue(total))}'),
+          const SizedBox(height: 12),
+          Expanded(
+            child: ListView.builder(
+              itemCount: _parts.length,
+              itemBuilder: (context, index) {
+                final part = _parts[index];
+                return _partCard(
+                  context,
+                  label: 'PARTE ${index + 1} DE $_people',
+                  amount: part.amount,
+                  paid: part.paid,
+                  onPay: part.paid || part.cents == 0
+                      ? null
+                      : () => Navigator.pop(
+                            context,
+                            PaymentEqualSplitSelection(
+                              amount: part.amount,
+                              parts: _parts,
+                              index: index,
+                            ),
+                          ),
+                );
+              },
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _partCard(
+    BuildContext context, {
+    required String label,
+    required String amount,
+    required VoidCallback? onPay,
+    bool paid = false,
+  }) =>
+      Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Text(label, style: const TextStyle(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 6),
+            Text(formatMoney(amount),
+                style: Theme.of(context)
+                    .textTheme
+                    .headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.w900)),
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: onPay,
+              child: Text(paid ? 'PARTE PAGA' : 'PAGAR ESTA PARTE'),
+            ),
+          ]),
+        ),
+      );
+
+  String _moneyValue(int cents) =>
+      '${cents ~/ 100}.${(cents % 100).toString().padLeft(2, '0')}';
 }
 
 class _PaymentEntryPageState extends State<PaymentEntryPage> {
@@ -258,16 +563,9 @@ class _PaymentEntryPageState extends State<PaymentEntryPage> {
       _PaymentMoneyEntry(widget.initialAmount ?? '0.00');
   late final _PaymentMoneyEntry _received = _PaymentMoneyEntry('0.00');
   bool _receiving = false;
-  int? _cashSessionId;
+  bool _payingRemaining = false;
 
   bool get _editingAmount => !widget.amountLocked || _receiving;
-
-  @override
-  void initState() {
-    super.initState();
-    _cashSessionId =
-        widget.cashSessions.length == 1 ? widget.cashSessions.single.id : null;
-  }
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -300,19 +598,6 @@ class _PaymentEntryPageState extends State<PaymentEntryPage> {
                           .displaySmall
                           ?.copyWith(fontWeight: FontWeight.w900)),
                   if (widget.method.isCash) ...[
-                    if (widget.cashSessions.isNotEmpty)
-                      DropdownButtonFormField<int>(
-                        initialValue: _cashSessionId,
-                        decoration: const InputDecoration(labelText: 'Caixa'),
-                        isExpanded: true,
-                        items: widget.cashSessions
-                            .map((session) => DropdownMenuItem(
-                                value: session.id,
-                                child: Text(session.registerName)))
-                            .toList(growable: false),
-                        onChanged: (value) =>
-                            setState(() => _cashSessionId = value),
-                      ),
                     SwitchListTile(
                       title: const Text('Informar valor recebido'),
                       value: _receiving,
@@ -328,14 +613,19 @@ class _PaymentEntryPageState extends State<PaymentEntryPage> {
                       OutlinedButton(
                         onPressed: !_editingAmount
                             ? null
-                            : () => setState(() =>
-                                (_receiving ? _received : _amount).set(value)),
+                            : () => setState(() {
+                                  (_receiving ? _received : _amount).set(value);
+                                  _payingRemaining = false;
+                                }),
                         child: Text('R\$ ${value.split('.').first}'),
                       ),
                     OutlinedButton(
                       onPressed: widget.amountLocked
                           ? null
-                          : () => setState(() => _amount.set(widget.remaining)),
+                          : () => setState(() {
+                                _amount.set(widget.remaining);
+                                _payingRemaining = true;
+                              }),
                       child: const Text('PAGAR SALDO'),
                     ),
                   ]),
@@ -355,8 +645,9 @@ class _PaymentEntryPageState extends State<PaymentEntryPage> {
                                         : _amount.value)
                                     : null,
                                 cashSessionId: widget.method.isCash
-                                    ? _cashSessionId
+                                    ? widget.cashSessionId
                                     : null,
+                                payingRemaining: _payingRemaining,
                               ),
                             )
                         : null,
@@ -371,8 +662,8 @@ class _PaymentEntryPageState extends State<PaymentEntryPage> {
       _amount.cents > 0 &&
       _amount.cents <= _PaymentMoneyEntry.centsFor(widget.remaining) &&
       (!widget.method.isCash ||
-          (widget.cashSessions.isEmpty || _cashSessionId != null) &&
-              (!_receiving || _received.cents >= _amount.cents));
+          !_receiving ||
+          _received.cents >= _amount.cents);
 
   Widget _keypad() => GridView.count(
         crossAxisCount: 3,
@@ -393,8 +684,10 @@ class _PaymentEntryPageState extends State<PaymentEntryPage> {
             '0'
           ])
             OutlinedButton(
-              onPressed: () => setState(
-                  () => (_receiving ? _received : _amount).append(digit)),
+              onPressed: () => setState(() {
+                (_receiving ? _received : _amount).append(digit);
+                _payingRemaining = false;
+              }),
               child: Text(digit, style: const TextStyle(fontSize: 22)),
             ),
           OutlinedButton(
@@ -632,11 +925,13 @@ class _PaymentMoneyEntry {
       : '0.00';
 }
 
-IconData _methodIcon(QuickSalePaymentMethod method) => switch (method.kind) {
-      'cash' => Icons.payments_outlined,
-      'pix' => Icons.qr_code_2,
-      'card' || 'credit' || 'debit' || 'benefit' => Icons.credit_card,
-      _ => Icons.account_balance_wallet_outlined,
+IconData paymentMethodIcon(QuickSalePaymentMethod method) =>
+    switch (paymentMethodGroup(method)) {
+      PaymentMethodGroup.cash => Icons.payments_outlined,
+      PaymentMethodGroup.debit => Icons.credit_card,
+      PaymentMethodGroup.pix => Icons.qr_code_2,
+      PaymentMethodGroup.credit => Icons.credit_card,
+      PaymentMethodGroup.other => Icons.account_balance_wallet_outlined,
     };
 
 int _quantityUnits(String value) {

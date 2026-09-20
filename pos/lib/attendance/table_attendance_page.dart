@@ -761,14 +761,6 @@ class _TableOrderPageState extends State<TableOrderPage> {
         },
         child: Scaffold(
           appBar: AppBar(title: Text(_attendance.tableName), actions: [
-            IconButton(
-              tooltip: 'Pagamento',
-              icon: const Icon(Icons.payments_outlined),
-              onPressed:
-                  _loading || _actionInProgress || !_can('tables.payments.view')
-                      ? null
-                      : _openPayments,
-            ),
             PopupMenuButton<String>(
               enabled: !_loading && !_actionInProgress,
               onSelected: (action) {
@@ -877,6 +869,11 @@ class _TableOrderPageState extends State<TableOrderPage> {
                                   attendance: _attendance,
                                   saving: _saving,
                                   onSave: _save,
+                                  canOpenPayment: !_loading &&
+                                      !_actionInProgress &&
+                                      _can('tables.payments.view') &&
+                                      _cart.isEmpty,
+                                  onPayment: _openPayments,
                                   preview: _preview,
                                   previewLoading: _previewLoading,
                                   onConfirmedItemActions:
@@ -910,6 +907,11 @@ class _TableOrderPageState extends State<TableOrderPage> {
             attendance: _attendance,
             saving: _saving,
             onSave: _save,
+            canOpenPayment: !_loading &&
+                !_actionInProgress &&
+                _can('tables.payments.view') &&
+                _cart.isEmpty,
+            onPayment: _openPayments,
             preview: _preview,
             previewLoading: _previewLoading,
             onConfirmedItemActions: _showConfirmedItemActions,
@@ -1022,6 +1024,8 @@ class _TableOrderSummaryPanel extends StatelessWidget {
       required this.attendance,
       required this.saving,
       required this.onSave,
+      required this.canOpenPayment,
+      required this.onPayment,
       required this.preview,
       required this.previewLoading,
       required this.onConfirmedItemActions,
@@ -1030,6 +1034,8 @@ class _TableOrderSummaryPanel extends StatelessWidget {
   final TableAttendance attendance;
   final bool saving;
   final Future<void> Function() onSave;
+  final bool canOpenPayment;
+  final Future<void> Function() onPayment;
   final Map<String, dynamic>? preview;
   final bool previewLoading;
   final Future<void> Function(TableOrderItem, TableOrder)
@@ -1173,6 +1179,17 @@ class _TableOrderSummaryPanel extends StatelessWidget {
                       formatAttendanceMoney(attendance.summary['total_due']),
                   strong: true),
             ]),
+            const SizedBox(height: 8),
+            Tooltip(
+              message: cart.isNotEmpty
+                  ? 'Envie os itens novos antes de registrar pagamentos.'
+                  : 'Pagamento indisponível.',
+              child: FilledButton.icon(
+                onPressed: canOpenPayment ? () => onPayment() : null,
+                icon: const Icon(Icons.payments_outlined),
+                label: const Text('PAGAMENTO'),
+              ),
+            ),
             const SizedBox(height: 8),
             FilledButton.icon(
               onPressed: saving || cart.isEmpty ? null : () => onSave(),

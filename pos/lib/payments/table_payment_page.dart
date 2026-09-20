@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../attendance/attendance_models.dart';
-import '../cash/cash_models.dart';
+import '../cash/cash_models.dart' show createIdempotencyKey;
 import '../core/app_controller.dart';
 import '../sales/sale_models.dart';
 import '../sales/shared_authorization_dialog.dart';
@@ -35,6 +35,7 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
   _TablePaymentRequest? _pending;
   final Map<int, String> _reverseKeys = {};
   String? _closeKey;
+  int? _cashSessionId;
   bool _loading = true;
   bool _working = false;
   bool _details = false;
@@ -86,6 +87,10 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
               payment.idempotencyKey == _pending!.idempotencyKey)) {
         _pending = null;
       }
+      _cashSessionId ??= _activePayments
+          .map((payment) => payment.cashSessionId)
+          .whereType<int>()
+          .firstOrNull;
       _loading = false;
     });
     if (_pending == null)
@@ -119,6 +124,9 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
     List<Map<String, dynamic>> allocations = const [],
     String? officialAmount,
   }) async {
+    final cashSessionId = await _resolveCashSession(method);
+    if (method.isCash && cashSessionId == null) return;
+    if (!mounted) return;
     final entry = await Navigator.of(context).push<PaymentEntryResult>(
       MaterialPageRoute(
           builder: (_) => PaymentEntryPage(
@@ -132,14 +140,16 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
                     ? PaymentAmountContext.equalSplit
                     : mode == 'items'
                         ? PaymentAmountContext.items
-                        : PaymentAmountContext.value,
-                cashSessions: _options?.cashSessions ?? const [],
+                        : mode == 'remaining'
+                            ? PaymentAmountContext.remaining
+                            : PaymentAmountContext.value,
+                cashSessionId: cashSessionId,
               )),
     );
     if (entry == null || !mounted) return;
     final request = _TablePaymentRequest(
       method: method,
-      mode: mode,
+      mode: mode == 'value' && entry.payingRemaining ? 'remaining' : mode,
       idempotencyKey: entry.intentId,
       amount: entry.amount,
       receivedAmount: entry.receivedAmount,
@@ -147,6 +157,29 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
       allocations: allocations,
     );
     await _record(request);
+  }
+
+  Future<int?> _resolveCashSession(QuickSalePaymentMethod method) async {
+    if (!method.isCash) return null;
+    if (_cashSessionId != null) return _cashSessionId;
+    final options = _options;
+    if (options == null || options.cashSessions.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Nenhuma sessão de caixa elegível está disponível.'),
+      ));
+      return null;
+    }
+    final sessions = options.cashSessions;
+    final sessionId = options.cashBindingMode == 'FIXED' || sessions.length == 1
+        ? sessions.first.id
+        : await PaymentCashSessionPicker.show(
+            context,
+            title: 'SELECIONE O CAIXA',
+            sessions: sessions,
+          );
+    if (sessionId != null && mounted)
+      setState(() => _cashSessionId = sessionId);
+    return sessionId;
   }
 
   Future<void> _record(_TablePaymentRequest request) async {
@@ -220,16 +253,18 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
   }
 
   Future<void> _close() async {
-    int? sessionId;
+    var sessionId = _cashSessionId;
     final sessions = _options?.cashSessions ?? const [];
-    if (sessions.isNotEmpty) {
-      sessionId = sessions.length == 1
-          ? sessions.single.id
-          : await showDialog<int>(
-              context: context,
-              builder: (_) => _CashSessionDialog(sessions: sessions),
+    if (sessionId == null && sessions.isNotEmpty) {
+      sessionId = _options!.cashBindingMode == 'FIXED' || sessions.length == 1
+          ? sessions.first.id
+          : await PaymentCashSessionPicker.show(
+              context,
+              title: 'CAIXA PARA FECHAMENTO',
+              sessions: sessions,
             );
       if (sessionId == null || !mounted) return;
+      setState(() => _cashSessionId = sessionId);
     }
     setState(() => _working = true);
     final closed = await widget.controller.closeTableAttendance(
@@ -286,10 +321,31 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
     final person = split['next_person'];
     final amount = '${split['next_amount'] ?? '0.00'}';
     if (person == null || _cents(amount) == 0) return;
-    final method =
-        await _pickMethod(_methods, title: 'Forma para pessoa $person');
+    final personNumber = person as int;
+    final people = split['people_count'] as int? ?? personNumber;
+    final selection =
+        await Navigator.of(context).push<PaymentEqualSplitSelection>(
+      MaterialPageRoute(
+        builder: (_) => PaymentEqualSplitPage(
+          remaining: _money('remaining_balance'),
+          officialPerson: personNumber,
+          officialPeopleCount: people,
+          officialAmount: amount,
+        ),
+      ),
+    );
+    if (selection == null || !mounted) return;
+    final method = await PaymentMethodPicker.show(
+      context,
+      title: 'Forma para pessoa $person',
+      methods: _methods,
+    );
     if (method != null && mounted)
-      await _requestPayment(method, mode: 'equal_people');
+      await _requestPayment(
+        method,
+        mode: 'equal_people',
+        officialAmount: selection.amount,
+      );
   }
 
   Future<void> _selectItems() async {
@@ -333,7 +389,11 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
               )),
     );
     if (selection == null || !mounted) return;
-    final method = await _pickMethod(_methods, title: 'Forma para os itens');
+    final method = await PaymentMethodPicker.show(
+      context,
+      title: 'Forma para os itens',
+      methods: _methods,
+    );
     if (method != null && mounted) {
       await _requestPayment(method,
           mode: 'items',
@@ -496,61 +556,31 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
       onSelect: (methods) async {
         final method = methods.length == 1
             ? methods.single
-            : await _pickMethod(methods, title: 'Formas de pagamento');
+            : await PaymentMethodPicker.show(
+                context,
+                title: 'Formas de pagamento',
+                methods: methods,
+              );
         if (method != null && mounted) await _selectMethod(method);
       },
     );
   }
 
-  Future<QuickSalePaymentMethod?> _pickMethod(
-          List<QuickSalePaymentMethod> methods,
-          {String title = 'FORMAS DE PAGAMENTO'}) =>
-      showModalBottomSheet<QuickSalePaymentMethod>(
-        context: context,
-        isScrollControlled: true,
-        builder: (context) => SafeArea(
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-                maxHeight: MediaQuery.sizeOf(context).height * .7),
-            child: ListView(children: [
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Text(title,
-                    style: const TextStyle(
-                        fontSize: 20, fontWeight: FontWeight.w900)),
-              ),
-              for (final method in methods)
-                ListTile(
-                  leading: Icon(_methodIcon(method)),
-                  title: Text(method.name),
-                  onTap: () => Navigator.pop(context, method),
-                ),
-            ]),
-          ),
-        ),
-      );
-
   Widget _history() {
     final payments = (_ledger?.payments ?? const [])
         .where((payment) => !payment.isReversal)
         .toList(growable: false);
-    if (payments.isEmpty) {
-      return const Center(child: Text('Nenhum pagamento registrado.'));
-    }
-    return ListView.separated(
-      itemCount: payments.length,
-      separatorBuilder: (_, __) => const Divider(height: 1),
-      itemBuilder: (_, index) {
-        final payment = payments[index];
+    return PaymentHistoryList(
+      entries: payments.map((payment) {
         final reversal = _reversalFor(payment.id);
-        return PaymentHistoryItem(
+        return PaymentHistoryEntry(
           payment: _display(payment),
           reversed: reversal != null,
           reversalReason: reversal?.reversalReason,
           working: _working,
           onReverse: () => _reverse(payment),
         );
-      },
+      }).toList(growable: false),
     );
   }
 
@@ -566,13 +596,6 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
             : null,
       );
 }
-
-IconData _methodIcon(QuickSalePaymentMethod method) => switch (method.kind) {
-      'cash' => Icons.payments_outlined,
-      'pix' => Icons.qr_code_2,
-      'card' || 'credit' || 'debit' || 'benefit' => Icons.credit_card,
-      _ => Icons.account_balance_wallet_outlined,
-    };
 
 class _TablePaymentRequest {
   const _TablePaymentRequest({
