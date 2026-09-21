@@ -927,6 +927,9 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(opened.status_code, 201, opened.data)
         device = POSDevice.objects.get(pk=paired.data['device']['id'])
         self.assertEqual(device.active_cash_session_id, opened.data['id'])
+        self.assertEqual(
+            opened.data['cash_state']['active_session']['id'], opened.data['id'],
+        )
         other_session = open_session(
             second, '0.00', operator, self.branch, allow_pos_only=True,
         )
@@ -937,7 +940,44 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(selected.status_code, 200, selected.data)
         device.refresh_from_db()
         self.assertEqual(device.active_cash_session_id, other_session.pk)
-        self.assertTrue(selected.data['cash_state']['active_session'])
+        self.assertEqual(
+            selected.data['cash_state']['active_session']['id'], other_session.pk,
+        )
+        closed = self.client.post(
+            reverse('pos:cash-session-close', args=[other_session.pk]),
+            {'closing_amount_informed': '0.00'}, format='json',
+        )
+        self.assertEqual(closed.status_code, 200, closed.data)
+        self.assertIsNone(closed.data['cash_state']['active_session'])
+        device.refresh_from_db()
+        self.assertIsNone(device.active_cash_session_id)
+
+    def test_flexible_cash_selection_requires_cash_open_permission(self):
+        operator, paired = self.login_pos_operator()
+        first = CashRegister.objects.create(branch=self.branch, name='Selection first')
+        second = CashRegister.objects.create(branch=self.branch, name='Selection second')
+        first_session = open_session(
+            first, '0.00', operator, self.branch, allow_pos_only=True,
+        )
+        open_session(second, '0.00', operator, self.branch, allow_pos_only=True)
+        device = POSDevice.objects.get(pk=paired.data['device']['id'])
+        device.active_cash_session = first_session
+        device.save(update_fields=('active_cash_session', 'updated_at'))
+        UserPermissionBlock.objects.create(
+            company=self.company,
+            branch=self.branch,
+            user=operator,
+            permission=FunctionalPermission.objects.get(code='cash_registers.open'),
+            created_by=self.owner,
+        )
+
+        selected = self.client.post(
+            reverse('pos:cash-session-select'), {'register': second.pk}, format='json',
+        )
+
+        self.assertEqual(selected.status_code, 403, selected.data)
+        device.refresh_from_db()
+        self.assertEqual(device.active_cash_session_id, first_session.pk)
 
     def test_quick_checkout_binds_non_cash_tender_to_active_device_session(self):
         _operator, _paired = self.login_pos_operator()

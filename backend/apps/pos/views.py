@@ -2139,6 +2139,10 @@ class POSCashSessionSelectView(POSCashView):
     def post(self, request):
         device, operator, permissions, operator_session = self.context(request)
         require_branch_feature(device.branch, 'cash_register')
+        self._require(
+            permissions, 'cash_registers.open',
+            'Você não possui permissão para alterar o caixa ativo nesta filial.',
+        )
         serializer = POSSelectCashSessionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         mode, _configured_register = effective_cash_settings(device)

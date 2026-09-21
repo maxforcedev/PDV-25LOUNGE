@@ -33,6 +33,7 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
   TablePaymentLedger? _ledger;
   QuickSaleCheckoutOptions? _options;
   _TablePaymentRequest? _pending;
+  Map<String, dynamic> _pendingRaw = const {};
   final Map<int, String> _reverseKeys = {};
   String? _closeKey;
   bool _loading = true;
@@ -55,6 +56,7 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
       _cents(_money('remaining_balance')) == 0;
   bool get _financialEditable =>
       _isOpen && _activePayments.isEmpty && _can('tables.add_items');
+  bool get _hasPending => _pendingRaw.isNotEmpty;
 
   List<TablePayment> get _activePayments => (_ledger?.payments ?? const [])
       .where((payment) => !payment.isReversal && !_hasReversal(payment.id))
@@ -75,22 +77,28 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
       widget.controller.tablePaymentPending(_attendance.id),
     ]);
     if (!mounted) return;
+    final pending = Map<String, dynamic>.from(results[3] as Map);
+    final pendingKey = pending['idempotency_key'] as String?;
+    final confirmed = pendingKey != null &&
+        (results[1] as TablePaymentLedger? ?? _ledger)
+                ?.payments
+                .any((payment) => payment.idempotencyKey == pendingKey) ==
+            true;
     setState(() {
       _attendance = results[0] as TableAttendance? ?? _attendance;
       _ledger = results[1] as TablePaymentLedger? ?? _ledger;
       _options = results[2] as QuickSaleCheckoutOptions? ?? _options;
-      _pending ??= _TablePaymentRequest.fromJson(
-          Map<String, dynamic>.from(results[3] as Map), _methods);
-      if (_pending != null &&
-          (_ledger?.payments ?? const []).any((payment) =>
-              payment.idempotencyKey == _pending!.idempotencyKey)) {
+      _pendingRaw = confirmed ? const {} : pending;
+      _pending = _TablePaymentRequest.fromJson(_pendingRaw, _methods);
+      if (confirmed) {
         _pending = null;
       }
       _loading = false;
     });
-    if (_pending == null)
+    if (confirmed) {
       await widget.controller
           .writeTablePaymentPending(_attendance.id, const {});
+    }
   }
 
   PaymentSummaryData get _summaryData => _adapter.summary;
@@ -109,7 +117,7 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
   }
 
   Future<void> _selectMethod(QuickSalePaymentMethod method) async {
-    if (!_canRecord || _working || _pending != null) return;
+    if (!_canRecord || _working || _hasPending) return;
     await _requestPayment(method, mode: 'value');
   }
 
@@ -154,6 +162,7 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
     setState(() {
       _working = true;
       _pending = request;
+      _pendingRaw = request.toJson();
     });
     await widget.controller
         .writeTablePaymentPending(_attendance.id, request.toJson());
@@ -169,9 +178,6 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
     if (!mounted) return;
     setState(() => _working = false);
     if (payment != null) {
-      setState(() => _pending = null);
-      await widget.controller
-          .writeTablePaymentPending(_attendance.id, const {});
       await _refresh();
     }
   }
@@ -256,7 +262,7 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
         context: context,
         builder: (_) => PaymentSplitSelector(
           canPayByItems: true,
-          enabled: _canRecord && !_working && _pending == null,
+          enabled: _canRecord && !_working && !_hasPending,
           onEqualSplit: () {
             Navigator.pop(context);
             _selectEqualSplit();
@@ -457,7 +463,7 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
               canEditCustomer: _financialEditable &&
                   _can('tables.set_customer') &&
                   !_working,
-              canSplit: _canRecord && !_working && _pending == null,
+              canSplit: _canRecord && !_working && !_hasPending,
               onCustomer: _setCustomer,
               onSplit: _showSplitSelector,
               menu: PopupMenuButton<String>(
@@ -490,12 +496,18 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
             : PaymentPageLayout(
                 summary: _summaryData,
                 methodGrid: _methodGrid(),
-                pendingAction: _pending == null
+                pendingAction: !_hasPending
                     ? null
                     : OutlinedButton.icon(
-                        onPressed: _working ? null : () => _record(_pending!),
+                        onPressed: _working
+                            ? null
+                            : _pending == null
+                                ? _refresh
+                                : () => _record(_pending!),
                         icon: const Icon(Icons.refresh),
-                        label: const Text('TENTAR NOVAMENTE'),
+                        label: Text(_pending == null
+                            ? 'RECONCILIAR PENDÊNCIA'
+                            : 'TENTAR NOVAMENTE'),
                       ),
                 history: _history(),
                 summaryPanel: _summaryPanel(),
@@ -505,7 +517,7 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
   Widget _methodGrid() {
     return PaymentMethodGrid(
       methods: _methods,
-      enabled: _canRecord && !_working && _pending == null,
+      enabled: _canRecord && !_working && !_hasPending,
       onSelect: (methods) async {
         final method = methods.length == 1
             ? methods.single
@@ -592,91 +604,6 @@ class _TablePaymentRequest {
       allocations: (json['allocations'] as List? ?? const [])
           .map((value) => Map<String, dynamic>.from(value as Map))
           .toList(growable: false),
-    );
-  }
-}
-
-class _TableItemAllocationPage extends StatefulWidget {
-  const _TableItemAllocationPage(
-      {required this.attendance, required this.payments});
-  final TableAttendance attendance;
-  final List<TablePayment> payments;
-
-  @override
-  State<_TableItemAllocationPage> createState() =>
-      _TableItemAllocationPageState();
-}
-
-class _TableItemAllocationPageState extends State<_TableItemAllocationPage> {
-  final Map<int, int> _quantities = {};
-
-  int _allocated(TableOrderItem item) => widget.payments
-      .where((payment) =>
-          !payment.isReversal &&
-          !widget.payments.any((row) => row.reversalOf == payment.id))
-      .expand((payment) => payment.allocations)
-      .where((allocation) => allocation['item'] == item.id)
-      .fold(
-          0,
-          (total, allocation) =>
-              total +
-              _quantityUnits('${allocation['allocated_quantity'] ?? '0'}'));
-
-  @override
-  Widget build(BuildContext context) {
-    final items = widget.attendance.orders
-        .expand((order) => order.items)
-        .where((item) => item.status == 'confirmed')
-        .toList(growable: false);
-    return Scaffold(
-      appBar: AppBar(title: const Text('PAGAR POR ITENS')),
-      body: ListView(padding: const EdgeInsets.all(16), children: [
-        const Text(
-            'A Mesa calculará oficialmente o valor dos itens selecionados.'),
-        const SizedBox(height: 8),
-        for (final item in items) _item(item),
-        const SizedBox(height: 12),
-        FilledButton(
-          onPressed: _quantities.values.any((value) => value > 0)
-              ? () => Navigator.pop(
-                    context,
-                    _quantities.entries
-                        .where((entry) => entry.value > 0)
-                        .map((entry) => {
-                              'item': entry.key,
-                              'allocated_quantity': _quantityValue(entry.value),
-                            })
-                        .toList(growable: false),
-                  )
-              : null,
-          child: const Text('CONTINUAR'),
-        ),
-      ]),
-    );
-  }
-
-  Widget _item(TableOrderItem item) {
-    final max = _quantityUnits(item.quantity) - _allocated(item);
-    final value = _quantities[item.id] ?? 0;
-    final step = item.unit.toLowerCase() == 'un' ? 1000 : 1;
-    return ListTile(
-      title: Text(item.productName),
-      subtitle: Text('Disponível: ${_quantityValue(max)} ${item.unit}'),
-      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-        IconButton(
-          onPressed: value <= 0
-              ? null
-              : () => setState(() => _quantities[item.id] = value - step),
-          icon: const Icon(Icons.remove),
-        ),
-        Text(_quantityValue(value)),
-        IconButton(
-          onPressed: value + step > max
-              ? null
-              : () => setState(() => _quantities[item.id] = value + step),
-          icon: const Icon(Icons.add),
-        ),
-      ]),
     );
   }
 }

@@ -18,7 +18,6 @@ class CashPage extends StatefulWidget {
 }
 
 class _CashPageState extends State<CashPage> {
-  int? _selectedRegisterId;
   CashSessionSummary? _summary;
   int? _summarySessionId;
   int? _observedSessionId;
@@ -89,8 +88,9 @@ class _CashPageState extends State<CashPage> {
                         if (!cash.isFixed)
                           _FlexibleRegisterPicker(
                               cash: cash,
-                              selectedRegisterId: _selectedRegisterId,
-                              onSelected: _selectRegister),
+                              selectedRegisterId: cash.activeRegister?.id,
+                              onSelected:
+                                  cash.canOpen ? _selectRegister : null),
                         if (!cash.isFixed) const SizedBox(height: 16),
                         _CashStateCard(cash: cash, session: session),
                         const SizedBox(height: 16),
@@ -99,7 +99,7 @@ class _CashPageState extends State<CashPage> {
                             canOpen: cash.canOpen,
                             canOpenHere: cash.isFixed
                                 ? cash.register != null
-                                : _selectedRegisterId != null,
+                                : cash.registers.isNotEmpty,
                             onOpen: _openSession,
                           )
                         else ...[
@@ -137,11 +137,10 @@ class _CashPageState extends State<CashPage> {
 
   Future<void> _selectRegister(int? id) async {
     if (id == null) return;
-    setState(() {
-      _selectedRegisterId = id;
-    });
-    // Selecting an already open flexible drawer persists on the POS device.
-    await widget.controller.selectCashSession(id);
+    // The picker only reflects the device context confirmed by the server.
+    final selected = await widget.controller.selectCashSession(id);
+    if (!mounted) return;
+    if (!selected) await widget.controller.refreshCashOverview();
     if (!mounted) return;
     _synchronizeSummary();
   }
@@ -204,13 +203,13 @@ class _CashPageState extends State<CashPage> {
     final request = await showDialog<_OpenCashRequest>(
       context: context,
       builder: (_) => _OpenCashDialog(
-          cash: snapshot.cash, selectedRegisterId: _selectedRegisterId),
+          cash: snapshot.cash,
+          selectedRegisterId: snapshot.cash.activeRegister?.id),
     );
     if (!mounted || request == null) return;
     final opened = await widget.controller.openCashSession(
         openingAmount: request.openingAmount, registerId: request.registerId);
     if (!mounted || !opened) return;
-    if (!snapshot.cash.isFixed) _selectedRegisterId = request.registerId;
     _synchronizeSummary();
   }
 
@@ -664,7 +663,7 @@ class _FlexibleRegisterPicker extends StatelessWidget {
 
   final CashOverview cash;
   final int? selectedRegisterId;
-  final ValueChanged<int?> onSelected;
+  final ValueChanged<int?>? onSelected;
 
   @override
   Widget build(BuildContext context) => DropdownButtonFormField<int>(

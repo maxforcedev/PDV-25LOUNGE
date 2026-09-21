@@ -733,12 +733,18 @@ def current_pos_cash_session(device, *, for_update=False):
     devices = POSDevice.objects
     if for_update:
         devices = devices.select_for_update()
-    device = devices.select_related(
-        'branch__company', 'active_cash_session__cash_register',
-    ).get(pk=device.pk)
-    session = device.active_cash_session
-    if session is None:
+    # Lock the device first, then its nullable session in a separate query.
+    # This avoids a locking outer join while preserving the POS context atomically.
+    device = devices.select_related('branch__company').get(pk=device.pk)
+    session_id = device.active_cash_session_id
+    if session_id is None:
         _error('pos_cash_not_ready', 'Nenhum caixa está aberto neste POS.', status_code=409)
+    sessions = CashSession.objects
+    if for_update:
+        sessions = sessions.select_for_update(of=('self',))
+    session = sessions.select_related('cash_register').filter(pk=session_id).first()
+    if session is None:
+        _error('pos_cash_not_ready', 'O caixa ativo deste POS não está disponível.', status_code=409)
     if (
         session.branch_id != device.branch_id
         or session.status != CashSessionStatus.OPEN
@@ -807,6 +813,8 @@ def _cash_register_data(register, *, include_opening_amount, permission_codes, o
 
 def cash_state_for_device(device, permission_codes, operator=None):
     """Build the POS cash state from the persisted device context."""
+    # Mutation endpoints may update active_cash_session without updating this instance.
+    device = POSDevice.objects.select_related('branch__company').get(pk=device.pk)
     mode, configured_register = effective_cash_settings(device)
     active_session_id = device.active_cash_session_id
     active_session = CashSession.objects.filter(

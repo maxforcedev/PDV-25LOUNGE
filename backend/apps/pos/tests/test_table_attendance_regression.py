@@ -4,10 +4,10 @@ from uuid import uuid4
 from django.test import TestCase
 
 from apps.accounts.models import User
-from apps.attendance.models import AttendanceCommand, TableAttendance, TableAttendanceStatus
+from apps.attendance.models import AttendanceCommand, TableAttendance, TableAttendanceStatus, TablePayment
 from apps.attendance.services import (
     AttendanceConflict, close_table_attendance, open_table_attendance,
-    record_table_payment, save_table_order,
+    record_table_payment, save_table_order, table_summary,
 )
 from apps.cash.models import CashRegister
 from apps.cash.services import open_session
@@ -80,3 +80,50 @@ class TableAttendanceRegressionTests(TestCase):
             )
 
         self.assertEqual(error.exception.code, 'table_cash_session_mismatch')
+
+    def test_payment_rejects_a_changed_pos_cash_context_before_writing(self):
+        table = create_table(branch=self.branch, name='Payment context table', user=self.user)
+        attendance, _ = open_table_attendance(
+            branch=self.branch, table_id=table.pk, user=self.user, idempotency_key=uuid4(),
+        )
+        save_table_order(
+            attendance=attendance, user=self.user,
+            items=[{'product': self.product.pk, 'quantity': Decimal('2.000')}],
+            idempotency_key=uuid4(),
+        )
+        record_table_payment(
+            attendance=attendance, user=self.user, payment_method_id=self.cash_method.pk,
+            pos_device=self.device, amount=Decimal('10.00'), received_amount=Decimal('10.00'),
+            idempotency_key=uuid4(),
+        )
+        other_register = CashRegister.objects.create(branch=self.branch, name='Other payment cash')
+        other_session = open_session(other_register, Decimal('0.00'), self.user, self.branch)
+        self.device.active_cash_session = other_session
+        self.device.save(update_fields=('active_cash_session', 'updated_at'))
+
+        with self.assertRaises(AttendanceConflict) as error:
+            record_table_payment(
+                attendance=attendance, user=self.user, payment_method_id=self.cash_method.pk,
+                pos_device=self.device, amount=Decimal('10.00'), received_amount=Decimal('10.00'),
+                idempotency_key=uuid4(),
+            )
+
+        self.assertEqual(error.exception.code, 'table_cash_session_mismatch')
+        self.assertEqual(TablePayment.objects.filter(attendance=attendance).count(), 1)
+
+    def test_prospective_equal_split_is_available_but_not_active(self):
+        table = create_table(branch=self.branch, name='Equal split table', user=self.user)
+        attendance, _ = open_table_attendance(
+            branch=self.branch, table_id=table.pk, user=self.user, people_count=2,
+            idempotency_key=uuid4(),
+        )
+        save_table_order(
+            attendance=attendance, user=self.user,
+            items=[{'product': self.product.pk, 'quantity': Decimal('1.000')}],
+            idempotency_key=uuid4(),
+        )
+
+        split = table_summary(attendance)['equal_split']
+
+        self.assertTrue(split['available'])
+        self.assertFalse(split['active'])

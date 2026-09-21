@@ -1033,11 +1033,11 @@ def table_equal_split_state(attendance, remaining=None):
         if attendance.people_count and remaining is not None and remaining > Decimal('0.00'):
             cents = int(remaining * 100)
             base, remainder = divmod(cents, attendance.people_count)
-            return {'active': True, 'cycle': attendance.equal_split_cycle + 1,
+            return {'available': True, 'active': False, 'cycle': attendance.equal_split_cycle + 1,
                     'total': f'{remaining:.2f}', 'people_count': attendance.people_count,
                     'paid_people': [], 'remaining_people': list(range(1, attendance.people_count + 1)),
                     'next_person': 1, 'next_amount': f'{Decimal(base + (1 if remainder else 0)) / Decimal("100"):.2f}'}
-        return {'active': False, 'cycle': attendance.equal_split_cycle, 'total': None, 'people_count': None,
+        return {'available': False, 'active': False, 'cycle': attendance.equal_split_cycle, 'total': None, 'people_count': None,
                 'paid_people': [], 'remaining_people': [], 'next_person': None, 'next_amount': None}
     paid = sorted(set(TablePaymentAllocation.objects.filter(
         payment__attendance=attendance, payment__status=AttendancePaymentStatus.APPLIED,
@@ -1050,7 +1050,7 @@ def table_equal_split_state(attendance, remaining=None):
     cents = int(attendance.equal_split_total * 100)
     base, remainder = divmod(cents, attendance.equal_split_people_count)
     next_amount = Decimal(base + (1 if next_person and next_person <= remainder else 0)) / Decimal('100') if next_person else None
-    return {'active': bool(remaining_people), 'cycle': attendance.equal_split_cycle,
+    return {'available': bool(remaining_people), 'active': bool(remaining_people), 'cycle': attendance.equal_split_cycle,
             'total': f'{attendance.equal_split_total:.2f}', 'people_count': attendance.equal_split_people_count,
             'paid_people': paid, 'remaining_people': remaining_people, 'next_person': next_person,
             'next_amount': f'{next_amount:.2f}' if next_amount is not None else None}
@@ -1459,6 +1459,16 @@ def record_table_payment(*, attendance, user, payment_method_id, pos_device, amo
     from apps.pos.services import current_pos_cash_session
 
     session = current_pos_cash_session(pos_device, for_update=True)
+    table_session_id = TablePayment.objects.select_for_update().filter(
+        attendance=attendance,
+        status=AttendancePaymentStatus.APPLIED,
+        reversal__isnull=True,
+    ).order_by('pk').values_list('cash_session_id', flat=True).first()
+    if table_session_id is not None and table_session_id != session.pk:
+        raise AttendanceConflict(
+            'table_cash_session_mismatch',
+            'Esta Mesa possui pagamentos vinculados a outro caixa.',
+        )
     if method.code != PaymentMethodCode.CASH and received_amount is not None:
         raise ValidationError({'payment_method': 'Somente dinheiro aceita recebido e troco.'})
     requested_discount = strict_decimal(discount if discount is not None else attendance.checkout_discount, field='discount', decimal_places=2, max_digits=14)

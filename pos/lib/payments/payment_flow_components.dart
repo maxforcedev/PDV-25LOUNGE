@@ -572,7 +572,7 @@ class _PaymentEntryPageState extends State<PaymentEntryPage> {
                             ? null
                             : () => setState(() {
                                   (_receiving ? _received : _amount).set(value);
-                                  _payingRemaining = false;
+                                  if (!_receiving) _payingRemaining = false;
                                 }),
                         child: Text('R\$ ${value.split('.').first}'),
                       ),
@@ -640,7 +640,7 @@ class _PaymentEntryPageState extends State<PaymentEntryPage> {
             OutlinedButton(
               onPressed: () => setState(() {
                 (_receiving ? _received : _amount).append(digit);
-                _payingRemaining = false;
+                if (!_receiving) _payingRemaining = false;
               }),
               child: Text(digit, style: const TextStyle(fontSize: 22)),
             ),
