@@ -328,11 +328,16 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
                 remaining: _checkout.remainingAmount,
                 items: _checkout.items
                     .map((item) => PaymentAllocationItem(
-                          id: item.id,
                           name: item.name,
                           quantity: item.quantity,
-                          availableQuantity: item.availableQuantity,
                           unit: item.unit,
+                          sources: [
+                            PaymentAllocationSource(
+                              itemId: item.id,
+                              quantity: item.quantity,
+                              availableQuantity: item.availableQuantity,
+                            ),
+                          ],
                         ))
                     .toList(growable: false),
                 preview: (allocations) async {

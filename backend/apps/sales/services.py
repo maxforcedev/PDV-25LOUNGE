@@ -2014,7 +2014,10 @@ def _frozen_command_snapshots(order_items, branch):
                     else None
                 ),
                 'promotion_benefit': Decimal(str(financial_snapshot.get('promotion_benefit', '0.00'))),
-                'manual_discount_intent': financial_snapshot.get('manual_discount_intent') or {'type': 'amount', 'value': Decimal('0.00')},
+                'manual_discount_intent': normalize_discount_intent(
+                    financial_snapshot.get('manual_discount_intent'),
+                    field='items.manual_discount_intent',
+                ),
                 'manual_discount': Decimal(str(financial_snapshot.get('manual_discount', '0.00'))),
                 'net_subtotal': Decimal(str(financial_snapshot.get('net_subtotal', item_subtotal))),
                 'participates_in_service_fee': bool(financial_snapshot['participates_in_service_fee']),

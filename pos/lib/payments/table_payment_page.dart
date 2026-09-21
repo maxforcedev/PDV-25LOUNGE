@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../attendance/attendance_models.dart';
+import '../attendance/table_order_item_grouping.dart';
 import '../cash/cash_models.dart' show createIdempotencyKey;
 import '../core/app_controller.dart';
 import '../sales/sale_models.dart';
@@ -318,16 +319,26 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
             (total, allocation) =>
                 total +
                 _quantityUnits('${allocation['allocated_quantity'] ?? '0'}'));
-    final items = _attendance.orders
-        .expand((order) => order.items)
-        .where((item) => item.status == 'confirmed')
-        .map((item) => PaymentAllocationItem(
-              id: item.id,
-              name: item.productName,
-              quantity: item.quantity,
-              availableQuantity: _quantityValue(
-                  _quantityUnits(item.quantity) - allocated(item)),
-              unit: item.unit,
+    String availableQuantity(TableOrderItem item) {
+      final available = _quantityUnits(item.quantity) - allocated(item);
+      return _quantityValue(available < 0 ? 0 : available);
+    }
+
+    final items = tableOrderItemGroups(_attendance, confirmedOnly: true)
+        .map((group) => PaymentAllocationItem(
+              name: group.item.productName,
+              quantity: _quantityValue(group.entries.fold<int>(
+                  0,
+                  (total, entry) =>
+                      total + _quantityUnits(entry.item.quantity))),
+              unit: group.item.unit,
+              sources: group.entriesByOperationalAge
+                  .map((entry) => PaymentAllocationSource(
+                        itemId: entry.item.id,
+                        quantity: entry.item.quantity,
+                        availableQuantity: availableQuantity(entry.item),
+                      ))
+                  .toList(growable: false),
             ))
         .toList(growable: false);
     final selection =

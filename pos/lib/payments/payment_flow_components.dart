@@ -657,18 +657,28 @@ class _PaymentEntryPageState extends State<PaymentEntryPage> {
 
 class PaymentAllocationItem {
   const PaymentAllocationItem({
-    required this.id,
     required this.name,
     required this.quantity,
-    required this.availableQuantity,
     required this.unit,
+    required this.sources,
   });
 
-  final int id;
   final String name;
   final String quantity;
-  final String availableQuantity;
   final String unit;
+  final List<PaymentAllocationSource> sources;
+}
+
+class PaymentAllocationSource {
+  const PaymentAllocationSource({
+    required this.itemId,
+    required this.quantity,
+    required this.availableQuantity,
+  });
+
+  final int itemId;
+  final String quantity;
+  final String availableQuantity;
 }
 
 class PaymentAllocationPreview {
@@ -706,9 +716,9 @@ class PaymentItemAllocationPage extends StatefulWidget {
 }
 
 class _PaymentItemAllocationPageState extends State<PaymentItemAllocationPage> {
-  final Map<int, int> _quantities = {};
-  final Map<int, TextEditingController> _inputs = {};
-  final Map<int, String> _errors = {};
+  final Map<PaymentAllocationItem, int> _quantities = {};
+  final Map<PaymentAllocationItem, TextEditingController> _inputs = {};
+  final Map<PaymentAllocationItem, String> _errors = {};
   PaymentAllocationPreview? _preview;
   bool _loading = false;
 
@@ -716,7 +726,7 @@ class _PaymentItemAllocationPageState extends State<PaymentItemAllocationPage> {
   void initState() {
     super.initState();
     for (final item in widget.items) {
-      _inputs[item.id] = TextEditingController(text: '0');
+      _inputs[item] = TextEditingController(text: '0');
     }
   }
 
@@ -728,13 +738,28 @@ class _PaymentItemAllocationPageState extends State<PaymentItemAllocationPage> {
     super.dispose();
   }
 
-  List<Map<String, dynamic>> get _allocations => _quantities.entries
-      .where((entry) => entry.value > 0)
-      .map((entry) => {
-            'item': entry.key,
-            'allocated_quantity': _quantityValue(entry.value),
-          })
-      .toList(growable: false);
+  List<Map<String, dynamic>> get _allocations {
+    final allocations = <Map<String, dynamic>>[];
+    for (final entry in _quantities.entries) {
+      var remaining = entry.value;
+      if (remaining <= 0) continue;
+      for (final source in entry.key.sources) {
+        final available = _quantityUnits(
+            _preview?.availableQuantities[source.itemId] ??
+                source.availableQuantity);
+        final allocated = remaining < available ? remaining : available;
+        if (allocated > 0) {
+          allocations.add({
+            'item': source.itemId,
+            'allocated_quantity': _quantityValue(allocated),
+          });
+          remaining -= allocated;
+        }
+        if (remaining == 0) break;
+      }
+    }
+    return allocations;
+  }
 
   bool get _exceedsRemaining =>
       _preview != null &&
@@ -792,16 +817,19 @@ class _PaymentItemAllocationPageState extends State<PaymentItemAllocationPage> {
       );
 
   Widget _item(PaymentAllocationItem item) {
-    final max = _quantityUnits(
-        _preview?.availableQuantities[item.id] ?? item.availableQuantity);
+    final max = item.sources.fold<int>(0, (total, source) {
+      return total +
+          _quantityUnits(_preview?.availableQuantities[source.itemId] ??
+              source.availableQuantity);
+    });
     final step = item.unit.toLowerCase() == 'un' ? 1000 : 1;
-    final value = _quantities[item.id] ?? 0;
-    final input = _inputs[item.id]!;
-    final error = _errors[item.id];
+    final value = _quantities[item] ?? 0;
+    final input = _inputs[item]!;
+    final error = _errors[item];
     void setValue(int next) {
       setState(() {
-        _quantities[item.id] = next;
-        _errors.remove(item.id);
+        _quantities[item] = next;
+        _errors.remove(item);
         input.text = _quantityValue(next);
       });
       _update();
@@ -840,10 +868,10 @@ class _PaymentItemAllocationPageState extends State<PaymentItemAllocationPage> {
                 setState(() {
                   _preview = null;
                   if (valid) {
-                    _quantities[item.id] = next;
-                    _errors.remove(item.id);
+                    _quantities[item] = next;
+                    _errors.remove(item);
                   } else {
-                    _errors[item.id] =
+                    _errors[item] =
                         'Informe até ${_quantityValue(max)} ${item.unit}.';
                   }
                 });

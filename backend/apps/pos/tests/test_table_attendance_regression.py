@@ -5,7 +5,10 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase
 
 from apps.accounts.models import User
-from apps.attendance.models import AttendanceCommand, TableAttendance, TableAttendanceStatus, TablePayment
+from apps.attendance.models import (
+    AttendanceCommand, TableAttendance, TableAttendanceStatus, TableOrderItem,
+    TablePayment,
+)
 from apps.attendance.services import (
     AttendanceConflict, close_table_attendance, open_table_attendance,
     record_table_payment, reverse_table_payment, save_table_order, table_summary,
@@ -77,6 +80,46 @@ class TableAttendanceRegressionTests(TestCase):
         self.assertEqual(closed.status, TableAttendanceStatus.CLOSED)
         self.assertIsNotNone(closed.sale_id)
         self.assertFalse(AttendanceCommand.objects.filter(table=table).exists())
+
+    def test_close_normalizes_serialized_manual_discount_intent(self):
+        for discount_type, value in (
+            ('amount', '0.00'),
+            ('amount', '10.00'),
+            ('percentage', '10.00'),
+        ):
+            with self.subTest(discount_type=discount_type, value=value):
+                attendance = self._table_with_order(
+                    f'Serialized discount {discount_type} {value}',
+                )
+                item = TableOrderItem.objects.get(order__attendance=attendance)
+                item.financial_snapshot = {
+                    **item.financial_snapshot,
+                    'manual_discount_intent': {
+                        'type': discount_type,
+                        'value': value,
+                    },
+                }
+                item.save(update_fields=('financial_snapshot', 'updated_at'))
+                record_table_payment(
+                    attendance=attendance,
+                    user=self.user,
+                    payment_method_id=self.cash_method.pk,
+                    pos_device=self.device,
+                    amount=Decimal('10.00'),
+                    received_amount=Decimal('10.00'),
+                    idempotency_key=uuid4(),
+                )
+
+                closed, _ = close_table_attendance(
+                    attendance=attendance,
+                    user=self.user,
+                    idempotency_key=uuid4(),
+                    pos_device=self.device,
+                )
+
+                sale_item = closed.sale.items.get()
+                self.assertEqual(sale_item.manual_discount_intent_type, discount_type)
+                self.assertEqual(sale_item.manual_discount_intent_value, Decimal(value))
 
     def test_close_rejects_historical_non_cash_payment_from_another_device_context(self):
         table = create_table(branch=self.branch, name='Context table', user=self.user)

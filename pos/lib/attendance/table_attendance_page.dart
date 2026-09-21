@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
@@ -17,6 +16,7 @@ import 'attendance_models.dart';
 import 'attendance_presentation.dart';
 import 'shared_tables_grid.dart';
 import 'table_summary_widgets.dart';
+import 'table_order_item_grouping.dart';
 
 double _tableCartNumber(Object? value) =>
     double.tryParse('$value'.replaceAll(',', '.')) ?? 0;
@@ -66,85 +66,13 @@ String _tableHistoryTime(String? value) {
       '${twoDigits(date.hour)}:${twoDigits(date.minute)}';
 }
 
-Object? _normalizedTableModifierValue(Object? value) {
-  if (value is Map) {
-    final entries = value.entries
-        .map((entry) => MapEntry(
-            '${entry.key}', _normalizedTableModifierValue(entry.value)))
-        .toList()
-      ..sort((a, b) => a.key.compareTo(b.key));
-    return Map<String, Object?>.fromEntries(entries);
-  }
-  if (value is List) {
-    final entries = value.map(_normalizedTableModifierValue).toList()
-      ..sort((a, b) => jsonEncode(a).compareTo(jsonEncode(b)));
-    return entries;
-  }
-  return value;
-}
-
-class _TableOrderItemEntry {
-  const _TableOrderItemEntry({required this.item, required this.order});
-
-  final TableOrderItem item;
-  final TableOrder order;
-
-  String get context {
-    final operationalTime = item.confirmedAt ?? order.createdAt;
-    return [
-      if (operationalTime != null) _tableHistoryTime(operationalTime),
-      'Pedido #${order.id}',
-      if (order.createdByName.isNotEmpty) order.createdByName,
-    ].join(' • ');
-  }
-}
-
-class _TableOrderItemGroup {
-  _TableOrderItemGroup(this.first) : entries = [first];
-
-  final _TableOrderItemEntry first;
-  final List<_TableOrderItemEntry> entries;
-
-  TableOrderItem get item => first.item;
-  double get quantity => entries.fold(
-      0, (total, entry) => total + _tableCartNumber(entry.item.quantity));
-  double get lineTotal => entries.fold(0, (total, entry) {
-        final item = entry.item;
-        final amount = item.lineTotal == null
-            ? _tableCartNumber(item.unitPrice) * _tableCartNumber(item.quantity)
-            : _tableCartNumber(item.lineTotal);
-        return total + amount;
-      });
-}
-
-List<_TableOrderItemGroup> _tableOrderItemGroups(
-  TableAttendance attendance, {
-  bool confirmedOnly = false,
-}) {
-  final groupsByKey = <String, _TableOrderItemGroup>{};
-  for (final order in attendance.orders) {
-    for (final item in order.items) {
-      if (confirmedOnly && item.status != 'confirmed') continue;
-      final key = [
-        item.productId,
-        _tableCartNumber(item.unitPrice).toStringAsFixed(2),
-        jsonEncode(_normalizedTableModifierValue(item.modifierSnapshot)),
-        jsonEncode(_normalizedTableModifierValue(item.financialSnapshot)),
-        item.notes,
-        item.status.toLowerCase(),
-        item.printStatus?.toLowerCase() ?? '',
-        item.cancellationReason,
-      ].join('\u0001');
-      final entry = _TableOrderItemEntry(item: item, order: order);
-      final group = groupsByKey[key];
-      if (group == null) {
-        groupsByKey[key] = _TableOrderItemGroup(entry);
-      } else {
-        group.entries.add(entry);
-      }
-    }
-  }
-  return groupsByKey.values.toList(growable: false);
+String _tableOrderItemEntryContext(TableOrderItemEntry entry) {
+  final operationalTime = entry.item.confirmedAt ?? entry.order.createdAt;
+  return [
+    if (operationalTime != null) _tableHistoryTime(operationalTime),
+    'Pedido #${entry.order.id}',
+    if (entry.order.createdByName.isNotEmpty) entry.order.createdByName,
+  ].join(' • ');
 }
 
 class TableOrderPage extends StatefulWidget {
@@ -604,14 +532,10 @@ class _TableOrderPageState extends State<TableOrderPage> {
 
   Future<void> _transferItems({Set<int> initiallySelected = const {}}) async {
     if (_actionInProgress) return;
-    final eligible = _attendance.orders
-        .expand((order) => order.items)
-        .where((item) => item.status == 'confirmed')
-        .toList(growable: false);
-    final items = await Navigator.of(context).push<List<TableOrderItem>>(
+    final items = await Navigator.of(context).push<List<TableOrderItemEntry>>(
       MaterialPageRoute(
         builder: (_) => _TableItemTransferPage(
-          items: eligible,
+          attendance: _attendance,
           initiallySelected: initiallySelected,
         ),
       ),
@@ -643,9 +567,9 @@ class _TableOrderPageState extends State<TableOrderPage> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            for (final item in items)
+            for (final group in tableOrderItemGroupsForEntries(items))
               Text(
-                  '${formatAttendanceQuantity(item.quantity)}x ${item.productName}'),
+                  '${formatAttendanceQuantity(group.quantity)}x ${group.item.productName}'),
           ],
         ),
         actions: [
@@ -664,7 +588,10 @@ class _TableOrderPageState extends State<TableOrderPage> {
       attendanceId: _attendance.id,
       destinationAttendanceId: target!.attendance!.id,
       items: items
-          .map((item) => {'item': item.id, 'quantity': item.quantity})
+          .map((entry) => {
+                'item': entry.item.id,
+                'quantity': entry.item.quantity,
+              })
           .toList(growable: false),
       idempotencyKey: createIdempotencyKey(),
     );
@@ -737,10 +664,10 @@ class _TableOrderPageState extends State<TableOrderPage> {
       ) ??
       false;
 
-  Future<_TableOrderItemEntry?> _selectGroupEntry(
-      _TableOrderItemGroup group, String action) async {
+  Future<TableOrderItemEntry?> _selectGroupEntry(
+      TableOrderItemGroup group, String action) async {
     if (group.entries.length == 1) return group.first;
-    return showDialog<_TableOrderItemEntry>(
+    return showDialog<TableOrderItemEntry>(
       context: context,
       builder: (_) => SimpleDialog(
         title: Text('$action: ${group.item.productName}'),
@@ -752,7 +679,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('${formatAttendanceQuantity(entry.item.quantity)}x'),
-                  Text(entry.context,
+                  Text(_tableOrderItemEntryContext(entry),
                       style: const TextStyle(
                           color: Color(0xff64748b), fontSize: 12)),
                 ],
@@ -763,7 +690,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
     );
   }
 
-  Future<void> _showConfirmedItemActions(_TableOrderItemGroup group) async {
+  Future<void> _showConfirmedItemActions(TableOrderItemGroup group) async {
     final item = group.item;
     final action = await showModalBottomSheet<String>(
       context: context,
@@ -803,12 +730,13 @@ class _TableOrderPageState extends State<TableOrderPage> {
               'Total: ${formatAttendanceMoney(group.lineTotal)}',
               '',
               'ENTRADAS',
-              if (group.entries
-                  .every((entry) => entry.context == group.first.context))
-                '${formatAttendanceQuantity(group.quantity)}x • ${group.first.context}'
+              if (group.entries.every((entry) =>
+                  _tableOrderItemEntryContext(entry) ==
+                  _tableOrderItemEntryContext(group.first)))
+                '${formatAttendanceQuantity(group.quantity)}x • ${_tableOrderItemEntryContext(group.first)}'
               else
                 ...group.entries.map((entry) =>
-                    '${formatAttendanceQuantity(entry.item.quantity)}x • ${entry.context}'),
+                    '${formatAttendanceQuantity(entry.item.quantity)}x • ${_tableOrderItemEntryContext(entry)}'),
               'Status: ${localizedAttendanceStatus(item.status)}',
               if (localizedPrintStatus(item.printStatus) != null)
                 'Impressão: ${localizedPrintStatus(item.printStatus)}',
@@ -1095,7 +1023,7 @@ class _TableConferencePage extends StatelessWidget {
                         textAlign: TextAlign.center),
                   const Divider(height: 32),
                   for (final group
-                      in _tableOrderItemGroups(attendance, confirmedOnly: true))
+                      in tableOrderItemGroups(attendance, confirmedOnly: true))
                     Padding(
                       padding: const EdgeInsets.only(bottom: 12),
                       child: Column(children: [
@@ -1150,7 +1078,7 @@ class _TableOrderSummaryPanel extends StatelessWidget {
   final Future<void> Function() onPayment;
   final Map<String, dynamic>? preview;
   final bool previewLoading;
-  final Future<void> Function(_TableOrderItemGroup) onConfirmedItemActions;
+  final Future<void> Function(TableOrderItemGroup) onConfirmedItemActions;
   final Future<void> Function(int) onDraftItemActions;
 
   @override
@@ -1180,7 +1108,7 @@ class _TableOrderSummaryPanel extends StatelessWidget {
                     ? const Center(
                         child: Text('Adicione produtos para iniciar o pedido.'))
                     : ListView(children: [
-                        for (final group in _tableOrderItemGroups(attendance))
+                        for (final group in tableOrderItemGroups(attendance))
                           _ConfirmedOrderItemRow(
                             group: group,
                             onTap: () =>
@@ -1319,7 +1247,7 @@ class _TableOrderSummaryPanel extends StatelessWidget {
 class _ConfirmedOrderItemRow extends StatelessWidget {
   const _ConfirmedOrderItemRow({required this.group, this.onTap});
 
-  final _TableOrderItemGroup group;
+  final TableOrderItemGroup group;
   final VoidCallback? onTap;
 
   @override
@@ -1472,11 +1400,11 @@ class _TableTransferDestinationPage extends StatelessWidget {
 
 class _TableItemTransferPage extends StatefulWidget {
   const _TableItemTransferPage({
-    required this.items,
+    required this.attendance,
     required this.initiallySelected,
   });
 
-  final List<TableOrderItem> items;
+  final TableAttendance attendance;
   final Set<int> initiallySelected;
 
   @override
@@ -1485,23 +1413,44 @@ class _TableItemTransferPage extends StatefulWidget {
 
 class _TableItemTransferPageState extends State<_TableItemTransferPage> {
   final Set<int> _selected = {};
+  final Set<TableOrderItemGroup> _expanded = {};
+  late final List<TableOrderItemGroup> _groups;
+
+  Iterable<TableOrderItemEntry> get _entries =>
+      _groups.expand((group) => group.entriesByOperationalAge);
 
   @override
   void initState() {
     super.initState();
-    for (final item in widget.items) {
-      if (widget.initiallySelected.contains(item.id)) _selected.add(item.id);
+    _groups = tableOrderItemGroups(widget.attendance, confirmedOnly: true);
+    for (final entry in _entries) {
+      if (widget.initiallySelected.contains(entry.item.id)) {
+        _selected.add(entry.item.id);
+      }
     }
   }
 
-  void _toggle(TableOrderItem item, bool selected) => setState(() {
-        selected ? _selected.add(item.id) : _selected.remove(item.id);
+  void _toggle(TableOrderItemEntry entry, bool selected) => setState(() {
+        selected
+            ? _selected.add(entry.item.id)
+            : _selected.remove(entry.item.id);
       });
+
+  void _toggleGroup(TableOrderItemGroup group, bool selected) => setState(() {
+        for (final entry in group.entries) {
+          selected
+              ? _selected.add(entry.item.id)
+              : _selected.remove(entry.item.id);
+        }
+      });
+
+  String _groupAvailability(TableOrderItemGroup group) =>
+      formatAttendanceQuantity(group.quantity);
 
   @override
   Widget build(BuildContext context) => Scaffold(
         appBar: AppBar(title: const Text('TRANSFERIR ITENS')),
-        body: widget.items.isEmpty
+        body: _groups.isEmpty
             ? const Center(
                 child: Text('Não há itens confirmados para transferir.'))
             : ListView(
@@ -1510,7 +1459,7 @@ class _TableItemTransferPageState extends State<_TableItemTransferPage> {
                   Wrap(spacing: 8, children: [
                     TextButton(
                       onPressed: () => setState(() => _selected
-                          .addAll(widget.items.map((item) => item.id))),
+                          .addAll(_entries.map((entry) => entry.item.id))),
                       child: const Text('SELECIONAR TODOS'),
                     ),
                     TextButton(
@@ -1519,17 +1468,7 @@ class _TableItemTransferPageState extends State<_TableItemTransferPage> {
                     ),
                   ]),
                   const SizedBox(height: 8),
-                  for (final item in widget.items)
-                    CheckboxListTile(
-                      value: _selected.contains(item.id),
-                      onChanged: (selected) => _toggle(item, selected == true),
-                      controlAffinity: ListTileControlAffinity.leading,
-                      title: Text(item.productName),
-                      subtitle: Text(
-                        'Disponível: ${formatAttendanceQuantity(item.quantity)}'
-                        '${_selected.contains(item.id) ? ' · Transferir: ${formatAttendanceQuantity(item.quantity)}' : ''}',
-                      ),
-                    ),
+                  for (final group in _groups) _group(group),
                 ],
               ),
         bottomNavigationBar: SafeArea(
@@ -1537,13 +1476,58 @@ class _TableItemTransferPageState extends State<_TableItemTransferPage> {
           child: FilledButton(
             onPressed: _selected.isEmpty
                 ? null
-                : () => Navigator.of(context).pop(widget.items
-                    .where((item) => _selected.contains(item.id))
+                : () => Navigator.of(context).pop(_entries
+                    .where((entry) => _selected.contains(entry.item.id))
                     .toList(growable: false)),
             child: const Text('CONTINUAR'),
           ),
         ),
       );
+
+  Widget _group(TableOrderItemGroup group) {
+    final selectedEntries =
+        group.entries.where((entry) => _selected.contains(entry.item.id));
+    final allSelected = selectedEntries.length == group.entries.length;
+    final partlySelected = selectedEntries.isNotEmpty && !allSelected;
+    final expanded = _expanded.contains(group);
+    return Card(
+      child: Column(children: [
+        CheckboxListTile(
+          value: allSelected ? true : (partlySelected ? null : false),
+          tristate: true,
+          onChanged: (selected) => _toggleGroup(group, selected == true),
+          controlAffinity: ListTileControlAffinity.leading,
+          title: Text(
+              '${formatAttendanceQuantity(group.quantity)}x ${group.item.productName}'),
+          subtitle: Text(
+              'Disponível: ${_groupAvailability(group)} ${group.item.unit}'),
+        ),
+        if (group.entries.length > 1)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => setState(() {
+                expanded ? _expanded.remove(group) : _expanded.add(group);
+              }),
+              icon: Icon(expanded ? Icons.expand_less : Icons.expand_more),
+              label: Text(expanded
+                  ? 'OCULTAR ENTRADAS'
+                  : 'SELECIONAR ENTRADAS (${group.entries.length})'),
+            ),
+          ),
+        if (expanded)
+          for (final entry in group.entriesByOperationalAge)
+            CheckboxListTile(
+              value: _selected.contains(entry.item.id),
+              onChanged: (selected) => _toggle(entry, selected == true),
+              controlAffinity: ListTileControlAffinity.leading,
+              title: Text(
+                  '${formatAttendanceQuantity(entry.item.quantity)}x ${entry.item.productName}'),
+              subtitle: Text(_tableOrderItemEntryContext(entry)),
+            ),
+      ]),
+    );
+  }
 }
 
 Future<String?> _requiredReasonDialog(
