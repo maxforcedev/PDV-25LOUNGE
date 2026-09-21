@@ -395,12 +395,18 @@ def preview_quick_checkout_payment(*, checkout, allocations):
 @transaction.atomic
 def record_quick_checkout_payment(*, checkout, user, payment_method_id, mode, amount,
                                     received_amount, allocations, idempotency_key,
-                                    active_cash_session_id=None,
+                                    pos_device,
                                     audit_metadata=None):
+    if pos_device.branch_id != checkout.branch_id:
+        raise ValidationError({'pos_device': 'O dispositivo deve pertencer ao checkout.'})
+    # Resolve and lock the persisted POS context before touching the checkout ledger.
+    from apps.pos.services import current_pos_cash_session
+
+    active_session = current_pos_cash_session(pos_device, for_update=True)
     session, checkout, _sessions = _lock_checkout_session(checkout.pk, user=user)
     if session.status != CashSessionStatus.OPEN:
         raise QuickCheckoutConflict('cash_session_closed', 'Não é possível registrar pagamento após o fechamento do caixa.')
-    if active_cash_session_id is not None and session.pk != active_cash_session_id:
+    if session.pk != active_session.pk:
         raise QuickCheckoutConflict(
             'cash_context_changed',
             'O checkout pertence a outro contexto de caixa deste POS.',

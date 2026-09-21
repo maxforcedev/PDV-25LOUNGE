@@ -410,10 +410,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           )}
         </button>
         <div className="hidden sm:block">
-          <p className="text-xs font-semibold text-fg">Painel {branding.platform_name}</p>
-          <p className="mt-0.5 text-[11px] text-muted">
-            Operação e acessos em um só lugar
-          </p>
+
         </div>
         <div className="ml-auto mr-2 grid min-w-0 max-w-[55vw] gap-1 sm:w-72 sm:max-w-none sm:grid-cols-2">
           <label className="sr-only" htmlFor="current-company">

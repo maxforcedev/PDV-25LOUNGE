@@ -132,9 +132,8 @@ function DailyRevenueChart({
       <div className="card-header">
         <div>
           <h2 className="text-sm font-bold">Vendas no período</h2>
-          <p className="mt-1 text-[11px] text-muted">
-            Faturamento comercial por dia
-          </p>
+
+
         </div>
         {href && (
           <Link className="text-xs font-bold text-link" href={href}>
@@ -482,7 +481,6 @@ function DashboardPage() {
               <Kpi
                 label="Faturamento"
                 value={sales ? formatBRL(sales.sales_revenue) : "Sem permissão"}
-                note="Faturamento comercial no período"
                 icon={TrendingUp}
                 href={
                   sales && canViewSalesReport ? report("vendas") : undefined
@@ -491,7 +489,6 @@ function DashboardPage() {
               <Kpi
                 label="Vendas"
                 value={sales ? String(sales.count) : "Sem permissão"}
-                note="Quantidade líquida de vendas"
                 icon={ShoppingBasket}
                 href={
                   sales && canViewSalesReport ? report("vendas") : undefined
@@ -502,7 +499,6 @@ function DashboardPage() {
                 value={
                   sales ? formatBRL(sales.ticket_average) : "Sem permissão"
                 }
-                note="Faturamento dividido pelas vendas"
                 icon={ReceiptText}
                 href={
                   sales && canViewSalesReport ? report("vendas") : undefined
@@ -513,7 +509,6 @@ function DashboardPage() {
                 value={
                   result !== undefined ? formatBRL(result) : "Sem permissão"
                 }
-                note="Estimativa operacional, não contábil"
                 icon={CircleDollarSign}
                 tone={result !== undefined ? "success" : "warning"}
                 href={
@@ -528,9 +523,6 @@ function DashboardPage() {
               <div className="card-header">
                 <div>
                   <h2 className="text-sm font-bold">Atenção operacional</h2>
-                  <p className="mt-1 text-[11px] text-muted">
-                    Exceções acionáveis conforme suas permissões
-                  </p>
                 </div>
               </div>
               {operationalAlerts.length ? (
@@ -590,9 +582,6 @@ function DashboardPage() {
                     <div className="card-header">
                       <div>
                         <h2 className="text-sm font-bold">Top 5 produtos</h2>
-                        <p className="mt-1 text-[11px] text-muted">
-                          Maior faturamento no período
-                        </p>
                       </div>
                       {canViewProductsReport && (
                         <Link
@@ -661,9 +650,6 @@ function DashboardPage() {
                         <h2 className="text-sm font-bold">
                           Formas de pagamento
                         </h2>
-                        <p className="mt-1 text-[11px] text-muted">
-                          Distribuição do total recebido
-                        </p>
                       </div>
                       {canViewReceiptsReport && (
                         <Link

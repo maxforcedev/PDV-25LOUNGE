@@ -11,7 +11,8 @@ import 'package:core_pos/network/pos_api.dart';
 import 'package:core_pos/network/pos_api_error.dart';
 import 'package:core_pos/pairing/pairing_models.dart';
 import 'package:core_pos/storage/secret_store.dart';
-
+   
+   
 void main() {
   const device = DeviceDescriptor(
     name: 'Terminal 01',

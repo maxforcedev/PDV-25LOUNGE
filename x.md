@@ -1,7 +1,7 @@
-CONTINUE A MESMA FASE.
+CONTINUE A MESMA FASE E CORRIJA OS 500 AGORA.
 
 FONTE DE VERDADE:
-ESTADO ATUAL DO PROJETO / HEAD ATUAL.
+HEAD ATUAL DA MAIN.
 
 NÃO INICIE:
 - impressão;
@@ -13,363 +13,437 @@ NÃO INICIE:
 
 NÃO MEXER EM COMANDA LEGADO.
 
-A arquitetura de CashSession como contexto global do POS está correta e deve ser preservada.
+A arquitetura atual deve ser PRESERVADA:
 
-NÃO VOLTAR A COLOCAR seleção de caixa em:
+CashSession pertence ao POSDevice / módulo CAIXA.
+
+Venda Rápida, Mesa e Pagamentos consomem o contexto ativo do POS.
+
+NÃO VOLTAR A COLOCAR seletor de caixa em:
 - Venda Rápida;
 - Mesa;
 - Pagamento;
 - Dinheiro;
 - fechamento da Mesa.
 
-Agora corrija SOMENTE os pontos abaixo.
-
 ==================================================
-1. BLOCKER — REGRA DE CASH SESSION DA MESA APÓS ESTORNO
+1. BLOCKER 500 — POSCashSessionSelectView
 ==================================================
 
-Hoje existe uma inconsistência entre:
+Hoje existe:
 
-`record_table_payment()`
+class POSCashSessionSelectView(POSCashView):
+    ...
+    self._require(...)
 
-e
+PROBLEMA:
 
-`close_table_attendance()`.
+POSCashView NÃO possui `_require()`.
 
-No registro de novo pagamento, o contexto da Mesa é inferido usando pagamentos:
+Esse helper existe em outras subclasses como:
+- POSQuickSaleView;
+- POSAttendanceView;
 
-- status APPLIED;
-- sem reversal.
+mas NÃO em POSCashView.
 
-Ou seja, pagamentos efetivamente ativos.
+Resultado real:
 
-Isso permite o cenário:
+FLEXIBLE
+→ selecionar outro caixa
+→ AttributeError
+→ HTTP 500.
 
-Caixa A
-→ pagamento R$ 50
-→ estorna R$ 50
-→ troca POS para Caixa B
-→ novo pagamento R$ 100 no B.
+ERRO CONFIRMADO:
 
-Até aí essa regra é válida.
-
-PORÉM no fechamento da Mesa hoje existe algo equivalente a:
-
-`historical_payments`
-
-pegando pagamentos originais mesmo que já tenham sido estornados.
-
-Resultado:
-
-Pagamento original A estornado
-+
-Pagamento ativo B
-↓
-FECHAR MESA
-↓
-table_cash_session_mismatch
-
-A Mesa fica paga e impossível de fechar.
+'POSCashSessionSelectView' object has no attribute '_require'
 
 CORRIGIR.
 
 ==================================================
-2. USAR UMA ÚNICA DEFINIÇÃO DE CONTEXTO FINANCEIRO DA MESA
+2. REGRA ESPERADA PARA PERMISSÃO FLEXIBLE
 ==================================================
 
-A regra deve ser consistente em:
+Selecionar outro caixa em modo FLEXIBLE deve exigir:
 
-- registrar pagamento;
-- estornar;
-- fechar Mesa.
+cash_registers.open
 
-Recomendação:
+Comportamento esperado:
 
-O CONTEXTO FINANCEIRO ATUAL DA MESA É DETERMINADO
-PELOS PAGAMENTOS ATIVOS.
+COM permissão:
+→ 200
+→ active_cash_session atualizada.
 
-Ou seja:
+SEM permissão:
+→ 403
+→ active_cash_session permanece inalterada.
 
-TablePayment:
-- status APPLIED;
-- reversal__isnull=True.
+Caixa não disponível:
+→ 409.
 
-Se todos os pagamentos associados ao Caixa A forem estornados,
-a Mesa pode posteriormente receber pagamentos no Caixa B.
+NUNCA retornar 500.
 
-O histórico do Caixa A permanece imutável para auditoria.
+Use mecanismo de permission check apropriado para POSCashView.
 
-NÃO apagar ou alterar registros históricos.
+Pode:
+- adicionar helper genérico apropriado em POSCashView;
+- ou fazer validação explícita nessa view;
+- ou reutilizar mecanismo já existente.
 
-Mas pagamentos totalmente estornados NÃO devem bloquear o fechamento
-em um novo contexto válido.
-
-==================================================
-3. FECHAMENTO DA MESA DEVE USAR A MESMA REGRA
-==================================================
-
-No `close_table_attendance()`:
-
-não comparar a CashSession atual com pagamentos antigos já totalmente estornados.
-
-Validar somente os pagamentos financeiros ativos que efetivamente
-compõem o saldo pago atual da Mesa.
-
-Se existirem pagamentos ativos em mais de uma CashSession:
-
-isso é inconsistência e o fechamento deve rejeitar.
-
-Mas o registro de novos pagamentos já deve impedir esse estado antes.
+Evitar duplicação desnecessária.
 
 ==================================================
-4. BLOCKER — FECHAMENTO DO CAIXA NÃO PODE CONSIDERAR SÓ DINHEIRO
+3. BLOCKER 500 — POSQuickCheckoutPaymentView
 ==================================================
 
-Na arquitetura nova:
+Hoje existe na View:
 
-CashSession não é "sessão de dinheiro".
-
-CashSession é o CONTEXTO OPERACIONAL DO POS.
-
-Portanto todos os pagamentos feitos durante esse contexto são vinculados à sessão:
-
-- Dinheiro;
-- PIX;
-- Crédito;
-- Débito;
-- Benefício;
-- outros.
-
-Hoje `close_session()` ainda possui regra de Mesa semelhante a:
-
-TablePayment.objects.filter(
-    cash_session=session,
-    payment_method__code='cash',
-    status=APPLIED,
-    reversal__isnull=True,
-    attendance__status=OPEN,
+session = current_pos_cash_session(
+    device,
+    for_update=True,
 )
 
-Esse filtro:
+PROBLEMA:
 
-`payment_method__code='cash'`
+`current_pos_cash_session(..., for_update=True)` executa:
 
-ESTÁ ERRADO para a arquitetura atual.
+select_for_update()
+
+no POSDevice e na CashSession.
+
+Mas `POSQuickCheckoutPaymentView.post()` NÃO está dentro de
+`transaction.atomic()`.
+
+Resultado real:
+
+TransactionManagementError:
+select_for_update cannot be used outside of a transaction.
+
+Isso está causando:
+
+POST
+/api/v1/pos/sales/checkouts/<id>/payments/
+→ HTTP 500.
+
+CORRIGIR A ARQUITETURA TRANSACIONAL.
 
 ==================================================
-5. BLOQUEAR FECHAMENTO DA CASH SESSION POR QUALQUER PAGAMENTO ATIVO DE MESA
+4. NÃO RESOLVER APENAS COM for_update=False
 ==================================================
 
-Se uma Mesa ainda está ABERTA e possui qualquer TablePayment ativo
-vinculado àquela CashSession:
+NÃO fazer simplesmente:
 
-NÃO permitir fechar a CashSession.
+current_pos_cash_session(
+    device,
+    for_update=False,
+)
 
-Independentemente da forma de pagamento.
+só para remover o erro.
 
-Exemplo:
+Isso abriria janela de race condition:
 
-Caixa A ativo
+lê Caixa A
 ↓
-Mesa 10
+contexto muda para B
 ↓
-PIX R$ 50
+pagamento continua usando informação antiga.
 
-A Mesa continua aberta.
-
-Nesse momento:
-
-FECHAR CAIXA A
-
-deve ser rejeitado.
-
-Porque aquela Mesa ainda possui operação financeira ativa
-vinculada ao contexto A.
+Queremos manter a proteção de concorrência.
 
 ==================================================
-6. MOTIVO
+5. RESOLUÇÃO RECOMENDADA
 ==================================================
 
-Não permitir:
+`record_quick_checkout_payment()` já é:
 
-Mesa aberta
-Pagamento PIX → Caixa A
+@transaction.atomic
+
+Portanto a resolução/lock do contexto ativo deve acontecer
+DENTRO do serviço transacional.
+
+Fluxo recomendado:
+
+record_quick_checkout_payment(...)
 ↓
-fecha Caixa A
+transaction.atomic
 ↓
-abre Caixa B
+lock POSDevice
 ↓
-Mesa continua aberta
+resolver active_cash_session
+↓
+lock CashSession
+↓
+lock checkout
+↓
+validar:
+checkout.cash_session == active POS CashSession
+↓
+registrar pagamento.
 
-Isso criaria uma Mesa presa ao contexto anterior e impossibilitaria
-ou confundiria novos pagamentos/fechamento.
+Ou solução equivalente que mantenha:
+- lock;
+- atomicidade;
+- consistência.
 
-O fechamento do caixa deve proteger operações abertas associadas
-àquela sessão.
-
-==================================================
-7. NÃO LIMITAR ESSA REGRA A DINHEIRO
-==================================================
-
-Remover o filtro por:
-
-payment_method__code='cash'
-
-da verificação de TablePayment ativo ao fechar CashSession.
-
-Avaliar a mesma coerência em outros fluxos POS novos.
-
-NÃO alterar Comanda legado nesta fase além do necessário para
-não quebrar o código existente.
+A View NÃO deve ser responsável por lock transacional de domínio.
 
 ==================================================
-8. PAGAR SALDO — BACKSPACE
+6. EVOLUIR CONTRATO DO SERVIÇO
 ==================================================
 
-Foi corrigido corretamente:
+Preferência:
 
-botões rápidos e teclado numérico do VALOR RECEBIDO
-não mudam mais `_payingRemaining`.
+em vez de a View resolver:
 
-Mas ainda revisar o BACKSPACE.
+active_cash_session_id=session.pk
 
-Hoje:
+ela deve passar o contexto necessário ao serviço, por exemplo:
 
-PAGAR SALDO
-→ `_payingRemaining = true`
+pos_device=device
 
-Se operador estiver editando VALOR APLICADO e apertar backspace:
+E o serviço resolve server-side dentro da transaction.
 
-o valor muda,
+Conceitualmente:
 
-mas `_payingRemaining` pode continuar true.
+@transaction.atomic
+def record_quick_checkout_payment(..., pos_device):
+    active_session = current_pos_cash_session(
+        pos_device,
+        for_update=True,
+    )
 
-Isso cria divergência:
+    checkout_session, checkout, ... = _lock_checkout_session(...)
 
-UI mostra valor alterado,
-mas request continua mode=remaining.
+    if checkout_session.pk != active_session.pk:
+        raise QuickCheckoutConflict(
+            'cash_context_changed',
+            ...
+        )
 
-CORRIGIR.
+    ...
 
-Regra:
-
-Se BACKSPACE alterar o VALOR APLICADO:
-
-`_payingRemaining = false`
-
-Se BACKSPACE alterar apenas VALOR RECEBIDO:
-
-manter `_payingRemaining = true`.
-
-A mesma regra vale para qualquer futura alteração manual do valor aplicado.
+Não precisa usar exatamente essa assinatura,
+mas preservar essa responsabilidade no domínio.
 
 ==================================================
-9. PRESERVAR CORREÇÕES JÁ FEITAS
+7. NÃO PERDER A PROTEÇÃO cash_context_changed
 ==================================================
 
-NÃO regredir:
+Venda Rápida deve continuar protegida:
 
-- `POSDevice.active_cash_session`;
-- `current_pos_cash_session()`;
-- lock separado de POSDevice e CashSession;
-- `cash_state_for_device()` lendo estado atual;
-- FLEXIBLE refletindo apenas seleção confirmada pelo backend;
-- permissão `cash_registers.open` para selecionar Caixa;
-- Mesa bloqueando novo pagamento se já possui pagamento ativo em outro caixa;
-- pending da Mesa preservado mesmo sem payment methods carregados;
-- equal_split:
-  - available=true;
-  - active=false antes do ciclo;
-- PaymentEntryPage sem conhecimento de CashSession;
-- ausência de seletor de caixa em Venda/Mesa/Pagamento;
-- código antigo de Table Item Allocation removido.
+checkout criado no Caixa A
+↓
+POS muda para Caixa B
+↓
+novo pagamento do checkout A
+↓
+rejeitado com conflito apropriado.
 
-==================================================
-10. NÃO REGREDIR VENDA RÁPIDA
-==================================================
+NÃO permitir pagamento em contexto diferente.
 
-Venda Rápida deve continuar:
+NÃO transformar isso em 500.
 
-checkout criado no contexto ativo do POS;
-
-se POS trocar de CashSession durante checkout com contexto já definido:
-
-novo pagamento incompatível é rejeitado.
-
-Não alterar essa proteção.
+Resposta deve ser domínio controlado, por exemplo 409.
 
 ==================================================
-11. NÃO REGREDIR MESA
+8. PROCURAR TODOS OS for_update=True FORA DE TRANSACTION
 ==================================================
 
-Mesa deve continuar:
+Não corrigir somente a linha 1881.
 
-primeiro pagamento ativo
-→ determina contexto financeiro atual.
+Revisar TODOS os usos de:
 
-Segundo pagamento em outro contexto
-→ rejeitado antes de gravar.
+current_pos_cash_session(..., for_update=True)
 
-Se todos os pagamentos anteriores forem estornados:
+principalmente em:
+- Views;
+- serializers;
+- helpers HTTP;
+- qualquer camada fora de @transaction.atomic.
 
-pode assumir novo contexto posteriormente.
-
-Essa mesma definição deve ser usada no fechamento.
-
-==================================================
-12. TESTES DIRECIONADOS
-==================================================
-
-Adicionar/ajustar somente testes backend DIRECIONADOS necessários.
-
-Não criar bateria pesada de Widget/E2E.
-
-Cenários mínimos:
-
-A.
-Mesa
-→ pagamento Caixa A
-→ troca POS para B
-→ segundo pagamento rejeitado.
-
-B.
-Mesa
-→ pagamento Caixa A
-→ estorno total
-→ troca para B
-→ novo pagamento em B permitido
-→ Mesa fecha normalmente no B.
-
-C.
-Mesa aberta
-→ pagamento PIX no Caixa A
-→ tentativa de fechar Caixa A
-→ fechamento rejeitado.
-
-D.
-Mesa aberta
-→ pagamento Crédito no Caixa A
-→ tentativa de fechar Caixa A
-→ fechamento rejeitado.
-
-E.
-Mesa fechada
-→ não deve continuar bloqueando fechamento da CashSession
-por causa dos pagamentos já consolidados.
-
-F.
-PAGAR SALDO em dinheiro
-→ informa recebido maior
-→ backspace no recebido
-→ continua mode=remaining.
-
-G.
-PAGAR SALDO
-→ backspace no valor aplicado
-→ deixa de ser mode=remaining.
+Qualquer select_for_update deve executar dentro de transaction.atomic.
 
 ==================================================
-13. CHECKS
+9. POSFinalizeSaleView TAMBÉM ESTÁ SUSPEITO
+==================================================
+
+No HEAD atual existe também:
+
+POSFinalizeSaleView
+→ current_pos_cash_session(device, for_update=True)
+
+diretamente na View.
+
+Isso pode gerar o MESMO:
+
+TransactionManagementError
+
+se esse endpoint for acionado.
+
+Corrigir o padrão também nele.
+
+Não deixar outro 500 escondido.
+
+==================================================
+10. SERVIÇOS DEVEM SER DONOS DA TRANSAÇÃO
+==================================================
+
+Regra arquitetural:
+
+VIEW:
+- autentica;
+- valida request;
+- verifica permissão;
+- chama domínio.
+
+SERVICE:
+- inicia transaction;
+- faz select_for_update;
+- valida consistência;
+- grava.
+
+Evitar espalhar `transaction.atomic()` apenas para mascarar erro de View.
+
+Se algum endpoint realmente precisar de transaction na View,
+justificar claramente.
+
+==================================================
+11. PRESERVAR current_pos_cash_session
+==================================================
+
+Não remover a segurança que já foi implementada:
+
+current_pos_cash_session(for_update=True)
+
+deve continuar capaz de:
+
+- lockar POSDevice;
+- ler active_cash_session_id;
+- lockar CashSession;
+- validar sessão OPEN;
+- validar mesma filial;
+- validar CashRegister ACTIVE;
+- validar FIXED.
+
+O problema NÃO está no helper.
+
+O problema está em chamar o helper com lock fora de transaction.
+
+==================================================
+12. CORRIGIR TESTES DE TABLE ATTENDANCE QUE NEM EXECUTAM
+==================================================
+
+O CI anterior mostrou que os testes de:
+
+TableAttendanceRegressionTests
+
+morriam no setUp antes de testar a regra.
+
+Erro:
+
+Stock com este Product e Branch já existe.
+
+Hoje o setUp ainda possui algo equivalente a:
+
+Stock.objects.create(
+    product=self.product,
+    branch=self.branch,
+    ...
+)
+
+Mas a criação/configuração anterior já pode gerar Stock.
+
+CORRIGIR O FIXTURE.
+
+Não furar validação do model.
+
+Não apagar constraint.
+
+Usar abordagem correta, por exemplo:
+- get_or_create;
+- update do estoque existente;
+- serviço oficial de estoque;
+- ou outra forma coerente com o projeto.
+
+Objetivo:
+
+os testes DEVEM chegar na lógica que pretendem validar.
+
+==================================================
+13. TESTES DIRECIONADOS OBRIGATÓRIOS
+==================================================
+
+Corrigir/validar explicitamente:
+
+A. FLEXIBLE com permissão:
+→ selecionar Caixa
+→ 200.
+
+B. FLEXIBLE sem cash_registers.open:
+→ 403.
+
+C. FLEXIBLE caixa indisponível:
+→ 409.
+
+D. Nenhum desses casos retorna 500.
+
+E. Quick Sale:
+→ pagamento com Caixa ativo correto
+→ sucesso.
+
+F. Quick Sale:
+→ checkout Caixa A
+→ muda POS para Caixa B
+→ pagamento rejeitado com cash_context_changed
+→ sem 500.
+
+G. Quick Sale:
+→ fluxo normal não gera TransactionManagementError.
+
+H. POSFinalizeSaleView:
+→ confirmar que não executa select_for_update fora de transaction.
+
+I. Mesa:
+→ testes de regressão realmente executam e não morrem no setUp.
+
+==================================================
+14. NÃO REGREDIR AS CORREÇÕES JÁ FEITAS
+==================================================
+
+Preservar:
+
+- POSDevice.active_cash_session;
+- CashSession como contexto do POS;
+- CashSession não sendo escolhida no pagamento;
+- Mesa bloqueando múltiplas sessões ativas;
+- Mesa após estorno podendo assumir novo contexto;
+- fechamento da Mesa usando somente pagamentos ativos;
+- fechamento da CashSession bloqueado por PIX/Crédito/Débito/etc
+  quando Mesa continua aberta;
+- backspace do PAGAR SALDO;
+- pending da Mesa;
+- equal_split available/active;
+- componentes compartilhados de pagamento;
+- Pagamento dentro do Resumo da Mesa.
+
+==================================================
+15. SOBRE OS WIDGET TESTS
+==================================================
+
+Foram adicionados testes Flutter em:
+
+pos/test/payment_flow_components_test.dart
+
+NÃO ampliar essa bateria.
+
+O teste funcional final será feito manualmente.
+
+Se esses 2 testes simples forem mantidos,
+não criar nova suíte Widget/E2E nesta fase.
+
+Prioridade agora é corrigir os blockers reais.
+
+==================================================
+16. CHECKS
 ==================================================
 
 Ao terminar rode:
@@ -379,51 +453,74 @@ Ao terminar rode:
 - python manage.py check
 - makemigrations --check --dry-run
 
-E testes backend direcionados para:
+E testes backend DIRECIONADOS para:
 
-- Table Payment;
-- Table Reverse;
-- Table Close;
-- Cash Session Close;
-- Quick Sale cash context.
+- POSCashSessionSelectView;
+- POS cash context;
+- Quick Checkout Payment;
+- Quick Checkout cash context change;
+- POSFinalizeSale;
+- Table Attendance regression;
+- Cash Session Close.
 
 ==================================================
-14. CHECKPOINT FINAL
+17. CI
+==================================================
+
+O commit deve subir com esses blockers resolvidos.
+
+Depois conferir o GitHub Actions.
+
+Se o backend continuar vermelho:
+
+informar quais falhas são:
+- diretamente relacionadas a esta fase;
+- preexistentes de outras áreas.
+
+NÃO declarar esta fase concluída se os testes desta fase
+continuarem falhando.
+
+==================================================
+18. CHECKPOINT FINAL
 ==================================================
 
 Ao concluir informe objetivamente:
 
-1. qual definição passou a determinar o contexto financeiro da Mesa;
-2. como pagamentos estornados são tratados;
-3. como o fechamento da Mesa usa essa mesma regra;
-4. como impediu Mesa paga de ficar impossível de fechar;
-5. como alterou a proteção de fechamento da CashSession;
-6. confirmação de que PIX/Crédito/Débito também bloqueiam fechamento
-   quando pertencem a Mesa aberta;
-7. confirmação de que pagamentos de Mesa fechada não bloqueiam o Caixa;
-8. correção do backspace de PAGAR SALDO;
-9. confirmação de não regressão da Venda Rápida;
-10. confirmação de ausência de seletor de caixa em pagamento;
-11. arquivos alterados;
-12. flutter analyze;
-13. git diff --check;
-14. Django check;
-15. migrations check;
-16. testes direcionados executados.
+1. por que POSCashSessionSelectView dava 500;
+2. como corrigiu;
+3. comportamento com permissão;
+4. comportamento sem permissão;
+5. por que POSQuickCheckoutPaymentView dava TransactionManagementError;
+6. onde o lock passou a acontecer;
+7. como a transaction agora envolve o lock;
+8. como preservou cash_context_changed;
+9. se POSFinalizeSaleView tinha o mesmo risco;
+10. como foi corrigido;
+11. todos os usos revisados de current_pos_cash_session(for_update=True);
+12. como corrigiu o fixture duplicado de Stock;
+13. testes direcionados executados;
+14. flutter analyze;
+15. git diff --check;
+16. Django check;
+17. migrations check;
+18. status final do CI;
+19. confirmação de que não há seletor de caixa em Venda/Mesa/Pagamento;
+20. confirmação de que não iniciou impressão.
 
 DEPOIS PARE.
 
 NÃO INICIE IMPRESSÃO.
 
-DEPOIS DESSA CORREÇÃO O PRÓXIMO PASSO SERÁ:
+DEPOIS EU VOU:
 
-VALIDAÇÃO MANUAL DE:
-- CAIXA
-- VENDA RÁPIDA
-- MESA
-- PAGAMENTOS
+1. auditar o GitHub novamente;
+2. testar manualmente:
+   - Caixa;
+   - Venda Rápida;
+   - Mesa;
+   - Pagamentos.
 
-SÓ DEPOIS PARTIREMOS PARA:
+SÓ DEPOIS PASSAMOS PARA:
 
 - NOTINHA / RESUMO / DOCUMENTO NÃO FISCAL;
-- IMPRESSÃO DE PRODUÇÃO POR SETOR.
+- IMPRESSÃO DE PRODUÇÃO.

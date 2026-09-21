@@ -1094,7 +1094,6 @@ export function SalesPdv() {
             ) : (
               <EmptyState
                 title="Nenhum produto disponível"
-                description="Ajuste a busca ou a categoria do catálogo."
               />
             )}
           </section>
@@ -1114,7 +1113,6 @@ export function SalesPdv() {
             {!cart.length ? (
               <EmptyState
                 title="Carrinho vazio"
-                description="Toque em um produto do catálogo para adicionar."
               />
             ) : (
               <div className="max-h-72 divide-y divide-slate-100 overflow-y-auto">
@@ -1736,7 +1734,6 @@ export function SalesPdv() {
         <Modal
           open={consumptionModal}
           title="Aplicar consumação"
-          description="O mesmo carrinho será recalculado como consumação."
           onClose={() => !beneficiariesLoading && setConsumptionModal(false)}
           size="md"
         >
@@ -1791,7 +1788,6 @@ export function SalesPdv() {
         <Modal
           open={discountOpen}
           title="Desconto"
-          description="Aplique desconto por valor. Autorizações continuam sendo validadas no fechamento."
           onClose={() => setDiscountOpen(false)}
           size="md"
         >
@@ -1823,7 +1819,6 @@ export function SalesPdv() {
         <Modal
           open={feeOpen}
           title="Taxa de serviço"
-          description="A taxa configurada é aplicada automaticamente. Você pode retirá-la quando autorizado."
           onClose={() => setFeeOpen(false)}
           size="md"
         >
@@ -1848,7 +1843,6 @@ export function SalesPdv() {
         <Modal
           open={splitOpen}
           title="Dividir pagamento"
-          description="Gera linhas de pagamento; a venda só muda após finalizar."
           onClose={() => setSplitOpen(false)}
           size="md"
         >

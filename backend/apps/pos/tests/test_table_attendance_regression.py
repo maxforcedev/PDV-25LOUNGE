@@ -32,7 +32,11 @@ class TableAttendanceRegressionTests(TestCase):
         category = Category.objects.create(company=self.company, branch=self.branch, name='Table category')
         self.product = Product.objects.create(company=self.company, category=category, name='Table item', internal_code='TABLE-ITEM', unit=Unit.UNIT, cost=Decimal('2.00'), sale_price=Decimal('10.00'), inventory_behavior=InventoryBehavior.DIRECT)
         ProductBranchConfig.objects.create(product=self.product, branch=self.branch, category=category, available_table=True)
-        Stock.objects.create(product=self.product, branch=self.branch, current_quantity=Decimal('20.000'), average_unit_cost=Decimal('2.00'), last_unit_cost=Decimal('2.00'))
+        stock = Stock.objects.get(product=self.product, branch=self.branch)
+        stock.current_quantity = Decimal('20.000')
+        stock.average_unit_cost = Decimal('2.00')
+        stock.last_unit_cost = Decimal('2.00')
+        stock.save(update_fields=('current_quantity', 'average_unit_cost', 'last_unit_cost', 'updated_at'))
         register = CashRegister.objects.create(branch=self.branch, name='Table cash')
         self.cash_session = open_session(register, Decimal('0.00'), self.user, self.branch)
         self.device = POSDevice.objects.create(

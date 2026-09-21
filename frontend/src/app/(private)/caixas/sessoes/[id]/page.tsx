@@ -537,13 +537,9 @@ function SessionDetail() {
                 </div>
               </section>
             )}
-            <div className="rounded-lg border border-primary/15 bg-primary/5 px-4 py-3 text-[11px] leading-5 text-slate-600">
-              O esperado é calculado no servidor como abertura + entradas
-              manuais + vendas em dinheiro + consumações em dinheiro - reversões
-              em dinheiro - sangrias. Valores recebidos e troco não compõem esse cálculo.
-            </div>
+            
             <section className="card overflow-hidden">
-              <div className="card-header"><div><h2 className="text-sm font-bold">Resumo operacional completo</h2><p className="mt-1 text-[11px] text-slate-500">Produção da sessão, benefícios e recebimentos por forma.</p></div><Banknote className="size-5 text-slate-300" /></div>
+              <div className="card-header"><div><h2 className="text-sm font-bold">Resumo operacional completo</h2></div>{/* <Banknote className="size-5 text-slate-300" /> */}</div>
               <div className="grid gap-6 p-5 lg:grid-cols-4">
                 <div className="space-y-2 text-xs"><h3 className="font-bold text-dark">Vendas ({summary.sales.count})</h3><p className="flex justify-between"><span>Bruto</span><strong>{formatBRL(summary.sales.gross)}</strong></p><p className="flex justify-between"><span>Descontos promocionais</span><strong className="text-danger">- {formatBRL(summary.sales.promotion_discount)}</strong></p><p className="flex justify-between"><span>Descontos manuais</span><strong className="text-danger">- {formatBRL(summary.sales.manual_discount)}</strong></p><p className="flex justify-between border-t border-slate-100 pt-2"><span>Faturamento de vendas</span><strong>{formatBRL((summary as CanonicalCashSummary).sales_revenue)}</strong></p><p className="flex justify-between"><span>Taxa de serviço</span><strong>{formatBRL(summary.sales.service_fee)}</strong></p><p className="flex justify-between"><span>Vendas com taxa de serviço</span><strong className="text-primary">{formatBRL(summary.sales.customer_total)}</strong></p>{summary.sales.commission !== undefined && <p className="flex justify-between"><span>Comissões atribuídas</span><strong>{formatBRL(summary.sales.commission)}</strong></p>}<p className="flex justify-between"><span>Cancelamentos</span><strong>{summary.sales.cancellations.count} · {formatBRL(summary.sales.cancellations.value)}</strong></p></div>
                 <div className="space-y-2 text-xs"><h3 className="font-bold text-dark">Consumações ({summary.consumptions.count})</h3><p className="flex justify-between"><span>Valor de referência</span><strong>{formatBRL(summary.consumptions.reference)}</strong></p><p className="flex justify-between"><span>Consumação cobrada</span><strong>{formatBRL((summary as CanonicalCashSummary).consumption_charged)}</strong></p><p className="flex justify-between border-t border-slate-100 pt-2"><span>Benefício concedido</span><strong className="text-warning">{formatBRL(summary.consumptions.benefit)}</strong></p><p className="flex justify-between"><span>Cancelamentos</span><strong>{summary.consumptions.cancellations.count} · {formatBRL(summary.consumptions.cancellations.value)}</strong></p></div>
@@ -616,9 +612,7 @@ function SessionDetail() {
               <div className="card-header">
                 <div>
                   <h2 className="text-sm font-bold">Histórico da sessão</h2>
-                  <p className="mt-1 text-[11px] text-slate-500">
-                    Entradas e sangrias em ordem de registro.
-                  </p>
+
                 </div>
                 <History className="size-5 text-slate-300" />
               </div>

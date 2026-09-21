@@ -237,10 +237,13 @@ class POSFoundationIntegrationTests(TestCase):
         ProductBranchConfig.objects.create(
             product=product, branch=self.branch, category=category,
         )
-        Stock.objects.create(
-            product=product, branch=self.branch, current_quantity=Decimal('10'),
-            average_unit_cost=Decimal('5.00'), last_unit_cost=Decimal('5.00'),
-        )
+        stock = Stock.objects.get(product=product, branch=self.branch)
+        stock.current_quantity = Decimal('10')
+        stock.average_unit_cost = Decimal('5.00')
+        stock.last_unit_cost = Decimal('5.00')
+        stock.save(update_fields=(
+            'current_quantity', 'average_unit_cost', 'last_unit_cost', 'updated_at',
+        ))
         cash_method = next(
             method for method in ensure_default_payment_methods(self.company)
             if method.code == 'cash'
@@ -773,6 +776,9 @@ class POSFoundationIntegrationTests(TestCase):
         settings.charges_service_fee = True
         settings.service_fee_rate = Decimal('10.00')
         settings.save(update_fields=['charges_service_fee', 'service_fee_rate', 'updated_at'])
+        device = POSDevice.objects.get(pk=paired.data['device']['id'])
+        device.active_cash_session = cash_session
+        device.save(update_fields=('active_cash_session', 'updated_at'))
 
         missing = self.client.post(
             reverse('pos:sale-finalize'), self.pos_sale_payload(cash_session), format='json',
@@ -979,6 +985,27 @@ class POSFoundationIntegrationTests(TestCase):
         device.refresh_from_db()
         self.assertEqual(device.active_cash_session_id, first_session.pk)
 
+    def test_flexible_cash_selection_rejects_unavailable_register(self):
+        _operator, paired = self.login_pos_operator()
+        active_register = CashRegister.objects.create(branch=self.branch, name='Available selection cash')
+        unavailable_register = CashRegister.objects.create(branch=self.branch, name='Unavailable selection cash')
+        BranchPOSSettings.objects.create(branch=self.branch, cash_binding_mode='FLEXIBLE')
+        active_session = open_session(
+            active_register, '0.00', self.owner, self.branch, allow_pos_only=True,
+        )
+        device = POSDevice.objects.get(pk=paired.data['device']['id'])
+        device.active_cash_session = active_session
+        device.save(update_fields=('active_cash_session', 'updated_at'))
+
+        selected = self.client.post(
+            reverse('pos:cash-session-select'), {'register': unavailable_register.pk}, format='json',
+        )
+
+        self.assertEqual(selected.status_code, 409, selected.data)
+        self.assertEqual(selected.data['code'], 'cash_session_unavailable')
+        device.refresh_from_db()
+        self.assertEqual(device.active_cash_session_id, active_session.pk)
+
     def test_quick_checkout_binds_non_cash_tender_to_active_device_session(self):
         _operator, _paired = self.login_pos_operator()
         register = CashRegister.objects.create(branch=self.branch, name='Quick checkout cash')
@@ -1015,6 +1042,63 @@ class POSFoundationIntegrationTests(TestCase):
             QuickSalePayment.objects.get(checkout_id=checkout.data['id']).cash_session_id,
             opened.data['id'],
         )
+
+    def test_quick_checkout_payment_rejects_changed_cash_context(self):
+        operator, paired = self.login_pos_operator()
+        first = CashRegister.objects.create(branch=self.branch, name='Checkout context A')
+        second = CashRegister.objects.create(branch=self.branch, name='Checkout context B')
+        BranchPOSSettings.objects.create(branch=self.branch, cash_binding_mode='FLEXIBLE')
+        opened = self.client.post(
+            reverse('pos:cash-session-open'),
+            {'register': first.pk, 'opening_amount': '0.00'}, format='json',
+        )
+        self.assertEqual(opened.status_code, 201, opened.data)
+        checkout_payload = self.pos_sale_payload(SimpleNamespace(pk=opened.data['id']))
+        checkout = self.client.post(
+            reverse('pos:quick-checkout-create'),
+            {key: value for key, value in checkout_payload.items() if key not in {'cash_session', 'payments'}},
+            format='json',
+        )
+        self.assertEqual(checkout.status_code, 201, checkout.data)
+        open_session(second, '0.00', operator, self.branch, allow_pos_only=True)
+        switched = self.client.post(
+            reverse('pos:cash-session-select'), {'register': second.pk}, format='json',
+        )
+        self.assertEqual(switched.status_code, 200, switched.data)
+        non_cash_method = next(
+            method for method in ensure_default_payment_methods(self.company)
+            if method.code != 'cash'
+        )
+
+        recorded = self.client.post(
+            reverse('pos:quick-checkout-payment', args=[checkout.data['id']]),
+            {
+                'payment_method': non_cash_method.pk,
+                'mode': 'value',
+                'amount': '20.00',
+                'idempotency_key': str(uuid4()),
+            },
+            format='json',
+        )
+
+        self.assertEqual(recorded.status_code, 409, recorded.data)
+        self.assertEqual(recorded.data['code'], 'cash_context_changed')
+        self.assertFalse(QuickSalePayment.objects.filter(checkout_id=checkout.data['id']).exists())
+
+    def test_pos_finalize_sale_uses_active_cash_session_inside_service_transaction(self):
+        operator, paired = self.login_pos_operator()
+        register = CashRegister.objects.create(branch=self.branch, name='Direct POS cash')
+        cash_session = open_session(register, '0.00', operator, self.branch, allow_pos_only=True)
+        device = POSDevice.objects.get(pk=paired.data['device']['id'])
+        device.active_cash_session = cash_session
+        device.save(update_fields=('active_cash_session', 'updated_at'))
+
+        finalized = self.client.post(
+            reverse('pos:sale-finalize'), self.pos_sale_payload(cash_session), format='json',
+        )
+
+        self.assertEqual(finalized.status_code, 201, finalized.data)
+        self.assertEqual(finalized.data['sale']['cash_session'], cash_session.pk)
 
     def test_pos_superuser_without_effective_sales_create_cannot_start_sale(self):
         operator, _ = self.login_pos_operator()

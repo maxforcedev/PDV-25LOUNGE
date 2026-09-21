@@ -97,7 +97,7 @@ function Registers() {
   </div>;
 
   return <>
-    <PageHeader title="Caixas" description={`Filial atual: ${currentBranch?.name || "nenhuma filial selecionada"}. Os dados abaixo pertencem somente a este contexto.`} action={canAdd ? <Button onClick={() => show()}><Plus className="size-4" />Novo caixa</Button> : undefined} />
+    <PageHeader title="Caixas" description="" action={canAdd ? <Button onClick={() => show()}><Plus className="size-4" />Novo caixa</Button> : undefined} />
     <div className="space-y-4 p-4 sm:p-6 lg:p-8">
       {error && !modalOpen && <Alert message={error} />}{success && <Alert type="success" message={success} />}
       <form className="card grid gap-3 p-4 sm:grid-cols-[1fr_12rem_auto]" onSubmit={(event) => { event.preventDefault(); void load(); }}>
@@ -114,7 +114,7 @@ function Registers() {
         </> : <EmptyState title="Nenhum caixa encontrado" description="Cadastre um caixa nesta filial ou ajuste os filtros da busca." />}
       </section>
     </div>
-    <Modal open={modalOpen} title={editing ? "Editar caixa" : "Novo caixa"} description={`Configuração vinculada à filial ${currentBranch?.name || "atual"}.`} onClose={() => !saving && setModalOpen(false)} size="md"><form onSubmit={submit}><div className="space-y-4 p-5 sm:p-6">{error && <Alert message={error} />}<Field label="Nome do caixa" error={fieldError(fields, "name")}><Input autoFocus required maxLength={120} value={name} onChange={(event) => setName(event.target.value)} placeholder="Ex.: Caixa principal" /></Field>{fieldError(fields, "branch") && <p className="field-error">{fieldError(fields, "branch")}</p>}</div><div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4"><Button type="button" variant="secondary" disabled={saving} onClick={() => setModalOpen(false)}>Cancelar</Button><Button type="submit" loading={saving}>Salvar</Button></div></form></Modal>
+    <Modal open={modalOpen} title={editing ? "Editar caixa" : "Novo caixa"} onClose={() => !saving && setModalOpen(false)} size="md"><form onSubmit={submit}><div className="space-y-4 p-5 sm:p-6">{error && <Alert message={error} />}<Field label="Nome do caixa" error={fieldError(fields, "name")}><Input autoFocus required maxLength={120} value={name} onChange={(event) => setName(event.target.value)} placeholder="Ex.: Caixa principal" /></Field>{fieldError(fields, "branch") && <p className="field-error">{fieldError(fields, "branch")}</p>}</div><div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4"><Button type="button" variant="secondary" disabled={saving} onClick={() => setModalOpen(false)}>Cancelar</Button><Button type="submit" loading={saving}>Salvar</Button></div></form></Modal>
     <ConfirmDialog open={!!confirming} title={`${confirming?.status === "active" ? "Inativar" : "Ativar"} caixa`} message={`Confirma a alteração de status de “${confirming?.name || ""}”? Um caixa com sessão aberta não pode ser inativado.`} confirmLabel={confirming?.status === "active" ? "Inativar" : "Ativar"} danger={confirming?.status === "active"} loading={saving} onClose={() => setConfirming(null)} onConfirm={changeStatus} />
   </>;
 }

@@ -110,7 +110,7 @@ from .serializers import (
 )
 from .services import (
     assert_branch_device_limit, authenticate_operator, cash_state_for_device, confirm_pairing,
-    current_pos_cash_session, effective_cash_settings, effective_settings, identify_branch, logout_operator, modules_for,
+    effective_cash_settings, effective_settings, identify_branch, logout_operator, modules_for,
     pos_operator_queryset, request_otp, set_device_status,
     eligible_pos_authorizers,
     request_pos_pin_reset, set_pos_pin, version_gate,
@@ -311,6 +311,11 @@ class POSCashView(POSDeviceView):
             'cash_registers.close', 'cash_registers.administer_others',
         }):
             raise PermissionDenied('Você não possui permissão operacional de caixa nesta filial.')
+
+    @staticmethod
+    def require_permission(permissions, code, message):
+        if code not in permissions:
+            raise PermissionDenied(message)
 
     @staticmethod
     def audit_metadata(device, operator_session):
@@ -1878,12 +1883,11 @@ class POSQuickCheckoutPaymentView(POSQuickCheckoutView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         try:
-            session = current_pos_cash_session(device, for_update=True)
             _payment, replayed = record_quick_checkout_payment(
                 checkout=self._checkout(device, operator, checkout_id), user=operator,
                 payment_method_id=data['payment_method'], mode=data['mode'], amount=data.get('amount'),
                 received_amount=data.get('received_amount'), allocations=data['allocations'],
-                active_cash_session_id=session.pk,
+                pos_device=device,
                 idempotency_key=data['idempotency_key'],
                 audit_metadata=self.audit_metadata(device, operator_session),
             )
@@ -2012,7 +2016,6 @@ class POSFinalizeSaleView(POSQuickSaleView):
         serializer = POSFinalizeSaleSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        session = current_pos_cash_session(device, for_update=True)
         customer = None
         if data.get('customer') is not None:
             customer = Customer.objects.filter(
@@ -2025,7 +2028,6 @@ class POSFinalizeSaleView(POSQuickSaleView):
             branch=device.branch,
             user=operator,
             operation_type=OperationType.SALE,
-            cash_session=session,
             seller_user=operator,
             customer=customer,
             items=self._items(data['items']),
@@ -2139,7 +2141,7 @@ class POSCashSessionSelectView(POSCashView):
     def post(self, request):
         device, operator, permissions, operator_session = self.context(request)
         require_branch_feature(device.branch, 'cash_register')
-        self._require(
+        self.require_permission(
             permissions, 'cash_registers.open',
             'Você não possui permissão para alterar o caixa ativo nesta filial.',
         )

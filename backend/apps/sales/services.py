@@ -2179,6 +2179,17 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
     branch = Branch.objects.select_for_update().select_related('company').get(pk=branch.pk)
     if pos_device is not None and pos_device.branch_id != branch.pk:
         raise ValidationError({'pos_device': 'O dispositivo deve pertencer à filial da venda.'})
+    if (
+        cash_session is None
+        and pos_device is not None
+        and allow_pos_only
+        and operation_type == OperationType.SALE
+        and channel == SalesChannel.COUNTER
+    ):
+        # Direct POS sales use the device's persisted active drawer, under this transaction.
+        from apps.pos.services import current_pos_cash_session
+
+        cash_session = current_pos_cash_session(pos_device, for_update=True)
     _require_sale_features(branch, operation_type, channel, charged_amount)
     if not idempotency_key:
         raise ValidationError({'idempotency_key': 'Informe a chave de idempotência.'})
