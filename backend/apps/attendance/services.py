@@ -1632,7 +1632,9 @@ def _table_allocation_amount(attendance, allocations, preview):
 @transaction.atomic
 def reverse_table_payment(*, payment, user, reason, idempotency_key, audit_metadata=None):
     from .models import TablePayment, TableAttendanceStatus
-    payment = TablePayment.objects.select_for_update().select_related('attendance__branch__company', 'cash_session').get(pk=payment.pk)
+    payment = TablePayment.objects.select_for_update(of=('self',)).select_related(
+        'attendance__branch__company', 'cash_session',
+    ).get(pk=payment.pk)
     if payment.attendance.status != TableAttendanceStatus.OPEN:
         raise AttendanceConflict('table_closed', 'Só é possível estornar pagamento de mesa aberta.')
     operation, replayed = _operation(branch=payment.attendance.branch, operation_type=AttendanceOperationType.TABLE_REVERSE_PAYMENT,
