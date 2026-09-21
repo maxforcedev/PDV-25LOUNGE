@@ -493,7 +493,6 @@ function Promotions() {
                   </h3>
                   <p className="mt-1 text-[10px] text-slate-400">
                     Sem agenda, a promoção vale o dia todo dentro da vigência.
-                    Intervalo final menor que inicial atravessa meia-noite.
                   </p>
                 </div>
                 <Button type="button" variant="secondary" onClick={addSchedule}>

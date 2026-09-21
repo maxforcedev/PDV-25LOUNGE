@@ -22,5 +22,13 @@ Impressão: manual
 Recibo: detailed, 1 via(s)
 
 
+-- MEU NEGOCIO:
+- ´Poder apagar as iompressoras. aplicar o mesmo comportamento de produtos (softdelete)
+
+-- PERMISSOES:
+- Verificar todo o sistema e ve se todas as permissoes possiveis estão presentes ali.
+
+
+
 
 UMA EMPRESA SEM ASSINATURA CORRENTE/ASSINATURA VENCIDA (OU ATE 7 DIAS DEPOIS DE VENCIDO), NÃO DEVERIA NEM PODER ENTRAR NO SISTEMA.

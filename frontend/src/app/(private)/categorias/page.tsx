@@ -358,7 +358,6 @@ function Categories() {
     <>
       <PageHeader
         title="Categorias"
-        description={`Ordem do catálogo de ${currentCompany?.trade_name || "sua empresa"}.`}
         action={
           <Button onClick={() => show()} disabled={!canAdd || !currentBranch}>
             <Plus className="size-4" />

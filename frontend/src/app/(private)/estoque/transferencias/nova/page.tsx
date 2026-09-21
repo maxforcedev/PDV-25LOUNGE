@@ -93,7 +93,7 @@ function NewTransfer() {
   }
 
   return <>
-    <PageHeader title="Nova transferência" description={`${currentBranch?.name || "Selecione uma filial"} será a origem.`} action={<Link href="/estoque/transferencias" className="btn btn-secondary"><ArrowLeft className="size-4" />Voltar</Link>} />
+    <PageHeader title="Nova transferência" action={<Link href="/estoque/transferencias" className="btn btn-secondary"><ArrowLeft className="size-4" />Voltar</Link>} />
     <InventoryNav />
     <div className="p-4 sm:p-6 lg:p-8">
       <form className="mx-auto max-w-4xl space-y-4" onSubmit={submit}>

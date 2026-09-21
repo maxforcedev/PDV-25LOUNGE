@@ -1413,8 +1413,7 @@ function UsersAdministration() {
                           Pode acessar o Backoffice?
                         </strong>
                         <small className="font-normal text-muted">
-                          Controla somente a autenticação nesta empresa, sem
-                          remover vínculos operacionais.
+                          Controla somente a autenticação nesta empresa via internet.
                         </small>
                       </span>
                     </label>
@@ -1427,7 +1426,7 @@ function UsersAdministration() {
                       />
                       <span>
                         <strong className="block">Pode operar no POS?</strong>
-                        <small className="font-normal text-muted">Libera a autenticação por PIN no aplicativo POS, sem acesso ao Backoffice.</small>
+                        <small className="font-normal text-muted">Libera a autenticação por PIN no aplicativo POS (Maquininhas, celulares e Aplicativos POS)</small>
                       </span>
                     </label>
                     <div className="grid gap-5 sm:grid-cols-2">
@@ -1472,10 +1471,7 @@ function UsersAdministration() {
                       <h2 className="text-sm font-bold">
                         Filiais e perfis de acesso autorizados
                       </h2>
-                      <p className="mt-1 text-xs text-muted">
-                        O perfil controla permissões e não altera o cargo ou
-                        função.
-                      </p>
+
                       <div className="mt-3 space-y-2">
                           {branches
                             .filter(
@@ -1559,10 +1555,6 @@ function UsersAdministration() {
                   <div className="space-y-4">
                     <h2 className="text-sm font-bold">Segurança</h2>
                     {success && <Alert type="success" message={success} />}
-                    <p className="text-xs text-muted">
-                      A senha é uma credencial CORE global e só pode ser alterada
-                      pelo próprio titular em Minha conta.
-                    </p>
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div className="rounded-lg border border-subtle p-4 text-xs">
                         <strong className="block">Acesso ao POS</strong>

@@ -534,7 +534,6 @@ function Suppliers() {
     <>
       <PageHeader
         title="Fornecedores"
-        description={`Cadastro comercial de ${currentCompany?.trade_name || "sua empresa"}.`}
         action={
           <Button
             onClick={openCreate}
@@ -602,7 +601,6 @@ function Suppliers() {
             <div>
               <h2 className="text-sm font-bold">Fornecedores cadastrados</h2>
               <p className="mt-1 text-[11px] text-muted">
-                Vínculos exclusivos da Company atual
               </p>
             </div>
             <Truck className="size-5 text-slate-300" />
@@ -873,10 +871,7 @@ function Suppliers() {
                     <MapPin className="size-4 text-primary" />
                     Informar endereço
                   </strong>
-                  <small className="mt-1 block text-[11px] text-muted">
-                    Opcional. Consulte o CEP pelo ViaCEP ou preencha os campos
-                    manualmente.
-                  </small>
+
                 </span>
               </label>
               {fieldError(fields, "address") && (

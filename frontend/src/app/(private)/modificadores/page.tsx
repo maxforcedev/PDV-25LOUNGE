@@ -622,10 +622,6 @@ function ModifiersPage() {
                 </option>
               ))}
             </Select>
-            <span className="mt-1 block text-[10px] text-muted">
-              Para substituição, a quantidade é herdada automaticamente do
-              produto avulso ou da composição.
-            </span>
           </Field>
           {error && <Alert message={error} />}
           <div className="flex justify-end gap-2 border-t border-subtle pt-4">

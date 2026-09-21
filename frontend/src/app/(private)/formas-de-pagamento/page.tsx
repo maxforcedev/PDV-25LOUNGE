@@ -142,7 +142,6 @@ function PaymentMethods() {
     <>
       <PageHeader
         title="Formas de pagamento"
-        description={`Empresa atual: ${currentCompany?.trade_name || "nenhuma"}. Ative ou inative os métodos disponíveis para todas as filiais.`}
       />
       <div className="space-y-4 p-4 sm:p-6 lg:p-8">
         {error && editing === undefined && <Alert message={error} />}
@@ -173,10 +172,6 @@ function PaymentMethods() {
           <div className="card-header">
             <div>
               <h2 className="text-sm font-bold">Métodos disponíveis</h2>
-              <p className="mt-1 text-[11px] text-slate-500">
-                Os quatro métodos padrão são imutáveis; métodos personalizados
-                legados permitem alterar somente o nome.
-              </p>
             </div>
             <CreditCard className="size-5 text-slate-300" />
           </div>

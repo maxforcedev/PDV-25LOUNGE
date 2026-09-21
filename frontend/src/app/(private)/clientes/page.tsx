@@ -171,7 +171,6 @@ function CustomersPage() {
     <>
       <PageHeader
         title="Clientes"
-        description="Cadastro simples de clientes da empresa atual."
         action={
           canAdd ? (
             <Button onClick={() => start()}>
