@@ -65,7 +65,7 @@ function Kpi({
 }: {
   label: string;
   value: string;
-  note: string;
+  note?: string;
   icon: LucideIcon;
   href?: string;
   tone?: "primary" | "success" | "warning";
@@ -84,7 +84,9 @@ function Kpi({
         <strong className="mt-3 block truncate text-2xl text-dark">
           {value}
         </strong>
-        <span className="mt-1 block text-[11px] text-muted">{note}</span>
+        {note ? (
+          <span className="mt-1 block text-[11px] text-muted">{note}</span>
+        ) : null}
       </div>
       <span
         className={`flex size-10 shrink-0 items-center justify-center rounded-lg ${tones[tone]}`}

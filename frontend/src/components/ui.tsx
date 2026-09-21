@@ -166,7 +166,7 @@ export function EmptyState({
   description,
 }: {
   title: string;
-  description: string;
+  description?: string;
 }) {
   return (
     <div className="flex flex-col items-center px-6 py-16 text-center">
@@ -174,9 +174,11 @@ export function EmptyState({
         <Inbox className="size-6" />
       </div>
       <h3 className="text-sm font-semibold text-fg">{title}</h3>
-      <p className="mt-1 max-w-sm text-xs leading-5 text-muted">
-        {description}
-      </p>
+      {description ? (
+        <p className="mt-1 max-w-sm text-xs leading-5 text-muted">
+          {description}
+        </p>
+      ) : null}
     </div>
   );
 }

@@ -134,13 +134,7 @@ function apiError(caught: unknown, fallback: string) {
     : fallback;
 }
 
-function AuditNote() {
-  return (
-    <p className="mt-2 text-[10px] text-muted">
-      Alterações desta seção são registradas na auditoria.
-    </p>
-  );
-}
+
 
 export function ProductV26Sections({
   product,
@@ -863,7 +857,7 @@ export function ProductV26Sections({
             )}
           </div>
         )}
-        <AuditNote />
+        
       </section>
 
       {permissions.viewModifiers && (
@@ -953,7 +947,7 @@ export function ProductV26Sections({
               Cadastre grupos em Modificadores antes de vinculá-los ao produto.
             </p>
           )}
-          <AuditNote />
+          
         </section>
       )}
 
@@ -1035,7 +1029,6 @@ export function ProductV26Sections({
               </Button>
             )
           )}
-          <AuditNote />
         </section>
       )}
 
@@ -1108,7 +1101,6 @@ export function ProductV26Sections({
             </Button>
           </div>
         )}
-        <AuditNote />
       </section>
 
       {!activeTab &&
@@ -1163,7 +1155,6 @@ export function ProductV26Sections({
                 )}
               </div>
             </div>
-            <AuditNote />
           </section>
         )}
 
@@ -1232,7 +1223,6 @@ export function ProductV26Sections({
             </p>
           )}
         </div>
-        <AuditNote />
       </section>
 
       {permissions.viewSuppliers && (
@@ -1365,7 +1355,6 @@ export function ProductV26Sections({
               </p>
             )}
           </div>
-          <AuditNote />
         </section>
       )}
 
