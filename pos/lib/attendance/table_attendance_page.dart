@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
@@ -63,6 +64,86 @@ String _tableHistoryTime(String? value) {
   String twoDigits(int number) => number.toString().padLeft(2, '0');
   return '${twoDigits(date.day)}/${twoDigits(date.month)}/${date.year} '
       '${twoDigits(date.hour)}:${twoDigits(date.minute)}';
+}
+
+Object? _normalizedTableModifierValue(Object? value) {
+  if (value is Map) {
+    final entries = value.entries
+        .map((entry) => MapEntry(
+            '${entry.key}', _normalizedTableModifierValue(entry.value)))
+        .toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
+    return Map<String, Object?>.fromEntries(entries);
+  }
+  if (value is List) {
+    final entries = value.map(_normalizedTableModifierValue).toList()
+      ..sort((a, b) => jsonEncode(a).compareTo(jsonEncode(b)));
+    return entries;
+  }
+  return value;
+}
+
+class _TableOrderItemEntry {
+  const _TableOrderItemEntry({required this.item, required this.order});
+
+  final TableOrderItem item;
+  final TableOrder order;
+
+  String get context {
+    final operationalTime = item.confirmedAt ?? order.createdAt;
+    return [
+      if (operationalTime != null) _tableHistoryTime(operationalTime),
+      'Pedido #${order.id}',
+      if (order.createdByName.isNotEmpty) order.createdByName,
+    ].join(' • ');
+  }
+}
+
+class _TableOrderItemGroup {
+  _TableOrderItemGroup(this.first) : entries = [first];
+
+  final _TableOrderItemEntry first;
+  final List<_TableOrderItemEntry> entries;
+
+  TableOrderItem get item => first.item;
+  double get quantity => entries.fold(
+      0, (total, entry) => total + _tableCartNumber(entry.item.quantity));
+  double get lineTotal => entries.fold(0, (total, entry) {
+        final item = entry.item;
+        final amount = item.lineTotal == null
+            ? _tableCartNumber(item.unitPrice) * _tableCartNumber(item.quantity)
+            : _tableCartNumber(item.lineTotal);
+        return total + amount;
+      });
+}
+
+List<_TableOrderItemGroup> _tableOrderItemGroups(
+  TableAttendance attendance, {
+  bool confirmedOnly = false,
+}) {
+  final groupsByKey = <String, _TableOrderItemGroup>{};
+  for (final order in attendance.orders) {
+    for (final item in order.items) {
+      if (confirmedOnly && item.status != 'confirmed') continue;
+      final key = [
+        item.productId,
+        _tableCartNumber(item.unitPrice).toStringAsFixed(2),
+        jsonEncode(_normalizedTableModifierValue(item.modifierSnapshot)),
+        item.notes,
+        item.status.toLowerCase(),
+        item.printStatus?.toLowerCase() ?? '',
+        item.cancellationReason,
+      ].join('\u0001');
+      final entry = _TableOrderItemEntry(item: item, order: order);
+      final group = groupsByKey[key];
+      if (group == null) {
+        groupsByKey[key] = _TableOrderItemGroup(entry);
+      } else {
+        group.entries.add(entry);
+      }
+    }
+  }
+  return groupsByKey.values.toList(growable: false);
 }
 
 class TableOrderPage extends StatefulWidget {
@@ -655,8 +736,34 @@ class _TableOrderPageState extends State<TableOrderPage> {
       ) ??
       false;
 
-  Future<void> _showConfirmedItemActions(
-      TableOrderItem item, TableOrder order) async {
+  Future<_TableOrderItemEntry?> _selectGroupEntry(
+      _TableOrderItemGroup group, String action) async {
+    if (group.entries.length == 1) return group.first;
+    return showDialog<_TableOrderItemEntry>(
+      context: context,
+      builder: (_) => SimpleDialog(
+        title: Text('$action: ${group.item.productName}'),
+        children: [
+          for (final entry in group.entries)
+            SimpleDialogOption(
+              onPressed: () => Navigator.of(context).pop(entry),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('${formatAttendanceQuantity(entry.item.quantity)}x'),
+                  Text(entry.context,
+                      style: const TextStyle(
+                          color: Color(0xff64748b), fontSize: 12)),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showConfirmedItemActions(_TableOrderItemGroup group) async {
+    final item = group.item;
     final action = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
@@ -691,14 +798,16 @@ class _TableOrderPageState extends State<TableOrderPage> {
           builder: (_) => AlertDialog(
             title: Text(item.productName),
             content: Text([
-              'Quantidade: ${formatAttendanceQuantity(item.quantity)}',
-              'Pedido: #${order.id}',
-              if (order.createdAt != null)
-                'Pedido criado em: ${_tableHistoryTime(order.createdAt)}',
-              if (order.createdByName.isNotEmpty)
-                'Operador: ${order.createdByName}',
-              if (item.confirmedAt != null)
-                'Confirmado em: ${_tableHistoryTime(item.confirmedAt)}',
+              'Quantidade total: ${formatAttendanceQuantity(group.quantity)}',
+              'Total: ${formatAttendanceMoney(group.lineTotal)}',
+              '',
+              'ENTRADAS',
+              if (group.entries
+                  .every((entry) => entry.context == group.first.context))
+                '${formatAttendanceQuantity(group.quantity)}x • ${group.first.context}'
+              else
+                ...group.entries.map((entry) =>
+                    '${formatAttendanceQuantity(entry.item.quantity)}x • ${entry.context}'),
               'Status: ${localizedAttendanceStatus(item.status)}',
               if (localizedPrintStatus(item.printStatus) != null)
                 'Impressão: ${localizedPrintStatus(item.printStatus)}',
@@ -717,10 +826,14 @@ class _TableOrderPageState extends State<TableOrderPage> {
         );
         break;
       case 'transfer':
-        await _transferItems(initiallySelected: {item.id});
+        final entry = await _selectGroupEntry(group, 'Transferir item');
+        if (entry != null) {
+          await _transferItems(initiallySelected: {entry.item.id});
+        }
         break;
       case 'cancel':
-        await _cancelItem(item);
+        final entry = await _selectGroupEntry(group, 'Cancelar item');
+        if (entry != null) await _cancelItem(entry.item);
         break;
     }
   }
@@ -980,30 +1093,28 @@ class _TableConferencePage extends StatelessWidget {
                     Text('Atendente: ${attendance.responsibleName}',
                         textAlign: TextAlign.center),
                   const Divider(height: 32),
-                  for (final order in attendance.orders)
-                    for (final item in order.items)
-                      if (item.status == 'confirmed')
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: Column(children: [
-                            Row(children: [
-                              Expanded(
-                                  child: Text(
-                                      '${formatAttendanceQuantity(item.quantity)}x ${item.productName}')),
-                              Text(formatAttendanceMoney(
-                                  item.lineTotal ?? item.unitPrice)),
-                            ]),
-                            for (final modifier in item.modifierSnapshot)
-                              Align(
-                                  alignment: Alignment.centerLeft,
-                                  child: Text(
-                                      '+ ${modifier['name'] ?? modifier['option_name'] ?? 'Modificador'}')),
-                            if (item.notes.isNotEmpty)
-                              Align(
-                                  alignment: Alignment.centerLeft,
-                                  child: Text('Obs: ${item.notes}')),
-                          ]),
-                        ),
+                  for (final group
+                      in _tableOrderItemGroups(attendance, confirmedOnly: true))
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Column(children: [
+                        Row(children: [
+                          Expanded(
+                              child: Text(
+                                  '${formatAttendanceQuantity(group.quantity)}x ${group.item.productName}')),
+                          Text(formatAttendanceMoney(group.lineTotal)),
+                        ]),
+                        for (final modifier in group.item.modifierSnapshot)
+                          Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                  '+ ${modifier['name'] ?? modifier['option_name'] ?? 'Modificador'}')),
+                        if (group.item.notes.isNotEmpty)
+                          Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text('Obs: ${group.item.notes}')),
+                      ]),
+                    ),
                   const Divider(height: 32),
                   TableSummaryWidgets(attendance.summary),
                   if (attendance.customerName.isNotEmpty)
@@ -1038,8 +1149,7 @@ class _TableOrderSummaryPanel extends StatelessWidget {
   final Future<void> Function() onPayment;
   final Map<String, dynamic>? preview;
   final bool previewLoading;
-  final Future<void> Function(TableOrderItem, TableOrder)
-      onConfirmedItemActions;
+  final Future<void> Function(_TableOrderItemGroup) onConfirmedItemActions;
   final Future<void> Function(int) onDraftItemActions;
 
   @override
@@ -1069,13 +1179,12 @@ class _TableOrderSummaryPanel extends StatelessWidget {
                     ? const Center(
                         child: Text('Adicione produtos para iniciar o pedido.'))
                     : ListView(children: [
-                        for (final order in attendance.orders)
-                          for (final item in order.items)
-                            _ConfirmedOrderItemRow(
-                              item: item,
-                              onTap: () => unawaited(
-                                  onConfirmedItemActions(item, order)),
-                            ),
+                        for (final group in _tableOrderItemGroups(attendance))
+                          _ConfirmedOrderItemRow(
+                            group: group,
+                            onTap: () =>
+                                unawaited(onConfirmedItemActions(group)),
+                          ),
                         if (cart.isNotEmpty) ...[
                           const Padding(
                             padding: EdgeInsets.only(top: 12, bottom: 4),
@@ -1207,13 +1316,14 @@ class _TableOrderSummaryPanel extends StatelessWidget {
 }
 
 class _ConfirmedOrderItemRow extends StatelessWidget {
-  const _ConfirmedOrderItemRow({required this.item, this.onTap});
+  const _ConfirmedOrderItemRow({required this.group, this.onTap});
 
-  final TableOrderItem item;
+  final _TableOrderItemGroup group;
   final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
+    final item = group.item;
     final cancelled = item.status == 'cancelled' || item.status == 'canceled';
     final printStatus = localizedPrintStatus(item.printStatus);
     return Material(
@@ -1228,13 +1338,13 @@ class _ConfirmedOrderItemRow extends StatelessWidget {
             Row(children: [
               Expanded(
                 child: Text(
-                    '${formatAttendanceQuantity(item.quantity)}x ${item.productName}',
+                    '${formatAttendanceQuantity(group.quantity)}x ${item.productName}',
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontWeight: FontWeight.w700)),
               ),
               const SizedBox(width: 8),
-              Text(formatAttendanceMoney(item.lineTotal ?? item.unitPrice),
+              Text(formatAttendanceMoney(group.lineTotal),
                   style: const TextStyle(
                       color: Color(0xff3454d1), fontWeight: FontWeight.w800)),
             ]),
