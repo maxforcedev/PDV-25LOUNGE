@@ -2162,11 +2162,12 @@ class POSCashSessionSelectView(POSCashView):
                 cash_register__status=CashRegisterStatus.ACTIVE,
             ).first()
             if session is None:
-                raise DomainValidationError(
+                error = DomainValidationError(
                     code='cash_session_unavailable',
                     message='Este caixa não possui uma sessão aberta disponível.',
-                    status_code=status.HTTP_409_CONFLICT,
                 )
+                error.status_code = status.HTTP_409_CONFLICT
+                raise error
             POSDevice.objects.select_for_update().filter(pk=device.pk).update(
                 active_cash_session=session,
             )
@@ -2343,11 +2344,12 @@ class POSAdminDeviceViewSet(viewsets.ModelViewSet):
     def _transition(self, request, expected_status, target_status, *, replacement=None):
         device = self.get_object()
         if device.status != expected_status:
-            raise DomainValidationError(
+            error = DomainValidationError(
                 code='device_status_transition_invalid',
                 message='Esta transicao nao esta disponivel para o status atual do dispositivo.',
-                status_code=409,
             )
+            error.status_code = status.HTTP_409_CONFLICT
+            raise error
         if target_status == POSDevice.Status.ACTIVE:
             assert_branch_device_limit(device.branch)
         return set_device_status(device, target_status, actor=request.user, replacement=replacement)
@@ -2366,11 +2368,12 @@ class POSAdminDeviceViewSet(viewsets.ModelViewSet):
     def revoke(self, request, pk=None):
         device = self.get_object()
         if device.status not in {POSDevice.Status.ACTIVE, POSDevice.Status.BLOCKED}:
-            raise DomainValidationError(
+            error = DomainValidationError(
                 code='device_status_transition_invalid',
                 message='Este dispositivo nao pode ser revogado no status atual.',
-                status_code=409,
             )
+            error.status_code = status.HTTP_409_CONFLICT
+            raise error
         device = set_device_status(device, POSDevice.Status.REVOKED, actor=request.user)
         return Response(self.get_serializer(device).data)
 
@@ -2380,11 +2383,12 @@ class POSAdminDeviceViewSet(viewsets.ModelViewSet):
         replacement_id = request.data.get('replacement_device')
         replacement = self.get_queryset().filter(pk=replacement_id).first()
         if device.status != POSDevice.Status.ACTIVE or not replacement or replacement == device or replacement.status != POSDevice.Status.ACTIVE:
-            raise DomainValidationError(
+            error = DomainValidationError(
                 code='device_replacement_invalid',
                 message='Informe outro dispositivo ativo da mesma filial para a substituicao.',
-                status_code=409,
             )
+            error.status_code = status.HTTP_409_CONFLICT
+            raise error
         device = set_device_status(device, POSDevice.Status.REPLACED, actor=request.user, replacement=replacement)
         return Response(self.get_serializer(device).data)
 

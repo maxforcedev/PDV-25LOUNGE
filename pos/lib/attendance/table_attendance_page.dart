@@ -129,6 +129,7 @@ List<_TableOrderItemGroup> _tableOrderItemGroups(
         item.productId,
         _tableCartNumber(item.unitPrice).toStringAsFixed(2),
         jsonEncode(_normalizedTableModifierValue(item.modifierSnapshot)),
+        jsonEncode(_normalizedTableModifierValue(item.financialSnapshot)),
         item.notes,
         item.status.toLowerCase(),
         item.printStatus?.toLowerCase() ?? '',

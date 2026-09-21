@@ -1788,7 +1788,7 @@ def close_table_attendance(*, attendance, user, idempotency_key, pos_device, aud
 
 @transaction.atomic
 def transfer_table_items(*, attendance, destination_id, items, user, idempotency_key, audit_metadata=None):
-    from .models import TableAttendance, TableAttendanceStatus, TableOrder, TableOrderItem, TablePaymentAllocation
+    from .models import TableAttendance, TableAttendanceStatus, TableOrder, TableOrderItem
     locked = {row.pk: row for row in TableAttendance.objects.select_for_update().filter(pk__in=sorted({attendance.pk, destination_id}))}
     source, destination = locked.get(attendance.pk), locked.get(destination_id)
     if not source or not destination or source.branch_id != destination.branch_id:
@@ -1813,10 +1813,6 @@ def transfer_table_items(*, attendance, destination_id, items, user, idempotency
     source_items = list(TableOrderItem.objects.select_for_update().filter(pk__in=requested, order__attendance=source).select_related('order').order_by('pk'))
     if len(source_items) != len(requested):
         raise ValidationError({'items': 'Um ou mais itens não pertencem à mesa de origem.'})
-    if TablePaymentAllocation.objects.filter(
-        item__in=source_items, payment_id__in=source_active_payment_ids,
-    ).exists():
-        raise AttendanceConflict('table_item_allocated_transfer_unsupported', 'Itens com pagamento alocado não podem ser transferidos automaticamente.')
     moved, moved_items, orders = [], [], {}
     for item in source_items:
         quantity = requested[item.pk]

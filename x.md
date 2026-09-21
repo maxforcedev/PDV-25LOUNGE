@@ -1,379 +1,322 @@
-TRABALHE SOMENTE NESTES DOIS PONTOS NO HEAD ATUAL DO CORE PDV E DEPOIS PARE.
+TRABALHE SOMENTE NESTAS CORREÇÕES NO HEAD ATUAL DA MAIN E DEPOIS PARE.
 
-NÃO INICIE:
+NÃO INICIE NOVA FASE.
+
+NÃO MEXER EM:
 
 * impressão;
+* Stone;
+* Cielo;
+* PagBank;
 * fiscal;
-* Stone/Cielo/PagBank;
-* nova fase;
-* alterações no módulo legado de Comandas.
+* Comanda legado;
+* nova arquitetura;
+* novas funcionalidades fora do escopo abaixo.
 
 ==================================================
 
-1. MESAS — AGRUPAR ITENS IGUAIS NO RESUMO
+1. CORRIGIR A CHAVE DE AGRUPAMENTO DOS ITENS DA MESA
    ==================================================
 
-No CORE POS, em:
+Arquivo principal:
 
 pos/lib/attendance/table_attendance_page.dart
 
-o RESUMO DA MESA atualmente renderiza cada TableOrderItem individualmente:
+O agrupamento visual implementado ficou correto estruturalmente:
 
-attendance.orders
-→ order.items
-→ _ConfirmedOrderItemRow
+* não consolida TableOrderItem no backend;
+* preserva os IDs individuais;
+* preserva cancelamento individual;
+* preserva transferência individual;
+* preserva pagamento por item;
+* detalhes mostram as entradas individuais.
 
-Alterar SOMENTE A APRESENTAÇÃO do resumo para agrupar itens equivalentes.
+PORÉM, a chave atual ainda pode agrupar itens que possuem condições financeiras diferentes.
 
-IMPORTANTE:
+Hoje ela considera aproximadamente:
 
-NÃO consolidar registros no backend.
-NÃO alterar TableOrderItem.
-NÃO perder IDs individuais.
-NÃO alterar pagamento por itens.
-NÃO alterar estoque, produção, tickets, cancelamento ou transferência.
-
-O agrupamento é SOMENTE VISUAL.
-
-Exemplo:
-
-Hoje:
-
-1x HEINEKEN
-1x HEINEKEN
-1x HEINEKEN
-2x COCA
-
-Quero:
-
-3x HEINEKEN
-2x COCA
-
-Um grupo só pode juntar itens que sejam realmente equivalentes.
-
-Considerar pelo menos:
-
-* mesmo produto;
-* mesmo preço efetivo;
-* mesmos modificadores;
-* mesma observação;
-* mesmo estado relevante.
-
-NÃO agrupar, por exemplo:
-
-HAMBÚRGUER
-HAMBÚRGUER + BACON
-HAMBÚRGUER sem cebola
-
-como se fossem o mesmo item.
-
-Somar corretamente:
-
-* quantity;
-* line total.
-
-Preservar os TableOrderItem originais dentro do grupo para qualquer ação posterior.
-
-==================================================
-2. DETALHES DO ITEM AGRUPADO
-============================
-
-Hoje "Ver detalhes" recebe um TableOrderItem + TableOrder individual.
-
-Adaptar a experiência para o grupo.
-
-Exemplo:
-
-3x HEINEKEN
-
-Ao abrir detalhes:
-
-HEINEKEN
-
-Quantidade total: 3
-
-ENTRADAS
-
-1x • 13:02 • Pedido #18 • Felipe
-1x • 13:17 • Pedido #21 • João
-1x • 13:41 • Pedido #27 • Felipe
-
-Os dados JÁ EXISTEM no payload:
-
-* order.createdAt;
-* order.id;
-* order.createdByName;
-* item.confirmedAt;
-* item.quantity.
-
-Usar preferencialmente confirmedAt como horário operacional do item.
-Se não existir, usar createdAt como fallback.
-
-Se todas as entradas tiverem exatamente o mesmo horário/contexto, não precisa gerar informação repetitiva desnecessária.
-
-Continuar mostrando quando aplicável:
-
-* modificadores;
-* observação;
+* productId;
+* unitPrice;
+* modifierSnapshot;
+* notes;
 * status;
-* impressão;
-* cancelamento.
+* printStatus;
+* cancellationReason.
 
-IMPORTANTE:
+Isso NÃO é suficiente.
 
-Cancelar e Transferir continuam sendo ações sobre TableOrderItem individual.
+Dois itens do mesmo produto podem possuir:
 
-Se um grupo possuir vários itens de origem, NÃO cancelar nem transferir todos automaticamente.
+* mesma quantidade;
+* mesmo preço base;
+* mesmos modificadores;
 
-Ao escolher uma ação que exige item individual, permitir selecionar a entrada correspondente ou manter a granularidade individual de forma clara.
+mas terem:
 
-Pagamento por itens também continua usando os IDs individuais reais.
+* promoção diferente;
+* desconto manual diferente;
+* benefício promocional diferente;
+* regra financeira congelada diferente.
+
+Esses itens NÃO devem ser agrupados visualmente como se fossem exatamente iguais.
+
+A chave de equivalência também deve considerar o estado financeiro efetivo congelado do item.
+
+Verifique o modelo/payload real de TableOrderItem e use o financial snapshot existente.
+
+Considere na equivalência os campos financeiros relevantes disponíveis, incluindo quando existirem:
+
+* financialSnapshot / financial_snapshot;
+* promotion;
+* promotionBenefit;
+* manualDiscount;
+* manualDiscountIntent;
+* valor líquido efetivo;
+* descontos;
+* qualquer outro snapshot financeiro que diferencie o preço/regra aplicada naquele item.
+
+NÃO inventar campos.
+
+Use o que realmente existe no modelo/API atual.
+
+Regra:
+
+SÓ AGRUPAR se os itens forem equivalentes também financeiramente.
+
+Exemplo:
+
+HEINEKEN R$ 15 sem desconto
+HEINEKEN R$ 15 com promoção
+
+NÃO devem necessariamente virar uma única linha só porque productId e unitPrice aparentam ser iguais.
+
+Preservar completamente:
+
+* IDs individuais;
+* TableOrderItem originais;
+* ações individuais;
+* horários individuais;
+* pagamento por itens;
+* valores oficiais do backend.
+
+O agrupamento continua APENAS VISUAL.
 
 ==================================================
-3. CONFERÊNCIA
-==============
+2. CORRIGIR O ERRO REAL EM POSCashSessionSelectView
+===================================================
 
-A conferência da Mesa atualmente também percorre:
+Arquivo:
 
-order
-→ item
+backend/apps/pos/views.py
 
-Avaliar e deixar coerente com o Resumo da Mesa:
+Existe atualmente:
 
-itens idênticos devem aparecer agrupados visualmente também na conferência, desde que isso não remova nenhuma informação financeira necessária.
-
-Isso continua sendo apenas apresentação.
-
-==================================================
-4. ERRO REAL AO REGISTRAR/FECHAR MESA
-=====================================
-
-Existe erro confirmado em PostgreSQL:
-
-FOR UPDATE cannot be applied to the nullable side of an outer join
-
-O CI do HEAD atual reproduz o problema.
-
-A causa NÃO é Flutter.
-
-A causa está nas consultas de TablePayment/TablePaymentAllocation que combinam:
-
-select_for_update(...)
-
-com filtros do tipo:
-
-reversal__isnull=True
-
-`reversal` é uma relação reversa OneToOne opcional.
-
-Esse filtro gera LEFT OUTER JOIN.
-
-Mesmo:
-
-select_for_update(of=('self',))
-
-NÃO resolve se o SQL ainda possuir o OUTER JOIN.
-
-O CI atual confirma falha em:
-
-backend/apps/attendance/services.py
-
-record_table_payment()
-
-na consulta equivalente a:
-
-TablePayment.objects
-.select_for_update(of=('self',))
-.filter(
-attendance=attendance,
-status=AttendancePaymentStatus.APPLIED,
-reversal__isnull=True,
+raise DomainValidationError(
+code='cash_session_unavailable',
+message='Este caixa não possui uma sessão aberta disponível.',
+status_code=status.HTTP_409_CONFLICT,
 )
-.exists()
 
-O fechamento também passa por:
+PROBLEMA:
 
-close_table_attendance()
-→ table_financial_state(attendance, lock=True)
+DomainValidationError.**init**() atualmente não aceita o argumento:
 
-e `table_financial_state` contém a mesma combinação:
+status_code
 
-TablePayment
+A assinatura atual é aproximadamente:
 
-* reversal__isnull=True
-* select_for_update
+def **init**(self, *, code, message, details=None):
 
-Esse é o motivo do 500 em:
+O CI já reproduziu:
 
-POSTableAttendanceCloseView
+TypeError:
+DomainValidationError.**init**() got an unexpected keyword argument 'status_code'
 
-==================================================
-5. CORREÇÃO CORRETA DO LEDGER
-=============================
+Isso pode gerar 500 no POS ao tentar selecionar um caixa indisponível.
 
-NÃO remover os locks.
+Corrija sem mascarar a exceção.
 
-NÃO trocar simplesmente select_for_update por consulta sem lock.
+Primeiro verifique como o projeto padroniza erros de domínio com HTTP 409.
 
-NÃO mascarar NotSupportedError.
+Escolha a solução mais coerente com a arquitetura existente.
 
-NÃO capturar a exceção para retornar 200.
+Pode ser:
 
-Corrigir a estratégia de consulta.
+* usar uma exceção específica já existente para conflict;
+* ou ajustar DomainValidationError de maneira arquiteturalmente correta caso o projeto já espere status customizável.
 
-O lock deve acontecer em TablePayment SEM atravessar a relação reversa nullable.
+NÃO faça uma alteração global arriscada somente para resolver uma chamada isolada.
 
-Estratégia desejada:
+Preferência:
+se já existir uma exceção de conflito no projeto, reutilize-a.
 
-1. lockar os TablePayment pertencentes à Mesa diretamente, sem `reversal__isnull=True`;
-2. dentro do conjunto já travado, identificar quais IDs possuem reversão;
-3. determinar os pagamentos ativos:
+Resultado esperado para caixa indisponível:
 
-   * status APPLIED;
-   * que não tenham um TablePayment de reversão apontando para eles;
-4. trabalhar com esses registros já seguros.
+* resposta de domínio controlada;
+* status HTTP adequado;
+* sem TypeError;
+* sem 500;
+* mantendo code = cash_session_unavailable;
+* mantendo a mensagem atual ou equivalente.
 
-Pode ser criada uma função interna compartilhada para obter o ledger ativo lockado, evitando repetir a lógica.
+Também procure rapidamente outros usos de:
 
-Exemplo conceitual:
+DomainValidationError(... status_code=...)
 
-locked_payments =
-TablePayment.objects
-.select_for_update(of=('self',))
-.filter(attendance=attendance)
+para não deixar a mesma falha em outro endpoint.
 
-Depois identificar:
-
-reversed_payment_ids = {
-payment.reversal_of_id
-for payment in locked_payments
-if payment.reversal_of_id is not None
-}
-
-active_payments = [
-payment
-for payment in locked_payments
-if payment.status == APPLIED
-and payment.id not in reversed_payment_ids
-]
-
-Não precisa obrigatoriamente usar exatamente esse código, mas preserve essa arquitetura:
-
-LOCK NA TABELA PRINCIPAL
-→ SEM OUTER JOIN
-→ determinar ledger ativo depois.
+NÃO faça refatoração ampla.
 
 ==================================================
-6. APLICAR EM TODOS OS PONTOS AFETADOS
-======================================
+3. NÃO MEXER NO NOVO LEDGER DE TABLEPAYMENT
+===========================================
 
-Revisar em backend/apps/attendance/services.py todos os usos onde:
-
-select_for_update
-
-é combinado direta ou indiretamente com:
-
-reversal__isnull=True
-payment__reversal__isnull=True
-
-Especial atenção a:
-
-* table_financial_state();
-* record_table_payment();
-* _table_allocation_amount();
-* close_table_attendance();
-* qualquer fluxo de pagamento por itens que trave TablePaymentAllocation e atravesse payment__reversal.
-
-Não corrigir apenas a linha que apareceu no traceback.
-
-A mesma classe de erro não pode permanecer em outro caminho da Mesa.
-
-Consultas somente leitura que não usam FOR UPDATE podem continuar usando reversal__isnull=True se forem seguras e fizer sentido.
-
-==================================================
-7. CONCORRÊNCIA / INTEGRIDADE
-=============================
+A correção recente do PostgreSQL em Mesas está correta conceitualmente.
 
 Preservar:
 
-* transaction.atomic;
-* lock da TableAttendance;
-* lock do ledger;
-* idempotência;
-* proteção contra pagamentos concorrentes;
-* proteção contra mistura de CashSession;
-* `table_cash_session_mismatch`;
-* saldo oficial;
-* estorno;
-* pagamento por valor;
-* pagar saldo;
-* dividir igual;
-* pagar por itens;
-* fechamento da Mesa.
+_locked_table_payments()
+_active_locked_table_payments()
+_locked_active_table_payments()
 
-Não reduzir segurança transacional para eliminar o erro.
+A estratégia deve continuar sendo:
 
-Se necessário, faça `reverse_table_payment()` participar da mesma estratégia de serialização da Mesa para impedir corrida entre:
+TableAttendance lock
+→ TablePayment base rows lockados SEM outer join
+→ identificar reversões dentro do ledger lockado
+→ determinar pagamentos ativos
+→ continuar operação.
 
-pagamento
-vs
-estorno
-vs
-fechamento.
+NÃO reintroduzir:
+
+reversal__isnull=True
+
+em queryset com:
+
+select_for_update()
+
+no fluxo novo de Mesas.
+
+Preservar o comportamento já corrigido em:
+
+* table_financial_state();
+* record_table_payment();
+* close_table_attendance();
+* reverse_table_payment();
+* equal split;
+* pagamento por itens;
+* transferência.
 
 ==================================================
-8. NÃO REGREDIR CASHSESSION
-===========================
+4. NÃO MEXER EM COMANDA LEGADO NESTA MISSÃO
+===========================================
 
-Preservar arquitetura atual:
+Ainda existem queries do módulo legado de Comanda com:
+
+AttendancePayment
+
+* select_for_update()
+* reversal__isnull=True
+
+NÃO corrigir isso agora.
+
+Registrar apenas no checkpoint que foi identificado e deixado intacto por estar fora do escopo.
+
+Não misturar Mesa nova com Comanda legado.
+
+==================================================
+5. LIMPEZA PEQUENA EM transfer_table_items()
+============================================
+
+Revisar este ponto:
+
+source_active_payment_ids = [...]
+destination_active_payment_ids = [...]
+
+logo depois existe bloqueio caso qualquer uma das listas tenha pagamentos ativos.
+
+Mais abaixo existe uma consulta de TablePaymentAllocation filtrando novamente por:
+
+payment_id__in=source_active_payment_ids
+
+Se o fluxo já saiu anteriormente sempre que a lista não está vazia, essa consulta pode ter se tornado redundante/código morto.
+
+CONFIRME primeiro.
+
+Se realmente for inalcançável ou redundante:
+
+remova somente essa redundância.
+
+Se houver algum cenário válido em que ainda tenha função, preserve.
+
+Não alterar regra de negócio de transferência.
+
+==================================================
+6. PRESERVAR CASHSESSION GLOBAL
+===============================
+
+Não alterar a arquitetura atual:
 
 CAIXA
 → POSDevice.active_cash_session
-→ Venda Rápida / Mesa / Pagamentos usam automaticamente.
+→ Venda Rápida / Mesa / Pagamentos.
 
-Não recolocar seletor de caixa dentro:
+Não adicionar seletor de caixa dentro de:
 
 * Venda Rápida;
 * Mesa;
-* Pagamento;
+* tela de pagamento;
 * Dinheiro;
 * fechamento.
 
+Preservar:
+
+table_cash_session_mismatch.
+
 ==================================================
-9. TESTE FUNCIONAL NÃO É PARA SER INVENTADO
-===========================================
+7. VALIDAÇÃO
+============
 
 NÃO criar bateria nova de testes Flutter/E2E.
 
-Corrija o código.
+OS TESTES FUNCIONAIS SERÃO FEITOS MANUALMENTE.
 
-Preserve os testes backend existentes.
+Rodar:
 
-O CI atual já demonstra o problema real de PostgreSQL e deve deixar de apresentar:
+* flutter analyze;
+* python manage.py check;
+* python manage.py makemigrations --check --dry-run;
+* git diff --check.
 
-FOR UPDATE cannot be applied to the nullable side of an outer join
+Se já existirem testes backend específicos para:
 
-nos testes de Mesa.
+* POSCashSessionSelectView;
+* cash_session_unavailable;
+* Table Attendance grouping/backend;
+
+pode rodar somente os testes direcionados necessários.
+
+Não iniciar suíte nova inventada.
 
 ==================================================
-10. AO TERMINAR
-===============
+8. CHECKPOINT FINAL
+===================
 
-Informe objetivamente:
+Ao terminar informe objetivamente:
 
-1. como agrupou itens no resumo;
-2. qual chave define itens equivalentes;
-3. como preservou os TableOrderItem individuais;
-4. como os horários aparecem nos detalhes;
-5. como cancelamento/transferência continuam individuais;
-6. se a conferência também foi agrupada;
-7. qual query causava o erro PostgreSQL;
-8. como removeu o OUTER JOIN do caminho lockado;
-9. quais pontos de `reversal__isnull=True` + lock foram corrigidos;
-10. como `table_financial_state()` funciona agora;
-11. como `record_table_payment()` funciona agora;
-12. como `close_table_attendance()` funciona agora;
-13. confirmação de preservação da CashSession global;
+1. qual era o problema da chave de agrupamento;
+2. quais dados financeiros passaram a participar da equivalência;
+3. confirmação de que itens com condições financeiras diferentes não agrupam;
+4. confirmação de que IDs individuais continuam preservados;
+5. confirmação de que cancelamento e transferência continuam individuais;
+6. causa do TypeError em POSCashSessionSelectView;
+7. como corrigiu cash_session_unavailable;
+8. qual status HTTP agora retorna nesse caso;
+9. se encontrou outros DomainValidationError com status_code inválido;
+10. confirmação de que o novo ledger de Mesa não foi alterado de forma regressiva;
+11. confirmação de que não existe reversal__isnull=True + select_for_update no fluxo novo de Mesa;
+12. se removeu ou preservou a checagem redundante de transfer_table_items e por quê;
+13. confirmação de que Comanda legado não foi alterado;
 14. arquivos alterados;
 15. flutter analyze;
 16. Django check;
@@ -381,3 +324,5 @@ Informe objetivamente:
 18. git diff --check.
 
 DEPOIS PARE.
+
+NÃO INICIE OUTRA TAREFA.
