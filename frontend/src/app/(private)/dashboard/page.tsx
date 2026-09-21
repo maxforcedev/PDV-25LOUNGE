@@ -401,7 +401,6 @@ function DashboardPage() {
     <>
       <PageHeader
         title="Dashboard"
-        description={`Visão rápida da operação de ${currentBranch?.name || "sua filial"}.`}
       />
       <div className="space-y-5 p-4 sm:p-6 lg:p-8">
         <section className="card p-4">

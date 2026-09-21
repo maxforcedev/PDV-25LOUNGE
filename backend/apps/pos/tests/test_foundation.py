@@ -813,7 +813,7 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(accepted.status_code, 201, accepted.data)
 
     def test_bootstrap_reports_fixed_and_flexible_cash_state_without_fake_selection(self):
-        operator, _ = self.login_pos_operator()
+        operator, paired = self.login_pos_operator()
         fixed_register = CashRegister.objects.create(branch=self.branch, name='Bar')
         fixed_session = open_session(
             fixed_register, '25.00', operator, self.branch, allow_pos_only=True,
@@ -823,6 +823,9 @@ class POSFoundationIntegrationTests(TestCase):
             cash_binding_mode='FIXED',
             default_cash_register=fixed_register,
         )
+        device = POSDevice.objects.get(pk=paired.data['device']['id'])
+        device.active_cash_session = fixed_session
+        device.save(update_fields=('active_cash_session', 'updated_at'))
 
         fixed = self.client.get(reverse('pos:bootstrap'))
 
@@ -986,12 +989,12 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(device.active_cash_session_id, first_session.pk)
 
     def test_flexible_cash_selection_rejects_unavailable_register(self):
-        _operator, paired = self.login_pos_operator()
+        operator, paired = self.login_pos_operator()
         active_register = CashRegister.objects.create(branch=self.branch, name='Available selection cash')
         unavailable_register = CashRegister.objects.create(branch=self.branch, name='Unavailable selection cash')
         BranchPOSSettings.objects.create(branch=self.branch, cash_binding_mode='FLEXIBLE')
         active_session = open_session(
-            active_register, '0.00', self.owner, self.branch, allow_pos_only=True,
+            active_register, '0.00', operator, self.branch, allow_pos_only=True,
         )
         device = POSDevice.objects.get(pk=paired.data['device']['id'])
         device.active_cash_session = active_session

@@ -153,7 +153,7 @@ function TablesPage() {
 
   return (
     <>
-      <PageHeader title="Mesas" description="" action={canManageTables ? (
+      <PageHeader title="Mesas" action={canManageTables ? (
         <div className="flex gap-2">
           <Button variant="secondary" onClick={() => { setBatchForm({ prefix: settings?.default_table_prefix || "", start: String(settings?.table_range_start || 1), end: String(settings?.table_range_end || settings?.default_table_quantity || 20), seats: String(settings?.default_table_seats || 0) }); setBatchOpen(true); }}><Layers className="size-4" />Configurar intervalo</Button>
           <Button onClick={openCreate}><Plus className="size-4" />Nova mesa</Button>

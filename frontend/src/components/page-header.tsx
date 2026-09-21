@@ -4,7 +4,7 @@ export function PageHeader({
   action,
 }: {
   title: string;
-  description: string;
+  description?: string;
   action?: React.ReactNode;
 }) {
   return (
@@ -14,7 +14,7 @@ export function PageHeader({
           Administração
         </p>
         <h1 className="text-xl font-bold tracking-tight text-fg">{title}</h1>
-        <p className="mt-1 text-xs text-muted">{description}</p>
+        {description ? <p className="mt-1 text-xs text-muted">{description}</p> : null}
       </div>
       {action && <div className="shrink-0">{action}</div>}
     </div>

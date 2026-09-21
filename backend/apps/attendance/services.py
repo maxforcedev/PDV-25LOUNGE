@@ -1459,7 +1459,7 @@ def record_table_payment(*, attendance, user, payment_method_id, pos_device, amo
     from apps.pos.services import current_pos_cash_session
 
     session = current_pos_cash_session(pos_device, for_update=True)
-    table_session_ids = set(TablePayment.objects.select_for_update().filter(
+    table_session_ids = set(TablePayment.objects.select_for_update(of=('self',)).filter(
         attendance=attendance,
         status=AttendancePaymentStatus.APPLIED,
         reversal__isnull=True,
@@ -1473,7 +1473,7 @@ def record_table_payment(*, attendance, user, payment_method_id, pos_device, amo
         raise ValidationError({'payment_method': 'Somente dinheiro aceita recebido e troco.'})
     requested_discount = strict_decimal(discount if discount is not None else attendance.checkout_discount, field='discount', decimal_places=2, max_digits=14)
     requested_waiver = attendance.checkout_service_fee_waived if service_fee_waived is None else bool(service_fee_waived)
-    has_payment = TablePayment.objects.select_for_update().filter(attendance=attendance, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True).exists()
+    has_payment = TablePayment.objects.select_for_update(of=('self',)).filter(attendance=attendance, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True).exists()
     if has_payment and (requested_discount != attendance.checkout_discount or requested_waiver != attendance.checkout_service_fee_waived):
         raise AttendanceConflict('checkout_context_mismatch', 'Desconto e taxa foram definidos pelo primeiro pagamento.')
     if not has_payment:
@@ -1697,7 +1697,7 @@ def close_table_attendance(*, attendance, user, idempotency_key, pos_device, aud
     if attendance.sale_id:
         return attendance, True
     confirmed = list(TableOrderItem.objects.filter(order__attendance=attendance, status=AttendanceOrderItemStatus.CONFIRMED).select_related('product').order_by('id'))
-    payments = list(TablePayment.objects.select_for_update().select_related('payment_method', 'cash_session').filter(
+    payments = list(TablePayment.objects.select_for_update(of=('self',)).select_related('payment_method').filter(
         attendance=attendance, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
     ).order_by('pk'))
     cash_session = None

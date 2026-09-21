@@ -97,7 +97,7 @@ function Registers() {
   </div>;
 
   return <>
-    <PageHeader title="Caixas" description="" action={canAdd ? <Button onClick={() => show()}><Plus className="size-4" />Novo caixa</Button> : undefined} />
+    <PageHeader title="Caixas" action={canAdd ? <Button onClick={() => show()}><Plus className="size-4" />Novo caixa</Button> : undefined} />
     <div className="space-y-4 p-4 sm:p-6 lg:p-8">
       {error && !modalOpen && <Alert message={error} />}{success && <Alert type="success" message={success} />}
       <form className="card grid gap-3 p-4 sm:grid-cols-[1fr_12rem_auto]" onSubmit={(event) => { event.preventDefault(); void load(); }}>

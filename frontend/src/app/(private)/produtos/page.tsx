@@ -197,7 +197,7 @@ function ProductEditorFrame({
     );
   return (
     <>
-      <PageHeader title={title} description={description || ""} action={actions} />
+      <PageHeader title={title} description={description} action={actions} />
       <main className="space-y-4 p-4 sm:p-6 lg:p-8">
         <section className="card overflow-hidden">{children}</section>
       </main>
@@ -1133,7 +1133,7 @@ function Products() {
                     variant="secondary"
                     onClick={() => productActionsRef.current?.openCopy()}
                   >
-                    Copiar
+                    Copiar em outra filial
                   </Button>
                 )}
               {editing && canStatus && (
@@ -1284,7 +1284,7 @@ function Products() {
             {(!isDetail || !editing || detailTab === "prices-modifiers") && (
               <>
                 {canViewCosts && (
-                  <Field label="Custo">
+                  <Field label="Preço de custo">
                     <MoneyInput
                       required
                       disabled={!canChangeCost}
@@ -1313,7 +1313,7 @@ function Products() {
                     )}
                     {editing?.suggested_cost && (
                       <small className="text-[10px] text-slate-400">
-                         Sugestão salva pela API: {formatDecimalBRL(editing.suggested_cost)}
+                         Sugestão: {formatDecimalBRL(editing.suggested_cost)}
                       </small>
                     )}
                   </Field>

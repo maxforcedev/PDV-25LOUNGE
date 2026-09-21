@@ -182,7 +182,7 @@ function PosDevicesAdministration() {
 
   const actionLabel = pendingAction === "block" ? "Bloquear" : pendingAction === "unblock" ? "Reativar" : pendingAction === "revoke" ? "Revogar" : pendingAction === "replace" ? "Substituir" : "Resetar dispositivo";
   return <>
-    <PageHeader title="Dispositivos POS" description="" />
+    <PageHeader title="Dispositivos POS" />
     <main className="space-y-4 p-4 sm:p-6 lg:p-8">
       {error && !selected && <Alert message={error} />}
       {success && <Alert type="success" message={success} />}

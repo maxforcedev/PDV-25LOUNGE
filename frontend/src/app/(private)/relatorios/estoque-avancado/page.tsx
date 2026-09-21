@@ -173,7 +173,7 @@ function AdvancedReport() {
           </div>
         </section>
         <section className="card overflow-hidden">
-          <div className="card-header"><div><h2 className="text-sm font-bold">Valor potencial e impacto</h2><p className="mt-1 text-[11px] text-muted">Custos aparecem somente quando a API autoriza sua visualização.</p></div><BarChart3 className="size-5 text-muted" /></div>
+          <div className="card-header"><div><h2 className="text-sm font-bold">Valor potencial e impacto</h2></div><BarChart3 className="size-5 text-muted" /></div>
           <div className="grid gap-px bg-subtle sm:grid-cols-2 xl:grid-cols-4">
             {[
               { label: `Em trânsito ${snapshotSuffix}`, potential: financials?.in_transit_potential_sale_value, cost: financials?.in_transit_cost_value },

@@ -1,7 +1,7 @@
 CONTINUE A MESMA FASE A PARTIR DO HEAD ATUAL.
 
 OBJETIVO:
-FECHAR TODOS OS PROBLEMAS RESTANTES DESTA RODADA SEM REGREDIR A ARQUITETURA JÁ CORRIGIDA.
+FECHAR OS ÚLTIMOS BLOCKERS DESTA ETAPA SEM REGREDIR O QUE JÁ FOI CORRIGIDO.
 
 NÃO INICIE:
 - impressão;
@@ -15,146 +15,432 @@ NÃO INICIE:
 NÃO MEXER EM COMANDA LEGADO.
 
 ==================================================
-1. DECISÃO DE UI/UX — NÃO RECOLOCAR TEXTOS REMOVIDOS
+1. BLOCKER — FOR UPDATE EM TABLEPAYMENT COM JOIN NULLABLE
 ==================================================
 
-As descrições removidas do Backoffice foram removidas INTENCIONALMENTE.
+O CI mostrou erro real de PostgreSQL:
 
-Objetivo visual:
-deixar as telas mais limpas e com menos texto explicando o óbvio.
+FOR UPDATE cannot be applied to the nullable side of an outer join
 
-Portanto NÃO quero recolocar:
+Hoje existem queries em Mesa como:
 
-- notas explicativas dos KPIs do Dashboard;
-- descriptions dos EmptyStates onde foram removidas;
-- textos auxiliares removidos de Caixas;
-- textos auxiliares removidos de Vendas;
-- descrições redundantes de modais;
-- subtítulos desnecessários.
+TablePayment.objects.select_for_update().filter(
+    attendance=attendance,
+    status=APPLIED,
+    reversal__isnull=True,
+)
 
-NÃO resolver o TypeScript adicionando novamente esses textos.
+e também no fechamento:
 
-==================================================
-2. CORRIGIR Kpi PARA `note` OPCIONAL
-==================================================
+TablePayment.objects
+    .select_for_update()
+    .select_related(
+        'payment_method',
+        'cash_session',
+    )
+    .filter(
+        attendance=attendance,
+        status=APPLIED,
+        reversal__isnull=True,
+    )
 
-Hoje o componente Kpi exige:
+O problema é que:
 
-note: string
+- `reversal` é relação reversa OneToOne opcional;
+- `cash_session` também é nullable;
+- o Django pode gerar OUTER JOIN;
+- PostgreSQL não aceita FOR UPDATE no lado nullable desse join.
 
-Mas agora vários KPIs devem funcionar apenas com:
-
-- label;
-- value;
-- icon;
-- href/tone quando aplicável.
-
-Alterar o contrato para:
-
-note?: string
-
-E renderizar o elemento visual da note SOMENTE se existir conteúdo.
-
-Exemplo desejado:
-
-Faturamento
-R$ 25.000
-
-e NÃO:
-
-Faturamento
-R$ 25.000
-Faturamento comercial no período
-
-Não usar:
-
-note=""
-
-como gambiarra.
-
-O componente deve suportar ausência real da propriedade.
+CORRIGIR.
 
 ==================================================
-3. CORRIGIR EmptyState PARA `description` OPCIONAL
+2. NÃO REMOVER O LOCK
 ==================================================
 
-Hoje EmptyState exige:
+NÃO resolver tirando:
+
+select_for_update()
+
+O lock é necessário para:
+
+- impedir concorrência entre pagamentos;
+- impedir mistura de contextos;
+- preservar integridade do ledger;
+- sincronizar pagamento/estorno/fechamento.
+
+Corrigir a estratégia de lock.
+
+==================================================
+3. ESTRATÉGIA RECOMENDADA
+==================================================
+
+Travar somente a tabela principal:
+
+TablePayment
+
+Exemplo conceitual:
+
+TablePayment.objects.select_for_update(
+    of=('self',)
+)
+
+quando for suficiente.
+
+Se a query com:
+
+reversal__isnull=True
+
+continuar produzindo join problemático:
+
+separar em etapas.
+
+Exemplo conceitual:
+
+1. lockar TablePayment base;
+2. buscar/filtrar os IDs necessários;
+3. carregar relações nullable separadamente;
+4. aplicar regra de negócio.
+
+Não precisa usar exatamente essa implementação.
+
+O importante é:
+
+- manter o lock;
+- evitar FOR UPDATE sobre lado nullable de outer join;
+- preservar atomicidade.
+
+==================================================
+4. RECORD_TABLE_PAYMENT
+==================================================
+
+Revisar especificamente:
+
+record_table_payment()
+
+Hoje ele precisa:
+
+- lockar Attendance;
+- resolver active CashSession;
+- lockar pagamentos existentes;
+- identificar sessões ativas existentes;
+- impedir novo pagamento em outra CashSession;
+- registrar pagamento.
+
+Essa consulta de pagamentos existentes NÃO pode gerar:
+
+FOR UPDATE cannot be applied to the nullable side of an outer join.
+
+Preservar regra:
+
+pagamentos ativos:
+- status APPLIED;
+- não estornados;
+
+definem o contexto financeiro atual.
+
+==================================================
+5. CLOSE_TABLE_ATTENDANCE
+==================================================
+
+Revisar:
+
+close_table_attendance()
+
+Hoje ele precisa:
+
+- lockar Attendance;
+- calcular estado financeiro;
+- lockar pagamentos ativos;
+- confirmar saldo zero;
+- validar CashSession atual;
+- materializar Sale;
+- fechar Attendance.
+
+Não usar select_for_update em queryset com joins nullable que causem erro no PostgreSQL.
+
+Carregar:
+
+payment_method
+cash_session
+
+de forma segura.
+
+==================================================
+6. NÃO REGREDIR REGRA DE ESTORNO
+==================================================
+
+Preservar:
+
+Pagamento Caixa A
+→ estorno total
+→ troca POS para Caixa B
+→ novo pagamento no B
+→ fechar Mesa normalmente.
+
+Pagamentos já estornados NÃO devem prender a Mesa ao contexto anterior.
+
+Mas continuam preservados no histórico/auditoria.
+
+==================================================
+7. NÃO REGREDIR MÚLTIPLAS CASH SESSIONS
+==================================================
+
+Preservar:
+
+Mesa com pagamento ativo no Caixa A
+→ POS muda para Caixa B
+→ novo pagamento deve ser rejeitado ANTES de gravar.
+
+Se por inconsistência existirem pagamentos ativos em mais de uma CashSession:
+
+fechamento deve rejeitar.
+
+==================================================
+8. FECHAMENTO DA CASH SESSION
+==================================================
+
+Preservar regra nova:
+
+Mesa aberta com qualquer TablePayment ativo naquela CashSession
+impede fechamento do Caixa.
+
+Independentemente do método:
+
+- Dinheiro;
+- PIX;
+- Crédito;
+- Débito;
+- Benefício;
+- outros.
+
+Mesa fechada NÃO deve continuar bloqueando fechamento da CashSession.
+
+==================================================
+9. CORRIGIR TESTE FIXED
+==================================================
+
+O teste:
+
+test_bootstrap_reports_fixed_and_flexible_cash_state_without_fake_selection
+
+está inconsistente com a arquitetura nova.
+
+Hoje:
+
+CashSession só é contexto ativo se estiver vinculada em:
+
+POSDevice.active_cash_session
+
+Não basta existir uma sessão OPEN no CashRegister.
+
+Portanto corrigir o teste para:
+
+- criar/obter o device;
+- configurar FIXED;
+- abrir sessão;
+- definir active_cash_session corretamente;
+- chamar bootstrap;
+- validar estado.
+
+NÃO alterar produção para fazer seleção "fake" automática só para o teste passar.
+
+A fonte da verdade continua sendo:
+
+POSDevice.active_cash_session
+
+==================================================
+10. CORRIGIR TESTE FLEXIBLE INDISPONÍVEL
+==================================================
+
+O teste:
+
+test_flexible_cash_selection_rejects_unavailable_register
+
+está morrendo antes da regra testada.
+
+Hoje usa algo como:
+
+open_session(
+    active_register,
+    ...,
+    self.owner,
+    ...,
+    allow_pos_only=True,
+)
+
+e recebe:
+
+PermissionDenied:
+Você não possui permissão nesta filial.
+
+CORRIGIR O FIXTURE/ATOR DO TESTE.
+
+Usar operador/usuário coerente com:
+
+allow_pos_only=True
+
+ou abrir sessão pelo fluxo correto.
+
+Objetivo do teste:
+
+- existir uma sessão ativa válida no POS;
+- tentar selecionar outro CashRegister sem sessão aberta;
+- endpoint retornar 409;
+- active_cash_session permanecer inalterada.
+
+O teste precisa chegar nessa regra.
+
+==================================================
+11. NÃO MASCARAR TESTES
+==================================================
+
+Não:
+- pular testes;
+- remover asserts;
+- afrouxar validações;
+- desativar constraint;
+- trocar comportamento só para verde.
+
+Corrigir fixture/setup e lógica real.
+
+==================================================
+12. PAGEHEADER — DESCRIPTION DEVE SER OPCIONAL
+==================================================
+
+DECISÃO DE UI/UX:
+
+Quero o Backoffice mais limpo.
+
+Hoje `PageHeader` exige:
 
 description: string
 
-Alterar para:
+e algumas telas estão passando:
+
+description=""
+
+Isso não é o padrão desejado.
+
+Alterar contrato para:
 
 description?: string
 
-Renderizar a descrição somente quando existir.
-
-Exemplo:
-
-Carrinho vazio
-
-em vez de:
-
-Carrinho vazio
-Toque em um produto do catálogo para adicionar.
-
-Não passar string vazia apenas para satisfazer TypeScript.
-
 ==================================================
-4. PRESERVAR HIERARQUIA E ESPAÇAMENTO
+13. PAGEHEADER — RENDERIZAÇÃO CONDICIONAL
 ==================================================
 
-Ao tornar note/description opcionais:
+Hoje existe algo como:
 
-não deixar:
-- espaço vazio;
-- margin/padding sobrando;
-- altura reservada;
-- gap visual estranho.
+<p className="mt-1 text-xs text-muted">
+  {description}
+</p>
 
-Se não houver texto secundário, o componente deve compactar naturalmente.
+Alterar para renderizar SOMENTE se existir conteúdo.
+
+Exemplo conceitual:
+
+{description ? (
+  <p className="mt-1 ...">
+    {description}
+  </p>
+) : null}
+
+Não deixar:
+
+- `<p>` vazio;
+- margin vazia;
+- gap desnecessário;
+- altura reservada.
 
 ==================================================
-5. NÃO GENERALIZAR ERRADO
+14. NÃO PASSAR description=""
 ==================================================
 
-Não remover textos úteis de telas que ainda precisam deles.
+Nas telas onde o texto foi removido intencionalmente:
 
-A decisão é:
+preferir:
 
-TEXTO SECUNDÁRIO DEVE SER OPCIONAL.
+<PageHeader
+  title="Caixas"
+/>
 
-Não:
+e não:
 
-"Toda description do sistema deve desaparecer."
+<PageHeader
+  title="Caixas"
+  description=""
+/>
 
-Preservar instruções quando forem realmente necessárias para:
-- segurança;
-- erro;
-- confirmação;
+Remover strings vazias onde fizer sentido.
+
+==================================================
+15. PRESERVAR TEXTOS ÚTEIS
+==================================================
+
+Não transformar isso em remoção geral de todas as descriptions.
+
+A regra é:
+
+description é OPCIONAL.
+
+Usar quando realmente ajuda.
+
+Preservar textos necessários para:
+
 - comportamento não óbvio;
-- contexto importante da operação.
+- segurança;
+- instruções importantes;
+- contexto operacional relevante;
+- erros;
+- confirmações.
 
 ==================================================
-6. 500 DO FLEXIBLE — PRESERVAR CORREÇÃO
+16. PRESERVAR Kpi.note OPCIONAL
 ==================================================
 
-O problema anterior:
+Já foi corrigido:
+
+note?: string
+
+com renderização condicional.
+
+Preservar.
+
+Não recolocar os textos removidos do Dashboard.
+
+==================================================
+17. PRESERVAR EmptyState.description OPCIONAL
+==================================================
+
+Já foi corrigido:
+
+description?: string
+
+com renderização condicional.
+
+Preservar.
+
+Não recolocar:
+
+"Toque em um produto..."
+
+ou outros textos removidos intencionalmente só para preencher espaço.
+
+==================================================
+18. 500 DO FLEXIBLE
+==================================================
+
+Preservar correção:
 
 POSCashSessionSelectView
-→ self._require inexistente
-→ AttributeError
-→ HTTP 500
+usa mecanismo válido de permission check.
 
-já foi corrigido usando mecanismo válido em POSCashView.
+Comportamento:
 
-PRESERVAR.
-
-Comportamento final obrigatório:
-
-com `cash_registers.open`
+com cash_registers.open
 → 200.
 
-sem `cash_registers.open`
+sem permissão
 → 403.
 
 caixa sem sessão disponível
@@ -163,233 +449,106 @@ caixa sem sessão disponível
 nunca 500.
 
 ==================================================
-7. 500 DO QUICK CHECKOUT PAYMENT — PRESERVAR CORREÇÃO
+19. 500 DO QUICK SALE PAYMENT
 ==================================================
 
-O problema anterior:
+Preservar correção:
 
-current_pos_cash_session(device, for_update=True)
-
-sendo chamado na View fora de transaction.atomic
-
-gerava:
-
-TransactionManagementError:
-select_for_update cannot be used outside of a transaction.
-
-A correção atual moveu essa responsabilidade para:
-
-record_quick_checkout_payment()
-
-que já roda em:
-
-@transaction.atomic
-
-e recebe:
-
-pos_device=device.
-
-PRESERVAR ESSA ARQUITETURA.
-
-A View NÃO deve voltar a realizar lock de domínio.
-
-==================================================
-8. QUICK SALE — ORDEM TRANSACIONAL
-==================================================
-
-Manter conceitualmente:
-
-record_quick_checkout_payment()
-↓
-transaction.atomic
-↓
-lock POSDevice
-↓
-resolve active_cash_session
-↓
-lock CashSession
-↓
-lock checkout
-↓
-valida contexto
-↓
-registra pagamento
-
-Se:
-
-checkout pertence ao Caixa A
-
-mas POS atualmente está no Caixa B:
-
-retornar conflito controlado:
-
-cash_context_changed
-
-e NÃO 500.
-
-==================================================
-9. POSFinalizeSaleView — PRESERVAR CORREÇÃO
-==================================================
-
-A View também não deve chamar:
+POSQuickCheckoutPaymentView
+NÃO chama mais:
 
 current_pos_cash_session(..., for_update=True)
 
-fora da transaction.
+na View.
 
-Manter a resolução dentro de:
+O lock acontece dentro de:
 
-finalize_sale()
+record_quick_checkout_payment()
 
-que já é:
+que roda em:
 
 @transaction.atomic
 
-Para venda direta POS no COUNTER:
-
-- resolve CashSession do POSDevice no serviço;
-- mantém lock;
-- mantém validação de filial;
-- mantém segurança server-side.
+Preservar.
 
 ==================================================
-10. REVISAR TODOS OS `current_pos_cash_session(for_update=True)`
+20. POS FINALIZE
 ==================================================
 
-Faça uma busca no projeto.
+Preservar:
 
-Todos os usos com:
+POSFinalizeSaleView
+não faz lock de CashSession na camada HTTP.
 
-for_update=True
+A resolução acontece em:
 
-devem estar dentro de fluxo transacional real.
+finalize_sale()
 
-Já existem usos corretos em serviços como:
-- create_quick_checkout;
-- update_quick_checkout;
-- record_quick_checkout_payment;
-- record_table_payment;
-- close_table_attendance;
-- finalize_sale.
-
-Confirmar que nenhum uso restante está em View ou camada HTTP fora de transaction.
+dentro da transaction.
 
 ==================================================
-11. FIXTURE DE STOCK — PRESERVAR CORREÇÃO
+21. current_pos_cash_session(for_update=True)
 ==================================================
 
-Os testes estavam falhando porque tentavam:
+Revisar novamente todos os usos atuais.
 
-Stock.objects.create(...)
+Todos devem estar dentro de fluxo transacional real.
 
-mesmo quando a criação/configuração do produto já gerava Stock.
+Não deixar:
 
-A correção atual reutiliza:
+select_for_update
 
-Stock.objects.get(...)
+fora de:
 
-e atualiza os valores.
-
-PRESERVAR.
-
-Não:
-- remover constraint;
-- criar Stock duplicado;
-- furar validação do model.
+transaction.atomic.
 
 ==================================================
-12. NÃO REGREDIR CASHSESSION GLOBAL DO POS
+22. CASHSESSION GLOBAL
 ==================================================
 
-CashSession continua pertencendo ao contexto operacional do POSDevice.
-
-Não pertence:
-- à Venda Rápida;
-- à Mesa;
-- ao método Dinheiro;
-- à tela de Pagamento.
-
-Fluxo:
+Preservar arquitetura definitiva:
 
 CAIXA
-→ define POSDevice.active_cash_session
-→ Venda Rápida / Mesa usam automaticamente.
+→ POSDevice.active_cash_session
+→ Venda Rápida / Mesa / Pagamentos consomem.
 
-Nenhum seletor de caixa deve reaparecer dentro de pagamento.
+NÃO existe seletor de caixa em:
 
-==================================================
-13. NÃO REGREDIR MESA
-==================================================
-
-Preservar tudo que já foi corrigido:
-
-- pagamentos ativos definem o contexto financeiro atual;
-- pagamento estornado não prende a Mesa para sempre ao contexto anterior;
-- após estorno total, Mesa pode assumir novo caixa;
-- pagamentos ativos em duas CashSessions são rejeitados;
-- fechamento usa somente pagamentos ativos;
-- PIX/Crédito/Débito/etc também pertencem à CashSession operacional;
-- Mesa aberta com pagamento ativo impede fechamento daquela CashSession;
-- Mesa fechada não deve continuar bloqueando o caixa.
+- Venda Rápida;
+- Mesa;
+- Pagamento;
+- Dinheiro;
+- fechamento da Mesa.
 
 ==================================================
-14. NÃO REGREDIR PAGAR SALDO
+23. PENDING / PAGAR SALDO / EQUAL SPLIT
 ==================================================
 
-Preservar:
+Não regredir:
 
-PAGAR SALDO
-→ payingRemaining=true.
+PENDING:
+- não apagar por falha de options/methods;
+- limpar só por reconciliação segura.
 
-Editar VALOR RECEBIDO:
-→ continua true.
+PAGAR SALDO:
+- editar recebido não muda remaining;
+- backspace no recebido não muda remaining;
+- editar aplicado muda para value;
+- backspace no aplicado muda para value.
 
-Backspace no VALOR RECEBIDO:
-→ continua true.
+EQUAL SPLIT:
+antes de iniciar:
+available=true
+active=false
 
-Editar VALOR APLICADO:
-→ false.
-
-Backspace no VALOR APLICADO:
-→ false.
-
-==================================================
-15. NÃO REGREDIR PENDING DA MESA
-==================================================
-
-Pending persistido continua existindo mesmo se:
-
-- checkout-options falhar;
-- payment methods não carregarem;
-- DTO não puder ser reconstruído temporariamente.
-
-Só limpar pending após:
-- confirmação pelo ledger/idempotency_key;
-ou
-- resolução explícita segura.
+depois de ciclo real:
+active=true.
 
 ==================================================
-16. NÃO REGREDIR EQUAL SPLIT
+24. COMPONENTES COMPARTILHADOS
 ==================================================
 
-Antes de iniciar divisão:
-
-available = true
-active = false
-
-Depois que existe ciclo real:
-
-active = true.
-
-Não voltar a usar active=true apenas porque a divisão é possível.
-
-==================================================
-17. NÃO REGREDIR COMPONENTES COMPARTILHADOS
-==================================================
-
-Venda Rápida e Mesa devem continuar usando os mesmos componentes de pagamento.
-
-Preservar:
+Preservar arquitetura compartilhada entre Venda Rápida e Mesa:
 
 - PaymentPageLayout
 - PaymentHeaderActions
@@ -408,13 +567,16 @@ Preservar:
 - SharedDiscountDialog
 - SharedCustomerPickerDialog
 
+Não criar implementações duplicadas novamente.
+
 ==================================================
-18. PAGAMENTO CONTINUA NO RESUMO DA MESA
+25. PAGAMENTO NA MESA
 ==================================================
 
 Preservar:
 
 RESUMO DA MESA
+
 ...
 TOTAL
 
@@ -422,83 +584,89 @@ TOTAL
 
 [ SALVAR E ENVIAR PEDIDO ]
 
-Não devolver Pagamento para AppBar/menu superior.
+Pagamento não volta para AppBar.
 
 ==================================================
-19. FRONTEND BUILD
+26. NÃO CRIAR NOVA BATERIA PESADA DE TESTES
 ==================================================
 
-Corrigir os erros atuais de TypeScript CAUSADOS pela remoção intencional de textos.
+Teste funcional final será feito manualmente por mim.
 
-Já identificados:
+Pode corrigir/adicionar apenas testes backend direcionados
+necessários para os blockers desta fase.
 
-Dashboard:
-Kpi sem `note`.
-
-Sales PDV:
-EmptyState sem `description`.
-
-A solução é ajustar os contratos/componentes,
-NÃO recolocar os textos.
-
-Depois executar build completo do Frontend.
+Não criar nova suíte pesada Widget/E2E.
 
 ==================================================
-20. NÃO SAIR CAÇANDO WARNINGS FORA DO ESCOPO
+27. TESTES DIRECIONADOS
 ==================================================
 
-Existem warnings ESLint antigos no Frontend.
+Validar especificamente:
 
-Não transformar esta missão em limpeza geral do projeto.
+A.
+record_table_payment
+→ não gera erro de FOR UPDATE em outer join.
 
-Corrigir:
-- errors de build;
-- regressões introduzidas por esta rodada;
-- problemas diretamente relacionados à fase atual.
+B.
+Mesa sem pagamentos
+→ fecha normalmente.
 
-Warnings antigos podem permanecer para revisão futura,
-desde que não sejam erros/blockers.
+C.
+Mesa paga
+→ fecha normalmente.
+
+D.
+Mesa:
+Caixa A
+→ pagamento
+→ estorno total
+→ Caixa B
+→ pagamento
+→ fecha normalmente.
+
+E.
+Mesa:
+pagamento ativo Caixa A
+→ POS em B
+→ novo pagamento rejeitado.
+
+F.
+Mesa:
+PIX no Caixa A
+→ CashSession A não pode fechar enquanto Mesa aberta.
+
+G.
+Mesa:
+Crédito no Caixa A
+→ CashSession A não pode fechar enquanto Mesa aberta.
+
+H.
+Mesa fechada
+→ não bloqueia CashSession.
+
+I.
+FIXED bootstrap
+→ active_cash_session real do POS é exibida.
+
+J.
+FLEXIBLE seleção de caixa indisponível
+→ 409
+→ active_cash_session não muda.
+
+K.
+FLEXIBLE sem permissão
+→ 403.
+
+L.
+Quick Sale pagamento
+→ sem TransactionManagementError.
+
+M.
+Quick Sale muda A → B
+→ cash_context_changed.
 
 ==================================================
-21. BACKEND CI
-==================================================
-
-Aguardar/rodar os testes backend.
-
-Se houver falha:
-
-se for desta fase:
-→ CORRIGIR.
-
-Exemplos:
-- CashSession;
-- POS FLEXIBLE;
-- Quick Checkout;
-- Venda Rápida;
-- Mesa;
-- pagamento;
-- fechamento de caixa;
-- fixtures modificados nesta rodada.
-
-Se for falha comprovadamente preexistente e fora da fase:
-→ informar separadamente;
-→ não ampliar escopo sem necessidade.
-
-==================================================
-22. NÃO CRIAR NOVA BATERIA PESADA DE TESTES FLUTTER
-==================================================
-
-O teste FUNCIONAL final será feito manualmente por mim.
-
-Já existem alguns testes simples adicionados.
-
-Não ampliar agora para nova suíte pesada Widget/E2E.
-
-Prioridade:
-corrigir funcionamento real e checks necessários.
-
-==================================================
-23. CHECKS OBRIGATÓRIOS
+28. CHECKS
 ==================================================
 
 Ao terminar:
@@ -519,94 +687,75 @@ GERAL:
 - git diff --check
 
 ==================================================
-24. TESTES BACKEND DIRECIONADOS
+29. GITHUB ACTIONS
 ==================================================
 
-Validar especificamente:
+Depois subir o commit e conferir o CI.
 
-A. FLEXIBLE com permissão
-→ 200.
+Nesta fase, NÃO considerar concluído se ainda falharem testes ligados a:
 
-B. FLEXIBLE sem permissão
-→ 403.
+- CashSession;
+- POS FLEXIBLE;
+- Quick Sale cash context;
+- Table Payment;
+- Table Close;
+- Cash Session Close;
+- fixtures alterados desta fase.
 
-C. FLEXIBLE sem sessão disponível
-→ 409.
+Se houver falhas antigas fora do escopo:
 
-D. Quick Sale pagamento normal
-→ funciona.
-
-E. Quick Sale checkout Caixa A
-→ POS muda para B
-→ pagamento rejeitado com cash_context_changed.
-
-F. Nenhum Quick Checkout Payment gera:
-TransactionManagementError.
-
-G. POSFinalizeSale
-→ usa active CashSession dentro do serviço transacional.
-
-H. Mesa:
-→ pagamento;
-→ estorno;
-→ troca de caixa;
-→ novo pagamento;
-→ fechamento.
-
-I. Mesa com PIX/Crédito ativa
-→ bloqueia fechamento da CashSession enquanto Mesa está aberta.
-
-J. Testes de TableAttendance realmente executam
-e não morrem no setup do Stock.
+informar separadamente.
 
 ==================================================
-25. CHECKPOINT FINAL
+30. CHECKPOINT FINAL
 ==================================================
 
-No final informe objetivamente:
+No final informe:
 
-1. como deixou Kpi.note opcional;
-2. como deixou EmptyState.description opcional;
-3. confirmação de que NÃO recolocou os textos removidos;
-4. confirmação de que não ficaram espaços vazios nos componentes;
-5. status do Frontend build;
-6. status do Frontend lint;
-7. confirmação do fix do POSCashSessionSelectView;
-8. resultado 200/403/409 do FLEXIBLE;
-9. confirmação de ausência de 500;
-10. confirmação do fix transacional do Quick Checkout Payment;
-11. onde current_pos_cash_session(for_update=True) é executado;
-12. confirmação de cash_context_changed funcionando;
-13. confirmação do POSFinalizeSale sem lock na View;
-14. resultado dos testes de TableAttendance;
-15. resultado do fixture de Stock;
-16. Django check;
-17. migrations check;
-18. flutter analyze;
-19. git diff --check;
-20. status final do GitHub Actions;
-21. quais falhas restantes, se houver, são desta fase;
-22. quais falhas restantes, se houver, são preexistentes;
-23. confirmação de que CashSession continua global no POSDevice;
-24. confirmação de que não há seletor em Venda/Mesa/Pagamento;
-25. confirmação de que PAGAMENTO continua no RESUMO DA MESA.
+1. qual query de TablePayment causava FOR UPDATE + outer join;
+2. como corrigiu o lock;
+3. como manteve atomicidade;
+4. resultado de record_table_payment;
+5. resultado de close_table_attendance;
+6. confirmação de estorno A → B funcionando;
+7. confirmação de múltiplas sessões ativas sendo rejeitadas;
+8. confirmação de PIX/Crédito bloqueando fechamento do Caixa quando Mesa aberta;
+9. como corrigiu o teste FIXED;
+10. como corrigiu o teste FLEXIBLE indisponível;
+11. resultado desses testes;
+12. como deixou PageHeader.description opcional;
+13. confirmação de que removeu description="" quando aplicável;
+14. confirmação de ausência de espaço vazio no PageHeader;
+15. confirmação de que Kpi.note continua opcional;
+16. confirmação de que EmptyState.description continua opcional;
+17. Frontend lint;
+18. Frontend build;
+19. Django check;
+20. migrations check;
+21. testes backend direcionados;
+22. flutter analyze;
+23. git diff --check;
+24. status do GitHub Actions;
+25. falhas restantes relacionadas à fase, se houver;
+26. falhas preexistentes fora do escopo, se houver;
+27. confirmação de que os dois 500 anteriores continuam resolvidos;
+28. confirmação de CashSession global no POSDevice;
+29. confirmação de ausência de seletor de caixa em Venda/Mesa/Pagamento;
+30. confirmação de que não iniciou impressão.
 
 DEPOIS PARE.
 
 NÃO INICIE IMPRESSÃO.
 
 DEPOIS DISSO:
+1. eu audito o GitHub novamente;
+2. eu faço o teste manual de:
+   - Caixa;
+   - Venda Rápida;
+   - Mesa;
+   - Pagamentos.
 
-EU VOU AUDITAR O GITHUB NOVAMENTE.
-
-PASSANDO A AUDITORIA, EU FAÇO O TESTE MANUAL DE:
-
-- CAIXA;
-- VENDA RÁPIDA;
-- MESA;
-- PAGAMENTOS.
-
-SÓ DEPOIS COMEÇAMOS:
+PASSANDO ESSA VALIDAÇÃO:
 
 - NOTINHA / RESUMO / DOCUMENTO NÃO FISCAL;
 - IMPRESSÃO DE PRODUÇÃO.

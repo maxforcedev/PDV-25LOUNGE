@@ -870,10 +870,6 @@ export function ProductV26Sections({
         >
           <div>
             <h3 className="text-sm font-bold">Grupos de modificadores</h3>
-            <p className="mt-1 text-[11px] text-muted">
-              Vincule grupos reutilizáveis a este produto e confira regras,
-              opções e impacto de estoque.
-            </p>
           </div>
           <div className="mt-4 grid gap-2 sm:grid-cols-2">
             {modifierGroups.map((group) => {
@@ -1478,10 +1474,6 @@ export function ProductV26Sections({
                 Estoque (nunca copiado)
               </label>
             </div>
-            <p className="mt-2 text-[10px] text-muted">
-              O serializer V2.6 executa estas seções como uma única operação
-              auditada; não aceita cópia parcial.
-            </p>
           </fieldset>
         </div>
         <div className="flex justify-end gap-2 border-t border-subtle px-5 py-4">
