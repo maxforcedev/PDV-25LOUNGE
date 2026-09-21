@@ -1459,12 +1459,12 @@ def record_table_payment(*, attendance, user, payment_method_id, pos_device, amo
     from apps.pos.services import current_pos_cash_session
 
     session = current_pos_cash_session(pos_device, for_update=True)
-    table_session_id = TablePayment.objects.select_for_update().filter(
+    table_session_ids = set(TablePayment.objects.select_for_update().filter(
         attendance=attendance,
         status=AttendancePaymentStatus.APPLIED,
         reversal__isnull=True,
-    ).order_by('pk').values_list('cash_session_id', flat=True).first()
-    if table_session_id is not None and table_session_id != session.pk:
+    ).values_list('cash_session_id', flat=True))
+    if table_session_ids and table_session_ids != {session.pk}:
         raise AttendanceConflict(
             'table_cash_session_mismatch',
             'Esta Mesa possui pagamentos vinculados a outro caixa.',
@@ -1700,18 +1700,15 @@ def close_table_attendance(*, attendance, user, idempotency_key, pos_device, aud
     payments = list(TablePayment.objects.select_for_update().select_related('payment_method', 'cash_session').filter(
         attendance=attendance, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
     ).order_by('pk'))
-    historical_payments = list(TablePayment.objects.select_for_update().filter(
-        attendance=attendance, reversal_of__isnull=True,
-    ))
     cash_session = None
-    if historical_payments:
+    if payments:
         if pos_device.branch_id != attendance.branch_id:
             raise ValidationError({'pos_device': 'O dispositivo deve pertencer à filial da mesa.'})
         # Keep the POS cash dependency local: pos.views imports this service.
         from apps.pos.services import current_pos_cash_session
 
         cash_session = current_pos_cash_session(pos_device, for_update=True)
-        if any(payment.cash_session_id != cash_session.pk for payment in historical_payments):
+        if {payment.cash_session_id for payment in payments} != {cash_session.pk}:
             raise AttendanceConflict(
                 'table_cash_session_mismatch',
                 'Os pagamentos da mesa pertencem a outro contexto de caixa.',

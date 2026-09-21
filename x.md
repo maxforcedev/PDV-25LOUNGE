@@ -1,639 +1,429 @@
 CONTINUE A MESMA FASE.
 
-NÃO INICIE IMPRESSÃO AINDA.
-NÃO INICIE STONE/CIELO/PAGBANK.
-NÃO INICIE OUTRA FASE.
-
 FONTE DE VERDADE:
 ESTADO ATUAL DO PROJETO / HEAD ATUAL.
 
-A ARQUITETURA NOVA DE CASH SESSION ESTÁ NO CAMINHO CERTO:
+NÃO INICIE:
+- impressão;
+- Stone;
+- Cielo;
+- PagBank;
+- fiscal;
+- outra fase.
 
-CashSession pertence ao POSDevice / módulo CAIXA.
+NÃO MEXER EM COMANDA LEGADO.
 
-Venda Rápida, Mesa e Pagamentos apenas consomem automaticamente o contexto ativo.
+A arquitetura de CashSession como contexto global do POS está correta e deve ser preservada.
 
-NÃO VOLTAR A COLOCAR SELETOR DE CAIXA EM:
+NÃO VOLTAR A COLOCAR seleção de caixa em:
 - Venda Rápida;
 - Mesa;
-- Dinheiro;
 - Pagamento;
+- Dinheiro;
 - fechamento da Mesa.
 
-Agora conclua os problemas restantes encontrados na auditoria.
+Agora corrija SOMENTE os pontos abaixo.
 
 ==================================================
-1. CORRIGIR ESTADO STALE AO ABRIR CAIXA
+1. BLOCKER — REGRA DE CASH SESSION DA MESA APÓS ESTORNO
 ==================================================
 
-Hoje, ao abrir uma CashSession:
+Hoje existe uma inconsistência entre:
 
-backend atualiza:
+`record_table_payment()`
 
-POSDevice.active_cash_session
+e
 
-via `.update()`.
+`close_table_attendance()`.
 
-Logo depois, a resposta é montada utilizando o objeto `device`
-que já estava carregado antes dessa atualização.
+No registro de novo pagamento, o contexto da Mesa é inferido usando pagamentos:
 
-Isso pode fazer o backend responder um `cash_state`
-desatualizado, ainda sem a nova sessão ativa.
+- status APPLIED;
+- sem reversal.
 
-Cenário:
+Ou seja, pagamentos efetivamente ativos.
 
-CAIXA FECHADO
-→ ABRIR CAIXA
-→ banco grava active_cash_session
-→ response usa device stale
-→ Flutter recebe cash_state como se ainda estivesse fechado.
+Isso permite o cenário:
 
-CORRIGIR.
+Caixa A
+→ pagamento R$ 50
+→ estorna R$ 50
+→ troca POS para Caixa B
+→ novo pagamento R$ 100 no B.
 
-Após definir `active_cash_session`, o estado retornado deve
-obrigatoriamente refletir a sessão atual persistida no banco.
+Até aí essa regra é válida.
 
-Pode:
+PORÉM no fechamento da Mesa hoje existe algo equivalente a:
 
-- atualizar/refetch do device;
-- ou fazer `cash_state_for_device()` consultar o device atual;
-- ou solução equivalente segura.
+`historical_payments`
 
-Mesmo problema deve ser corrigido em:
-
-- abrir sessão;
-- selecionar sessão FLEXIBLE.
-
-==================================================
-2. FLEXIBLE: NÃO ALTERAR SELEÇÃO LOCAL ANTES DO SUCESSO
-==================================================
-
-Hoje em CashPage o `_selectedRegisterId`
-é alterado antes de confirmar que o backend aceitou a sessão.
-
-Problema:
-
-POS está no Caixa A.
-
-Usuário toca Caixa B.
-
-Flutter:
-_selectedRegisterId = B
-
-Backend:
-Caixa B não tem sessão aberta
-→ 409.
-
-Resultado possível:
-
-seletor mostra Caixa B
-mas activeSession continua Caixa A.
-
-CORRIGIR.
-
-A seleção só deve ser confirmada na UI depois de sucesso do backend.
-
-Em caso de erro:
-
-manter/reverter para o caixa ativo real vindo do backend.
-
-A fonte da verdade deve ser o estado retornado pelo servidor.
-
-==================================================
-3. PROTEGER SELEÇÃO DE CAIXA FLEXIBLE COM PERMISSÃO
-==================================================
-
-Revisar `POSCashSessionSelectView`.
-
-Trocar o contexto de caixa ativo do POS é uma ação operacional de Caixa.
-
-Não basta apenas existir uma sessão de operador válida.
-
-Aplicar validação explícita de permissão adequada.
-
-Usar o RBAC existente.
-
-Não criar permissão paralela sem necessidade.
-
-O usuário precisa ter autorização operacional de caixa
-para alterar o contexto ativo do POS.
-
-Auditar também:
-
-- seleção;
-- abertura;
-- fechamento.
-
-==================================================
-4. BLOCKER: MESA NÃO PODE MISTURAR CASH SESSIONS
-==================================================
-
-Esse é bloqueador.
-
-Hoje:
-
-Mesa 10
-→ primeiro pagamento com CashSession A.
-
-Depois alguém troca o POS para CashSession B.
-
-A mesma Mesa pode registrar outro pagamento usando B.
+pegando pagamentos originais mesmo que já tenham sido estornados.
 
 Resultado:
 
-TablePayment 1 → A
-TablePayment 2 → B.
-
-Depois o fechamento detecta mismatch e a Mesa fica impossível de fechar.
-
-NÃO permitir isso.
-
-A regra deve ser:
-
-PRIMEIRO PAGAMENTO DA MESA
-→ determina implicitamente o contexto de caixa daquele ciclo financeiro.
-
-PAGAMENTOS SEGUINTES
-→ devem usar a mesma CashSession.
-
-Se o POS estiver atualmente em outra CashSession:
-
-REJEITAR O NOVO PAGAMENTO ANTES DE GRAVAR.
-
-Mensagem adequada, por exemplo:
-
-"Esta Mesa possui pagamentos vinculados a outro caixa."
-
-Não esperar o fechamento para descobrir a inconsistência.
-
-==================================================
-5. NÃO PRECISA NECESSARIAMENTE CRIAR CAMPO NOVO NA MESA
-==================================================
-
-Antes de adicionar campo persistido em TableAttendance,
-avalie se o contexto pode ser inferido com segurança pelo primeiro
-TablePayment histórico não-reversal.
-
-Se isso for suficiente e consistente:
-
-usar o ledger existente.
-
-Não duplicar estado sem necessidade.
-
-Mas garantir atomicidade e lock corretos.
-
-==================================================
-6. VENDA RÁPIDA JÁ TEM CONCEITO CORRETO
-==================================================
-
-Venda Rápida já faz melhor:
-
-checkout nasce vinculado à sessão ativa.
-
-Se o POS mudar de contexto antes de outro pagamento:
-
-backend detecta:
-
-cash_context_changed
-
-e não grava.
-
-Manter esse comportamento.
-
-Mesa deve adotar o mesmo princípio.
-
-==================================================
-7. REVISAR current_pos_cash_session COM LOCK SEGURO
-==================================================
-
-Hoje `current_pos_cash_session(device, for_update=True)`
-carrega POSDevice com `select_for_update()` e relação nullable
-de `active_cash_session`.
-
-Revisar o SQL/locking.
-
-Preferência arquitetural:
-
-lock POSDevice
+Pagamento original A estornado
++
+Pagamento ativo B
 ↓
-ler active_cash_session_id
+FECHAR MESA
 ↓
-lock CashSession separadamente
+table_cash_session_mismatch
+
+A Mesa fica paga e impossível de fechar.
+
+CORRIGIR.
+
+==================================================
+2. USAR UMA ÚNICA DEFINIÇÃO DE CONTEXTO FINANCEIRO DA MESA
+==================================================
+
+A regra deve ser consistente em:
+
+- registrar pagamento;
+- estornar;
+- fechar Mesa.
+
+Recomendação:
+
+O CONTEXTO FINANCEIRO ATUAL DA MESA É DETERMINADO
+PELOS PAGAMENTOS ATIVOS.
+
+Ou seja:
+
+TablePayment:
+- status APPLIED;
+- reversal__isnull=True.
+
+Se todos os pagamentos associados ao Caixa A forem estornados,
+a Mesa pode posteriormente receber pagamentos no Caixa B.
+
+O histórico do Caixa A permanece imutável para auditoria.
+
+NÃO apagar ou alterar registros históricos.
+
+Mas pagamentos totalmente estornados NÃO devem bloquear o fechamento
+em um novo contexto válido.
+
+==================================================
+3. FECHAMENTO DA MESA DEVE USAR A MESMA REGRA
+==================================================
+
+No `close_table_attendance()`:
+
+não comparar a CashSession atual com pagamentos antigos já totalmente estornados.
+
+Validar somente os pagamentos financeiros ativos que efetivamente
+compõem o saldo pago atual da Mesa.
+
+Se existirem pagamentos ativos em mais de uma CashSession:
+
+isso é inconsistência e o fechamento deve rejeitar.
+
+Mas o registro de novos pagamentos já deve impedir esse estado antes.
+
+==================================================
+4. BLOCKER — FECHAMENTO DO CAIXA NÃO PODE CONSIDERAR SÓ DINHEIRO
+==================================================
+
+Na arquitetura nova:
+
+CashSession não é "sessão de dinheiro".
+
+CashSession é o CONTEXTO OPERACIONAL DO POS.
+
+Portanto todos os pagamentos feitos durante esse contexto são vinculados à sessão:
+
+- Dinheiro;
+- PIX;
+- Crédito;
+- Débito;
+- Benefício;
+- outros.
+
+Hoje `close_session()` ainda possui regra de Mesa semelhante a:
+
+TablePayment.objects.filter(
+    cash_session=session,
+    payment_method__code='cash',
+    status=APPLIED,
+    reversal__isnull=True,
+    attendance__status=OPEN,
+)
+
+Esse filtro:
+
+`payment_method__code='cash'`
+
+ESTÁ ERRADO para a arquitetura atual.
+
+==================================================
+5. BLOQUEAR FECHAMENTO DA CASH SESSION POR QUALQUER PAGAMENTO ATIVO DE MESA
+==================================================
+
+Se uma Mesa ainda está ABERTA e possui qualquer TablePayment ativo
+vinculado àquela CashSession:
+
+NÃO permitir fechar a CashSession.
+
+Independentemente da forma de pagamento.
+
+Exemplo:
+
+Caixa A ativo
 ↓
-validar:
-- OPEN;
-- mesma filial;
-- CashRegister ACTIVE;
-- FIXED compatível.
+Mesa 10
+↓
+PIX R$ 50
 
-Evitar lock ambíguo envolvendo outer join de relação nullable.
+A Mesa continua aberta.
 
-Manter atomicidade.
+Nesse momento:
 
-==================================================
-8. CASH SESSION CONTINUA SENDO CONTEXTO DO DEVICE
-==================================================
+FECHAR CAIXA A
 
-Preservar:
+deve ser rejeitado.
 
-POSDevice.active_cash_session
-
-Isso está correto.
-
-FIXED:
-
-- device usa CashRegister configurado;
-- abrir Caixa define active_cash_session;
-- operações usam essa sessão.
-
-FLEXIBLE:
-
-- seleção acontece na área CAIXA;
-- seleção/open define active_cash_session;
-- Venda/Mesa apenas consomem.
+Porque aquela Mesa ainda possui operação financeira ativa
+vinculada ao contexto A.
 
 ==================================================
-9. FECHAR CAIXA
+6. MOTIVO
 ==================================================
 
-Ao fechar a sessão ativa:
+Não permitir:
 
-- limpar active_cash_session dos devices vinculados;
-- POS deve imediatamente ficar `cash_ready = false`;
-- novas operações financeiras que exigem contexto ativo devem falhar.
+Mesa aberta
+Pagamento PIX → Caixa A
+↓
+fecha Caixa A
+↓
+abre Caixa B
+↓
+Mesa continua aberta
 
-Preservar comportamento existente.
+Isso criaria uma Mesa presa ao contexto anterior e impossibilitaria
+ou confundiria novos pagamentos/fechamento.
 
-Revisar se a resposta após fechamento também usa estado atualizado,
-não objeto stale.
-
-==================================================
-10. VENDA RÁPIDA NÃO DEVE ENVIAR CASH SESSION
-==================================================
-
-Preservar a nova arquitetura:
-
-create checkout:
-NÃO recebe cash_session do Flutter.
-
-update checkout:
-NÃO recebe cash_session do Flutter.
-
-record payment:
-NÃO recebe cash_session do Flutter.
-
-finalize:
-NÃO escolhe caixa no client.
-
-Backend resolve e valida pelo POSDevice/contexto do checkout.
+O fechamento do caixa deve proteger operações abertas associadas
+àquela sessão.
 
 ==================================================
-11. MESA NÃO DEVE ENVIAR CASH SESSION
+7. NÃO LIMITAR ESSA REGRA A DINHEIRO
 ==================================================
 
-Preservar:
+Remover o filtro por:
 
-record TablePayment:
-NÃO recebe cash_session do Flutter.
+payment_method__code='cash'
 
-close Table:
-NÃO recebe cash_session do Flutter.
+da verificação de TablePayment ativo ao fechar CashSession.
 
-Nenhuma seleção na UI.
+Avaliar a mesma coerência em outros fluxos POS novos.
 
-Backend resolve o contexto.
-
-==================================================
-12. PAYMENT ENTRY NÃO SABE NADA DE CAIXA
-==================================================
-
-Preservar `PaymentEntryPage` sem:
-
-- cashSessionId;
-- lista de caixas;
-- CashRegister;
-- dropdown;
-- picker.
-
-Dinheiro continua sendo apenas forma de pagamento.
+NÃO alterar Comanda legado nesta fase além do necessário para
+não quebrar o código existente.
 
 ==================================================
-13. CORRIGIR PENDING DA MESA
+8. PAGAR SALDO — BACKSPACE
 ==================================================
 
-Ainda existe problema no recovery.
+Foi corrigido corretamente:
+
+botões rápidos e teclado numérico do VALOR RECEBIDO
+não mudam mais `_payingRemaining`.
+
+Mas ainda revisar o BACKSPACE.
 
 Hoje:
-
-pending salvo
-↓
-reabre app
-↓
-checkout-options falha
-↓
-_methods pode ficar vazio
-↓
-fromJson não encontra method
-↓
-_pending vira null
-↓
-pending persistido pode ser apagado.
-
-ISSO NÃO PODE ACONTECER.
-
-Falha de rede ou falha ao carregar payment methods
-não pode apagar uma tentativa incerta.
-
-Regra:
-
-pending só pode ser removido quando:
-
-1. ledger confirmar o mesmo idempotency_key;
-ou
-2. operação for explicitamente resolvida/cancelada de forma segura.
-
-Não apagar pending porque DTO/UI não conseguiu reconstruir o método.
-
-O estado persistido deve preservar ao menos os dados necessários
-para reconciliar a operação.
-
-==================================================
-14. CORRIGIR PAGAR SALDO + DINHEIRO
-==================================================
-
-Ainda existe bug em `PaymentEntryPage`.
-
-Fluxo:
 
 PAGAR SALDO
 → `_payingRemaining = true`
 
-Depois operador ativa:
+Se operador estiver editando VALOR APLICADO e apertar backspace:
 
-INFORMAR VALOR RECEBIDO
+o valor muda,
 
-e digita o recebido.
+mas `_payingRemaining` pode continuar true.
 
-Hoje o mesmo handler pode fazer:
+Isso cria divergência:
+
+UI mostra valor alterado,
+mas request continua mode=remaining.
+
+CORRIGIR.
+
+Regra:
+
+Se BACKSPACE alterar o VALOR APLICADO:
 
 `_payingRemaining = false`
 
-mesmo o operador tendo alterado apenas VALOR RECEBIDO.
+Se BACKSPACE alterar apenas VALOR RECEBIDO:
 
-Isso está errado.
+manter `_payingRemaining = true`.
 
-`payingRemaining` só pode virar false se o operador alterar
-o VALOR APLICADO.
-
-Alterar:
-
-- valor recebido;
-- troco;
-- teclado do recebido;
-
-NÃO pode mudar:
-
-mode=remaining.
+A mesma regra vale para qualquer futura alteração manual do valor aplicado.
 
 ==================================================
-15. EQUAL SPLIT ACTIVE
+9. PRESERVAR CORREÇÕES JÁ FEITAS
 ==================================================
 
-Ainda corrigir semântica.
+NÃO regredir:
 
-Hoje o estado prospectivo pode retornar:
-
-active = true
-
-antes de existir de fato um ciclo de equal split iniciado.
-
-Não misturar:
-
-"divisão disponível"
-
-com:
-
-"divisão ativa".
-
-Separar semanticamente.
-
-Exemplo conceitual:
-
-available = true
-active = false
-
-antes do primeiro pagamento.
-
-Depois que o ciclo realmente existe:
-
-active = true.
-
-Não precisa obrigatoriamente usar esses nomes,
-mas o contrato deve ser semanticamente correto.
+- `POSDevice.active_cash_session`;
+- `current_pos_cash_session()`;
+- lock separado de POSDevice e CashSession;
+- `cash_state_for_device()` lendo estado atual;
+- FLEXIBLE refletindo apenas seleção confirmada pelo backend;
+- permissão `cash_registers.open` para selecionar Caixa;
+- Mesa bloqueando novo pagamento se já possui pagamento ativo em outro caixa;
+- pending da Mesa preservado mesmo sem payment methods carregados;
+- equal_split:
+  - available=true;
+  - active=false antes do ciclo;
+- PaymentEntryPage sem conhecimento de CashSession;
+- ausência de seletor de caixa em Venda/Mesa/Pagamento;
+- código antigo de Table Item Allocation removido.
 
 ==================================================
-16. REMOVER CÓDIGO MORTO
+10. NÃO REGREDIR VENDA RÁPIDA
 ==================================================
 
-Revisar `table_payment_page.dart`.
+Venda Rápida deve continuar:
 
-Ainda existe implementação antiga como:
+checkout criado no contexto ativo do POS;
 
-`_TableItemAllocationPage`
+se POS trocar de CashSession durante checkout com contexto já definido:
 
-mesmo com o fluxo ativo usando:
+novo pagamento incompatível é rejeitado.
 
-`PaymentItemAllocationPage`.
-
-Se não houver referência ativa:
-
-REMOVER.
-
-Revisar também outros helpers antigos de cash/payment
-que ficaram sem uso após essa refatoração.
-
-Não deixar duas implementações da mesma funcionalidade.
+Não alterar essa proteção.
 
 ==================================================
-17. PRESERVAR ARQUITETURA COMPARTILHADA DE PAGAMENTO
+11. NÃO REGREDIR MESA
 ==================================================
 
-NÃO regredir os componentes compartilhados:
+Mesa deve continuar:
 
-- PaymentPageLayout
-- PaymentHeaderActions
-- PaymentMethodGrid
-- PaymentSplitSelector
-- PaymentMethodPicker
-- PaymentEntryPage
-- PaymentItemAllocationPage
-- PaymentEqualSplitPage
-- PaymentHistoryList
-- PaymentBalanceCard
-- PaymentFinancialSummary
-- PaymentHistoryItem
-- PaymentReversalDialog
-- SharedAuthorizationDialog
-- SharedDiscountDialog
-- SharedCustomerPickerDialog
+primeiro pagamento ativo
+→ determina contexto financeiro atual.
 
-Venda Rápida e Mesa devem continuar usando os mesmos elementos.
+Segundo pagamento em outro contexto
+→ rejeitado antes de gravar.
+
+Se todos os pagamentos anteriores forem estornados:
+
+pode assumir novo contexto posteriormente.
+
+Essa mesma definição deve ser usada no fechamento.
 
 ==================================================
-18. PRESERVAR PAGAMENTO NO RESUMO DA MESA
+12. TESTES DIRECIONADOS
 ==================================================
 
-Manter:
+Adicionar/ajustar somente testes backend DIRECIONADOS necessários.
 
-RESUMO DA MESA
+Não criar bateria pesada de Widget/E2E.
 
-...
-Total oficial
+Cenários mínimos:
 
-[ PAGAMENTO ]
+A.
+Mesa
+→ pagamento Caixa A
+→ troca POS para B
+→ segundo pagamento rejeitado.
 
-[ SALVAR E ENVIAR PEDIDO ]
+B.
+Mesa
+→ pagamento Caixa A
+→ estorno total
+→ troca para B
+→ novo pagamento em B permitido
+→ Mesa fecha normalmente no B.
 
-Não devolver Pagamento ao AppBar.
+C.
+Mesa aberta
+→ pagamento PIX no Caixa A
+→ tentativa de fechar Caixa A
+→ fechamento rejeitado.
 
-Desktop e mobile devem continuar usando o mesmo painel de resumo.
+D.
+Mesa aberta
+→ pagamento Crédito no Caixa A
+→ tentativa de fechar Caixa A
+→ fechamento rejeitado.
+
+E.
+Mesa fechada
+→ não deve continuar bloqueando fechamento da CashSession
+por causa dos pagamentos já consolidados.
+
+F.
+PAGAR SALDO em dinheiro
+→ informa recebido maior
+→ backspace no recebido
+→ continua mode=remaining.
+
+G.
+PAGAR SALDO
+→ backspace no valor aplicado
+→ deixa de ser mode=remaining.
 
 ==================================================
-19. NÃO MEXER EM COMANDA LEGADO
+13. CHECKS
 ==================================================
 
-Não alterar fluxo legado de Comanda nesta fase.
-
-Não usar Comanda como justificativa para ampliar escopo.
-
-==================================================
-20. TESTES / CHECKS
-==================================================
-
-NÃO criar nova bateria pesada de Widget/E2E.
-
-O teste funcional final será feito manualmente por mim.
-
-Pode rodar checks estáticos e backend direcionado.
-
-Obrigatório no final:
+Ao terminar rode:
 
 - flutter analyze
 - git diff --check
 - python manage.py check
 - makemigrations --check --dry-run
 
-Se backend mudou:
-rodar testes direcionados relacionados a:
+E testes backend direcionados para:
 
-- POS cash context;
-- abertura de caixa;
-- seleção FLEXIBLE;
-- fechamento de caixa;
-- Quick Sale;
 - Table Payment;
-- Table Close.
+- Table Reverse;
+- Table Close;
+- Cash Session Close;
+- Quick Sale cash context.
 
 ==================================================
-21. CENÁRIOS QUE O CÓDIGO DEVE SUPORTAR
+14. CHECKPOINT FINAL
 ==================================================
 
-A. FIXED:
+Ao concluir informe objetivamente:
 
-abrir Caixa
-→ active_cash_session definida
-→ Venda Rápida funciona
-→ Mesa funciona.
-
-B. FLEXIBLE:
-
-Caixa A aberto
-→ selecionar Caixa A
-→ active_cash_session=A
-→ Venda/Mesa usam A.
-
-C. FLEXIBLE selecionar caixa inválido:
-
-POS permanece no contexto anterior.
-
-D. Fechar Caixa:
-
-active_cash_session limpa
-→ Venda/Mesa bloqueadas até novo Caixa ativo.
-
-E. Venda Rápida:
-
-checkout iniciado no Caixa A
-→ trocar POS para Caixa B
-→ novo pagamento do checkout A deve ser rejeitado.
-
-F. Mesa:
-
-primeiro pagamento no Caixa A
-→ trocar POS para Caixa B
-→ segundo pagamento da mesma Mesa deve ser rejeitado ANTES de gravar.
-
-G. Pending Mesa:
-
-timeout
-→ fechar app
-→ checkout-options falhar
-→ pending continua preservado.
-
-H. Pagar Saldo em Dinheiro:
-
-PAGAR SALDO
-→ informar recebido maior
-→ mode continua remaining
-→ troco correto.
-
-==================================================
-22. CHECKPOINT FINAL
-==================================================
-
-Quando concluir, informe objetivamente:
-
-1. como corrigiu o device stale após abrir Caixa;
-2. como corrigiu o device stale após selecionar Caixa;
-3. como corrigiu a seleção FLEXIBLE no Flutter;
-4. qual permissão protege seleção de caixa;
-5. onde active_cash_session vive;
-6. como FIXED funciona;
-7. como FLEXIBLE funciona;
-8. como Venda Rápida consome CashSession;
-9. como Mesa consome CashSession;
-10. como impediu Mesa de misturar sessões;
-11. como Venda Rápida trata mudança de contexto;
-12. como funciona fechamento de Caixa;
-13. como `current_pos_cash_session` faz lock;
-14. como corrigiu pending;
-15. como corrigiu PAGAR SALDO + valor recebido;
-16. como corrigiu equal_split.active;
-17. qual código morto foi removido;
-18. confirmação de que não existe seletor de caixa em Venda/Mesa/Pagamento;
-19. confirmação de que PAGAMENTO continua no RESUMO DA MESA;
-20. arquivos alterados;
-21. flutter analyze;
-22. git diff --check;
-23. Django check;
-24. migrations check;
-25. testes backend direcionados executados.
+1. qual definição passou a determinar o contexto financeiro da Mesa;
+2. como pagamentos estornados são tratados;
+3. como o fechamento da Mesa usa essa mesma regra;
+4. como impediu Mesa paga de ficar impossível de fechar;
+5. como alterou a proteção de fechamento da CashSession;
+6. confirmação de que PIX/Crédito/Débito também bloqueiam fechamento
+   quando pertencem a Mesa aberta;
+7. confirmação de que pagamentos de Mesa fechada não bloqueiam o Caixa;
+8. correção do backspace de PAGAR SALDO;
+9. confirmação de não regressão da Venda Rápida;
+10. confirmação de ausência de seletor de caixa em pagamento;
+11. arquivos alterados;
+12. flutter analyze;
+13. git diff --check;
+14. Django check;
+15. migrations check;
+16. testes direcionados executados.
 
 DEPOIS PARE.
 
 NÃO INICIE IMPRESSÃO.
 
-DEPOIS DESSA FASE EU VOU VALIDAR MANUALMENTE:
+DEPOIS DESSA CORREÇÃO O PRÓXIMO PASSO SERÁ:
 
-CAIXA
-+
-VENDA RÁPIDA
-+
-MESA
-+
-PAGAMENTOS
+VALIDAÇÃO MANUAL DE:
+- CAIXA
+- VENDA RÁPIDA
+- MESA
+- PAGAMENTOS
 
-SÓ DEPOIS DA VALIDAÇÃO COMEÇAREMOS:
+SÓ DEPOIS PARTIREMOS PARA:
 
 - NOTINHA / RESUMO / DOCUMENTO NÃO FISCAL;
 - IMPRESSÃO DE PRODUÇÃO POR SETOR.

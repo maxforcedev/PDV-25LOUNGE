@@ -687,7 +687,7 @@ def close_session(
             command__status=AttendanceCommandStatus.OPEN,
         ).values_list('pk', flat=True))
         blocked_table_payment_ids = list(TablePayment.objects.select_for_update(of=('self',)).filter(
-            cash_session=session, payment_method__code='cash', status=AttendancePaymentStatus.APPLIED,
+            cash_session=session, status=AttendancePaymentStatus.APPLIED,
             reversal__isnull=True, attendance__status=TableAttendanceStatus.OPEN,
         ).values_list('pk', flat=True))
         # Keep session -> checkout -> payment locking so a tender cannot be

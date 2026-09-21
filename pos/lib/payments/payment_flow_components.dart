@@ -645,8 +645,10 @@ class _PaymentEntryPageState extends State<PaymentEntryPage> {
               child: Text(digit, style: const TextStyle(fontSize: 22)),
             ),
           OutlinedButton(
-            onPressed: () =>
-                setState(() => (_receiving ? _received : _amount).backspace()),
+            onPressed: () => setState(() {
+              (_receiving ? _received : _amount).backspace();
+              if (!_receiving) _payingRemaining = false;
+            }),
             child: const Icon(Icons.backspace_outlined),
           ),
         ],
