@@ -22,16 +22,30 @@ Object? _normalizedTableOrderItemValue(Object? value) {
 double _tableOrderItemNumber(Object? value) =>
     double.tryParse('$value'.replaceAll(',', '.')) ?? 0;
 
-Object? _tableOrderItemFinancialSignature(Map<String, dynamic> snapshot) =>
-    _normalizedTableOrderItemValue({
-      'promotion': snapshot['promotion'],
-      'promotion_name': snapshot['promotion_name'],
-      'promotion_discount_type': snapshot['promotion_discount_type'],
-      'promotion_discount_value': snapshot['promotion_discount_value'],
-      'manual_discount_intent': snapshot['manual_discount_intent'],
-      'participates_in_service_fee': snapshot['participates_in_service_fee'],
-      'participates_in_commission': snapshot['participates_in_commission'],
-    });
+Object? _tableOrderItemFinancialSignature(TableOrderItem item) {
+  final snapshot = item.financialSnapshot;
+  final intent = Map<String, dynamic>.from(
+    snapshot['manual_discount_intent'] as Map? ?? const {},
+  );
+  if (intent['type'] == 'amount' &&
+      _tableOrderItemNumber(intent['value']) != 0) {
+    final quantity = _tableOrderItemNumber(item.quantity);
+    intent['unit_value'] = quantity == 0
+        ? '0.000000'
+        : (_tableOrderItemNumber(snapshot['manual_discount']) / quantity)
+            .toStringAsFixed(6);
+    intent.remove('value');
+  }
+  return _normalizedTableOrderItemValue({
+    'promotion': snapshot['promotion'],
+    'promotion_name': snapshot['promotion_name'],
+    'promotion_discount_type': snapshot['promotion_discount_type'],
+    'promotion_discount_value': snapshot['promotion_discount_value'],
+    'manual_discount_intent': intent,
+    'participates_in_service_fee': snapshot['participates_in_service_fee'],
+    'participates_in_commission': snapshot['participates_in_commission'],
+  });
+}
 
 class TableOrderItemEntry {
   const TableOrderItemEntry({required this.item, required this.order});
@@ -108,7 +122,7 @@ List<TableOrderItemGroup> tableOrderItemGroupsForEntries(
       item.unit.toLowerCase(),
       _tableOrderItemNumber(item.unitPrice).toStringAsFixed(2),
       jsonEncode(_normalizedTableOrderItemValue(item.modifierSnapshot)),
-      jsonEncode(_tableOrderItemFinancialSignature(item.financialSnapshot)),
+      jsonEncode(_tableOrderItemFinancialSignature(item)),
       item.notes,
       item.status.toLowerCase(),
       item.printStatus?.toLowerCase() ?? '',
