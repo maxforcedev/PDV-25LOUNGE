@@ -22,6 +22,17 @@ Object? _normalizedTableOrderItemValue(Object? value) {
 double _tableOrderItemNumber(Object? value) =>
     double.tryParse('$value'.replaceAll(',', '.')) ?? 0;
 
+Object? _tableOrderItemFinancialSignature(Map<String, dynamic> snapshot) =>
+    _normalizedTableOrderItemValue({
+      'promotion': snapshot['promotion'],
+      'promotion_name': snapshot['promotion_name'],
+      'promotion_discount_type': snapshot['promotion_discount_type'],
+      'promotion_discount_value': snapshot['promotion_discount_value'],
+      'manual_discount_intent': snapshot['manual_discount_intent'],
+      'participates_in_service_fee': snapshot['participates_in_service_fee'],
+      'participates_in_commission': snapshot['participates_in_commission'],
+    });
+
 class TableOrderItemEntry {
   const TableOrderItemEntry({required this.item, required this.order});
 
@@ -97,7 +108,7 @@ List<TableOrderItemGroup> tableOrderItemGroupsForEntries(
       item.unit.toLowerCase(),
       _tableOrderItemNumber(item.unitPrice).toStringAsFixed(2),
       jsonEncode(_normalizedTableOrderItemValue(item.modifierSnapshot)),
-      jsonEncode(_normalizedTableOrderItemValue(item.financialSnapshot)),
+      jsonEncode(_tableOrderItemFinancialSignature(item.financialSnapshot)),
       item.notes,
       item.status.toLowerCase(),
       item.printStatus?.toLowerCase() ?? '',

@@ -246,6 +246,7 @@ export function SalesPdv() {
   const [previewError, setPreviewError] = useState("");
   const [finalizing, setFinalizing] = useState(false);
   const [sale, setSale] = useState<Sale | null>(null);
+  const [finalizeSuccess, setFinalizeSuccess] = useState("");
   const idempotencyKeyRef = useRef<string | null>(null);
 
   function catalogPath() {
@@ -312,6 +313,7 @@ export function SalesPdv() {
     setPreview(null);
     setPreviewSignature(null);
     setPreviewError("");
+    setFinalizeSuccess("");
     setLoadingError("");
     setResourceErrors({});
     setSearch("");
@@ -770,6 +772,7 @@ export function SalesPdv() {
       return;
     setFinalizing(true);
     setPreviewError("");
+    setFinalizeSuccess("");
     try {
       if (!idempotencyKeyRef.current) {
         idempotencyKeyRef.current = newIdempotencyKey();
@@ -839,6 +842,9 @@ export function SalesPdv() {
       });
       requestRef.current += 1;
       setSale(result);
+      setFinalizeSuccess(
+        `${result.operation_type === "consumption" ? "Consumação" : "Venda"} ${result.sale_number} finalizada com sucesso.`,
+      );
       setCart([]);
       setPreview(null);
       setPreviewSignature(null);
@@ -1427,6 +1433,9 @@ export function SalesPdv() {
                   </div>
                 )}
                 {previewError && <Alert message={previewError} />}
+                {finalizeSuccess && (
+                  <Alert type="success" message={finalizeSuccess} />
+                )}
                 {calculating && (
                   <div className="flex items-center gap-2 text-xs text-primary">
                     <Spinner />
