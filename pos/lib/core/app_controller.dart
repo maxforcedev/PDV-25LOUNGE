@@ -715,6 +715,14 @@ class AppController extends ChangeNotifier {
   BootstrapSnapshot? bootstrapSnapshot;
   SyncStatus syncStatus = const SyncStatus();
   PosApiException? deviceError;
+  String _deviceStatus = '';
+
+  bool get printingEligible =>
+      _device.capabilities['network_printing'] == true &&
+      _deviceStatus == 'ACTIVE' &&
+      (phase == AppPhase.operatorSelection ||
+          phase == AppPhase.operatorPin ||
+          phase == AppPhase.home);
 
   PosCredentialCache? get _credentialCache =>
       _api is PosCredentialCache ? _api as PosCredentialCache : null;
@@ -785,6 +793,7 @@ class AppController extends ChangeNotifier {
       syncStatus = syncStatus.begin();
       final heartbeat = await _api.heartbeat(_device);
       syncStatus = syncStatus.heartbeat(DateTime.now());
+      _deviceStatus = heartbeat.deviceStatus;
       if (heartbeat.release.updateRequired) {
         phase = AppPhase.updateRequired;
         return;
@@ -884,6 +893,7 @@ class AppController extends ChangeNotifier {
     try {
       final heartbeat = await _api.heartbeat(_device);
       syncStatus = syncStatus.heartbeat(DateTime.now());
+      _deviceStatus = heartbeat.deviceStatus;
       if (heartbeat.release.updateRequired) {
         phase = AppPhase.updateRequired;
         return;
@@ -1890,6 +1900,7 @@ class AppController extends ChangeNotifier {
     operators = const [];
     selectedOperator = null;
     bootstrapSnapshot = null;
+    _deviceStatus = '';
     deviceError = null;
     errorMessage = null;
     _clearTransientMessage();

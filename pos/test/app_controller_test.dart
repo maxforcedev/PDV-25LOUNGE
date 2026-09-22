@@ -20,6 +20,7 @@ void main() {
     appVersion: '1.0.0',
     osVersion: 'Android',
     model: 'Test',
+    capabilities: {'network_printing': true},
   );
 
   test('pairs, stores secrets, authenticates, and requires PIN after reopen',
@@ -38,11 +39,13 @@ void main() {
     await controller.confirmOtp('123456');
     expect(await storage.readDeviceCredential(), 'device-secret');
     expect(controller.phase, AppPhase.operatorSelection);
+    expect(controller.printingEligible, isTrue);
 
     controller.selectOperator(controller.operators.single);
     await controller.login('123456');
     expect(await storage.readOperatorSession(), 'operator-secret');
     expect(controller.phase, AppPhase.home);
+    expect(controller.printingEligible, isTrue);
 
     final reopened = AppController(api: api, secrets: storage, device: device);
     await reopened.initialize();
@@ -327,7 +330,7 @@ class FakePosApi implements PosApi {
   @override
   Future<HeartbeatResult> heartbeat(DeviceDescriptor device) async {
     if (heartbeatError != null) throw heartbeatError!;
-    return HeartbeatResult(release: release);
+    return HeartbeatResult(release: release, deviceStatus: 'ACTIVE');
   }
 
   @override

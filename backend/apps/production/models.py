@@ -153,6 +153,9 @@ class PrintJob(BaseModel):
     lease_until = models.DateTimeField(blank=True, null=True)
     # Jobs emitted by one business operation can be sent as one physical ticket.
     batch_key = models.UUIDField(blank=True, null=True, db_index=True)
+    # Once persisted, a physical ticket may have reached the printer and can
+    # never be automatically claimed by another POS.
+    physical_dispatch_started_at = models.DateTimeField(blank=True, null=True)
     executor_metadata = models.JSONField(default=dict, blank=True)
     reprint_of = models.ForeignKey('self', on_delete=models.PROTECT, related_name='reprints', null=True, blank=True)
     reprint_number = models.PositiveIntegerField(default=0)

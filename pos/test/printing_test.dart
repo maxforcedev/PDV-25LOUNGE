@@ -34,10 +34,16 @@ void main() {
     final store = _Store();
     final ledger = LocalPrintLedger(store);
     await ledger.mark(const PrintLedgerEntry(
-        jobId: 10, printerId: 2, idempotencyKey: 'stable', state: 'sent'));
+      jobId: 10,
+      printerId: 2,
+      idempotencyKey: 'stable',
+      state: 'sent',
+      printerObserved: true,
+    ));
     final recovered = await LocalPrintLedger(store).entries();
     expect(recovered.single.jobId, 10);
     expect(recovered.single.state, 'sent');
+    expect(recovered.single.printerObserved, isTrue);
   });
 
   test('renderer identifies cancellation and does not include prices', () {

@@ -77,13 +77,21 @@ class PrintManager with WidgetsBindingObserver {
 
   Future<void> _reconcile() async {
     final entries = await _ledger.entries();
-    final sent = entries.where((entry) => entry.state == 'sent').toList();
-    if (sent.isEmpty) return;
+    final reconcilable = entries
+        .where((entry) =>
+            entry.state == 'sent' || entry.state == 'failed_before_send')
+        .toList();
+    if (reconcilable.isEmpty) return;
     try {
-      await _api.reconcilePrintJobs([
-        for (final entry in sent) {'job_id': entry.jobId, 'state': 'sent'},
+      final reconciled = await _api.reconcilePrintJobs([
+        for (final entry in reconcilable)
+          {
+            'job_id': entry.jobId,
+            'state': entry.state,
+            'printer_observed': entry.printerObserved,
+          },
       ]);
-      await _ledger.removeAll(sent.map((entry) => entry.jobId));
+      await _ledger.removeAll(reconciled);
     } catch (_) {
       // Keep the record: an HTTP failure must not cause a second physical send.
     }
@@ -98,15 +106,27 @@ class PrintManager with WidgetsBindingObserver {
         state: 'attempted',
       ));
     }
+    // The backend must persist this boundary before a socket can be opened.
+    await _api.startPrintDispatch(jobs.first.id);
     final result = await _transport.send(
       printer,
       _renderer.render(jobs, paperWidth: printer.paperWidth, cut: printer.cut),
     );
     final ids = jobs.map((job) => job.id);
     if (result.state == PrintTransportState.failedBeforeSend) {
+      for (final job in jobs) {
+        await _ledger.mark(PrintLedgerEntry(
+          jobId: job.id,
+          printerId: job.printerId,
+          idempotencyKey: job.idempotencyKey,
+          state: 'failed_before_send',
+          printerObserved: result.printerObserved,
+        ));
+      }
       try {
         await _api.reportPrintResult(jobs.first.id, 'failed',
-            error: result.detail);
+            error: result.detail,
+            metadata: {'printer_observed': result.printerObserved});
         await _ledger.removeAll(ids);
       } catch (_) {}
       return;
@@ -117,13 +137,17 @@ class PrintManager with WidgetsBindingObserver {
         printerId: job.printerId,
         idempotencyKey: job.idempotencyKey,
         state: 'sent',
+        printerObserved: result.printerObserved,
       ));
     }
     final outcome =
         result.state == PrintTransportState.sent ? 'printed' : 'uncertain';
     try {
       await _api.reportPrintResult(jobs.first.id, outcome,
-          error: result.detail, metadata: {'transport': 'tcp_lan'});
+          error: result.detail, metadata: {
+        'transport': 'tcp_lan',
+        'printer_observed': result.printerObserved,
+      });
       await _ledger.removeAll(ids);
     } catch (_) {
       // The sent ledger is reconciled as uncertain after connectivity returns.

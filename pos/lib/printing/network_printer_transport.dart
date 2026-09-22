@@ -7,9 +7,11 @@ import 'models.dart';
 enum PrintTransportState { sent, failedBeforeSend, uncertain }
 
 class PrintTransportResult {
-  const PrintTransportResult(this.state, [this.detail = '']);
+  const PrintTransportResult(this.state,
+      {this.detail = '', this.printerObserved = false});
   final PrintTransportState state;
   final String detail;
+  final bool printerObserved;
 }
 
 class NetworkPrinterTransport {
@@ -19,38 +21,44 @@ class NetworkPrinterTransport {
         printer.port < 1 ||
         printer.port > 65535) {
       return const PrintTransportResult(PrintTransportState.failedBeforeSend,
-          'Configuração de rede inválida.');
+          detail: 'Configuração de rede inválida.');
     }
     Socket? socket;
     var started = false;
+    var connected = false;
     try {
       socket = await Socket.connect(printer.host, printer.port,
           timeout: Duration(seconds: printer.timeoutSeconds));
+      connected = true;
       socket.add(bytes);
       started = true;
       await socket.flush().timeout(Duration(seconds: printer.timeoutSeconds));
       await socket.close().timeout(Duration(seconds: printer.timeoutSeconds));
-      return const PrintTransportResult(PrintTransportState.sent);
+      return const PrintTransportResult(PrintTransportState.sent,
+          printerObserved: true);
     } on TimeoutException {
       return PrintTransportResult(
           started
               ? PrintTransportState.uncertain
               : PrintTransportState.failedBeforeSend,
-          started
+          detail: started
               ? 'Timeout após iniciar o envio para a impressora.'
-              : 'Timeout ao conectar à impressora.');
+              : 'Timeout ao conectar à impressora.',
+          printerObserved: connected);
     } on SocketException catch (error) {
       return PrintTransportResult(
           started
               ? PrintTransportState.uncertain
               : PrintTransportState.failedBeforeSend,
-          error.message);
+          detail: error.message,
+          printerObserved: connected);
     } catch (error) {
       return PrintTransportResult(
           started
               ? PrintTransportState.uncertain
               : PrintTransportState.failedBeforeSend,
-          error.toString());
+          detail: error.toString(),
+          printerObserved: connected);
     } finally {
       socket?.destroy();
     }

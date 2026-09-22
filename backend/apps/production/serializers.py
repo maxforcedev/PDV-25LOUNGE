@@ -151,6 +151,7 @@ class PrintJobSerializer(serializers.ModelSerializer):
             'payload_snapshot', 'is_test', 'status', 'attempts', 'last_error',
             'error_summary', 'origin_type', 'origin_label', 'idempotency_key',
             'processing_at', 'printed_at', 'claimed_by', 'lease_until', 'batch_key',
+            'physical_dispatch_started_at',
             'reprint_of', 'reprint_number', 'created_at', 'updated_at',
         )
 

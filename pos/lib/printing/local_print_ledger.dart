@@ -8,6 +8,7 @@ class PrintLedgerEntry {
     required this.printerId,
     required this.idempotencyKey,
     required this.state,
+    this.printerObserved = false,
     this.attemptedAt,
     this.sentAt,
     this.acknowledgedAt,
@@ -19,6 +20,7 @@ class PrintLedgerEntry {
         printerId: json['printer_id'] as int,
         idempotencyKey: json['idempotency_key'] as String? ?? '',
         state: json['state'] as String? ?? 'attempted',
+        printerObserved: json['printer_observed'] == true,
         attemptedAt: json['attempted_at'] as String?,
         sentAt: json['sent_at'] as String?,
         acknowledgedAt: json['acknowledged_at'] as String?,
@@ -28,6 +30,7 @@ class PrintLedgerEntry {
   final int printerId;
   final String idempotencyKey;
   final String state;
+  final bool printerObserved;
   final String? attemptedAt;
   final String? sentAt;
   final String? acknowledgedAt;
@@ -37,6 +40,7 @@ class PrintLedgerEntry {
         'printer_id': printerId,
         'idempotency_key': idempotencyKey,
         'state': state,
+        'printer_observed': printerObserved,
         'attempted_at': attemptedAt,
         'sent_at': sentAt,
         'acknowledged_at': acknowledgedAt,
@@ -74,6 +78,7 @@ class LocalPrintLedger {
       printerId: entry.printerId,
       idempotencyKey: entry.idempotencyKey,
       state: entry.state,
+      printerObserved: entry.printerObserved || previous?.printerObserved == true,
       attemptedAt: entry.attemptedAt ?? previous?.attemptedAt ?? now,
       sentAt: entry.sentAt ??
           previous?.sentAt ??

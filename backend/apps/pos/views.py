@@ -80,6 +80,7 @@ from apps.production.models import PrintJob, PrintJobStatus, PrinterConnectionTy
 from apps.production.serializers import PrintJobSerializer
 from apps.production.services import (
     claim_print_job, complete_print_job, reconcile_print_jobs, renew_print_lease,
+    start_print_dispatch,
 )
 from apps.sales.models import OperationType, Sale
 from apps.sales.serializers import (
@@ -306,9 +307,14 @@ class POSPrintJobsView(POSPrintingView):
             branch=device.branch,
             printer_device__connection_type=PrinterConnectionType.NETWORK,
             printer_device__status=Status.ACTIVE,
+            physical_dispatch_started_at__isnull=True,
         ).filter(
             Q(status=PrintJobStatus.PENDING)
-            | Q(status=PrintJobStatus.PROCESSING, lease_until__lte=now)
+            | Q(
+                status=PrintJobStatus.PROCESSING,
+                lease_until__lte=now,
+                physical_dispatch_started_at__isnull=True,
+            )
         ).select_related('production_job', 'printer_device', 'destination').order_by('created_at', 'id')[:25]
         return Response({'jobs': self._jobs_payload(jobs, request)})
 
@@ -331,6 +337,16 @@ class POSPrintLeaseView(POSPrintingView):
         except ValueError as error:
             raise ValidationError({'detail': str(error)})
         return Response({'lease_seconds': 60, 'jobs': self._jobs_payload(jobs, request)})
+
+
+class POSPrintDispatchView(POSPrintingView):
+    def post(self, request, job_id):
+        device = self.printing_device(request)
+        try:
+            jobs = start_print_dispatch(job_id=job_id, device=device)
+        except ValueError as error:
+            raise ValidationError({'detail': str(error)})
+        return Response({'jobs': self._jobs_payload(jobs, request)})
 
 
 class POSPrintResultView(POSPrintingView):

@@ -162,6 +162,32 @@ void main() {
             .billRequested,
         isTrue);
   });
+
+  test('starts physical dispatch and only returns confirmed reconciliation ids',
+      () async {
+    final api = HttpPosApi(
+      baseUrl: 'https://core.example',
+      secrets: _MemorySecretStore(deviceCredential: 'device-secret'),
+      client: MockClient((request) async {
+        if (request.url.path.endsWith('/dispatch/')) {
+          expect(request.method, 'POST');
+          return http.Response(jsonEncode({'jobs': const []}), 200);
+        }
+        expect(request.url.path, '/api/v1/pos/printing/reconcile/');
+        expect(jsonDecode(request.body), {
+          'entries': [
+            {'job_id': 10, 'state': 'sent'}
+          ]
+        });
+        return http.Response(jsonEncode({'job_ids': [10]}), 200);
+      }),
+    );
+
+    await api.startPrintDispatch(10);
+    expect(await api.reconcilePrintJobs([
+      {'job_id': 10, 'state': 'sent'}
+    ]), [10]);
+  });
 }
 
 class _MemorySecretStore implements SecretStore {

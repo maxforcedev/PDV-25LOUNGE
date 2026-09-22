@@ -463,9 +463,13 @@ def retry_print_job(*, job, user):
         item.last_error = ''
         item.claimed_by = None
         item.lease_until = None
-        item.save(update_fields=('status', 'last_error', 'claimed_by', 'lease_until', 'updated_at'))
+        item.physical_dispatch_started_at = None
+        item.save(update_fields=(
+            'status', 'last_error', 'claimed_by', 'lease_until',
+            'physical_dispatch_started_at', 'updated_at',
+        ))
         audit_log(actor=user, action='print_job.retry', obj=item, company=item.company, branch=item.branch)
-    return job
+    return next((item for item in jobs if item.pk == job.pk), job)
 
 
 PRINT_LEASE_SECONDS = 60
@@ -483,7 +487,7 @@ def _claimed_batch(*, job, device):
 @transaction.atomic
 def claim_print_job(*, job_id, device):
     now = timezone.now()
-    job = PrintJob.objects.select_for_update().select_related('printer_device').filter(
+    job = PrintJob.objects.select_related('printer_device').filter(
         pk=job_id, branch=device.branch, printer_device__connection_type=PrinterConnectionType.NETWORK,
         printer_device__status=Status.ACTIVE,
     ).first()
@@ -492,7 +496,12 @@ def claim_print_job(*, job_id, device):
     jobs = list(_claimed_batch(job=job, device=device).select_related('printer_device'))
     if not jobs or any(
         item.status == PrintJobStatus.UNCERTAIN
-        or (item.status == PrintJobStatus.PROCESSING and item.lease_until and item.lease_until > now and item.claimed_by_id != device.pk)
+        or item.physical_dispatch_started_at is not None
+        or (
+            item.status == PrintJobStatus.PROCESSING
+            and item.claimed_by_id != device.pk
+            and (not item.lease_until or item.lease_until > now)
+        )
         or item.status not in (PrintJobStatus.PENDING, PrintJobStatus.PROCESSING)
         for item in jobs
     ):
@@ -513,12 +522,19 @@ def claim_print_job(*, job_id, device):
 
 @transaction.atomic
 def renew_print_lease(*, job_id, device):
-    job = PrintJob.objects.select_for_update().filter(pk=job_id, branch=device.branch).first()
+    job = PrintJob.objects.filter(pk=job_id, branch=device.branch).first()
     if not job:
         raise ValueError('Job de impressão não encontrado.')
     jobs = list(_claimed_batch(job=job, device=device))
     now = timezone.now()
-    if not jobs or any(item.status != PrintJobStatus.PROCESSING or item.claimed_by_id != device.pk or not item.lease_until or item.lease_until <= now for item in jobs):
+    if not jobs or any(
+        item.status != PrintJobStatus.PROCESSING
+        or item.claimed_by_id != device.pk
+        or item.physical_dispatch_started_at is not None
+        or not item.lease_until
+        or item.lease_until <= now
+        for item in jobs
+    ):
         raise ValueError('Lease de impressão inválida ou expirada.')
     lease_until = now + timedelta(seconds=PRINT_LEASE_SECONDS)
     for item in jobs:
@@ -527,30 +543,62 @@ def renew_print_lease(*, job_id, device):
     return jobs
 
 
-def _record_printer_observation(job, *, status, error=''):
+@transaction.atomic
+def start_print_dispatch(*, job_id, device):
+    """Atomically cross the point after which automatic retry is unsafe."""
+    job = PrintJob.objects.filter(pk=job_id, branch=device.branch).first()
+    if not job:
+        raise ValueError('Job de impressão não encontrado.')
+    jobs = list(_claimed_batch(job=job, device=device).select_related('printer_device'))
+    now = timezone.now()
+    if not jobs or any(
+        item.status != PrintJobStatus.PROCESSING
+        or item.claimed_by_id != device.pk
+        or item.physical_dispatch_started_at is not None
+        or not item.lease_until
+        or item.lease_until <= now
+        for item in jobs
+    ):
+        raise ValueError('Este POS não possui o claim ativo para iniciar o dispatch.')
+    for item in jobs:
+        item.physical_dispatch_started_at = now
+        item.save(update_fields=('physical_dispatch_started_at', 'updated_at'))
+        audit_log(
+            actor=None, action='print_job.dispatch_started', obj=item,
+            company=item.company, branch=item.branch,
+            metadata={'device_id': str(device.pk), 'batch_key': str(item.batch_key or '')},
+        )
+    return jobs
+
+
+def _record_printer_observation(job, *, status, error='', observed=False):
     device = job.printer_device
     now = timezone.now()
-    device.last_seen_at = now
-    if job.is_test:
-        device.last_test_at = now
     device.operational_status = status
     device.last_operational_error = error[:300]
-    device.save(update_fields=('last_seen_at', 'last_test_at', 'operational_status', 'last_operational_error', 'updated_at'))
+    update_fields = ['operational_status', 'last_operational_error', 'updated_at']
+    if observed:
+        device.last_seen_at = now
+        update_fields.append('last_seen_at')
+        if job.is_test:
+            device.last_test_at = now
+            update_fields.append('last_test_at')
+    device.save(update_fields=update_fields)
 
 
 @transaction.atomic
-def complete_print_job(*, job_id, device, outcome, error='', metadata=None, allow_expired_lease=False):
-    job = PrintJob.objects.select_for_update().select_related('printer_device').filter(pk=job_id, branch=device.branch).first()
+def complete_print_job(*, job_id, device, outcome, error='', metadata=None):
+    job = PrintJob.objects.select_related('printer_device').filter(pk=job_id, branch=device.branch).first()
     if not job:
         raise ValueError('Job de impressão não encontrado.')
     jobs = list(_claimed_batch(job=job, device=device).select_related('printer_device'))
     now = timezone.now()
     if not jobs or any(
         item.status != PrintJobStatus.PROCESSING or item.claimed_by_id != device.pk
-        or not item.lease_until or (item.lease_until <= now and not allow_expired_lease)
+        or item.physical_dispatch_started_at is None
         for item in jobs
     ):
-        raise ValueError('Este POS não possui o claim ativo do job.')
+        raise ValueError('Este POS não possui um dispatch físico iniciado para o job.')
     status = {
         'printed': PrintJobStatus.PRINTED,
         'failed': PrintJobStatus.FAILED,
@@ -570,6 +618,7 @@ def complete_print_job(*, job_id, device, outcome, error='', metadata=None, allo
             item,
             status=PrinterOperationalStatus.ONLINE if status == PrintJobStatus.PRINTED else PrinterOperationalStatus.OFFLINE if item.is_test else PrinterOperationalStatus.FAILED,
             error=item.last_error,
+            observed=status == PrintJobStatus.PRINTED or bool((metadata or {}).get('printer_observed')),
         )
         audit_log(actor=None, action=f'print_job.{outcome}', obj=item, company=item.company, branch=item.branch,
                   metadata={'device_id': str(device.pk), 'attempt': item.attempts, 'error': item.last_error})
@@ -582,17 +631,24 @@ def reconcile_print_jobs(*, device, entries):
     for entry in entries:
         job_id = entry.get('job_id')
         state = entry.get('state')
-        if not isinstance(job_id, int) or state not in ('sent', 'acknowledged'):
+        if not isinstance(job_id, int) or state not in ('sent', 'acknowledged', 'failed_before_send'):
             continue
         try:
             jobs = complete_print_job(
                 job_id=job_id, device=device,
-                outcome='printed' if state == 'acknowledged' else 'uncertain',
-                metadata={'reconciled': True}, allow_expired_lease=True,
+                outcome={
+                    'acknowledged': 'printed',
+                    'sent': 'uncertain',
+                    'failed_before_send': 'failed',
+                }[state],
+                metadata={
+                    'reconciled': True,
+                    'printer_observed': entry.get('printer_observed') is True,
+                },
             )
         except ValueError:
             continue
-        reconciled.extend(item.pk for item in jobs)
+        reconciled.extend(item.pk for item in jobs if item.pk not in reconciled)
     if reconciled:
         audit_log(actor=None, action='print_job.reconciled', company=device.branch.company, branch=device.branch,
                   metadata={'device_id': str(device.pk), 'job_ids': reconciled})
@@ -601,22 +657,40 @@ def reconcile_print_jobs(*, device, entries):
 
 @transaction.atomic
 def reprint_print_job(*, job, user, reason=''):
-    source = PrintJob.objects.only('pk', 'reprint_of_id').get(pk=job.pk)
-    root = PrintJob.objects.select_for_update().get(pk=source.reprint_of_id or source.pk)
-    descendants = list(PrintJob.objects.select_for_update().filter(reprint_of=root))
-    number = max((copy.reprint_number for copy in descendants), default=0) + 1
-    source = root if source.pk == root.pk else next(copy for copy in descendants if copy.pk == source.pk)
-    copy = PrintJob.objects.create(company=source.company, branch=source.branch, production_job=source.production_job, destination=source.destination, printer_device=source.printer_device, payload_snapshot={**source.payload_snapshot, 'reprint': True, 'reprint_number': number}, reprint_of=root, reprint_number=number)
-    audit_log(
-        actor=user, action='print_job.reprint_requested', obj=copy,
-        company=copy.company, branch=copy.branch,
-        metadata={
-            'source_print_job_id': str(source.pk),
-            'reprint_number': number,
-            'reason': (reason or '').strip(),
-        },
+    requested = PrintJob.objects.select_for_update().get(pk=job.pk)
+    sources = list(
+        PrintJob.objects.select_for_update().filter(batch_key=requested.batch_key).order_by('id')
+        if requested.batch_key else [requested]
     )
-    return copy
+    roots = {
+        source.reprint_of_id or source.pk
+        for source in sources
+    }
+    descendants = list(PrintJob.objects.select_for_update().filter(reprint_of_id__in=roots))
+    number = max((copy.reprint_number for copy in descendants), default=0) + 1
+    new_batch_key = uuid.uuid4() if requested.batch_key else None
+    copies = {}
+    for source in sources:
+        root_id = source.reprint_of_id or source.pk
+        copy = PrintJob.objects.create(
+            company=source.company, branch=source.branch,
+            production_job=source.production_job, destination=source.destination,
+            printer_device=source.printer_device,
+            payload_snapshot={**source.payload_snapshot, 'reprint': True, 'reprint_number': number},
+            batch_key=new_batch_key, reprint_of_id=root_id, reprint_number=number,
+        )
+        copies[source.pk] = copy
+        audit_log(
+            actor=user, action='print_job.reprint_requested', obj=copy,
+            company=copy.company, branch=copy.branch,
+            metadata={
+                'source_print_job_id': str(source.pk),
+                'reprint_number': number,
+                'reason': (reason or '').strip(),
+                'batch_key': str(new_batch_key or ''),
+            },
+        )
+    return copies[requested.pk]
 
 
 @transaction.atomic

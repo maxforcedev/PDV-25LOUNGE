@@ -24,7 +24,7 @@ Future<void> main() async {
       PrintManager(api: api, ledger: LocalPrintLedger(secrets));
   printManager.start();
   controller.addListener(() {
-    printManager.setOperational(controller.phase == AppPhase.home);
+    printManager.setOperational(controller.printingEligible);
   });
   runApp(CorePosApp(controller: controller));
   unawaited(controller.initialize());

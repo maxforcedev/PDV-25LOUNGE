@@ -348,10 +348,12 @@ abstract class PosApi {
   Future<List<PrintJob>> claimPrintJob(int jobId) => throw UnimplementedError();
   Future<List<PrintJob>> renewPrintLease(int jobId) =>
       throw UnimplementedError();
+  Future<List<PrintJob>> startPrintDispatch(int jobId) =>
+      throw UnimplementedError();
   Future<void> reportPrintResult(int jobId, String outcome,
           {String error = '', Map<String, dynamic> metadata = const {}}) =>
       throw UnimplementedError();
-  Future<void> reconcilePrintJobs(List<Map<String, dynamic>> entries) =>
+  Future<List<int>> reconcilePrintJobs(List<Map<String, dynamic>> entries) =>
       throw UnimplementedError();
   Future<List<NetworkPrinter>> networkPrinters() => throw UnimplementedError();
 }
@@ -564,6 +566,15 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   }
 
   @override
+  Future<List<PrintJob>> startPrintDispatch(int jobId) async {
+    final payload = await _request('POST', 'printing/jobs/$jobId/dispatch/');
+    return (payload['jobs'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(PrintJob.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
   Future<void> reportPrintResult(int jobId, String outcome,
       {String error = '', Map<String, dynamic> metadata = const {}}) async {
     await _request('POST', 'printing/jobs/$jobId/$outcome/', body: {
@@ -573,8 +584,14 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   }
 
   @override
-  Future<void> reconcilePrintJobs(List<Map<String, dynamic>> entries) async {
-    await _request('POST', 'printing/reconcile/', body: {'entries': entries});
+  Future<List<int>> reconcilePrintJobs(
+      List<Map<String, dynamic>> entries) async {
+    final payload =
+        await _request('POST', 'printing/reconcile/', body: {'entries': entries});
+    return (payload['job_ids'] as List<dynamic>? ?? const [])
+        .whereType<num>()
+        .map((id) => id.toInt())
+        .toList(growable: false);
   }
 
   @override

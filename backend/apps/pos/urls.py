@@ -35,7 +35,7 @@ from .views import (
     POSTableOrderPreviewView,
     POSTableCheckoutOptionsView,
     POSTicketLookupView, POSTicketValidateView,
-    POSPrintJobsView, POSPrintClaimView, POSPrintLeaseView, POSPrintPrintedView,
+    POSPrintJobsView, POSPrintClaimView, POSPrintLeaseView, POSPrintDispatchView, POSPrintPrintedView,
     POSPrintFailedView, POSPrintUncertainView, POSPrintReconcileView,
     POSPrinterConfigurationView,
 )
@@ -126,6 +126,7 @@ urlpatterns = [
     path('printing/jobs/', POSPrintJobsView.as_view(), name='print-jobs'),
     path('printing/jobs/<int:job_id>/claim/', POSPrintClaimView.as_view(), name='print-claim'),
     path('printing/jobs/<int:job_id>/renew/', POSPrintLeaseView.as_view(), name='print-lease'),
+    path('printing/jobs/<int:job_id>/dispatch/', POSPrintDispatchView.as_view(), name='print-dispatch'),
     path('printing/jobs/<int:job_id>/printed/', POSPrintPrintedView.as_view(), name='print-printed'),
     path('printing/jobs/<int:job_id>/failed/', POSPrintFailedView.as_view(), name='print-failed'),
     path('printing/jobs/<int:job_id>/uncertain/', POSPrintUncertainView.as_view(), name='print-uncertain'),
