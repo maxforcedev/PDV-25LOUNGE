@@ -24,6 +24,7 @@ class AppConfig {
         appVersion: appVersion,
         osVersion: Platform.operatingSystemVersion,
         model: Platform.localHostname,
+        capabilities: const {'network_printing': true},
       ),
     );
   }

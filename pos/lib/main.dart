@@ -6,17 +6,26 @@ import 'core/app_controller.dart';
 import 'core/app_shell.dart';
 import 'core/transient_feedback.dart';
 import 'network/pos_api.dart';
+import 'printing/local_print_ledger.dart';
+import 'printing/print_manager.dart';
 import 'storage/secret_store.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final config = AppConfig.fromEnvironment();
   final secrets = FlutterSecretStore();
+  final api = HttpPosApi(baseUrl: config.apiBaseUrl, secrets: secrets);
   final controller = AppController(
-    api: HttpPosApi(baseUrl: config.apiBaseUrl, secrets: secrets),
+    api: api,
     secrets: secrets,
     device: config.device,
   );
+  final printManager =
+      PrintManager(api: api, ledger: LocalPrintLedger(secrets));
+  printManager.start();
+  controller.addListener(() {
+    printManager.setOperational(controller.phase == AppPhase.home);
+  });
   runApp(CorePosApp(controller: controller));
   unawaited(controller.initialize());
 }

@@ -35,6 +35,9 @@ from .views import (
     POSTableOrderPreviewView,
     POSTableCheckoutOptionsView,
     POSTicketLookupView, POSTicketValidateView,
+    POSPrintJobsView, POSPrintClaimView, POSPrintLeaseView, POSPrintPrintedView,
+    POSPrintFailedView, POSPrintUncertainView, POSPrintReconcileView,
+    POSPrinterConfigurationView,
 )
 
 app_name = 'pos'
@@ -120,6 +123,14 @@ urlpatterns = [
     path('sales/', POSFinalizeSaleView.as_view(), name='sale-finalize'),
     path('tickets/lookup/', POSTicketLookupView.as_view(), name='ticket-lookup'),
     path('tickets/validate/', POSTicketValidateView.as_view(), name='ticket-validate'),
+    path('printing/jobs/', POSPrintJobsView.as_view(), name='print-jobs'),
+    path('printing/jobs/<int:job_id>/claim/', POSPrintClaimView.as_view(), name='print-claim'),
+    path('printing/jobs/<int:job_id>/renew/', POSPrintLeaseView.as_view(), name='print-lease'),
+    path('printing/jobs/<int:job_id>/printed/', POSPrintPrintedView.as_view(), name='print-printed'),
+    path('printing/jobs/<int:job_id>/failed/', POSPrintFailedView.as_view(), name='print-failed'),
+    path('printing/jobs/<int:job_id>/uncertain/', POSPrintUncertainView.as_view(), name='print-uncertain'),
+    path('printing/reconcile/', POSPrintReconcileView.as_view(), name='print-reconcile'),
+    path('printing/printers/', POSPrinterConfigurationView.as_view(), name='print-printers'),
     path('heartbeat/', HeartbeatView.as_view(), name='heartbeat'),
     path('pin/confirm/', PinConfirmView.as_view(), name='pin-confirm'),
 ]

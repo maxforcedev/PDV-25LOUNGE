@@ -62,6 +62,11 @@ class PrinterDeviceSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError({'technical_configuration': 'Informe IP ou hostname válido.'})
             if not isinstance(configuration.get('port'), int) or not 1 <= configuration['port'] <= 65535:
                 raise serializers.ValidationError({'technical_configuration': 'Rede exige porta entre 1 e 65535.'})
+            timeout = configuration.get('timeout', 5)
+            if not isinstance(timeout, (int, float)) or not 1 <= timeout <= 30:
+                raise serializers.ValidationError({'technical_configuration': 'Rede exige timeout entre 1 e 30 segundos.'})
+            if configuration.get('paper_width', 80) not in (58, 80):
+                raise serializers.ValidationError({'technical_configuration': 'Largura do papel deve ser 58 ou 80 mm.'})
         elif connection_type == PrinterConnectionType.USB:
             if not str(configuration.get('identifier', '')).strip():
                 raise serializers.ValidationError({'technical_configuration': 'Informe os dados da impressora USB.'})
@@ -121,7 +126,7 @@ class PrinterDeviceSerializer(serializers.ModelSerializer):
 class ProductionJobSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProductionJob
-        fields = ('id', 'company', 'branch', 'order_item', 'sale_item', 'destination', 'event', 'payload_snapshot', 'original_job', 'created_at')
+        fields = ('id', 'company', 'branch', 'order_item', 'attendance_order_item', 'table_order_item', 'sale_item', 'destination', 'event', 'payload_snapshot', 'original_job', 'created_at')
 
 
 class TicketSerializer(serializers.ModelSerializer):
@@ -145,7 +150,7 @@ class PrintJobSerializer(serializers.ModelSerializer):
             'destination', 'printer_device', 'printer_name', 'connection_type',
             'payload_snapshot', 'is_test', 'status', 'attempts', 'last_error',
             'error_summary', 'origin_type', 'origin_label', 'idempotency_key',
-            'processing_at', 'printed_at',
+            'processing_at', 'printed_at', 'claimed_by', 'lease_until', 'batch_key',
             'reprint_of', 'reprint_number', 'created_at', 'updated_at',
         )
 
@@ -160,6 +165,8 @@ class PrintJobSerializer(serializers.ModelSerializer):
             return 'command'
         if production_job and production_job.sale_item_id:
             return 'sale'
+        if production_job and production_job.table_order_item_id:
+            return 'table'
         return 'system'
 
     def get_origin_label(self, job):
@@ -172,6 +179,9 @@ class PrintJobSerializer(serializers.ModelSerializer):
             return f'Comanda {number}' if number else f'Pedido #{production_job.order_item_id}'
         if production_job and production_job.sale_item_id:
             return f'Venda #{production_job.sale_item.sale_id}'
+        if production_job and production_job.table_order_item_id:
+            table = (job.payload_snapshot or {}).get('table', {})
+            return f"Mesa {table.get('name') or production_job.table_order_item_id}"
         return f'Impressão #{job.pk}'
 
 

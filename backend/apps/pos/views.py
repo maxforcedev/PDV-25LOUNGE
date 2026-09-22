@@ -76,6 +76,11 @@ from apps.products.models import (
 from apps.products.models import SalesChannel
 from apps.products.selectors import sellable_products_for_branch
 from apps.production.services import lookup_ticket_for_validation, redeem_ticket, ticket_validation_data
+from apps.production.models import PrintJob, PrintJobStatus, PrinterConnectionType, PrinterDevice
+from apps.production.serializers import PrintJobSerializer
+from apps.production.services import (
+    claim_print_job, complete_print_job, reconcile_print_jobs, renew_print_lease,
+)
 from apps.sales.models import OperationType, Sale
 from apps.sales.serializers import (
     CalculationOutputSerializer, SaleCatalogProductSerializer, SaleSerializer,
@@ -277,6 +282,114 @@ class HeartbeatView(POSDeviceView):
         device.last_seen_at = timezone.now()
         device.save(update_fields=['app_version', 'capabilities', 'last_seen_at', 'updated_at'])
         return Response({'device': {'id': device.id, 'status': device.status}, 'release': version_gate(device.app_version)})
+
+
+class POSPrintingView(POSDeviceView):
+    """Device-authenticated LAN print executor endpoints; no human RBAC is needed."""
+
+    def printing_device(self, request):
+        device = self.device(request, check_version=True)
+        if device.capabilities.get('network_printing') is not True:
+            raise PermissionDenied('Este POS não possui capacidade de impressão em rede.')
+        return device
+
+    @staticmethod
+    def _jobs_payload(jobs, request):
+        return PrintJobSerializer(jobs, many=True, context={'request': request}).data
+
+
+class POSPrintJobsView(POSPrintingView):
+    def get(self, request):
+        device = self.printing_device(request)
+        now = timezone.now()
+        jobs = PrintJob.objects.filter(
+            branch=device.branch,
+            printer_device__connection_type=PrinterConnectionType.NETWORK,
+            printer_device__status=Status.ACTIVE,
+        ).filter(
+            Q(status=PrintJobStatus.PENDING)
+            | Q(status=PrintJobStatus.PROCESSING, lease_until__lte=now)
+        ).select_related('production_job', 'printer_device', 'destination').order_by('created_at', 'id')[:25]
+        return Response({'jobs': self._jobs_payload(jobs, request)})
+
+
+class POSPrintClaimView(POSPrintingView):
+    def post(self, request, job_id):
+        device = self.printing_device(request)
+        try:
+            jobs = claim_print_job(job_id=job_id, device=device)
+        except ValueError as error:
+            raise ValidationError({'detail': str(error)})
+        return Response({'lease_seconds': 60, 'jobs': self._jobs_payload(jobs, request)})
+
+
+class POSPrintLeaseView(POSPrintingView):
+    def post(self, request, job_id):
+        device = self.printing_device(request)
+        try:
+            jobs = renew_print_lease(job_id=job_id, device=device)
+        except ValueError as error:
+            raise ValidationError({'detail': str(error)})
+        return Response({'lease_seconds': 60, 'jobs': self._jobs_payload(jobs, request)})
+
+
+class POSPrintResultView(POSPrintingView):
+    outcome = ''
+
+    def post(self, request, job_id):
+        device = self.printing_device(request)
+        error = str(request.data.get('error', '')).strip()[:1000]
+        metadata = request.data.get('metadata')
+        if not isinstance(metadata, dict):
+            metadata = {}
+        try:
+            jobs = complete_print_job(
+                job_id=job_id, device=device, outcome=self.outcome,
+                error=error, metadata=metadata,
+            )
+        except ValueError as error:
+            raise ValidationError({'detail': str(error)})
+        return Response({'jobs': self._jobs_payload(jobs, request)})
+
+
+class POSPrintPrintedView(POSPrintResultView):
+    outcome = 'printed'
+
+
+class POSPrintFailedView(POSPrintResultView):
+    outcome = 'failed'
+
+
+class POSPrintUncertainView(POSPrintResultView):
+    outcome = 'uncertain'
+
+
+class POSPrintReconcileView(POSPrintingView):
+    def post(self, request):
+        device = self.printing_device(request)
+        entries = request.data.get('entries', [])
+        if not isinstance(entries, list) or len(entries) > 100:
+            raise ValidationError({'entries': 'Informe até 100 registros de reconciliação.'})
+        return Response({'job_ids': reconcile_print_jobs(device=device, entries=entries)})
+
+
+class POSPrinterConfigurationView(POSPrintingView):
+    def get(self, request):
+        device = self.printing_device(request)
+        printers = PrinterDevice.objects.filter(
+            branch=device.branch, status=Status.ACTIVE,
+            connection_type=PrinterConnectionType.NETWORK,
+        ).prefetch_related('destinations').order_by('name', 'id')
+        return Response({'printers': [{
+            'id': printer.pk,
+            'name': printer.name,
+            'destinations': [{'id': destination.pk, 'name': destination.name} for destination in printer.destinations.all()],
+            'configuration': {
+                key: (printer.technical_configuration or {}).get(key)
+                for key in ('host', 'port', 'timeout', 'paper_width', 'cut')
+            },
+            'operational_status': printer.operational_status,
+        } for printer in printers]})
 
 
 class PinConfirmView(POSPublicView):

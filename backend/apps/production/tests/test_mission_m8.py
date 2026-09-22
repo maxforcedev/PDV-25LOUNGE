@@ -63,39 +63,29 @@ class MissionM8PrinterTests(TestCase):
         self.assertEqual(item['operational_status'], 'not_tested')
 
     @patch('apps.production.adapters.socket.create_connection')
-    def test_network_test_sets_online_only_after_real_adapter_success(self, connect):
-        connection = MagicMock()
-        connect.return_value.__enter__.return_value = connection
+    def test_network_test_enqueues_for_local_pos_without_server_socket(self, connect):
         printer = self.create_printer()
 
         response = self.client.post(f'/api/v1/printer-devices/{printer.pk}/test/')
 
         self.assertEqual(response.status_code, 201, response.data)
-        self.assertEqual(response.data['status'], PrintJobStatus.PRINTED)
+        self.assertEqual(response.data['status'], PrintJobStatus.PENDING)
         printer.refresh_from_db()
-        self.assertEqual(printer.operational_status, PrinterOperationalStatus.ONLINE)
-        self.assertIsNotNone(printer.last_test_at)
-        connection.sendall.assert_called_once()
+        self.assertEqual(printer.operational_status, PrinterOperationalStatus.NOT_TESTED)
+        self.assertIsNone(printer.last_test_at)
+        connect.assert_not_called()
 
-    @patch(
-        'apps.production.adapters.socket.create_connection',
-        side_effect=TimeoutError('timed out'),
-    )
-    def test_network_failure_sets_offline_with_friendly_error(self, _connect):
+    def test_network_test_stays_pending_until_local_pos_reports_result(self):
         printer = self.create_printer()
 
         response = self.client.post(f'/api/v1/printer-devices/{printer.pk}/test/')
 
         self.assertEqual(response.status_code, 201, response.data)
-        self.assertEqual(response.data['status'], PrintJobStatus.FAILED)
-        self.assertEqual(
-            response.data['error_summary'],
-            'Não foi possível conectar à impressora 192.168.1.50:9100.',
-        )
+        self.assertEqual(response.data['status'], PrintJobStatus.PENDING)
         printer.refresh_from_db()
-        self.assertEqual(printer.operational_status, PrinterOperationalStatus.OFFLINE)
+        self.assertEqual(printer.operational_status, PrinterOperationalStatus.NOT_TESTED)
 
-    def test_usb_and_bluetooth_are_saved_without_fake_bridge_connection(self):
+    def test_usb_and_bluetooth_are_saved_but_not_executed_by_network_pos(self):
         usb = self.create_printer('Tickets', 'usb')
         bluetooth = self.create_printer('Bar', 'bluetooth')
 
@@ -103,16 +93,12 @@ class MissionM8PrinterTests(TestCase):
             self.assertEqual(printer.operational_status, PrinterOperationalStatus.NOT_TESTED)
 
         response = self.client.post(f'/api/v1/printer-devices/{usb.pk}/test/')
-        self.assertEqual(response.status_code, 201, response.data)
-        self.assertEqual(response.data['status'], PrintJobStatus.FAILED)
-        self.assertEqual(response.data['error_summary'], 'Print Bridge necessária para utilizar esta impressora.')
+        self.assertEqual(response.status_code, 400, response.data)
         usb.refresh_from_db()
-        self.assertEqual(
-            usb.operational_status, PrinterOperationalStatus.BRIDGE_UNAVAILABLE,
-        )
+        self.assertEqual(usb.operational_status, PrinterOperationalStatus.NOT_TESTED)
 
     def test_history_is_paginated_and_archiving_preserves_jobs(self):
-        printer = self.create_printer('Tickets', 'usb')
+        printer = self.create_printer('Tickets')
         self.client.post(f'/api/v1/printer-devices/{printer.pk}/test/')
 
         history = self.client.get(

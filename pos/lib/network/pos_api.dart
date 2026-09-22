@@ -12,6 +12,7 @@ import '../pairing/pairing_models.dart';
 import '../sales/sale_models.dart';
 import '../storage/secret_store.dart';
 import '../tickets/ticket_models.dart';
+import '../printing/models.dart';
 import 'pos_api_error.dart';
 
 final _posDebugClock = Stopwatch()..start();
@@ -343,6 +344,16 @@ abstract class PosApi {
       required String quantity,
       required String idempotencyKey,
       required String inputMethod});
+  Future<List<PrintJob>> printingJobs() => throw UnimplementedError();
+  Future<List<PrintJob>> claimPrintJob(int jobId) => throw UnimplementedError();
+  Future<List<PrintJob>> renewPrintLease(int jobId) =>
+      throw UnimplementedError();
+  Future<void> reportPrintResult(int jobId, String outcome,
+          {String error = '', Map<String, dynamic> metadata = const {}}) =>
+      throw UnimplementedError();
+  Future<void> reconcilePrintJobs(List<Map<String, dynamic>> entries) =>
+      throw UnimplementedError();
+  Future<List<NetworkPrinter>> networkPrinters() => throw UnimplementedError();
 }
 
 abstract interface class PosCredentialCache {
@@ -524,6 +535,56 @@ class HttpPosApi implements PosApi, PosCredentialCache {
           'capabilities': device.capabilities,
         }),
       );
+
+  @override
+  Future<List<PrintJob>> printingJobs() async {
+    final payload = await _request('GET', 'printing/jobs/');
+    return (payload['jobs'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(PrintJob.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<List<PrintJob>> claimPrintJob(int jobId) async {
+    final payload = await _request('POST', 'printing/jobs/$jobId/claim/');
+    return (payload['jobs'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(PrintJob.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<List<PrintJob>> renewPrintLease(int jobId) async {
+    final payload = await _request('POST', 'printing/jobs/$jobId/renew/');
+    return (payload['jobs'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(PrintJob.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<void> reportPrintResult(int jobId, String outcome,
+      {String error = '', Map<String, dynamic> metadata = const {}}) async {
+    await _request('POST', 'printing/jobs/$jobId/$outcome/', body: {
+      'error': error,
+      'metadata': metadata,
+    });
+  }
+
+  @override
+  Future<void> reconcilePrintJobs(List<Map<String, dynamic>> entries) async {
+    await _request('POST', 'printing/reconcile/', body: {'entries': entries});
+  }
+
+  @override
+  Future<List<NetworkPrinter>> networkPrinters() async {
+    final payload = await _request('GET', 'printing/printers/');
+    return (payload['printers'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(NetworkPrinter.fromJson)
+        .toList(growable: false);
+  }
 
   @override
   Future<List<PosOperator>> operators() async {

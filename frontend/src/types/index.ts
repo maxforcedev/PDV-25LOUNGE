@@ -575,7 +575,7 @@ export interface ProductionDestination {
   updated_at: string;
 }
 
-export type PrintJobStatus = "pending" | "processing" | "printed" | "failed" | "cancelled";
+export type PrintJobStatus = "pending" | "processing" | "printed" | "failed" | "uncertain" | "cancelled";
 
 export interface PrinterDevice {
   id: number;

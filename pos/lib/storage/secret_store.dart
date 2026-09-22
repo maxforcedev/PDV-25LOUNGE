@@ -21,6 +21,11 @@ abstract interface class TablePaymentStateStore {
   Future<void> writeTablePaymentState(String value);
 }
 
+abstract interface class PrintLedgerStateStore {
+  Future<String?> readPrintLedgerState();
+  Future<void> writePrintLedgerState(String value);
+}
+
 /// Optional so existing secret-store implementations remain valid.
 extension QuickSaleCheckoutSecretStore on SecretStore {
   Future<String?> readQuickSaleCheckoutState() =>
@@ -44,11 +49,22 @@ extension TablePaymentSecretStore on SecretStore {
           : Future.value();
 }
 
+extension PrintLedgerSecretStore on SecretStore {
+  Future<String?> readPrintLedgerState() => this is PrintLedgerStateStore
+      ? (this as PrintLedgerStateStore).readPrintLedgerState()
+      : Future.value(null);
+  Future<void> writePrintLedgerState(String value) =>
+      this is PrintLedgerStateStore
+          ? (this as PrintLedgerStateStore).writePrintLedgerState(value)
+          : Future.value();
+}
+
 class FlutterSecretStore
     implements
         SecretStore,
         QuickSaleCheckoutStateStore,
-        TablePaymentStateStore {
+        TablePaymentStateStore,
+        PrintLedgerStateStore {
   FlutterSecretStore({FlutterSecureStorage? storage})
       : _storage = storage ?? const FlutterSecureStorage();
 
@@ -57,6 +73,7 @@ class FlutterSecretStore
   static const _pendingSaleIntentsKey = 'core_pos.pending_sale_intents';
   static const _quickSaleCheckoutStateKey = 'core_pos.quick_sale_checkout';
   static const _tablePaymentStateKey = 'core_pos.table_payment_state';
+  static const _printLedgerStateKey = 'core_pos.print_ledger';
 
   final FlutterSecureStorage _storage;
 
@@ -107,4 +124,12 @@ class FlutterSecretStore
   @override
   Future<void> writeTablePaymentState(String value) =>
       _storage.write(key: _tablePaymentStateKey, value: value);
+
+  @override
+  Future<String?> readPrintLedgerState() =>
+      _storage.read(key: _printLedgerStateKey);
+
+  @override
+  Future<void> writePrintLedgerState(String value) =>
+      _storage.write(key: _printLedgerStateKey, value: value);
 }

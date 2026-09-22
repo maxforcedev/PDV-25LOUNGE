@@ -69,6 +69,12 @@ class PrinterDevice(BaseModel):
             port = configuration.get('port')
             if not isinstance(port, int) or not 1 <= port <= 65535:
                 raise ValidationError({'technical_configuration': 'Rede exige porta entre 1 e 65535.'})
+            timeout = configuration.get('timeout', 5)
+            if not isinstance(timeout, (int, float)) or not 1 <= timeout <= 30:
+                raise ValidationError({'technical_configuration': 'Rede exige timeout entre 1 e 30 segundos.'})
+            width = configuration.get('paper_width', 80)
+            if width not in (58, 80):
+                raise ValidationError({'technical_configuration': 'Largura do papel deve ser 58 ou 80 mm.'})
         elif self.connection_type == PrinterConnectionType.USB:
             if not configuration.get('identifier'):
                 raise ValidationError({'technical_configuration': 'USB exige identificador persistente do dispositivo.'})
@@ -122,6 +128,7 @@ class PrintJobStatus(models.TextChoices):
     PROCESSING = 'processing', 'Processando'
     PRINTED = 'printed', 'Impresso'
     FAILED = 'failed', 'Falhou'
+    UNCERTAIN = 'uncertain', 'Resultado incerto'
     CANCELLED = 'cancelled', 'Cancelado'
 
 
@@ -139,6 +146,14 @@ class PrintJob(BaseModel):
     idempotency_key = models.UUIDField(default=uuid.uuid4, editable=False)
     processing_at = models.DateTimeField(blank=True, null=True)
     printed_at = models.DateTimeField(blank=True, null=True)
+    claimed_by = models.ForeignKey(
+        'pos.POSDevice', on_delete=models.PROTECT, related_name='claimed_print_jobs',
+        blank=True, null=True,
+    )
+    lease_until = models.DateTimeField(blank=True, null=True)
+    # Jobs emitted by one business operation can be sent as one physical ticket.
+    batch_key = models.UUIDField(blank=True, null=True, db_index=True)
+    executor_metadata = models.JSONField(default=dict, blank=True)
     reprint_of = models.ForeignKey('self', on_delete=models.PROTECT, related_name='reprints', null=True, blank=True)
     reprint_number = models.PositiveIntegerField(default=0)
 

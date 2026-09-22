@@ -40,6 +40,7 @@ const jobStatusLabels: Record<PrintJobStatus, string> = {
   processing: "Processando",
   printed: "Impresso",
   failed: "Falhou",
+  uncertain: "Resultado incerto",
   cancelled: "Cancelado",
 };
 
@@ -51,6 +52,7 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
   const { currentBranch, currentCompany, supportSession, hasPermission } = useAuth();
   const readOnly = supportSession?.mode === "READ_ONLY";
   const canReprint = hasPermission(permissions.reprintPrintJobs) && !readOnly;
+  const canRetry = hasPermission(permissions.retryPrintJobs) && !readOnly;
   const contextRef = useRef("");
   contextRef.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}`;
   const [devices, setDevices] = useState<PrinterDevice[]>([]);
@@ -68,6 +70,8 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
   const [deviceStatus, setDeviceStatus] = useState<"active" | "inactive">("active");
   const [host, setHost] = useState("");
   const [port, setPort] = useState("9100");
+  const [timeout, setTimeout] = useState("5");
+  const [paperWidth, setPaperWidth] = useState("80");
   const [vendorId, setVendorId] = useState("");
   const [productId, setProductId] = useState("");
   const [serial, setSerial] = useState("");
@@ -118,6 +122,8 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
     setDeviceStatus(device?.status || "active");
     setHost(String(config.host || ""));
     setPort(String(config.port || "9100"));
+    setTimeout(String(config.timeout || 5));
+    setPaperWidth(String(config.paper_width || 80));
     setVendorId(String(config.vendor_id || ""));
     setProductId(String(config.product_id || ""));
     setSerial(String(config.serial || ""));
@@ -133,7 +139,7 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
     if (!currentBranch || readOnly) return;
     const technical_configuration =
       connectionType === "network"
-        ? { host: host.trim(), port: Number(port), timeout: 5 }
+        ? { host: host.trim(), port: Number(port), timeout: Number(timeout), paper_width: Number(paperWidth), cut: true }
         : connectionType === "usb"
           ? {
               vendor_id: vendorId.trim(),
@@ -176,14 +182,11 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
     setError("");
     setSuccess("");
     try {
-      const job = await http.post<PrintJob>(
+      await http.post<PrintJob>(
         `printer-devices/${device.id}/test/`,
         {},
       );
-      if (job.status === "printed")
-        setSuccess("Teste de impressão enviado com sucesso.");
-      else
-        setError(job.error_summary || "Não foi possível testar esta impressora.");
+      setSuccess("Teste enfileirado. Aguardando um CORE POS local executar.");
       await load();
     } catch (caught) {
       setError(
@@ -260,6 +263,19 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
     }
   }
 
+  async function retry(job: PrintJob) {
+    setBusy(job.id);
+    try {
+      await http.post(`print-jobs/${job.id}/retry/`, {});
+      setSuccess("Retry técnico incluído na fila para o CORE POS local.");
+      if (historyDevice) await openHistory(historyDevice);
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Não foi possível executar o retry.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   const workspace = (
     <div className={embedded ? "space-y-4" : "space-y-4 p-4 sm:p-6 lg:p-8"}>
       {error && !editorOpen && <Alert message={error} />}
@@ -326,7 +342,7 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
                     type="button"
                     variant="secondary"
                     loading={busy === device.id}
-                    disabled={readOnly || device.status !== "active"}
+                    disabled={readOnly || device.status !== "active" || device.connection_type !== "network"}
                     onClick={() => void testPrinter(device)}
                   >
                     {device.connection_type === "bluetooth" ? "Conectar" : "Testar"}
@@ -429,26 +445,37 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
               </Field>
             </div>
             {connectionType === "network" && (
-              <div className="grid gap-4 sm:grid-cols-[1fr_9rem]">
-                <Field label="IP ou hostname">
-                  <Input
-                    required
-                    value={host}
-                    onChange={(event) => setHost(event.target.value)}
-                    placeholder="192.168.1.50"
-                  />
+              <>
+                <div className="grid gap-4 sm:grid-cols-[1fr_9rem_8rem]">
+                  <Field label="IP ou hostname">
+                    <Input
+                      required
+                      value={host}
+                      onChange={(event) => setHost(event.target.value)}
+                      placeholder="192.168.1.50"
+                    />
+                  </Field>
+                  <Field label="Porta">
+                    <Input
+                      required
+                      inputMode="numeric"
+                      value={port}
+                      onChange={(event) =>
+                        setPort(event.target.value.replace(/\D/g, ""))
+                      }
+                    />
+                  </Field>
+                  <Field label="Timeout (s)">
+                    <Input required inputMode="numeric" value={timeout} onChange={(event) => setTimeout(event.target.value.replace(/\D/g, ""))} />
+                  </Field>
+                </div>
+                <Field label="Largura do papel">
+                  <Select value={paperWidth} onChange={(event) => setPaperWidth(event.target.value)}>
+                    <option value="80">80 mm</option>
+                    <option value="58">58 mm</option>
+                  </Select>
                 </Field>
-                <Field label="Porta">
-                  <Input
-                    required
-                    inputMode="numeric"
-                    value={port}
-                    onChange={(event) =>
-                      setPort(event.target.value.replace(/\D/g, ""))
-                    }
-                  />
-                </Field>
-              </div>
+              </>
             )}
             {connectionType === "usb" && (
               <>
@@ -557,6 +584,16 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
                         onClick={() => void reprint(job)}
                       >
                         Reimprimir
+                      </Button>
+                    )}
+                    {canRetry && job.status === "failed" && (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        loading={busy === job.id}
+                        onClick={() => void retry(job)}
+                      >
+                        Tentar novamente
                       </Button>
                     )}
                   </article>
