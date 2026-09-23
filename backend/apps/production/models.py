@@ -224,6 +224,8 @@ class PrintDocumentRequest(BaseModel):
     document = models.ForeignKey(PrintDocument, on_delete=models.PROTECT, related_name='requests')
     action = models.CharField(max_length=12, choices=(('issue', 'Emissão'), ('reprint', 'Reimpressão')))
     idempotency_key = models.UUIDField()
+    request_fingerprint = models.CharField(max_length=64)
+    generated_jobs = models.ManyToManyField('PrintJob', related_name='document_requests', blank=True)
 
     class Meta:
         constraints = [

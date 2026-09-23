@@ -80,7 +80,7 @@ from apps.production.models import PrintDocument, PrintDocumentType, PrintJob, P
 from apps.production.serializers import PrintDocumentIssueSerializer, PrintDocumentResultSerializer, PrintJobSerializer, ReprintSerializer
 from apps.production.services import (
     claim_print_job, complete_print_job, reconcile_print_jobs, renew_print_lease,
-    create_print_document, expire_abandoned_print_dispatches, issue_print_document, reprint_print_document, reprint_print_job, start_print_dispatch,
+    current_print_document, expire_abandoned_print_dispatches, issue_print_document, reprint_print_document, reprint_print_job, start_print_dispatch,
 )
 from apps.sales.models import OperationType, Sale
 from apps.sales.serializers import (
@@ -1488,17 +1488,14 @@ class POSTableAttendanceView(POSAttendanceView):
             PrintDocumentType.TABLE_CONFERENCE,
             PrintDocumentType.TABLE_FINAL_RECEIPT,
         ):
-            try:
-                document, _ = create_print_document(
-                    branch=device.branch, document_type=document_type,
-                    source_type='table_attendance', source_id=attendance.pk,
-                )
-            except ValueError:
-                # A final receipt is not meaningful before the attendance closes.
-                continue
-            documents.append(PrintDocumentResultSerializer(
-                document, context={'request': request},
-            ).data)
+            document = current_print_document(
+                branch=device.branch, document_type=document_type,
+                source_type='table_attendance', source_id=attendance.pk,
+            )
+            if document:
+                documents.append(PrintDocumentResultSerializer(
+                    document, context={'request': request},
+                ).data)
         data['print_documents'] = documents
         return Response(data)
 
@@ -1634,17 +1631,6 @@ class POSTableAttendancePaymentsView(POSTableAttendanceView):
         attendance = self._attendance(device, attendance_id)
         payments = attendance.payments.select_related('payment_method', 'cash_session').prefetch_related('allocations').order_by('created_at', 'id')
         rows = TablePaymentSerializer(payments, many=True).data
-        documents = {
-            document.source_id: document
-            for document in PrintDocument.objects.filter(
-                branch=device.branch, document_type=PrintDocumentType.PAYMENT_RECEIPT,
-                source_type='table_payment', source_id__in=[str(payment.pk) for payment in payments],
-            )
-        }
-        for row in rows:
-            document = documents.get(str(row['id']))
-            if document:
-                row['print_document'] = _print_document_effect(document)
         return Response({'summary': table_summary(attendance), 'payments': rows})
 
     def post(self, request, attendance_id):
@@ -1980,6 +1966,14 @@ def _quick_checkout_payload(checkout, *, permissions=()):
         and remaining > Decimal('0.00')
         and session_open
     )
+    payments = list(checkout.payments.select_related('payment_method').prefetch_related('allocations').order_by('created_at', 'id'))
+    payment_documents = {
+        document.source_id: document
+        for document in PrintDocument.objects.filter(
+            branch=checkout.branch, document_type=PrintDocumentType.PAYMENT_RECEIPT,
+            source_type='quick_sale_payment', source_id__in=[str(payment.pk) for payment in payments],
+        )
+    }
     return {
         'id': str(checkout.pk),
         'status': checkout.status,
@@ -2068,8 +2062,10 @@ def _quick_checkout_payload(checkout, *, permissions=()):
                     for allocation in payment.allocations.all()
                 ],
                 'created_at': payment.created_at,
+                'print_document': _print_document_effect(payment_documents[str(payment.pk)])
+                if str(payment.pk) in payment_documents else None,
             }
-            for payment in checkout.payments.select_related('payment_method').prefetch_related('allocations').order_by('created_at', 'id')
+            for payment in payments
         ],
     }
 

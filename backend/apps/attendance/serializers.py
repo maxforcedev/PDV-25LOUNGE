@@ -251,13 +251,25 @@ class TablePaymentSerializer(serializers.ModelSerializer):
     allocations = TablePaymentAllocationSerializer(many=True, read_only=True)
     payment_method_name = serializers.CharField(source='payment_method.name', read_only=True)
     payment_method_code = serializers.CharField(source='payment_method.code', read_only=True)
+    print_document = serializers.SerializerMethodField()
+
+    def get_print_document(self, payment):
+        from apps.production.models import PrintDocument, PrintDocumentType
+        from apps.production.serializers import PrintDocumentResultSerializer
+
+        document = PrintDocument.objects.filter(
+            branch=payment.attendance.branch,
+            document_type=PrintDocumentType.PAYMENT_RECEIPT,
+            source_type='table_payment', source_id=str(payment.pk),
+        ).order_by('-version', '-id').first()
+        return PrintDocumentResultSerializer(document).data if document else None
 
     class Meta:
         model = TablePayment
         fields = (
             'id', 'attendance', 'payment_method', 'payment_method_name', 'payment_method_code', 'amount', 'received_amount',
             'change_amount', 'operator', 'status', 'idempotency_key',
-            'reversal_of', 'reversal_reason', 'allocations', 'created_at',
+            'reversal_of', 'reversal_reason', 'allocations', 'print_document', 'created_at',
         )
         read_only_fields = fields
 

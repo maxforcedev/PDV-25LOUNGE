@@ -119,6 +119,18 @@ def _number(value):
     return str(value) if value is not None else None
 
 
+def _document_request_fingerprint(*, action, branch, document_type=None,
+                                  source_type=None, source_id=None,
+                                  pos_device=None, document_id=None, reason='', snapshot_hash=None):
+    intent = {
+        'action': action, 'branch_id': branch.pk, 'document_type': document_type,
+        'source_type': source_type, 'source_id': str(source_id) if source_id is not None else None,
+        'pos_device_id': getattr(pos_device, 'pk', None), 'document_id': document_id,
+        'reason': reason, 'snapshot_hash': snapshot_hash,
+    }
+    return sha256(json.dumps(intent, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
 def _table_snapshot(attendance):
     from apps.attendance.models import AttendanceOrderItemStatus, TablePayment
     from apps.attendance.services import table_financial_state, table_summary
@@ -308,6 +320,29 @@ def create_print_document(*, branch, document_type, source_type, source_id, user
     return document, True
 
 
+def current_print_document(*, branch, document_type, source_type, source_id):
+    """Find the existing immutable document for the source's current snapshot.
+
+    This selector is intentionally read-only: opening a screen must not emit a
+    document, add audit history, or advance its version.
+    """
+    document_type = normalize_print_document_type(document_type)
+    try:
+        _source, snapshot = _source_snapshot(
+            document_type=document_type, source_type=source_type,
+            source_id=source_id, branch=branch,
+        )
+    except ValueError:
+        return None
+    snapshot_hash = sha256(json.dumps(
+        snapshot, sort_keys=True, separators=(',', ':'), default=str,
+    ).encode()).hexdigest()
+    return PrintDocument.objects.filter(
+        branch=branch, document_type=document_type, source_type=source_type,
+        source_id=str(source_id), snapshot_hash=snapshot_hash,
+    ).first()
+
+
 def enqueue_print_document(*, document, user=None, pos_device=None, retry_failed=False):
     """Enqueue the first physical copies once; retries and reprints stay PrintJob operations."""
     initial_jobs = list(document.print_jobs.filter(reprint_of__isnull=True).order_by('id'))
@@ -356,13 +391,27 @@ def enqueue_print_document(*, document, user=None, pos_device=None, retry_failed
 @transaction.atomic
 def issue_print_document(*, branch, document_type, source_type, source_id, user=None, pos_device=None,
                          automatic_only=False, metadata=None, idempotency_key=None):
+    document_type = normalize_print_document_type(document_type)
+    _source, current_snapshot = _source_snapshot(
+        document_type=document_type, source_type=source_type,
+        source_id=source_id, branch=branch,
+    )
+    current_snapshot_hash = sha256(json.dumps(
+        current_snapshot, sort_keys=True, separators=(',', ':'), default=str,
+    ).encode()).hexdigest()
+    fingerprint = _document_request_fingerprint(
+        action='issue', branch=branch, document_type=document_type,
+        source_type=source_type, source_id=source_id, pos_device=pos_device,
+        snapshot_hash=current_snapshot_hash,
+    )
     if idempotency_key:
         prior = PrintDocumentRequest.objects.select_related('document').filter(
             branch=branch, action='issue', idempotency_key=idempotency_key,
         ).first()
         if prior:
+            if prior.request_fingerprint != fingerprint:
+                raise ValueError('Conflito de idempotência: a chave já foi usada para outra emissão.')
             return prior.document
-    document_type = normalize_print_document_type(document_type)
     document, _created = create_print_document(
         branch=branch, document_type=document_type, source_type=source_type,
         source_id=source_id, user=user, metadata=metadata,
@@ -374,9 +423,11 @@ def issue_print_document(*, branch, document_type, source_type, source_id, user=
     else:
         enqueue_print_document(document=document, user=user, pos_device=pos_device, retry_failed=True)
     if idempotency_key:
-        PrintDocumentRequest.objects.create(
+        request = PrintDocumentRequest.objects.create(
             branch=branch, document=document, action='issue', idempotency_key=idempotency_key,
+            request_fingerprint=fingerprint,
         )
+        request.generated_jobs.set(document.print_jobs.filter(reprint_of__isnull=True))
         audit_log(actor=user, action='print_document.issue', obj=document, company=branch.company,
                   branch=branch, metadata={'idempotency_key': str(idempotency_key)})
     return document
@@ -384,12 +435,17 @@ def issue_print_document(*, branch, document_type, source_type, source_id, user=
 
 @transaction.atomic
 def reprint_print_document(*, document, user, reason='', idempotency_key=None):
+    fingerprint = _document_request_fingerprint(
+        action='reprint', branch=document.branch, document_id=document.pk, reason=reason,
+    )
     if idempotency_key:
-        prior = PrintDocumentRequest.objects.filter(
+        prior = PrintDocumentRequest.objects.prefetch_related('generated_jobs').filter(
             branch=document.branch, action='reprint', idempotency_key=idempotency_key,
         ).first()
         if prior:
-            return list(document.print_jobs.filter(reprint_of__isnull=False).order_by('id'))
+            if prior.request_fingerprint != fingerprint:
+                raise ValueError('Conflito de idempotência: a chave já foi usada para outra reimpressão.')
+            return list(prior.generated_jobs.order_by('id'))
     sources = list(document.print_jobs.filter(reprint_of__isnull=True).order_by('id'))
     if not sources:
         raise ValueError('O documento ainda não possui impressão inicial configurada.')
@@ -404,9 +460,11 @@ def reprint_print_document(*, document, user, reason='', idempotency_key=None):
         for source in eligible_sources
     ]
     if idempotency_key:
-        PrintDocumentRequest.objects.create(
+        request = PrintDocumentRequest.objects.create(
             branch=document.branch, document=document, action='reprint', idempotency_key=idempotency_key,
+            request_fingerprint=fingerprint,
         )
+        request.generated_jobs.set(reprints)
         audit_log(actor=user, action='print_document.reprint', obj=document, company=document.company,
                   branch=document.branch, metadata={'idempotency_key': str(idempotency_key), 'reason': reason})
     return reprints

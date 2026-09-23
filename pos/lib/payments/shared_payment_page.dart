@@ -58,6 +58,11 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
   @override
   void initState() {
     super.initState();
+    for (final payment in _checkout.payments) {
+      if (payment.printDocument != null) {
+        _paymentDocuments[payment.id] = payment.printDocument!;
+      }
+    }
     _restorePendingPayment();
   }
 
@@ -75,6 +80,11 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         _equalSplitParts = null;
       }
       _checkout = checkout;
+      for (final payment in checkout.payments) {
+        if (payment.printDocument != null) {
+          _paymentDocuments[payment.id] = payment.printDocument!;
+        }
+      }
     });
   }
 
