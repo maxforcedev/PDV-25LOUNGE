@@ -46,6 +46,20 @@ void main() {
     expect(recovered.single.printerObserved, isTrue);
   });
 
+  test('ledger preserves an attempted job for safe reconciliation', () async {
+    final store = _Store();
+    await LocalPrintLedger(store).mark(const PrintLedgerEntry(
+      jobId: 11,
+      printerId: 2,
+      idempotencyKey: 'attempted-boundary',
+      state: 'attempted',
+    ));
+
+    final recovered = await LocalPrintLedger(store).entries();
+    expect(recovered.single.state, 'attempted');
+    expect(recovered.single.attemptedAt, isNotNull);
+  });
+
   test('renderer identifies cancellation and does not include prices', () {
     const job = PrintJob(
       id: 1,

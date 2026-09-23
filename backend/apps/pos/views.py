@@ -80,7 +80,7 @@ from apps.production.models import PrintJob, PrintJobStatus, PrinterConnectionTy
 from apps.production.serializers import PrintJobSerializer
 from apps.production.services import (
     claim_print_job, complete_print_job, reconcile_print_jobs, renew_print_lease,
-    start_print_dispatch,
+    expire_abandoned_print_dispatches, start_print_dispatch,
 )
 from apps.sales.models import OperationType, Sale
 from apps.sales.serializers import (
@@ -302,6 +302,7 @@ class POSPrintingView(POSDeviceView):
 class POSPrintJobsView(POSPrintingView):
     def get(self, request):
         device = self.printing_device(request)
+        expire_abandoned_print_dispatches(branch=device.branch)
         now = timezone.now()
         jobs = PrintJob.objects.filter(
             branch=device.branch,

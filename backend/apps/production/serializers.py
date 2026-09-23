@@ -5,7 +5,10 @@ from django.utils.text import slugify
 
 from apps.products.models import ProductionDestination
 
-from .models import PrintJob, PrinterConnectionType, PrinterDevice, ProductionJob, Ticket
+from .models import (
+    PrintJob, PrintJobStatus, PrinterConnectionType, PrinterDevice,
+    ProductionJob, Ticket,
+)
 
 
 class PrinterDeviceSerializer(serializers.ModelSerializer):
@@ -142,6 +145,7 @@ class PrintJobSerializer(serializers.ModelSerializer):
     error_summary = serializers.SerializerMethodField()
     origin_type = serializers.SerializerMethodField()
     origin_label = serializers.SerializerMethodField()
+    reprint_eligible = serializers.SerializerMethodField()
 
     class Meta:
         model = PrintJob
@@ -152,7 +156,7 @@ class PrintJobSerializer(serializers.ModelSerializer):
             'error_summary', 'origin_type', 'origin_label', 'idempotency_key',
             'processing_at', 'printed_at', 'claimed_by', 'lease_until', 'batch_key',
             'physical_dispatch_started_at',
-            'reprint_of', 'reprint_number', 'created_at', 'updated_at',
+            'reprint_of', 'reprint_number', 'reprint_eligible', 'created_at', 'updated_at',
         )
 
     def get_error_summary(self, job):
@@ -184,6 +188,16 @@ class PrintJobSerializer(serializers.ModelSerializer):
             table = (job.payload_snapshot or {}).get('table', {})
             return f"Mesa {table.get('name') or production_job.table_order_item_id}"
         return f'Impressão #{job.pk}'
+
+    def get_reprint_eligible(self, job):
+        if job.is_test:
+            return False
+        sources = PrintJob.objects.filter(batch_key=job.batch_key) if job.batch_key else [job]
+        return all(
+            not source.is_test
+            and source.status in (PrintJobStatus.PRINTED, PrintJobStatus.UNCERTAIN)
+            for source in sources
+        )
 
 
 class ReprintSerializer(serializers.Serializer):

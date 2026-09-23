@@ -79,7 +79,9 @@ class PrintManager with WidgetsBindingObserver {
     final entries = await _ledger.entries();
     final reconcilable = entries
         .where((entry) =>
-            entry.state == 'sent' || entry.state == 'failed_before_send')
+            entry.state == 'attempted' ||
+            entry.state == 'sent' ||
+            entry.state == 'failed_before_send')
         .toList();
     if (reconcilable.isEmpty) return;
     try {

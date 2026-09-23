@@ -473,6 +473,7 @@ def retry_print_job(*, job, user):
 
 
 PRINT_LEASE_SECONDS = 60
+PHYSICAL_DISPATCH_TIMEOUT_SECONDS = 300
 
 
 def _claimed_batch(*, job, device):
@@ -482,6 +483,58 @@ def _claimed_batch(*, job, device):
     if job.batch_key:
         return queryset.filter(batch_key=job.batch_key).order_by('id')
     return queryset.filter(pk=job.pk)
+
+
+@transaction.atomic
+def expire_abandoned_print_dispatches(*, branch):
+    """Resolve expired physical dispatches without making them claimable again."""
+    cutoff = timezone.now() - timedelta(seconds=PHYSICAL_DISPATCH_TIMEOUT_SECONDS)
+    candidates = list(PrintJob.objects.filter(
+        branch=branch,
+        status=PrintJobStatus.PROCESSING,
+        physical_dispatch_started_at__lte=cutoff,
+    ).values_list('pk', 'batch_key'))
+    expired = []
+    handled_batches = set()
+    for job_id, batch_key in candidates:
+        group_key = batch_key or job_id
+        if group_key in handled_batches:
+            continue
+        handled_batches.add(group_key)
+        jobs_queryset = PrintJob.objects.select_for_update().filter(branch=branch)
+        if batch_key:
+            jobs_queryset = jobs_queryset.filter(batch_key=batch_key).order_by('id')
+        else:
+            jobs_queryset = jobs_queryset.filter(pk=job_id)
+        jobs = list(jobs_queryset)
+        if not any(
+            item.status == PrintJobStatus.PROCESSING
+            and item.physical_dispatch_started_at
+            and item.physical_dispatch_started_at <= cutoff
+            for item in jobs
+        ):
+            continue
+        for item in jobs:
+            if (
+                item.status != PrintJobStatus.PROCESSING
+                or item.physical_dispatch_started_at is None
+            ):
+                continue
+            item.status = PrintJobStatus.UNCERTAIN
+            item.lease_until = None
+            item.last_error = 'Dispatch físico sem resultado dentro do prazo de segurança.'
+            item.save(update_fields=('status', 'lease_until', 'last_error', 'updated_at'))
+            audit_log(
+                actor=None, action='print_job.uncertain_timeout', obj=item,
+                company=item.company, branch=item.branch,
+                metadata={
+                    'batch_key': str(item.batch_key or ''),
+                    'physical_dispatch_started_at': item.physical_dispatch_started_at.isoformat(),
+                    'timeout_seconds': PHYSICAL_DISPATCH_TIMEOUT_SECONDS,
+                },
+            )
+            expired.append(item.pk)
+    return expired
 
 
 @transaction.atomic
@@ -627,20 +680,52 @@ def complete_print_job(*, job_id, device, outcome, error='', metadata=None):
 
 @transaction.atomic
 def reconcile_print_jobs(*, device, entries):
+    expire_abandoned_print_dispatches(branch=device.branch)
     reconciled = []
     for entry in entries:
         job_id = entry.get('job_id')
         state = entry.get('state')
-        if not isinstance(job_id, int) or state not in ('sent', 'acknowledged', 'failed_before_send'):
+        if not isinstance(job_id, int) or state not in ('attempted', 'sent', 'acknowledged', 'failed_before_send'):
             continue
+        job = PrintJob.objects.filter(pk=job_id, branch=device.branch).first()
+        if not job:
+            continue
+        terminal_statuses = {
+            'acknowledged': (PrintJobStatus.PRINTED,),
+            'sent': (PrintJobStatus.PRINTED, PrintJobStatus.UNCERTAIN),
+            'failed_before_send': (PrintJobStatus.FAILED,),
+        }
+        if state == 'attempted':
+            # No socket was opened before this ledger state. A pending/leased job
+            # remains backend-owned; a persisted dispatch becomes explicitly uncertain.
+            if job.status in (
+                PrintJobStatus.PRINTED,
+                PrintJobStatus.FAILED,
+                PrintJobStatus.UNCERTAIN,
+                PrintJobStatus.CANCELLED,
+            ) or (
+                job.status == PrintJobStatus.PENDING
+                or (
+                    job.status == PrintJobStatus.PROCESSING
+                    and job.physical_dispatch_started_at is None
+                )
+            ):
+                reconciled.append(job_id)
+                continue
+            outcome = 'uncertain'
+        elif job.status in terminal_statuses[state]:
+            reconciled.append(job_id)
+            continue
+        else:
+            outcome = {
+                'acknowledged': 'printed',
+                'sent': 'uncertain',
+                'failed_before_send': 'failed',
+            }[state]
         try:
-            jobs = complete_print_job(
+            complete_print_job(
                 job_id=job_id, device=device,
-                outcome={
-                    'acknowledged': 'printed',
-                    'sent': 'uncertain',
-                    'failed_before_send': 'failed',
-                }[state],
+                outcome=outcome,
                 metadata={
                     'reconciled': True,
                     'printer_observed': entry.get('printer_observed') is True,
@@ -648,7 +733,7 @@ def reconcile_print_jobs(*, device, entries):
             )
         except ValueError:
             continue
-        reconciled.extend(item.pk for item in jobs if item.pk not in reconciled)
+        reconciled.append(job_id)
     if reconciled:
         audit_log(actor=None, action='print_job.reconciled', company=device.branch.company, branch=device.branch,
                   metadata={'device_id': str(device.pk), 'job_ids': reconciled})
@@ -662,6 +747,12 @@ def reprint_print_job(*, job, user, reason=''):
         PrintJob.objects.select_for_update().filter(batch_key=requested.batch_key).order_by('id')
         if requested.batch_key else [requested]
     )
+    if requested.is_test or any(
+        source.is_test
+        or source.status not in (PrintJobStatus.PRINTED, PrintJobStatus.UNCERTAIN)
+        for source in sources
+    ):
+        raise ValueError('Reimpressão exige jobs não-test já impressos ou com resultado incerto.')
     roots = {
         source.reprint_of_id or source.pk
         for source in sources

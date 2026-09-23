@@ -74,6 +74,14 @@ function destinationName(job: PrintJob, destinations: ProductionDestination[]) {
   );
 }
 
+function canRetryJob(job: PrintJob) {
+  return job.status === "pending" || job.status === "failed";
+}
+
+function canReprintJob(job: PrintJob) {
+  return job.reprint_eligible;
+}
+
 export function PrintQueue({
   failuresOnly = false,
 }: {
@@ -176,7 +184,7 @@ export function PrintQueue({
       >
         <ExternalLink className="size-4" />
       </Link>
-      {canRetry && job.status !== "printed" && (
+      {canRetry && canRetryJob(job) && (
         <button
           className="icon-button"
           disabled={busy === job.id}
@@ -186,7 +194,7 @@ export function PrintQueue({
           <RotateCcw className="size-4" />
         </button>
       )}
-      {canRetry && (job.status === "pending" || job.status === "failed") && (
+      {canRetry && canRetryJob(job) && (
         <button
           className="icon-button"
           disabled={busy === job.id}
@@ -196,7 +204,7 @@ export function PrintQueue({
           <Send className="size-4" />
         </button>
       )}
-      {canReprint && job.status === "printed" && (
+      {canReprint && canReprintJob(job) && (
         <button
           className="icon-button"
           disabled={busy === job.id}
@@ -754,7 +762,7 @@ export function PrintJobDetail({ id }: { id: string }) {
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {canRetry && job.status !== "printed" && (
+                  {canRetry && canRetryJob(job) && (
                     <Button
                       variant="secondary"
                       loading={busy}
@@ -764,8 +772,7 @@ export function PrintJobDetail({ id }: { id: string }) {
                       Tentar novamente
                     </Button>
                   )}
-                  {canRetry &&
-                    (job.status === "pending" || job.status === "failed") && (
+                  {canRetry && canRetryJob(job) && (
                       <Button
                         variant="secondary"
                         loading={busy}
@@ -775,7 +782,7 @@ export function PrintJobDetail({ id }: { id: string }) {
                         Despacho manual
                       </Button>
                     )}
-                  {canReprint && job.status === "printed" && (
+                  {canReprint && canReprintJob(job) && (
                     <Button loading={busy} onClick={() => void act("reprint")}>
                       <Printer className="size-4" />
                       Reimprimir

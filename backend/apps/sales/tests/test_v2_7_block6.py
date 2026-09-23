@@ -34,7 +34,7 @@ from apps.companies.services import (
 )
 from apps.inventory.models import Stock, MovementType
 from apps.production.models import (
-    PrintJob, PrinterDevice, ProductionJob, Ticket, TicketStatus,
+    PrintJob, PrintJobStatus, PrinterDevice, ProductionJob, Ticket, TicketStatus,
 )
 from apps.production.services import reprint_print_job
 from apps.production.views import PrinterDeviceViewSet
@@ -317,6 +317,8 @@ class SalesFinalizeIdempotencyTests(SalesFixture, TestCase):
         sale = self.finalize_sale_via_service()
         production = ProductionJob.objects.get(sale_item__sale=sale, destination=destination)
         job = PrintJob.objects.get(production_job=production, printer_device=printer)
+        job.status = PrintJobStatus.PRINTED
+        job.save(update_fields=('status', 'updated_at'))
         first = reprint_print_job(job=job, user=self.owner)
         second = reprint_print_job(job=job, user=self.owner)
         self.assertEqual((first.reprint_number, second.reprint_number), (1, 2))

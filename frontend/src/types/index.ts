@@ -623,6 +623,7 @@ export interface PrintJob {
   printed_at: string | null;
   reprint_of: number | null;
   reprint_number: number;
+  reprint_eligible: boolean;
   created_at: string;
   updated_at: string;
 }

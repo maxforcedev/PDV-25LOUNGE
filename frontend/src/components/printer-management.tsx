@@ -576,7 +576,8 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
                         </p>
                       )}
                     </div>
-                    {canReprint && !job.is_test && (
+                    {canReprint &&
+                      job.reprint_eligible && (
                       <Button
                         type="button"
                         variant="secondary"

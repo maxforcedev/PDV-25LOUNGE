@@ -12,7 +12,10 @@ from .serializers import (
     PrintJobSerializer, PrinterDeviceSerializer, ProductionJobSerializer,
     ReprintSerializer, TicketSerializer,
 )
-from .services import manual_dispatch_print_job, reprint_print_job, retry_print_job, test_printer_device
+from .services import (
+    expire_abandoned_print_dispatches, manual_dispatch_print_job,
+    reprint_print_job, retry_print_job, test_printer_device,
+)
 
 
 class PrinterDeviceViewSet(viewsets.ModelViewSet):
@@ -54,6 +57,7 @@ class PrinterDeviceViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=('get',))
     def history(self, request, pk=None):
+        expire_abandoned_print_dispatches(branch=self.request.branch_context)
         queryset = self.get_object().print_jobs.select_related(
             'production_job', 'production_job__sale_item__sale',
             'destination', 'printer_device',
@@ -96,6 +100,7 @@ class PrintJobViewSet(viewsets.ReadOnlyModelViewSet):
     permission_codes = {'list': 'print_jobs.view', 'retrieve': 'print_jobs.view', 'retry': 'print_jobs.retry', 'reprint': 'print_jobs.reprint', 'manual_dispatch': 'print_jobs.retry'}
 
     def get_queryset(self):
+        expire_abandoned_print_dispatches(branch=self.request.branch_context)
         queryset = PrintJob.objects.filter(branch=self.request.branch_context).select_related(
             'production_job', 'production_job__sale_item__sale',
             'destination', 'printer_device',
@@ -120,10 +125,13 @@ class PrintJobViewSet(viewsets.ReadOnlyModelViewSet):
     def reprint(self, request, pk=None):
         serializer = ReprintSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        job = reprint_print_job(
-            job=self.get_object(), user=request.user,
-            reason=serializer.validated_data.get('reason', ''),
-        )
+        try:
+            job = reprint_print_job(
+                job=self.get_object(), user=request.user,
+                reason=serializer.validated_data.get('reason', ''),
+            )
+        except ValueError as error:
+            raise ValidationError({'detail': str(error)})
         return Response(self.get_serializer(job).data, status=201)
 
     @action(detail=True, methods=('post',), url_path='manual-dispatch')
