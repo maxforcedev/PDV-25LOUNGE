@@ -62,6 +62,7 @@ class PrintDocumentResult {
     this.reprintNumber = 0,
     this.initialPrinted = false,
     this.reprintEligible = false,
+    this.retryEligible = false,
     this.queued = false,
   });
 
@@ -98,6 +99,8 @@ class PrintDocumentResult {
                    current > next ? current : next)),
       initialPrinted: initialPrinted,
       reprintEligible: reprintEligible,
+      retryEligible: initialJobs.any((job) =>
+          job['status'] == 'failed' && job['physical_dispatch_started_at'] == null),
       queued: json['queued'] == true || jobs.isNotEmpty,
     );
   }
@@ -116,7 +119,18 @@ class PrintDocumentResult {
   final int reprintNumber;
   final bool initialPrinted;
   final bool reprintEligible;
+  final bool retryEligible;
   final bool queued;
+
+  bool get canReprint => reprintEligible;
+  bool get awaitingInitialPrint => queued && !canReprint;
+  bool get needsInitialPrint => !initialPrinted && !reprintEligible && !queued;
+  String get printActionLabel {
+    if (canReprint) return 'REIMPRIMIR';
+    if (awaitingInitialPrint) return 'IMPRESSAO PENDENTE';
+    if (retryEligible) return 'TENTAR NOVAMENTE';
+    return 'IMPRIMIR';
+  }
 }
 
 class PrintJob {

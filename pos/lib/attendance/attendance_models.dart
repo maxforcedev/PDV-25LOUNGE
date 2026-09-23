@@ -189,6 +189,7 @@ class TableOrder {
     this.status = '',
     this.createdByName = '',
     this.createdAt,
+    this.printDocument,
   });
 
   factory TableOrder.fromJson(Map<String, dynamic> json) => TableOrder(
@@ -196,6 +197,7 @@ class TableOrder {
         status: json['status'] as String? ?? '',
         createdByName: json['created_by_name'] as String? ?? '',
         createdAt: json['created_at'] as String?,
+        printDocument: PrintDocumentResult.maybeFromJson(json['print_document']),
         items: (json['items'] as List<dynamic>? ?? const [])
             .cast<Map<String, dynamic>>()
             .map(TableOrderItem.fromJson)
@@ -207,6 +209,7 @@ class TableOrder {
   final String status;
   final String createdByName;
   final String? createdAt;
+  final PrintDocumentResult? printDocument;
 }
 
 class TableOrderItem {

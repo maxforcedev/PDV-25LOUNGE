@@ -102,8 +102,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
   bool _saving = false;
   bool _actionInProgress = false;
   bool _previewLoading = false;
-  bool _billPrinted = false;
-  String? _billDocumentId;
+  PrintDocumentResult? _billDocument;
   String? _orderIdempotencyKey;
   Map<String, dynamic>? _preview;
   AttendanceTableGroup? _group;
@@ -115,9 +114,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
   void initState() {
     super.initState();
     _search.addListener(() => setState(() {}));
-    _billDocumentId =
-        _attendance.printDocumentFor(PrintDocumentType.tableBill)?.id;
-    _billPrinted = _billDocumentId != null;
+    _billDocument = _attendance.printDocumentFor(PrintDocumentType.tableBill);
     unawaited(_load());
   }
 
@@ -146,6 +143,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
     setState(() {
       _catalog = results[0] as List<QuickSaleProduct>? ?? const [];
       _attendance = attendance;
+      _billDocument = attendance.printDocumentFor(PrintDocumentType.tableBill);
       _group = tables
           ?.where((table) => table.id == attendance.tableId)
           .firstOrNull
@@ -511,14 +509,8 @@ class _TableOrderPageState extends State<TableOrderPage> {
     if (!mounted) return;
     setState(() => _actionInProgress = false);
     if (updated != null) {
-      final documentId =
-          updated.printDocumentFor(PrintDocumentType.tableBill)?.id;
-      if (documentId != null) {
-        setState(() {
-          _billDocumentId = documentId;
-          _billPrinted = true;
-        });
-      }
+      setState(() => _billDocument =
+          updated.printDocumentFor(PrintDocumentType.tableBill));
       await _load();
     }
   }
@@ -526,28 +518,34 @@ class _TableOrderPageState extends State<TableOrderPage> {
   Future<void> _printBill() async {
     if (_actionInProgress) return;
     setState(() => _actionInProgress = true);
-    final result = _billDocumentId == null
-        ? await widget.controller.requestPrintDocument(
+    final document = _billDocument;
+    if (document?.awaitingInitialPrint == true) {
+      setState(() => _actionInProgress = false);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('A impressão inicial ainda está pendente.')));
+      return;
+    }
+    final result = document?.canReprint == true
+        ? await widget.controller.reprintPrintDocument(
+            PrintDocumentReprintRequest(
+              documentId: document!.id!,
+              idempotencyKey: createIdempotencyKey(),
+              reason: 'Reimpressão de conta de mesa',
+            ),
+          )
+        : await widget.controller.requestPrintDocument(
             PrintDocumentRequest(
               type: PrintDocumentType.tableBill,
               sourceType: 'table_attendance',
               sourceId: '${_attendance.id}',
               idempotencyKey: createIdempotencyKey(),
             ),
-          )
-        : await widget.controller.reprintPrintDocument(
-            PrintDocumentReprintRequest(
-              documentId: _billDocumentId!,
-              idempotencyKey: createIdempotencyKey(),
-              reason: 'Reimpressão de conta de mesa',
-            ),
           );
     if (!mounted) return;
     setState(() => _actionInProgress = false);
     if (result != null) {
       setState(() {
-        _billPrinted = true;
-        _billDocumentId ??= result.id;
+        _billDocument = result;
       });
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('Conta enviada para a fila de impressão.')));
@@ -901,9 +899,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
                  if (_attendance.billRequested)
                    PopupMenuItem(
                        value: 'print_bill',
-                       child: Text(_billPrinted
-                           ? 'Reimprimir conta'
-                           : 'Imprimir conta')),
+                        child: Text('${_billDocument?.printActionLabel ?? 'IMPRIMIR'} CONTA')),
                 if (_attendance.status == 'open' &&
                     _can('tables.transfer_items') &&
                     _attendance.orders
@@ -1047,44 +1043,46 @@ class _TableConferencePage extends StatefulWidget {
 }
 
 class _TableConferencePageState extends State<_TableConferencePage> {
-  bool _printed = false;
   bool _printing = false;
-  String? _documentId;
+  PrintDocumentResult? _document;
 
   @override
   void initState() {
     super.initState();
-    _documentId = widget.attendance
-        .printDocumentFor(PrintDocumentType.tableConference)
-        ?.id;
-    _printed = _documentId != null;
+    _document = widget.attendance
+        .printDocumentFor(PrintDocumentType.tableConference);
   }
 
   Future<void> _print() async {
     if (_printing) return;
     setState(() => _printing = true);
-    final result = _documentId == null
-        ? await widget.controller.requestPrintDocument(
+    if (_document?.awaitingInitialPrint == true) {
+      setState(() => _printing = false);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('A impressão inicial ainda está pendente.')));
+      return;
+    }
+    final result = _document?.canReprint == true
+        ? await widget.controller.reprintPrintDocument(
+            PrintDocumentReprintRequest(
+              documentId: _document!.id!,
+              idempotencyKey: createIdempotencyKey(),
+              reason: 'Reimpressão de conferência de mesa',
+            ),
+          )
+        : await widget.controller.requestPrintDocument(
             PrintDocumentRequest(
               type: PrintDocumentType.tableConference,
               sourceType: 'table_attendance',
               sourceId: '${widget.attendance.id}',
               idempotencyKey: createIdempotencyKey(),
             ),
-          )
-        : await widget.controller.reprintPrintDocument(
-            PrintDocumentReprintRequest(
-              documentId: _documentId!,
-              idempotencyKey: createIdempotencyKey(),
-              reason: 'Reimpressão de conferência de mesa',
-            ),
           );
     if (!mounted) return;
     setState(() {
       _printing = false;
       if (result != null) {
-        _printed = true;
-        _documentId ??= result.id;
+        _document = result;
       }
     });
   }
@@ -1095,7 +1093,7 @@ class _TableConferencePageState extends State<_TableConferencePage> {
           title: const Text('Conferência'),
           actions: [
             IconButton(
-              tooltip: _printed ? 'Reimprimir' : 'Imprimir',
+              tooltip: _document?.printActionLabel ?? 'IMPRIMIR',
               icon: const Icon(Icons.print_outlined),
               onPressed: _printing ? null : _print,
             ),

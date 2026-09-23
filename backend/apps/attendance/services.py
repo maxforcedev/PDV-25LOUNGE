@@ -1727,11 +1727,19 @@ def set_table_bill_requested(*, attendance, user, requested, idempotency_key, po
         from apps.production.models import PrintDocumentType
         from apps.production.services import issue_print_document
 
-        issue_print_document(
-            branch=attendance.branch, document_type=PrintDocumentType.TABLE_BILL,
-            source_type='table_attendance', source_id=attendance.pk, user=user,
-            pos_device=pos_device, automatic_only=True, metadata={'trigger': 'table_bill_requested'},
-        )
+        def issue_bill_after_commit():
+            try:
+                issue_print_document(
+                    branch=attendance.branch, document_type=PrintDocumentType.TABLE_BILL,
+                    source_type='table_attendance', source_id=attendance.pk, user=user,
+                    pos_device=pos_device, automatic_only=True,
+                    metadata={'trigger': 'table_bill_requested'},
+                )
+            except ValueError as error:
+                audit_log(actor=user, action='print_document.automatic_failed', obj=attendance,
+                          company=attendance.company, branch=attendance.branch,
+                          metadata={'document_type': PrintDocumentType.TABLE_BILL, 'detail': str(error)})
+        transaction.on_commit(issue_bill_after_commit)
     return attendance, False
 
 
@@ -1800,12 +1808,19 @@ def close_table_attendance(*, attendance, user, idempotency_key, pos_device, aud
         from apps.production.models import PrintDocumentType
         from apps.production.services import issue_print_document
 
-        issue_print_document(
-            branch=attendance.branch, document_type=PrintDocumentType.TABLE_FINAL_RECEIPT,
-            source_type='table_attendance', source_id=attendance.pk, user=user,
-            pos_device=pos_device, automatic_only=True,
-            metadata={'trigger': 'table_closed', 'sale_id': sale.pk},
-        )
+        def issue_final_receipt_after_commit():
+            try:
+                issue_print_document(
+                    branch=attendance.branch, document_type=PrintDocumentType.TABLE_FINAL_RECEIPT,
+                    source_type='table_attendance', source_id=attendance.pk, user=user,
+                    pos_device=pos_device, automatic_only=True,
+                    metadata={'trigger': 'table_closed', 'sale_id': sale.pk},
+                )
+            except ValueError as error:
+                audit_log(actor=user, action='print_document.automatic_failed', obj=attendance,
+                          company=attendance.company, branch=attendance.branch,
+                          metadata={'document_type': PrintDocumentType.TABLE_FINAL_RECEIPT, 'detail': str(error)})
+        transaction.on_commit(issue_final_receipt_after_commit)
     return attendance, False
 
 

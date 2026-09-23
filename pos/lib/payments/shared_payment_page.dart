@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../cash/cash_models.dart' show createIdempotencyKey;
 import '../core/app_controller.dart';
+import '../printing/models.dart';
 import '../sales/sale_models.dart';
 import '../sales/sale_presentation.dart';
 import '../sales/shared_authorization_dialog.dart';
@@ -41,6 +43,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
   QuickSalePaymentAttempt? _pendingPayment;
   int? _pendingEqualSplitIndex;
   bool _showSummaryDetails = false;
+  final Map<String, PrintDocumentResult> _paymentDocuments = {};
   bool get _canDiscount =>
       widget.controller.bootstrapSnapshot?.permissions
           .contains('sales.apply_discount') ??
@@ -441,6 +444,37 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     }
   }
 
+  Future<void> _printPaymentReceipt(QuickSaleCheckoutPayment payment) async {
+    if (_working || payment.isReversal) return;
+    setState(() => _working = true);
+    final document = _paymentDocuments[payment.id];
+    if (document?.awaitingInitialPrint == true) {
+      setState(() => _working = false);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('A impressão inicial ainda está pendente.')));
+      return;
+    }
+    final result = document?.canReprint == true
+        ? await widget.controller.reprintPrintDocument(
+            PrintDocumentReprintRequest(
+              documentId: document!.id!, idempotencyKey: createIdempotencyKey(),
+              reason: 'Reimpressão de comprovante de pagamento',
+            ),
+          )
+        : await widget.controller.requestPrintDocument(
+            PrintDocumentRequest(
+              type: PrintDocumentType.paymentReceipt,
+              sourceType: 'quick_sale_payment', sourceId: payment.id,
+              idempotencyKey: createIdempotencyKey(),
+            ),
+          );
+    if (!mounted) return;
+    setState(() {
+      _working = false;
+      if (result != null) _paymentDocuments[payment.id] = result;
+    });
+  }
+
   Future<void> _cancel() async {
     if (_working) return;
     final confirmed = await showDialog<bool>(
@@ -631,8 +665,8 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
                     _checkout.reversalFor(payment.id)?.reversalReason,
                 working: _working,
                 onReverse: () => _reverse(payment),
-                // Quick-sale payments have no valid payment-receipt source.
-                onPrint: null,
+                onPrint: _working ? null : () => _printPaymentReceipt(payment),
+                printTooltip: _paymentDocuments[payment.id]?.printActionLabel ?? 'IMPRIMIR COMPROVANTE',
               ))
           .toList(growable: false),
     );

@@ -74,7 +74,7 @@ export function DocumentPrintRoutes({ posDeviceId }: { posDeviceId?: string }) {
         ]);
         setRoutes(overrides.filter((route) => route.pos_device === posDeviceId));
         setBranchRoutes(inherited);
-        setPrinters(devices.filter((device) => device.status === "active"));
+        setPrinters(devices.filter((device) => device.status === "active" && device.connection_type === "network"));
       } else {
         const [items, devices] = await Promise.all([
           http.getAll<PrintRoute>("print-routes/"),
@@ -82,7 +82,7 @@ export function DocumentPrintRoutes({ posDeviceId }: { posDeviceId?: string }) {
         ]);
         setRoutes(items);
         setBranchRoutes([]);
-        setPrinters(devices.filter((device) => device.status === "active"));
+        setPrinters(devices.filter((device) => device.status === "active" && device.connection_type === "network"));
       }
     } catch (caught) {
       setError(routeError(caught, "Nao foi possivel carregar as rotas de impressao."));
@@ -195,7 +195,7 @@ export function DocumentPrintRoutes({ posDeviceId }: { posDeviceId?: string }) {
             <Field label="Copias"><Input type="number" min="1" max="10" value={value.copies} disabled={readOnly || saving === definition.value} onChange={(event) => update(definition.value, { copies: Math.max(1, Number(event.target.value) || 1) }, inheritedRoute)} /></Field>
             {definition.format && <Field label="Formato"><Select value={value.document_format || "detailed"} disabled={readOnly || saving === definition.value} onChange={(event) => update(definition.value, { document_format: event.target.value as PrintDocumentFormat }, inheritedRoute)}><option value="detailed">Detalhado</option><option value="simplified">Simplificado</option></Select></Field>}
           </div>
-          <fieldset className="mt-3"><legend className="label">Impressoras ativas</legend><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{printers.map((printer) => <label key={printer.id} className="flex items-center gap-2 text-xs"><input type="checkbox" checked={value.printer_device_ids.includes(printer.id)} disabled={readOnly || saving === definition.value} onChange={(event) => update(definition.value, { printer_device_ids: event.target.checked ? [...value.printer_device_ids, printer.id] : value.printer_device_ids.filter((id) => id !== printer.id) }, inheritedRoute)} />{printer.name}</label>)}</div>{!printers.length && <span className="text-xs text-muted">Nenhuma impressora ativa nesta filial.</span>}</fieldset>
+          <fieldset className="mt-3"><legend className="label">Impressoras NETWORK ativas</legend><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{printers.map((printer) => <label key={printer.id} className="flex items-center gap-2 text-xs"><input type="checkbox" checked={value.printer_device_ids.includes(printer.id)} disabled={readOnly || saving === definition.value} onChange={(event) => update(definition.value, { printer_device_ids: event.target.checked ? [...value.printer_device_ids, printer.id] : value.printer_device_ids.filter((id) => id !== printer.id) }, inheritedRoute)} />{printer.name}</label>)}</div>{!printers.length && <span className="text-xs text-muted">Nenhuma impressora NETWORK ativa nesta filial.</span>}{value.mode !== "disabled" && !value.printer_device_ids.length && <span className="mt-2 block text-xs text-danger">Selecione ao menos uma impressora NETWORK para ativar esta rota.</span>}</fieldset>
           <div className="mt-3 flex flex-wrap justify-end gap-2">{posDeviceId && route && <Button variant="secondary" disabled={readOnly || saving === definition.value} onClick={() => void inherit(definition.value)}>Usar regra da filial</Button>}<Button loading={saving === definition.value} disabled={readOnly} onClick={() => void save(definition.value)}>{inherited ? "Sobrescrever" : "Salvar"}</Button></div>
         </article>;
       })}

@@ -265,6 +265,7 @@ class PrintDocumentViewSet(viewsets.ReadOnlyModelViewSet):
             reprint_print_document(
                 document=document, user=request.user,
                 reason=serializer.validated_data.get('reason', ''),
+                idempotency_key=serializer.validated_data.get('idempotency_key'),
             )
         except ValueError as error:
             raise ValidationError({'detail': str(error)})

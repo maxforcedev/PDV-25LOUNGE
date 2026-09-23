@@ -41,8 +41,7 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
   bool _loading = true;
   bool _working = false;
   bool _details = false;
-  final Set<int> _printedReceipts = {};
-  final Map<int, String> _paymentDocumentIds = {};
+  final Map<int, PrintDocumentResult> _paymentDocuments = {};
 
   bool _can(String permission) =>
       widget.controller.bootstrapSnapshot?.permissions.contains(permission) ==
@@ -91,6 +90,9 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
     setState(() {
       _attendance = results[0] as TableAttendance? ?? _attendance;
       _ledger = results[1] as TablePaymentLedger? ?? _ledger;
+      for (final payment in _ledger?.payments ?? const <TablePayment>[]) {
+        if (payment.printDocument != null) _paymentDocuments[payment.id] = payment.printDocument!;
+      }
       _options = results[2] as QuickSaleCheckoutOptions? ?? _options;
       _pendingRaw = confirmed ? const {} : pending;
       _pending = _TablePaymentRequest.fromJson(_pendingRaw, _methods);
@@ -232,29 +234,34 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
   Future<void> _printPaymentReceipt(TablePayment payment) async {
     if (_working || payment.isReversal) return;
     setState(() => _working = true);
-    final documentId = _paymentDocumentIds[payment.id];
-    final result = documentId == null
-        ? await widget.controller.requestPrintDocument(
+    final document = _paymentDocuments[payment.id];
+    if (document?.awaitingInitialPrint == true) {
+      setState(() => _working = false);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('A impressão inicial ainda está pendente.')));
+      return;
+    }
+    final result = document?.canReprint == true
+        ? await widget.controller.reprintPrintDocument(
+            PrintDocumentReprintRequest(
+              documentId: document!.id!,
+              idempotencyKey: createIdempotencyKey(),
+              reason: 'Reimpressão de comprovante de pagamento',
+            ),
+          )
+        : await widget.controller.requestPrintDocument(
             PrintDocumentRequest(
               type: PrintDocumentType.paymentReceipt,
               sourceType: 'table_payment',
               sourceId: '${payment.id}',
               idempotencyKey: createIdempotencyKey(),
             ),
-          )
-        : await widget.controller.reprintPrintDocument(
-            PrintDocumentReprintRequest(
-              documentId: documentId,
-              idempotencyKey: createIdempotencyKey(),
-              reason: 'Reimpressão de comprovante de pagamento',
-            ),
           );
     if (!mounted) return;
     setState(() {
       _working = false;
       if (result != null) {
-        _printedReceipts.add(payment.id);
-        if (result.id != null) _paymentDocumentIds[payment.id] = result.id!;
+        _paymentDocuments[payment.id] = result;
       }
     });
   }
@@ -273,8 +280,7 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
       if (mounted && closed.finalSaleId != null) {
         await _showFinalReceiptAction(
           closed.id,
-          documentId:
-              closed.printDocumentFor(PrintDocumentType.tableFinalReceipt)?.id,
+          document: closed.printDocumentFor(PrintDocumentType.tableFinalReceipt),
         );
       }
       if (mounted) Navigator.of(context).pop(closed);
@@ -282,8 +288,7 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
   }
 
   Future<void> _showFinalReceiptAction(int attendanceId,
-      {String? documentId}) async {
-    var printed = documentId != null;
+      {PrintDocumentResult? document}) async {
     await showDialog<void>(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -296,31 +301,31 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
                 child: const Text('FECHAR')),
             FilledButton.icon(
               onPressed: () async {
-                final result = documentId == null
-                    ? await widget.controller.requestPrintDocument(
+                if (document?.awaitingInitialPrint == true) return;
+                final result = document?.canReprint == true
+                    ? await widget.controller.reprintPrintDocument(
+                        PrintDocumentReprintRequest(
+                          documentId: document!.id!,
+                          idempotencyKey: createIdempotencyKey(),
+                          reason: 'Reimpressão de recibo final de mesa',
+                        ),
+                      )
+                    : await widget.controller.requestPrintDocument(
                         PrintDocumentRequest(
                           type: PrintDocumentType.tableFinalReceipt,
                           sourceType: 'table_attendance',
                           sourceId: '$attendanceId',
                           idempotencyKey: createIdempotencyKey(),
                         ),
-                      )
-                    : await widget.controller.reprintPrintDocument(
-                        PrintDocumentReprintRequest(
-                          documentId: documentId!,
-                          idempotencyKey: createIdempotencyKey(),
-                          reason: 'Reimpressão de recibo final de mesa',
-                        ),
                       );
                 if (result != null && context.mounted) {
                   setDialogState(() {
-                    printed = true;
-                    documentId ??= result.id;
+                    document = result;
                   });
                 }
               },
               icon: const Icon(Icons.print_outlined),
-              label: Text(printed ? 'REIMPRIMIR RECIBO' : 'IMPRIMIR RECIBO'),
+              label: Text('${document?.printActionLabel ?? 'IMPRIMIR'} RECIBO'),
             ),
           ],
         ),
@@ -647,9 +652,7 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
                   _printPaymentReceipt(payment);
                 }
               : null,
-          printTooltip: _printedReceipts.contains(payment.id)
-              ? 'Reimprimir comprovante'
-              : 'Imprimir comprovante',
+          printTooltip: _paymentDocuments[payment.id]?.printActionLabel ?? 'IMPRIMIR COMPROVANTE',
         );
       }).toList(growable: false),
     );

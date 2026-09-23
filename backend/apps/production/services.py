@@ -17,7 +17,7 @@ from apps.products.models import ProductProductionDestination
 # jobs are always executed by a POS on the branch LAN.
 from .adapters import adapter_for
 from .models import (
-    PrintDocument, PrintDocumentType, PrintJob, PrintJobStatus, PrintRoute,
+    PrintDocument, PrintDocumentRequest, PrintDocumentType, PrintJob, PrintJobStatus, PrintRoute,
     PrintRouteMode, PrintRouteOverride, PrinterConnectionType, PrinterOperationalStatus,
     ProductionEvent, ProductionJob, Ticket, TicketRedemption, TicketStatus,
 )
@@ -308,16 +308,26 @@ def create_print_document(*, branch, document_type, source_type, source_id, user
     return document, True
 
 
-def enqueue_print_document(*, document, user=None, pos_device=None):
+def enqueue_print_document(*, document, user=None, pos_device=None, retry_failed=False):
     """Enqueue the first physical copies once; retries and reprints stay PrintJob operations."""
-    if document.print_jobs.filter(reprint_of__isnull=True).exists():
+    initial_jobs = list(document.print_jobs.filter(reprint_of__isnull=True).order_by('id'))
+    if initial_jobs:
+        if retry_failed:
+            for job in initial_jobs:
+                if job.status == PrintJobStatus.FAILED and not job.physical_dispatch_started_at:
+                    retry_print_job(job=job, user=user)
         return list(document.print_jobs.filter(reprint_of__isnull=True).order_by('id'))
     policy = effective_print_route(
         branch=document.branch, document_type=document.document_type, pos_device=pos_device,
     )
     if policy.mode == PrintRouteMode.DISABLED:
         raise ValueError('A rota deste documento está desabilitada.')
-    devices = list(policy.printer_devices.filter(branch=document.branch, status=Status.ACTIVE).order_by('id'))
+    devices = list(policy.printer_devices.filter(
+        branch=document.branch, status=Status.ACTIVE,
+        connection_type=PrinterConnectionType.NETWORK,
+    ).order_by('id'))
+    if not devices:
+        raise ValueError('A rota exige ao menos uma impressora NETWORK ativa.')
     jobs = []
     for device in devices:
         for copy_number in range(1, policy.copies + 1):
@@ -343,8 +353,15 @@ def enqueue_print_document(*, document, user=None, pos_device=None):
     return jobs
 
 
+@transaction.atomic
 def issue_print_document(*, branch, document_type, source_type, source_id, user=None, pos_device=None,
-                         automatic_only=False, metadata=None):
+                         automatic_only=False, metadata=None, idempotency_key=None):
+    if idempotency_key:
+        prior = PrintDocumentRequest.objects.select_related('document').filter(
+            branch=branch, action='issue', idempotency_key=idempotency_key,
+        ).first()
+        if prior:
+            return prior.document
     document_type = normalize_print_document_type(document_type)
     document, _created = create_print_document(
         branch=branch, document_type=document_type, source_type=source_type,
@@ -355,11 +372,24 @@ def issue_print_document(*, branch, document_type, source_type, source_id, user=
         if policy.mode == PrintRouteMode.AUTOMATIC:
             enqueue_print_document(document=document, user=user, pos_device=pos_device)
     else:
-        enqueue_print_document(document=document, user=user, pos_device=pos_device)
+        enqueue_print_document(document=document, user=user, pos_device=pos_device, retry_failed=True)
+    if idempotency_key:
+        PrintDocumentRequest.objects.create(
+            branch=branch, document=document, action='issue', idempotency_key=idempotency_key,
+        )
+        audit_log(actor=user, action='print_document.issue', obj=document, company=branch.company,
+                  branch=branch, metadata={'idempotency_key': str(idempotency_key)})
     return document
 
 
-def reprint_print_document(*, document, user, reason=''):
+@transaction.atomic
+def reprint_print_document(*, document, user, reason='', idempotency_key=None):
+    if idempotency_key:
+        prior = PrintDocumentRequest.objects.filter(
+            branch=document.branch, action='reprint', idempotency_key=idempotency_key,
+        ).first()
+        if prior:
+            return list(document.print_jobs.filter(reprint_of__isnull=False).order_by('id'))
     sources = list(document.print_jobs.filter(reprint_of__isnull=True).order_by('id'))
     if not sources:
         raise ValueError('O documento ainda não possui impressão inicial configurada.')
@@ -369,10 +399,17 @@ def reprint_print_document(*, document, user, reason=''):
     ]
     if not eligible_sources:
         raise ValueError('O documento só pode ser reimpresso após uma impressão inicial concluída.')
-    return [
+    reprints = [
         reprint_print_job(job=source, user=user, reason=reason)
         for source in eligible_sources
     ]
+    if idempotency_key:
+        PrintDocumentRequest.objects.create(
+            branch=document.branch, document=document, action='reprint', idempotency_key=idempotency_key,
+        )
+        audit_log(actor=user, action='print_document.reprint', obj=document, company=document.company,
+                  branch=document.branch, metadata={'idempotency_key': str(idempotency_key), 'reason': reason})
+    return reprints
 
 
 def create_production_jobs(*, item, command, user, idempotency_key):
@@ -1135,11 +1172,8 @@ def test_printer_device(*, device, user):
         raise ValueError('Ative a impressora antes de executar o teste.')
     if device.connection_type != PrinterConnectionType.NETWORK:
         raise ValueError('Este bloco executa testes apenas para impressoras NETWORK pelo CORE POS local.')
-    destination = device.destinations.filter(status=Status.ACTIVE).first()
-    if not destination:
-        raise ValueError('Associe ao menos um destino ativo antes de executar o teste.')
     job = PrintJob.objects.create(
-        company=device.branch.company, branch=device.branch, destination=destination,
+        company=device.branch.company, branch=device.branch,
         printer_device=device, is_test=True,
         payload_snapshot={
             'test': True, 'title': 'CORE PDV', 'message': 'TESTE DE IMPRESSÃO',

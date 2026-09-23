@@ -6,12 +6,15 @@ import 'models.dart';
 /// by PrintManager; a document is never sent directly from a UI action.
 class ProductionTicketRenderer {
   int _printableWidth = 42;
+  int _leftMargin = 3;
 
   Uint8List render(List<PrintJob> jobs,
       {required int paperWidth, required bool cut}) {
     if (jobs.isEmpty) return Uint8List(0);
     final width = paperWidth == 58 ? 28 : 42;
     _printableWidth = width;
+    // Safe content is inset from both physical paper edges (32/48 columns).
+    _leftMargin = paperWidth == 58 ? 2 : 3;
     final bytes = BytesBuilder()
       ..add(const [0x1b, 0x40])
       ..add(const [0x1b, 0x74, 2]);
@@ -365,7 +368,8 @@ class ProductionTicketRenderer {
     for (final line in _wrap(value, width)) {
       bytes.add([0x1b, 0x45, bold ? 1 : 0]);
       bytes.add([0x1d, 0x21, large ? 0x11 : 0]);
-      bytes.add(_encode(line));
+      final margin = large ? _leftMargin ~/ 2 : _leftMargin;
+      bytes.add(_encode('${' ' * margin}$line'));
       bytes.addByte(0x0a);
       bytes.add(const [0x1d, 0x21, 0, 0x1b, 0x45, 0]);
     }

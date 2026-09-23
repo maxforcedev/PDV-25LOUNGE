@@ -6,7 +6,7 @@ from apps.products.models import ProductionDestination
 
 from .models import (
     PrintDocument, PrintDocumentType, PrintJob, PrintJobStatus, PrintRoute,
-    PrintRouteOverride, PrinterConnectionType, PrinterDevice, ProductionJob, Ticket,
+    PrintRouteMode, PrintRouteOverride, PrinterConnectionType, PrinterDevice, ProductionJob, Ticket,
 )
 
 
@@ -180,27 +180,28 @@ class PrintJobSerializer(serializers.ModelSerializer):
 
 class ReprintSerializer(serializers.Serializer):
     reason = serializers.CharField(required=False, allow_blank=True, max_length=300)
+    idempotency_key = serializers.UUIDField(required=False)
 
 
 class PrintDocumentTypeField(serializers.ChoiceField):
-    """Expose the documented enum names while persisting model choice values."""
+    """Accept enum names for compatibility while exposing persisted lowercase values."""
 
     def __init__(self, **kwargs):
-        super().__init__(choices=tuple(PrintDocumentType.__members__), **kwargs)
+        super().__init__(choices=PrintDocumentType.values, **kwargs)
 
     def to_internal_value(self, data):
         if not isinstance(data, str):
             self.fail('invalid_choice', input=data)
+        normalized = data.lower()
+        if normalized in PrintDocumentType.values:
+            return normalized
         member = PrintDocumentType.__members__.get(data.upper())
         if member is None:
             self.fail('invalid_choice', input=data)
         return member.value
 
     def to_representation(self, value):
-        try:
-            return PrintDocumentType(value).name
-        except ValueError:
-            return value
+        return value
 
 
 class _RouteSerializer(serializers.ModelSerializer):
@@ -210,13 +211,28 @@ class _RouteSerializer(serializers.ModelSerializer):
         source='printer_devices', many=True, queryset=PrinterDevice.objects.all(), required=False,
     )
 
-    def validate_printer_devices(self, devices):
+    def validate_printer_device_ids(self, devices):
         branch_id = getattr(self.instance, 'branch_id', None)
         if branch_id is None:
             branch_id = getattr(getattr(self.context.get('request'), 'branch_context', None), 'pk', None)
         if any(device.branch_id != branch_id for device in devices):
             raise serializers.ValidationError('Todas as impressoras devem pertencer à filial atual.')
+        if any(
+            device.status != 'active' or device.connection_type != PrinterConnectionType.NETWORK
+            for device in devices
+        ):
+            raise serializers.ValidationError('Rotas atuais aceitam apenas impressoras NETWORK ativas.')
         return devices
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        mode = attrs.get('mode', getattr(self.instance, 'mode', PrintRouteMode.DISABLED))
+        devices = attrs.get('printer_devices')
+        if devices is None and self.instance:
+            devices = self.instance.printer_devices.all()
+        if mode in (PrintRouteMode.MANUAL, PrintRouteMode.AUTOMATIC) and not devices:
+            raise serializers.ValidationError({'printer_device_ids': 'Selecione ao menos uma impressora NETWORK ativa para esta rota.'})
+        return attrs
 
 
 class PrintRouteSerializer(_RouteSerializer):
@@ -300,3 +316,4 @@ class PrintDocumentIssueSerializer(serializers.Serializer):
         'table_attendance', 'sale', 'table_payment', 'quick_sale_payment', 'ticket',
     ))
     source_id = serializers.CharField(max_length=64)
+    idempotency_key = serializers.UUIDField()

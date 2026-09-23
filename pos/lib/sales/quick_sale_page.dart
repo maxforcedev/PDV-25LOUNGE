@@ -1006,20 +1006,16 @@ class QuickSaleCompletedPage extends StatefulWidget {
 }
 
 class _QuickSaleCompletedPageState extends State<QuickSaleCompletedPage> {
-  bool _receiptPrinted = false;
   bool _printingReceipt = false;
-  bool _ticketsPrinted = false;
   bool _printingTickets = false;
-  String? _receiptDocumentId;
-  final Map<String, String> _ticketDocumentIds = {};
+  PrintDocumentResult? _receiptDocument;
+  final Map<String, PrintDocumentResult> _ticketDocuments = {};
 
   @override
   void initState() {
     super.initState();
-    _receiptDocumentId = widget.result.receiptDocumentId;
-    // Automatic routes already created the original document. A user request
-    // from this screen must create an audited reprint, never re-issue it.
-    _receiptPrinted = _receiptDocumentId != null;
+    _receiptDocument = widget.result.receiptDocument;
+    _ticketDocuments.addAll(widget.result.ticketDocuments);
   }
 
   Future<void> _printReceipt() async {
@@ -1027,28 +1023,33 @@ class _QuickSaleCompletedPageState extends State<QuickSaleCompletedPage> {
     final saleId = widget.result.saleId;
     if (controller == null || saleId == null || _printingReceipt) return;
     setState(() => _printingReceipt = true);
-    final result = _receiptDocumentId == null
-        ? await controller.requestPrintDocument(
+    if (_receiptDocument?.awaitingInitialPrint == true) {
+      setState(() => _printingReceipt = false);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('A impressão inicial ainda está pendente.')));
+      return;
+    }
+    final result = _receiptDocument?.canReprint == true
+        ? await controller.reprintPrintDocument(
+            PrintDocumentReprintRequest(
+              documentId: _receiptDocument!.id!,
+              idempotencyKey: createIdempotencyKey(),
+              reason: 'Reimpressão de recibo de venda rápida',
+            ),
+          )
+        : await controller.requestPrintDocument(
             PrintDocumentRequest(
               type: PrintDocumentType.quickSaleReceipt,
               sourceType: 'sale',
               sourceId: saleId,
               idempotencyKey: createIdempotencyKey(),
             ),
-          )
-        : await controller.reprintPrintDocument(
-            PrintDocumentReprintRequest(
-              documentId: _receiptDocumentId!,
-              idempotencyKey: createIdempotencyKey(),
-              reason: 'Reimpressão de recibo de venda rápida',
-            ),
           );
     if (!mounted) return;
     setState(() {
       _printingReceipt = false;
       if (result != null) {
-        _receiptPrinted = true;
-        _receiptDocumentId ??= result.id;
+        _receiptDocument = result;
       }
     });
   }
@@ -1063,31 +1064,33 @@ class _QuickSaleCompletedPageState extends State<QuickSaleCompletedPage> {
     setState(() => _printingTickets = true);
     var queued = true;
     for (final ticketId in widget.result.ticketIds) {
-      final documentId = _ticketDocumentIds[ticketId];
-      final result = documentId == null
-          ? await controller.requestPrintDocument(
+      final document = _ticketDocuments[ticketId];
+      if (document?.awaitingInitialPrint == true) {
+        queued = false;
+        continue;
+      }
+      final result = document?.canReprint == true
+          ? await controller.reprintPrintDocument(
+              PrintDocumentReprintRequest(
+                documentId: document!.id!,
+                idempotencyKey: createIdempotencyKey(),
+                reason: 'Reimpressão de ticket',
+              ),
+            )
+          : await controller.requestPrintDocument(
               PrintDocumentRequest(
                 type: PrintDocumentType.ticket,
                 sourceType: 'ticket',
                 sourceId: ticketId,
                 idempotencyKey: createIdempotencyKey(),
               ),
-            )
-          : await controller.reprintPrintDocument(
-              PrintDocumentReprintRequest(
-                documentId: documentId,
-                idempotencyKey: createIdempotencyKey(),
-                reason: 'Reimpressão de ticket',
-              ),
             );
-      final resultId = result?.id;
-      if (resultId != null) _ticketDocumentIds[ticketId] = resultId;
+      if (result != null) _ticketDocuments[ticketId] = result;
       if (result == null) queued = false;
     }
     if (!mounted) return;
     setState(() {
       _printingTickets = false;
-      if (queued) _ticketsPrinted = true;
     });
   }
 
@@ -1142,9 +1145,7 @@ class _QuickSaleCompletedPageState extends State<QuickSaleCompletedPage> {
                          OutlinedButton.icon(
                            onPressed: _printingReceipt ? null : _printReceipt,
                            icon: const Icon(Icons.print_outlined),
-                           label: Text(_receiptPrinted
-                               ? 'REIMPRIMIR COMPROVANTE'
-                               : 'IMPRIMIR COMPROVANTE'),
+                            label: Text('${_receiptDocument?.printActionLabel ?? 'IMPRIMIR'} COMPROVANTE'),
                          ),
                          const SizedBox(height: 8),
                        ],
@@ -1153,9 +1154,9 @@ class _QuickSaleCompletedPageState extends State<QuickSaleCompletedPage> {
                          OutlinedButton.icon(
                            onPressed: _printingTickets ? null : _printTickets,
                            icon: const Icon(Icons.confirmation_number_outlined),
-                           label: Text(_ticketsPrinted
-                               ? 'REIMPRIMIR TICKETS'
-                               : 'IMPRIMIR TICKETS'),
+                            label: Text(_ticketDocuments.values.any((document) => document.canReprint)
+                                ? 'REIMPRIMIR TICKETS'
+                                : 'IMPRIMIR TICKETS'),
                          ),
                          const SizedBox(height: 8),
                        ],

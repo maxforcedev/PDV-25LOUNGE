@@ -80,7 +80,7 @@ from apps.production.models import PrintDocument, PrintDocumentType, PrintJob, P
 from apps.production.serializers import PrintDocumentIssueSerializer, PrintDocumentResultSerializer, PrintJobSerializer, ReprintSerializer
 from apps.production.services import (
     claim_print_job, complete_print_job, reconcile_print_jobs, renew_print_lease,
-    expire_abandoned_print_dispatches, issue_print_document, reprint_print_document, reprint_print_job, start_print_dispatch,
+    create_print_document, expire_abandoned_print_dispatches, issue_print_document, reprint_print_document, reprint_print_job, start_print_dispatch,
 )
 from apps.sales.models import OperationType, Sale
 from apps.sales.serializers import (
@@ -127,6 +127,7 @@ def _print_document_effect(document):
     jobs = document.print_jobs
     return {
         'id': document.pk,
+        'document_type': document.document_type,
         'initial_printed': jobs.filter(
             reprint_of__isnull=True, status=PrintJobStatus.PRINTED,
         ).exists(),
@@ -135,6 +136,10 @@ def _print_document_effect(document):
             status__in=(PrintJobStatus.PRINTED, PrintJobStatus.UNCERTAIN),
         ).exists(),
         'reprint_number': max(jobs.values_list('reprint_number', flat=True), default=0),
+        'queued': jobs.filter(status__in=(PrintJobStatus.PENDING, PrintJobStatus.PROCESSING)).exists(),
+        'print_jobs': list(jobs.values(
+            'status', 'reprint_of', 'reprint_number', 'physical_dispatch_started_at',
+        )),
     }
 
 
@@ -160,6 +165,22 @@ def _ticket_print_effects(sale):
         if ticket['sale_ticket__id'] is not None
         and str(ticket['sale_ticket__id']) in documents
     ]
+
+
+def _issue_ticket_documents(sale, user, device):
+    ticket_ids = sale.items.filter(product__emits_ticket).values_list('sale_ticket__id', flat=True)
+    for ticket_id in ticket_ids:
+        if not ticket_id:
+            continue
+        try:
+            issue_print_document(
+                branch=sale.branch, document_type=PrintDocumentType.TICKET,
+                source_type='ticket', source_id=ticket_id, user=user, pos_device=device,
+                automatic_only=True, metadata={'trigger': 'quick_sale_ticket'},
+            )
+        except ValueError:
+            # Ticket creation is financial/stock business state; printing is secondary.
+            continue
 
 
 def _required(data, field):
@@ -486,6 +507,7 @@ class POSPrintDocumentReprintView(POSDeviceView):
             reprint_print_document(
                 document=document, user=operator,
                 reason=serializer.validated_data.get('reason', ''),
+                idempotency_key=serializer.validated_data.get('idempotency_key'),
             )
         except ValueError as error:
             raise ValidationError({'detail': str(error)})
@@ -1460,6 +1482,24 @@ class POSTableAttendanceView(POSAttendanceView):
             ).all(),
             many=True,
         ).data
+        documents = []
+        for document_type in (
+            PrintDocumentType.TABLE_BILL,
+            PrintDocumentType.TABLE_CONFERENCE,
+            PrintDocumentType.TABLE_FINAL_RECEIPT,
+        ):
+            try:
+                document, _ = create_print_document(
+                    branch=device.branch, document_type=document_type,
+                    source_type='table_attendance', source_id=attendance.pk,
+                )
+            except ValueError:
+                # A final receipt is not meaningful before the attendance closes.
+                continue
+            documents.append(PrintDocumentResultSerializer(
+                document, context={'request': request},
+            ).data)
+        data['print_documents'] = documents
         return Response(data)
 
 
@@ -1592,10 +1632,20 @@ class POSTableAttendancePaymentsView(POSTableAttendanceView):
         device, _, permissions, _ = self.context(request)
         self._require(permissions, 'tables.payments.view', 'Você não possui permissão para consultar pagamentos.')
         attendance = self._attendance(device, attendance_id)
-        return Response({'summary': table_summary(attendance), 'payments': TablePaymentSerializer(
-            attendance.payments.select_related('payment_method', 'cash_session').prefetch_related('allocations').order_by('created_at', 'id'),
-            many=True,
-        ).data})
+        payments = attendance.payments.select_related('payment_method', 'cash_session').prefetch_related('allocations').order_by('created_at', 'id')
+        rows = TablePaymentSerializer(payments, many=True).data
+        documents = {
+            document.source_id: document
+            for document in PrintDocument.objects.filter(
+                branch=device.branch, document_type=PrintDocumentType.PAYMENT_RECEIPT,
+                source_type='table_payment', source_id__in=[str(payment.pk) for payment in payments],
+            )
+        }
+        for row in rows:
+            document = documents.get(str(row['id']))
+            if document:
+                row['print_document'] = _print_document_effect(document)
+        return Response({'summary': table_summary(attendance), 'payments': rows})
 
     def post(self, request, attendance_id):
         device, operator, permissions, operator_session = self.context(request)
@@ -2216,19 +2266,23 @@ class POSQuickCheckoutFinalizeView(POSQuickCheckoutView):
         sale = Sale.objects.select_related(
             'company', 'branch', 'cash_session', 'created_by', 'seller_user', 'pos_device',
         ).prefetch_related('items__product', 'payments__payment_method').get(pk=sale.pk)
-        document = issue_print_document(
-            branch=device.branch, document_type=PrintDocumentType.QUICK_SALE_RECEIPT,
-            source_type='sale', source_id=sale.pk, user=operator, pos_device=device,
-            automatic_only=True, metadata={'trigger': 'quick_sale_finalized'},
-        )
+        try:
+            document = issue_print_document(
+                branch=device.branch, document_type=PrintDocumentType.QUICK_SALE_RECEIPT,
+                source_type='sale', source_id=sale.pk, user=operator, pos_device=device,
+                automatic_only=True, metadata={'trigger': 'quick_sale_finalized'},
+            )
+        except ValueError:
+            document = None
+        _issue_ticket_documents(sale, operator, device)
         response = Response({
             'sale': SaleSerializer(sale, context={'request': request}).data,
             'cash_state': cash_state_for_device(device, permissions, operator),
                 'effects': {
                     'tickets': _ticket_print_effects(sale),
                     'production_job_count': sum(item.production_jobs.filter(event='new').count() for item in sale.items.all()),
-                    'print_document_id': document.pk,
-                    'print_document': _print_document_effect(document),
+                    'print_document_id': document.pk if document else None,
+                    'print_document': _print_document_effect(document) if document else None,
                 },
         }, status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED)
         if replayed:
@@ -2296,11 +2350,15 @@ class POSFinalizeSaleView(POSQuickSaleView):
         sale = Sale.objects.select_related(
             'company', 'branch', 'cash_session', 'created_by', 'seller_user', 'pos_device',
         ).prefetch_related('items__product', 'payments__payment_method').get(pk=sale.pk)
-        document = issue_print_document(
-            branch=device.branch, document_type=PrintDocumentType.QUICK_SALE_RECEIPT,
-            source_type='sale', source_id=sale.pk, user=operator, pos_device=device,
-            automatic_only=True, metadata={'trigger': 'quick_sale_finalized'},
-        )
+        try:
+            document = issue_print_document(
+                branch=device.branch, document_type=PrintDocumentType.QUICK_SALE_RECEIPT,
+                source_type='sale', source_id=sale.pk, user=operator, pos_device=device,
+                automatic_only=True, metadata={'trigger': 'quick_sale_finalized'},
+            )
+        except ValueError:
+            document = None
+        _issue_ticket_documents(sale, operator, device)
         response = Response(
             {
                 'sale': SaleSerializer(sale, context={'request': request}).data,
@@ -2311,8 +2369,8 @@ class POSFinalizeSaleView(POSQuickSaleView):
                         item.production_jobs.filter(event='new').count()
                         for item in sale.items.all()
                     ),
-                    'print_document_id': document.pk,
-                    'print_document': _print_document_effect(document),
+                    'print_document_id': document.pk if document else None,
+                    'print_document': _print_document_effect(document) if document else None,
                 },
             },
             status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED,

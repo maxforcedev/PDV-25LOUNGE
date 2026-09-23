@@ -735,6 +735,7 @@ class QuickSaleResult {
     required this.cash,
     this.saleId,
     this.receiptDocument,
+    this.ticketDocuments = const {},
     this.ticketNumbers = const [],
     this.ticketIds = const [],
     this.productionJobCount = 0,
@@ -744,6 +745,12 @@ class QuickSaleResult {
     final sale = json['sale'] as Map<String, dynamic>? ?? const {};
     final effects = json['effects'] as Map<String, dynamic>? ?? const {};
     final tickets = effects['tickets'] as List<dynamic>? ?? const [];
+    final ticketDocuments = <String, PrintDocumentResult>{
+      for (final ticket in tickets.whereType<Map>())
+        if (ticket['id'] != null)
+          if (PrintDocumentResult.maybeFromJson(ticket['print_document']) case final document?)
+            ticket['id'].toString(): document,
+    };
     final receiptDocument = PrintDocumentResult.maybeFromJson(
           effects['print_document'] ??
               effects['quick_sale_receipt_document'] ??
@@ -754,6 +761,7 @@ class QuickSaleResult {
       saleNumber: sale['sale_number'] as String? ?? '',
       saleId: sale['id']?.toString(),
       receiptDocument: receiptDocument,
+      ticketDocuments: ticketDocuments,
       total: sale['total'] as String? ?? '0.00',
       cash: CashOverview.fromJson(
           json['cash_state'] as Map<String, dynamic>? ?? const {}),
@@ -774,6 +782,7 @@ class QuickSaleResult {
   final String saleNumber;
   final String? saleId;
   final PrintDocumentResult? receiptDocument;
+  final Map<String, PrintDocumentResult> ticketDocuments;
   final String total;
   final CashOverview cash;
   final List<int> ticketNumbers;

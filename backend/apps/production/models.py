@@ -217,6 +217,23 @@ class PrintDocument(BaseModel):
         ]
 
 
+class PrintDocumentRequest(BaseModel):
+    """Durable business-action idempotency, separate from physical PrintJob keys."""
+
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='print_document_requests')
+    document = models.ForeignKey(PrintDocument, on_delete=models.PROTECT, related_name='requests')
+    action = models.CharField(max_length=12, choices=(('issue', 'Emissão'), ('reprint', 'Reimpressão')))
+    idempotency_key = models.UUIDField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=('branch', 'action', 'idempotency_key'),
+                name='print_document_request_idempotency_unique',
+            ),
+        ]
+
+
 class PrintJob(BaseModel):
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='print_jobs')
     branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='print_jobs')
