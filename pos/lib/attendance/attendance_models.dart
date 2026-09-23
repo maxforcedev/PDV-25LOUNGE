@@ -1,3 +1,5 @@
+import '../printing/models.dart';
+
 class AttendanceTable {
   const AttendanceTable({
     required this.id,
@@ -66,9 +68,15 @@ class TableAttendance {
     this.checkoutDiscount = '0.00',
     this.checkoutDiscountType = 'amount',
     this.checkoutServiceFeeWaived = false,
+    this.finalSaleId,
+    this.printDocuments = const [],
   });
 
   factory TableAttendance.fromJson(Map<String, dynamic> json) {
+    final effects = json['effects'] is Map
+        ? Map<String, dynamic>.from(json['effects'] as Map)
+        : const <String, dynamic>{};
+    final documents = _printDocuments(json, effects);
     return TableAttendance(
       id: json['id'] as int,
       tableId: json['table'] as int? ?? 0,
@@ -92,6 +100,9 @@ class TableAttendance {
       checkoutDiscountType:
           json['checkout_discount_type'] as String? ?? 'amount',
       checkoutServiceFeeWaived: json['checkout_service_fee_waived'] == true,
+       finalSaleId: json['sale_id']?.toString() ??
+           (json['sale'] as Map?)?['id']?.toString(),
+       printDocuments: documents,
     );
   }
 
@@ -113,6 +124,15 @@ class TableAttendance {
   final String checkoutDiscount;
   final String checkoutDiscountType;
   final bool checkoutServiceFeeWaived;
+  final String? finalSaleId;
+  final List<PrintDocumentResult> printDocuments;
+
+  PrintDocumentResult? printDocumentFor(PrintDocumentType type) {
+    for (final document in printDocuments) {
+      if (document.documentType == type) return document;
+    }
+    return printDocuments.length == 1 ? printDocuments.single : null;
+  }
 
   TableAttendance withSummary(Map<String, dynamic> value) => TableAttendance(
         id: id,
@@ -133,9 +153,33 @@ class TableAttendance {
         checkoutDiscount: checkoutDiscount,
         checkoutDiscountType: checkoutDiscountType,
         checkoutServiceFeeWaived: checkoutServiceFeeWaived,
-      );
+         finalSaleId: finalSaleId,
+         printDocuments: printDocuments,
+       );
 
   bool get billRequested => billRequestedAt != null;
+
+  static List<PrintDocumentResult> _printDocuments(
+      Map<String, dynamic> json, Map<String, dynamic> effects) {
+    final values = <Object?>[
+      effects['print_document'],
+      effects['print_document_id'],
+      json['print_document'],
+      json['print_document_id'],
+    ];
+    for (final source in [effects['print_documents'], json['print_documents']]) {
+      if (source is List) values.addAll(source);
+    }
+    final documents = <PrintDocumentResult>[];
+    final ids = <String>{};
+    for (final value in values) {
+      final document = PrintDocumentResult.maybeFromJson(value);
+      if (document?.id != null && ids.add(document!.id!)) {
+        documents.add(document);
+      }
+    }
+    return documents;
+  }
 }
 
 class TableOrder {

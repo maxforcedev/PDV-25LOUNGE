@@ -1702,8 +1702,8 @@ def reverse_table_payment(*, payment, user, reason, idempotency_key, audit_metad
 
 
 @transaction.atomic
-def set_table_bill_requested(*, attendance, user, requested, idempotency_key, audit_metadata=None):
-    from .models import TableAttendance, TableAttendanceStatus
+def set_table_bill_requested(*, attendance, user, requested, idempotency_key, pos_device=None, audit_metadata=None):
+    from .models import TableAttendance, TableAttendanceStatus, TableOrderItem
     attendance = TableAttendance.objects.select_for_update().get(pk=attendance.pk)
     if attendance.status != TableAttendanceStatus.OPEN:
         raise AttendanceConflict('table_closed', 'A mesa deve estar aberta.')
@@ -1719,6 +1719,19 @@ def set_table_bill_requested(*, attendance, user, requested, idempotency_key, au
     audit_log(actor=user, action='table_attendance.bill.request' if requested else 'table_attendance.bill.clear', obj=attendance,
               company=attendance.company, branch=attendance.branch, after=operation.result,
               metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
+    if requested:
+        # A saved table order confirms every item immediately; pending rows would
+        # represent an order that has not entered the production lifecycle yet.
+        if TableOrderItem.objects.filter(order__attendance=attendance, status=AttendanceOrderItemStatus.PENDING).exists():
+            raise AttendanceConflict('table_has_unsubmitted_items', 'Envie todos os itens para produção antes de solicitar a conta.')
+        from apps.production.models import PrintDocumentType
+        from apps.production.services import issue_print_document
+
+        issue_print_document(
+            branch=attendance.branch, document_type=PrintDocumentType.TABLE_BILL,
+            source_type='table_attendance', source_id=attendance.pk, user=user,
+            pos_device=pos_device, automatic_only=True, metadata={'trigger': 'table_bill_requested'},
+        )
     return attendance, False
 
 
@@ -1783,6 +1796,16 @@ def close_table_attendance(*, attendance, user, idempotency_key, pos_device, aud
     audit_log(actor=user, action='table_attendance.close', obj=attendance, company=attendance.company,
               branch=attendance.branch, after={**_table_reference(attendance), 'sale_id': sale.pk if sale else None},
               metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
+    if sale:
+        from apps.production.models import PrintDocumentType
+        from apps.production.services import issue_print_document
+
+        issue_print_document(
+            branch=attendance.branch, document_type=PrintDocumentType.TABLE_FINAL_RECEIPT,
+            source_type='table_attendance', source_id=attendance.pk, user=user,
+            pos_device=pos_device, automatic_only=True,
+            metadata={'trigger': 'table_closed', 'sale_id': sale.pk},
+        )
     return attendance, False
 
 

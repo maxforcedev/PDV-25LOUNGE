@@ -9,7 +9,8 @@ from apps.companies.models import Status
 from apps.companies.services import create_company_with_matrix
 from apps.pos.models import POSDevice
 from apps.products.models import ProductionDestination
-from apps.production.models import PrintJob, PrintJobStatus, PrinterDevice
+from apps.production.models import PrintDocument, PrintDocumentType, PrintJob, PrintJobStatus, PrinterDevice
+from apps.production.serializers import PrintDocumentResultSerializer, PrintJobSerializer
 from apps.production.services import (
     PHYSICAL_DISPATCH_TIMEOUT_SECONDS, claim_print_job, complete_print_job,
     expire_abandoned_print_dispatches, reconcile_print_jobs, reprint_print_job,
@@ -45,10 +46,19 @@ class POSPrintExecutorTests(TestCase):
         )
 
     def _job(self, **kwargs):
-        return PrintJob.objects.create(
-            company=self.company, branch=self.branch, destination=self.destination,
-            printer_device=self.printer, payload_snapshot={'event': 'new'}, **kwargs,
+        is_test = kwargs.get('is_test', False)
+        document = None if is_test else PrintDocument.objects.create(
+            company=self.company, branch=self.branch, document_type='ticket',
+            source_type='fixture', source_id=str(uuid.uuid4()), snapshot={},
+            snapshot_hash=uuid.uuid4().hex,
         )
+        values = {
+            'company': self.company, 'branch': self.branch, 'printer_device': self.printer,
+            'print_document': document, 'payload_snapshot': {'event': 'new'}, **kwargs,
+        }
+        if is_test:
+            values['destination'] = self.destination
+        return PrintJob.objects.create(**values)
 
     def test_atomic_claim_and_expired_lease_can_be_reclaimed(self):
         job = self._job()
@@ -202,3 +212,33 @@ class POSPrintExecutorTests(TestCase):
         self.assertEqual(job.status, PrintJobStatus.PENDING)
         self.printer.refresh_from_db()
         self.assertIsNone(self.printer.last_test_at)
+
+    def test_document_jobs_expose_raw_document_type_and_immutable_snapshot(self):
+        for document_type in PrintDocumentType.values:
+            with self.subTest(document_type=document_type):
+                snapshot = {'document_type': document_type, 'source': 'fixture'}
+                document = PrintDocument.objects.create(
+                    company=self.company, branch=self.branch, document_type=document_type,
+                    source_type='fixture', source_id=str(uuid.uuid4()), snapshot=snapshot,
+                    snapshot_hash=uuid.uuid4().hex,
+                )
+                job = PrintJob.objects.create(
+                    company=self.company, branch=self.branch, print_document=document,
+                    printer_device=self.printer, payload_snapshot={'snapshot': snapshot},
+                )
+
+                data = PrintJobSerializer(job).data
+
+                self.assertEqual(data['document_type'], document_type)
+                self.assertEqual(data['document_snapshot'], snapshot)
+
+    def test_document_result_reports_the_document_queue_and_reprint_state(self):
+        job = self._job()
+
+        data = PrintDocumentResultSerializer(job.print_document).data
+
+        self.assertEqual(data['document']['id'], job.print_document_id)
+        self.assertEqual(data['jobs'][0]['id'], job.pk)
+        self.assertTrue(data['queued'])
+        self.assertEqual(data['reprint_number'], 0)
+        self.assertFalse(data['reprint_eligible'])

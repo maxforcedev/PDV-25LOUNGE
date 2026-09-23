@@ -266,8 +266,12 @@ async function getAll<T>(path: string): Promise<T[]> {
   const results: T[] = [];
   let next: string | null = path;
   while (next) {
-    const page: PaginatedResponse<T> =
-      await request<PaginatedResponse<T>>(next);
+    const page = await request<PaginatedResponse<T> | T[]>(next);
+    // A few nested resources intentionally return a direct array instead of DRF pagination.
+    if (Array.isArray(page)) {
+      results.push(...page);
+      break;
+    }
     results.push(...page.results);
     next = page.next;
   }

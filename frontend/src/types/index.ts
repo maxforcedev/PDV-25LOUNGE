@@ -577,12 +577,55 @@ export interface ProductionDestination {
 
 export type PrintJobStatus = "pending" | "processing" | "printed" | "failed" | "uncertain" | "cancelled";
 
+export type PrintDocumentType =
+  | "table_bill"
+  | "table_conference"
+  | "table_final_receipt"
+  | "quick_sale_receipt"
+  | "payment_receipt"
+  | "ticket"
+  | "report"
+  | "fiscal_receipt"
+  | "label"
+  | "delivery_order"
+  | "cash_closing"
+  | "cash_opening";
+export type PrintRouteMode = "disabled" | "manual" | "automatic";
+export type PrintDocumentFormat = string;
+export type PrinterTransport = "network" | "usb" | "bluetooth" | "stone_integrated";
+
+export interface PrintRoute {
+  id: number;
+  branch: number;
+  document_type: PrintDocumentType;
+  mode: PrintRouteMode;
+  printer_device_ids: number[];
+  copies: number;
+  document_format: PrintDocumentFormat;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PrintRouteOverride {
+  id: number;
+  pos_device: string;
+  pos_device_name: string;
+  document_type: PrintDocumentType;
+  inherit_branch: boolean;
+  mode: PrintRouteMode;
+  printer_device_ids: number[];
+  copies: number;
+  document_format: PrintDocumentFormat;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface PrinterDevice {
   id: number;
   branch: number;
   name: string;
   device_type: "manual" | "development";
-  connection_type: "network" | "usb" | "bluetooth";
+  connection_type: PrinterTransport;
   status: Status;
   destination_ids: number[];
   technical_configuration: Record<string, unknown>;
@@ -605,12 +648,16 @@ export interface PrintJob {
   company: number;
   branch: number;
   production_job: number | null;
+  print_document?: number | null;
+  document_type?: PrintDocumentType | null;
+  document_label?: string;
+  snapshot_hash?: string;
   is_test: boolean;
-  production_event: "new" | "cancel";
-  destination: number;
+  production_event: "new" | "cancel" | null;
+  destination: number | null;
   printer_device: number;
   printer_name: string;
-  connection_type: "network" | "usb" | "bluetooth";
+  connection_type: PrinterTransport;
   payload_snapshot: Record<string, unknown>;
   status: PrintJobStatus;
   attempts: number;

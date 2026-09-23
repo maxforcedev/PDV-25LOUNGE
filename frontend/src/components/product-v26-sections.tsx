@@ -47,6 +47,7 @@ import type {
   ProductPurchasePresentation,
   PresentationType,
   PrinterDevice,
+  ProductionDestination,
   Supplier,
   UserBranch,
 } from "@/types";
@@ -154,6 +155,7 @@ export function ProductV26Sections({
     formatEditableDecimal(product.branch_stock?.minimum_quantity || "0"),
   );
   const [printers, setPrinters] = useState<PrinterDevice[]>([]);
+  const [destinations, setDestinations] = useState<ProductionDestination[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [modifierGroups, setModifierGroups] = useState<ModifierGroup[]>([]);
   const [modifierLinks, setModifierLinks] = useState<ProductModifierGroup[]>(
@@ -171,7 +173,7 @@ export function ProductV26Sections({
   );
   const [activateFraction, setActivateFraction] = useState(false);
 
-  const [selectedPrinters, setSelectedPrinters] = useState<number[]>([]);
+  const [selectedDestinations, setSelectedDestinations] = useState<number[]>([]);
 
   const [copyOpen, setCopyOpen] = useState<"product" | "category" | null>(null);
   const [copySource, setCopySource] = useState(String(currentBranchId));
@@ -218,7 +220,7 @@ export function ProductV26Sections({
     let active = true;
     setError("");
     setNotice("");
-    setSelectedPrinters([]);
+    setSelectedDestinations([]);
     setMinimumQuantity(
       formatEditableDecimal(product.branch_stock?.minimum_quantity || "0"),
     );
@@ -239,22 +241,19 @@ export function ProductV26Sections({
     if (isVisible("production")) {
       requests.push(
         Promise.all([
-          http.getAll<PrinterDevice>(
-            `products/${product.id}/production-printers/?available=true`,
+          http.getAll<ProductionDestination>("production-destinations/"),
+          http.getAll<PrinterDevice>("printer-devices/"),
+          http.get<ProductionDestination[]>(
+            `products/${product.id}/production-destinations/`,
           ),
-          http.getAll<PrinterDevice>(
-            `products/${product.id}/production-printers/`,
-          ),
-        ]).then(([available, selected]) => {
+        ]).then(([available, devices, selected]) => {
             if (active) {
-              const operational = available.filter(
-                (printer) => printer.status === "active",
-              );
-              setPrinters(operational);
-              setSelectedPrinters(
+              setDestinations(available.filter((item) => item.status === "active"));
+              setPrinters(devices.filter((item) => item.status === "active"));
+              setSelectedDestinations(
                 selected
-                  .filter((printer) => printer.status === "active")
-                  .map((printer) => printer.id),
+                  .filter((destination) => destination.status === "active")
+                  .map((destination) => destination.id),
               );
             }
           }),
@@ -406,13 +405,13 @@ export function ProductV26Sections({
     );
   }
 
-  async function savePrinterLinks() {
+  async function saveProductionDestinations() {
     await run(
       () =>
-        http.put(`products/${product.id}/production-printers/`, {
-          printers: selectedPrinters,
+        http.put(`products/${product.id}/production-destinations/`, {
+          destinations: selectedDestinations,
         }),
-      "Impressoras do produto salvas.",
+      "Destinos de produção do produto salvos.",
     );
   }
 
@@ -1039,26 +1038,27 @@ export function ProductV26Sections({
           <div>
             <h3 className="flex items-center gap-2 text-sm font-bold">
               <Factory className="size-4 text-primary" />
-              Imprimir em
+              Destinos de produção
             </h3>
             <p className="mt-1 text-[11px] text-muted">
-              Qual impressora ou setor deve receber este produto quando ele
-              for vendido?
+              Selecione os setores que receberão este produto. As impressoras
+              são definidas pelo destino, nunca diretamente pelo produto. Uma
+              impressora pode atender mais de um destino.
             </p>
           </div>
         </div>
         <div className="mt-4 grid gap-2 sm:grid-cols-2">
-          {printers.map((item) => (
+          {destinations.map((item) => (
             <label
               key={item.id}
               className="flex items-center gap-3 rounded-md border border-subtle p-3 text-xs"
             >
               <input
                 type="checkbox"
-                checked={selectedPrinters.includes(item.id)}
+                checked={selectedDestinations.includes(item.id)}
                 disabled={!permissions.destinations}
                 onChange={(event) =>
-                  setSelectedPrinters((value) =>
+                  setSelectedDestinations((value) =>
                     event.target.checked
                       ? [...value, item.id]
                       : value.filter((id) => id !== item.id),
@@ -1067,22 +1067,15 @@ export function ProductV26Sections({
               />
               <span className="min-w-0 flex-1">
                 <strong className="block">{item.name}</strong>
-                <span className="text-muted">
-                  {item.connection_type === "network"
-                    ? "Rede"
-                    : item.connection_type === "usb"
-                      ? "USB"
-                      : "Bluetooth"}
-                  {item.connection_summary ? ` · ${item.connection_summary}` : ""}
-                </span>
+                <span className="text-muted">{item.code}</span>
               </span>
             </label>
           ))}
         </div>
-        {!printers.length && (
+        {!destinations.length && (
           <p className="mt-4 rounded-md bg-surface-muted p-3 text-xs text-muted">
-            Nenhuma impressora ativa nesta filial. Cadastre em Meu negócio →
-            Filial → Impressoras.
+            Nenhum destino de produção ativo nesta filial. Cadastre os setores
+            de produção antes de vinculá-los ao produto.
           </p>
         )}
         {permissions.destinations && (
@@ -1090,11 +1083,34 @@ export function ProductV26Sections({
             <Button
               type="button"
               loading={busy}
-              onClick={() => void savePrinterLinks()}
-              disabled={!printers.length}
+              onClick={() => void saveProductionDestinations()}
+              disabled={!destinations.length}
             >
-              Salvar impressão
+              Salvar destinos
             </Button>
+          </div>
+        )}
+        {selectedDestinations.length > 0 && (
+          <div className="mt-4 rounded-md bg-surface-muted p-3 text-xs">
+            <strong className="block">Impressoras derivadas</strong>
+            <p className="mt-1 text-muted">
+              Destinos compartilhados podem listar a mesma impressora; apenas
+              impressoras ativas são consideradas na produção.
+            </p>
+            <div className="mt-2 space-y-1 text-muted">
+              {destinations
+                .filter((destination) => selectedDestinations.includes(destination.id))
+                .map((destination) => {
+                  const linked = printers.filter((printer) =>
+                    printer.destination_ids.includes(destination.id),
+                  );
+                  return (
+                    <p key={destination.id}>
+                      {destination.name}: {linked.length ? linked.map((printer) => printer.name).join(", ") : "nenhuma impressora ativa"}
+                    </p>
+                  );
+                })}
+            </div>
           </div>
         )}
       </section>

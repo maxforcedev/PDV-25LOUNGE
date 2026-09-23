@@ -148,6 +148,7 @@ class BranchPOSSettings(BaseModel):
     branch = models.OneToOneField('companies.Branch', on_delete=models.CASCADE, related_name='pos_settings')
     cash_binding_mode = models.CharField(max_length=10, choices=(('FIXED', 'Fixo'), ('FLEXIBLE', 'Flexivel')), default='FLEXIBLE')
     default_cash_register = models.ForeignKey('cash.CashRegister', on_delete=models.SET_NULL, blank=True, null=True, related_name='+')
+    # Legacy UI preferences. PrintRoute is the authoritative document-routing source.
     receipt_printer = models.CharField(max_length=80, default='none')
     sale_confirmation_print = models.BooleanField(default=False)
     receipt_print_mode = models.CharField(max_length=10, choices=(('automatic', 'Automatico'), ('manual', 'Manual')), default='manual')
@@ -176,6 +177,7 @@ class POSDeviceSettings(BaseModel):
     device = models.OneToOneField(POSDevice, on_delete=models.CASCADE, related_name='settings')
     cash_binding_mode = models.CharField(max_length=10, choices=(('FIXED', 'Fixo'), ('FLEXIBLE', 'Flexivel')), blank=True)
     default_cash_register = models.ForeignKey('cash.CashRegister', on_delete=models.SET_NULL, blank=True, null=True, related_name='+')
+    # Retained only for pre-PrintRoute clients; new document dispatch uses PrintRouteOverride.
     receipt_printer = models.CharField(max_length=80, blank=True)
     sale_confirmation_print = models.BooleanField(blank=True, null=True)
     receipt_print_mode = models.CharField(max_length=10, blank=True)

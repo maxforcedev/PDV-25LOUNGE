@@ -14,6 +14,7 @@ const routes: Array<{
   { href: "/comandas", permissions: [permissions.viewCommands], features: ["commands"] },
   { href: "/caixas", permissions: [permissions.viewCashRegister], features: ["cash_register"] },
   { href: "/producao/fila", permissions: [permissions.viewPrintJobs] },
+  { href: "/producao/rotas-impressao", permissions: [permissions.managePrintRoutes] },
   { href: "/producao/impressoras", permissions: [permissions.managePrinters] },
   { href: "/produtos", permissions: [permissions.viewProduct] },
   { href: "/categorias", permissions: [permissions.viewCategory] },

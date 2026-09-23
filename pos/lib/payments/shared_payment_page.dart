@@ -631,6 +631,8 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
                     _checkout.reversalFor(payment.id)?.reversalReason,
                 working: _working,
                 onReverse: () => _reverse(payment),
+                // Quick-sale payments have no valid payment-receipt source.
+                onPrint: null,
               ))
           .toList(growable: false),
     );

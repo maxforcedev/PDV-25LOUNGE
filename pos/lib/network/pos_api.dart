@@ -345,6 +345,12 @@ abstract class PosApi {
       required String idempotencyKey,
       required String inputMethod});
   Future<List<PrintJob>> printingJobs() => throw UnimplementedError();
+  Future<PrintDocumentResult> requestPrintDocument(
+          PrintDocumentRequest request) =>
+      throw UnimplementedError();
+  Future<PrintDocumentResult> reprintPrintDocument(
+          PrintDocumentReprintRequest request) =>
+      throw UnimplementedError();
   Future<List<PrintJob>> claimPrintJob(int jobId) => throw UnimplementedError();
   Future<List<PrintJob>> renewPrintLease(int jobId) =>
       throw UnimplementedError();
@@ -390,6 +396,19 @@ class HttpPosApi implements PosApi, PosCredentialCache {
           'A resposta de caixa não contém o estado atualizado.');
     }
     return CashOverview.fromJson(state);
+  }
+
+  TableAttendance _tableAttendance(Map<String, dynamic> payload) {
+    final raw = payload['attendance'] is Map
+        ? Map<String, dynamic>.from(payload['attendance'] as Map)
+        : payload;
+    if (payload['effects'] is Map && raw['effects'] == null) {
+      return TableAttendance.fromJson({
+        ...raw,
+        'effects': Map<String, dynamic>.from(payload['effects'] as Map),
+      });
+    }
+    return TableAttendance.fromJson(raw);
   }
 
   @override
@@ -545,6 +564,25 @@ class HttpPosApi implements PosApi, PosCredentialCache {
         .cast<Map<String, dynamic>>()
         .map(PrintJob.fromJson)
         .toList(growable: false);
+  }
+
+  @override
+  Future<PrintDocumentResult> requestPrintDocument(
+      PrintDocumentRequest request) async {
+    final payload = await _request('POST', 'printing/documents/issue/',
+        body: request.toJson());
+    return PrintDocumentResult.fromJson(Map<String, dynamic>.from(payload as Map));
+  }
+
+  @override
+  Future<PrintDocumentResult> reprintPrintDocument(
+      PrintDocumentReprintRequest request) async {
+    final payload = await _request(
+      'POST',
+      'printing/documents/${request.documentId}/reprint/',
+      body: request.toJson(),
+    );
+    return PrintDocumentResult.fromJson(Map<String, dynamic>.from(payload as Map));
   }
 
   @override
@@ -912,7 +950,7 @@ class HttpPosApi implements PosApi, PosCredentialCache {
     required bool requested,
     required String idempotencyKey,
   }) async =>
-      TableAttendance.fromJson(await _request(
+      _tableAttendance(await _request(
         'POST',
         'table-attendances/$attendanceId/${requested ? 'request-bill' : 'clear-bill'}/',
         body: {'idempotency_key': idempotencyKey},
@@ -1036,7 +1074,7 @@ class HttpPosApi implements PosApi, PosCredentialCache {
     required int attendanceId,
     required String idempotencyKey,
   }) async =>
-      TableAttendance.fromJson(await _request(
+      _tableAttendance(await _request(
         'POST',
         'table-attendances/$attendanceId/close/',
         body: {

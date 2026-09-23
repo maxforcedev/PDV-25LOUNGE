@@ -42,7 +42,7 @@ export const permissions = {
   viewProductsReport: "reports.view_products", viewReceiptsReport: "reports.view_receipts", viewTeamReport: "reports.view_team", viewDiscountsReport: "reports.view_discounts", viewCancellationsReport: "reports.view_cancellations", viewPricesReport: "reports.view_prices",
   viewAuditLog: "audit_logs.view",
   viewCommission: "commissions.view", changeBranchCommission: "commissions.change_branch_default", changeProfileCommission: "commissions.change_profile", changeUserCommission: "commissions.change_user_override",
-  viewProduction: "production.view", managePrinters: "printers.manage", viewPrintJobs: "print_jobs.view", retryPrintJobs: "print_jobs.retry", reprintPrintJobs: "print_jobs.reprint",
+  viewProduction: "production.view", managePrinters: "printers.manage", managePrintRoutes: "print_routes.manage", viewPrintJobs: "print_jobs.view", retryPrintJobs: "print_jobs.retry", reprintPrintJobs: "print_jobs.reprint",
   viewTickets: "tickets.view", reprintTickets: "tickets.reprint",
   viewPosDevices: "pos_devices.view", managePosDevices: "pos_devices.manage",
 } as const;

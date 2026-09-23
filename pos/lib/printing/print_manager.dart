@@ -8,6 +8,7 @@ import 'models.dart';
 import 'network_printer_transport.dart';
 import 'production_ticket_renderer.dart';
 
+/// Safe local executor for production and generic document PrintJobs.
 class PrintManager with WidgetsBindingObserver {
   PrintManager({
     required PosApi api,
@@ -66,6 +67,13 @@ class PrintManager with WidgetsBindingObserver {
       if (claimed.isEmpty) return;
       final printer = printers[claimed.first.printerId];
       if (printer == null) return;
+      // A claimed batch is a single physical document. Never blend different
+      // printer targets or document purposes into one socket payload.
+      if (claimed.any((job) =>
+          job.printerId != printer.id ||
+          job.documentType != claimed.first.documentType)) {
+        return;
+      }
       await _api.renewPrintLease(claimed.first.id);
       await _execute(claimed, printer);
     } catch (_) {

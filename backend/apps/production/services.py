@@ -17,7 +17,8 @@ from apps.products.models import ProductProductionDestination
 # jobs are always executed by a POS on the branch LAN.
 from .adapters import adapter_for
 from .models import (
-    PrintJob, PrintJobStatus, PrinterConnectionType, PrinterOperationalStatus,
+    PrintDocument, PrintDocumentType, PrintJob, PrintJobStatus, PrintRoute,
+    PrintRouteMode, PrintRouteOverride, PrinterConnectionType, PrinterOperationalStatus,
     ProductionEvent, ProductionJob, Ticket, TicketRedemption, TicketStatus,
 )
 
@@ -63,6 +64,315 @@ def _payload(item, destination, event, reason='', command=None, table_attendance
 
 def _batch_key(idempotency_key, destination_id, device_id, event):
     return uuid.uuid5(uuid.NAMESPACE_URL, f'print-batch:{idempotency_key}:{destination_id}:{device_id}:{event}')
+
+
+INITIAL_DOCUMENT_TYPES = (
+    PrintDocumentType.TABLE_BILL,
+    PrintDocumentType.TABLE_CONFERENCE,
+    PrintDocumentType.TABLE_FINAL_RECEIPT,
+    PrintDocumentType.QUICK_SALE_RECEIPT,
+    PrintDocumentType.PAYMENT_RECEIPT,
+    PrintDocumentType.TICKET,
+)
+
+
+def normalize_print_document_type(document_type):
+    if isinstance(document_type, PrintDocumentType):
+        return document_type.value
+    if isinstance(document_type, str):
+        member = PrintDocumentType.__members__.get(document_type.upper())
+        if member is not None:
+            return member.value
+        try:
+            return PrintDocumentType(document_type).value
+        except ValueError:
+            pass
+    raise ValueError('Tipo de documento não suportado.')
+
+
+def ensure_print_routes(branch):
+    """New branches inherit disabled document policies until an operator configures them."""
+    for document_type in INITIAL_DOCUMENT_TYPES:
+        PrintRoute.objects.get_or_create(
+            branch=branch, document_type=document_type,
+            defaults={'mode': PrintRouteMode.DISABLED, 'copies': 1},
+        )
+
+
+def effective_print_route(*, branch, document_type, pos_device=None):
+    document_type = normalize_print_document_type(document_type)
+    ensure_print_routes(branch)
+    route = PrintRoute.objects.prefetch_related('printer_devices').get(
+        branch=branch, document_type=document_type,
+    )
+    if pos_device is None:
+        return route
+    if pos_device.branch_id != branch.pk:
+        raise ValueError('O dispositivo POS deve pertencer à filial do documento.')
+    override = PrintRouteOverride.objects.filter(
+        pos_device=pos_device, document_type=document_type, inherit_branch=False,
+    ).prefetch_related('printer_devices').first()
+    return override or route
+
+
+def _number(value):
+    return str(value) if value is not None else None
+
+
+def _table_snapshot(attendance):
+    from apps.attendance.models import AttendanceOrderItemStatus, TablePayment
+    from apps.attendance.services import table_financial_state, table_summary
+
+    items = attendance.orders.prefetch_related('items').all()
+    rows = []
+    for order in items:
+        for item in order.items.all():
+            rows.append({
+                'id': item.pk, 'product_name': item.product_name, 'internal_code': item.internal_code,
+                'quantity': _number(item.quantity), 'unit': item.unit,
+                'unit_price': _number(item.unit_price), 'status': item.status,
+                'modifiers': item.modifier_snapshot, 'notes': item.notes,
+                'financial': item.financial_snapshot,
+                'cancelled_at': item.cancelled_at.isoformat() if item.cancelled_at else None,
+                'cancellation_reason': item.cancellation_reason,
+            })
+    payments = TablePayment.objects.filter(attendance=attendance).select_related('payment_method', 'operator').order_by('id')
+    return {
+        'table': {'id': attendance.table_id, 'name': attendance.table.name},
+        'attendance_id': attendance.pk, 'status': attendance.status,
+        'opened_at': attendance.created_at.isoformat(), 'closed_at': attendance.closed_at.isoformat() if attendance.closed_at else None,
+        'attendant': _operator_name(attendance.seller_user or attendance.opened_by),
+        'operator': _operator_name(attendance.closed_by) if attendance.closed_by else '',
+        'customer': attendance.customer.name if attendance.customer_id else '',
+        'responsible_name': attendance.responsible_name, 'notes': attendance.notes,
+        'items': rows,
+        'summary': table_summary(attendance),
+        'payments': [{
+            'id': payment.pk, 'method': payment.payment_method.name, 'method_code': payment.payment_method.code,
+            'amount': _number(payment.amount), 'received_amount': _number(payment.received_amount),
+            'change_amount': _number(payment.change_amount), 'status': payment.status,
+            'operator': _operator_name(payment.operator), 'created_at': payment.created_at.isoformat(),
+        } for payment in payments],
+    }
+
+
+def _operator_name(user):
+    return (user.get_full_name().strip() or user.email) if user else ''
+
+
+def _sale_snapshot(sale):
+    return {
+        'sale_id': sale.pk, 'sale_number': sale.sale_number, 'channel': sale.channel,
+        'created_at': sale.created_at.isoformat(), 'customer': sale.customer_name_snapshot,
+        'seller': _operator_name(sale.seller_user), 'operator': _operator_name(sale.created_by),
+        'items': [{
+            'id': item.pk, 'product_name': item.product_name, 'internal_code': item.internal_code,
+            'quantity': _number(item.quantity), 'unit': item.unit, 'unit_price': _number(item.unit_price),
+            'subtotal': _number(item.subtotal), 'modifiers': item.modifier_snapshot, 'notes': item.notes,
+            'promotion_discount': _number(item.promotion_benefit), 'item_discount': _number(item.manual_discount),
+            'net_subtotal': _number(item.net_subtotal),
+        } for item in sale.items.all()],
+        'summary': {
+            'subtotal': _number(sale.subtotal), 'promotion_discount_total': _number(sale.promotion_discount_total),
+            'item_discount_total': _number(sale.item_discount_total), 'discount': _number(sale.discount),
+            'service_fee': _number(sale.service_fee_amount), 'total': _number(sale.total),
+        },
+        'payments': [{
+            'method': payment.payment_method.name, 'method_code': payment.payment_method.code,
+            'amount': _number(payment.amount), 'received_amount': _number(payment.received_amount),
+            'change_amount': _number(payment.change_amount),
+        } for payment in sale.payments.select_related('payment_method').all()],
+    }
+
+
+def _source_snapshot(*, document_type, source_type, source_id, branch):
+    if source_type == 'table_attendance':
+        from apps.attendance.models import TableAttendance
+
+        attendance = TableAttendance.objects.select_related(
+            'table', 'customer', 'opened_by', 'seller_user', 'closed_by',
+        ).prefetch_related('orders__items').filter(pk=source_id, branch=branch).first()
+        if not attendance:
+            raise ValueError('Atendimento de mesa não encontrado na filial.')
+        if document_type == PrintDocumentType.TABLE_FINAL_RECEIPT:
+            from apps.attendance.models import TableAttendanceStatus
+            from apps.products.models import SalesChannel
+            from apps.sales.models import SaleStatus
+
+            if (
+                attendance.status != TableAttendanceStatus.CLOSED
+                or not attendance.sale_id
+                or attendance.sale.channel != SalesChannel.TABLE
+                or attendance.sale.status != SaleStatus.FINALIZED
+            ):
+                raise ValueError('Recibo final exige uma mesa fechada com venda finalizada.')
+        return attendance, _table_snapshot(attendance)
+    if source_type == 'sale':
+        from apps.sales.models import Sale
+
+        sale = Sale.objects.select_related('customer', 'seller_user', 'created_by').prefetch_related(
+            'items', 'payments__payment_method',
+        ).filter(pk=source_id, branch=branch).first()
+        if not sale:
+            raise ValueError('Venda não encontrada na filial.')
+        if document_type == PrintDocumentType.QUICK_SALE_RECEIPT:
+            from apps.sales.models import SaleStatus
+
+            if sale.channel != 'counter' or sale.status != SaleStatus.FINALIZED:
+                raise ValueError('Recibo de venda rápida exige uma venda de balcão finalizada.')
+        return sale, _sale_snapshot(sale)
+    if source_type == 'table_payment':
+        from apps.attendance.models import TablePayment
+
+        payment = TablePayment.objects.select_related(
+            'attendance__table', 'payment_method', 'operator',
+        ).filter(pk=source_id, attendance__branch=branch).first()
+        if not payment:
+            raise ValueError('Pagamento de mesa não encontrado na filial.')
+        if document_type == PrintDocumentType.PAYMENT_RECEIPT and (
+            payment.status != 'applied' or hasattr(payment, 'reversal')
+        ):
+            raise ValueError('Comprovante exige um pagamento de mesa ativo.')
+        return payment, {
+            'payment_id': payment.pk, 'table': {'id': payment.attendance.table_id, 'name': payment.attendance.table.name},
+            'method': payment.payment_method.name, 'method_code': payment.payment_method.code,
+            'amount': _number(payment.amount), 'received_amount': _number(payment.received_amount),
+            'change_amount': _number(payment.change_amount), 'status': payment.status,
+            'operator': _operator_name(payment.operator), 'created_at': payment.created_at.isoformat(),
+        }
+    if source_type == 'quick_sale_payment':
+        from apps.pos.models import QuickSalePayment, QuickSalePaymentStatus
+
+        payment = QuickSalePayment.objects.select_related(
+            'checkout__sale', 'operator', 'payment_method',
+        ).filter(pk=source_id, checkout__branch=branch).first()
+        if not payment:
+            raise ValueError('Pagamento de venda rápida não encontrado na filial.')
+        if document_type == PrintDocumentType.PAYMENT_RECEIPT and (
+            payment.status != QuickSalePaymentStatus.APPLIED or hasattr(payment, 'reversal')
+        ):
+            raise ValueError('Comprovante exige um pagamento de venda rápida ativo.')
+        return payment, {
+            'payment_id': str(payment.pk), 'checkout_id': str(payment.checkout_id),
+            'sale_id': payment.checkout.sale_id,
+            'method': payment.payment_method_name, 'method_code': payment.payment_method_code,
+            'amount': _number(payment.amount), 'received_amount': _number(payment.received_amount),
+            'change_amount': _number(payment.change_amount), 'status': payment.status,
+            'operator': _operator_name(payment.operator), 'created_at': payment.created_at.isoformat(),
+        }
+    if source_type == 'ticket':
+        ticket = Ticket.objects.filter(pk=source_id, branch=branch).first()
+        if not ticket:
+            raise ValueError('Ticket não encontrado na filial.')
+        return ticket, {
+            'ticket_id': ticket.pk, 'number': ticket.number, 'quantity': _number(ticket.quantity),
+            'status': ticket.status, 'validation_code': str(ticket.validation_code),
+            'issued_at': ticket.issued_at.isoformat(), 'item': ticket.identification_snapshot,
+        }
+    raise ValueError('Origem de documento não suportada.')
+
+
+def create_print_document(*, branch, document_type, source_type, source_id, user=None, metadata=None):
+    document_type = normalize_print_document_type(document_type)
+    valid_sources = {
+        PrintDocumentType.TABLE_BILL: {'table_attendance'},
+        PrintDocumentType.TABLE_CONFERENCE: {'table_attendance'},
+        PrintDocumentType.TABLE_FINAL_RECEIPT: {'table_attendance'},
+        PrintDocumentType.QUICK_SALE_RECEIPT: {'sale'},
+        PrintDocumentType.PAYMENT_RECEIPT: {'table_payment', 'quick_sale_payment'},
+        PrintDocumentType.TICKET: {'ticket'},
+    }
+    if source_type not in valid_sources.get(document_type, set()):
+        raise ValueError('A origem não é válida para este tipo de documento.')
+    _source, snapshot = _source_snapshot(
+        document_type=document_type, source_type=source_type, source_id=source_id, branch=branch,
+    )
+    snapshot_hash = sha256(json.dumps(snapshot, sort_keys=True, separators=(',', ':'), default=str).encode()).hexdigest()
+    existing = PrintDocument.objects.filter(
+        branch=branch, document_type=document_type, source_type=source_type,
+        source_id=str(source_id), snapshot_hash=snapshot_hash,
+    ).first()
+    if existing:
+        return existing, False
+    version = (PrintDocument.objects.filter(
+        branch=branch, document_type=document_type, source_type=source_type, source_id=str(source_id),
+    ).aggregate(latest=Max('version'))['latest'] or 0) + 1
+    document = PrintDocument.objects.create(
+        company=branch.company, branch=branch, document_type=document_type,
+        source_type=source_type, source_id=str(source_id), snapshot=snapshot,
+        snapshot_hash=snapshot_hash, version=version, created_by=user, metadata=metadata or {},
+    )
+    audit_log(actor=user, action='print_document.create', obj=document, company=branch.company, branch=branch,
+              metadata={'document_type': document_type, 'source_type': source_type, 'source_id': str(source_id),
+                        'snapshot_hash': snapshot_hash, 'version': version})
+    return document, True
+
+
+def enqueue_print_document(*, document, user=None, pos_device=None):
+    """Enqueue the first physical copies once; retries and reprints stay PrintJob operations."""
+    if document.print_jobs.filter(reprint_of__isnull=True).exists():
+        return list(document.print_jobs.filter(reprint_of__isnull=True).order_by('id'))
+    policy = effective_print_route(
+        branch=document.branch, document_type=document.document_type, pos_device=pos_device,
+    )
+    if policy.mode == PrintRouteMode.DISABLED:
+        raise ValueError('A rota deste documento está desabilitada.')
+    devices = list(policy.printer_devices.filter(branch=document.branch, status=Status.ACTIVE).order_by('id'))
+    jobs = []
+    for device in devices:
+        for copy_number in range(1, policy.copies + 1):
+            job = PrintJob.objects.create(
+                company=document.company, branch=document.branch, print_document=document,
+                printer_device=device,
+                payload_snapshot={
+                    'document': {
+                        'id': document.pk, 'document_type': document.document_type,
+                        'source_type': document.source_type, 'source_id': document.source_id,
+                        'snapshot_hash': document.snapshot_hash, 'version': document.version,
+                        'copy_number': copy_number, 'format': policy.document_format,
+                    },
+                    'snapshot': document.snapshot,
+                },
+                idempotency_key=uuid.uuid5(uuid.NAMESPACE_URL, f'document:{document.pk}:device:{device.pk}:copy:{copy_number}'),
+            )
+            jobs.append(job)
+            audit_log(actor=user, action='print_job.enqueue_document', obj=job,
+                      company=document.company, branch=document.branch,
+                      metadata={'document_id': document.pk, 'printer_device_id': device.pk,
+                                'copy_number': copy_number, 'document_type': document.document_type})
+    return jobs
+
+
+def issue_print_document(*, branch, document_type, source_type, source_id, user=None, pos_device=None,
+                         automatic_only=False, metadata=None):
+    document_type = normalize_print_document_type(document_type)
+    document, _created = create_print_document(
+        branch=branch, document_type=document_type, source_type=source_type,
+        source_id=source_id, user=user, metadata=metadata,
+    )
+    policy = effective_print_route(branch=branch, document_type=document_type, pos_device=pos_device)
+    if automatic_only:
+        if policy.mode == PrintRouteMode.AUTOMATIC:
+            enqueue_print_document(document=document, user=user, pos_device=pos_device)
+    else:
+        enqueue_print_document(document=document, user=user, pos_device=pos_device)
+    return document
+
+
+def reprint_print_document(*, document, user, reason=''):
+    sources = list(document.print_jobs.filter(reprint_of__isnull=True).order_by('id'))
+    if not sources:
+        raise ValueError('O documento ainda não possui impressão inicial configurada.')
+    eligible_sources = [
+        source for source in sources
+        if source.status in (PrintJobStatus.PRINTED, PrintJobStatus.UNCERTAIN)
+    ]
+    if not eligible_sources:
+        raise ValueError('O documento só pode ser reimpresso após uma impressão inicial concluída.')
+    return [
+        reprint_print_job(job=source, user=user, reason=reason)
+        for source in eligible_sources
+    ]
 
 
 def create_production_jobs(*, item, command, user, idempotency_key):
@@ -171,6 +481,11 @@ def _create_ticket(*, item, company, branch, user, source_field):
     ticket = Ticket.objects.create(company=company, branch=branch, number=number + 1, quantity=item.quantity,
         issued_at=timezone.now(), identification_snapshot=_ticket_snapshot(item), **{source_field: item})
     audit_log(actor=user, action='ticket.issue', obj=ticket, company=company, branch=branch)
+    # A ticket remains a commercial record even when its route is disabled.
+    issue_print_document(
+        branch=branch, document_type=PrintDocumentType.TICKET, source_type='ticket',
+        source_id=ticket.pk, user=user, automatic_only=True,
+    )
     return ticket
 
 
@@ -674,7 +989,11 @@ def complete_print_job(*, job_id, device, outcome, error='', metadata=None):
             observed=status == PrintJobStatus.PRINTED or bool((metadata or {}).get('printer_observed')),
         )
         audit_log(actor=None, action=f'print_job.{outcome}', obj=item, company=item.company, branch=item.branch,
-                  metadata={'device_id': str(device.pk), 'attempt': item.attempts, 'error': item.last_error})
+                  metadata={
+                      'device_id': str(device.pk), 'attempt': item.attempts, 'error': item.last_error,
+                      'document_id': item.print_document_id,
+                      'document_type': item.print_document.document_type if item.print_document_id else None,
+                  })
     return jobs
 
 
@@ -765,7 +1084,8 @@ def reprint_print_job(*, job, user, reason=''):
         root_id = source.reprint_of_id or source.pk
         copy = PrintJob.objects.create(
             company=source.company, branch=source.branch,
-            production_job=source.production_job, destination=source.destination,
+            production_job=source.production_job, print_document=source.print_document,
+            destination=source.destination,
             printer_device=source.printer_device,
             payload_snapshot={**source.payload_snapshot, 'reprint': True, 'reprint_number': number},
             batch_key=new_batch_key, reprint_of_id=root_id, reprint_number=number,
@@ -779,6 +1099,8 @@ def reprint_print_job(*, job, user, reason=''):
                 'reprint_number': number,
                 'reason': (reason or '').strip(),
                 'batch_key': str(new_batch_key or ''),
+                'document_id': copy.print_document_id,
+                'document_type': copy.print_document.document_type if copy.print_document_id else None,
             },
         )
     return copies[requested.pk]

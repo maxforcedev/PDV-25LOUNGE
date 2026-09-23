@@ -76,11 +76,11 @@ from apps.products.models import (
 from apps.products.models import SalesChannel
 from apps.products.selectors import sellable_products_for_branch
 from apps.production.services import lookup_ticket_for_validation, redeem_ticket, ticket_validation_data
-from apps.production.models import PrintJob, PrintJobStatus, PrinterConnectionType, PrinterDevice
-from apps.production.serializers import PrintJobSerializer
+from apps.production.models import PrintDocument, PrintDocumentType, PrintJob, PrintJobStatus, PrinterConnectionType, PrinterDevice
+from apps.production.serializers import PrintDocumentIssueSerializer, PrintDocumentResultSerializer, PrintJobSerializer, ReprintSerializer
 from apps.production.services import (
     claim_print_job, complete_print_job, reconcile_print_jobs, renew_print_lease,
-    expire_abandoned_print_dispatches, start_print_dispatch,
+    expire_abandoned_print_dispatches, issue_print_document, reprint_print_document, reprint_print_job, start_print_dispatch,
 )
 from apps.sales.models import OperationType, Sale
 from apps.sales.serializers import (
@@ -121,6 +121,45 @@ from .services import (
     eligible_pos_authorizers,
     request_pos_pin_reset, set_pos_pin, version_gate,
 )
+
+
+def _print_document_effect(document):
+    jobs = document.print_jobs
+    return {
+        'id': document.pk,
+        'initial_printed': jobs.filter(
+            reprint_of__isnull=True, status=PrintJobStatus.PRINTED,
+        ).exists(),
+        'reprint_eligible': jobs.filter(
+            reprint_of__isnull=True,
+            status__in=(PrintJobStatus.PRINTED, PrintJobStatus.UNCERTAIN),
+        ).exists(),
+        'reprint_number': max(jobs.values_list('reprint_number', flat=True), default=0),
+    }
+
+
+def _ticket_print_effects(sale):
+    tickets = list(sale.items.filter(product__emits_ticket=True).values(
+        'sale_ticket__id', 'sale_ticket__number',
+    ))
+    documents = {
+        document.source_id: document
+        for document in PrintDocument.objects.filter(
+            branch=sale.branch, document_type=PrintDocumentType.TICKET,
+            source_type='ticket', source_id__in=[str(ticket['sale_ticket__id']) for ticket in tickets],
+        )
+    }
+    return [
+        {
+            'id': ticket['sale_ticket__id'],
+            'number': ticket['sale_ticket__number'],
+            'print_document_id': documents[str(ticket['sale_ticket__id'])].pk,
+            'print_document': _print_document_effect(documents[str(ticket['sale_ticket__id'])]),
+        }
+        for ticket in tickets
+        if ticket['sale_ticket__id'] is not None
+        and str(ticket['sale_ticket__id']) in documents
+    ]
 
 
 def _required(data, field):
@@ -407,6 +446,54 @@ class POSPrinterConfigurationView(POSPrintingView):
             },
             'operational_status': printer.operational_status,
         } for printer in printers]})
+
+
+class POSPrintDocumentIssueView(POSDeviceView):
+    """Stable POS contract for manual bill, conference, receipt, payment, and ticket printing."""
+
+    def post(self, request):
+        device = self.device(request, check_version=True)
+        operator = require_operator_session(request, device).operator
+        permissions = request.pos_permission_codes
+        if 'print_documents.print' not in permissions:
+            raise PermissionDenied('Você não possui permissão para imprimir documentos nesta filial.')
+        serializer = PrintDocumentIssueSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            document = issue_print_document(
+                branch=device.branch, user=operator, pos_device=device, **serializer.validated_data,
+            )
+        except ValueError as error:
+            raise ValidationError({'detail': str(error)})
+        request.branch_context = device.branch
+        return Response(
+            PrintDocumentResultSerializer(document, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class POSPrintDocumentReprintView(POSDeviceView):
+    def post(self, request, document_id):
+        device = self.device(request, check_version=True)
+        operator = require_operator_session(request, device).operator
+        permissions = request.pos_permission_codes
+        if 'print_documents.reprint' not in permissions:
+            raise PermissionDenied('Você não possui permissão para reimprimir documentos nesta filial.')
+        serializer = ReprintSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        document = get_object_or_404(PrintDocument.objects.filter(branch=device.branch), pk=document_id)
+        try:
+            reprint_print_document(
+                document=document, user=operator,
+                reason=serializer.validated_data.get('reason', ''),
+            )
+        except ValueError as error:
+            raise ValidationError({'detail': str(error)})
+        request.branch_context = device.branch
+        return Response(
+            PrintDocumentResultSerializer(document, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class PinConfirmView(POSPublicView):
@@ -1597,10 +1684,22 @@ class POSTableAttendanceBillView(POSTableAttendanceView):
         serializer.is_valid(raise_exception=True)
         try:
             attendance, replayed = set_table_bill_requested(attendance=self._attendance(device, attendance_id), user=operator, requested=self.requested,
-                idempotency_key=serializer.validated_data['idempotency_key'], audit_metadata=self.audit_metadata(device, operator_session))
+                idempotency_key=serializer.validated_data['idempotency_key'], pos_device=device,
+                audit_metadata=self.audit_metadata(device, operator_session))
         except AttendanceConflict as error:
             self._domain(error)
-        return Response(TableAttendanceSerializer(attendance).data, headers={'Idempotency-Replayed': 'true'} if replayed else None)
+        payload = TableAttendanceSerializer(attendance).data
+        if self.requested:
+            document = PrintDocument.objects.filter(
+                branch=device.branch, document_type=PrintDocumentType.TABLE_BILL,
+                source_type='table_attendance', source_id=str(attendance.pk),
+            ).order_by('-version', '-id').first()
+            if document:
+                payload['effects'] = {
+                    'print_document_id': document.pk,
+                    'print_document': _print_document_effect(document),
+                }
+        return Response(payload, headers={'Idempotency-Replayed': 'true'} if replayed else None)
 
 
 class POSTableAttendanceCloseView(POSTableAttendanceView):
@@ -1614,7 +1713,17 @@ class POSTableAttendanceCloseView(POSTableAttendanceView):
                 idempotency_key=serializer.validated_data['idempotency_key'], pos_device=device, audit_metadata=self.audit_metadata(device, operator_session))
         except AttendanceConflict as error:
             self._domain(error)
-        return Response(TableAttendanceSerializer(attendance).data, headers={'Idempotency-Replayed': 'true'} if replayed else None)
+        payload = TableAttendanceSerializer(attendance).data
+        document = PrintDocument.objects.filter(
+            branch=device.branch, document_type=PrintDocumentType.TABLE_FINAL_RECEIPT,
+            source_type='table_attendance', source_id=str(attendance.pk),
+        ).order_by('-version', '-id').first()
+        if document:
+            payload['effects'] = {
+                'print_document_id': document.pk,
+                'print_document': _print_document_effect(document),
+            }
+        return Response(payload, headers={'Idempotency-Replayed': 'true'} if replayed else None)
 
 
 class POSTableAttendanceItemsTransferView(POSTableAttendanceView):
@@ -2107,13 +2216,20 @@ class POSQuickCheckoutFinalizeView(POSQuickCheckoutView):
         sale = Sale.objects.select_related(
             'company', 'branch', 'cash_session', 'created_by', 'seller_user', 'pos_device',
         ).prefetch_related('items__product', 'payments__payment_method').get(pk=sale.pk)
+        document = issue_print_document(
+            branch=device.branch, document_type=PrintDocumentType.QUICK_SALE_RECEIPT,
+            source_type='sale', source_id=sale.pk, user=operator, pos_device=device,
+            automatic_only=True, metadata={'trigger': 'quick_sale_finalized'},
+        )
         response = Response({
             'sale': SaleSerializer(sale, context={'request': request}).data,
             'cash_state': cash_state_for_device(device, permissions, operator),
-            'effects': {
-                'tickets': list(sale.items.filter(product__emits_ticket=True).values_list('sale_ticket__number', flat=True)),
-                'production_job_count': sum(item.production_jobs.filter(event='new').count() for item in sale.items.all()),
-            },
+                'effects': {
+                    'tickets': _ticket_print_effects(sale),
+                    'production_job_count': sum(item.production_jobs.filter(event='new').count() for item in sale.items.all()),
+                    'print_document_id': document.pk,
+                    'print_document': _print_document_effect(document),
+                },
         }, status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED)
         if replayed:
             response['Idempotency-Replayed'] = 'true'
@@ -2180,18 +2296,23 @@ class POSFinalizeSaleView(POSQuickSaleView):
         sale = Sale.objects.select_related(
             'company', 'branch', 'cash_session', 'created_by', 'seller_user', 'pos_device',
         ).prefetch_related('items__product', 'payments__payment_method').get(pk=sale.pk)
+        document = issue_print_document(
+            branch=device.branch, document_type=PrintDocumentType.QUICK_SALE_RECEIPT,
+            source_type='sale', source_id=sale.pk, user=operator, pos_device=device,
+            automatic_only=True, metadata={'trigger': 'quick_sale_finalized'},
+        )
         response = Response(
             {
                 'sale': SaleSerializer(sale, context={'request': request}).data,
                 'cash_state': cash_state_for_device(device, permissions, operator),
                 'effects': {
-                    'tickets': list(sale.items.filter(
-                        product__emits_ticket=True,
-                    ).values_list('sale_ticket__number', flat=True)),
+                    'tickets': _ticket_print_effects(sale),
                     'production_job_count': sum(
                         item.production_jobs.filter(event='new').count()
                         for item in sale.items.all()
                     ),
+                    'print_document_id': document.pk,
+                    'print_document': _print_document_effect(document),
                 },
             },
             status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED,

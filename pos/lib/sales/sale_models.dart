@@ -1,5 +1,7 @@
-import '../cash/cash_models.dart';
 import 'package:flutter/foundation.dart';
+
+import '../cash/cash_models.dart';
+import '../printing/models.dart';
 
 class QuickSaleDiscountIntent {
   const QuickSaleDiscountIntent({
@@ -731,27 +733,63 @@ class QuickSaleResult {
     required this.saleNumber,
     required this.total,
     required this.cash,
+    this.saleId,
+    this.receiptDocument,
     this.ticketNumbers = const [],
+    this.ticketIds = const [],
     this.productionJobCount = 0,
   });
 
   factory QuickSaleResult.fromJson(Map<String, dynamic> json) {
     final sale = json['sale'] as Map<String, dynamic>? ?? const {};
     final effects = json['effects'] as Map<String, dynamic>? ?? const {};
+    final tickets = effects['tickets'] as List<dynamic>? ?? const [];
+    final receiptDocument = PrintDocumentResult.maybeFromJson(
+          effects['print_document'] ??
+              effects['quick_sale_receipt_document'] ??
+              effects['print_document_id'],
+        ) ??
+        _documentFromList(effects['print_documents']);
     return QuickSaleResult(
       saleNumber: sale['sale_number'] as String? ?? '',
+      saleId: sale['id']?.toString(),
+      receiptDocument: receiptDocument,
       total: sale['total'] as String? ?? '0.00',
       cash: CashOverview.fromJson(
           json['cash_state'] as Map<String, dynamic>? ?? const {}),
-      ticketNumbers:
-          (effects['tickets'] as List<dynamic>? ?? const []).cast<int>(),
+      ticketNumbers: tickets
+          .map((ticket) => ticket is Map ? ticket['number'] : ticket)
+          .whereType<num>()
+          .map((number) => number.toInt())
+          .toList(growable: false),
+      ticketIds: tickets
+          .whereType<Map>()
+          .map((ticket) => ticket['id']?.toString())
+          .whereType<String>()
+          .toList(growable: false),
       productionJobCount: effects['production_job_count'] as int? ?? 0,
     );
   }
 
   final String saleNumber;
+  final String? saleId;
+  final PrintDocumentResult? receiptDocument;
   final String total;
   final CashOverview cash;
   final List<int> ticketNumbers;
+  final List<String> ticketIds;
   final int productionJobCount;
+
+  String? get receiptDocumentId => receiptDocument?.id;
+
+  static PrintDocumentResult? _documentFromList(Object? value) {
+    if (value is! List) return null;
+    for (final document in value) {
+      final result = PrintDocumentResult.maybeFromJson(document);
+      if (result?.documentType == PrintDocumentType.quickSaleReceipt) {
+        return result;
+      }
+    }
+    return null;
+  }
 }

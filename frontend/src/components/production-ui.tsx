@@ -43,6 +43,7 @@ const statusLabels: Record<PrintJobStatus, string> = {
   processing: "Processando",
   printed: "Impresso",
   failed: "Falhou",
+  uncertain: "Nao confirmado",
   cancelled: "Cancelado",
 };
 const statusClasses: Record<PrintJobStatus, string> = {
@@ -50,6 +51,7 @@ const statusClasses: Record<PrintJobStatus, string> = {
   processing: "bg-primary/10 text-primary",
   printed: "bg-success-surface text-success-strong",
   failed: "bg-danger-surface text-danger-strong",
+  uncertain: "bg-warning-surface text-warning-strong",
   cancelled: "bg-surface-muted text-muted",
 };
 
@@ -70,12 +72,27 @@ function destinationName(job: PrintJob, destinations: ProductionDestination[]) {
   return (
     snapshot?.name ||
     destinations.find((item) => item.id === job.destination)?.name ||
-    `Destino #${job.destination}`
+    job.destination ? `Destino #${job.destination}` : "-"
   );
 }
 
+const documentLabels: Record<NonNullable<PrintJob["document_type"]>, string> = {
+  TABLE_BILL: "Conta da mesa",
+  TABLE_CONFERENCE: "Conferencia",
+  TABLE_FINAL_RECEIPT: "Recibo final da mesa",
+  QUICK_SALE_RECEIPT: "Recibo venda rapida",
+  PAYMENT_RECEIPT: "Comprovante de pagamento",
+  TICKET: "Ticket",
+};
+
+function jobLabel(job: PrintJob) {
+  if (job.document_type)
+    return job.document_label || documentLabels[job.document_type];
+  return job.production_event === "cancel" ? "Cancelamento de producao" : "Novo pedido de producao";
+}
+
 function canRetryJob(job: PrintJob) {
-  return job.status === "pending" || job.status === "failed";
+  return job.status === "failed";
 }
 
 function canReprintJob(job: PrintJob) {
@@ -254,8 +271,8 @@ export function PrintQueue({
                 {failuresOnly ? "Jobs com erro" : "Jobs de impressão"}
               </h2>
               <p className="mt-1 text-[11px] text-muted">
-                Ações técnicas são auditadas. Reimpressões são sempre
-                explícitas.
+                Retry so e permitido para falha confirmada. Jobs nao
+                confirmados exigem reimpressao explicita.
               </p>
             </div>
             <Printer className="size-5 text-muted" />
@@ -269,7 +286,7 @@ export function PrintQueue({
                   <thead>
                     <tr>
                       <th>Job</th>
-                      <th>Destino</th>
+                       <th>Documento / destino</th>
                       <th>Impressora</th>
                       <th>Status</th>
                       <th>Criado em</th>
@@ -281,17 +298,25 @@ export function PrintQueue({
                       <tr key={job.id}>
                         <td>
                           <strong>#{job.id}</strong>
-                          <span className="block text-[11px] text-muted">
-                            {job.production_event === "cancel"
-                              ? "Cancelamento"
-                              : "Novo pedido"}
-                          </span>
-                        </td>
-                        <td>{destinationName(job, destinations)}</td>
+                           <span className="block text-[11px] text-muted">
+                             {jobLabel(job)}
+                           </span>
+                           {job.reprint_number > 0 && (
+                             <span className="block text-[11px] text-muted">
+                               Reimpressao #{job.reprint_number}
+                             </span>
+                           )}
+                         </td>
+                         <td>{job.document_type ? job.snapshot_hash ? `Snapshot ${job.snapshot_hash.slice(0, 12)}` : "Documento" : destinationName(job, destinations)}</td>
                         <td>{job.printer_name}</td>
-                        <td>
-                          <PrintJobStatusBadge status={job.status} />
-                          {job.last_error && (
+                         <td>
+                           <PrintJobStatusBadge status={job.status} />
+                           {job.status === "uncertain" && (
+                             <span className="mt-1 block text-[11px] text-warning-strong">
+                               Reimpressao explicita necessaria
+                             </span>
+                           )}
+                           {job.last_error && (
                             <span
                               className="mt-1 block max-w-56 truncate text-[11px] text-danger-strong"
                               title={job.last_error}
@@ -315,18 +340,28 @@ export function PrintQueue({
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <strong className="text-sm">Job #{job.id}</strong>
+                        {job.reprint_number > 0 && (
+                          <span className="ml-2 text-[11px] text-muted">
+                            Reimpressao #{job.reprint_number}
+                          </span>
+                        )}
                         <p className="mt-1 text-xs text-muted">
-                          {destinationName(job, destinations)} ·{" "}
-                          {job.printer_name}
+                           {jobLabel(job)} ·{" "}
+                           {job.printer_name}
                         </p>
                       </div>
                       <PrintJobStatusBadge status={job.status} />
                     </div>
-                    {job.last_error && (
+                     {job.last_error && (
                       <p className="rounded bg-danger-surface p-2 text-xs text-danger-strong">
                         {job.last_error}
                       </p>
-                    )}
+                     )}
+                     {job.status === "uncertain" && (
+                       <p className="rounded bg-warning-surface p-2 text-xs text-warning-strong">
+                         O envio fisico nao pode ser confirmado. Nao use retry; reimprima somente se desejar uma nova copia.
+                       </p>
+                     )}
                     <p className="text-xs text-muted">
                       Criado em {formatDate(job.created_at)}
                     </p>
@@ -752,13 +787,17 @@ export function PrintJobDetail({ id }: { id: string }) {
                     )}
                   </div>
                   <h2 className="mt-3 text-lg font-bold">
-                    {order?.product_name || "Item de produção"}
+                    {jobLabel(job) || order?.product_name || "Item de producao"}
                   </h2>
                   <p className="mt-1 text-sm text-muted">
-                    {command?.number
+                    {job.document_type
+                      ? job.snapshot_hash
+                        ? `Snapshot ${job.snapshot_hash}`
+                        : "Documento registrado"
+                      : command?.number
                       ? `Comanda ${command.number}`
-                      : "Comanda não identificada"}
-                    {command?.identifier ? ` · ${command.identifier}` : ""}
+                      : "Comanda nao identificada"}
+                    {!job.document_type && command?.identifier ? ` · ${command.identifier}` : ""}
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -795,10 +834,15 @@ export function PrintJobDetail({ id }: { id: string }) {
                   <strong>Último erro:</strong> {job.last_error}
                 </div>
               )}
+              {job.status === "uncertain" && (
+                <div className="mt-3 rounded-md border border-warning/30 bg-warning-surface p-3 text-sm text-warning-strong">
+                  O envio fisico nao foi confirmado. Retry tecnico nao e seguro; use reimpressao somente se uma nova copia for desejada.
+                </div>
+              )}
             </section>
             <div className="grid gap-4 lg:grid-cols-2">
               <section className="card p-5">
-                <h2 className="text-sm font-bold">Pedido e modificadores</h2>
+                <h2 className="text-sm font-bold">Documento ou pedido</h2>
                 <dl className="mt-4 grid gap-3 text-sm">
                   <div>
                     <dt className="text-xs text-muted">Item</dt>
@@ -840,7 +884,7 @@ export function PrintJobDetail({ id }: { id: string }) {
                   <div>
                     <dt className="text-xs text-muted">Destino</dt>
                     <dd>
-                      {destination?.name || `#${job.destination}`}
+                       {destination?.name || (job.destination ? `#${job.destination}` : "Nao se aplica")}
                       {destination?.code ? ` (${destination.code})` : ""}
                     </dd>
                   </div>
@@ -851,9 +895,7 @@ export function PrintJobDetail({ id }: { id: string }) {
                   <div>
                     <dt className="text-xs text-muted">Evento</dt>
                     <dd>
-                      {job.production_event === "cancel"
-                        ? "Cancelamento"
-                        : "Novo pedido"}
+                       {jobLabel(job)}
                     </dd>
                   </div>
                   <div>

@@ -285,6 +285,8 @@ class PaymentHistoryList extends StatelessWidget {
           reversalReason: entry.reversalReason,
           working: entry.working,
           onReverse: entry.onReverse,
+          onPrint: entry.onPrint,
+          printTooltip: entry.printTooltip,
         );
       },
     );
@@ -297,6 +299,8 @@ class PaymentHistoryEntry {
     required this.reversed,
     required this.working,
     required this.onReverse,
+    this.onPrint,
+    this.printTooltip,
     this.reversalReason,
   });
 
@@ -304,6 +308,8 @@ class PaymentHistoryEntry {
   final bool reversed;
   final bool working;
   final VoidCallback onReverse;
+  final VoidCallback? onPrint;
+  final String? printTooltip;
   final String? reversalReason;
 }
 

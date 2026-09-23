@@ -1095,13 +1095,24 @@ class POSFoundationIntegrationTests(TestCase):
         device = POSDevice.objects.get(pk=paired.data['device']['id'])
         device.active_cash_session = cash_session
         device.save(update_fields=('active_cash_session', 'updated_at'))
+        payload = self.pos_sale_payload(cash_session)
+        product = Product.objects.get(pk=payload['items'][0]['product'])
+        product.emits_ticket = True
+        product.save(update_fields=('emits_ticket', 'updated_at'))
 
         finalized = self.client.post(
-            reverse('pos:sale-finalize'), self.pos_sale_payload(cash_session), format='json',
+            reverse('pos:sale-finalize'), payload, format='json',
         )
 
         self.assertEqual(finalized.status_code, 201, finalized.data)
         self.assertEqual(finalized.data['sale']['cash_session'], cash_session.pk)
+        self.assertEqual(finalized.data['effects']['print_document_id'], finalized.data['effects']['print_document']['id'])
+        self.assertIn('reprint_eligible', finalized.data['effects']['print_document'])
+        self.assertEqual(len(finalized.data['effects']['tickets']), 1)
+        ticket = finalized.data['effects']['tickets'][0]
+        self.assertIsNotNone(ticket['id'])
+        self.assertIsNotNone(ticket['print_document_id'])
+        self.assertIn('reprint_eligible', ticket['print_document'])
 
     def test_pos_superuser_without_effective_sales_create_cannot_start_sale(self):
         operator, _ = self.login_pos_operator()

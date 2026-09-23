@@ -19,12 +19,19 @@ import { fieldError, formatDate } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
-import type { Paginated, PrinterDevice, PrintJob, PrintJobStatus } from "@/types";
+import type {
+  Paginated,
+  PrinterDevice,
+  PrintJob,
+  PrintJobStatus,
+  ProductionDestination,
+} from "@/types";
 
 const connectionLabels = {
   network: "Rede",
   usb: "USB",
   bluetooth: "Bluetooth",
+  stone_integrated: "Stone integrada (em breve)",
 } as const;
 
 const operationalLabels = {
@@ -56,6 +63,7 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
   const contextRef = useRef("");
   contextRef.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}`;
   const [devices, setDevices] = useState<PrinterDevice[]>([]);
+  const [destinations, setDestinations] = useState<ProductionDestination[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -77,6 +85,7 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
   const [serial, setSerial] = useState("");
   const [deviceName, setDeviceName] = useState("");
   const [identifier, setIdentifier] = useState("");
+  const [destinationIds, setDestinationIds] = useState<number[]>([]);
   const [historyDevice, setHistoryDevice] = useState<PrinterDevice | null>(null);
   const [history, setHistory] = useState<Paginated<PrintJob> | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -89,8 +98,16 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
     setLoading(true);
     setError("");
     try {
-      const items = await http.getAll<PrinterDevice>("printer-devices/");
-      if (context === contextRef.current) setDevices(items);
+      const [items, availableDestinations] = await Promise.all([
+        http.getAll<PrinterDevice>("printer-devices/"),
+        http
+          .getAll<ProductionDestination>("production-destinations/")
+          .catch(() => []),
+      ]);
+      if (context === contextRef.current) {
+        setDevices(items);
+        setDestinations(availableDestinations);
+      }
     } catch (caught) {
       if (context === contextRef.current)
         setError(
@@ -110,6 +127,7 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
   useEffect(() => {
     const context = contextRef.current;
     setDevices([]);
+    setDestinations([]);
     setEditorOpen(false);
     loadForContext(context);
   }, [currentCompany?.id, currentBranch?.id]);
@@ -129,6 +147,7 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
     setSerial(String(config.serial || ""));
     setDeviceName(String(config.device_name || ""));
     setIdentifier(String(config.identifier || ""));
+    setDestinationIds(device?.destination_ids || []);
     setFields({});
     setError("");
     setEditorOpen(true);
@@ -148,10 +167,12 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
               identifier:
                 serial.trim() || `${vendorId.trim()}:${productId.trim()}`,
             }
-          : {
-              device_name: deviceName.trim(),
-              identifier: identifier.trim(),
-            };
+          : connectionType === "bluetooth"
+            ? {
+                device_name: deviceName.trim(),
+                identifier: identifier.trim(),
+              }
+            : editing?.technical_configuration || {};
     setSaving(true);
     setError("");
     setFields({});
@@ -160,6 +181,7 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
         name,
         connection_type: connectionType,
         status: deviceStatus,
+        destination_ids: destinationIds,
         technical_configuration,
       };
       if (editing) await http.patch(`printer-devices/${editing.id}/`, body);
@@ -206,10 +228,10 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
       await http.patch(`printer-devices/${device.id}/`, {
         status: device.status === "active" ? "inactive" : "active",
       });
-      setSuccess(
-        device.status === "active"
-          ? "Impressora excluída da operação."
-          : "Impressora ativada.",
+        setSuccess(
+          device.status === "active"
+            ? "Impressora arquivada. Os destinos continuam disponíveis para outras impressoras ativas."
+            : "Impressora ativada.",
       );
       await load();
     } catch (caught) {
@@ -326,7 +348,19 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
                     Último teste: {device.last_test_at ? formatDate(device.last_test_at) : "não realizado"}
                   </span>
                 </div>
+                <p className="mt-3 text-xs text-muted">
+                  Destinos de produção: {device.destination_ids.length
+                    ? device.destination_ids
+                        .map(
+                          (id) =>
+                            destinations.find((destination) => destination.id === id)
+                              ?.name || `Destino #${id}`,
+                        )
+                        .join(", ")
+                    : "Nenhum destino vinculado"}
+                </p>
                 {device.connection_type !== "network" &&
+                  device.connection_type !== "stone_integrated" &&
                   device.operational_status !== "online" && (
                     <p className="mt-3 rounded-md bg-warning-surface p-2 text-xs text-warning-strong">
                       Print Bridge necessária para utilizar esta impressora.
@@ -338,15 +372,17 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
                   </p>
                 )}
                 <div className="mt-4 flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    loading={busy === device.id}
-                    disabled={readOnly || device.status !== "active" || device.connection_type !== "network"}
-                    onClick={() => void testPrinter(device)}
-                  >
-                    {device.connection_type === "bluetooth" ? "Conectar" : "Testar"}
-                  </Button>
+                  {device.connection_type !== "stone_integrated" && (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      loading={busy === device.id}
+                      disabled={readOnly || device.status !== "active" || device.connection_type !== "network"}
+                      onClick={() => void testPrinter(device)}
+                    >
+                      {device.connection_type === "bluetooth" ? "Conectar" : "Testar"}
+                    </Button>
+                  )}
                   <Button
                     type="button"
                     variant="secondary"
@@ -402,7 +438,7 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
       <Modal
         open={editorOpen}
         title={editing ? "Editar impressora" : "Adicionar impressora"}
-        description="O nome também será usado como setor operacional."
+          description="Uma impressora pode atender vários destinos, e cada destino pode ser compartilhado por outras impressoras."
         onClose={() => !saving && setEditorOpen(false)}
         size="xl"
       >
@@ -430,6 +466,7 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
                   <option value="network">Rede</option>
                   <option value="usb">USB</option>
                   <option value="bluetooth">Bluetooth</option>
+                  <option value="stone_integrated" disabled>Stone integrada (em breve)</option>
                 </Select>
               </Field>
               <Field label="Status administrativo">
@@ -444,6 +481,35 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
                 </Select>
               </Field>
             </div>
+            <fieldset>
+              <legend className="label">Destinos de produção atendidos</legend>
+              <p className="mb-2 text-xs text-muted">
+                Vincule todos os destinos que esta impressora deve atender. Arquivar a impressora não arquiva nem desativa os destinos.
+              </p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {destinations.map((destination) => (
+                  <label key={destination.id} className="flex items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={destinationIds.includes(destination.id)}
+                      disabled={destination.status !== "active"}
+                      onChange={(event) =>
+                        setDestinationIds((current) =>
+                          event.target.checked
+                            ? [...current, destination.id]
+                            : current.filter((id) => id !== destination.id),
+                        )
+                      }
+                    />
+                    {destination.name}
+                    {destination.status !== "active" ? " (inativo)" : ""}
+                  </label>
+                ))}
+              </div>
+              {!destinations.length && (
+                <p className="text-xs text-muted">Nenhum destino de produção disponível nesta filial.</p>
+              )}
+            </fieldset>
             {connectionType === "network" && (
               <>
                 <div className="grid gap-4 sm:grid-cols-[1fr_9rem_8rem]">
@@ -519,6 +585,9 @@ export function PrinterManagement({ embedded = false }: { embedded?: boolean }) 
                 </Field>
                 <Alert message="Print Bridge necessária para conectar esta impressora Bluetooth." />
               </>
+            )}
+            {connectionType === "stone_integrated" && (
+              <Alert message="Transporte Stone integrada reservado para uso futuro. Não há configuração ou execução disponível nesta tela." />
             )}
           </div>
           <div className="flex justify-end gap-2 border-t border-subtle p-4">

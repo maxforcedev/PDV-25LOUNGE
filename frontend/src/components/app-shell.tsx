@@ -26,6 +26,7 @@ import {
   PanelLeftOpen,
   ShieldCheck,
   ShoppingCart,
+  Printer,
   Sun,
   Tags,
   Layers,
@@ -64,7 +65,12 @@ const operationNavigation: NavItem[] = [
   { href: "/caixas", label: "Caixa", icon: Banknote, requiredPermissions: [permissions.viewCashRegister], requiredFeatures: ["cash_register"] },
 ];
 
-const productionNavigation: NavItem[] = [];
+const productionNavigation: NavItem[] = [
+  { href: "/producao/rotas-impressao", label: "Rotas de impressao", icon: Printer, requiredPermissions: [permissions.managePrintRoutes] },
+  { href: "/producao/impressoras", label: "Impressoras", icon: Printer, requiredPermissions: [permissions.viewProduction, permissions.managePrinters] },
+  { href: "/producao/fila", label: "Fila de impressao", icon: Printer, requiredPermissions: [permissions.viewPrintJobs] },
+  { href: "/producao/falhas", label: "Falhas de impressao", icon: Printer, requiredPermissions: [permissions.viewPrintJobs] },
+];
 
 const cadastrosNavigation: NavItem[] = [
   { href: "/produtos", label: "Produtos", icon: Package, requiredPermissions: [permissions.viewProduct] },

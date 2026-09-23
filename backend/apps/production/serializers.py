@@ -1,18 +1,19 @@
 from rest_framework import serializers
 import ipaddress
 import re
-from django.utils.text import slugify
 
 from apps.products.models import ProductionDestination
 
 from .models import (
-    PrintJob, PrintJobStatus, PrinterConnectionType, PrinterDevice,
-    ProductionJob, Ticket,
+    PrintDocument, PrintDocumentType, PrintJob, PrintJobStatus, PrintRoute,
+    PrintRouteOverride, PrinterConnectionType, PrinterDevice, ProductionJob, Ticket,
 )
 
 
 class PrinterDeviceSerializer(serializers.ModelSerializer):
-    destination_ids = serializers.PrimaryKeyRelatedField(source='destinations', many=True, read_only=True)
+    destination_ids = serializers.PrimaryKeyRelatedField(
+        source='destinations', many=True, queryset=ProductionDestination.objects.all(), required=False,
+    )
     connection_summary = serializers.SerializerMethodField()
 
     class Meta:
@@ -39,19 +40,16 @@ class PrinterDeviceSerializer(serializers.ModelSerializer):
             self.fields['branch'].default = branch
             self.fields['branch'].required = False
 
-    def validate_name(self, value):
-        value = ' '.join(value.split())
-        if self.instance and ProductionDestination.objects.filter(
-            branch=self.instance.branch, name__iexact=value,
-        ).exclude(printer_devices=self.instance).exists():
-            raise serializers.ValidationError('Já existe outro setor com este nome na filial.')
-        return value
-
     def validate(self, attrs):
         branch = attrs.get('branch', getattr(self.instance, 'branch', None))
         context_branch = getattr(self.context.get('request'), 'branch_context', None)
         if context_branch and branch and context_branch.pk != branch.pk:
             raise serializers.ValidationError({'branch': 'Selecione a filial ativa.'})
+        destinations = attrs.get('destinations')
+        if destinations is not None and (
+            branch is None or any(destination.branch_id != branch.pk for destination in destinations)
+        ):
+            raise serializers.ValidationError({'destination_ids': 'Todos os destinos devem pertencer à filial atual.'})
         configuration = attrs.get('technical_configuration', getattr(self.instance, 'technical_configuration', {})) or {}
         connection_type = attrs.get('connection_type', getattr(self.instance, 'connection_type', None))
         if self.instance and not configuration and 'technical_configuration' not in attrs:
@@ -82,40 +80,11 @@ class PrinterDeviceSerializer(serializers.ModelSerializer):
         branch = getattr(self.context['request'], 'branch_context', None)
         validated_data['branch'] = branch
         validated_data['device_type'] = 'manual'
-        device = super().create(validated_data)
-        self._sync_destination(device)
-        return device
+        return super().create(validated_data)
 
     def update(self, instance, validated_data):
         validated_data.pop('branch', None)
-        device = super().update(instance, validated_data)
-        self._sync_destination(device)
-        return device
-
-    @staticmethod
-    def _sync_destination(device):
-        destination = device.destinations.order_by('id').first()
-        if destination is None:
-            destination = ProductionDestination.objects.filter(
-                branch=device.branch, name__iexact=device.name,
-            ).first()
-        if destination is None:
-            base = slugify(device.name)[:40] or f'impressora-{device.pk}'
-            code = base
-            suffix = 1
-            while ProductionDestination.objects.filter(branch=device.branch, code=code).exists():
-                suffix += 1
-                code = f'{base[:44]}-{suffix}'
-            destination = ProductionDestination.objects.create(
-                branch=device.branch, name=device.name, code=code,
-                status=device.status,
-            )
-        if not device.destinations.filter(pk=destination.pk).exists():
-            device.destinations.add(destination)
-        if destination.name != device.name or destination.status != device.status:
-            destination.name = device.name
-            destination.status = device.status
-            destination.save(update_fields=('name', 'status', 'updated_at'))
+        return super().update(instance, validated_data)
 
     def get_connection_summary(self, device):
         configuration = device.technical_configuration or {}
@@ -123,6 +92,8 @@ class PrinterDeviceSerializer(serializers.ModelSerializer):
             return f"{configuration.get('host', '')}:{configuration.get('port', '')}".strip(':')
         if device.connection_type == PrinterConnectionType.USB:
             return configuration.get('serial') or 'USB configurada'
+        if device.connection_type == PrinterConnectionType.STONE_INTEGRATED:
+            return 'Stone integrada'
         return configuration.get('device_name') or configuration.get('identifier') or 'Bluetooth configurada'
 
 
@@ -140,6 +111,8 @@ class TicketSerializer(serializers.ModelSerializer):
 
 class PrintJobSerializer(serializers.ModelSerializer):
     production_event = serializers.CharField(source='production_job.event', read_only=True, allow_null=True)
+    document_type = serializers.CharField(source='print_document.document_type', read_only=True, allow_null=True)
+    document_snapshot = serializers.JSONField(source='print_document.snapshot', read_only=True, allow_null=True)
     printer_name = serializers.CharField(source='printer_device.name', read_only=True)
     connection_type = serializers.CharField(source='printer_device.connection_type', read_only=True)
     error_summary = serializers.SerializerMethodField()
@@ -150,7 +123,8 @@ class PrintJobSerializer(serializers.ModelSerializer):
     class Meta:
         model = PrintJob
         fields = (
-            'id', 'company', 'branch', 'production_job', 'production_event',
+            'id', 'company', 'branch', 'production_job', 'print_document', 'production_event',
+            'document_type', 'document_snapshot',
             'destination', 'printer_device', 'printer_name', 'connection_type',
             'payload_snapshot', 'is_test', 'status', 'attempts', 'last_error',
             'error_summary', 'origin_type', 'origin_label', 'idempotency_key',
@@ -165,6 +139,8 @@ class PrintJobSerializer(serializers.ModelSerializer):
     def get_origin_type(self, job):
         if job.is_test:
             return 'test'
+        if job.print_document_id:
+            return 'document'
         production_job = job.production_job
         if production_job and production_job.order_item_id:
             return 'command'
@@ -177,6 +153,8 @@ class PrintJobSerializer(serializers.ModelSerializer):
     def get_origin_label(self, job):
         if job.is_test:
             return 'Teste de impressão'
+        if job.print_document_id:
+            return job.print_document.get_document_type_display()
         production_job = job.production_job
         if production_job and production_job.order_item_id:
             command = (job.payload_snapshot or {}).get('command', {})
@@ -202,3 +180,123 @@ class PrintJobSerializer(serializers.ModelSerializer):
 
 class ReprintSerializer(serializers.Serializer):
     reason = serializers.CharField(required=False, allow_blank=True, max_length=300)
+
+
+class PrintDocumentTypeField(serializers.ChoiceField):
+    """Expose the documented enum names while persisting model choice values."""
+
+    def __init__(self, **kwargs):
+        super().__init__(choices=tuple(PrintDocumentType.__members__), **kwargs)
+
+    def to_internal_value(self, data):
+        if not isinstance(data, str):
+            self.fail('invalid_choice', input=data)
+        member = PrintDocumentType.__members__.get(data.upper())
+        if member is None:
+            self.fail('invalid_choice', input=data)
+        return member.value
+
+    def to_representation(self, value):
+        try:
+            return PrintDocumentType(value).name
+        except ValueError:
+            return value
+
+
+class _RouteSerializer(serializers.ModelSerializer):
+    document_type = PrintDocumentTypeField()
+    copies = serializers.IntegerField(min_value=1, max_value=10, required=False)
+    printer_device_ids = serializers.PrimaryKeyRelatedField(
+        source='printer_devices', many=True, queryset=PrinterDevice.objects.all(), required=False,
+    )
+
+    def validate_printer_devices(self, devices):
+        branch_id = getattr(self.instance, 'branch_id', None)
+        if branch_id is None:
+            branch_id = getattr(getattr(self.context.get('request'), 'branch_context', None), 'pk', None)
+        if any(device.branch_id != branch_id for device in devices):
+            raise serializers.ValidationError('Todas as impressoras devem pertencer à filial atual.')
+        return devices
+
+
+class PrintRouteSerializer(_RouteSerializer):
+    class Meta:
+        model = PrintRoute
+        fields = ('id', 'branch', 'document_type', 'mode', 'printer_device_ids', 'copies', 'document_format', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'branch', 'created_at', 'updated_at')
+
+
+class PrintRouteOverrideSerializer(_RouteSerializer):
+    pos_device_name = serializers.CharField(source='pos_device.name', read_only=True)
+
+    class Meta:
+        model = PrintRouteOverride
+        fields = ('id', 'pos_device', 'pos_device_name', 'document_type', 'inherit_branch', 'mode', 'printer_device_ids', 'copies', 'document_format', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'pos_device_name', 'created_at', 'updated_at')
+
+    def validate_pos_device(self, device):
+        branch = getattr(self.context.get('request'), 'branch_context', None)
+        if branch and device.branch_id != branch.pk:
+            raise serializers.ValidationError('O POS deve pertencer à filial atual.')
+        return device
+
+
+class PrintDocumentSerializer(serializers.ModelSerializer):
+    document_type = PrintDocumentTypeField(read_only=True)
+    print_jobs = PrintJobSerializer(many=True, read_only=True)
+    initial_printed = serializers.SerializerMethodField()
+    reprint_eligible = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PrintDocument
+        fields = (
+            'id', 'company', 'branch', 'document_type', 'source_type', 'source_id',
+            'snapshot', 'snapshot_hash', 'version', 'created_by', 'original_document', 'metadata',
+            'initial_printed', 'reprint_eligible', 'print_jobs', 'created_at', 'updated_at',
+        )
+        read_only_fields = fields
+
+    def get_initial_printed(self, document):
+        return document.print_jobs.filter(reprint_of__isnull=True, status=PrintJobStatus.PRINTED).exists()
+
+    def get_reprint_eligible(self, document):
+        return document.print_jobs.filter(
+            reprint_of__isnull=True, status__in=(PrintJobStatus.PRINTED, PrintJobStatus.UNCERTAIN),
+        ).exists()
+
+
+class PrintDocumentResultSerializer(serializers.Serializer):
+    """POS action response with the document identity and current queue state."""
+
+    document = serializers.SerializerMethodField()
+    jobs = serializers.SerializerMethodField()
+    queued = serializers.SerializerMethodField()
+    reprint_number = serializers.SerializerMethodField()
+    reprint_eligible = serializers.SerializerMethodField()
+
+    def get_document(self, document):
+        return PrintDocumentSerializer(document, context=self.context).data
+
+    def get_jobs(self, document):
+        return PrintJobSerializer(document.print_jobs.order_by('id'), many=True, context=self.context).data
+
+    def get_queued(self, document):
+        return document.print_jobs.filter(
+            status__in=(PrintJobStatus.PENDING, PrintJobStatus.PROCESSING),
+        ).exists()
+
+    def get_reprint_number(self, document):
+        return max(document.print_jobs.values_list('reprint_number', flat=True), default=0)
+
+    def get_reprint_eligible(self, document):
+        return document.print_jobs.filter(
+            reprint_of__isnull=True, status__in=(PrintJobStatus.PRINTED, PrintJobStatus.UNCERTAIN),
+        ).exists()
+
+
+class PrintDocumentIssueSerializer(serializers.Serializer):
+    document_type = PrintDocumentTypeField()
+    source_type = serializers.ChoiceField(choices=(
+        'table_attendance', 'sale', 'table_payment', 'quick_sale_payment', 'ticket',
+    ))
+    source_id = serializers.CharField(max_length=64)

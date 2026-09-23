@@ -89,6 +89,8 @@ class PaymentHistoryItem extends StatelessWidget {
     required this.reversed,
     required this.working,
     required this.onReverse,
+    this.onPrint,
+    this.printTooltip,
     this.reversalReason,
     super.key,
   });
@@ -97,6 +99,8 @@ class PaymentHistoryItem extends StatelessWidget {
   final bool reversed;
   final bool working;
   final VoidCallback onReverse;
+  final VoidCallback? onPrint;
+  final String? printTooltip;
   final String? reversalReason;
 
   @override
@@ -140,6 +144,12 @@ class PaymentHistoryItem extends StatelessWidget {
         ),
         Text(formatMoney(payment.amount),
             style: const TextStyle(fontWeight: FontWeight.w800)),
+        if (!reversed && onPrint != null)
+          IconButton(
+            onPressed: working ? null : onPrint,
+            tooltip: printTooltip ?? 'Imprimir comprovante',
+            icon: const Icon(Icons.print_outlined, size: 20),
+          ),
         if (!reversed)
           IconButton(
             onPressed: working ? null : onReverse,

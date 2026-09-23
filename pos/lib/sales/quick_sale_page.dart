@@ -7,6 +7,7 @@ import '../cash/cash_models.dart';
 import '../core/app_controller.dart';
 import '../network/pos_api_error.dart';
 import '../payments/shared_payment_page.dart';
+import '../printing/models.dart';
 import '../scanner/product_barcode_scanner_page.dart';
 import '../sync/sync_center_page.dart';
 import '../sync/sync_status_button.dart';
@@ -243,7 +244,8 @@ class _QuickSalePageState extends State<QuickSalePage> {
       unawaited(_loadCheckoutOptions());
       unawaited(_loadCatalog());
       await Navigator.of(context).push<void>(MaterialPageRoute(
-        builder: (_) => QuickSaleCompletedPage(result: result),
+        builder: (_) =>
+            QuickSaleCompletedPage(controller: widget.controller, result: result),
       ));
       return;
     }
@@ -993,10 +995,101 @@ class _CartPage extends StatelessWidget {
       );
 }
 
-class QuickSaleCompletedPage extends StatelessWidget {
-  const QuickSaleCompletedPage({required this.result, super.key});
+class QuickSaleCompletedPage extends StatefulWidget {
+  const QuickSaleCompletedPage({this.controller, required this.result, super.key});
 
+  final AppController? controller;
   final QuickSaleResult result;
+
+  @override
+  State<QuickSaleCompletedPage> createState() => _QuickSaleCompletedPageState();
+}
+
+class _QuickSaleCompletedPageState extends State<QuickSaleCompletedPage> {
+  bool _receiptPrinted = false;
+  bool _printingReceipt = false;
+  bool _ticketsPrinted = false;
+  bool _printingTickets = false;
+  String? _receiptDocumentId;
+  final Map<String, String> _ticketDocumentIds = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _receiptDocumentId = widget.result.receiptDocumentId;
+    // Automatic routes already created the original document. A user request
+    // from this screen must create an audited reprint, never re-issue it.
+    _receiptPrinted = _receiptDocumentId != null;
+  }
+
+  Future<void> _printReceipt() async {
+    final controller = widget.controller;
+    final saleId = widget.result.saleId;
+    if (controller == null || saleId == null || _printingReceipt) return;
+    setState(() => _printingReceipt = true);
+    final result = _receiptDocumentId == null
+        ? await controller.requestPrintDocument(
+            PrintDocumentRequest(
+              type: PrintDocumentType.quickSaleReceipt,
+              sourceType: 'sale',
+              sourceId: saleId,
+              idempotencyKey: createIdempotencyKey(),
+            ),
+          )
+        : await controller.reprintPrintDocument(
+            PrintDocumentReprintRequest(
+              documentId: _receiptDocumentId!,
+              idempotencyKey: createIdempotencyKey(),
+              reason: 'Reimpressão de recibo de venda rápida',
+            ),
+          );
+    if (!mounted) return;
+    setState(() {
+      _printingReceipt = false;
+      if (result != null) {
+        _receiptPrinted = true;
+        _receiptDocumentId ??= result.id;
+      }
+    });
+  }
+
+  Future<void> _printTickets() async {
+    final controller = widget.controller;
+    if (controller == null ||
+        widget.result.ticketIds.isEmpty ||
+        _printingTickets) {
+      return;
+    }
+    setState(() => _printingTickets = true);
+    var queued = true;
+    for (final ticketId in widget.result.ticketIds) {
+      final documentId = _ticketDocumentIds[ticketId];
+      final result = documentId == null
+          ? await controller.requestPrintDocument(
+              PrintDocumentRequest(
+                type: PrintDocumentType.ticket,
+                sourceType: 'ticket',
+                sourceId: ticketId,
+                idempotencyKey: createIdempotencyKey(),
+              ),
+            )
+          : await controller.reprintPrintDocument(
+              PrintDocumentReprintRequest(
+                documentId: documentId,
+                idempotencyKey: createIdempotencyKey(),
+                reason: 'Reimpressão de ticket',
+              ),
+            );
+      final resultId = result?.id;
+      if (resultId != null) _ticketDocumentIds[ticketId] = resultId;
+      if (result == null) queued = false;
+    }
+    if (!mounted) return;
+    setState(() {
+      _printingTickets = false;
+      if (queued) _ticketsPrinted = true;
+    });
+  }
 
   @override
   Widget build(BuildContext context) => PopScope(
@@ -1023,28 +1116,50 @@ class QuickSaleCompletedPage extends StatelessWidget {
                               .headlineSmall
                               ?.copyWith(fontWeight: FontWeight.w900)),
                       const SizedBox(height: 12),
-                      Text('Venda #${result.saleNumber}',
+                       Text('Venda #${widget.result.saleNumber}',
                           textAlign: TextAlign.center,
                           style: const TextStyle(fontWeight: FontWeight.w700)),
                       const SizedBox(height: 6),
-                      Text(formatMoney(result.total),
+                       Text(formatMoney(widget.result.total),
                           textAlign: TextAlign.center,
                           style: Theme.of(context)
                               .textTheme
                               .displaySmall
                               ?.copyWith(fontWeight: FontWeight.w900)),
-                      if (result.productionJobCount > 0) ...[
+                       if (widget.result.productionJobCount > 0) ...[
                         const SizedBox(height: 16),
                         const Text('Pedido enviado para produção.',
                             textAlign: TextAlign.center),
                       ],
-                      if (result.ticketNumbers.isNotEmpty) ...[
+                       if (widget.result.ticketNumbers.isNotEmpty) ...[
                         const SizedBox(height: 8),
-                        Text('Tickets: ${result.ticketNumbers.join(', ')}',
-                            textAlign: TextAlign.center),
-                      ],
-                      const SizedBox(height: 28),
-                      FilledButton(
+                         Text('Tickets: ${widget.result.ticketNumbers.join(', ')}',
+                             textAlign: TextAlign.center),
+                       ],
+                       const SizedBox(height: 28),
+                       if (widget.controller != null &&
+                           widget.result.saleId != null) ...[
+                         OutlinedButton.icon(
+                           onPressed: _printingReceipt ? null : _printReceipt,
+                           icon: const Icon(Icons.print_outlined),
+                           label: Text(_receiptPrinted
+                               ? 'REIMPRIMIR COMPROVANTE'
+                               : 'IMPRIMIR COMPROVANTE'),
+                         ),
+                         const SizedBox(height: 8),
+                       ],
+                       if (widget.controller != null &&
+                           widget.result.ticketIds.isNotEmpty) ...[
+                         OutlinedButton.icon(
+                           onPressed: _printingTickets ? null : _printTickets,
+                           icon: const Icon(Icons.confirmation_number_outlined),
+                           label: Text(_ticketsPrinted
+                               ? 'REIMPRIMIR TICKETS'
+                               : 'IMPRIMIR TICKETS'),
+                         ),
+                         const SizedBox(height: 8),
+                       ],
+                       FilledButton(
                         onPressed: () => Navigator.of(context).pop(),
                         child: const Padding(
                           padding: EdgeInsets.symmetric(vertical: 12),

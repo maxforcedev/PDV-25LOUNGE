@@ -8,6 +8,7 @@ import '../sales/sale_models.dart';
 import '../sales/shared_authorization_dialog.dart';
 import '../sales/shared_customer_dialog.dart';
 import '../sales/shared_discount_dialog.dart';
+import '../printing/models.dart';
 import 'payment_contract.dart';
 import 'payment_flow_components.dart';
 import 'shared_payment_widgets.dart';
@@ -40,6 +41,8 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
   bool _loading = true;
   bool _working = false;
   bool _details = false;
+  final Set<int> _printedReceipts = {};
+  final Map<int, String> _paymentDocumentIds = {};
 
   bool _can(String permission) =>
       widget.controller.bootstrapSnapshot?.permissions.contains(permission) ==
@@ -226,6 +229,36 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
     }
   }
 
+  Future<void> _printPaymentReceipt(TablePayment payment) async {
+    if (_working || payment.isReversal) return;
+    setState(() => _working = true);
+    final documentId = _paymentDocumentIds[payment.id];
+    final result = documentId == null
+        ? await widget.controller.requestPrintDocument(
+            PrintDocumentRequest(
+              type: PrintDocumentType.paymentReceipt,
+              sourceType: 'table_payment',
+              sourceId: '${payment.id}',
+              idempotencyKey: createIdempotencyKey(),
+            ),
+          )
+        : await widget.controller.reprintPrintDocument(
+            PrintDocumentReprintRequest(
+              documentId: documentId,
+              idempotencyKey: createIdempotencyKey(),
+              reason: 'Reimpressão de comprovante de pagamento',
+            ),
+          );
+    if (!mounted) return;
+    setState(() {
+      _working = false;
+      if (result != null) {
+        _printedReceipts.add(payment.id);
+        if (result.id != null) _paymentDocumentIds[payment.id] = result.id!;
+      }
+    });
+  }
+
   Future<void> _close() async {
     setState(() => _working = true);
     final closed = await widget.controller.closeTableAttendance(
@@ -237,8 +270,62 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
     if (closed != null) {
       _closeKey = null;
       await widget.onClosed(closed);
+      if (mounted && closed.finalSaleId != null) {
+        await _showFinalReceiptAction(
+          closed.id,
+          documentId:
+              closed.printDocumentFor(PrintDocumentType.tableFinalReceipt)?.id,
+        );
+      }
       if (mounted) Navigator.of(context).pop(closed);
     }
+  }
+
+  Future<void> _showFinalReceiptAction(int attendanceId,
+      {String? documentId}) async {
+    var printed = documentId != null;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Mesa fechada'),
+          content: const Text('A mesa foi fechada com sucesso.'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('FECHAR')),
+            FilledButton.icon(
+              onPressed: () async {
+                final result = documentId == null
+                    ? await widget.controller.requestPrintDocument(
+                        PrintDocumentRequest(
+                          type: PrintDocumentType.tableFinalReceipt,
+                          sourceType: 'table_attendance',
+                          sourceId: '$attendanceId',
+                          idempotencyKey: createIdempotencyKey(),
+                        ),
+                      )
+                    : await widget.controller.reprintPrintDocument(
+                        PrintDocumentReprintRequest(
+                          documentId: documentId!,
+                          idempotencyKey: createIdempotencyKey(),
+                          reason: 'Reimpressão de recibo final de mesa',
+                        ),
+                      );
+                if (result != null && context.mounted) {
+                  setDialogState(() {
+                    printed = true;
+                    documentId ??= result.id;
+                  });
+                }
+              },
+              icon: const Icon(Icons.print_outlined),
+              label: Text(printed ? 'REIMPRIMIR RECIBO' : 'IMPRIMIR RECIBO'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _setCustomer() async {
@@ -555,6 +642,14 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
           reversalReason: reversal?.reversalReason,
           working: _working,
           onReverse: () => _reverse(payment),
+          onPrint: reversal == null
+              ? () {
+                  _printPaymentReceipt(payment);
+                }
+              : null,
+          printTooltip: _printedReceipts.contains(payment.id)
+              ? 'Reimprimir comprovante'
+              : 'Imprimir comprovante',
         );
       }).toList(growable: false),
     );

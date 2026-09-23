@@ -37,7 +37,7 @@ from .views import (
     POSTicketLookupView, POSTicketValidateView,
     POSPrintJobsView, POSPrintClaimView, POSPrintLeaseView, POSPrintDispatchView, POSPrintPrintedView,
     POSPrintFailedView, POSPrintUncertainView, POSPrintReconcileView,
-    POSPrinterConfigurationView,
+    POSPrinterConfigurationView, POSPrintDocumentIssueView, POSPrintDocumentReprintView,
 )
 
 app_name = 'pos'
@@ -132,6 +132,8 @@ urlpatterns = [
     path('printing/jobs/<int:job_id>/uncertain/', POSPrintUncertainView.as_view(), name='print-uncertain'),
     path('printing/reconcile/', POSPrintReconcileView.as_view(), name='print-reconcile'),
     path('printing/printers/', POSPrinterConfigurationView.as_view(), name='print-printers'),
+    path('printing/documents/issue/', POSPrintDocumentIssueView.as_view(), name='print-document-issue'),
+    path('printing/documents/<int:document_id>/reprint/', POSPrintDocumentReprintView.as_view(), name='print-document-reprint'),
     path('heartbeat/', HeartbeatView.as_view(), name='heartbeat'),
     path('pin/confirm/', PinConfirmView.as_view(), name='pin-confirm'),
 ]

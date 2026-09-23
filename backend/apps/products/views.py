@@ -870,6 +870,9 @@ class ProductViewSet(CatalogViewSet):
                 printers = PrinterDevice.objects.filter(
                     branch=branch, status=Status.ACTIVE,
                 ).prefetch_related('destinations').order_by('name', 'id')
+            page = self.paginate_queryset(printers)
+            if page is not None:
+                return self.get_paginated_response(PrinterDeviceSerializer(page, many=True).data)
             return Response(PrinterDeviceSerializer(printers, many=True).data)
 
         serializer = ProductPrintersSerializer(data=request.data)

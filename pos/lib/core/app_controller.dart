@@ -9,6 +9,7 @@ import '../cash/cash_models.dart';
 import '../network/pos_api.dart';
 import '../network/pos_api_error.dart';
 import '../pairing/pairing_models.dart';
+import '../printing/models.dart';
 import '../sales/sale_models.dart';
 import '../storage/secret_store.dart';
 import '../sync/sync_status.dart';
@@ -1130,7 +1131,15 @@ class AppController extends ChangeNotifier {
             attendanceId: attendanceId,
             requested: requested,
             idempotencyKey: idempotencyKey,
-          ));
+       ));
+
+  Future<PrintDocumentResult?> requestPrintDocument(
+          PrintDocumentRequest request) =>
+      _attendance(() => _api.requestPrintDocument(request));
+
+  Future<PrintDocumentResult?> reprintPrintDocument(
+          PrintDocumentReprintRequest request) =>
+      _attendance(() => _api.reprintPrintDocument(request));
 
   Future<TableAttendance?> setTableAttendanceCustomer({
     required int attendanceId,

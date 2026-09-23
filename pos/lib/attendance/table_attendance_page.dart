@@ -12,6 +12,7 @@ import '../sales/shared_customer_dialog.dart';
 import '../sales/shared_pos_widgets.dart';
 import '../sales/shared_sale_item_editor_dialog.dart';
 import '../payments/table_payment_page.dart';
+import '../printing/models.dart';
 import 'attendance_models.dart';
 import 'attendance_presentation.dart';
 import 'shared_tables_grid.dart';
@@ -101,6 +102,8 @@ class _TableOrderPageState extends State<TableOrderPage> {
   bool _saving = false;
   bool _actionInProgress = false;
   bool _previewLoading = false;
+  bool _billPrinted = false;
+  String? _billDocumentId;
   String? _orderIdempotencyKey;
   Map<String, dynamic>? _preview;
   AttendanceTableGroup? _group;
@@ -112,6 +115,9 @@ class _TableOrderPageState extends State<TableOrderPage> {
   void initState() {
     super.initState();
     _search.addListener(() => setState(() {}));
+    _billDocumentId =
+        _attendance.printDocumentFor(PrintDocumentType.tableBill)?.id;
+    _billPrinted = _billDocumentId != null;
     unawaited(_load());
   }
 
@@ -504,7 +510,48 @@ class _TableOrderPageState extends State<TableOrderPage> {
     );
     if (!mounted) return;
     setState(() => _actionInProgress = false);
-    if (updated != null) await _load();
+    if (updated != null) {
+      final documentId =
+          updated.printDocumentFor(PrintDocumentType.tableBill)?.id;
+      if (documentId != null) {
+        setState(() {
+          _billDocumentId = documentId;
+          _billPrinted = true;
+        });
+      }
+      await _load();
+    }
+  }
+
+  Future<void> _printBill() async {
+    if (_actionInProgress) return;
+    setState(() => _actionInProgress = true);
+    final result = _billDocumentId == null
+        ? await widget.controller.requestPrintDocument(
+            PrintDocumentRequest(
+              type: PrintDocumentType.tableBill,
+              sourceType: 'table_attendance',
+              sourceId: '${_attendance.id}',
+              idempotencyKey: createIdempotencyKey(),
+            ),
+          )
+        : await widget.controller.reprintPrintDocument(
+            PrintDocumentReprintRequest(
+              documentId: _billDocumentId!,
+              idempotencyKey: createIdempotencyKey(),
+              reason: 'Reimpressão de conta de mesa',
+            ),
+          );
+    if (!mounted) return;
+    setState(() => _actionInProgress = false);
+    if (result != null) {
+      setState(() {
+        _billPrinted = true;
+        _billDocumentId ??= result.id;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Conta enviada para a fila de impressão.')));
+    }
   }
 
   Future<void> _openPayments() async {
@@ -819,6 +866,9 @@ class _TableOrderPageState extends State<TableOrderPage> {
                   case 'bill':
                     unawaited(_toggleBill());
                     break;
+                  case 'print_bill':
+                    unawaited(_printBill());
+                    break;
                   case 'transfer':
                     unawaited(_transferItems());
                     break;
@@ -841,13 +891,19 @@ class _TableOrderPageState extends State<TableOrderPage> {
                       value: 'remove_customer', child: Text('Remover cliente')),
                 const PopupMenuItem(
                     value: 'conference', child: Text('Visualizar conferência')),
-                if (_attendance.status == 'open' && _can('tables.close'))
-                  PopupMenuItem(
+                 if (_attendance.status == 'open' && _can('tables.close'))
+                   PopupMenuItem(
                     value: 'bill',
                     child: Text(_attendance.billRequested
                         ? 'Cancelar solicitação de conta'
-                        : 'Solicitar conta'),
-                  ),
+                         : 'Solicitar conta'),
+                   ),
+                 if (_attendance.billRequested)
+                   PopupMenuItem(
+                       value: 'print_bill',
+                       child: Text(_billPrinted
+                           ? 'Reimprimir conta'
+                           : 'Imprimir conta')),
                 if (_attendance.status == 'open' &&
                     _can('tables.transfer_items') &&
                     _attendance.orders
@@ -974,15 +1030,64 @@ class _TableOrderPageState extends State<TableOrderPage> {
       return;
     }
     await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => _TableConferencePage(attendance: _attendance),
+      builder: (_) => _TableConferencePage(
+          controller: widget.controller, attendance: _attendance),
     ));
   }
 }
 
-class _TableConferencePage extends StatelessWidget {
-  const _TableConferencePage({required this.attendance});
+class _TableConferencePage extends StatefulWidget {
+  const _TableConferencePage({required this.controller, required this.attendance});
 
+  final AppController controller;
   final TableAttendance attendance;
+
+  @override
+  State<_TableConferencePage> createState() => _TableConferencePageState();
+}
+
+class _TableConferencePageState extends State<_TableConferencePage> {
+  bool _printed = false;
+  bool _printing = false;
+  String? _documentId;
+
+  @override
+  void initState() {
+    super.initState();
+    _documentId = widget.attendance
+        .printDocumentFor(PrintDocumentType.tableConference)
+        ?.id;
+    _printed = _documentId != null;
+  }
+
+  Future<void> _print() async {
+    if (_printing) return;
+    setState(() => _printing = true);
+    final result = _documentId == null
+        ? await widget.controller.requestPrintDocument(
+            PrintDocumentRequest(
+              type: PrintDocumentType.tableConference,
+              sourceType: 'table_attendance',
+              sourceId: '${widget.attendance.id}',
+              idempotencyKey: createIdempotencyKey(),
+            ),
+          )
+        : await widget.controller.reprintPrintDocument(
+            PrintDocumentReprintRequest(
+              documentId: _documentId!,
+              idempotencyKey: createIdempotencyKey(),
+              reason: 'Reimpressão de conferência de mesa',
+            ),
+          );
+    if (!mounted) return;
+    setState(() {
+      _printing = false;
+      if (result != null) {
+        _printed = true;
+        _documentId ??= result.id;
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -990,12 +1095,9 @@ class _TableConferencePage extends StatelessWidget {
           title: const Text('Conferência'),
           actions: [
             IconButton(
-              tooltip: 'Imprimir',
+              tooltip: _printed ? 'Reimprimir' : 'Imprimir',
               icon: const Icon(Icons.print_outlined),
-              onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                    content: Text('Impressão estará disponível em breve.')),
-              ),
+              onPressed: _printing ? null : _print,
             ),
           ],
         ),
@@ -1012,18 +1114,18 @@ class _TableConferencePage extends StatelessWidget {
                       textAlign: TextAlign.center,
                       style: TextStyle(fontWeight: FontWeight.w800)),
                   const SizedBox(height: 12),
-                  Text(attendance.tableName,
+                  Text(widget.attendance.tableName,
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.titleLarge),
-                  if (attendance.openedAt != null)
-                    Text(_tableHistoryTime(attendance.openedAt),
+                  if (widget.attendance.openedAt != null)
+                    Text(_tableHistoryTime(widget.attendance.openedAt),
                         textAlign: TextAlign.center),
-                  if (attendance.responsibleName.isNotEmpty)
-                    Text('Atendente: ${attendance.responsibleName}',
+                  if (widget.attendance.responsibleName.isNotEmpty)
+                    Text('Atendente: ${widget.attendance.responsibleName}',
                         textAlign: TextAlign.center),
                   const Divider(height: 32),
                   for (final group
-                      in tableOrderItemGroups(attendance, confirmedOnly: true))
+                      in tableOrderItemGroups(widget.attendance, confirmedOnly: true))
                     Padding(
                       padding: const EdgeInsets.only(bottom: 12),
                       child: Column(children: [
@@ -1045,11 +1147,11 @@ class _TableConferencePage extends StatelessWidget {
                       ]),
                     ),
                   const Divider(height: 32),
-                  TableSummaryWidgets(attendance.summary),
-                  if (attendance.customerName.isNotEmpty)
+                  TableSummaryWidgets(widget.attendance.summary),
+                  if (widget.attendance.customerName.isNotEmpty)
                     Padding(
                         padding: const EdgeInsets.only(top: 12),
-                        child: Text('Cliente: ${attendance.customerName}')),
+                        child: Text('Cliente: ${widget.attendance.customerName}')),
                 ],
               ),
             ),

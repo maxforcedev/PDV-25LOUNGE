@@ -87,4 +87,26 @@ void main() {
     expect(bytes, containsAll(<int>[0x1b, 0x40, 0x1d, 0x56]));
     expect(String.fromCharCodes(bytes), isNot(contains('R\$')));
   });
+
+  test('test ticket keeps a visible safe width for 58mm paper', () {
+    const job = PrintJob(
+      id: 2,
+      printerId: 2,
+      idempotencyKey: 'test-width',
+      isTest: true,
+      status: 'processing',
+      reprintNumber: 0,
+      payload: {
+        'test': true,
+        'printer': 'Caixa principal',
+        'host': '192.168.0.20',
+      },
+    );
+
+    final rendered = String.fromCharCodes(
+        ProductionTicketRenderer().render([job], paperWidth: 58, cut: true));
+    expect(rendered, contains('Papel: 58mm'));
+    expect(rendered, contains('-' * 28));
+    expect(rendered, isNot(contains('-' * 29)));
+  });
 }

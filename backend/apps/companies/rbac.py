@@ -118,6 +118,10 @@ PERMISSION_CATALOG = (
     ('print_jobs.view', 'production', 'Visualizar fila de impressão', 'Visualizar fila e detalhes de impressão da filial.'),
     ('print_jobs.retry', 'production', 'Reprocessar impressão', 'Solicitar novo processamento técnico ou despacho manual auditado.'),
     ('print_jobs.reprint', 'production', 'Reimprimir', 'Criar uma reimpressão explícita e auditada.'),
+    ('print_routes.manage', 'production', 'Configurar rotas de impressão', 'Configurar políticas de documentos e overrides por POS da filial.'),
+    ('print_documents.view', 'production', 'Visualizar documentos de impressão', 'Consultar snapshots e histórico de documentos impressos.'),
+    ('print_documents.print', 'production', 'Imprimir documentos', 'Gerar a primeira impressão de documentos comerciais.'),
+    ('print_documents.reprint', 'production', 'Reimprimir documentos', 'Solicitar cópia explícita e auditada de documento comercial.'),
     ('tickets.view', 'tickets', 'Visualizar tickets', 'Visualizar tickets emitidos na filial.'),
     ('tickets.reprint', 'tickets', 'Reimprimir tickets', 'Registrar e solicitar reimpressão de tickets.'),
     ('tickets.validate', 'tickets', 'Validar tickets', 'Registrar retirada ou entrega de itens emitidos por ticket na filial autorizada.'),
@@ -186,7 +190,8 @@ BRANCH_PERMISSION_CODES = frozenset({
     'commands.split', 'commands.payments.view', 'commands.payments.record',
     'commands.payments.reverse', 'payment_methods.view', 'payment_methods.change',
     'production.view', 'printers.manage', 'print_jobs.view', 'print_jobs.retry',
-    'print_jobs.reprint', 'tickets.view', 'tickets.reprint', 'tickets.validate',
+    'print_jobs.reprint', 'print_routes.manage', 'print_documents.view', 'print_documents.print',
+    'print_documents.reprint', 'tickets.view', 'tickets.reprint', 'tickets.validate',
     'promotions.view', 'promotions.change', 'dashboard.view',
     'reports.view_sales', 'reports.view_consumptions', 'reports.view_cash',
     'reports.view_withdrawals', 'reports.view_inventory',
@@ -237,6 +242,7 @@ DEFAULT_PROFILE_PERMISSIONS = {
             'tables.cancel_items', 'tables.payments.view', 'tables.payments.record',
             'tables.payments.reverse', 'tables.transfer', 'tables.transfer_items',
             'tables.merge', 'tables.close',
+            'print_documents.view', 'print_documents.print', 'print_documents.reprint',
         }
     ),
     'Operador de Caixa': frozenset(
@@ -263,6 +269,7 @@ DEFAULT_PROFILE_PERMISSIONS = {
              'sales.waive_service_fee',
             'tables.view', 'tables.open', 'tables.set_customer', 'tables.add_items',
             'tables.payments.view', 'tables.payments.record', 'tables.close',
+            'print_documents.view', 'print_documents.print',
         }
     ),
     'Operador de Estoque': frozenset(

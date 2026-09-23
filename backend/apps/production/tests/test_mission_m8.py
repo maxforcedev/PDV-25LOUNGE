@@ -1,4 +1,5 @@
 from unittest.mock import MagicMock, patch
+import uuid
 
 from django.test import TestCase
 from rest_framework.test import APIClient
@@ -10,6 +11,7 @@ from apps.companies.services import create_company_with_matrix
 from apps.products.models import Category, Product, ProductProductionDestination
 from apps.production.models import (
     PrintJob,
+    PrintDocument,
     PrintJobStatus,
     PrinterDevice,
     PrinterOperationalStatus,
@@ -33,38 +35,69 @@ class MissionM8PrinterTests(TestCase):
         feature.start()
         self.addCleanup(feature.stop)
 
-    def create_printer(self, name='Cozinha', connection_type='network', configuration=None):
+    def create_printer(self, name='Cozinha', connection_type='network', configuration=None, destination_ids=None):
         configurations = {
             'network': {'host': '192.168.1.50', 'port': 9100, 'timeout': 5},
             'usb': {'vendor_id': '04b8', 'product_id': '0e15', 'identifier': '04b8:0e15'},
             'bluetooth': {'device_name': 'Printer Bar', 'identifier': 'AA:BB:CC:DD'},
         }
-        response = self.client.post('/api/v1/printer-devices/', {
+        payload = {
             'name': name,
             'connection_type': connection_type,
             'status': 'active',
             'technical_configuration': configuration or configurations[connection_type],
-        }, format='json')
+        }
+        if destination_ids is not None:
+            payload['destination_ids'] = destination_ids
+        response = self.client.post('/api/v1/printer-devices/', payload, format='json')
         self.assertEqual(response.status_code, 201, response.data)
         return PrinterDevice.objects.get(pk=response.data['id'])
 
-    def test_create_uses_name_as_internal_destination_and_active_is_not_online(self):
+    def create_destination(self, name='Cozinha', code='kitchen'):
+        from apps.products.models import ProductionDestination
+
+        return ProductionDestination.objects.create(
+            branch=self.branch, name=name, code=code,
+        )
+
+    def test_create_leaves_destinations_explicit_and_active_is_not_online(self):
         printer = self.create_printer()
 
         self.assertEqual(printer.operational_status, PrinterOperationalStatus.NOT_TESTED)
-        destination = printer.destinations.get()
-        self.assertEqual(destination.name, 'Cozinha')
-        self.assertEqual(destination.branch, self.branch)
+        self.assertFalse(printer.destinations.exists())
 
         response = self.client.get('/api/v1/printer-devices/')
         self.assertEqual(response.status_code, 200, response.data)
         item = response.data['results'][0]
+        self.assertEqual(item['destination_ids'], [])
         self.assertEqual(item['connection_summary'], '192.168.1.50:9100')
         self.assertEqual(item['operational_status'], 'not_tested')
+
+    def test_destinations_are_writable_and_shared_destination_stays_active_until_last_printer(self):
+        destination = self.create_destination()
+        first = self.create_printer(destination_ids=[destination.pk])
+        second = self.create_printer('Bar', destination_ids=[destination.pk])
+
+        response = self.client.patch(
+            f'/api/v1/printer-devices/{first.pk}/',
+            {'destination_ids': [destination.pk]}, format='json',
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['destination_ids'], [destination.pk])
+        self.assertEqual(set(destination.printer_devices.values_list('pk', flat=True)), {first.pk, second.pk})
+
+        self.client.delete(f'/api/v1/printer-devices/{first.pk}/')
+        destination.refresh_from_db()
+        self.assertEqual(destination.status, 'active')
+
+        self.client.delete(f'/api/v1/printer-devices/{second.pk}/')
+        destination.refresh_from_db()
+        self.assertEqual(destination.status, 'inactive')
 
     @patch('apps.production.adapters.socket.create_connection')
     def test_network_test_enqueues_for_local_pos_without_server_socket(self, connect):
         printer = self.create_printer()
+        printer.destinations.add(self.create_destination())
 
         response = self.client.post(f'/api/v1/printer-devices/{printer.pk}/test/')
 
@@ -77,6 +110,7 @@ class MissionM8PrinterTests(TestCase):
 
     def test_network_test_stays_pending_until_local_pos_reports_result(self):
         printer = self.create_printer()
+        printer.destinations.add(self.create_destination())
 
         response = self.client.post(f'/api/v1/printer-devices/{printer.pk}/test/')
 
@@ -99,6 +133,8 @@ class MissionM8PrinterTests(TestCase):
 
     def test_history_is_paginated_and_archiving_preserves_jobs(self):
         printer = self.create_printer('Tickets')
+        destination = self.create_destination('Tickets', 'tickets')
+        printer.destinations.add(destination)
         self.client.post(f'/api/v1/printer-devices/{printer.pk}/test/')
 
         history = self.client.get(
@@ -113,12 +149,15 @@ class MissionM8PrinterTests(TestCase):
         self.assertEqual(response.status_code, 204, response.data)
         printer.refresh_from_db()
         self.assertEqual(printer.status, 'inactive')
-        self.assertEqual(printer.destinations.get().status, 'inactive')
+        destination.refresh_from_db()
+        self.assertEqual(destination.status, 'inactive')
         self.assertEqual(printer.print_jobs.count(), 1)
 
     def test_product_selects_printers_without_exposing_destination_management(self):
-        printer = self.create_printer()
-        other = self.create_printer('Bar')
+        printer_destination = self.create_destination()
+        other_destination = self.create_destination('Bar', 'bar')
+        printer = self.create_printer(destination_ids=[printer_destination.pk])
+        other = self.create_printer('Bar', destination_ids=[other_destination.pk])
         category = Category.objects.create(company=self.company, name='Bebidas')
         product = Product.objects.create(
             company=self.company, category=category, name='Suco',
@@ -138,7 +177,7 @@ class MissionM8PrinterTests(TestCase):
         )
         self.assertEqual(response.status_code, 200, response.data)
         link = ProductProductionDestination.objects.get(product=product)
-        self.assertEqual(link.destination, printer.destinations.get())
+        self.assertEqual(link.destination, printer_destination)
 
         response = self.client.put(
             f'/api/v1/products/{product.pk}/production-printers/',
@@ -148,15 +187,19 @@ class MissionM8PrinterTests(TestCase):
         self.assertEqual(ProductProductionDestination.objects.filter(product=product).count(), 1)
         self.assertEqual(
             ProductProductionDestination.objects.get(product=product).destination,
-            other.destinations.get(),
+            other_destination,
         )
 
     def test_reprint_is_explicit_audited_and_permission_protected(self):
         printer = self.create_printer()
-        destination = printer.destinations.get()
+        document = PrintDocument.objects.create(
+            company=self.company, branch=self.branch, document_type='ticket',
+            source_type='fixture', source_id=str(uuid.uuid4()), snapshot={},
+            snapshot_hash=uuid.uuid4().hex,
+        )
         original = PrintJob.objects.create(
-            company=self.company, branch=self.branch, destination=destination,
-            printer_device=printer, status=PrintJobStatus.PRINTED,
+            company=self.company, branch=self.branch,
+            printer_device=printer, print_document=document, status=PrintJobStatus.PRINTED,
         )
         response = self.client.post(
             f'/api/v1/print-jobs/{original.pk}/reprint/',

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Copy, KeyRound, MonitorSmartphone, Pencil, Power, RotateCw, Settings2, ShieldBan, Trash2 } from "lucide-react";
 import { AdminGuard } from "@/components/admin-guard";
+import { PosDocumentRouteOverrides } from "@/components/document-print-routes";
 import { PageHeader } from "@/components/page-header";
 import { Alert, Button, ConfirmDialog, EmptyState, Field, Input, Modal, Pagination, Select, Spinner, TableLoading } from "@/components/ui";
 import { formatDate } from "@/lib/format";
@@ -36,14 +37,8 @@ function PosSettingsFields<T extends PosSettings>({ value, onChange, disabled }:
   return <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
     <Field label="Vínculo de caixa"><Select value={value.cash_binding_mode || ""} disabled={disabled} onChange={(event) => update("cash_binding_mode", (event.target.value || null) as T["cash_binding_mode"])}><option value="">Usar padrão</option><option value="FLEXIBLE">Flexível</option><option value="FIXED">Fixo</option></Select></Field>
     <Field label="Caixa padrão"><Select value={value.default_cash_register || ""} disabled={disabled || inheritsCash} onChange={(event) => update("default_cash_register", (event.target.value ? Number(event.target.value) : null) as T["default_cash_register"])}><option value="">{inheritsCash ? "Definido pela filial" : "Nenhum caixa padrão"}</option>{cashRegisters.map((register) => <option key={register.id} value={register.id}>{register.name}</option>)}</Select></Field>
-    <Field label="Impressora de recibo"><Input value={value.receipt_printer || ""} disabled={disabled} placeholder="Usar padrão" onChange={(event) => update("receipt_printer", (event.target.value || null) as T["receipt_printer"])} /></Field>
-    <Field label="Modo de impressão"><Select value={value.receipt_print_mode || ""} disabled={disabled} onChange={(event) => update("receipt_print_mode", (event.target.value || null) as T["receipt_print_mode"])}><option value="">Usar padrão</option><option value="automatic">Automático</option><option value="manual">Manual</option></Select></Field>
-    <Field label="Formato do recibo"><Select value={value.receipt_format || ""} disabled={disabled} onChange={(event) => update("receipt_format", (event.target.value || null) as T["receipt_format"])}><option value="">Usar padrão</option><option value="detailed">Detalhado</option><option value="simplified">Simplificado</option></Select></Field>
-    <Field label="Largura do papel (mm)"><Input type="number" min="40" max="120" value={value.paper_width ?? ""} disabled={disabled} onChange={(event) => update("paper_width", (event.target.value ? Number(event.target.value) : null) as T["paper_width"])} /></Field>
-    <Field label="Cópias"><Input type="number" min="1" max="10" value={value.copies ?? ""} disabled={disabled} onChange={(event) => update("copies", (event.target.value ? Number(event.target.value) : null) as T["copies"])} /></Field>
     <Field label="Tempo de tela (segundos)" optional><Input type="number" min="0" value={value.screen_timeout_seconds ?? ""} disabled={disabled} onChange={(event) => update("screen_timeout_seconds", (event.target.value ? Number(event.target.value) : null) as T["screen_timeout_seconds"])} /></Field>
     <Field label="Mostrar produtos sem estoque"><Select value={value.show_out_of_stock_products === null ? "" : String(value.show_out_of_stock_products)} disabled={disabled} onChange={(event) => update("show_out_of_stock_products", (event.target.value === "" ? null : event.target.value === "true") as T["show_out_of_stock_products"])}>{inherits && <option value="">Usar padrão da filial</option>}<option value="true">Sim</option><option value="false">Não</option></Select><span className="mt-1 block text-xs font-normal text-muted">Quando desativado, produtos controlados sem estoque disponível não aparecem no catálogo do POS.</span></Field>
-    <label className="flex items-center gap-2 self-end pb-2 text-sm font-medium"><input type="checkbox" className="size-4 accent-primary" checked={value.sale_confirmation_print || false} disabled={disabled} onChange={(event) => update("sale_confirmation_print", event.target.checked as T["sale_confirmation_print"])} />Imprimir confirmação</label>
     <label className="flex items-center gap-2 self-end pb-2 text-sm font-medium"><input type="checkbox" className="size-4 accent-primary" checked={value.sound_enabled ?? true} disabled={disabled} onChange={(event) => update("sound_enabled", event.target.checked as T["sound_enabled"])} />Som habilitado</label>
   </div>;
 }
@@ -51,15 +46,15 @@ function PosSettingsFields<T extends PosSettings>({ value, onChange, disabled }:
 function EffectiveSettings({ value }: { value: PosSettings }) {
   return <div className="grid gap-2 rounded-lg border border-subtle bg-surface-muted p-3 text-xs sm:grid-cols-2">
     <span>Caixa: <strong>{value.cash_binding_mode || "Flexível"}</strong></span>
-    <span>Impressora: <strong>{value.receipt_printer || "Nenhuma"}</strong></span>
-    <span>Impressão: <strong>{value.receipt_print_mode || "manual"}</strong></span>
-    <span>Recibo: <strong>{value.receipt_format || "detailed"}, {value.copies || 1} via(s)</strong></span>
+    <span>Impressao: <strong>Definida por documento</strong></span>
+    <span>Compatibilidade: <strong>campos legados de recibo</strong></span>
   </div>;
 }
 
 function PosDevicesAdministration() {
   const { currentCompany, currentBranch, user, hasPermission } = useAuth();
   const canManage = hasPermission(permissions.managePosDevices);
+  const canManagePrintRoutes = hasPermission(permissions.managePrintRoutes);
   const [devices, setDevices] = useState<Paginated<PosDevice> | null>(null);
   const [branchId, setBranchId] = useState("");
   const [branchSettings, setBranchSettings] = useState<BranchPosSettings | null>(null);
@@ -189,6 +184,7 @@ function PosDevicesAdministration() {
       <section className="card space-y-4 p-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><Field label="Filial"><Select value={branchId} onChange={(event) => { setBranchId(event.target.value); void load(undefined, currentCompany?.id, event.target.value); }}><option value="">Todas as filiais</option>{availableBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</Select></Field><Button variant="secondary" onClick={() => void load()}><RotateCw className="size-4" />Atualizar</Button></div>
         {settingsBranch && <div className="space-y-4 border-t border-subtle pt-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-sm font-bold">Padrões POS: {settingsBranch.name}</h2></div>{licensingCode && <div className="flex items-center gap-2"><code className="rounded bg-surface-muted px-2 py-1 text-xs">{licensingCode}</code><Button variant="secondary" onClick={() => void copyLicensingCode()}><Copy className="size-4" />Copiar</Button><Button variant="secondary" disabled={!canManage} onClick={() => setConfirmRotateLicense(true)}><KeyRound className="size-4" />Rotacionar</Button></div>}</div>{branchSettings ? <><PosSettingsFields value={branchSettings} onChange={setBranchSettings} disabled={!canManage || saving} /><div className="flex justify-end"><Button loading={saving} disabled={!canManage} onClick={() => void saveBranchSettings()}><Settings2 className="size-4" />Salvar padrões</Button></div></> : <div className="flex h-20 items-center justify-center text-primary"><Spinner /></div>}</div>}
+        {settingsBranch && canManagePrintRoutes && <section className="space-y-3 border-t border-subtle pt-4"><div><h2 className="text-sm font-bold">Overrides de impressao por POS</h2><p className="mt-1 text-xs text-muted">As regras de documentos substituem a configuracao antiga de recibo. Use override somente quando este POS precisar diferir da filial.</p></div><PosDocumentRouteOverrides /></section>}
       </section>
       <section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Dispositivos cadastrados</h2></div><MonitorSmartphone className="size-5 text-muted" /></div>{loading ? <TableLoading columns={7} /> : devices?.results.length ? <><div className="table-wrap"><table className="data-table"><thead><tr><th>Dispositivo</th><th>Filial</th><th>Status</th><th>Conexão</th><th>Pareado em</th><th>Último sinal</th><th className="text-right">Ações</th></tr></thead><tbody>{devices.results.map((device) => <tr key={device.id}><td><strong className="block">{device.name}</strong><small className="text-muted">{device.device_type} · {device.device_model || "Modelo não informado"} · {device.app_version || "Versão não informada"}</small></td><td>{device.branch_name || "-"}</td><td><span className="text-xs font-semibold">{statusLabel[device.status]}</span></td><td><OnlineBadge device={device} /></td><td>{device.paired_at ? formatDate(device.paired_at) : "Não informado"}</td><td>{device.last_seen_at ? formatDate(device.last_seen_at) : "Nunca"}</td><td><div className="flex justify-end"><button className="icon-button" aria-label="Ver dispositivo" onClick={() => void openDevice(device)}><Pencil className="size-4" /></button></div></td></tr>)}</tbody></table></div><Pagination count={devices.count} next={devices.next} previous={devices.previous} onPage={load} /></> : <EmptyState title="Nenhum dispositivo encontrado" description="Altere a filial selecionada ou pareie um dispositivo no aplicativo POS." />}</section>
     </main>
