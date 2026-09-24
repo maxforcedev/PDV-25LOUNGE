@@ -862,10 +862,16 @@ def retry_print_job(*, job, user):
         raise ValueError('Use reprint for a job already printed.')
     if job.status == PrintJobStatus.UNCERTAIN:
         raise ValueError('Resultado incerto exige reimpressão explícita; não faça retry automático.')
-    jobs = list(
-        PrintJob.objects.select_for_update().filter(batch_key=job.batch_key)
-        if job.batch_key else [job]
-    )
+    if job.print_document_id:
+        if job.status != PrintJobStatus.FAILED or job.physical_dispatch_started_at:
+            raise ValueError('Somente falha comprovadamente anterior ao envio físico pode receber retry.')
+        # Document copies/printers are independent physical executions.
+        jobs = [job]
+    else:
+        jobs = list(
+            PrintJob.objects.select_for_update().filter(batch_key=job.batch_key)
+            if job.batch_key else [job]
+        )
     if any(item.status not in (PrintJobStatus.FAILED, PrintJobStatus.PENDING) for item in jobs):
         raise ValueError('Todos os jobs do ticket físico precisam estar pendentes ou falhos para retry.')
     for item in jobs:

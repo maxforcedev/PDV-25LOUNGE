@@ -77,7 +77,7 @@ from apps.products.models import SalesChannel
 from apps.products.selectors import sellable_products_for_branch
 from apps.production.services import lookup_ticket_for_validation, redeem_ticket, ticket_validation_data
 from apps.production.models import PrintDocument, PrintDocumentType, PrintJob, PrintJobStatus, PrinterConnectionType, PrinterDevice
-from apps.production.serializers import PrintDocumentIssueSerializer, PrintDocumentResultSerializer, PrintJobSerializer, ReprintSerializer
+from apps.production.serializers import PrintDocumentIssueSerializer, PrintDocumentResultSerializer, PrintJobSerializer, ReprintSerializer, print_document_state
 from apps.production.services import (
     claim_print_job, complete_print_job, reconcile_print_jobs, renew_print_lease,
     current_print_document, expire_abandoned_print_dispatches, issue_print_document, reprint_print_document, reprint_print_job, start_print_dispatch,
@@ -125,16 +125,11 @@ from .services import (
 
 def _print_document_effect(document):
     jobs = document.print_jobs
+    state = print_document_state(document)
     return {
         'id': document.pk,
         'document_type': document.document_type,
-        'initial_printed': jobs.filter(
-            reprint_of__isnull=True, status=PrintJobStatus.PRINTED,
-        ).exists(),
-        'reprint_eligible': jobs.filter(
-            reprint_of__isnull=True,
-            status__in=(PrintJobStatus.PRINTED, PrintJobStatus.UNCERTAIN),
-        ).exists(),
+        **state,
         'reprint_number': max(jobs.values_list('reprint_number', flat=True), default=0),
         'queued': jobs.filter(status__in=(PrintJobStatus.PENDING, PrintJobStatus.PROCESSING)).exists(),
         'print_jobs': list(jobs.values(

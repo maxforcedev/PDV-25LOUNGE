@@ -10,6 +10,31 @@ from .models import (
 )
 
 
+def print_document_state(document):
+    """Aggregate only initial physical jobs; one copy cannot complete a document."""
+    jobs = list(document.print_jobs.filter(reprint_of__isnull=True).only(
+        'status', 'physical_dispatch_started_at',
+    ))
+    retry_eligible = any(
+        job.status == PrintJobStatus.FAILED and not job.physical_dispatch_started_at
+        for job in jobs
+    )
+    queued = not retry_eligible and any(
+        job.status in (PrintJobStatus.PENDING, PrintJobStatus.PROCESSING)
+        for job in jobs
+    )
+    reprint_eligible = bool(jobs) and not retry_eligible and not queued and all(
+        job.status in (PrintJobStatus.PRINTED, PrintJobStatus.UNCERTAIN)
+        for job in jobs
+    )
+    return {
+        'initial_printed': bool(jobs) and all(job.status == PrintJobStatus.PRINTED for job in jobs),
+        'retry_eligible': retry_eligible,
+        'queued': queued,
+        'reprint_eligible': reprint_eligible,
+    }
+
+
 class PrinterDeviceSerializer(serializers.ModelSerializer):
     destination_ids = serializers.PrimaryKeyRelatedField(
         source='destinations', many=True, queryset=ProductionDestination.objects.all(), required=False,
@@ -262,23 +287,29 @@ class PrintDocumentSerializer(serializers.ModelSerializer):
     print_jobs = PrintJobSerializer(many=True, read_only=True)
     initial_printed = serializers.SerializerMethodField()
     reprint_eligible = serializers.SerializerMethodField()
+    retry_eligible = serializers.SerializerMethodField()
+    queued = serializers.SerializerMethodField()
 
     class Meta:
         model = PrintDocument
         fields = (
             'id', 'company', 'branch', 'document_type', 'source_type', 'source_id',
             'snapshot', 'snapshot_hash', 'version', 'created_by', 'original_document', 'metadata',
-            'initial_printed', 'reprint_eligible', 'print_jobs', 'created_at', 'updated_at',
+            'initial_printed', 'retry_eligible', 'queued', 'reprint_eligible', 'print_jobs', 'created_at', 'updated_at',
         )
         read_only_fields = fields
 
     def get_initial_printed(self, document):
-        return document.print_jobs.filter(reprint_of__isnull=True, status=PrintJobStatus.PRINTED).exists()
+        return print_document_state(document)['initial_printed']
+
+    def get_retry_eligible(self, document):
+        return print_document_state(document)['retry_eligible']
+
+    def get_queued(self, document):
+        return print_document_state(document)['queued']
 
     def get_reprint_eligible(self, document):
-        return document.print_jobs.filter(
-            reprint_of__isnull=True, status__in=(PrintJobStatus.PRINTED, PrintJobStatus.UNCERTAIN),
-        ).exists()
+        return print_document_state(document)['reprint_eligible']
 
 
 class PrintDocumentResultSerializer(serializers.Serializer):
@@ -289,6 +320,7 @@ class PrintDocumentResultSerializer(serializers.Serializer):
     queued = serializers.SerializerMethodField()
     reprint_number = serializers.SerializerMethodField()
     reprint_eligible = serializers.SerializerMethodField()
+    retry_eligible = serializers.SerializerMethodField()
 
     def get_document(self, document):
         return PrintDocumentSerializer(document, context=self.context).data
@@ -297,17 +329,16 @@ class PrintDocumentResultSerializer(serializers.Serializer):
         return PrintJobSerializer(document.print_jobs.order_by('id'), many=True, context=self.context).data
 
     def get_queued(self, document):
-        return document.print_jobs.filter(
-            status__in=(PrintJobStatus.PENDING, PrintJobStatus.PROCESSING),
-        ).exists()
+        return print_document_state(document)['queued']
 
     def get_reprint_number(self, document):
         return max(document.print_jobs.values_list('reprint_number', flat=True), default=0)
 
     def get_reprint_eligible(self, document):
-        return document.print_jobs.filter(
-            reprint_of__isnull=True, status__in=(PrintJobStatus.PRINTED, PrintJobStatus.UNCERTAIN),
-        ).exists()
+        return print_document_state(document)['reprint_eligible']
+
+    def get_retry_eligible(self, document):
+        return print_document_state(document)['retry_eligible']
 
 
 class PrintDocumentIssueSerializer(serializers.Serializer):

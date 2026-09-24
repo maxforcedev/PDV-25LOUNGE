@@ -81,9 +81,13 @@ class PrintDocumentResult {
     final initialJobs =
         jobs.whereType<Map>().where((job) => job['reprint_of'] == null);
     final initialPrinted = document['initial_printed'] == true ||
-        initialJobs.any((job) => job['status'] == 'printed');
-    final reprintEligible = document['reprint_eligible'] == true ||
-        initialJobs.any((job) =>
+        (initialJobs.isNotEmpty && initialJobs.every((job) => job['status'] == 'printed'));
+    final retryEligible = document['retry_eligible'] == true || initialJobs.any((job) =>
+        job['status'] == 'failed' && job['physical_dispatch_started_at'] == null);
+    final queued = !retryEligible && (document['queued'] == true || initialJobs.any((job) =>
+        job['status'] == 'pending' || job['status'] == 'processing'));
+    final reprintEligible = !retryEligible && !queued &&
+        initialJobs.isNotEmpty && initialJobs.every((job) =>
             job['status'] == 'printed' || job['status'] == 'uncertain');
     final reprintNumbers = jobs.whereType<Map>().map(
         (job) => (job['reprint_number'] as num?)?.toInt() ?? 0);
@@ -99,10 +103,8 @@ class PrintDocumentResult {
                    current > next ? current : next)),
       initialPrinted: initialPrinted,
       reprintEligible: reprintEligible,
-      retryEligible: initialJobs.any((job) =>
-          job['status'] == 'failed' && job['physical_dispatch_started_at'] == null),
-       queued: json['queued'] == true || initialJobs.any((job) =>
-           job['status'] == 'pending' || job['status'] == 'processing'),
+      retryEligible: retryEligible,
+      queued: queued,
     );
   }
 
@@ -127,9 +129,9 @@ class PrintDocumentResult {
   bool get awaitingInitialPrint => !canReprint && !retryEligible && queued;
   bool get needsInitialPrint => !canReprint && !retryEligible && !queued;
   String get printActionLabel {
-    if (canReprint) return 'REIMPRIMIR';
     if (retryEligible) return 'TENTAR NOVAMENTE';
     if (awaitingInitialPrint) return 'IMPRESSAO PENDENTE';
+    if (canReprint) return 'REIMPRIMIR';
     return 'IMPRIMIR';
   }
 }
