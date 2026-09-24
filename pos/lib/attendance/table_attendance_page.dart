@@ -550,52 +550,6 @@ class _TableOrderPageState extends State<TableOrderPage> {
     }
   }
 
-  Future<void> _printBill() async {
-    if (_actionInProgress) return;
-    setState(() => _actionInProgress = true);
-    final document = _billDocument;
-    if (document?.awaitingInitialPrint == true) {
-      setState(() => _actionInProgress = false);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('A impressão inicial ainda está pendente.')));
-      return;
-    }
-    final result = document?.canReprint == true
-        ? await widget.controller.reprintPrintDocument(
-            PrintDocumentReprintRequest(
-              documentId: document!.id!,
-              idempotencyKey: createIdempotencyKey(),
-              reason: 'Reimpressão de conferência de mesa',
-            ),
-          )
-        : await widget.controller.requestPrintDocument(
-            PrintDocumentRequest(
-              type: PrintDocumentType.tableConference,
-              sourceType: 'table_attendance',
-              sourceId: '${_attendance.id}',
-              idempotencyKey: createIdempotencyKey(),
-            ),
-          );
-    if (!mounted) return;
-    setState(() => _actionInProgress = false);
-    if (result != null) {
-      setState(() {
-        _billDocument = result;
-      });
-      unawaited(pollPrintDocument(
-        isMounted: () => mounted,
-        reload: () async => (await widget.controller
-                .tableAttendanceDetail(_attendance.id))
-            ?.printDocumentFor(PrintDocumentType.tableConference),
-        onUpdate: (document) {
-          if (mounted) setState(() => _billDocument = document);
-        },
-      ));
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Conferência enviada para a fila de impressão.')));
-    }
-  }
-
   Future<void> _openPayments() async {
     if (_cart.isNotEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -908,9 +862,6 @@ class _TableOrderPageState extends State<TableOrderPage> {
                   case 'bill':
                     unawaited(_toggleBill());
                     break;
-                  case 'print_bill':
-                    unawaited(_printBill());
-                    break;
                   case 'transfer':
                     unawaited(_transferItems());
                     break;
@@ -940,10 +891,6 @@ class _TableOrderPageState extends State<TableOrderPage> {
                         ? 'Cancelar solicitação de conta'
                          : 'Solicitar conta'),
                    ),
-                 if (_attendance.billRequested)
-                   PopupMenuItem(
-                       value: 'print_bill',
-                child: Text('${_billDocument?.printActionLabel ?? 'IMPRIMIR'} CONFERÊNCIA')),
                 if (_attendance.status == 'open' &&
                     _can('tables.transfer_items') &&
                     _attendance.orders

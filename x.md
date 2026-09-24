@@ -1,405 +1,613 @@
 Continue no HEAD atual.
 
-Nova missão: **ao fechar a mesa, o sistema deve emitir automaticamente um cupom final parecido com o exemplo enviado pelo usuário**.
+Na última revisão, o HEAD era:
 
-Use a imagem de referência **apenas como referência visual/estrutural** do cupom:
-- simples;
-- térmico;
-- texto puro;
-- largura 58mm/80mm;
-- sem visual “fiscal”;
-- com cara de relatório/recibo gerencial.
+`6946139a7a3e6f692f6f24866d71c7e2f1c7f19c`
 
-## OBJETIVO
+Antes de alterar, confira o HEAD atual.
 
-Quando a mesa for fechada com sucesso, o POS deve emitir um **cupom final de fechamento da mesa** semelhante ao modelo enviado.
+Precisamos fechar estes pontos que ainda ficaram pendentes no fluxo de impressão do CORE POS.
 
-Esse cupom **não é NFC-e**, **não é cupom fiscal**, **não é SAT**.
+---
 
-É um:
+# 1. SOLICITAR CONTA DEVE EMITIR UMA CONFERÊNCIA NO MESMO PADRÃO VISUAL DO CUPOM FINAL
+
+Hoje:
 
 ```text
-RELATÓRIO GERENCIAL
-NÃO É DOCUMENTO FISCAL
-1. TIPO DE DOCUMENTO
+Solicitar conta
+→ TABLE_CONFERENCE
+→ automatic_only=True
 
-Usar o fluxo de documento final da mesa.
+e o renderer ainda usa o layout antigo:
 
-Preservar a arquitetura de documentos já existente.
-
-O fechamento da mesa deve emitir:
-
-TABLE_FINAL_RECEIPT
-
-Não usar:
-
-TABLE_CONFERENCE para isso;
-TABLE_BILL legado;
-PAYMENT_RECEIPT no lugar do recibo final.
-
-A lógica deve ser:
-
-fechar mesa com sucesso
-→ gerar/emitir TABLE_FINAL_RECEIPT
-→ criar PrintJob conforme rota efetiva
-→ PrintManager imprime
-2. MOMENTO DA IMPRESSÃO
-
-A emissão deve acontecer depois que a mesa realmente foi fechada com sucesso.
-
-Fluxo esperado:
-
-Mesa aberta
-→ pagamentos ok
-→ operador fecha mesa
-→ backend fecha attendance
-→ status closed
-→ emite TABLE_FINAL_RECEIPT
-→ volta para o grid das mesas
-
-Se a impressão falhar ou a rota estiver desabilitada:
-
-não desfazer o fechamento da mesa;
-fechamento continua válido;
-impressão é efeito documental separado.
-3. LAYOUT ESPERADO DO CUPOM
-
-O cupom deve seguir esse espírito do exemplo:
-
-Cabeçalho
-nome da empresa;
-nome da filial;
-endereço (se houver disponível);
-telefone (se houver disponível).
-Identificação do documento
-data/hora de impressão;
-título:
-SIMPLES CONFERENCIA DA CONTA não
-aqui deve ser algo como:
-RECIBO DE FECHAMENTO DA MESA
-ou FECHAMENTO DA CONTA
-ou RELATÓRIO GERENCIAL DE FECHAMENTO
-linha:
-RELATÓRIO GERENCIAL
-aviso:
-*** NÃO É DOCUMENTO FISCAL ***
-Dados operacionais
-mesa;
-atendimento/comanda/conta (se houver identificador);
-aberto em;
-fechado em;
-operador/usuário;
-cliente, se houver.
-Itens
-
-Listar os itens vendidos.
-
-Formato próximo do exemplo:
-
-ITEM (V.Unit)                   Total
-1 X BURGER (39,90)              39,90
-  1 COCA ZERO LATA
-  OBS: sem cebola
-
-Pode usar formatação melhor alinhada, mas precisa continuar simples para ESC/POS.
-
-Totais
-subtotal;
-desconto total, se houver;
-taxa de serviço, se houver;
-total a pagar;
-total pago;
-troco, se houver.
-Pagamentos
-
-Listar as formas de pagamento utilizadas.
-
-Exemplo:
-
-TOTAL PAGO
-CARTAO DE DEBITO VISA          39,90
-PIX                            20,00
-DINHEIRO                       19,90
-Rodapé
-operador;
-mensagem opcional de agradecimento;
-talvez site/instagram se já existir configuração;
-número/senha/identificador final, se fizer sentido.
-4. NÃO COPIAR LITERALMENTE O TEXTO DO EXEMPLO
-
-A imagem é uma referência de estrutura.
-
-Não copiar literalmente dados do estabelecimento da foto.
-
-Não reproduzir:
-
-nome da loja da imagem;
-endereço da imagem;
-telefone da imagem;
-domínio da imagem.
-
-Usar os dados reais do CORE / filial atual.
-
-5. DIFERENÇA ENTRE CONFERÊNCIA E RECIBO FINAL
-
-Deixar a separação bem clara:
-
-Conferência
-
-Antes do fechamento:
-
-CONFERÊNCIA
+CONFERENCIA
 SEM VALOR FISCAL
-Cupom final ao fechar mesa
+MESA...
+itens...
+totais...
 
-Depois do fechamento:
+Quero mudar.
 
-RECIBO DE FECHAMENTO / RELATÓRIO GERENCIAL
-NÃO É DOCUMENTO FISCAL
+Ao solicitar conta, o documento deve continuar sendo:
 
-Ou seja:
+TABLE_CONFERENCE
 
-a conferência continua existindo;
-o recibo final é outro documento.
+mas o layout precisa ficar no mesmo estilo do recibo final que foi implementado agora.
 
-Não unificar os dois indevidamente.
+Referência estrutural:
 
-6. USAR A ROTA CORRETA
+EMPRESA
+FILIAL
 
-O documento final deve obedecer a rota efetiva de:
+CONFERENCIA DA CONTA
+RELATORIO GERENCIAL
+*** NAO E DOCUMENTO FISCAL ***
+
+Endereco
+Telefone
+
+MESA X
+Atendimento: ...
+Aberta em: ...
+Impresso em: ...
+Atendente: ...
+Cliente: ...
+
+----------------------------
+
+ITENS
+
+1x PRODUTO            39,90
+  modificador
+  OBS: ...
+
+----------------------------
+
+SUBTOTAL
+DESCONTOS
+TAXA DE SERVICO
+TOTAL
+TOTAL PAGO
+SALDO A PAGAR
+
+----------------------------
+
+PAGAMENTOS JA REALIZADOS
+PIX                    20,00
+CARTAO                 10,00
+
+----------------------------
+
+A Mesa continua aberta.
+
+NÃO colocar:
+
+Fechada em
+
+na Conferência.
+
+2. SOLICITAR CONTA DEVE DISPARAR A PRIMEIRA IMPRESSÃO
+
+A ação:
+
+SOLICITAR CONTA
+
+deve ser o gatilho normal da primeira impressão da Conferência, conforme a rota configurada.
+
+Se a rota TABLE_CONFERENCE estiver configurada para emissão automática:
+
+Solicitar conta
+→ cria/encontra PrintDocument
+→ cria PrintJob inicial
+→ PrintManager imprime
+
+Preservar a arquitetura atual de:
+
+PrintDocument
+PrintRoute
+PrintRouteOverride
+PrintJob
+
+Não criar impressão direta pela UI.
+
+3. REMOVER IMPRIMIR / REIMPRIMIR CONFERÊNCIA DO MENU DA MESA
+
+Hoje o menu ainda possui:
+
+Visualizar conferência
+Solicitar conta
+IMPRIMIR CONFERÊNCIA / REIMPRIMIR CONFERÊNCIA
+
+Remover completamente:
+
+IMPRIMIR CONFERÊNCIA
+REIMPRIMIR CONFERÊNCIA
+
+do PopupMenuButton.
+
+Também remover o fluxo duplicado relacionado, como:
+
+_printBill()
+case 'print_bill'
+
+se não existir outro uso necessário.
+
+O menu da Mesa deve ficar com:
+
+Visualizar conferência
+Solicitar conta / Cancelar solicitação de conta
+...
+4. IMPRESSÃO DA CONFERÊNCIA FICA SOMENTE NO VISUALIZAR CONFERÊNCIA
+
+Na tela:
+
+Visualizar conferência
+
+já existe o ícone:
+
+🖨
+
+Esse deve ser o ÚNICO ponto manual para:
+
+IMPRIMIR
+REIMPRIMIR
+
+a Conferência.
+
+Não duplicar ação no menu da Mesa.
+
+5. REGRA FORTE: UMA ÚNICA PRIMEIRA IMPRESSÃO
+
+Não permitir duas impressões iniciais do mesmo documento/snapshot.
+
+Fluxo obrigatório:
+
+PrintDocument novo
+→ PRIMEIRA IMPRESSÃO
+
+já possui impressão inicial
+→ não pode gerar outra impressão inicial
+
+se quiser outra cópia
+→ REPRINT
+
+Preservar a proteção atual de:
+
+initial_jobs = document.print_jobs.filter(reprint_of__isnull=True)
+
+if initial_jobs:
+    return initial_jobs
+
+ou equivalente.
+
+Não criar um novo PrintDocument só para conseguir outra cópia do mesmo snapshot.
+
+6. SNAPSHOT NOVO PODE GERAR NOVA VERSÃO
+
+Exemplo correto:
+
+Solicitar conta
+→ Conferência v1
+→ imprime
+
+Cancelar solicitação
+→ adicionar novos produtos
+→ solicitar conta novamente
+→ snapshot mudou
+→ Conferência v2
+→ primeira impressão da v2
+
+Isso é correto.
+
+Mas:
+
+mesmo snapshot
+→ apertar imprimir novamente
+
+NÃO pode criar nova primeira impressão.
+
+Deve ser:
+
+REPRINT
+7. TODA REIMPRESSÃO DO CORE DEVE TER TARJA PRETA
+
+Hoje já existe helper central:
+
+_reprintBanner(...)
+
+mas ele só imprime texto em negrito:
+
+*** REIMPRESSAO #1 ***
+
+Quero alterar isso.
+
+Toda reimpressão física deve ter uma tarja preta evidente com texto branco:
+
+████████████████████████████
+        REIMPRESSAO #1
+████████████████████████████
+
+Não precisa desenhar blocos manualmente se ESC/POS suportar modo reverso.
+
+Preferir comando ESC/POS de reverse/inverse printing:
+
+fundo preto
+texto branco
+
+ocupando a largura imprimível.
+
+8. A TARJA DEVE SER GLOBAL
+
+Não implementar documento por documento.
+
+Centralizar no helper existente:
+
+_reprintBanner()
+
+ou equivalente.
+
+Assim a regra vale para TODAS as reimpressões:
+
+TABLE_CONFERENCE;
+TABLE_FINAL_RECEIPT;
+PAYMENT_RECEIPT;
+QUICK_SALE_RECEIPT;
+TICKET;
+TABLE_BILL legado;
+reimpressão de produção quando aplicável.
+9. PRIMEIRA IMPRESSÃO NÃO TEM TARJA
+
+Somente:
+
+reprint_number > 0
+
+ou reprint explícito.
+
+Nunca mostrar tarja de reimpressão na impressão inicial.
+
+10. TICKET — PROBLEMA IDENTIFICADO
+
+Hoje o sistema cria Ticket corretamente quando:
+
+product.emits_ticket = true
+
+Na Mesa:
+
+_confirm_table_item()
+→ create_table_production_jobs()
+→ create_table_order_item_ticket()
+
+Então o registro comercial do Ticket é criado.
+
+O problema está na emissão física.
+
+Hoje _create_ticket() faz:
+
+issue_print_document(
+    branch=branch,
+    document_type=PrintDocumentType.TICKET,
+    source_type='ticket',
+    source_id=ticket.pk,
+    user=user,
+    automatic_only=True,
+)
+
+SEM:
+
+pos_device
+11. ISSO FAZ O TICKET IGNORAR OVERRIDE DO POS
+
+Quando pos_device=None:
+
+effective_print_route(...)
+
+resolve apenas a rota da filial.
+
+Então:
+
+POS X
+TICKET = AUTOMATIC
+Impressora Y
+
+como override específico do POS pode ser ignorado.
+
+Na Venda Rápida já existe um segundo fluxo:
+
+_issue_ticket_documents(sale, operator, device)
+
+que conhece o device.
+
+Mesa e Comanda precisam ficar coerentes.
+
+12. CORRIGIR TICKET DE MESA
+
+Quando confirmar item de Mesa com:
+
+emits_ticket = true
+
+o fluxo deve ser:
+
+confirmar item
+→ criar Ticket uma única vez
+→ emitir PrintDocument TICKET
+→ passar POSDevice de origem
+→ resolver PrintRoute / PrintRouteOverride
+→ se rota TICKET automática
+→ criar PrintJob
+→ PrintManager imprime
+
+Não emitir novamente no fechamento da Mesa.
+
+Ticket da Mesa deve sair no momento em que o item entra no fluxo operacional.
+
+13. CORRIGIR TICKET DE COMANDA
+
+Mesma regra:
+
+confirmar item da Comanda
+→ se emits_ticket
+→ criar Ticket
+→ emitir com pos_device correto
+
+Não esperar fechamento da Comanda.
+
+14. VENDA RÁPIDA
+
+Revisar a Venda Rápida para garantir que não está emitindo o mesmo Ticket duas vezes.
+
+Hoje existe:
+
+create_sale_tickets()
+
+e depois:
+
+_issue_ticket_documents(sale, operator, device)
+
+Confirmar que:
+
+Ticket comercial
+
+é criado uma única vez e que:
+
+PrintDocument TICKET
+
+também mantém apenas uma impressão inicial.
+
+Não criar dois PrintJob iniciais.
+
+15. TICKET DEVE RESPEITAR ROTA
+
+A impressão física do Ticket deve obedecer:
+
+PrintRoute.TICKET
+
+e:
+
+PrintRouteOverride.TICKET
+
+com prioridade normal:
+
+sem override
+→ filial
+
+inherit_branch=true
+→ filial
+
+inherit_branch=false
+→ override do POS
+16. ROTA TICKET AUTOMATIC
+
+Como Ticket operacional deve sair no momento do evento, o comportamento esperado é:
+
+TICKET = automatic
+→ imprime automaticamente
+
+Se estiver:
+
+manual
+
+não imprimir automaticamente.
+
+Se estiver:
+
+disabled
+
+não imprimir.
+
+O registro Ticket pode continuar existindo mesmo sem impressão.
+
+17. NÃO DUPLICAR TICKET
+
+Mesmo Ticket:
+
+ticket_id X
+→ PrintDocument TICKET X
+→ primeira impressão
+
+não pode gerar outra impressão inicial.
+
+Nova cópia:
+
+REPRINT
+→ tarja preta
+18. CANCELAMENTO DE TICKET
+
+Preservar o comportamento atual de:
+
+cancel_ticket_for_source(...)
+
+Não misturar cancelamento de Ticket comercial com reimpressão.
+
+Não apagar Ticket histórico.
+
+19. CUPOM FINAL DA MESA
+
+Preservar o que já foi implementado no commit atual:
 
 TABLE_FINAL_RECEIPT
 
-Respeitar:
+com:
 
-PrintRoute da filial;
-PrintRouteOverride do POS;
-mode;
-printer_device_ids;
-copies;
-document_format.
+RECIBO DE FECHAMENTO DA MESA
+RELATORIO GERENCIAL
+*** NAO E DOCUMENTO FISCAL ***
 
-Não hardcodar impressora.
+e:
 
-7. FORMATO DO DOCUMENTO
-
-Se já existe suporte a:
-
-detailed
-simplified
-
-em document_format, usar isso também para o recibo final.
-
-Detailed
-
-Mais próximo do exemplo:
-
+empresa;
+filial;
+endereço;
+telefone;
+mesa;
+atendimento;
+abertura;
+fechamento;
 itens;
 modificadores;
 observações;
-timestamps;
+totais;
 pagamentos;
 operador.
-Simplified
+20. CONFERÊNCIA E RECIBO FINAL DEVEM TER O MESMO ESTILO
 
-Mais enxuto:
+A diferença principal deve ser de contexto.
 
-cabeçalho;
-itens resumidos;
-total;
-pagamentos;
-operador.
-8. RENDERER
+Conferência
+CONFERENCIA DA CONTA
+RELATORIO GERENCIAL
+*** NAO E DOCUMENTO FISCAL ***
 
-Revisar o renderer do TABLE_FINAL_RECEIPT.
+Mesa ainda aberta.
 
-Se ainda estiver simples demais ou ausente, implementar.
+Fechamento
+RECIBO DE FECHAMENTO DA MESA
+RELATORIO GERENCIAL
+*** NAO E DOCUMENTO FISCAL ***
 
-O resultado impresso deve ser visualmente parecido com o modelo:
+Mesa já fechada.
 
-centralização no cabeçalho;
-divisórias com traços;
-texto legível;
-blocos bem separados;
-bom uso de largura 58/80 mm.
+Compartilhar helpers de layout quando fizer sentido.
 
-Não exagerar em estilos.
-Manter compatível com ESC/POS simples.
+Evitar dois renderers completamente diferentes com código duplicado.
 
-9. DADOS QUE O DOCUMENTO DEVE TRAZER
-
-No mínimo:
-
-company_name
-branch_name
-endereço da filial, se disponível
-telefone da filial, se disponível
-printed_at
-opened_at
-closed_at
-número da mesa
-identificador do atendimento
-operador
-cliente (se houver)
-itens
-modificadores
-observações
-subtotal
-desconto
-taxa de serviço
-total
-pagamentos
-troco (se houver)
-10. ITENS E AGRUPAMENTO
-
-Se o documento final hoje usa agrupamento, manter coerência com o restante do projeto.
-
-Se houver itens iguais agrupados, ok.
-
-Mas precisa continuar claro no papel.
-
-Exemplo aceitável:
-
-2 X HEINEKEN LONG NECK (12,00)   24,00
-
-Ou, se não agrupar:
-
-1 X HEINEKEN LONG NECK (12,00)   12,00
-1 X HEINEKEN LONG NECK (12,00)   12,00
-
-Escolher o formato que já estiver mais consistente com o projeto.
-
-11. PAGAMENTOS
-
-O cupom final precisa mostrar as formas de pagamento realmente usadas no fechamento.
-
-Exemplo:
-
-PAGAMENTOS
-PIX                            50,00
-CARTÃO CRÉDITO                 30,00
-DINHEIRO                       20,00
-
-Se existir reversão anterior ou múltiplos pagamentos, mostrar apenas o resultado final válido da mesa fechada.
-
-12. NÃO REGREDIR O FECHAMENTO DA MESA
+21. NÃO REGREDIR O QUE JÁ ESTÁ CERTO
 
 Preservar:
 
-fechar mesa continua funcionando;
-volta ao grid das mesas;
-grid atualiza;
-mesa fica livre;
-não reabre mesa por causa de impressão;
-não duplica venda;
-não duplica baixa de estoque;
-não duplica pagamento.
-
-Impressão é apenas documento pós-fechamento.
-
-13. COMPORTAMENTO EM CASO DE ROTA DESABILITADA
-
-Se TABLE_FINAL_RECEIPT estiver desabilitado:
-
-a mesa fecha normalmente;
-o sistema pode informar que o recibo final não foi impresso;
-não bloquear o fechamento.
-
-A mensagem deve ser operacional e clara.
-
-Exemplo:
-
-Mesa fechada com sucesso.
-A impressão do recibo final está desabilitada para esta filial/POS.
-14. COMPORTAMENTO EM CASO DE FALHA DE IMPRESSÃO
-
-Se houver FAILED ou UNCERTAIN:
-
-mesa continua fechada;
-documento final continua existente;
-pode ser reimpresso depois conforme regra atual;
-não refazer fechamento;
-não recriar pagamento.
-15. REIMPRESSÃO
-
-Depois que o recibo final existir/imprimir:
-
-permitir reimpressão pelo fluxo já existente de PrintDocument, se aplicável;
-preservar diferença entre:
-impressão inicial;
-reimpressão.
-
-Não gerar vários “primeiros recibos” duplicados.
-
-16. NÃO ALTERAR O QUE JÁ ESTÁ CERTO
-
-Preservar:
-
+cupom final da Mesa;
+pagamentos APPLIED e não estornados;
+branch_address;
+branch_phone;
+hash + fallback legado;
 polling de produção;
 polling de PrintDocument;
 UNCERTAIN;
-hash unificado + fallback legado;
-Conferência atualizada;
-PAYMENT_RECEIPT;
-Solicitar Conta → TABLE_CONFERENCE;
-fechamento da mesa voltando ao grid;
-1.000x → 1x;
 retry != reprint;
-impressão NETWORK local;
-rotas por filial/POS.
-17. REFERÊNCIA VISUAL
+physical_dispatch_started_at;
+claim/lease;
+idempotência;
+quantidade formatada;
+retorno da Mesa para o grid;
+bloqueio após Solicitar Conta;
+PrintRoute / PrintRouteOverride;
+impressão NETWORK local.
+22. RESULTADO ESPERADO — SOLICITAR CONTA
+Mesa aberta
+→ itens enviados
+→ SOLICITAR CONTA
+→ bill_requested = true
+→ TABLE_CONFERENCE
+→ impressão inicial
+→ cupom no modelo gerencial
+23. RESULTADO ESPERADO — VISUALIZAR CONFERÊNCIA
+Mesa
+→ Visualizar conferência
 
-Usar como referência o exemplo enviado pelo usuário:
+Na tela:
 
-cabeçalho centralizado;
-linhas separadoras;
-aviso de não fiscal;
-bloco de itens;
-bloco de total;
-bloco de pagamentos;
-rodapé simples.
+🖨
 
-Não precisa copiar pixel a pixel.
-Precisa apenas ficar no mesmo estilo operacional.
+Se nunca imprimiu:
 
-18. CENÁRIO ESPERADO
-Mesa com itens
-→ registrar pagamentos
-→ fechar mesa
-→ backend fecha attendance
-→ emite TABLE_FINAL_RECEIPT
-→ PrintJob criado
-→ impressora imprime cupom final
-→ POS sai da tela e volta para o grid
+IMPRIMIR
 
-Cupom esperado:
+Se já imprimiu:
 
-simples;
-térmico;
-gerencial;
-com itens e pagamentos;
-semelhante ao exemplo.
-19. ARQUIVOS A REVISAR
+REIMPRIMIR
 
-No mínimo, revisar o que for necessário em:
+Não existe mais impressão no menu anterior.
+
+24. RESULTADO ESPERADO — REIMPRESSÃO
+documento já PRINTED
+→ operador pede nova cópia
+→ REPRINT
+→ novo PrintJob reprint
+→ papel sai com TARJA PRETA
+
+Exemplo:
+
+████████████████████████
+      REIMPRESSAO #1
+████████████████████████
+25. RESULTADO ESPERADO — TICKET MESA
+Produto:
+emits_ticket = true
+
+Mesa:
+enviar item
+
+→ cria TableOrderItem
+→ confirma
+→ cria Ticket
+→ resolve rota TICKET com POS atual
+→ PrintJob
+→ papel sai
+26. RESULTADO ESPERADO — TICKET COM OVERRIDE
+Filial:
+TICKET = disabled
+
+POS A:
+override TICKET = automatic
+Impressora Ticket
+
+Produto emits_ticket
+→ venda/mesa/comanda no POS A
+→ deve imprimir Ticket
+
+Isso hoje pode falhar porque o pos_device não chega em alguns fluxos.
+
+CORRIGIR.
+
+27. RESULTADO ESPERADO — SEM DUPLICAÇÃO
+mesmo Ticket
+→ uma impressão inicial
+
+mesma Conferência/snapshot
+→ uma impressão inicial
+
+mesmo recibo final
+→ uma impressão inicial
+
+Qualquer nova cópia física:
+
+REPRINT
+28. ARQUIVOS A REVISAR
+
+No mínimo:
 
 backend/apps/attendance/services.py
-backend/apps/sales/services.py
 backend/apps/production/services.py
-backend/apps/production/serializers.py
 backend/apps/pos/views.py
+backend/apps/sales/services.py
 
-pos/lib/printing/models.dart
-pos/lib/printing/print_manager.dart
+pos/lib/attendance/table_attendance_page.dart
 pos/lib/printing/production_ticket_renderer.dart
+pos/lib/printing/models.dart
 
-e principalmente o renderer/geração do:
+Alterar apenas o necessário.
 
-TABLE_FINAL_RECEIPT
-
-Se existir arquivo específico para renderização de documentos, revisar também.
-
-20. REGRA CRÍTICA
+REGRA CRÍTICA
 
 NÃO EXECUTE TESTES.
 
@@ -413,6 +621,7 @@ pytest
 npm test
 npm build
 npm lint
+suites
 makemigrations --check
 
 Eu farei os testes manualmente.
@@ -421,19 +630,25 @@ CHECKPOINT
 
 Ao terminar informe:
 
-onde passou a emitir o TABLE_FINAL_RECEIPT no fechamento da mesa;
-se a mesa continua fechando mesmo quando a impressão falha;
-como ficou o layout do recibo final;
-quais campos foram incluídos no documento;
-como ficou a distinção entre Conferência e recibo final;
-como os pagamentos aparecem no cupom;
-como ficou o renderer em 58/80 mm;
-se preservou reimpressão;
+como ficou o layout da TABLE_CONFERENCE;
+se Solicitar Conta continua sendo o gatilho da primeira impressão;
+se removeu IMPRIMIR/REIMPRIMIR CONFERÊNCIA do menu;
+se a impressão manual ficou somente no ícone da tela de Conferência;
+como garantiu uma única impressão inicial;
+como ficou a tarja preta global de reimpressão;
+quais tipos de documento usam essa tarja;
+qual era a causa do Ticket não imprimir corretamente;
+como o pos_device passou a chegar ao Ticket da Mesa;
+como o pos_device passou a chegar ao Ticket da Comanda;
+se a Venda Rápida continua sem duplicar Ticket;
+como a rota TICKET respeita override do POS;
 arquivos backend alterados;
 arquivos Flutter alterados;
 migrations criadas — não deveria precisar;
 pontos restantes para teste manual.
 
 NÃO EXECUTE TESTES.
+NÃO EXECUTE ANALYZE.
+NÃO EXECUTE BUILD.
 
 Depois pare.

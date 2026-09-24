@@ -307,7 +307,7 @@ def add_order_items(*, command, user, items, idempotency_key, audit_metadata=Non
 
 
 @transaction.atomic
-def confirm_order_item(*, item, user, idempotency_key, audit_metadata=None):
+def confirm_order_item(*, item, user, idempotency_key, pos_device=None, audit_metadata=None):
     item = AttendanceOrderItem.objects.select_for_update().select_related('order__command', 'product').get(pk=item.pk)
     command = item.order.command
     if item.status == AttendanceOrderItemStatus.CONFIRMED:
@@ -341,7 +341,7 @@ def confirm_order_item(*, item, user, idempotency_key, audit_metadata=None):
         item.order.save(update_fields=('status', 'updated_at'))
     from apps.production.services import create_attendance_order_item_ticket, create_attendance_production_jobs
     create_attendance_production_jobs(item=item, command=command, user=user, idempotency_key=idempotency_key)
-    create_attendance_order_item_ticket(item=item, command=command, user=user)
+    create_attendance_order_item_ticket(item=item, command=command, user=user, pos_device=pos_device)
     audit_log(actor=user, action='attendance.order_item.confirm', obj=item, company=command.company,
               branch=command.branch, after=model_snapshot(item, ('status', 'confirmed_at', 'confirmed_by_id')),
               metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
@@ -1154,7 +1154,7 @@ def open_table_attendance(*, branch, table_id, user, idempotency_key, people_cou
 
 
 @transaction.atomic
-def save_table_order(*, attendance, user, items, idempotency_key, audit_metadata=None):
+def save_table_order(*, attendance, user, items, idempotency_key, pos_device=None, audit_metadata=None):
     from .models import TableAttendance, TableAttendanceStatus, TableOrder, TableOrderItem
 
     attendance = TableAttendance.objects.select_for_update().select_related('branch__company').get(pk=attendance.pk)
@@ -1197,7 +1197,7 @@ def save_table_order(*, attendance, user, items, idempotency_key, audit_metadata
             base_unit_price=base_price, modifier_unit_total=modifier_total,
             unit_price=(base_price + modifier_total).quantize(CENT, rounding=ROUND_HALF_UP),
             modifier_snapshot=modifiers, notes=entry.get('notes', ''), unit_cost=unit_cost)
-        _confirm_table_item(item=item, attendance=attendance, user=user, idempotency_key=idempotency_key)
+        _confirm_table_item(item=item, attendance=attendance, user=user, idempotency_key=idempotency_key, pos_device=pos_device)
         created.append(item)
     order.status = AttendanceOrderStatus.CONFIRMED
     order.save(update_fields=('status', 'updated_at'))
@@ -1209,7 +1209,7 @@ def save_table_order(*, attendance, user, items, idempotency_key, audit_metadata
     return order, created, False
 
 
-def _confirm_table_item(*, item, attendance, user, idempotency_key):
+def _confirm_table_item(*, item, attendance, user, idempotency_key, pos_device=None):
     from apps.production.services import create_table_order_item_ticket, create_table_production_jobs
     requirements, contents, component_snapshots = stock_requirements_for_product(item.product, item.quantity, attendance.branch, item.modifier_snapshot)
     stocks = {}
@@ -1252,7 +1252,7 @@ def _confirm_table_item(*, item, attendance, user, idempotency_key):
     item.component_cost_snapshot = snapshot['component_cost_snapshot']
     item.save(update_fields=('financial_snapshot', 'status', 'confirmed_at', 'confirmed_by', 'component_cost_snapshot', 'updated_at'))
     create_table_production_jobs(item=item, attendance=attendance, user=user, idempotency_key=idempotency_key)
-    create_table_order_item_ticket(item=item, attendance=attendance, user=user)
+    create_table_order_item_ticket(item=item, attendance=attendance, user=user, pos_device=pos_device)
 
 
 @transaction.atomic

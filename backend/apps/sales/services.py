@@ -2463,7 +2463,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         from apps.production.services import create_sale_production_jobs, create_sale_tickets
 
         create_sale_production_jobs(sale=sale, user=user, idempotency_key=idempotency_key)
-        create_sale_tickets(sale=sale, user=user)
+        create_sale_tickets(sale=sale, user=user, pos_device=pos_device)
     if payment_sources is not None and len(payment_sources) != len(prepared_payments):
         raise ValidationError({'payments': 'Proveniência de pagamentos inconsistente.'})
     if attendance_payment_sources is not None and len(attendance_payment_sources) != len(prepared_payments):

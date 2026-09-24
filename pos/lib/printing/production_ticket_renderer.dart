@@ -99,9 +99,7 @@ class ProductionTicketRenderer {
             fiscalLabel: null, detailed: detailed);
         break;
       case PrintDocumentType.tableConference:
-        _center(bytes, 'CONFERENCIA', width, bold: true, large: true);
-        _tableDocument(bytes, snapshot, width,
-            fiscalLabel: 'SEM VALOR FISCAL', detailed: detailed);
+        _conferenceDocument(bytes, snapshot, width, detailed: detailed);
         break;
       case PrintDocumentType.tableFinalReceipt:
         _finalTableReceiptDocument(bytes, snapshot, width, detailed: detailed);
@@ -169,6 +167,25 @@ class ProductionTicketRenderer {
     _lineIfPresent(bytes, 'Operador', _first(snapshot, ['operator', 'attendant']), width);
     _line(bytes, '-' * width);
     _center(bytes, 'OBRIGADO PELA PREFERENCIA', width);
+  }
+
+  void _conferenceDocument(BytesBuilder bytes, Map<String, dynamic> snapshot,
+      int width, {required bool detailed}) {
+    _center(bytes, 'CONFERENCIA DA CONTA', width, bold: true, large: true);
+    _center(bytes, 'RELATORIO GERENCIAL', width, bold: true);
+    _center(bytes, '*** NAO E DOCUMENTO FISCAL ***', width, bold: true);
+    _line(bytes, '-' * width);
+    _lineIfPresent(bytes, 'Endereco', _first(snapshot, ['branch_address']), width);
+    _lineIfPresent(bytes, 'Telefone', _first(snapshot, ['branch_phone']), width);
+    _centerIfPresent(bytes, _tableLabel(snapshot), width, bold: true);
+    _lineIfPresent(bytes, 'Atendimento', _first(snapshot, ['attendance_id']), width);
+    _lineIfPresent(bytes, 'Aberta em', _first(snapshot, ['opened_at']), width);
+    _lineIfPresent(bytes, 'Impresso em', DateTime.now().toLocal().toString().substring(0, 16), width);
+    _lineIfPresent(bytes, 'Atendente', _first(snapshot, ['attendant', 'operator']), width);
+    _lineIfPresent(bytes, 'Cliente', _first(snapshot, ['customer']), width);
+    _documentItems(bytes, snapshot, width, detailed: detailed);
+    _financials(bytes, snapshot, width);
+    _payments(bytes, snapshot, width);
   }
 
   void _paymentDocument(BytesBuilder bytes, Map<String, dynamic> snapshot, int width) {
@@ -271,6 +288,7 @@ class ProductionTicketRenderer {
       'total_due': 'TOTAL',
       'total': 'TOTAL',
       'paid_total': 'TOTAL PAGO',
+      'remaining_balance': 'SALDO A PAGAR',
     };
     final rows = <MapEntry<String, String>>[];
     for (final entry in labels.entries) {
@@ -362,8 +380,21 @@ class ProductionTicketRenderer {
     return '${part(instant.day)}/${part(instant.month)} ${part(instant.hour)}:${part(instant.minute)}';
   }
 
-  void _reprintBanner(BytesBuilder bytes, int number, int width) =>
-      _center(bytes, number > 0 ? '*** REIMPRESSAO #$number ***' : '*** REIMPRESSAO ***', width, bold: true);
+  void _reprintBanner(BytesBuilder bytes, int number, int width) {
+    final label = number > 0 ? 'REIMPRESSAO #$number' : 'REIMPRESSAO';
+    bytes.add(const [0x1d, 0x42, 1]);
+    _inverseLine(bytes, '', width);
+    _inverseLine(bytes, label, width);
+    _inverseLine(bytes, '', width);
+    bytes.add(const [0x1d, 0x42, 0]);
+  }
+
+  void _inverseLine(BytesBuilder bytes, String value, int width) {
+    final padding = ((width - value.length) ~/ 2).clamp(0, width).toInt();
+    final line = '${' ' * padding}$value'.padRight(width);
+    bytes.add(_encode('${' ' * _leftMargin}$line'));
+    bytes.addByte(0x0a);
+  }
 
   void _centerIfPresent(BytesBuilder bytes, String? value, int width,
       {bool bold = false, bool large = false}) {

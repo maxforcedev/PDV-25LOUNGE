@@ -1324,6 +1324,7 @@ class POSAttendanceItemConfirmView(POSAttendanceView):
         try:
             item = confirm_order_item(
                 item=item, user=operator, audit_metadata=self.audit_metadata(device, operator_session),
+                pos_device=device,
                 **serializer.validated_data,
             )
         except AttendanceConflict as error:
@@ -1505,6 +1506,7 @@ class POSTableAttendanceOrdersView(POSTableAttendanceView):
         try:
             _, items, replayed = save_table_order(attendance=self._attendance(device, attendance_id), user=operator,
                 items=serializer.validated_data['items'], idempotency_key=serializer.validated_data['idempotency_key'],
+                pos_device=device,
                 audit_metadata=self.audit_metadata(device, operator_session))
         except AttendanceConflict as error:
             self._domain(error)

@@ -658,7 +658,7 @@ def _ticket_snapshot(item):
     }
 
 
-def _create_ticket(*, item, company, branch, user, source_field):
+def _create_ticket(*, item, company, branch, user, source_field, pos_device=None):
     Company.objects.select_for_update().get(pk=company.pk)
     existing = Ticket.objects.filter(**{source_field: item}).first()
     if existing:
@@ -670,20 +670,21 @@ def _create_ticket(*, item, company, branch, user, source_field):
     # A ticket remains a commercial record even when its route is disabled.
     issue_print_document(
         branch=branch, document_type=PrintDocumentType.TICKET, source_type='ticket',
-        source_id=ticket.pk, user=user, automatic_only=True,
+        source_id=ticket.pk, user=user, pos_device=pos_device, automatic_only=True,
     )
     return ticket
 
 
-def create_sale_tickets(*, sale, user):
-    return [_create_ticket(item=item, company=sale.company, branch=sale.branch, user=user, source_field='source_sale_item')
+def create_sale_tickets(*, sale, user, pos_device=None):
+    return [_create_ticket(item=item, company=sale.company, branch=sale.branch, user=user,
+                           source_field='source_sale_item', pos_device=pos_device)
             for item in sale.items.select_related('product').filter(product__emits_ticket=True)]
 
 
-def create_order_item_ticket(*, item, command, user):
+def create_order_item_ticket(*, item, command, user, pos_device=None):
     if not item.product.emits_ticket:
         return None
-    return _create_ticket(item=item, company=command.company, branch=command.branch, user=user, source_field='source_order_item')
+    return _create_ticket(item=item, company=command.company, branch=command.branch, user=user, source_field='source_order_item', pos_device=pos_device)
 
 
 def create_attendance_production_jobs(*, item, command, user, idempotency_key):
@@ -717,12 +718,12 @@ def create_attendance_production_jobs(*, item, command, user, idempotency_key):
                       company=command.company, branch=command.branch)
 
 
-def create_attendance_order_item_ticket(*, item, command, user):
+def create_attendance_order_item_ticket(*, item, command, user, pos_device=None):
     if not item.product.emits_ticket:
         return None
     return _create_ticket(
         item=item, company=command.company, branch=command.branch, user=user,
-        source_field='source_attendance_order_item',
+        source_field='source_attendance_order_item', pos_device=pos_device,
     )
 
 
@@ -792,12 +793,12 @@ def create_table_production_jobs(*, item, attendance, user, idempotency_key):
             )
 
 
-def create_table_order_item_ticket(*, item, attendance, user):
+def create_table_order_item_ticket(*, item, attendance, user, pos_device=None):
     if not item.product.emits_ticket:
         return None
     return _create_ticket(
         item=item, company=attendance.company, branch=attendance.branch, user=user,
-        source_field='source_table_order_item',
+        source_field='source_table_order_item', pos_device=pos_device,
     )
 
 
