@@ -155,6 +155,23 @@ class _TableOrderPageState extends State<TableOrderPage> {
     _schedulePreview();
   }
 
+  bool get _hasPendingProductionPrint => _attendance.orders
+      .expand((order) => order.items)
+      .any((item) => {'pending', 'processing'}.contains(item.printStatus?.toLowerCase()));
+
+  Future<void> _pollProductionPrintStatus() async {
+    for (var attempt = 0; attempt < 5 && _hasPendingProductionPrint; attempt++) {
+      await Future<void>.delayed(const Duration(seconds: 2));
+      if (!mounted) return;
+      final attendance = await widget.controller.tableAttendanceDetail(_attendance.id);
+      if (!mounted || attendance == null) return;
+      setState(() {
+        _attendance = attendance;
+        _billDocument = attendance.printDocumentFor(PrintDocumentType.tableConference);
+      });
+    }
+  }
+
   List<QuickSaleProduct> get _visible => _catalog
       .where((product) =>
           (_categoryId == null || product.categoryId == _categoryId) &&
@@ -488,6 +505,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
         tone: TransientAlertTone.success);
     await _load();
     if (!mounted) return;
+    unawaited(_pollProductionPrintStatus());
     setState(() {
       _cart.clear();
       _orderIdempotencyKey = null;
@@ -1083,7 +1101,7 @@ class _TableConferencePageState extends State<_TableConferencePage> {
   }
 
   Future<void> _load() async {
-    final attendance = await widget.controller.tableAttendanceDetail(widget.attendance.id);
+    final attendance = await widget.controller.tableAttendanceDetail(_attendance.id);
     if (!mounted) return;
     setState(() {
       _loading = false;
@@ -1197,11 +1215,11 @@ class _TableConferencePageState extends State<_TableConferencePage> {
                       ]),
                     ),
                   const Divider(height: 32),
-                  TableSummaryWidgets(widget.attendance.summary),
-                  if (widget.attendance.customerName.isNotEmpty)
+                  TableSummaryWidgets(_attendance.summary),
+                  if (_attendance.customerName.isNotEmpty)
                     Padding(
                         padding: const EdgeInsets.only(top: 12),
-                        child: Text('Cliente: ${widget.attendance.customerName}')),
+                        child: Text('Cliente: ${_attendance.customerName}')),
                 ],
               ),
             ),

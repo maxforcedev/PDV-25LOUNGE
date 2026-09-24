@@ -210,6 +210,8 @@ class TableOrderItemSerializer(serializers.ModelSerializer):
             return 'printed'
         if 'failed' in statuses:
             return 'failed'
+        if 'uncertain' in statuses:
+            return 'uncertain'
         if 'processing' in statuses:
             return 'processing'
         return 'pending'

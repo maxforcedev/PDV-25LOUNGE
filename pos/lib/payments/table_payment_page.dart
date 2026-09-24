@@ -267,13 +267,7 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
         _paymentDocuments[payment.id] = result;
       }
     });
-    if (result == null) {
-      final error = widget.controller.errorMessage;
-      if (error != null && error.isNotEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
-      }
-      return;
-    }
+    if (result == null) return;
     unawaited(pollPrintDocument(
       isMounted: () => mounted,
       reload: () async {

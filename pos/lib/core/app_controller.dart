@@ -1530,6 +1530,7 @@ class AppController extends ChangeNotifier {
       return await request();
     } on PosApiException catch (error) {
       _handleApiError(error);
+      notifyListeners();
     } on PosNetworkException catch (error) {
       _showTransientMessage(error.message);
     }

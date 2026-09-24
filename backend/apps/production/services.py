@@ -301,6 +301,27 @@ def _document_snapshot_hash(snapshot):
     ).encode()).hexdigest()
 
 
+def _legacy_document_snapshot_hash(snapshot):
+    legacy_snapshot = dict(snapshot)
+    legacy_snapshot.pop('company_name', None)
+    legacy_snapshot.pop('branch_name', None)
+    return _document_snapshot_hash(legacy_snapshot)
+
+
+def _existing_print_document(*, branch, document_type, source_type, source_id, snapshot_hash, snapshot):
+    filters = {
+        'branch': branch, 'document_type': document_type, 'source_type': source_type,
+        'source_id': str(source_id),
+    }
+    document = PrintDocument.objects.filter(**filters, snapshot_hash=snapshot_hash).first()
+    if document:
+        return document
+    # Documents emitted before the header fields were added remain immutable.
+    return PrintDocument.objects.filter(
+        **filters, snapshot_hash=_legacy_document_snapshot_hash(snapshot),
+    ).first()
+
+
 def create_print_document(*, branch, document_type, source_type, source_id, user=None, metadata=None):
     document_type = normalize_print_document_type(document_type)
     valid_sources = {
@@ -317,10 +338,10 @@ def create_print_document(*, branch, document_type, source_type, source_id, user
         document_type=document_type, source_type=source_type, source_id=source_id, branch=branch,
     )
     snapshot_hash = _document_snapshot_hash(snapshot)
-    existing = PrintDocument.objects.filter(
+    existing = _existing_print_document(
         branch=branch, document_type=document_type, source_type=source_type,
-        source_id=str(source_id), snapshot_hash=snapshot_hash,
-    ).first()
+        source_id=source_id, snapshot_hash=snapshot_hash, snapshot=snapshot,
+    )
     if existing:
         return existing, False
     version = (PrintDocument.objects.filter(
@@ -364,10 +385,10 @@ def current_print_document(*, branch, document_type, source_type, source_id):
     except ValueError:
         return None
     snapshot_hash = _document_snapshot_hash(snapshot)
-    return PrintDocument.objects.filter(
+    return _existing_print_document(
         branch=branch, document_type=document_type, source_type=source_type,
-        source_id=str(source_id), snapshot_hash=snapshot_hash,
-    ).first()
+        source_id=source_id, snapshot_hash=snapshot_hash, snapshot=snapshot,
+    )
 
 
 def enqueue_print_document(*, document, user=None, pos_device=None, retry_failed=False):

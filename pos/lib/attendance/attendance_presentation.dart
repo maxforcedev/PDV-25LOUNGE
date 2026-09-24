@@ -34,5 +34,6 @@ String? localizedPrintStatus(String? printStatus) =>
       'pending' => 'Aguardando impressão',
       'processing' => 'Impressão em andamento',
       'failed' => 'Falha na impressão',
+      'uncertain' => 'Impressão com resultado incerto',
       _ => null,
     };
