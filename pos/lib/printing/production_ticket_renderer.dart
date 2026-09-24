@@ -70,7 +70,7 @@ class ProductionTicketRenderer {
     _line(bytes, _time(payload));
     for (final job in jobs) {
       final item = job.payload['source_item'] as Map? ?? const {};
-      _line(bytes, '${item['quantity'] ?? ''}x ${item['product_name'] ?? ''}',
+      _line(bytes, '${_formatQuantity(item['quantity'])}x ${item['product_name'] ?? ''}',
           bold: true, large: true);
       _itemDetails(bytes, item, width);
     }
@@ -191,7 +191,7 @@ class ProductionTicketRenderer {
       final item = _map(raw);
       final name = _first(item, ['product_name', 'name']);
       if (name == null) continue;
-      final quantity = _first(item, ['quantity']) ?? '';
+      final quantity = _formatQuantity(_first(item, ['quantity']));
       final financial = _map(item['financial']);
       _columns(bytes, '$quantity${quantity.isEmpty ? '' : 'x '} $name',
           _first(item, ['line_total', 'net_subtotal', 'subtotal', 'total']) ??
@@ -296,6 +296,16 @@ class ProductionTicketRenderer {
       if (value != null && '$value'.trim().isNotEmpty) return '$value';
     }
     return null;
+  }
+
+  String _formatQuantity(Object? value) {
+    final raw = '${value ?? ''}'.trim();
+    if (raw.isEmpty) return '';
+    final parsed = num.tryParse(raw.replaceAll(',', '.'));
+    if (parsed == null) return raw;
+    var text = parsed.toStringAsFixed(3);
+    text = text.replaceFirst(RegExp(r'0+$'), '').replaceFirst(RegExp(r'\.$'), '');
+    return text.replaceAll('.', ',');
   }
 
   String _tableLabel(Map<String, dynamic> snapshot) {

@@ -186,6 +186,11 @@ class _TableOrderPageState extends State<TableOrderPage> {
 
   Future<void> _add(QuickSaleProduct product) async {
     if (_saving) return;
+    if (_attendance.billRequested) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Conta solicitada. Novos produtos estão bloqueados.')));
+      return;
+    }
     if (!product.canSell) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(product.availabilityReason?.trim().isNotEmpty == true
@@ -500,6 +505,11 @@ class _TableOrderPageState extends State<TableOrderPage> {
 
   Future<void> _toggleBill() async {
     if (_actionInProgress) return;
+    if (!_attendance.billRequested && _cart.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Envie os itens novos antes de solicitar a conta.')));
+      return;
+    }
     setState(() => _actionInProgress = true);
     final updated = await widget.controller.setTableBillRequested(
       attendanceId: _attendance.id,
@@ -1044,13 +1054,30 @@ class _TableConferencePage extends StatefulWidget {
 
 class _TableConferencePageState extends State<_TableConferencePage> {
   bool _printing = false;
+  bool _loading = true;
+  String? _error;
   PrintDocumentResult? _document;
+  late TableAttendance _attendance = widget.attendance;
 
   @override
   void initState() {
     super.initState();
-    _document = widget.attendance
-        .printDocumentFor(PrintDocumentType.tableConference);
+    _document = _attendance.printDocumentFor(PrintDocumentType.tableConference);
+    _load();
+  }
+
+  Future<void> _load() async {
+    final attendance = await widget.controller.tableAttendanceDetail(widget.attendance.id);
+    if (!mounted) return;
+    setState(() {
+      _loading = false;
+      if (attendance == null) {
+        _error = 'Não foi possível atualizar a conferência da mesa.';
+      } else {
+        _attendance = attendance;
+        _document = attendance.printDocumentFor(PrintDocumentType.tableConference);
+      }
+    });
   }
 
   Future<void> _print() async {
@@ -1074,7 +1101,7 @@ class _TableConferencePageState extends State<_TableConferencePage> {
             PrintDocumentRequest(
               type: PrintDocumentType.tableConference,
               sourceType: 'table_attendance',
-              sourceId: '${widget.attendance.id}',
+              sourceId: '${_attendance.id}',
               idempotencyKey: createIdempotencyKey(),
             ),
           );
@@ -1099,7 +1126,7 @@ class _TableConferencePageState extends State<_TableConferencePage> {
             ),
           ],
         ),
-        body: Center(
+        body: _loading ? const Center(child: CircularProgressIndicator()) : _error != null ? Center(child: Text(_error!)) : Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 480),
             child: Card(
@@ -1112,18 +1139,18 @@ class _TableConferencePageState extends State<_TableConferencePage> {
                       textAlign: TextAlign.center,
                       style: TextStyle(fontWeight: FontWeight.w800)),
                   const SizedBox(height: 12),
-                  Text(widget.attendance.tableName,
+                  Text(_attendance.tableName,
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.titleLarge),
-                  if (widget.attendance.openedAt != null)
-                    Text(_tableHistoryTime(widget.attendance.openedAt),
+                  if (_attendance.openedAt != null)
+                    Text(_tableHistoryTime(_attendance.openedAt),
                         textAlign: TextAlign.center),
-                  if (widget.attendance.responsibleName.isNotEmpty)
-                    Text('Atendente: ${widget.attendance.responsibleName}',
+                  if (_attendance.responsibleName.isNotEmpty)
+                    Text('Atendente: ${_attendance.responsibleName}',
                         textAlign: TextAlign.center),
                   const Divider(height: 32),
                   for (final group
-                      in tableOrderItemGroups(widget.attendance, confirmedOnly: true))
+                      in tableOrderItemGroups(_attendance, confirmedOnly: true))
                     Padding(
                       padding: const EdgeInsets.only(bottom: 12),
                       child: Column(children: [

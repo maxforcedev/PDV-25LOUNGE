@@ -936,6 +936,9 @@ def preview_table_order(*, attendance, items):
     """Calculate a read-only table preview including the unsaved POS draft."""
     from .models import TableOrderItem
 
+    if attendance.bill_requested_at:
+        raise AttendanceConflict('table_bill_requested', 'A conta desta mesa já foi solicitada. Libere a conta antes de adicionar novos produtos.')
+
     confirmed = list(TableOrderItem.objects.filter(
         order__attendance=attendance, status=AttendanceOrderItemStatus.CONFIRMED,
     ).select_related('product__category').order_by('id'))
@@ -1157,6 +1160,8 @@ def save_table_order(*, attendance, user, items, idempotency_key, audit_metadata
     attendance = TableAttendance.objects.select_for_update().select_related('branch__company').get(pk=attendance.pk)
     if attendance.status != TableAttendanceStatus.OPEN:
         raise AttendanceConflict('table_closed', 'A mesa deve estar aberta.')
+    if attendance.bill_requested_at:
+        raise AttendanceConflict('table_bill_requested', 'A conta desta mesa já foi solicitada. Libere a conta antes de adicionar novos produtos.')
     operation, replayed = _operation(
         branch=attendance.branch, operation_type=AttendanceOperationType.TABLE_ORDER,
         idempotency_key=idempotency_key, payload={'attendance': attendance.pk, 'items': items},
@@ -1730,7 +1735,7 @@ def set_table_bill_requested(*, attendance, user, requested, idempotency_key, po
         def issue_bill_after_commit():
             try:
                 issue_print_document(
-                    branch=attendance.branch, document_type=PrintDocumentType.TABLE_BILL,
+                    branch=attendance.branch, document_type=PrintDocumentType.TABLE_CONFERENCE,
                     source_type='table_attendance', source_id=attendance.pk, user=user,
                     pos_device=pos_device, automatic_only=True,
                     metadata={'trigger': 'table_bill_requested'},
@@ -1738,7 +1743,7 @@ def set_table_bill_requested(*, attendance, user, requested, idempotency_key, po
             except ValueError as error:
                 audit_log(actor=user, action='print_document.automatic_failed', obj=attendance,
                           company=attendance.company, branch=attendance.branch,
-                          metadata={'document_type': PrintDocumentType.TABLE_BILL, 'detail': str(error)})
+                          metadata={'document_type': PrintDocumentType.TABLE_CONFERENCE, 'detail': str(error)})
         transaction.on_commit(issue_bill_after_commit)
     return attendance, False
 
