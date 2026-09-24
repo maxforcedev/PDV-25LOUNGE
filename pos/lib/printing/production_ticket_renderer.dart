@@ -86,8 +86,9 @@ class ProductionTicketRenderer {
     final snapshot = _snapshot(payload);
     final type = job.documentType!;
     final detailed = _documentFormat(payload) != 'simplified';
-    _centerIfPresent(bytes, _first(snapshot, ['company_name', 'branch_name', 'branch']),
-        width, bold: true);
+    _centerIfPresent(bytes, _first(snapshot, ['company_name', 'company']), width,
+        bold: true);
+    _centerIfPresent(bytes, _first(snapshot, ['branch_name', 'branch']), width);
     if (job.reprintNumber > 0 || payload['reprint'] == true) {
       _reprintBanner(bytes, job.reprintNumber, width);
     }
@@ -166,7 +167,7 @@ class ProductionTicketRenderer {
     _lineIfPresent(bytes, 'Produto',
         _first(ticket, ['product_name', 'product']) ?? _first(item, ['product_name', 'name', 'product']), width);
     _lineIfPresent(bytes, 'Quantidade',
-        _first(ticket, ['quantity']) ?? _first(item, ['quantity']), width);
+        _formatQuantity(_first(ticket, ['quantity']) ?? _first(item, ['quantity'])), width);
     _lineIfPresent(bytes, 'Codigo', _first(ticket, ['validation_code', 'code']), width);
     _lineIfPresent(bytes, 'Data/hora', _first(ticket, ['issued_at', 'created_at']), width);
   }

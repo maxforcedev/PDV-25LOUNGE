@@ -300,6 +300,8 @@ def create_print_document(*, branch, document_type, source_type, source_id, user
     _source, snapshot = _source_snapshot(
         document_type=document_type, source_type=source_type, source_id=source_id, branch=branch,
     )
+    snapshot.setdefault('company_name', branch.company.trade_name or branch.company.legal_name)
+    snapshot.setdefault('branch_name', branch.name)
     snapshot_hash = sha256(json.dumps(snapshot, sort_keys=True, separators=(',', ':'), default=str).encode()).hexdigest()
     existing = PrintDocument.objects.filter(
         branch=branch, document_type=document_type, source_type=source_type,

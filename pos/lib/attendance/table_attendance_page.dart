@@ -114,7 +114,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
   void initState() {
     super.initState();
     _search.addListener(() => setState(() {}));
-    _billDocument = _attendance.printDocumentFor(PrintDocumentType.tableBill);
+    _billDocument = _attendance.printDocumentFor(PrintDocumentType.tableConference);
     unawaited(_load());
   }
 
@@ -143,7 +143,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
     setState(() {
       _catalog = results[0] as List<QuickSaleProduct>? ?? const [];
       _attendance = attendance;
-      _billDocument = attendance.printDocumentFor(PrintDocumentType.tableBill);
+      _billDocument = attendance.printDocumentFor(PrintDocumentType.tableConference);
       _group = tables
           ?.where((table) => table.id == attendance.tableId)
           .firstOrNull
@@ -237,6 +237,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
 
   Future<void> _addCartItem(QuickSaleCartItem item) =>
       _queueCartMutation((cart) {
+        if (_attendance.billRequested) return cart;
         final equivalent = cart.indexWhere((entry) =>
             entry.product.id == item.product.id &&
             entry.notes == item.notes &&
@@ -371,6 +372,11 @@ class _TableOrderPageState extends State<TableOrderPage> {
 
   Future<void> _addBatch(QuickSaleProduct product) async {
     if (_saving) return;
+    if (_attendance.billRequested) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Conta solicitada. Novos produtos estão bloqueados.')));
+      return;
+    }
     if (!product.canSell) {
       await _add(product);
       return;
@@ -520,7 +526,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
     setState(() => _actionInProgress = false);
     if (updated != null) {
       setState(() => _billDocument =
-          updated.printDocumentFor(PrintDocumentType.tableBill));
+          updated.printDocumentFor(PrintDocumentType.tableConference));
       await _load();
     }
   }
@@ -545,7 +551,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
           )
         : await widget.controller.requestPrintDocument(
             PrintDocumentRequest(
-              type: PrintDocumentType.tableBill,
+              type: PrintDocumentType.tableConference,
               sourceType: 'table_attendance',
               sourceId: '${_attendance.id}',
               idempotencyKey: createIdempotencyKey(),
@@ -557,8 +563,9 @@ class _TableOrderPageState extends State<TableOrderPage> {
       setState(() {
         _billDocument = result;
       });
+      unawaited(Future<void>.delayed(const Duration(seconds: 2), _load));
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Conta enviada para a fila de impressão.')));
+          content: Text('Conferência enviada para a fila de impressão.')));
     }
   }
 
@@ -909,7 +916,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
                  if (_attendance.billRequested)
                    PopupMenuItem(
                        value: 'print_bill',
-                        child: Text('${_billDocument?.printActionLabel ?? 'IMPRIMIR'} CONTA')),
+                child: Text('${_billDocument?.printActionLabel ?? 'IMPRIMIR'} CONFERÊNCIA')),
                 if (_attendance.status == 'open' &&
                     _can('tables.transfer_items') &&
                     _attendance.orders
@@ -1112,6 +1119,7 @@ class _TableConferencePageState extends State<_TableConferencePage> {
         _document = result;
       }
     });
+    unawaited(Future<void>.delayed(const Duration(seconds: 2), _load));
   }
 
   @override

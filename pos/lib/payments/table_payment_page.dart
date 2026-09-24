@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../attendance/attendance_models.dart';
@@ -264,6 +266,7 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
         _paymentDocuments[payment.id] = result;
       }
     });
+    unawaited(Future<void>.delayed(const Duration(seconds: 2), _refresh));
   }
 
   Future<void> _close() async {
@@ -277,13 +280,11 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
     if (closed != null) {
       _closeKey = null;
       await widget.onClosed(closed);
-      if (mounted && closed.finalSaleId != null) {
-        await _showFinalReceiptAction(
-          closed.id,
-          document: closed.printDocumentFor(PrintDocumentType.tableFinalReceipt),
-        );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Mesa fechada com sucesso.')));
+        Navigator.of(context).pop(closed);
       }
-      if (mounted) Navigator.of(context).pop(closed);
     }
   }
 
