@@ -51,6 +51,8 @@ class InventoryFunctionalPermission(BasePermission):
             branch_ids = {transfer.origin_branch_id, transfer.destination_branch_id}
         elif hasattr(obj, 'stock_id'):
             branch_ids = {obj.stock.branch_id}
+        elif getattr(obj, 'pos_device_id', None):
+            branch_ids = {obj.pos_device.branch_id}
         else:
             branch_ids = {obj.branch_id}
         branch = getattr(request, 'branch_context', None)

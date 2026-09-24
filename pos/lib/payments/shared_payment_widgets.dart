@@ -98,7 +98,7 @@ class PaymentHistoryItem extends StatelessWidget {
   final PaymentDisplayEntry payment;
   final bool reversed;
   final bool working;
-  final VoidCallback onReverse;
+  final VoidCallback? onReverse;
   final VoidCallback? onPrint;
   final String? printTooltip;
   final String? reversalReason;
@@ -150,7 +150,7 @@ class PaymentHistoryItem extends StatelessWidget {
             tooltip: printTooltip ?? 'Imprimir comprovante',
             icon: const Icon(Icons.print_outlined, size: 20),
           ),
-        if (!reversed)
+        if (!reversed && onReverse != null)
           IconButton(
             onPressed: working ? null : onReverse,
             tooltip: 'Estornar',

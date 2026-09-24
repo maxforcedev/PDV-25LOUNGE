@@ -30,6 +30,9 @@ def _company_ids_from_object(obj):
     branch = getattr(obj, 'branch', None)
     if branch is not None:
         return {branch.company_id}
+    pos_device = getattr(obj, 'pos_device', None)
+    if pos_device is not None:
+        return {pos_device.branch.company_id}
     stock = getattr(obj, 'stock', None)
     if stock is not None:
         return {stock.branch.company_id}

@@ -307,7 +307,7 @@ class PaymentHistoryEntry {
   final PaymentDisplayEntry payment;
   final bool reversed;
   final bool working;
-  final VoidCallback onReverse;
+  final VoidCallback? onReverse;
   final VoidCallback? onPrint;
   final String? printTooltip;
   final String? reversalReason;
