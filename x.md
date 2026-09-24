@@ -1,305 +1,319 @@
-TRABALHE NO HEAD MAIS RECENTE DA MAIN.
+MISSÃO — Corrigir pendências finais do módulo de impressão + erro de build do POS
 
-Na última revisão, o HEAD era:
+Trabalhe no HEAD mais recente da main.
 
-`89b4d5a9dcffd6d57902e29316dc1bc390728d05`
+Na última revisão, a main estava em:
+
+89b4d5a9dcffd6d57902e29316dc1bc390728d05
+
+Antes de alterar, confira o HEAD atual.
 
 NÃO refaça a arquitetura de impressão.
 
 Preservar:
 
-* PrintDocument
-* PrintRoute
-* PrintRouteOverride
-* PrintDocumentRequest
-* PrintJob
-* ProductionJob
-* PrintManager
-* claim / lease / dispatch / reconcile
-* UNCERTAIN
-* impressão NETWORK local
-* roteamento por finalidade
-* ProductionDestination
-* margem ESC/POS já implementada
-* wrapping
-* feed/corte
-* herança filial -> POS
-
-Esta missão é SOMENTE para corrigir os problemas abaixo encontrados na revisão do HEAD atual.
-
+PrintDocument
+PrintRoute
+PrintRouteOverride
+PrintDocumentRequest
+PrintJob
+ProductionJob
+PrintManager
+claim / lease / dispatch / reconcile
+UNCERTAIN
+impressão NETWORK local
+roteamento por finalidade
+ProductionDestination
+margens ESC/POS
+wrapping
+feed/corte
+herança filial -> POS
 ==================================================
 REGRA CRÍTICA
-=============
 
 NÃO EXECUTE TESTES.
 
 NÃO execute:
 
-* flutter analyze
-* flutter test
-* pytest
-* npm test
-* npm build
-* npm lint
-* builds
-* suites
-* makemigrations --check
-* qualquer validação pesada
+flutter analyze
+flutter test
+build Flutter
+pytest
+npm test
+npm build
+npm lint
+backend suites
+frontend suites
+makemigrations --check
+qualquer validação pesada
 
-Pode criar migration se necessária.
+Pode criar migration se realmente necessária.
 
-EU FAREI A VALIDAÇÃO MANUAL.
+EU FAREI O BUILD E OS TESTES MANUALMENTE.
 
 ==================================================
 
-1. CORRIGIR TABLE PAYMENT + PRINT DOCUMENT
-   ==================================================
+ERRO DE BUILD CONFIRMADO — PRIORIDADE MÁXIMA
+==================================================
 
-Existe uma inconsistência concreta.
+O build real do CORE POS falhou com:
 
-Hoje:
+lib/payments/table_payment_page.dart:94:21:
+Error: The getter 'printDocument' isn't defined for the type 'TablePayment'.
 
-`pos/lib/payments/table_payment_page.dart`
+lib/payments/table_payment_page.dart:94:84:
+Error: The getter 'printDocument' isn't defined for the type 'TablePayment'.
 
-usa:
+O código atual usa:
 
-`payment.printDocument`
+if (payment.printDocument != null)
+  _paymentDocuments[payment.id] = payment.printDocument!;
 
-Porém:
+porém TablePayment, em:
 
-`pos/lib/attendance/attendance_models.dart`
+pos/lib/attendance/attendance_models.dart
 
-na classe `TablePayment`
+não possui printDocument.
 
-NÃO possui o campo:
+CORRIGIR COMPLETAMENTE, NÃO APENAS PARA COMPILAR.
 
-`printDocument`
+==================================================
+2. TABLE PAYMENT — FLUTTER
 
-E:
+Em TablePayment:
 
-`backend/apps/attendance/serializers.py`
+adicionar:
 
-em `TablePaymentSerializer`
+PrintDocumentResult? printDocument
 
-também NÃO retorna `print_document`.
+Fazer:
 
-CORRIGIR OS DOIS LADOS.
+adicionar no construtor;
+adicionar no model;
+interpretar json['print_document'];
+usar PrintDocumentResult.maybeFromJson(...);
+manter null quando não existir comprovante.
 
-O backend deve retornar para cada pagamento de Mesa o PrintDocument atual de:
+Garantir import correto do model de impressão sem criar dependência circular desnecessária.
 
-`PAYMENT_RECEIPT`
+==================================================
+3. TABLE PAYMENT — BACKEND
 
-com:
+Em:
 
-source_type:
-`table_payment`
+backend/apps/attendance/serializers.py
 
-source_id:
-ID do pagamento
+no TablePaymentSerializer,
+
+retornar:
+
+print_document
+
+correspondente a:
+
+document_type = payment_receipt
+source_type = table_payment
+source_id = payment.id
 
 IMPORTANTE:
 
-NÃO criar PrintDocument só para montar o serializer.
+O serializer deve SOMENTE CONSULTAR.
 
-A consulta deve apenas procurar documento existente.
+NÃO chamar:
 
-Exemplo conceitual:
+create_print_document()
 
-payment:
-{
-id: 10,
-amount: "50.00",
-...
-print_document: {
-...
-}
-}
+NÃO criar:
 
-ou:
+PrintDocument
+PrintJob
+version
+auditoria de emissão
 
-`print_document: null`
+Se não existir documento:
 
-O Flutter deve:
+"print_document": null
 
-* adicionar `PrintDocumentResult? printDocument` em `TablePayment`;
-* interpretar `print_document`;
-* restaurar `_paymentDocuments` corretamente em `_refresh()`.
+Se existir, retornar estado suficiente para o POS saber:
 
-Isso deve eliminar também qualquer provável erro de compilação causado pelo acesso atual a `payment.printDocument`.
+id
+document_type
+initial_printed
+reprint_eligible
+queued
+retry_eligible
+jobs/status necessários
+==================================================
+4. PERSISTÊNCIA DO COMPROVANTE DE MESA
+
+Após:
+
+Pagamento R$50
+→ IMPRIMIR COMPROVANTE
+
+se o usuário:
+
+sair da tela;
+voltar;
+atualizar;
+fechar e reabrir o fluxo;
+
+o backend deve devolver o print_document existente.
+
+A UI deve continuar mostrando:
+
+REIMPRIMIR COMPROVANTE
+
+quando aplicável.
+
+Não depender só de _paymentDocuments em memória.
 
 ==================================================
-2. GET DE MESA DEVE SER 100% READ-ONLY
-======================================
+5. QUICK SALE PAYMENT — MESMO PROBLEMA
 
-Existe um problema arquitetural atual em:
+O backend já suporta:
 
-`POSTableAttendanceView.get()`
+document_type = payment_receipt
+source_type = quick_sale_payment
 
-Hoje o GET percorre:
+mas _quick_checkout_payload() ainda não devolve print_document por pagamento.
 
-* TABLE_BILL
-* TABLE_CONFERENCE
-* TABLE_FINAL_RECEIPT
+CORRIGIR.
 
-e chama:
+Cada QuickSalePayment deve retornar o PrintDocument existente correspondente.
 
-`create_print_document(...)`
+SOMENTE consultar.
 
-Isso NÃO pode acontecer.
-
-GET não deve persistir documentos.
-
-Hoje apenas abrir/atualizar uma Mesa pode:
-
-* criar PrintDocument;
-* aumentar version;
-* gerar auditoria;
-* poluir histórico.
-
-REMOVER qualquer criação/persistência de PrintDocument do GET.
+NÃO criar documento em GET/payload.
 
 ==================================================
-3. RESOLVER ESTADO ATUAL DO DOCUMENTO SEM CRIAR
-===============================================
+6. QUICK SALE PAYMENT — FLUTTER
 
-Precisamos continuar devolvendo:
+O model Flutter de pagamento rápido deve possuir:
 
-`print_documents`
+PrintDocumentResult? printDocument
 
-no GET da Mesa.
+A tela deve reconstruir:
 
-Mas de forma READ-ONLY.
+_paymentDocuments
 
-Criar um selector/helper equivalente a:
+a partir do payload retornado pelo backend.
 
-`current_print_document(...)`
+Então:
 
-ou nome apropriado.
+imprime comprovante
+→ atualiza checkout
+→ sai
+→ volta
+→ continua REIMPRIMIR
+==================================================
+7. GET DA MESA DEVE SER 100% READ-ONLY
 
-Ele deve:
+Existe um erro arquitetural atual em:
 
-1. calcular o snapshot atual da origem;
-2. calcular o snapshot_hash atual;
-3. procurar um PrintDocument já existente com:
+POSTableAttendanceView.get()
 
-* branch;
-* document_type;
-* source_type;
-* source_id;
-* snapshot_hash;
+Hoje o GET chama:
 
-4. retornar o documento se existir;
-5. retornar `None` se nunca foi emitido.
+create_print_document(...)
 
-NÃO criar documento.
+para:
+
+TABLE_BILL
+TABLE_CONFERENCE
+TABLE_FINAL_RECEIPT
+
+ISSO DEVE SER REMOVIDO.
+
+Um GET não pode persistir PrintDocument.
+
+Hoje apenas abrir/atualizar a Mesa pode criar versões e poluir histórico.
+
+==================================================
+8. LOCALIZAR DOCUMENTO DO SNAPSHOT ATUAL SEM CRIAR
+
+Criar selector/helper read-only apropriado.
+
+Conceito:
+
+calcular snapshot atual;
+calcular snapshot_hash;
+procurar:
+branch
+document_type
+source_type
+source_id
+snapshot_hash
+retornar o PrintDocument se existir;
+retornar None se não existir.
+
+NÃO criar.
+
+==================================================
+9. VERSIONAMENTO DE CONTA/CONFERÊNCIA
 
 Exemplo:
 
-Mesa R$100
-→ Conferência v1 impressa.
+Mesa = R$100
+Conferência v1 impressa
 
-Depois adiciona produto:
-Mesa R$130.
+Depois:
 
-GET:
++ produto
+Mesa = R$130
 
-calcula hash de R$130.
+GET deve calcular snapshot atual.
 
-Não existe documento com esse hash.
+Como não existe documento para o novo hash:
 
-Retorna:
+→ UI mostra IMPRIMIR
 
-nenhum documento atual para Conferência.
+Não pode reimprimir v1 de R$100.
 
-Logo o POS mostra:
-
-IMPRIMIR
-
-A Conferência v1 de R$100 continua no histórico, mas NÃO é considerada documento atual.
+Histórico antigo permanece intacto.
 
 ==================================================
-4. GET DE MESA E VERSIONAMENTO
-==============================
+10. FAILED NÃO É PENDING
 
-O GET deve devolver somente o documento correspondente ao SNAPSHOT ATUAL para cada finalidade.
+Existe bug em:
 
-Não simplesmente:
-
-"último documento criado".
-
-Tipos:
-
-* TABLE_BILL
-* TABLE_CONFERENCE
-* TABLE_FINAL_RECEIPT
-
-TABLE_FINAL_RECEIPT só é válido se a Mesa estiver fechada e possuir venda finalizada válida.
-
-Não gerar erro de domínio no GET por documento que ainda não é aplicável.
-
-Apenas omitir/null.
-
-==================================================
-5. CORRIGIR ESTADO FAILED NO FLUTTER
-====================================
-
-Existe bug atual em:
-
-`PrintDocumentResult.fromJson`
+PrintDocumentResult.fromJson
 
 Hoje:
 
-`queued: json['queued'] == true || jobs.isNotEmpty`
+queued: json['queued'] == true || jobs.isNotEmpty
 
 Isso está errado.
 
-Um documento que possui um job FAILED não está necessariamente "queued".
-
-Exemplo:
+Um job:
 
 FAILED
 physical_dispatch_started_at = null
 
-deve resultar em:
+deve resultar:
 
-* queued = false
-* retryEligible = true
-* awaitingInitialPrint = false
-* label = TENTAR NOVAMENTE
+queued = false
+retryEligible = true
+awaitingInitialPrint = false
+ação = TENTAR NOVAMENTE
 
-CORRIGIR.
+Remover:
 
-`queued` deve significar SOMENTE que existe job inicial em:
+|| jobs.isNotEmpty
 
-* pending
-* processing
+queued deve significar somente:
 
-Não usar:
-
-`jobs.isNotEmpty`
-
-como sinônimo de queued.
-
+PENDING
+PROCESSING
 ==================================================
-6. ORDEM DOS ESTADOS NO FLUTTER
-===============================
+11. PRIORIDADE DOS ESTADOS
 
-Revisar os getters:
+Ajustar getters para ficar:
 
-* canReprint
-* awaitingInitialPrint
-* needsInitialPrint
-* retryEligible
-* printActionLabel
-
-A prioridade deve ser coerente.
-
-Conceitualmente:
-
-UNCERTAIN ou PRINTED inicial
+PRINTED / UNCERTAIN inicial
 → REIMPRIMIR
 
-FAILED antes de dispatch físico
+FAILED antes do dispatch
 → TENTAR NOVAMENTE
 
 PENDING / PROCESSING
@@ -308,463 +322,254 @@ PENDING / PROCESSING
 nenhum job inicial
 → IMPRIMIR
 
-Não bloquear retry de FAILED porque existe PrintJob no documento.
+Não deixar FAILED cair em “impressão pendente”.
 
 ==================================================
-7. RETRY DO DOCUMENTO
-=====================
+12. RETRY DE DOCUMENTO
 
-Hoje a UI sabe identificar `retryEligible`, mas a ação de vários botões ainda segue apenas:
+Hoje vários botões fazem só:
 
-canReprint
-? reprint
-: issue
+canReprint ? reprint : issue
 
-Isso precisa ser corrigido.
+Isso é insuficiente.
 
-Se o documento atual possui job inicial:
+Se:
 
-FAILED
-+
-physical_dispatch_started_at == null
+retryEligible = true
 
-o usuário deve executar retry do job inicial existente.
+deve executar RETRY do job inicial existente.
 
 NÃO criar nova emissão.
+
 NÃO criar reprint.
 
-Criar/usar endpoint seguro de retry de PrintDocument se necessário.
-
-Pode internamente executar `retry_print_job()` para os jobs iniciais FAILED elegíveis.
-
-A UI deve tratar:
-
-TENTAR NOVAMENTE
-
-como retry técnico.
-
-Preservar:
-
-retry != reprint.
+Criar/usar endpoint de retry por documento se necessário.
 
 ==================================================
-8. RETRY DE DOCUMENTO COM MÚLTIPLAS IMPRESSORAS/CÓPIAS
-======================================================
-
-Se um PrintDocument inicial gerou múltiplos PrintJobs:
+13. RETRY COM MÚLTIPLAS IMPRESSORAS
 
 Exemplo:
 
-TABLE_BILL
-→ Printer A
-→ Printer B
+Conta
+→ Printer A = PRINTED
+→ Printer B = FAILED antes do dispatch
 
-ou:
+Retry deve reenviar SOMENTE Printer B.
 
-copies = 2
-
-retry deve considerar cada job.
-
-Nunca reenviar automaticamente um job que já está:
+Nunca reenviar:
 
 PRINTED
-ou
-UNCERTAIN.
+UNCERTAIN
 
-Somente FAILED comprovadamente antes de envio físico pode voltar a PENDING.
-
-Não duplicar as cópias já concluídas.
+O mesmo vale para múltiplas cópias.
 
 ==================================================
-9. VENDA RÁPIDA — PERSISTIR PRINTDOCUMENT DOS PAGAMENTOS
-========================================================
+14. IDEMPOTÊNCIA — HARDENING
 
-A Venda Rápida agora permite:
+PrintDocumentRequest já existe.
 
-PAYMENT_RECEIPT
-source_type = quick_sale_payment
+Hoje possui:
 
-Isso ficou correto.
+branch
+document
+action
+idempotency_key
 
-Porém `_quick_checkout_payload()` ainda devolve pagamentos sem:
-
-`print_document`
-
-Então o estado desaparece quando o checkout é recarregado.
-
-CORRIGIR.
-
-Para cada `QuickSalePayment` não reverso, devolver o PrintDocument atual correspondente a:
-
-document_type:
-`payment_receipt`
-
-source_type:
-`quick_sale_payment`
-
-source_id:
-payment.id
-
-SOMENTE consultar documento existente.
-
-NÃO criar documento durante GET/payload.
+Adicionar fingerprint persistente da intenção.
 
 ==================================================
-10. FLUTTER — QUICK SALE PAYMENT STATE
-======================================
+15. FINGERPRINT DE ISSUE
 
-Ao receber `_quick_checkout_payload()`, o model Flutter de pagamento rápido deve conter:
+Deve considerar pelo menos:
 
-`PrintDocumentResult? printDocument`
+action
+branch
+document_type
+source_type
+source_id
+pos_device quando necessário
 
-e a tela deve reconstruir:
+Mesma key + mesma intenção:
 
-`_paymentDocuments`
+→ replay
 
-a partir desses dados.
+Mesma key + dados diferentes:
 
-Então:
+→ conflito de idempotência
 
-imprimi comprovante
-→ atualiza checkout
-→ sai e volta
-→ continua REIMPRIMIR
-
-e não volta para IMPRIMIR.
-
-==================================================
-11. MESA — PAGAMENTO STATE
-==========================
-
-Fazer a mesma persistência para TablePayment.
-
-Após:
-
-IMPRIMIR COMPROVANTE
-
-se o usuário:
-
-* atualizar;
-* sair da página de pagamentos;
-* voltar;
-* fechar/reabrir fluxo;
-
-o sistema deve consultar backend e continuar mostrando o estado correto.
-
-Não depender do Map em memória.
+NÃO retornar silenciosamente documento de outra operação.
 
 ==================================================
-12. NÃO CRIAR DOCUMENTOS EM SERIALIZERS
-=======================================
+16. FINGERPRINT DE REPRINT
 
-Regra importante:
+Para reprint considerar:
 
-Serializers/GET/selectors de leitura podem:
+action
+branch
+document_id
+reason quando fizer sentido
 
-* localizar;
-* calcular hash;
-* serializar;
+Mesma key + mesmo documento:
 
-mas NÃO devem:
+→ replay
 
-* criar PrintDocument;
-* criar PrintJob;
-* alterar version;
-* auditar emissão.
-
-PrintDocument só deve nascer quando existir uma intenção real:
-
-* emissão manual;
-* impressão automática disparada por evento;
-* outro fluxo explícito de emissão.
-
-==================================================
-13. HARDENING DA IDEMPOTÊNCIA DE PrintDocumentRequest
-=====================================================
-
-Foi criada corretamente:
-
-`PrintDocumentRequest`
-
-com:
-
-* branch;
-* document;
-* action;
-* idempotency_key.
-
-Porém ainda falta proteger reutilização indevida da mesma chave.
-
-Exemplo:
-
-request 1:
-
-idempotency_key = ABC
-action = issue
-document_type = table_bill
-source = table 10
-
-Depois por bug do cliente:
-
-idempotency_key = ABC
-action = issue
-document_type = table_conference
-source = table 15
-
-Hoje não devemos simplesmente retornar o documento anterior.
-
-Adicionar fingerprint persistente da INTENÇÃO.
-
-Pode ser campo como:
-
-`request_fingerprint`
-
-ou estrutura equivalente.
-
-==================================================
-14. FINGERPRINT DE ISSUE
-========================
-
-Para ISSUE, fingerprint deve representar pelo menos:
-
-* action;
-* branch;
-* document_type;
-* source_type;
-* source_id;
-* pos_device quando semanticamente necessário.
-
-Pode incluir snapshot_hash atual se isso fizer sentido sem quebrar replay da mesma intenção.
-
-A decisão deve preservar idempotência correta mesmo com resposta HTTP perdida.
-
-Se a mesma idempotency_key chegar com os mesmos dados:
-
-→ retornar replay.
-
-Se chegar com dados diferentes:
-
-→ ERRO DE CONFLITO DE IDEMPOTÊNCIA.
-
-Nunca retornar silenciosamente documento de outra operação.
-
-==================================================
-15. FINGERPRINT DE REPRINT
-==========================
-
-Para REPRINT:
-
-fingerprint deve considerar pelo menos:
-
-* action;
-* branch;
-* document_id;
-* reason quando semanticamente relevante.
-
-Mesma chave + mesmo documento:
-
-→ replay.
-
-Mesma chave + outro documento:
+Mesma key + outro documento:
 
 → conflito.
 
 ==================================================
-16. REPRINT IDEMPOTENTE DEVE RETORNAR EXATAMENTE A MESMA EXECUÇÃO
-=================================================================
+17. REPLAY EXATO DE REPRINT
 
-Revisar:
+Hoje reprint_print_document() no replay pode devolver todos os reprints históricos do documento.
 
-`reprint_print_document()`
+Isso não é correto.
 
-Hoje, no replay, ele retorna todos os reprints existentes do documento.
+Se key X criou:
 
-Isso é amplo demais.
-
-Exemplo:
-
-Documento já possui:
-
-reprint #1
-reprint #2
 reprint #3
 
-A chave X criou apenas #3.
+replay de X deve devolver exatamente a execução criada por X.
 
-Replay da chave X deve representar especificamente a execução criada pela chave X.
+Não:
 
-Não simplesmente retornar:
+#1
+#2
+#3
 
-todos os reprints históricos.
-
-Se necessário, relacionar PrintDocumentRequest aos PrintJobs gerados pela ação ou registrar metadata suficiente para identificar exatamente os jobs daquela requisição.
-
-Preservar histórico completo.
+Relacionar PrintDocumentRequest aos jobs criados ou guardar metadata suficiente para localizar exatamente a execução daquela requisição.
 
 ==================================================
-17. ISSUE IDEMPOTENTE E NOVO SNAPSHOT
-=====================================
+18. VENDA NÃO PODE FALHAR POR IMPRESSÃO
 
-Exemplo:
+Preservar:
 
-Mesa snapshot A.
+fechamento da Mesa independente da impressão;
+Venda Rápida independente da impressão;
+tickets independentes da operação financeira;
+transaction.on_commit() onde já foi aplicado.
 
-Issue com key X
-→ documento A.
-
-Resposta se perde.
-
-Cliente repete key X:
-→ retorna documento A.
-
-Correto.
-
-Mas se o cliente reutilizar key X quando snapshot atual já é B por erro do cliente:
-
-→ NÃO criar B;
-→ NÃO retornar A silenciosamente como se fosse a nova intenção;
-→ detectar fingerprint/conflito conforme política definida.
+NÃO reintroduzir impressão dentro da transação financeira principal.
 
 ==================================================
-18. QUICK SALE AUTOMATIC PRINT
-==============================
+19. QUICK SALE RECEIPT
 
-Não mexer desnecessariamente.
+Preservar o comportamento atual.
 
-A finalização da Venda Rápida atualmente conclui a venda e depois tenta:
+Se impressão automática falhar:
 
-* QUICK_SALE_RECEIPT
-* TICKET
-
-com tratamento que evita falha de impressão invalidar a venda.
-
-Preservar isso.
-
-Não reintroduzir impressão dentro da transação financeira principal.
+venda continua válida.
 
 ==================================================
-19. TABLE CLOSE AUTOMATIC PRINT
-===============================
+20. TABLE FINAL RECEIPT
 
-Preservar o `transaction.on_commit()` já implementado para:
-
-TABLE_FINAL_RECEIPT
-
-A Mesa deve continuar fechando mesmo se a impressão falhar.
+Preservar o transaction.on_commit() atual.
 
 ==================================================
-20. TABLE BILL AUTOMATIC PRINT
-==============================
+21. TABLE BILL
 
-Preservar o `transaction.on_commit()` já implementado ao solicitar conta.
-
-Não deixar falha de impressão desfazer a solicitação da conta.
+Preservar o transaction.on_commit() atual ao solicitar conta.
 
 ==================================================
-21. DOCUMENT TYPE
-=================
+22. DOCUMENT TYPE
 
-Preservar o contrato novo lowercase:
+Preservar lowercase:
 
-* table_bill
-* table_conference
-* table_final_receipt
-* quick_sale_receipt
-* payment_receipt
-* ticket
-
-Não voltar a serializar como enum name uppercase.
-
+table_bill
+table_conference
+table_final_receipt
+quick_sale_receipt
+payment_receipt
+ticket
 ==================================================
-22. PRINT ROUTES
-================
+23. PRINT ROUTES
 
-Preservar as validações atuais:
+Preservar:
 
 DISABLED
 → pode não ter impressora
 
 MANUAL / AUTOMATIC
-→ exige ao menos uma impressora
+→ exige impressora
 
-Neste bloco:
-→ somente PrinterDevice NETWORK ativo
+neste bloco:
+→ somente NETWORK ativo
+==================================================
+24. TESTE DE IMPRESSORA
 
-Não relaxar isso agora.
+Preservar a correção atual:
+
+teste de impressora NETWORK não exige ProductionDestination.
 
 ==================================================
-23. TESTE DE IMPRESSORA
-=======================
+25. MARGENS ESC/POS
 
-Preservar a correção atual.
-
-Teste de PrinterDevice NETWORK NÃO deve exigir ProductionDestination.
-
-Não voltar atrás.
-
-==================================================
-24. MARGENS ESC/POS
-===================
-
-Preservar a implementação atual:
-
-58mm:
-
-* printable width 28
-* left margin 2
-
-80mm:
-
-* printable width 42
-* left margin 3
+NÃO mexer desnecessariamente.
 
 Preservar:
 
-* wrapping;
-* centralização;
-* margin em `_line`;
-* 4 feeds antes do corte.
+58mm:
+printable width = 28
+left margin = 2
 
-NÃO mexer nisso nesta missão, salvo erro inevitável relacionado à compilação.
+80mm:
+printable width = 42
+left margin = 3
+
+Preservar:
+
+wrapping;
+centralização;
+margem;
+4 feeds antes do corte.
+==================================================
+26. AVISO DE KOTLIN DO BUILD
+
+O build também exibiu:
+
+If you don't see a plugins block, your project was likely created with an older template version...
+
+NÃO alterar Kotlin/Gradle só por causa desse aviso.
+
+O erro fatal real do build é:
+
+The getter 'printDocument' isn't defined for the type 'TablePayment'
+
+Só mexer em Kotlin/Gradle se houver erro explícito posterior relacionado a isso.
 
 ==================================================
-25. NÃO COMEÇAR NOVO BLOCO
-==========================
+27. NÃO COMEÇAR NOVO BLOCO
 
 NÃO implementar:
 
-* Stone printer;
-* USB;
-* Bluetooth;
-* Print Agent;
-* fiscal;
-* delivery;
-* KDS;
-* Comanda.
-
-Somente corrigir o estado atual.
-
+Stone printer
+USB
+Bluetooth
+Print Agent
+fiscal
+delivery
+KDS
+Comanda
 ==================================================
-26. CHECKPOINT
-==============
+CHECKPOINT FINAL
 
 Ao terminar informe:
 
-1. como corrigiu `TablePayment.printDocument`;
-2. como backend passou a retornar print_document no pagamento de Mesa;
-3. como GET da Mesa ficou 100% read-only;
-4. como o documento correspondente ao snapshot atual é localizado sem criar registro;
-5. como `FAILED` é tratado no Flutter;
-6. como funciona TENTAR NOVAMENTE;
-7. como retry de PrintDocument funciona com múltiplos jobs;
-8. como QuickSalePayment passou a persistir PrintDocument;
-9. como TablePayment persiste estado após refresh;
-10. como PrintDocumentRequest passou a detectar conflito de idempotência;
-11. como replay de reprint identifica exatamente sua própria execução;
-12. migrations criadas;
-13. arquivos backend alterados;
-14. arquivos Flutter alterados;
-15. qualquer ponto que ainda dependa exclusivamente de teste físico.
+como corrigiu o erro de build TablePayment.printDocument;
+como ficou TablePayment no Flutter;
+como ficou TablePaymentSerializer;
+como QuickSalePayment passou a retornar print_document;
+como o estado persiste após refresh;
+como GET da Mesa ficou read-only;
+como localiza documento do snapshot atual;
+como FAILED passou a virar TENTAR NOVAMENTE;
+como funciona retry de documento;
+como funciona retry com múltiplos jobs;
+como ficou fingerprint de idempotência;
+como replay de reprint retorna exatamente sua própria execução;
+migrations criadas;
+arquivos backend alterados;
+arquivos Flutter alterados;
+qualquer ponto que ainda dependa de teste físico.
 
 NÃO EXECUTE TESTES.
 
