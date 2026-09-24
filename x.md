@@ -1,379 +1,326 @@
 Continue no HEAD atual.
 
-Problema encontrado no POS:
+Na última revisão, o HEAD era:
 
-Praticamente todas as ações de impressão estão retornando:
+`f2b11d2e718dad4332174dc30b1f5dca9067bb21`
 
-`A rota deste documento está desabilitada.`
+Antes de alterar, confira o HEAD atual.
 
-Revise e corrija o fluxo completo de resolução de rotas.
+A parte principal de `PrintRoute` / `PrintRouteOverride` foi corrigida, mas ainda ficou uma inconsistência de UX/contexto de filial no Backoffice que pode fazer o usuário configurar a filial errada.
 
-Hoje a arquitetura correta deve ser:
+---
+
+# 1. PROBLEMA ATUAL
+
+Na tela:
 
 ```text
-PrintRoute da filial
-        ↓
-POS sem override
-        ↓
-herda exatamente a regra da filial
+/pos-dispositivos
 
-POS com override explícito e inherit_branch=false
-        ↓
-usa o override do POS
-1. NÃO ALTERAR A ARQUITETURA
+existe um seletor local de filial:
 
-Não quero hardcode de impressora.
-
-Não quero IP salvo diretamente na Mesa/Venda.
-
-Não quero ativar todas as impressões automaticamente.
-
-Continuar usando:
-
-PrintRoute
-PrintRouteOverride
-effective_print_route()
-PrinterDevice
-PrintDocument
-PrintJob
-2. INVESTIGAR POR QUE O POS ESTÁ RECEBENDO DISABLED
-
-Revise:
-
-ensure_print_routes()
-effective_print_route()
-issue_print_document()
-enqueue_print_document()
-
-Hoje ensure_print_routes() cria rotas novas com:
-
-mode = DISABLED
-
-Isso pode continuar sendo o default de segurança.
-
-O problema a corrigir é:
-
-se o usuário configurou a rota da filial como MANUAL ou AUTOMATIC, o POS não pode continuar recebendo DISABLED indevidamente.
-
-Verifique:
-
-filial do POSDevice;
-branch usada na emissão;
-PrintRoute carregada;
-PrintRouteOverride;
-inherit_branch;
-document_type;
-impressoras relacionadas;
-contexto de filial do Backoffice.
-3. OVERRIDE DO POS
-
-A regra deve ser inequívoca.
-
-Se NÃO existir override:
-
-usar PrintRoute da filial
-
-Se existir:
-
-inherit_branch = true
-→ usar PrintRoute da filial
-
-Somente se:
-
-inherit_branch = false
-
-usar:
-
-mode
-printer_devices
-copies
-document_format
-
-do override.
-
-Um override antigo salvo como:
-
-mode = disabled
-inherit_branch = false
-
-pode efetivamente bloquear o POS.
-
-Isso é válido se foi configurado propositalmente, mas a UI precisa deixar isso extremamente claro.
-
-4. BACKOFFICE — ROTAS DA FILIAL
-
-Revise:
-
-Produção
-→ Rotas de impressão
-
-A tela deve mostrar a configuração REAL da filial ativa.
-
-Ao salvar:
-
-Conferência → Manual
-Comprovante de pagamento → Manual
-Recibo final → Automático
-
-o backend deve persistir exatamente esses valores para a filial correta.
-
-Depois de atualizar a página, os mesmos valores devem continuar aparecendo.
-
-Não pode salvar em outra filial por inconsistência de currentBranch.
-
-5. POSSÍVEL INCONSISTÊNCIA DE FILIAL
-
-Revise especialmente o uso de:
-
-currentBranch
 branchId
 settingsBranchId
 
-na tela de Dispositivos POS e nas Rotas de impressão.
-
-Já identificamos anteriormente que pos-dispositivos possui seletor/local state de filial enquanto DocumentPrintRoutes usa o currentBranch global.
-
-Não pode acontecer:
-
-Tela mostra Filial B
-mas DocumentPrintRoutes consulta/salva Filial A
-
-Corrija se essa inconsistência ainda existir.
-
-Para configuração de impressão por filial, deve haver UMA fonte de verdade clara para o branch usado pela API.
-
-6. OVERRIDES NO BACKOFFICE
-
-Em:
-
-Dispositivos POS
-→ Overrides de impressão por POS
-
-deve ficar muito claro:
-
-Herdando da filial
-
-ou:
-
-Override ativo
-
-Se estiver herdando, mostrar também a configuração efetiva:
+Agora os overrides de impressão usam corretamente esse settingsBranchId.
 
 Exemplo:
 
-Herdando da filial
-Modo efetivo: Manual
-Impressora efetiva: Cozinha
-Cópias: 1
+Topo global:
+Filial A
 
-Não mostrar apenas "Herdando da filial" sem deixar claro o que está sendo herdado.
+Tela Dispositivos POS:
+seleciona Filial B
 
-7. USAR REGRA DA FILIAL
+Overrides:
+trabalham na Filial B ✅
 
-Ao clicar:
+Porém o botão:
 
-Usar regra da filial
+Configurar regras da filial
 
-o resultado final deve ser:
+continua navegando somente para:
 
-nenhum override efetivo para aquele document_type/POS
+/producao/rotas-impressao
 
-e:
+Essa página usa o currentBranch global.
 
-effective_print_route(...)
+Então pode acontecer:
 
-deve retornar a PrintRoute da filial.
+currentBranch global = Filial A
 
-Se a implementação atual deleta o override, preservar essa abordagem.
+/pos-dispositivos:
+filial selecionada localmente = Filial B
 
-Garantir que o DELETE não deixe estado stale no frontend.
+→ clicar "Configurar regras da filial"
 
-Depois de remover:
+→ /producao/rotas-impressao abre Filial A
 
-recarregar configuração
-→ badge Herdando da filial
-→ mostrar modo efetivo correto
-8. TIPOS QUE PRECISAM SER REVISADOS
+O operador pode achar que está configurando a Filial B, mas salva a rota na Filial A.
 
-No mínimo:
+CORRIGIR.
 
-TABLE_CONFERENCE
-TABLE_FINAL_RECEIPT
-QUICK_SALE_RECEIPT
-PAYMENT_RECEIPT
-TICKET
-TABLE_BILL enquanto existir
+2. OBJETIVO
 
-Não corrigir apenas Conferência.
+Não pode existir ambiguidade sobre qual filial está sendo configurada.
 
-9. NÃO CONFUNDIR PRODUÇÃO COM ROTAS DE DOCUMENTOS
+Ao sair de:
 
-Produção continua:
+Dispositivos POS
+→ Filial B
+→ Configurar regras da filial
 
-Produto
-→ ProductionDestination
-→ PrinterDevice
-→ ProductionJob
-→ PrintJob
+a tela:
 
-Documentos continuam:
+Produção → Rotas de impressão
 
-PrintDocumentType
-→ PrintRoute / PrintRouteOverride
-→ PrinterDevice
-→ PrintJob
+deve abrir necessariamente na:
 
-Não usar PrintRoute para decidir destino de produção.
+Filial B
+3. PREFERÊNCIA DE ARQUITETURA
 
-10. UX PARA ROTAS DESABILITADAS
+A preferência é usar o contexto global de filial como fonte principal de verdade.
 
-Se uma rota estiver realmente desabilitada, manter o bloqueio.
+Ou seja:
 
-Mas a mensagem precisa ajudar o operador.
+currentBranch
 
-Em vez de apenas:
+deve representar a filial operacional atual do Backoffice.
 
-A rota deste documento está desabilitada.
+Evitar manter dois contextos independentes de filial para funcionalidades branch-scoped.
 
-usar mensagem operacional mais útil, por exemplo:
+Se for viável sem expandir demais a missão:
 
-A impressão de "Comprovante de pagamento" está desabilitada para este POS/filial. Configure em Produção > Rotas de impressão.
+seletor local da tela
+→ ao mudar filial
+→ atualizar currentBranch global
 
-Se houver override responsável pelo bloqueio:
+e então todas as telas branch-scoped usam o mesmo contexto.
 
-A impressão de "Comprovante de pagamento" está desabilitada por uma configuração específica deste POS.
+4. CASO NÃO QUEIRA REMOVER O SELETOR LOCAL AGORA
 
-Se possível identificar isso sem complicar a arquitetura.
+Se preservar:
 
-11. NÃO ATIVAR TUDO AUTOMATICAMENTE
+branchId / settingsBranchId
 
-IMPORTANTE:
+dentro de /pos-dispositivos, então o botão:
 
-Não mudar ensure_print_routes() simplesmente para:
+Configurar regras da filial
 
-AUTOMATIC
+deve sincronizar o contexto global antes de navegar.
 
-ou:
+Exemplo conceitual:
 
-MANUAL
+settingsBranchId = B
+→ setCurrentBranchId(B)
+→ navegar para /producao/rotas-impressao
 
-sem impressora configurada.
+Não fazer apenas:
 
-Isso poderia gerar impressões inesperadas.
+<Link href="/producao/rotas-impressao">
 
-Novas filiais podem continuar começando com rotas desabilitadas.
+sem sincronizar a filial.
 
-O que precisamos corrigir é:
+5. NÃO USAR QUERY PARAM COMO ÚNICA FONTE DE VERDADE
 
-configuração salva
-→ resolução efetiva correta
-→ POS respeita a configuração
-12. MELHORAR ONBOARDING DE IMPRESSÃO
+Evitar solução frágil como:
 
-Quando existir impressora NETWORK cadastrada mas rotas ainda estiverem desabilitadas, o Backoffice deve deixar claro:
+/producao/rotas-impressao?branch=2
 
-Impressora cadastrada.
+enquanto o header global continuar dizendo outra filial.
 
-As rotas de documentos ainda precisam ser configuradas.
+Se usar query param temporariamente, a página deve sincronizar o currentBranch global imediatamente.
 
-Mostrar CTA:
+A UI inteira precisa concordar sobre a filial.
 
-CONFIGURAR ROTAS DE IMPRESSÃO
+6. HEADER GLOBAL
 
-Não deixar o usuário descobrir apenas quando o POS retornar erro.
+Depois da navegação, o seletor do topo deve mostrar a mesma filial:
 
-13. CONFIGURAÇÃO ESPERADA PARA TESTE MANUAL
+Filial B
 
-Depois da correção, vou configurar:
+Não pode ficar:
 
-Conferência
-Modo: Manual
-Impressora: NETWORK cadastrada
-Cópias: 1
+Topo: Filial A
+Tela: Filial B
+7. DOCUMENT PRINT ROUTES
 
-Comprovante de pagamento
-Modo: Manual
-Impressora: NETWORK cadastrada
-Cópias: 1
+Preservar a correção atual de:
 
-Recibo final da mesa
-Modo: Manual ou Automático
-Impressora: NETWORK cadastrada
-Cópias: 1
+DocumentPrintRoutes({
+    posDeviceId,
+    branchId
+})
 
-Recibo venda rápida
-Modo: Manual ou Automático
-Impressora: NETWORK cadastrada
-Cópias: 1
+e o uso de:
 
-Sem override no POS.
+effectiveBranchId
 
-Resultado esperado:
+com:
 
-POS
+X-Branch-ID
+
+Não regredir isso.
+
+8. MELHORAR LABEL DA FILIAL
+
+Hoje, quando DocumentPrintRoutes recebe branchId, a UI pode mostrar algo como:
+
+Filial: 2
+
+Isso não é bom.
+
+Mostrar o nome da filial.
+
+Exemplo:
+
+Filial: Matriz
+
+Pode resolver usando:
+
+currentBranch
+
+quando sincronizado corretamente,
+
+ou buscando o nome correspondente em:
+
+user.branches
+
+Não exibir ID técnico para o usuário.
+
+9. OVERRIDES
+
+Preservar a lógica atual:
+
+sem override
 → herda filial
-→ effective_print_route retorna MANUAL/AUTOMATIC
-→ PrintJob criado
-→ PrintManager imprime
-14. CENÁRIO COM OVERRIDE
 
-Depois vou configurar apenas:
+inherit_branch = true
+→ herda filial
 
-PAYMENT_RECEIPT
-
-com override nesse POS.
-
-Resultado:
-
-PAYMENT_RECEIPT
+inherit_branch = false
 → usa override
 
-TABLE_CONFERENCE
-→ continua herdando filial
+Não alterar effective_print_route() novamente sem necessidade.
 
-TABLE_FINAL_RECEIPT
-→ continua herdando filial
-
-Um tipo não pode interferir no outro.
-
-15. NÃO REGREDIR O QUE JÁ FOI CORRIGIDO
+10. "USAR REGRA DA FILIAL"
 
 Preservar:
 
+DELETE override
+→ reload
+→ Herdando da filial
+→ configuração efetiva atualizada
+
+Não voltar a atualizar apenas estado local sem reload.
+
+11. CONFIGURAÇÃO EFETIVA
+
+Continuar mostrando no override:
+
+Herdando da filial
+
+Modo efetivo: Manual/Automático/Desabilitado
+Impressoras efetivas: ...
+Cópias: ...
+
+Se possível, traduzir os modos para o usuário:
+
+manual → Manual
+automatic → Automático
+disabled → Desabilitado
+
+Evitar mostrar valor técnico em inglês.
+
+12. CENÁRIO ESPERADO
+
+Exemplo:
+
+Empresa: 25 Lounge
+
+Topo global:
+Matriz
+
+/pos-dispositivos:
+seleciona Filial Centro
+
+→ Overrides passam a usar Filial Centro
+
+→ clicar "Configurar regras da filial"
+
+→ currentBranch global muda para Filial Centro
+
+→ abre /producao/rotas-impressao
+
+→ topo mostra Filial Centro
+
+→ GET print-routes usa X-Branch-ID da Filial Centro
+
+→ salvar Conferência = Manual
+
+→ volta depois e continua Manual na Filial Centro
+13. CENÁRIO DE TROCA
+
+Depois:
+
+Topo global:
+Filial Centro
+
+→ trocar para Matriz
+
+→ /producao/rotas-impressao
+→ recarrega rotas da Matriz
+
+Não carregar dados da filial anterior.
+
+14. NÃO ALTERAR BACKEND SEM NECESSIDADE
+
+O backend atual de resolução está correto:
+
+override = PrintRouteOverride.objects.filter(
+    pos_device=pos_device,
+    document_type=document_type,
+).first()
+
+return route if override is None or override.inherit_branch else override
+
+Preservar isso.
+
+A missão agora é principalmente corrigir consistência de contexto de filial no frontend.
+
+15. NÃO REGREDIR CORREÇÕES ANTERIORES
+
+Preservar:
+
+resolução correta de PrintRoute;
+resolução correta de PrintRouteOverride;
+inherit_branch;
+X-Branch-ID explícito;
+mensagem detalhada de rota desabilitada;
 polling de produção;
-UNCERTAIN;
 polling de PrintDocument;
-Conferência atualizada;
 PAYMENT_RECEIPT;
-hash novo + fallback legado;
-1.000x → 1x;
-Solicitar Conta → TABLE_CONFERENCE;
-fechamento de Mesa → grid;
-bloqueio de produtos após solicitar conta;
+Conferência;
+hash + fallback legado;
+UNCERTAIN;
+fechamento de Mesa;
+quantidade formatada;
 retry != reprint;
-claim/lease;
-idempotência;
-impressão NETWORK local.
-CHECKPOINT
+impressão NETWORK.
+ARQUIVOS A REVISAR
 
-Ao terminar informe:
+No mínimo:
 
-qual era a causa de as rotas aparecerem desabilitadas;
-se havia inconsistência entre filial selecionada e currentBranch;
-como ficou effective_print_route();
-como ficou a herança sem override;
-como ficou inherit_branch=true;
-como ficou override explícito inherit_branch=false;
-se "Usar regra da filial" remove corretamente o override;
-como a UI mostra a configuração efetiva herdada;
-como ficou a mensagem quando a rota está realmente desabilitada;
-arquivos backend alterados;
-arquivos frontend alterados;
-arquivos Flutter alterados;
-migrations criadas — não deveria precisar;
-o que depende de teste manual.
+frontend/src/app/(private)/pos-dispositivos/page.tsx
+frontend/src/components/document-print-routes.tsx
+frontend/src/providers/auth-provider.tsx
+frontend/src/lib/http.ts
 
-REGRA CRÍTICA:
+Talvez não seja necessário alterar todos.
+
+Alterar apenas o necessário.
+
+REGRA CRÍTICA
 
 NÃO EXECUTE TESTES.
 
@@ -391,5 +338,25 @@ suites
 makemigrations --check
 
 Eu farei os testes manualmente.
+
+CHECKPOINT
+
+Ao terminar informe:
+
+como eliminou a divergência entre settingsBranchId e currentBranch;
+o que acontece ao clicar "Configurar regras da filial";
+se o header global passa a refletir a filial correta;
+se /producao/rotas-impressao usa a mesma filial;
+se o X-Branch-ID continua correto;
+se a UI agora mostra o nome da filial em vez do ID;
+se os modos herdados aparecem traduzidos;
+arquivos frontend alterados;
+arquivos backend alterados — idealmente nenhum;
+migrations criadas — não deveria precisar;
+pontos restantes para teste manual.
+
+NÃO EXECUTE TESTES.
+NÃO EXECUTE ANALYZE.
+NÃO EXECUTE BUILD.
 
 Depois pare.

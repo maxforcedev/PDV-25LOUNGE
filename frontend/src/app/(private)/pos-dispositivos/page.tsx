@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Copy, KeyRound, MonitorSmartphone, Pencil, Power, RotateCw, Settings2, ShieldBan, Trash2 } from "lucide-react";
 import { AdminGuard } from "@/components/admin-guard";
 import { PosDocumentRouteOverrides } from "@/components/document-print-routes";
@@ -53,7 +53,8 @@ function EffectiveSettings({ value }: { value: PosSettings }) {
 }
 
 function PosDevicesAdministration() {
-  const { currentCompany, currentBranch, user, hasPermission } = useAuth();
+  const { currentCompany, currentBranch, user, hasPermission, setCurrentBranchId } = useAuth();
+  const router = useRouter();
   const canManage = hasPermission(permissions.managePosDevices);
   const canManagePrintRoutes = hasPermission(permissions.managePrintRoutes);
   const [devices, setDevices] = useState<Paginated<PosDevice> | null>(null);
@@ -82,7 +83,7 @@ function PosDevicesAdministration() {
     setLoading(true); setError("");
     const query = new URLSearchParams({ company: String(companyId) });
     if (branch) query.set("branch", branch);
-    try { setDevices(await http.get<Paginated<PosDevice>>(path || `pos/admin/devices/?${query}`)); }
+    try { setDevices(await http.get<Paginated<PosDevice>>(path || `pos/admin/devices/?${query}`, { branchId: branch || currentBranch?.id })); }
     catch (caught) { setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar os dispositivos POS."); }
     finally { setLoading(false); }
   }
@@ -97,8 +98,8 @@ function PosDevicesAdministration() {
     if (!settingsBranchId || !currentCompany) { setBranchSettings(null); setLicensingCode(""); return; }
     let active = true;
     Promise.all([
-      http.get<BranchPosSettings>(`branches/${settingsBranchId}/pos-settings/?company=${currentCompany.id}`),
-      http.get<LicensingCodeResponse>(`branches/${settingsBranchId}/licensing-code/?company=${currentCompany.id}`),
+      http.get<BranchPosSettings>(`branches/${settingsBranchId}/pos-settings/?company=${currentCompany.id}`, { branchId: settingsBranchId }),
+      http.get<LicensingCodeResponse>(`branches/${settingsBranchId}/licensing-code/?company=${currentCompany.id}`, { branchId: settingsBranchId }),
     ]).then(([defaults, license]) => {
       if (!active) return;
       setBranchSettings(defaults); setLicensingCode(license.licensing_code);
@@ -140,7 +141,7 @@ function PosDevicesAdministration() {
   async function saveBranchSettings() {
     if (!branchSettings || !settingsBranchId || !currentCompany || !canManage) return;
     setSaving(true); setError("");
-    try { setBranchSettings(await http.patch<BranchPosSettings>(`branches/${settingsBranchId}/pos-settings/?company=${currentCompany.id}`, branchSettings)); setSuccess("Configurações padrão da filial salvas."); }
+    try { setBranchSettings(await http.patch<BranchPosSettings>(`branches/${settingsBranchId}/pos-settings/?company=${currentCompany.id}`, branchSettings, { branchId: settingsBranchId })); setSuccess("Configurações padrão da filial salvas."); }
     catch (caught) { setError(caught instanceof ApiError ? caught.message : "Não foi possível salvar as configurações do POS."); }
     finally { setSaving(false); }
   }
@@ -171,7 +172,7 @@ function PosDevicesAdministration() {
   async function rotateLicense() {
     if (!settingsBranchId || !currentCompany || !canManage) return;
     setSaving(true); setError("");
-    try { const response = await http.post<LicensingCodeResponse>(`branches/${settingsBranchId}/rotate-licensing-code/?company=${currentCompany.id}`); setLicensingCode(response.licensing_code); setSuccess("Código de licenciamento rotacionado."); }
+    try { const response = await http.post<LicensingCodeResponse>(`branches/${settingsBranchId}/rotate-licensing-code/?company=${currentCompany.id}`, undefined, { branchId: settingsBranchId }); setLicensingCode(response.licensing_code); setSuccess("Código de licenciamento rotacionado."); }
     catch (caught) { setError(caught instanceof ApiError ? caught.message : "Não foi possível rotacionar o código de licenciamento."); }
     finally { setSaving(false); setConfirmRotateLicense(false); }
   }
@@ -183,9 +184,9 @@ function PosDevicesAdministration() {
       {error && !selected && <Alert message={error} />}
       {success && <Alert type="success" message={success} />}
       <section className="card space-y-4 p-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><Field label="Filial"><Select value={branchId} onChange={(event) => { setBranchId(event.target.value); void load(undefined, currentCompany?.id, event.target.value); }}><option value="">Todas as filiais</option>{availableBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</Select></Field><Button variant="secondary" onClick={() => void load()}><RotateCw className="size-4" />Atualizar</Button></div>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><Field label="Filial"><Select value={branchId} onChange={(event) => { const nextBranchId = event.target.value; setBranchId(nextBranchId); if (nextBranchId) setCurrentBranchId(Number(nextBranchId)); void load(undefined, currentCompany?.id, nextBranchId); }}><option value="">Todas as filiais</option>{availableBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</Select></Field><Button variant="secondary" onClick={() => void load()}><RotateCw className="size-4" />Atualizar</Button></div>
         {settingsBranch && <div className="space-y-4 border-t border-subtle pt-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-sm font-bold">Padrões POS: {settingsBranch.name}</h2></div>{licensingCode && <div className="flex items-center gap-2"><code className="rounded bg-surface-muted px-2 py-1 text-xs">{licensingCode}</code><Button variant="secondary" onClick={() => void copyLicensingCode()}><Copy className="size-4" />Copiar</Button><Button variant="secondary" disabled={!canManage} onClick={() => setConfirmRotateLicense(true)}><KeyRound className="size-4" />Rotacionar</Button></div>}</div>{branchSettings ? <><PosSettingsFields value={branchSettings} onChange={setBranchSettings} disabled={!canManage || saving} /><div className="flex justify-end"><Button loading={saving} disabled={!canManage} onClick={() => void saveBranchSettings()}><Settings2 className="size-4" />Salvar padrões</Button></div></> : <div className="flex h-20 items-center justify-center text-primary"><Spinner /></div>}</div>}
-        {settingsBranch && canManagePrintRoutes && <section className="space-y-3 border-t border-subtle pt-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-sm font-bold">Overrides de impressao por POS</h2><p className="mt-1 text-xs text-muted">As regras padrao sao configuradas por filial em Produção &gt; Rotas de impressão. Use um override somente quando este POS precisar imprimir de forma diferente da filial.</p></div><Link href="/producao/rotas-impressao"><Button variant="secondary">Configurar regras da filial</Button></Link></div><PosDocumentRouteOverrides branchId={settingsBranchId} /></section>}
+        {settingsBranch && canManagePrintRoutes && <section className="space-y-3 border-t border-subtle pt-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-sm font-bold">Overrides de impressao por POS</h2><p className="mt-1 text-xs text-muted">As regras padrao sao configuradas por filial em Produção &gt; Rotas de impressão. Use um override somente quando este POS precisar imprimir de forma diferente da filial.</p></div><Button variant="secondary" onClick={() => { setCurrentBranchId(Number(settingsBranchId)); router.push("/producao/rotas-impressao"); }}>Configurar regras da filial</Button></div><PosDocumentRouteOverrides branchId={settingsBranchId} /></section>}
       </section>
       <section className="card overflow-hidden"><div className="card-header"><div><h2 className="text-sm font-bold">Dispositivos cadastrados</h2></div><MonitorSmartphone className="size-5 text-muted" /></div>{loading ? <TableLoading columns={7} /> : devices?.results.length ? <><div className="table-wrap"><table className="data-table"><thead><tr><th>Dispositivo</th><th>Filial</th><th>Status</th><th>Conexão</th><th>Pareado em</th><th>Último sinal</th><th className="text-right">Ações</th></tr></thead><tbody>{devices.results.map((device) => <tr key={device.id}><td><strong className="block">{device.name}</strong><small className="text-muted">{device.device_type} · {device.device_model || "Modelo não informado"} · {device.app_version || "Versão não informada"}</small></td><td>{device.branch_name || "-"}</td><td><span className="text-xs font-semibold">{statusLabel[device.status]}</span></td><td><OnlineBadge device={device} /></td><td>{device.paired_at ? formatDate(device.paired_at) : "Não informado"}</td><td>{device.last_seen_at ? formatDate(device.last_seen_at) : "Nunca"}</td><td><div className="flex justify-end"><button className="icon-button" aria-label="Ver dispositivo" onClick={() => void openDevice(device)}><Pencil className="size-4" /></button></div></td></tr>)}</tbody></table></div><Pagination count={devices.count} next={devices.next} previous={devices.previous} onPage={load} /></> : <EmptyState title="Nenhum dispositivo encontrado" description="Altere a filial selecionada ou pareie um dispositivo no aplicativo POS." />}</section>
     </main>

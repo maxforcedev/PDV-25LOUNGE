@@ -19,6 +19,12 @@ const documentTypes: Array<{ value: PrintDocumentType; label: string; format: bo
 type Route = PrintRoute | PrintRouteOverride;
 type RouteChanges = Partial<Pick<PrintRoute, "mode" | "printer_device_ids" | "copies" | "document_format">>;
 
+const routeModeLabel: Record<PrintRouteMode, string> = {
+  disabled: "Desabilitado",
+  manual: "Manual",
+  automatic: "Automático",
+};
+
 function emptyRoute(documentType: PrintDocumentType, branch: number, posDeviceId?: string): Route {
   if (posDeviceId) return {
     id: -Date.now(),
@@ -51,8 +57,9 @@ function routeError(caught: unknown, fallback: string) {
 }
 
 export function DocumentPrintRoutes({ posDeviceId, branchId }: { posDeviceId?: string; branchId?: number | string }) {
-  const { currentBranch, supportSession } = useAuth();
+  const { currentBranch, supportSession, user } = useAuth();
   const effectiveBranchId = branchId || currentBranch?.id;
+  const effectiveBranch = (user?.branches || []).find((branch) => String(branch.id) === String(effectiveBranchId));
   const readOnly = supportSession?.mode === "READ_ONLY";
   const [routes, setRoutes] = useState<Route[]>([]);
   const [branchRoutes, setBranchRoutes] = useState<PrintRoute[]>([]);
@@ -175,7 +182,7 @@ export function DocumentPrintRoutes({ posDeviceId, branchId }: { posDeviceId?: s
       <div>
         <h2 className="flex items-center gap-2 text-sm font-bold"><Printer className="size-4 text-primary" />{title}</h2>
         <p className="mt-1 text-xs text-muted">
-          Filial: {branchId ? String(branchId) : currentBranch?.name || "nenhuma"}. {posDeviceId ? "Cada override e opcional; sem override, o POS herda a filial." : "Configure finalidade, modo, varias impressoras, copias e formato."}
+          Filial: {effectiveBranch?.name || currentBranch?.name || "nenhuma"}. {posDeviceId ? "Cada override e opcional; sem override, o POS herda a filial." : "Configure finalidade, modo, varias impressoras, copias e formato."}
         </p>
       </div>
       <Button variant="secondary" disabled={loading} onClick={() => void load()}><RotateCcw className="size-4" />Atualizar</Button>
@@ -192,7 +199,7 @@ export function DocumentPrintRoutes({ posDeviceId, branchId }: { posDeviceId?: s
           const value = inherited && inheritedRoute ? inheritedRoute : route || emptyRoute(definition.value, Number(effectiveBranchId) || 0, posDeviceId);
         return <article key={definition.value} className="rounded-lg border border-subtle p-3">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><strong className="text-sm">{definition.label}</strong>{inherited && <span className="rounded-full bg-surface-muted px-2 py-1 text-[11px] font-semibold text-muted">Herdando da filial</span>}</div>
-          {inherited && <p className="mb-3 text-xs text-muted">Modo efetivo: <strong>{value.mode}</strong> · Impressoras efetivas: <strong>{value.printer_device_ids.map((id) => printers.find((printer) => printer.id === id)?.name || id).join(", ") || "nenhuma"}</strong> · Cópias: <strong>{value.copies}</strong></p>}
+          {inherited && <p className="mb-3 text-xs text-muted">Modo efetivo: <strong>{routeModeLabel[value.mode]}</strong> · Impressoras efetivas: <strong>{value.printer_device_ids.map((id) => printers.find((printer) => printer.id === id)?.name || id).join(", ") || "nenhuma"}</strong> · Cópias: <strong>{value.copies}</strong></p>}
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Field label="Modo"><Select value={value.mode} disabled={readOnly || saving === definition.value} onChange={(event) => update(definition.value, { mode: event.target.value as PrintRouteMode }, inheritedRoute)}><option value="disabled">Desabilitado</option><option value="manual">Manual</option><option value="automatic">Automatico</option></Select></Field>
             <Field label="Copias"><Input type="number" min="1" max="10" value={value.copies} disabled={readOnly || saving === definition.value} onChange={(event) => update(definition.value, { copies: Math.max(1, Number(event.target.value) || 1) }, inheritedRoute)} /></Field>
