@@ -476,6 +476,7 @@ class QuickSaleCheckout {
     required this.canFinalize,
     required this.canReversePayment,
     this.customer,
+    this.saleId,
   });
 
   factory QuickSaleCheckout.fromJson(Map<String, dynamic> json) =>
@@ -505,6 +506,7 @@ class QuickSaleCheckout {
         canPayByItems: json['capabilities']?['can_pay_by_items'] == true,
         canFinalize: json['capabilities']?['can_finalize'] == true,
         canReversePayment: json['capabilities']?['can_reverse_payment'] == true,
+        saleId: (json['sale_id'] as num?)?.toInt(),
         customer: json['customer'] is Map<String, dynamic>
             ? QuickSaleCustomer.fromJson(
                 json['customer'] as Map<String, dynamic>)
@@ -527,6 +529,7 @@ class QuickSaleCheckout {
   final bool canFinalize;
   final bool canReversePayment;
   final QuickSaleCustomer? customer;
+  final int? saleId;
 
   bool hasReversalFor(String paymentId) =>
       payments.any((payment) => payment.reversalOf == paymentId);

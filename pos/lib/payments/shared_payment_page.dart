@@ -121,7 +121,15 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       serviceFeeAuthorization: serviceFeeAuthorization,
     );
     if (mounted) setState(() => _working = false);
-    if (updated != null && mounted) _replaceCheckout(updated);
+    if (updated != null && mounted) {
+      _replaceCheckout(updated);
+    } else {
+      final recovered = widget.controller.takeRecoveredQuickSaleResult();
+      if (recovered != null && mounted) {
+        await widget.onCompleted(recovered);
+        if (mounted) Navigator.of(context).pop(recovered);
+      }
+    }
   }
 
   Future<QuickSaleAuthorization?> _requestAuthorization(String type) async {

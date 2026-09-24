@@ -1,417 +1,497 @@
-Esse `409` é consequência do `500` anterior.
+# MISSÃO — Fechar recuperação de Venda Rápida finalizada com estado stale no POS
 
-O que aconteceu foi:
+Trabalhe no **HEAD mais recente da main**.
 
-```text
-1. Você finalizou a Venda Rápida
-2. finalize_quick_checkout() concluiu a venda no banco
-3. checkout virou FINALIZED
-4. depois disso a impressão explodiu com UUID
-5. POS recebeu 500 e ficou achando que ainda estava no checkout
-6. você apertou ESTORNAR
-7. backend encontrou checkout FINALIZED
-8. retornou 409
-```
+Na última revisão, o HEAD era:
 
-No código atual existe exatamente esta trava:
+`a03bba27af5fba7d8a11ed2323902860e411efd5`
 
-```python
-if checkout.status != QuickSaleCheckoutStatus.OPEN:
-    raise QuickCheckoutConflict(
-        'checkout_closed',
-        'O checkout já foi finalizado.',
-    )
-```
+Antes de alterar, confira o HEAD atual.
 
-Então **não é erro do estorno em si**. É um problema de recuperação de estado: a venda foi finalizada, mas a interface não soube porque o efeito secundário de impressão derrubou a resposta.
+## CONTEXTO
 
-Para checkout ainda aberto, estornar pagamento está correto. Depois que virou venda finalizada, o fluxo existente passa a ser **cancelamento da venda**, não estorno daquele `QuickSalePayment` do checkout.
+As últimas correções resolveram corretamente:
 
-Manda junto na correção:
+- UUID no fingerprint de impressão;
+- impressão automática não derrubar Sale já finalizada;
+- replay imediato da finalização com a mesma idempotency key;
+- bloqueio de reprint parcial;
+- bloqueio de estorno quando o `_checkout.status` local já não está OPEN.
 
-````md
-# MISSÃO — Corrigir recuperação após finalize + impedir estorno de checkout já finalizado
-
-Trabalhe no HEAD mais recente da main.
-
-Além da correção já solicitada para o UUID do fingerprint de impressão, corrigir o problema abaixo encontrado em uso real.
-
-## CENÁRIO REAL
-
-O POS executou:
-
-POST /api/v1/pos/sales/checkouts/74ea6ba8-3b2b-420a-b7ec-80c662fee086/finalize/
-
-O backend concluiu `finalize_quick_checkout()` e depois ocorreu erro no subsistema de impressão:
-
-TypeError: Object of type UUID is not JSON serializable
-
-O POS recebeu HTTP 500.
-
-Logo depois, ainda na tela de pagamento, foi tentado:
-
-POST /api/v1/pos/sales/checkouts/74ea6ba8-3b2b-420a-b7ec-80c662fee086/payments/2896d0a0-43dd-4ae0-a317-ba1e862785bc/reverse/
-
-Resultado:
-
-HTTP 409
-
-## CAUSA
-
-`finalize_quick_checkout()` já havia persistido:
-
-- Sale;
-- vínculo checkout.sale;
-- checkout.status = FINALIZED;
-- finalization_idempotency_key.
-
-Porém uma falha posterior de impressão fez a API retornar 500.
-
-O Flutter permaneceu com o estado local anterior do checkout e continuou oferecendo ações de pagamento/estorno.
-
-Ao tentar estornar, o backend corretamente encontrou:
-
-checkout.status != OPEN
-
-e retornou conflito:
-
-`checkout_closed`
-`O checkout já foi finalizado.`
-
-Portanto o problema é de CONSISTÊNCIA/RECUPERAÇÃO entre:
-
-operação financeira concluída
-+
-efeito secundário de impressão falhou
-+
-cliente ficou com estado stale.
-
----
-
-# 1. IMPRESSÃO NÃO PODE TRANSFORMAR VENDA CONCLUÍDA EM 500
-
-Preservar a correção já solicitada.
-
-Depois que `finalize_quick_checkout()` concluiu com sucesso:
-
-- falha em QUICK_SALE_RECEIPT;
-- falha em TICKET;
-- falha ao criar PrintDocument;
-- falha de fingerprint;
-- qualquer falha interna do subsistema de impressão;
-
-NÃO pode fazer o endpoint de finalização responder como se a venda tivesse falhado.
-
-A venda é a operação principal.
-
-Impressão é efeito secundário.
-
-Registrar/logar a falha de impressão e devolver a venda concluída.
-
-Não usar `except Exception` silencioso.
-
-Registrar erro técnico de forma apropriada.
-
----
-
-# 2. REPLAY DE FINALIZAÇÃO DEVE RECUPERAR A VENDA
-
-Já existe idempotência na finalização.
-
-Se:
-
-checkout.status == FINALIZED
-e
-checkout.sale existe
-
-uma repetição da mesma finalização deve retornar a Sale existente como replay.
-
-NÃO:
-
-- criar nova venda;
-- baixar estoque novamente;
-- registrar pagamentos novamente;
-- criar outro checkout;
-- cobrar novamente.
-
-Preservar:
-
-`Idempotency-Replayed: true`
-
-quando aplicável.
-
----
-
-# 3. POS DEVE SE RECUPERAR DE RESPOSTA INCERTA DA FINALIZAÇÃO
-
-Existe uma janela importante:
-
-request de finalize enviado
-→ backend pode concluir
-→ resposta pode falhar/perder conexão/efeito secundário gerar problema
-→ cliente não sabe se concluiu.
-
-O POS NÃO pode assumir automaticamente que o checkout continua OPEN.
-
-Quando uma tentativa de finalização falhar de forma incerta, recuperar o checkout pelo backend antes de permitir novas ações financeiras.
-
-Usar o endpoint de recuperação/detalhe já existente sempre que possível.
-
-Se backend disser:
-
-status = FINALIZED
-sale_id != null
-
-o POS deve:
-
-- tratar a venda como concluída;
-- ir para o estado/tela de venda concluída;
-- NÃO continuar mostrando pagamento editável;
-- NÃO oferecer estorno de QuickSalePayment daquele checkout.
-
----
-
-# 4. NÃO OFERECER ESTORNO DE CHECKOUT FINALIZADO
-
-No Flutter, a disponibilidade da ação de estorno deve depender do estado REAL retornado pelo backend.
-
-QuickSalePayment pode ser estornado pelo fluxo de checkout somente enquanto:
-
-checkout.status == OPEN
-
-e demais regras atuais forem satisfeitas.
-
-Se:
-
-checkout.status == FINALIZED
-
-não chamar:
-
-`/sales/checkouts/<checkout>/payments/<payment>/reverse/`
-
-A UI deve atualizar o checkout e remover/desabilitar essa ação.
-
----
-
-# 5. BACKEND CONTINUA BLOQUEANDO ESTORNO DE CHECKOUT FINALIZADO
-
-NÃO remover esta proteção:
-
-```python
-if checkout.status != QuickSaleCheckoutStatus.OPEN:
-    raise QuickCheckoutConflict(
-        'checkout_closed',
-        'O checkout já foi finalizado.',
-    )
-````
-
-Ela está correta.
-
-Não permitir alteração do ledger do checkout depois da materialização da Sale.
-
----
-
-# 6. DIFERENCIAR ESTORNO DE CHECKOUT E CANCELAMENTO DE VENDA
-
-Antes da finalização:
-
-QuickSaleCheckout
-→ QuickSalePayment
-→ pode estornar pagamento
-
-Depois da finalização:
-
-QuickSaleCheckout FINALIZED
-→ Sale materializada
-
-não voltar atrás alterando QuickSalePayment.
-
-O fluxo de reversão operacional passa a ser a entidade Sale.
-
-O projeto já possui:
-
-SaleViewSet.cancel
-→ `cancel_sale(...)`
-
-Preservar essa separação de domínio.
-
-NÃO criar uma gambiarra que reabra checkout finalizado.
-
-NÃO mudar FINALIZED de volta para OPEN.
-
----
-
-# 7. NÃO REABRIR CHECKOUT FINALIZADO
-
-Proibido corrigir fazendo:
-
-FINALIZED → OPEN
-
-ou removendo:
-
-checkout.sale
-
-Isso quebraria:
-
-* idempotência;
-* estoque;
-* caixa;
-* auditoria;
-* tickets;
-* produção;
-* vínculo com Sale.
-
-Checkout finalizado é imutável do ponto de vista financeiro.
-
----
-
-# 8. TRATAR 409 `checkout_closed` NO FLUTTER
-
-Mesmo com a recuperação preventiva, tratar esse conflito defensivamente.
-
-Se uma ação de pagamento/estorno retornar:
-
-`checkout_closed`
-
-o POS deve:
-
-1. consultar novamente o checkout;
-2. verificar `status`;
-3. se FINALIZED e houver `sale_id`, recuperar o estado final;
-4. sair do fluxo de pagamento editável;
-5. informar de forma adequada que a venda já foi concluída.
-
-Não deixar o usuário preso numa tela stale.
-
----
-
-# 9. NÃO CONFUNDIR CANCELAMENTO DE VENDA COM REFUND DE ADQUIRENTE
-
-Neste momento preservar o comportamento do CORE já existente.
-
-Não implementar agora:
-
-* estorno Stone;
-* refund Cielo;
-* refund adquirente;
-* TEF;
-* novo fluxo fiscal.
-
-Aqui estamos corrigindo somente a consistência do domínio CORE.
-
----
-
-# 10. CORRIGIR TAMBÉM O UUID DO FINGERPRINT
-
-Preservar a missão anterior:
-
-`POSDevice.pk` é UUID.
-
-Canonicalizar antes do `json.dumps`.
-
-No mínimo:
-
-```python
-'pos_device_id': str(pos_device.pk) if pos_device else None
-```
-
-E evitar calcular fingerprint quando não existe `idempotency_key`, se ele não for necessário.
-
----
-
-# 11. BLOQUEAR REPRINT PARCIAL
-
-Preservar também a correção pendente:
-
-`reprint_print_document()` só pode executar se:
-
-`print_document_state(document)['reprint_eligible'] == True`
-
-Não permitir reprint quando houver job inicial:
-
-* FAILED;
-* PENDING;
-* PROCESSING.
-
----
-
-# RESULTADO ESPERADO
-
-Fluxo normal:
-
-finalizar
-→ Sale criada
-→ impressão funciona
-→ tela Venda concluída
-
-Falha de impressão:
-
-finalizar
-→ Sale criada
-→ impressão falha
-→ venda continua respondendo como concluída
-→ POS mostra venda concluída
-→ impressão pode ser tratada separadamente
-
-Resposta perdida/erro incerto:
-
-finalizar
-→ backend conclui
-→ POS não sabe
-→ POS recupera checkout
-→ encontra FINALIZED + sale_id
-→ mostra Venda concluída
-→ não oferece estorno de checkout
-
-Estorno antes da finalização:
-
-checkout OPEN
-→ pagamento aplicado
-→ ESTORNAR
-→ permitido
-
-Após finalização:
-
-checkout FINALIZED
-→ estorno de QuickSalePayment não permitido
-→ não reabrir checkout
+Porém ainda existe uma falha de recuperação quando o backend já finalizou a venda e o Flutter continua com um checkout local stale.
 
 ---
 
 # REGRA CRÍTICA
 
-NÃO EXECUTE TESTES.
+**NÃO EXECUTE TESTES.**
 
-NÃO EXECUTE:
+NÃO execute:
 
-* flutter analyze
-* flutter test
-* build
-* pytest
-* npm test
-* npm build
-* npm lint
-* suites
-* makemigrations --check
+- `flutter analyze`
+- `flutter test`
+- build Flutter
+- pytest
+- npm test
+- npm build
+- npm lint
+- suites
+- `makemigrations --check`
 
-Eu farei a validação manual.
+Eu farei o build e os testes manualmente.
+
+---
+
+# 1. PROBLEMA REAL AINDA EXISTENTE
+
+Existe este cenário:
+
+```text
+POS envia finalize
+→ backend cria Sale
+→ checkout vira FINALIZED
+→ resposta falha ou conexão cai
+
+Flutter tenta replay
+→ replay também falha ou conexão continua ruim
+
+Flutter continua na tela de pagamento
+com `_checkout.status == open` local/stale
+
+Depois o operador tenta estornar pagamento.
+
+O Flutter chama:
+
+POST /sales/checkouts/<checkout>/payments/<payment>/reverse/
+
+O backend corretamente responde:
+
+409
+code = checkout_closed
+
+porque o checkout real já está FINALIZED.
+
+Hoje o Flutter mostra o erro, mas pode continuar com o checkout stale na tela.
+
+Isso precisa ser corrigido.
+
+2. NÃO REMOVER A PROTEÇÃO DO BACKEND
+
+Preservar:
+
+if checkout.status != QuickSaleCheckoutStatus.OPEN:
+    raise QuickCheckoutConflict(
+        'checkout_closed',
+        'O checkout já foi finalizado.',
+    )
+
+Essa regra está correta.
+
+NÃO reabrir checkout.
+
+NÃO permitir estorno de QuickSalePayment depois que a Sale foi materializada.
+
+3. QUICKSALECHECKOUT PRECISA CONHECER sale_id
+
+O backend já devolve em _quick_checkout_payload():
+
+{
+  "id": "...",
+  "status": "finalized",
+  "sale_id": 123
+}
+
+Porém o model Flutter QuickSaleCheckout atualmente não possui saleId.
+
+CORRIGIR.
+
+Em:
+
+pos/lib/sales/sale_models.dart
+
+adicionar algo equivalente a:
+
+final int? saleId;
+
+ou tipo compatível com o ID real da Sale.
+
+Fazer parse de:
+
+json['sale_id']
+
+Preservar null quando não houver Sale.
+
+4. CHECKOUT FINALIZED NÃO É "CHECKOUT SUMIU"
+
+Hoje recoverQuickSaleCheckout() faz algo equivalente a:
+
+if (_isTerminalQuickSaleCheckout(checkout)) {
+  await _writeQuickCheckoutState({});
+  return null;
+}
+
+Isso é insuficiente para:
+
+FINALIZED + sale_id
+
+FINALIZED significa que existe uma operação concluída que precisa ser recuperada.
+
+Não tratar simplesmente como null/descartado.
+
+Diferenciar:
+
+CANCELLED
+→ pode limpar estado e retornar null
+
+FINALIZED + sale_id
+→ precisa recuperar conclusão da venda
+5. CRIAR RECUPERAÇÃO DA VENDA FINALIZADA
+
+Quando o checkout recuperado estiver:
+
+status = finalized
+sale_id != null
+
+o AppController deve conseguir recuperar a Sale/result correspondente.
+
+Preferir reutilizar endpoint POS/backend existente.
+
+Não criar lógica duplicada se já houver endpoint que retorne a Sale/result final.
+
+Objetivo:
+
+checkout FINALIZED
+→ localizar Sale
+→ montar/obter QuickSaleResult
+→ limpar pending/local state
+→ retornar estado final para UI
+
+Não recalcular venda.
+
+Não criar nova Sale.
+
+Não refazer estoque.
+
+Não refazer pagamentos.
+
+6. RECUPERAÇÃO DEVE FUNCIONAR APÓS RESTART
+
+Cenário:
+
+POS finaliza venda
+→ backend conclui
+→ app fecha/crasha/perde conexão
+→ operador abre app novamente
+
+Se o estado local ainda contém:
+
+checkout_id
++
+pending.finalize
+
+e o backend responde:
+
+status = finalized
+sale_id != null
+
+o POS deve reconhecer:
+
+A VENDA JÁ FOI CONCLUÍDA
+
+e não oferecer edição, pagamento ou estorno do checkout.
+
+7. TRATAR checkout_closed EM _runQuickCheckoutOperation()
+
+Hoje _runQuickCheckoutOperation() trata erro HTTP < 500 genericamente:
+
+remove pending
+→ mostra erro
+→ retorna null
+
+Adicionar tratamento específico para:
+
+error.code == 'checkout_closed'
+
+Antes de simplesmente abandonar a operação:
+
+consultar novamente o checkout;
+obter estado real do backend;
+se estiver FINALIZED e tiver sale_id, iniciar recuperação da venda final;
+limpar operação pendente correspondente;
+impedir continuidade no checkout editável.
+8. ESTORNO COM ESTADO STALE
+
+Cenário:
+
+Flutter local:
+_checkout.status = open
+
+Backend:
+checkout.status = finalized
+
+Usuário toca ESTORNAR.
+
+Backend responde:
+
+409 checkout_closed
+
+O Flutter deve:
+
+buscar checkout novamente
+↓
+receber finalized + sale_id
+↓
+atualizar estado
+↓
+sair do fluxo editável
+↓
+tratar venda como concluída
+
+Não apenas mostrar snackbar e permanecer na mesma tela.
+
+9. OUTRAS OPERAÇÕES DE CHECKOUT TAMBÉM DEVEM SER DEFENSIVAS
+
+O mesmo problema pode ocorrer em:
+
+estorno;
+pagamento;
+cancelamento;
+edição financeira;
+qualquer ação que dependa de checkout OPEN.
+
+Se backend responder checkout_closed, usar a mesma recuperação centralizada.
+
+Não implementar lógica diferente em cada tela.
+
+Criar helper central no AppController, se apropriado.
+
+10. NÃO CONFUNDIR FINALIZED COM CANCELLED
+
+Regra:
+
+CANCELLED
+→ checkout encerrado sem Sale válida
+→ limpar estado local
+
+FINALIZED + sale_id
+→ venda concluída
+→ recuperar resultado final
+
+Não tratar os dois estados igualmente.
+
+11. TELA DE PAGAMENTO
+
+Se a tela SharedPaymentPage descobrir que o checkout foi finalizado no backend:
+
+NÃO manter:
+
+grid de pagamento ativo;
+estorno de QuickSalePayment;
+edição financeira;
+botão finalizar;
+cancelamento do checkout.
+
+Ela deve sair do fluxo financeiro e encaminhar o resultado final já materializado.
+
+12. REUTILIZAR O onCompleted
+
+A SharedPaymentPage já possui fluxo:
+
+await widget.onCompleted(result);
+Navigator.pop(result);
+
+A recuperação de venda finalizada deve, se possível, convergir para esse mesmo fluxo.
+
+Objetivo:
+
+finalização normal
+ou
+recuperação após erro
+
+→ ambos terminam com QuickSaleResult
+→ onCompleted(result)
+→ Venda concluída
+
+Evitar duas arquiteturas de finalização.
+
+13. FINALIZE REPLAY CONTINUA COM A MESMA CHAVE
+
+Preservar a implementação atual:
+
+erro >= 500
+ou erro de rede
+→ tentar finalize novamente com MESMA key
+
+Não gerar nova idempotency key durante recuperação.
+
+14. PENDING FINALIZE
+
+Se ainda existir:
+
+pending['finalize']
+
+e o backend confirmar checkout FINALIZED:
+
+remover esse pending.
+
+Não deixar operação financeira incerta armazenada depois de o servidor confirmar a Sale.
+
+15. recoverQuickSaleCheckout() PRECISA TER SEMÂNTICA CLARA
+
+Pode refatorar para evitar retorno ambíguo.
+
+Hoje:
+
+null
+
+pode significar:
+
+não existe checkout;
+foi cancelado;
+foi finalizado;
+erro de rede;
+erro de API.
+
+Isso dificulta a recuperação.
+
+Se necessário, criar tipo/resultado interno que diferencie:
+
+OPEN checkout
+FINALIZED sale
+CANCELLED
+NOT_FOUND
+ERROR
+
+Não é obrigatório se houver solução simples, mas não esconder FINALIZED + sale_id em null.
+
+16. BACKEND: GARANTIR QUE FINALIZED SEMPRE TENHA SALE
+
+Já existe validação no model:
+
+FINALIZED exige sale
+
+Preservar.
+
+Não criar estado intermediário persistente:
+
+FINALIZED sem sale
+17. NÃO REABRIR CHECKOUT
+
+PROIBIDO:
+
+FINALIZED → OPEN
+
+PROIBIDO remover checkout.sale.
+
+PROIBIDO manipular QuickSalePayment para simular rollback de venda finalizada.
+
+Depois da finalização, a entidade correta é Sale.
+
+18. CANCELAMENTO PÓS-VENDA
+
+Não implementar refund/adquirente agora.
+
+Preservar domínio existente:
+
+QuickSaleCheckout OPEN
+→ estorno de QuickSalePayment
+
+Sale FINALIZED
+→ cancel_sale / fluxo de cancelamento de venda
+
+Não misturar os dois.
+
+19. NÃO REGREDIR CORREÇÕES ANTERIORES
+
+Preservar:
+
+UUID canonicalizado no fingerprint;
+fingerprint somente quando necessário;
+impressão secundária não derruba Sale;
+tickets secundários não derrubam Sale;
+PrintDocumentRequest;
+generated_jobs;
+print_document_state;
+retry != reprint;
+reprint parcial bloqueado;
+múltiplas impressoras;
+múltiplas cópias;
+GET read-only;
+snapshot/versionamento;
+margens ESC/POS.
+20. NÃO COMEÇAR NOVO BLOCO
+
+NÃO implementar:
+
+Stone refund;
+Cielo refund;
+TEF;
+fiscal;
+USB;
+Bluetooth;
+Print Agent;
+KDS;
+Delivery;
+Comanda.
+RESULTADO ESPERADO 1 — FINALIZAÇÃO NORMAL
+checkout OPEN
+→ paga
+→ FINALIZAR
+→ backend cria Sale
+→ response sucesso
+→ QuickSaleResult
+→ tela Venda concluída
+RESULTADO ESPERADO 2 — RESPOSTA PERDIDA
+FINALIZAR
+→ backend cria Sale
+→ resposta perdida
+→ POS repete mesma key
+→ backend retorna replay
+→ tela Venda concluída
+RESULTADO ESPERADO 3 — DUPLA FALHA / RESTART
+FINALIZAR
+→ backend cria Sale
+→ resposta falha
+→ replay falha por rede
+→ app reinicia
+
+recover
+→ backend devolve checkout FINALIZED + sale_id
+→ POS recupera Sale
+→ limpa pending
+→ trata venda como concluída
+RESULTADO ESPERADO 4 — ESTORNO STALE
+Flutter acha que checkout está OPEN
+backend já está FINALIZED
+
+ESTORNAR
+→ 409 checkout_closed
+→ POS consulta checkout
+→ encontra FINALIZED + sale_id
+→ recupera venda
+→ sai da tela de pagamento
+→ NÃO tenta estornar QuickSalePayment novamente
+CHECKPOINT FINAL
 
 Ao terminar informe:
 
-1. como protegeu a resposta da venda contra falha de impressão;
-2. como ficou a recuperação de finalize incerto;
-3. como o Flutter reage a checkout FINALIZED;
-4. como trata `checkout_closed`;
-5. se manteve o bloqueio de estorno após materialização da Sale;
-6. como ficou o replay idempotente da finalização;
-7. arquivos backend alterados;
-8. arquivos Flutter alterados;
-9. migrations, se houver;
-10. pontos que ainda dependem de teste manual.
+como sale_id passou a ser representado no Flutter;
+como recoverQuickSaleCheckout() diferencia CANCELLED de FINALIZED;
+como recupera a Sale de checkout FINALIZED;
+como trata checkout_closed;
+como _runQuickCheckoutOperation() ficou defensivo;
+como a SharedPaymentPage sai do estado stale;
+como funciona após restart;
+como pending.finalize é limpo;
+arquivos backend alterados;
+arquivos Flutter alterados;
+migrations criadas, se houver;
+pontos que ainda dependem de teste manual.
+
+NÃO EXECUTE TESTES.
+
+NÃO EXECUTE FLUTTER ANALYZE.
+
+NÃO EXECUTE BUILD.
 
 Depois pare.
-
-```
-
-Esse caso foi útil porque mostrou uma falha importante de UX/transação: **o backend estava correto ao negar o estorno; o erro foi o POS continuar se comportando como se a venda ainda estivesse aberta depois de uma finalização que, na prática, já aconteceu.**
-```

@@ -153,12 +153,42 @@ class AppController extends ChangeNotifier {
     await _writeQuickCheckoutState(state);
   }
 
+  QuickSaleResult? _recoveredQuickSaleResult;
+
+  QuickSaleResult? takeRecoveredQuickSaleResult() {
+    final result = _recoveredQuickSaleResult;
+    _recoveredQuickSaleResult = null;
+    return result;
+  }
+
+  Future<QuickSaleResult?> _recoverFinalizedQuickSale(
+      String checkoutId, Map<String, dynamic> state) async {
+    final key = (state['pending'] as Map?)?['finalize'] as String?;
+    if (key == null) return null;
+    try {
+      final result = await _api.finalizeQuickSaleCheckout(
+          checkoutId: checkoutId, idempotencyKey: key);
+      await _writeQuickCheckoutState({});
+      return result;
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
   Future<QuickSaleCheckout?> recoverQuickSaleCheckout() async {
     final state = await _quickCheckoutState();
     final id = state['checkout_id'] as String?;
     try {
       if (id != null) {
         final checkout = await _api.getQuickSaleCheckout(id);
+        if (checkout.status == 'finalized' && checkout.saleId != null) {
+          _recoveredQuickSaleResult = await _recoverFinalizedQuickSale(id, state);
+          if (_recoveredQuickSaleResult != null) return null;
+          return checkout;
+        }
         if (_isTerminalQuickSaleCheckout(checkout)) {
           await _writeQuickCheckoutState({});
           return null;
@@ -169,6 +199,11 @@ class AppController extends ChangeNotifier {
       final creationKey = state['creation_idempotency_key'] as String?;
       if (creationKey == null) return null;
       final checkout = await _api.recoverQuickSaleCheckout(creationKey);
+      if (checkout.status == 'finalized' && checkout.saleId != null) {
+        _recoveredQuickSaleResult = await _recoverFinalizedQuickSale(checkout.id, state);
+        if (_recoveredQuickSaleResult != null) return null;
+        return checkout;
+      }
       if (_isTerminalQuickSaleCheckout(checkout)) {
         await _writeQuickCheckoutState({});
         return null;
@@ -649,6 +684,19 @@ class AppController extends ChangeNotifier {
       await _writeQuickCheckoutState(state);
       return checkout;
     } on PosApiException catch (error) {
+      if (error.code == 'checkout_closed') {
+        try {
+          final current = await _api.getQuickSaleCheckout(checkoutId);
+          if (current.status == 'finalized' && current.saleId != null) {
+            _recoveredQuickSaleResult = await _recoverFinalizedQuickSale(checkoutId, state);
+          }
+        } on PosApiException {
+          // Preserve the original conflict below when authoritative recovery fails.
+        } on PosNetworkException {
+          // Preserve the original conflict below when the state cannot be read.
+        }
+        if (_recoveredQuickSaleResult != null) return null;
+      }
       if (error.statusCode < 500) {
         pending.remove(operation);
         state['pending'] = pending;
