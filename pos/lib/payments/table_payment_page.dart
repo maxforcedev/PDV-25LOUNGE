@@ -11,6 +11,7 @@ import '../sales/shared_authorization_dialog.dart';
 import '../sales/shared_customer_dialog.dart';
 import '../sales/shared_discount_dialog.dart';
 import '../printing/models.dart';
+import '../printing/print_document_polling.dart';
 import 'payment_contract.dart';
 import 'payment_flow_components.dart';
 import 'shared_payment_widgets.dart';
@@ -266,7 +267,26 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
         _paymentDocuments[payment.id] = result;
       }
     });
-    unawaited(Future<void>.delayed(const Duration(seconds: 2), _refresh));
+    if (result == null) {
+      final error = widget.controller.errorMessage;
+      if (error != null && error.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
+      }
+      return;
+    }
+    unawaited(pollPrintDocument(
+      isMounted: () => mounted,
+      reload: () async {
+        final ledger = await widget.controller.tablePaymentLedger(_attendance.id);
+        for (final entry in ledger?.payments ?? const <TablePayment>[]) {
+          if (entry.id == payment.id) return entry.printDocument;
+        }
+        return null;
+      },
+      onUpdate: (document) {
+        if (mounted) setState(() => _paymentDocuments[payment.id] = document);
+      },
+    ));
   }
 
   Future<void> _close() async {

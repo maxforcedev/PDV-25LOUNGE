@@ -13,6 +13,7 @@ import '../sales/shared_pos_widgets.dart';
 import '../sales/shared_sale_item_editor_dialog.dart';
 import '../payments/table_payment_page.dart';
 import '../printing/models.dart';
+import '../printing/print_document_polling.dart';
 import 'attendance_models.dart';
 import 'attendance_presentation.dart';
 import 'shared_tables_grid.dart';
@@ -546,7 +547,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
             PrintDocumentReprintRequest(
               documentId: document!.id!,
               idempotencyKey: createIdempotencyKey(),
-              reason: 'Reimpressão de conta de mesa',
+              reason: 'Reimpressão de conferência de mesa',
             ),
           )
         : await widget.controller.requestPrintDocument(
@@ -563,7 +564,15 @@ class _TableOrderPageState extends State<TableOrderPage> {
       setState(() {
         _billDocument = result;
       });
-      unawaited(Future<void>.delayed(const Duration(seconds: 2), _load));
+      unawaited(pollPrintDocument(
+        isMounted: () => mounted,
+        reload: () async => (await widget.controller
+                .tableAttendanceDetail(_attendance.id))
+            ?.printDocumentFor(PrintDocumentType.tableConference),
+        onUpdate: (document) {
+          if (mounted) setState(() => _billDocument = document);
+        },
+      ));
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('Conferência enviada para a fila de impressão.')));
     }
@@ -1119,7 +1128,15 @@ class _TableConferencePageState extends State<_TableConferencePage> {
         _document = result;
       }
     });
-    unawaited(Future<void>.delayed(const Duration(seconds: 2), _load));
+    unawaited(pollPrintDocument(
+      isMounted: () => mounted,
+      reload: () async => (await widget.controller
+              .tableAttendanceDetail(_attendance.id))
+          ?.printDocumentFor(PrintDocumentType.tableConference),
+      onUpdate: (document) {
+        if (mounted) setState(() => _document = document);
+      },
+    ));
   }
 
   @override

@@ -285,6 +285,22 @@ def _source_snapshot(*, document_type, source_type, source_id, branch):
     raise ValueError('Origem de documento não suportada.')
 
 
+def _document_snapshot(*, branch, document_type, source_type, source_id):
+    source, snapshot = _source_snapshot(
+        document_type=document_type, source_type=source_type, source_id=source_id, branch=branch,
+    )
+    snapshot = dict(snapshot)
+    snapshot.setdefault('company_name', branch.company.trade_name or branch.company.legal_name)
+    snapshot.setdefault('branch_name', branch.name)
+    return source, snapshot
+
+
+def _document_snapshot_hash(snapshot):
+    return sha256(json.dumps(
+        snapshot, sort_keys=True, separators=(',', ':'), default=str,
+    ).encode()).hexdigest()
+
+
 def create_print_document(*, branch, document_type, source_type, source_id, user=None, metadata=None):
     document_type = normalize_print_document_type(document_type)
     valid_sources = {
@@ -297,12 +313,10 @@ def create_print_document(*, branch, document_type, source_type, source_id, user
     }
     if source_type not in valid_sources.get(document_type, set()):
         raise ValueError('A origem não é válida para este tipo de documento.')
-    _source, snapshot = _source_snapshot(
+    _source, snapshot = _document_snapshot(
         document_type=document_type, source_type=source_type, source_id=source_id, branch=branch,
     )
-    snapshot.setdefault('company_name', branch.company.trade_name or branch.company.legal_name)
-    snapshot.setdefault('branch_name', branch.name)
-    snapshot_hash = sha256(json.dumps(snapshot, sort_keys=True, separators=(',', ':'), default=str).encode()).hexdigest()
+    snapshot_hash = _document_snapshot_hash(snapshot)
     existing = PrintDocument.objects.filter(
         branch=branch, document_type=document_type, source_type=source_type,
         source_id=str(source_id), snapshot_hash=snapshot_hash,
@@ -343,15 +357,13 @@ def current_print_document(*, branch, document_type, source_type, source_id):
     """
     document_type = normalize_print_document_type(document_type)
     try:
-        _source, snapshot = _source_snapshot(
+        _source, snapshot = _document_snapshot(
             document_type=document_type, source_type=source_type,
             source_id=source_id, branch=branch,
         )
     except ValueError:
         return None
-    snapshot_hash = sha256(json.dumps(
-        snapshot, sort_keys=True, separators=(',', ':'), default=str,
-    ).encode()).hexdigest()
+    snapshot_hash = _document_snapshot_hash(snapshot)
     return PrintDocument.objects.filter(
         branch=branch, document_type=document_type, source_type=source_type,
         source_id=str(source_id), snapshot_hash=snapshot_hash,
@@ -413,13 +425,11 @@ def enqueue_print_document(*, document, user=None, pos_device=None, retry_failed
 def issue_print_document(*, branch, document_type, source_type, source_id, user=None, pos_device=None,
                          automatic_only=False, metadata=None, idempotency_key=None):
     document_type = normalize_print_document_type(document_type)
-    _source, current_snapshot = _source_snapshot(
+    _source, current_snapshot = _document_snapshot(
         document_type=document_type, source_type=source_type,
         source_id=source_id, branch=branch,
     )
-    current_snapshot_hash = sha256(json.dumps(
-        current_snapshot, sort_keys=True, separators=(',', ':'), default=str,
-    ).encode()).hexdigest()
+    current_snapshot_hash = _document_snapshot_hash(current_snapshot)
     fingerprint = None
     if idempotency_key:
         fingerprint = _document_request_fingerprint(
