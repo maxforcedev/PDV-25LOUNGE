@@ -50,8 +50,9 @@ function routeError(caught: unknown, fallback: string) {
   return caught instanceof ApiError ? caught.message : fallback;
 }
 
-export function DocumentPrintRoutes({ posDeviceId }: { posDeviceId?: string }) {
+export function DocumentPrintRoutes({ posDeviceId, branchId }: { posDeviceId?: string; branchId?: number | string }) {
   const { currentBranch, supportSession } = useAuth();
+  const effectiveBranchId = branchId || currentBranch?.id;
   const readOnly = supportSession?.mode === "READ_ONLY";
   const [routes, setRoutes] = useState<Route[]>([]);
   const [branchRoutes, setBranchRoutes] = useState<PrintRoute[]>([]);
@@ -62,23 +63,23 @@ export function DocumentPrintRoutes({ posDeviceId }: { posDeviceId?: string }) {
   const [success, setSuccess] = useState("");
 
   async function load() {
-    if (!currentBranch) return;
+    if (!effectiveBranchId) return;
     setLoading(true);
     setError("");
     try {
       if (posDeviceId) {
         const [overrides, devices, inherited] = await Promise.all([
-          http.getAll<PrintRouteOverride>("print-route-overrides/"),
-          http.getAll<PrinterDevice>("printer-devices/"),
-          http.getAll<PrintRoute>("print-routes/"),
+          http.getAll<PrintRouteOverride>("print-route-overrides/", { branchId: effectiveBranchId }),
+          http.getAll<PrinterDevice>("printer-devices/", { branchId: effectiveBranchId }),
+          http.getAll<PrintRoute>("print-routes/", { branchId: effectiveBranchId }),
         ]);
         setRoutes(overrides.filter((route) => route.pos_device === posDeviceId));
         setBranchRoutes(inherited);
         setPrinters(devices.filter((device) => device.status === "active" && device.connection_type === "network"));
       } else {
         const [items, devices] = await Promise.all([
-          http.getAll<PrintRoute>("print-routes/"),
-          http.getAll<PrinterDevice>("printer-devices/"),
+          http.getAll<PrintRoute>("print-routes/", { branchId: effectiveBranchId }),
+          http.getAll<PrinterDevice>("printer-devices/", { branchId: effectiveBranchId }),
         ]);
         setRoutes(items);
         setBranchRoutes([]);
@@ -95,7 +96,7 @@ export function DocumentPrintRoutes({ posDeviceId }: { posDeviceId?: string }) {
     setRoutes([]);
     setBranchRoutes([]);
     void load();
-  }, [currentBranch?.id, posDeviceId]);
+  }, [effectiveBranchId, posDeviceId]);
 
   function update(type: PrintDocumentType, changes: RouteChanges, inheritedRoute?: PrintRoute) {
     setRoutes((items) => {
@@ -115,7 +116,7 @@ export function DocumentPrintRoutes({ posDeviceId }: { posDeviceId?: string }) {
         copies: inheritedRoute.copies,
         document_format: inheritedRoute.document_format,
       } : {};
-      return [...items, { ...emptyRoute(type, currentBranch?.id || 0, posDeviceId), ...base, ...changes }];
+      return [...items, { ...emptyRoute(type, Number(effectiveBranchId) || 0, posDeviceId), ...base, ...changes }];
     });
   }
 
@@ -123,8 +124,8 @@ export function DocumentPrintRoutes({ posDeviceId }: { posDeviceId?: string }) {
     const existing = routes.find((item) => item.document_type === type);
     const inheritedRoute = branchRoutes.find((item) => item.document_type === type);
     const inherited = !!posDeviceId && (!existing || ("inherit_branch" in existing && existing.inherit_branch));
-    const route = inherited && inheritedRoute ? inheritedRoute : existing || emptyRoute(type, currentBranch?.id || 0, posDeviceId);
-    if (!currentBranch) return;
+    const route = inherited && inheritedRoute ? inheritedRoute : existing || emptyRoute(type, Number(effectiveBranchId) || 0, posDeviceId);
+    if (!effectiveBranchId) return;
     setSaving(type);
     setError("");
     setSuccess("");
@@ -138,11 +139,11 @@ export function DocumentPrintRoutes({ posDeviceId }: { posDeviceId?: string }) {
     try {
       const saved: Route = posDeviceId
         ? existing && existing.id > 0
-          ? await http.patch<PrintRouteOverride>(`print-route-overrides/${existing.id}/`, { ...body, pos_device: posDeviceId, inherit_branch: false })
-          : await http.post<PrintRouteOverride>("print-route-overrides/", { ...body, pos_device: posDeviceId, inherit_branch: false })
+          ? await http.patch<PrintRouteOverride>(`print-route-overrides/${existing.id}/`, { ...body, pos_device: posDeviceId, inherit_branch: false }, { branchId: effectiveBranchId })
+          : await http.post<PrintRouteOverride>("print-route-overrides/", { ...body, pos_device: posDeviceId, inherit_branch: false }, { branchId: effectiveBranchId })
         : existing && existing.id > 0
-          ? await http.patch<PrintRoute>(`print-routes/${existing.id}/`, body)
-          : await http.post<PrintRoute>("print-routes/", body);
+          ? await http.patch<PrintRoute>(`print-routes/${existing.id}/`, body, { branchId: effectiveBranchId })
+          : await http.post<PrintRoute>("print-routes/", body, { branchId: effectiveBranchId });
       setRoutes((items) => items.some((item) => item.document_type === type) ? items.map((item) => item.document_type === type ? saved : item) : [...items, saved]);
       setSuccess("Regra de impressao salva.");
     } catch (caught) {
@@ -158,8 +159,8 @@ export function DocumentPrintRoutes({ posDeviceId }: { posDeviceId?: string }) {
     setSaving(type);
     setError("");
     try {
-      await http.delete(`print-route-overrides/${route.id}/`);
-      setRoutes((items) => items.filter((item) => item.document_type !== type));
+      await http.delete(`print-route-overrides/${route.id}/`, { branchId: effectiveBranchId });
+      await load();
       setSuccess("Override removido. O POS voltou a herdar a regra da filial.");
     } catch (caught) {
       setError(routeError(caught, "Nao foi possivel remover o override."));
@@ -174,12 +175,13 @@ export function DocumentPrintRoutes({ posDeviceId }: { posDeviceId?: string }) {
       <div>
         <h2 className="flex items-center gap-2 text-sm font-bold"><Printer className="size-4 text-primary" />{title}</h2>
         <p className="mt-1 text-xs text-muted">
-          Filial ativa: {currentBranch?.name || "nenhuma"}. {posDeviceId ? "Cada override e opcional; sem override, o POS herda a filial." : "Configure finalidade, modo, varias impressoras, copias e formato."}
+          Filial: {branchId ? String(branchId) : currentBranch?.name || "nenhuma"}. {posDeviceId ? "Cada override e opcional; sem override, o POS herda a filial." : "Configure finalidade, modo, varias impressoras, copias e formato."}
         </p>
       </div>
       <Button variant="secondary" disabled={loading} onClick={() => void load()}><RotateCcw className="size-4" />Atualizar</Button>
     </div>
     {!posDeviceId && <p className="rounded-md bg-surface-muted p-3 text-xs text-muted">Estas regras sao a fonte oficial para documentos. Os antigos campos de recibo do POS permanecem apenas para compatibilidade e nao devem ser usados para novo roteamento.</p>}
+    {!posDeviceId && printers.length > 0 && routes.length > 0 && routes.every((route) => route.mode === "disabled") && <Alert message="Impressora cadastrada. CONFIGURAR ROTAS DE IMPRESSÃO abaixo antes de usar o POS." />}
     {error && <Alert message={error} />}
     {success && <Alert type="success" message={success} />}
     {loading ? <div className="flex h-24 items-center justify-center text-primary"><Spinner /></div> : <div className="space-y-3">
@@ -187,9 +189,10 @@ export function DocumentPrintRoutes({ posDeviceId }: { posDeviceId?: string }) {
         const route = routes.find((item) => item.document_type === definition.value);
         const inheritedRoute = branchRoutes.find((item) => item.document_type === definition.value);
         const inherited = !!posDeviceId && (!route || ("inherit_branch" in route && route.inherit_branch));
-        const value = inherited && inheritedRoute ? inheritedRoute : route || emptyRoute(definition.value, currentBranch?.id || 0, posDeviceId);
+          const value = inherited && inheritedRoute ? inheritedRoute : route || emptyRoute(definition.value, Number(effectiveBranchId) || 0, posDeviceId);
         return <article key={definition.value} className="rounded-lg border border-subtle p-3">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><strong className="text-sm">{definition.label}</strong>{inherited && <span className="rounded-full bg-surface-muted px-2 py-1 text-[11px] font-semibold text-muted">Herdando da filial</span>}</div>
+          {inherited && <p className="mb-3 text-xs text-muted">Modo efetivo: <strong>{value.mode}</strong> · Impressoras efetivas: <strong>{value.printer_device_ids.map((id) => printers.find((printer) => printer.id === id)?.name || id).join(", ") || "nenhuma"}</strong> · Cópias: <strong>{value.copies}</strong></p>}
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Field label="Modo"><Select value={value.mode} disabled={readOnly || saving === definition.value} onChange={(event) => update(definition.value, { mode: event.target.value as PrintRouteMode }, inheritedRoute)}><option value="disabled">Desabilitado</option><option value="manual">Manual</option><option value="automatic">Automatico</option></Select></Field>
             <Field label="Copias"><Input type="number" min="1" max="10" value={value.copies} disabled={readOnly || saving === definition.value} onChange={(event) => update(definition.value, { copies: Math.max(1, Number(event.target.value) || 1) }, inheritedRoute)} /></Field>
@@ -203,15 +206,16 @@ export function DocumentPrintRoutes({ posDeviceId }: { posDeviceId?: string }) {
   </section>;
 }
 
-export function PosDocumentRouteOverrides() {
+export function PosDocumentRouteOverrides({ branchId }: { branchId?: string }) {
   const { currentCompany, currentBranch } = useAuth();
   const [devices, setDevices] = useState<PosDevice[]>([]);
   const [deviceId, setDeviceId] = useState("");
 
   useEffect(() => {
-    if (!currentCompany || !currentBranch) return;
-    http.getAll<PosDevice>(`pos/admin/devices/?company=${currentCompany.id}&branch=${currentBranch.id}`).then(setDevices).catch(() => setDevices([]));
-  }, [currentCompany?.id, currentBranch?.id]);
+    const selectedBranchId = branchId || String(currentBranch?.id || "");
+    if (!currentCompany || !selectedBranchId) return;
+    http.getAll<PosDevice>(`pos/admin/devices/?company=${currentCompany.id}&branch=${selectedBranchId}`, { branchId: selectedBranchId }).then(setDevices).catch(() => setDevices([]));
+  }, [branchId, currentCompany?.id, currentBranch?.id]);
 
-  return <div className="space-y-3"><Field label="Dispositivo POS"><Select value={deviceId} onChange={(event) => setDeviceId(event.target.value)}><option value="">Selecione um POS para configurar overrides</option>{devices.map((device) => <option key={device.id} value={device.id}>{device.name}</option>)}</Select></Field>{deviceId ? <DocumentPrintRoutes posDeviceId={deviceId} /> : <EmptyState title="Selecione um dispositivo POS" description="Os overrides sao opcionais e cada finalidade pode continuar herdando a regra da filial." />}</div>;
+  return <div className="space-y-3"><Field label="Dispositivo POS"><Select value={deviceId} onChange={(event) => setDeviceId(event.target.value)}><option value="">Selecione um POS para configurar overrides</option>{devices.map((device) => <option key={device.id} value={device.id}>{device.name}</option>)}</Select></Field>{deviceId ? <DocumentPrintRoutes posDeviceId={deviceId} branchId={branchId} /> : <EmptyState title="Selecione um dispositivo POS" description="Os overrides sao opcionais e cada finalidade pode continuar herdando a regra da filial." />}</div>;
 }

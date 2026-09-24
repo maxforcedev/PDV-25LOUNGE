@@ -1,417 +1,379 @@
-Continue a missão no HEAD atual.
+Continue no HEAD atual.
 
-Na última revisão, o HEAD era:
+Problema encontrado no POS:
 
-`9bc61d04653940b4b860d97618ca62073d1770c2`
+Praticamente todas as ações de impressão estão retornando:
 
-Antes de alterar, confira o HEAD atual.
+`A rota deste documento está desabilitada.`
 
-Ainda restam estes problemas reais:
+Revise e corrija o fluxo completo de resolução de rotas.
 
----
-
-# 1. RESUMO DA MESA CONTINUA COM "AGUARDANDO IMPRESSÃO" DEPOIS QUE A PRODUÇÃO JÁ IMPRIMIU
-
-O polling criado para `PrintDocument` resolveu Conferência/Comprovante, mas o resumo da Mesa usa outro fluxo:
+Hoje a arquitetura correta deve ser:
 
 ```text
-TableOrderItem.printStatus
-→ ProductionJob
-→ PrintJob
+PrintRoute da filial
+        ↓
+POS sem override
+        ↓
+herda exatamente a regra da filial
 
-Hoje acontece:
+POS com override explícito e inherit_branch=false
+        ↓
+usa o override do POS
+1. NÃO ALTERAR A ARQUITETURA
 
-pedido enviado
-→ _load()
-→ PrintJob ainda PENDING
-→ item.printStatus = pending
-→ UI mostra "Aguardando impressão"
+Não quero hardcode de impressora.
 
-alguns segundos depois:
-→ PrintManager imprime
-→ backend passa PrintJob para PRINTED
-→ UI da Mesa não atualiza novamente
+Não quero IP salvo diretamente na Mesa/Venda.
 
-Resultado:
-
-papel saiu
-mas o resumo continua "Aguardando impressão"
-
-CORRIGIR.
-
-Depois de enviar um pedido, se houver item com:
-
-printStatus == pending
-ou
-printStatus == processing
-
-fazer refresh curto e limitado do tableAttendanceDetail() até os itens chegarem a estado terminal.
-
-Não usar pollPrintDocument() diretamente porque produção não é PrintDocument.
-
-Criar helper pequeno/reutilizável se fizer sentido.
-
-Exemplo:
-
-pedido salvo
-→ carregar Mesa
-→ encontrou produção pending/processing?
-→ esperar 2s
-→ tableAttendanceDetail()
-→ atualizar UI
-→ repetir limitado
-→ parar quando nenhum item estiver pending/processing
-
-Limitar tentativas.
-
-Não criar polling infinito.
-
-Não reenviar produção.
-
-Não criar novo ProductionJob.
-
-Não mexer em estoque.
-
-2. ERROS DO COMPROVANTE DE PAGAMENTO NÃO ESTÃO APARECENDO CORRETAMENTE
-
-Hoje _printPaymentReceipt() faz algo parecido com:
-
-if (result == null) {
-    final error = widget.controller.errorMessage;
-    ...
-}
-
-Isso não resolve os erros normais de API.
-
-No AppController, _handleApiError() para 400/409 normalmente chama:
-
-_showTransientMessage(message, notify: false);
-
-e não salva em errorMessage.
-
-Então cenários como:
-
-A rota deste documento está desabilitada.
-
-ou:
-
-A rota exige ao menos uma impressora NETWORK ativa.
-
-podem continuar parecendo que o botão não fez nada.
-
-CORRIGIR o tratamento de erro.
-
-Não usar errorMessage para erro operacional comum.
-
-O erro retornado pelo backend deve aparecer imediatamente no padrão de alerta do CORE POS.
-
-Exemplo esperado:
-
-PAYMENT_RECEIPT disabled
-→ clicar IMPRIMIR COMPROVANTE
-→ alerta:
-"A rota deste documento está desabilitada."
-
-ou mensagem operacional equivalente.
-
-Não duplicar Snackbar + alerta global para o mesmo erro.
-
-Escolher um padrão consistente.
-
-3. REVISAR _attendance() / _handleApiError()
-
-Hoje _attendance() captura:
-
-PosApiException
-PosNetworkException
-
-Revisar para garantir que erro operacional:
-
-400
-404
-409
-
-seja exibido imediatamente.
-
-Não transformar esses erros em erro persistente de tela.
-
-Não usar errorMessage global como mecanismo de Snackbar.
-
-Preservar comportamento especial para:
-
-device unavailable
-update required
-500+
-
-conforme arquitetura atual.
-
-4. CONFERÊNCIA AINDA USA DADOS STALE NO RESUMO
-
-Na _TableConferencePage, já existe:
-
-late TableAttendance _attendance
-
-e _load() atualiza esse objeto via:
-
-tableAttendanceDetail()
-
-Mas a parte de baixo ainda usa:
-
-TableSummaryWidgets(widget.attendance.summary)
-
-e também:
-
-widget.attendance.customerName
-
-Isso está errado.
-
-Trocar para o estado atualizado:
-
-TableSummaryWidgets(_attendance.summary)
-
-e cliente também deve vir de:
-
-_attendance.customerName
-
-A Conferência inteira deve usar _attendance.
-
-Não misturar:
-
-itens novos
-com
-resumo antigo
-5. CONFERÊNCIA DEVE REFLETIR O ESTADO ATUAL COMPLETO
-
-Depois de _load():
-
-usar _attendance para:
-
-mesa;
-horário;
-atendente;
-itens;
-modificadores;
-observações;
-summary;
-cliente;
-print_documents.
-
-Não usar widget.attendance para dados que podem mudar.
-
-6. PRESERVAR POLLING DE PrintDocument
-
-NÃO remover o helper atual:
-
-pos/lib/printing/print_document_polling.dart
-
-Preservar:
-
-5 tentativas
-2 segundos
-parar quando !document.queued
-
-ou equivalente atual.
-
-Ele continua sendo usado para:
-
-TABLE_CONFERENCE;
-PAYMENT_RECEIPT.
-
-O novo polling de produção é separado.
-
-7. PRODUÇÃO E DOCUMENTOS SÃO FLUXOS DIFERENTES
-
-Não misturar:
-
-ProductionJob / PrintJob
-
-com:
-
-PrintDocument / PrintJob
-
-O mesmo PrintJob executor pode existir, mas a origem operacional é diferente.
-
-Resumo da Mesa:
-
-TableOrderItem
-→ ProductionJob
-→ PrintJob
-
-Conferência/Comprovante:
-
-PrintDocument
-→ PrintJob
-
-Manter essa separação.
-
-8. NÃO REGREDIR HASH DO SNAPSHOT
-
-Preservar:
-
-_document_snapshot(...)
-_document_snapshot_hash(...)
-
-e o uso unificado em:
-
-create_print_document()
-current_print_document()
-issue_print_document()
-
-Não voltar a duplicar montagem de snapshot.
-
-9. COMPATIBILIDADE COM DOCUMENTOS ANTIGOS
-
-Revisar se documentos criados ANTES da inclusão de:
-
-company_name
-branch_name
-
-ficam invisíveis para current_print_document() por causa do hash antigo.
-
-Se isso puder acontecer no ambiente atual, implementar fallback seguro de leitura para o snapshot/hash legado.
-
-IMPORTANTE:
-
-não alterar snapshot histórico;
-não recalcular e salvar hash antigo;
-não modificar documento imutável;
-apenas localizar documento legado quando o estado operacional for equivalente.
-
-Se concluir que não é necessário por ainda estarmos em desenvolvimento e não houver dados relevantes, apenas informar no checkpoint.
-
-10. COMPROVANTE DE PAGAMENTO — PRESERVAR FLUXO
+Não quero ativar todas as impressões automaticamente.
 
 Continuar usando:
 
-document_type = PAYMENT_RECEIPT
-source_type = table_payment
-source_id = payment.id
+PrintRoute
+PrintRouteOverride
+effective_print_route()
+PrinterDevice
+PrintDocument
+PrintJob
+2. INVESTIGAR POR QUE O POS ESTÁ RECEBENDO DISABLED
 
-Não criar novo tipo.
+Revise:
 
-Não usar Sale para comprovante de pagamento da Mesa.
+ensure_print_routes()
+effective_print_route()
+issue_print_document()
+enqueue_print_document()
 
-Não recriar pagamento.
+Hoje ensure_print_routes() cria rotas novas com:
 
-11. STATUS DO COMPROVANTE
+mode = DISABLED
 
-Depois de impressão:
+Isso pode continuar sendo o default de segurança.
 
-IMPRIMIR COMPROVANTE
-→ queued
-→ PrintManager
-→ PRINTED
-→ polling
-→ REIMPRIMIR COMPROVANTE
+O problema a corrigir é:
 
-Preservar o polling já criado.
+se o usuário configurou a rota da filial como MANUAL ou AUTOMATIC, o POS não pode continuar recebendo DISABLED indevidamente.
 
-12. STATUS DA PRODUÇÃO NO RESUMO
+Verifique:
 
-Esperado:
+filial do POSDevice;
+branch usada na emissão;
+PrintRoute carregada;
+PrintRouteOverride;
+inherit_branch;
+document_type;
+impressoras relacionadas;
+contexto de filial do Backoffice.
+3. OVERRIDE DO POS
 
-PENDING
-→ Aguardando impressão
+A regra deve ser inequívoca.
 
-PROCESSING
-→ Impressão em andamento
+Se NÃO existir override:
 
-PRINTED
-→ Impresso
+usar PrintRoute da filial
 
-FAILED
-→ Falha na impressão
+Se existir:
 
-Se existir UNCERTAIN no serializer de produção e ele ainda cair como pending, revisar.
+inherit_branch = true
+→ usar PrintRoute da filial
 
-Não mascarar UNCERTAIN como "Aguardando impressão".
+Somente se:
 
-Se aplicável, mostrar algo como:
+inherit_branch = false
 
-Impressão com resultado incerto
+usar:
 
-sem retry automático.
+mode
+printer_devices
+copies
+document_format
 
-13. NÃO ALTERAR O TIMER DO PrintManager
+do override.
 
-Não reduzir o timer de:
+Um override antigo salvo como:
 
-Timer.periodic(const Duration(seconds: 3), ...)
+mode = disabled
+inherit_branch = false
 
-só para esconder o problema.
+pode efetivamente bloquear o POS.
 
-O problema é a UI não fazer refresh.
+Isso é válido se foi configurado propositalmente, mas a UI precisa deixar isso extremamente claro.
 
-14. NÃO REGREDIR O QUE JÁ ESTÁ CORRETO
+4. BACKOFFICE — ROTAS DA FILIAL
 
-Preservar:
+Revise:
 
-1.000x → 1x;
-quantidade formatada em Ticket;
-Solicitar Conta → TABLE_CONFERENCE;
-impressão manual → TABLE_CONFERENCE;
-bloqueio de novos produtos após Solicitar Conta;
-bloqueio de long press/lote;
-backend protegendo table_bill_requested;
-Mesa fechando e voltando ao grid;
-grid atualizando;
-empresa/filial no documento;
-polling de Conferência;
-polling de PAYMENT_RECEIPT;
-retry != reprint;
-UNCERTAIN;
-idempotência;
-claim/lease;
-physical_dispatch_started_at;
-impressão NETWORK local.
-RESULTADO ESPERADO 1 — PRODUÇÃO
-Adicionar produto
-→ enviar pedido
-→ status "Aguardando impressão"
+Produção
+→ Rotas de impressão
 
-PrintManager imprime
-→ backend PRINTED
-→ refresh limitado detecta
-→ resumo muda para "Impresso"
+A tela deve mostrar a configuração REAL da filial ativa.
 
-sem fechar/reabrir a Mesa.
+Ao salvar:
 
-RESULTADO ESPERADO 2 — COMPROVANTE COM ROTA DESABILITADA
-PAYMENT_RECEIPT = disabled
-→ clicar IMPRIMIR COMPROVANTE
-→ erro aparece imediatamente
+Conferência → Manual
+Comprovante de pagamento → Manual
+Recibo final → Automático
 
-Não botão morto.
+o backend deve persistir exatamente esses valores para a filial correta.
 
-RESULTADO ESPERADO 3 — CONFERÊNCIA
-abrir Conferência
-→ tableAttendanceDetail()
-→ itens atuais
-→ summary atual
-→ cliente atual
+Depois de atualizar a página, os mesmos valores devem continuar aparecendo.
 
-Tudo vindo do mesmo _attendance.
+Não pode salvar em outra filial por inconsistência de currentBranch.
 
-RESULTADO ESPERADO 4 — COMPROVANTE IMPRESSO
-IMPRIMIR COMPROVANTE
-→ papel sai
-→ polling detecta PRINTED
-→ botão vira REIMPRIMIR COMPROVANTE
-ARQUIVOS A REVISAR
+5. POSSÍVEL INCONSISTÊNCIA DE FILIAL
+
+Revise especialmente o uso de:
+
+currentBranch
+branchId
+settingsBranchId
+
+na tela de Dispositivos POS e nas Rotas de impressão.
+
+Já identificamos anteriormente que pos-dispositivos possui seletor/local state de filial enquanto DocumentPrintRoutes usa o currentBranch global.
+
+Não pode acontecer:
+
+Tela mostra Filial B
+mas DocumentPrintRoutes consulta/salva Filial A
+
+Corrija se essa inconsistência ainda existir.
+
+Para configuração de impressão por filial, deve haver UMA fonte de verdade clara para o branch usado pela API.
+
+6. OVERRIDES NO BACKOFFICE
+
+Em:
+
+Dispositivos POS
+→ Overrides de impressão por POS
+
+deve ficar muito claro:
+
+Herdando da filial
+
+ou:
+
+Override ativo
+
+Se estiver herdando, mostrar também a configuração efetiva:
+
+Exemplo:
+
+Herdando da filial
+Modo efetivo: Manual
+Impressora efetiva: Cozinha
+Cópias: 1
+
+Não mostrar apenas "Herdando da filial" sem deixar claro o que está sendo herdado.
+
+7. USAR REGRA DA FILIAL
+
+Ao clicar:
+
+Usar regra da filial
+
+o resultado final deve ser:
+
+nenhum override efetivo para aquele document_type/POS
+
+e:
+
+effective_print_route(...)
+
+deve retornar a PrintRoute da filial.
+
+Se a implementação atual deleta o override, preservar essa abordagem.
+
+Garantir que o DELETE não deixe estado stale no frontend.
+
+Depois de remover:
+
+recarregar configuração
+→ badge Herdando da filial
+→ mostrar modo efetivo correto
+8. TIPOS QUE PRECISAM SER REVISADOS
 
 No mínimo:
 
-pos/lib/attendance/table_attendance_page.dart
-pos/lib/attendance/attendance_presentation.dart
-pos/lib/payments/table_payment_page.dart
-pos/lib/core/app_controller.dart
-pos/lib/printing/print_document_polling.dart
-backend/apps/attendance/serializers.py
-backend/apps/production/services.py
+TABLE_CONFERENCE
+TABLE_FINAL_RECEIPT
+QUICK_SALE_RECEIPT
+PAYMENT_RECEIPT
+TICKET
+TABLE_BILL enquanto existir
 
-Alterar apenas o necessário.
+Não corrigir apenas Conferência.
 
-REGRA CRÍTICA
+9. NÃO CONFUNDIR PRODUÇÃO COM ROTAS DE DOCUMENTOS
+
+Produção continua:
+
+Produto
+→ ProductionDestination
+→ PrinterDevice
+→ ProductionJob
+→ PrintJob
+
+Documentos continuam:
+
+PrintDocumentType
+→ PrintRoute / PrintRouteOverride
+→ PrinterDevice
+→ PrintJob
+
+Não usar PrintRoute para decidir destino de produção.
+
+10. UX PARA ROTAS DESABILITADAS
+
+Se uma rota estiver realmente desabilitada, manter o bloqueio.
+
+Mas a mensagem precisa ajudar o operador.
+
+Em vez de apenas:
+
+A rota deste documento está desabilitada.
+
+usar mensagem operacional mais útil, por exemplo:
+
+A impressão de "Comprovante de pagamento" está desabilitada para este POS/filial. Configure em Produção > Rotas de impressão.
+
+Se houver override responsável pelo bloqueio:
+
+A impressão de "Comprovante de pagamento" está desabilitada por uma configuração específica deste POS.
+
+Se possível identificar isso sem complicar a arquitetura.
+
+11. NÃO ATIVAR TUDO AUTOMATICAMENTE
+
+IMPORTANTE:
+
+Não mudar ensure_print_routes() simplesmente para:
+
+AUTOMATIC
+
+ou:
+
+MANUAL
+
+sem impressora configurada.
+
+Isso poderia gerar impressões inesperadas.
+
+Novas filiais podem continuar começando com rotas desabilitadas.
+
+O que precisamos corrigir é:
+
+configuração salva
+→ resolução efetiva correta
+→ POS respeita a configuração
+12. MELHORAR ONBOARDING DE IMPRESSÃO
+
+Quando existir impressora NETWORK cadastrada mas rotas ainda estiverem desabilitadas, o Backoffice deve deixar claro:
+
+Impressora cadastrada.
+
+As rotas de documentos ainda precisam ser configuradas.
+
+Mostrar CTA:
+
+CONFIGURAR ROTAS DE IMPRESSÃO
+
+Não deixar o usuário descobrir apenas quando o POS retornar erro.
+
+13. CONFIGURAÇÃO ESPERADA PARA TESTE MANUAL
+
+Depois da correção, vou configurar:
+
+Conferência
+Modo: Manual
+Impressora: NETWORK cadastrada
+Cópias: 1
+
+Comprovante de pagamento
+Modo: Manual
+Impressora: NETWORK cadastrada
+Cópias: 1
+
+Recibo final da mesa
+Modo: Manual ou Automático
+Impressora: NETWORK cadastrada
+Cópias: 1
+
+Recibo venda rápida
+Modo: Manual ou Automático
+Impressora: NETWORK cadastrada
+Cópias: 1
+
+Sem override no POS.
+
+Resultado esperado:
+
+POS
+→ herda filial
+→ effective_print_route retorna MANUAL/AUTOMATIC
+→ PrintJob criado
+→ PrintManager imprime
+14. CENÁRIO COM OVERRIDE
+
+Depois vou configurar apenas:
+
+PAYMENT_RECEIPT
+
+com override nesse POS.
+
+Resultado:
+
+PAYMENT_RECEIPT
+→ usa override
+
+TABLE_CONFERENCE
+→ continua herdando filial
+
+TABLE_FINAL_RECEIPT
+→ continua herdando filial
+
+Um tipo não pode interferir no outro.
+
+15. NÃO REGREDIR O QUE JÁ FOI CORRIGIDO
+
+Preservar:
+
+polling de produção;
+UNCERTAIN;
+polling de PrintDocument;
+Conferência atualizada;
+PAYMENT_RECEIPT;
+hash novo + fallback legado;
+1.000x → 1x;
+Solicitar Conta → TABLE_CONFERENCE;
+fechamento de Mesa → grid;
+bloqueio de produtos após solicitar conta;
+retry != reprint;
+claim/lease;
+idempotência;
+impressão NETWORK local.
+CHECKPOINT
+
+Ao terminar informe:
+
+qual era a causa de as rotas aparecerem desabilitadas;
+se havia inconsistência entre filial selecionada e currentBranch;
+como ficou effective_print_route();
+como ficou a herança sem override;
+como ficou inherit_branch=true;
+como ficou override explícito inherit_branch=false;
+se "Usar regra da filial" remove corretamente o override;
+como a UI mostra a configuração efetiva herdada;
+como ficou a mensagem quando a rota está realmente desabilitada;
+arquivos backend alterados;
+arquivos frontend alterados;
+arquivos Flutter alterados;
+migrations criadas — não deveria precisar;
+o que depende de teste manual.
+
+REGRA CRÍTICA:
 
 NÃO EXECUTE TESTES.
 
@@ -429,26 +391,5 @@ suites
 makemigrations --check
 
 Eu farei os testes manualmente.
-
-CHECKPOINT
-
-Ao terminar informe:
-
-como atualizou o status da produção no resumo da Mesa;
-quantas tentativas/intervalo usou nesse refresh;
-se tratou UNCERTAIN separadamente;
-como corrigiu exibição de erros do PAYMENT_RECEIPT;
-se removeu dependência incorreta de errorMessage;
-se a Conferência agora usa _attendance.summary;
-se a Conferência agora usa _attendance.customerName;
-se implementou fallback de hash legado ou por que não;
-arquivos backend alterados;
-arquivos Flutter alterados;
-migrations criadas — não deveria precisar;
-pontos restantes para teste manual.
-
-NÃO EXECUTE TESTES.
-NÃO EXECUTE ANALYZE.
-NÃO EXECUTE BUILD.
 
 Depois pare.

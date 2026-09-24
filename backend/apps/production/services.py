@@ -110,9 +110,9 @@ def effective_print_route(*, branch, document_type, pos_device=None):
     if pos_device.branch_id != branch.pk:
         raise ValueError('O dispositivo POS deve pertencer à filial do documento.')
     override = PrintRouteOverride.objects.filter(
-        pos_device=pos_device, document_type=document_type, inherit_branch=False,
+        pos_device=pos_device, document_type=document_type,
     ).prefetch_related('printer_devices').first()
-    return override or route
+    return route if override is None or override.inherit_branch else override
 
 
 def _number(value):
@@ -404,7 +404,19 @@ def enqueue_print_document(*, document, user=None, pos_device=None, retry_failed
         branch=document.branch, document_type=document.document_type, pos_device=pos_device,
     )
     if policy.mode == PrintRouteMode.DISABLED:
-        raise ValueError('A rota deste documento está desabilitada.')
+        labels = {
+            PrintDocumentType.TABLE_BILL: 'Conta da mesa',
+            PrintDocumentType.TABLE_CONFERENCE: 'Conferência',
+            PrintDocumentType.TABLE_FINAL_RECEIPT: 'Recibo final da mesa',
+            PrintDocumentType.QUICK_SALE_RECEIPT: 'Recibo de venda rápida',
+            PrintDocumentType.PAYMENT_RECEIPT: 'Comprovante de pagamento',
+            PrintDocumentType.TICKET: 'Ticket',
+        }
+        source = 'por uma configuração específica deste POS' if isinstance(policy, PrintRouteOverride) else 'para esta filial'
+        raise ValueError(
+            f'A impressão de "{labels.get(document.document_type, document.document_type)}" está desabilitada '
+            f'{source}. Configure em Produção > Rotas de impressão.'
+        )
     devices = list(policy.printer_devices.filter(
         branch=document.branch, status=Status.ACTIVE,
         connection_type=PrinterConnectionType.NETWORK,

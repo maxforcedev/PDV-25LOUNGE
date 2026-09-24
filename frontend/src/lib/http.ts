@@ -149,7 +149,11 @@ export async function getCsrfToken(force = false): Promise<string> {
   return csrfRequest;
 }
 
-interface RequestOptions extends Omit<RequestInit, "body"> {
+export interface HttpOptions {
+  branchId?: number | string;
+}
+
+interface RequestOptions extends Omit<RequestInit, "body">, HttpOptions {
   body?: unknown;
   suppressUnauthorizedEvent?: boolean;
   omitSupportSession?: boolean;
@@ -178,6 +182,7 @@ async function request<T>(
     suppressUnauthorizedEvent,
     omitSupportSession,
     preserveSupportSessionOnUnauthorized,
+    branchId: requestedBranchId,
     ...fetchOptions
   } = options;
   const unsafe = !["GET", "HEAD", "OPTIONS"].includes(method);
@@ -185,8 +190,8 @@ async function request<T>(
   const formData =
     typeof FormData !== "undefined" && options.body instanceof FormData;
   if (typeof window !== "undefined") {
-    const branchId = window.sessionStorage.getItem("pdv.current_branch_id");
-    if (branchId) headers.set("X-Branch-ID", branchId);
+    const branchId = requestedBranchId || window.sessionStorage.getItem("pdv.current_branch_id");
+    if (branchId) headers.set("X-Branch-ID", String(branchId));
     const activeSupportSession =
       supportSessionId ||
       window.sessionStorage.getItem("pdv.support_session_id");
@@ -262,11 +267,11 @@ async function request<T>(
   return data as T;
 }
 
-async function getAll<T>(path: string): Promise<T[]> {
+async function getAll<T>(path: string, options?: HttpOptions): Promise<T[]> {
   const results: T[] = [];
   let next: string | null = path;
   while (next) {
-    const page = await request<PaginatedResponse<T> | T[]>(next);
+    const page = await request<PaginatedResponse<T> | T[]>(next, options);
     // A few nested resources intentionally return a direct array instead of DRF pagination.
     if (Array.isArray(page)) {
       results.push(...page);
@@ -316,15 +321,15 @@ async function download(path: string) {
 }
 
 export const http = {
-  get: <T>(path: string) => request<T>(path),
+  get: <T>(path: string, options?: HttpOptions) => request<T>(path, options),
   getPublic: <T>(path: string) =>
     request<T>(path, {
       suppressUnauthorizedEvent: true,
       omitSupportSession: true,
     }),
   getAll,
-  post: <T>(path: string, body?: unknown) =>
-    request<T>(path, { method: "POST", body }),
+  post: <T>(path: string, body?: unknown, options?: HttpOptions) =>
+    request<T>(path, { method: "POST", body, ...options }),
   postForm: <T>(path: string, body: FormData) =>
     request<T>(path, { method: "POST", body }),
   postPublic: <T>(path: string, body?: unknown) =>
@@ -347,11 +352,11 @@ export const http = {
       suppressUnauthorizedEvent: true,
       preserveSupportSessionOnUnauthorized: true,
     }),
-  patch: <T>(path: string, body: unknown) =>
-    request<T>(path, { method: "PATCH", body }),
+  patch: <T>(path: string, body: unknown, options?: HttpOptions) =>
+    request<T>(path, { method: "PATCH", body, ...options }),
   put: <T>(path: string, body: unknown) =>
     request<T>(path, { method: "PUT", body }),
-  delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
+  delete: <T>(path: string, options?: HttpOptions) => request<T>(path, { method: "DELETE", ...options }),
   download,
 };
 
