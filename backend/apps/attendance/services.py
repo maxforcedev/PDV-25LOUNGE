@@ -1818,7 +1818,7 @@ def close_table_attendance(*, attendance, user, idempotency_key, pos_device, aud
                 issue_print_document(
                     branch=attendance.branch, document_type=PrintDocumentType.TABLE_FINAL_RECEIPT,
                     source_type='table_attendance', source_id=attendance.pk, user=user,
-                    pos_device=pos_device, automatic_only=True,
+                    pos_device=pos_device, automatic_only=False,
                     metadata={'trigger': 'table_closed', 'sale_id': sale.pk},
                 )
             except ValueError as error:

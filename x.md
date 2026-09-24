@@ -1,326 +1,405 @@
 Continue no HEAD atual.
 
-Na última revisão, o HEAD era:
+Nova missão: **ao fechar a mesa, o sistema deve emitir automaticamente um cupom final parecido com o exemplo enviado pelo usuário**.
 
-`f2b11d2e718dad4332174dc30b1f5dca9067bb21`
+Use a imagem de referência **apenas como referência visual/estrutural** do cupom:
+- simples;
+- térmico;
+- texto puro;
+- largura 58mm/80mm;
+- sem visual “fiscal”;
+- com cara de relatório/recibo gerencial.
 
-Antes de alterar, confira o HEAD atual.
+## OBJETIVO
 
-A parte principal de `PrintRoute` / `PrintRouteOverride` foi corrigida, mas ainda ficou uma inconsistência de UX/contexto de filial no Backoffice que pode fazer o usuário configurar a filial errada.
+Quando a mesa for fechada com sucesso, o POS deve emitir um **cupom final de fechamento da mesa** semelhante ao modelo enviado.
 
----
+Esse cupom **não é NFC-e**, **não é cupom fiscal**, **não é SAT**.
 
-# 1. PROBLEMA ATUAL
-
-Na tela:
+É um:
 
 ```text
-/pos-dispositivos
+RELATÓRIO GERENCIAL
+NÃO É DOCUMENTO FISCAL
+1. TIPO DE DOCUMENTO
 
-existe um seletor local de filial:
+Usar o fluxo de documento final da mesa.
 
-branchId
-settingsBranchId
+Preservar a arquitetura de documentos já existente.
 
-Agora os overrides de impressão usam corretamente esse settingsBranchId.
+O fechamento da mesa deve emitir:
+
+TABLE_FINAL_RECEIPT
+
+Não usar:
+
+TABLE_CONFERENCE para isso;
+TABLE_BILL legado;
+PAYMENT_RECEIPT no lugar do recibo final.
+
+A lógica deve ser:
+
+fechar mesa com sucesso
+→ gerar/emitir TABLE_FINAL_RECEIPT
+→ criar PrintJob conforme rota efetiva
+→ PrintManager imprime
+2. MOMENTO DA IMPRESSÃO
+
+A emissão deve acontecer depois que a mesa realmente foi fechada com sucesso.
+
+Fluxo esperado:
+
+Mesa aberta
+→ pagamentos ok
+→ operador fecha mesa
+→ backend fecha attendance
+→ status closed
+→ emite TABLE_FINAL_RECEIPT
+→ volta para o grid das mesas
+
+Se a impressão falhar ou a rota estiver desabilitada:
+
+não desfazer o fechamento da mesa;
+fechamento continua válido;
+impressão é efeito documental separado.
+3. LAYOUT ESPERADO DO CUPOM
+
+O cupom deve seguir esse espírito do exemplo:
+
+Cabeçalho
+nome da empresa;
+nome da filial;
+endereço (se houver disponível);
+telefone (se houver disponível).
+Identificação do documento
+data/hora de impressão;
+título:
+SIMPLES CONFERENCIA DA CONTA não
+aqui deve ser algo como:
+RECIBO DE FECHAMENTO DA MESA
+ou FECHAMENTO DA CONTA
+ou RELATÓRIO GERENCIAL DE FECHAMENTO
+linha:
+RELATÓRIO GERENCIAL
+aviso:
+*** NÃO É DOCUMENTO FISCAL ***
+Dados operacionais
+mesa;
+atendimento/comanda/conta (se houver identificador);
+aberto em;
+fechado em;
+operador/usuário;
+cliente, se houver.
+Itens
+
+Listar os itens vendidos.
+
+Formato próximo do exemplo:
+
+ITEM (V.Unit)                   Total
+1 X BURGER (39,90)              39,90
+  1 COCA ZERO LATA
+  OBS: sem cebola
+
+Pode usar formatação melhor alinhada, mas precisa continuar simples para ESC/POS.
+
+Totais
+subtotal;
+desconto total, se houver;
+taxa de serviço, se houver;
+total a pagar;
+total pago;
+troco, se houver.
+Pagamentos
+
+Listar as formas de pagamento utilizadas.
 
 Exemplo:
 
-Topo global:
-Filial A
+TOTAL PAGO
+CARTAO DE DEBITO VISA          39,90
+PIX                            20,00
+DINHEIRO                       19,90
+Rodapé
+operador;
+mensagem opcional de agradecimento;
+talvez site/instagram se já existir configuração;
+número/senha/identificador final, se fizer sentido.
+4. NÃO COPIAR LITERALMENTE O TEXTO DO EXEMPLO
 
-Tela Dispositivos POS:
-seleciona Filial B
+A imagem é uma referência de estrutura.
 
-Overrides:
-trabalham na Filial B ✅
+Não copiar literalmente dados do estabelecimento da foto.
 
-Porém o botão:
+Não reproduzir:
 
-Configurar regras da filial
+nome da loja da imagem;
+endereço da imagem;
+telefone da imagem;
+domínio da imagem.
 
-continua navegando somente para:
+Usar os dados reais do CORE / filial atual.
 
-/producao/rotas-impressao
+5. DIFERENÇA ENTRE CONFERÊNCIA E RECIBO FINAL
 
-Essa página usa o currentBranch global.
+Deixar a separação bem clara:
 
-Então pode acontecer:
+Conferência
 
-currentBranch global = Filial A
+Antes do fechamento:
 
-/pos-dispositivos:
-filial selecionada localmente = Filial B
+CONFERÊNCIA
+SEM VALOR FISCAL
+Cupom final ao fechar mesa
 
-→ clicar "Configurar regras da filial"
+Depois do fechamento:
 
-→ /producao/rotas-impressao abre Filial A
-
-O operador pode achar que está configurando a Filial B, mas salva a rota na Filial A.
-
-CORRIGIR.
-
-2. OBJETIVO
-
-Não pode existir ambiguidade sobre qual filial está sendo configurada.
-
-Ao sair de:
-
-Dispositivos POS
-→ Filial B
-→ Configurar regras da filial
-
-a tela:
-
-Produção → Rotas de impressão
-
-deve abrir necessariamente na:
-
-Filial B
-3. PREFERÊNCIA DE ARQUITETURA
-
-A preferência é usar o contexto global de filial como fonte principal de verdade.
+RECIBO DE FECHAMENTO / RELATÓRIO GERENCIAL
+NÃO É DOCUMENTO FISCAL
 
 Ou seja:
 
-currentBranch
+a conferência continua existindo;
+o recibo final é outro documento.
 
-deve representar a filial operacional atual do Backoffice.
+Não unificar os dois indevidamente.
 
-Evitar manter dois contextos independentes de filial para funcionalidades branch-scoped.
+6. USAR A ROTA CORRETA
 
-Se for viável sem expandir demais a missão:
+O documento final deve obedecer a rota efetiva de:
 
-seletor local da tela
-→ ao mudar filial
-→ atualizar currentBranch global
+TABLE_FINAL_RECEIPT
 
-e então todas as telas branch-scoped usam o mesmo contexto.
+Respeitar:
 
-4. CASO NÃO QUEIRA REMOVER O SELETOR LOCAL AGORA
+PrintRoute da filial;
+PrintRouteOverride do POS;
+mode;
+printer_device_ids;
+copies;
+document_format.
 
-Se preservar:
+Não hardcodar impressora.
 
-branchId / settingsBranchId
+7. FORMATO DO DOCUMENTO
 
-dentro de /pos-dispositivos, então o botão:
+Se já existe suporte a:
 
-Configurar regras da filial
+detailed
+simplified
 
-deve sincronizar o contexto global antes de navegar.
+em document_format, usar isso também para o recibo final.
 
-Exemplo conceitual:
+Detailed
 
-settingsBranchId = B
-→ setCurrentBranchId(B)
-→ navegar para /producao/rotas-impressao
+Mais próximo do exemplo:
 
-Não fazer apenas:
+itens;
+modificadores;
+observações;
+timestamps;
+pagamentos;
+operador.
+Simplified
 
-<Link href="/producao/rotas-impressao">
+Mais enxuto:
 
-sem sincronizar a filial.
+cabeçalho;
+itens resumidos;
+total;
+pagamentos;
+operador.
+8. RENDERER
 
-5. NÃO USAR QUERY PARAM COMO ÚNICA FONTE DE VERDADE
+Revisar o renderer do TABLE_FINAL_RECEIPT.
 
-Evitar solução frágil como:
+Se ainda estiver simples demais ou ausente, implementar.
 
-/producao/rotas-impressao?branch=2
+O resultado impresso deve ser visualmente parecido com o modelo:
 
-enquanto o header global continuar dizendo outra filial.
+centralização no cabeçalho;
+divisórias com traços;
+texto legível;
+blocos bem separados;
+bom uso de largura 58/80 mm.
 
-Se usar query param temporariamente, a página deve sincronizar o currentBranch global imediatamente.
+Não exagerar em estilos.
+Manter compatível com ESC/POS simples.
 
-A UI inteira precisa concordar sobre a filial.
-
-6. HEADER GLOBAL
-
-Depois da navegação, o seletor do topo deve mostrar a mesma filial:
-
-Filial B
-
-Não pode ficar:
-
-Topo: Filial A
-Tela: Filial B
-7. DOCUMENT PRINT ROUTES
-
-Preservar a correção atual de:
-
-DocumentPrintRoutes({
-    posDeviceId,
-    branchId
-})
-
-e o uso de:
-
-effectiveBranchId
-
-com:
-
-X-Branch-ID
-
-Não regredir isso.
-
-8. MELHORAR LABEL DA FILIAL
-
-Hoje, quando DocumentPrintRoutes recebe branchId, a UI pode mostrar algo como:
-
-Filial: 2
-
-Isso não é bom.
-
-Mostrar o nome da filial.
-
-Exemplo:
-
-Filial: Matriz
-
-Pode resolver usando:
-
-currentBranch
-
-quando sincronizado corretamente,
-
-ou buscando o nome correspondente em:
-
-user.branches
-
-Não exibir ID técnico para o usuário.
-
-9. OVERRIDES
-
-Preservar a lógica atual:
-
-sem override
-→ herda filial
-
-inherit_branch = true
-→ herda filial
-
-inherit_branch = false
-→ usa override
-
-Não alterar effective_print_route() novamente sem necessidade.
-
-10. "USAR REGRA DA FILIAL"
-
-Preservar:
-
-DELETE override
-→ reload
-→ Herdando da filial
-→ configuração efetiva atualizada
-
-Não voltar a atualizar apenas estado local sem reload.
-
-11. CONFIGURAÇÃO EFETIVA
-
-Continuar mostrando no override:
-
-Herdando da filial
-
-Modo efetivo: Manual/Automático/Desabilitado
-Impressoras efetivas: ...
-Cópias: ...
-
-Se possível, traduzir os modos para o usuário:
-
-manual → Manual
-automatic → Automático
-disabled → Desabilitado
-
-Evitar mostrar valor técnico em inglês.
-
-12. CENÁRIO ESPERADO
-
-Exemplo:
-
-Empresa: 25 Lounge
-
-Topo global:
-Matriz
-
-/pos-dispositivos:
-seleciona Filial Centro
-
-→ Overrides passam a usar Filial Centro
-
-→ clicar "Configurar regras da filial"
-
-→ currentBranch global muda para Filial Centro
-
-→ abre /producao/rotas-impressao
-
-→ topo mostra Filial Centro
-
-→ GET print-routes usa X-Branch-ID da Filial Centro
-
-→ salvar Conferência = Manual
-
-→ volta depois e continua Manual na Filial Centro
-13. CENÁRIO DE TROCA
-
-Depois:
-
-Topo global:
-Filial Centro
-
-→ trocar para Matriz
-
-→ /producao/rotas-impressao
-→ recarrega rotas da Matriz
-
-Não carregar dados da filial anterior.
-
-14. NÃO ALTERAR BACKEND SEM NECESSIDADE
-
-O backend atual de resolução está correto:
-
-override = PrintRouteOverride.objects.filter(
-    pos_device=pos_device,
-    document_type=document_type,
-).first()
-
-return route if override is None or override.inherit_branch else override
-
-Preservar isso.
-
-A missão agora é principalmente corrigir consistência de contexto de filial no frontend.
-
-15. NÃO REGREDIR CORREÇÕES ANTERIORES
-
-Preservar:
-
-resolução correta de PrintRoute;
-resolução correta de PrintRouteOverride;
-inherit_branch;
-X-Branch-ID explícito;
-mensagem detalhada de rota desabilitada;
-polling de produção;
-polling de PrintDocument;
-PAYMENT_RECEIPT;
-Conferência;
-hash + fallback legado;
-UNCERTAIN;
-fechamento de Mesa;
-quantidade formatada;
-retry != reprint;
-impressão NETWORK.
-ARQUIVOS A REVISAR
+9. DADOS QUE O DOCUMENTO DEVE TRAZER
 
 No mínimo:
 
-frontend/src/app/(private)/pos-dispositivos/page.tsx
-frontend/src/components/document-print-routes.tsx
-frontend/src/providers/auth-provider.tsx
-frontend/src/lib/http.ts
+company_name
+branch_name
+endereço da filial, se disponível
+telefone da filial, se disponível
+printed_at
+opened_at
+closed_at
+número da mesa
+identificador do atendimento
+operador
+cliente (se houver)
+itens
+modificadores
+observações
+subtotal
+desconto
+taxa de serviço
+total
+pagamentos
+troco (se houver)
+10. ITENS E AGRUPAMENTO
 
-Talvez não seja necessário alterar todos.
+Se o documento final hoje usa agrupamento, manter coerência com o restante do projeto.
 
-Alterar apenas o necessário.
+Se houver itens iguais agrupados, ok.
 
-REGRA CRÍTICA
+Mas precisa continuar claro no papel.
+
+Exemplo aceitável:
+
+2 X HEINEKEN LONG NECK (12,00)   24,00
+
+Ou, se não agrupar:
+
+1 X HEINEKEN LONG NECK (12,00)   12,00
+1 X HEINEKEN LONG NECK (12,00)   12,00
+
+Escolher o formato que já estiver mais consistente com o projeto.
+
+11. PAGAMENTOS
+
+O cupom final precisa mostrar as formas de pagamento realmente usadas no fechamento.
+
+Exemplo:
+
+PAGAMENTOS
+PIX                            50,00
+CARTÃO CRÉDITO                 30,00
+DINHEIRO                       20,00
+
+Se existir reversão anterior ou múltiplos pagamentos, mostrar apenas o resultado final válido da mesa fechada.
+
+12. NÃO REGREDIR O FECHAMENTO DA MESA
+
+Preservar:
+
+fechar mesa continua funcionando;
+volta ao grid das mesas;
+grid atualiza;
+mesa fica livre;
+não reabre mesa por causa de impressão;
+não duplica venda;
+não duplica baixa de estoque;
+não duplica pagamento.
+
+Impressão é apenas documento pós-fechamento.
+
+13. COMPORTAMENTO EM CASO DE ROTA DESABILITADA
+
+Se TABLE_FINAL_RECEIPT estiver desabilitado:
+
+a mesa fecha normalmente;
+o sistema pode informar que o recibo final não foi impresso;
+não bloquear o fechamento.
+
+A mensagem deve ser operacional e clara.
+
+Exemplo:
+
+Mesa fechada com sucesso.
+A impressão do recibo final está desabilitada para esta filial/POS.
+14. COMPORTAMENTO EM CASO DE FALHA DE IMPRESSÃO
+
+Se houver FAILED ou UNCERTAIN:
+
+mesa continua fechada;
+documento final continua existente;
+pode ser reimpresso depois conforme regra atual;
+não refazer fechamento;
+não recriar pagamento.
+15. REIMPRESSÃO
+
+Depois que o recibo final existir/imprimir:
+
+permitir reimpressão pelo fluxo já existente de PrintDocument, se aplicável;
+preservar diferença entre:
+impressão inicial;
+reimpressão.
+
+Não gerar vários “primeiros recibos” duplicados.
+
+16. NÃO ALTERAR O QUE JÁ ESTÁ CERTO
+
+Preservar:
+
+polling de produção;
+polling de PrintDocument;
+UNCERTAIN;
+hash unificado + fallback legado;
+Conferência atualizada;
+PAYMENT_RECEIPT;
+Solicitar Conta → TABLE_CONFERENCE;
+fechamento da mesa voltando ao grid;
+1.000x → 1x;
+retry != reprint;
+impressão NETWORK local;
+rotas por filial/POS.
+17. REFERÊNCIA VISUAL
+
+Usar como referência o exemplo enviado pelo usuário:
+
+cabeçalho centralizado;
+linhas separadoras;
+aviso de não fiscal;
+bloco de itens;
+bloco de total;
+bloco de pagamentos;
+rodapé simples.
+
+Não precisa copiar pixel a pixel.
+Precisa apenas ficar no mesmo estilo operacional.
+
+18. CENÁRIO ESPERADO
+Mesa com itens
+→ registrar pagamentos
+→ fechar mesa
+→ backend fecha attendance
+→ emite TABLE_FINAL_RECEIPT
+→ PrintJob criado
+→ impressora imprime cupom final
+→ POS sai da tela e volta para o grid
+
+Cupom esperado:
+
+simples;
+térmico;
+gerencial;
+com itens e pagamentos;
+semelhante ao exemplo.
+19. ARQUIVOS A REVISAR
+
+No mínimo, revisar o que for necessário em:
+
+backend/apps/attendance/services.py
+backend/apps/sales/services.py
+backend/apps/production/services.py
+backend/apps/production/serializers.py
+backend/apps/pos/views.py
+
+pos/lib/printing/models.dart
+pos/lib/printing/print_manager.dart
+pos/lib/printing/production_ticket_renderer.dart
+
+e principalmente o renderer/geração do:
+
+TABLE_FINAL_RECEIPT
+
+Se existir arquivo específico para renderização de documentos, revisar também.
+
+20. REGRA CRÍTICA
 
 NÃO EXECUTE TESTES.
 
@@ -334,7 +413,6 @@ pytest
 npm test
 npm build
 npm lint
-suites
 makemigrations --check
 
 Eu farei os testes manualmente.
@@ -343,20 +421,19 @@ CHECKPOINT
 
 Ao terminar informe:
 
-como eliminou a divergência entre settingsBranchId e currentBranch;
-o que acontece ao clicar "Configurar regras da filial";
-se o header global passa a refletir a filial correta;
-se /producao/rotas-impressao usa a mesma filial;
-se o X-Branch-ID continua correto;
-se a UI agora mostra o nome da filial em vez do ID;
-se os modos herdados aparecem traduzidos;
-arquivos frontend alterados;
-arquivos backend alterados — idealmente nenhum;
+onde passou a emitir o TABLE_FINAL_RECEIPT no fechamento da mesa;
+se a mesa continua fechando mesmo quando a impressão falha;
+como ficou o layout do recibo final;
+quais campos foram incluídos no documento;
+como ficou a distinção entre Conferência e recibo final;
+como os pagamentos aparecem no cupom;
+como ficou o renderer em 58/80 mm;
+se preservou reimpressão;
+arquivos backend alterados;
+arquivos Flutter alterados;
 migrations criadas — não deveria precisar;
 pontos restantes para teste manual.
 
 NÃO EXECUTE TESTES.
-NÃO EXECUTE ANALYZE.
-NÃO EXECUTE BUILD.
 
 Depois pare.

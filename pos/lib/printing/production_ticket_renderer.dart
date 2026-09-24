@@ -104,6 +104,8 @@ class ProductionTicketRenderer {
             fiscalLabel: 'SEM VALOR FISCAL', detailed: detailed);
         break;
       case PrintDocumentType.tableFinalReceipt:
+        _finalTableReceiptDocument(bytes, snapshot, width, detailed: detailed);
+        break;
       case PrintDocumentType.quickSaleReceipt:
         _center(bytes, 'RECIBO NAO FISCAL', width, bold: true);
         _receiptDocument(bytes, snapshot, width, detailed: detailed);
@@ -143,6 +145,32 @@ class ProductionTicketRenderer {
         _first(snapshot, ['customer', 'customer_name']), width);
   }
 
+  void _finalTableReceiptDocument(BytesBuilder bytes,
+      Map<String, dynamic> snapshot, int width, {required bool detailed}) {
+    _center(bytes, 'RECIBO DE FECHAMENTO DA MESA', width, bold: true,
+        large: true);
+    _center(bytes, 'RELATORIO GERENCIAL', width, bold: true);
+    _center(bytes, '*** NAO E DOCUMENTO FISCAL ***', width, bold: true);
+    _line(bytes, '-' * width);
+    _lineIfPresent(bytes, 'Endereco', _first(snapshot, ['branch_address']), width);
+    _lineIfPresent(bytes, 'Telefone', _first(snapshot, ['branch_phone']), width);
+    _centerIfPresent(bytes, _tableLabel(snapshot), width, bold: true);
+    _lineIfPresent(bytes, 'Atendimento', _first(snapshot, ['attendance_id']), width);
+    _lineIfPresent(bytes, 'Fechada em', _first(snapshot, ['closed_at']), width);
+    _lineIfPresent(bytes, 'Impresso em', DateTime.now().toLocal().toString().substring(0, 16), width);
+    if (detailed) {
+      _lineIfPresent(bytes, 'Aberta em', _first(snapshot, ['opened_at']), width);
+      _lineIfPresent(bytes, 'Cliente', _first(snapshot, ['customer']), width);
+    }
+    _documentItems(bytes, snapshot, width, detailed: detailed,
+        includeUnitPrice: true);
+    _financials(bytes, snapshot, width);
+    _payments(bytes, snapshot, width);
+    _lineIfPresent(bytes, 'Operador', _first(snapshot, ['operator', 'attendant']), width);
+    _line(bytes, '-' * width);
+    _center(bytes, 'OBRIGADO PELA PREFERENCIA', width);
+  }
+
   void _paymentDocument(BytesBuilder bytes, Map<String, dynamic> snapshot, int width) {
     final nestedPayment = _map(snapshot['payment']);
     final payment = nestedPayment.isEmpty ? snapshot : nestedPayment;
@@ -177,6 +205,8 @@ class ProductionTicketRenderer {
       {bool attendant = false}) {
     _lineIfPresent(bytes, 'Data/hora',
         _first(snapshot, ['opened_at', 'created_at', 'issued_at']), width);
+    _lineIfPresent(bytes, 'Endereco', _first(snapshot, ['branch_address']), width);
+    _lineIfPresent(bytes, 'Telefone', _first(snapshot, ['branch_phone']), width);
     if (attendant) {
       _lineIfPresent(bytes, 'Atendente',
           _first(snapshot, ['attendant', 'operator', 'seller']), width);
@@ -184,7 +214,7 @@ class ProductionTicketRenderer {
   }
 
   void _documentItems(BytesBuilder bytes, Map<String, dynamic> snapshot,
-      int width, {required bool detailed}) {
+      int width, {required bool detailed, bool includeUnitPrice = false}) {
     final items = snapshot['items'];
     if (items is! List || items.isEmpty) return;
     _line(bytes, '-' * width);
@@ -194,7 +224,10 @@ class ProductionTicketRenderer {
       if (name == null) continue;
       final quantity = _formatQuantity(_first(item, ['quantity']));
       final financial = _map(item['financial']);
-      _columns(bytes, '$quantity${quantity.isEmpty ? '' : 'x '} $name',
+      final unitPrice = _first(item, ['unit_price']);
+      final description = '$quantity${quantity.isEmpty ? '' : 'x '} $name'
+          '${includeUnitPrice && unitPrice != null ? ' ($unitPrice)' : ''}';
+      _columns(bytes, description,
           _first(item, ['line_total', 'net_subtotal', 'subtotal', 'total']) ??
               _first(financial, ['net_subtotal', 'subtotal']),
           width,
@@ -237,6 +270,7 @@ class ProductionTicketRenderer {
       'service_fee': 'Taxa de servico',
       'total_due': 'TOTAL',
       'total': 'TOTAL',
+      'paid_total': 'TOTAL PAGO',
     };
     final rows = <MapEntry<String, String>>[];
     for (final entry in labels.entries) {

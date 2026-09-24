@@ -133,7 +133,7 @@ def _document_request_fingerprint(*, action, branch, document_type=None,
 
 
 def _table_snapshot(attendance):
-    from apps.attendance.models import AttendanceOrderItemStatus, TablePayment
+    from apps.attendance.models import AttendanceOrderItemStatus, AttendancePaymentStatus, TablePayment
     from apps.attendance.services import table_financial_state, table_summary
 
     items = attendance.orders.prefetch_related('items').all()
@@ -149,7 +149,9 @@ def _table_snapshot(attendance):
                 'cancelled_at': item.cancelled_at.isoformat() if item.cancelled_at else None,
                 'cancellation_reason': item.cancellation_reason,
             })
-    payments = TablePayment.objects.filter(attendance=attendance).select_related('payment_method', 'operator').order_by('id')
+    payments = TablePayment.objects.filter(
+        attendance=attendance, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
+    ).select_related('payment_method', 'operator').order_by('id')
     return {
         'table': {'id': attendance.table_id, 'name': attendance.table.name},
         'attendance_id': attendance.pk, 'status': attendance.status,
@@ -292,6 +294,10 @@ def _document_snapshot(*, branch, document_type, source_type, source_id):
     snapshot = dict(snapshot)
     snapshot.setdefault('company_name', branch.company.trade_name or branch.company.legal_name)
     snapshot.setdefault('branch_name', branch.name)
+    snapshot.setdefault('branch_address', ', '.join(
+        str(value).strip() for value in (branch.address or {}).values() if str(value).strip()
+    ))
+    snapshot.setdefault('branch_phone', branch.phone)
     return source, snapshot
 
 
@@ -301,11 +307,17 @@ def _document_snapshot_hash(snapshot):
     ).encode()).hexdigest()
 
 
-def _legacy_document_snapshot_hash(snapshot):
-    legacy_snapshot = dict(snapshot)
-    legacy_snapshot.pop('company_name', None)
-    legacy_snapshot.pop('branch_name', None)
-    return _document_snapshot_hash(legacy_snapshot)
+def _legacy_document_snapshot_hashes(snapshot):
+    before_contact_fields = dict(snapshot)
+    before_contact_fields.pop('branch_address', None)
+    before_contact_fields.pop('branch_phone', None)
+    before_header_fields = dict(before_contact_fields)
+    before_header_fields.pop('company_name', None)
+    before_header_fields.pop('branch_name', None)
+    return {
+        _document_snapshot_hash(before_contact_fields),
+        _document_snapshot_hash(before_header_fields),
+    }
 
 
 def _existing_print_document(*, branch, document_type, source_type, source_id, snapshot_hash, snapshot):
@@ -318,7 +330,7 @@ def _existing_print_document(*, branch, document_type, source_type, source_id, s
         return document
     # Documents emitted before the header fields were added remain immutable.
     return PrintDocument.objects.filter(
-        **filters, snapshot_hash=_legacy_document_snapshot_hash(snapshot),
+        **filters, snapshot_hash__in=_legacy_document_snapshot_hashes(snapshot),
     ).first()
 
 
