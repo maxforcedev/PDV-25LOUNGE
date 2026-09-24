@@ -269,6 +269,11 @@ class PrintJob(BaseModel):
         ordering = ('id',)
         constraints = [
             models.UniqueConstraint(fields=('production_job', 'printer_device', 'idempotency_key'), name='production_print_job_idempotency_unique'),
+            models.UniqueConstraint(
+                fields=('print_document', 'printer_device', 'idempotency_key'),
+                condition=Q(print_document__isnull=False),
+                name='document_print_job_idempotency_unique',
+            ),
             models.UniqueConstraint(fields=('reprint_of', 'reprint_number'), condition=Q(reprint_of__isnull=False), name='production_print_job_reprint_number_unique'),
             models.CheckConstraint(
                 condition=(

@@ -131,7 +131,6 @@ def _print_document_effect(document):
         'document_type': document.document_type,
         **state,
         'reprint_number': max(jobs.values_list('reprint_number', flat=True), default=0),
-        'queued': jobs.filter(status__in=(PrintJobStatus.PENDING, PrintJobStatus.PROCESSING)).exists(),
         'print_jobs': list(jobs.values(
             'status', 'reprint_of', 'reprint_number', 'physical_dispatch_started_at',
         )),

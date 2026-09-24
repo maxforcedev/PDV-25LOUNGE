@@ -4,7 +4,7 @@ from hashlib import sha256
 import json
 from datetime import timedelta
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Max, Sum
 from django.utils import timezone
 
@@ -309,11 +309,23 @@ def create_print_document(*, branch, document_type, source_type, source_id, user
     version = (PrintDocument.objects.filter(
         branch=branch, document_type=document_type, source_type=source_type, source_id=str(source_id),
     ).aggregate(latest=Max('version'))['latest'] or 0) + 1
-    document = PrintDocument.objects.create(
-        company=branch.company, branch=branch, document_type=document_type,
-        source_type=source_type, source_id=str(source_id), snapshot=snapshot,
-        snapshot_hash=snapshot_hash, version=version, created_by=user, metadata=metadata or {},
-    )
+    try:
+        # Savepoint keeps the surrounding business transaction usable on a
+        # concurrent insert of this immutable source snapshot.
+        with transaction.atomic():
+            document = PrintDocument.objects.create(
+                company=branch.company, branch=branch, document_type=document_type,
+                source_type=source_type, source_id=str(source_id), snapshot=snapshot,
+                snapshot_hash=snapshot_hash, version=version, created_by=user, metadata=metadata or {},
+            )
+    except IntegrityError:
+        document = PrintDocument.objects.filter(
+            branch=branch, document_type=document_type, source_type=source_type,
+            source_id=str(source_id), snapshot_hash=snapshot_hash,
+        ).first()
+        if document:
+            return document, False
+        raise
     audit_log(actor=user, action='print_document.create', obj=document, company=branch.company, branch=branch,
               metadata={'document_type': document_type, 'source_type': source_type, 'source_id': str(source_id),
                         'snapshot_hash': snapshot_hash, 'version': version})
@@ -366,10 +378,15 @@ def enqueue_print_document(*, document, user=None, pos_device=None, retry_failed
     jobs = []
     for device in devices:
         for copy_number in range(1, policy.copies + 1):
-            job = PrintJob.objects.create(
-                company=document.company, branch=document.branch, print_document=document,
-                printer_device=device,
-                payload_snapshot={
+            job_key = uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f'document:{document.pk}:device:{device.pk}:copy:{copy_number}',
+            )
+            job, created = PrintJob.objects.get_or_create(
+                print_document=document, printer_device=device, idempotency_key=job_key,
+                defaults={
+                    'company': document.company, 'branch': document.branch,
+                    'payload_snapshot': {
                     'document': {
                         'id': document.pk, 'document_type': document.document_type,
                         'source_type': document.source_type, 'source_id': document.source_id,
@@ -378,13 +395,14 @@ def enqueue_print_document(*, document, user=None, pos_device=None, retry_failed
                     },
                     'snapshot': document.snapshot,
                 },
-                idempotency_key=uuid.uuid5(uuid.NAMESPACE_URL, f'document:{document.pk}:device:{device.pk}:copy:{copy_number}'),
+                },
             )
             jobs.append(job)
-            audit_log(actor=user, action='print_job.enqueue_document', obj=job,
-                      company=document.company, branch=document.branch,
-                      metadata={'document_id': document.pk, 'printer_device_id': device.pk,
-                                'copy_number': copy_number, 'document_type': document.document_type})
+            if created:
+                audit_log(actor=user, action='print_job.enqueue_document', obj=job,
+                          company=document.company, branch=document.branch,
+                          metadata={'document_id': document.pk, 'printer_device_id': device.pk,
+                                    'copy_number': copy_number, 'document_type': document.document_type})
     return jobs
 
 
@@ -423,10 +441,19 @@ def issue_print_document(*, branch, document_type, source_type, source_id, user=
     else:
         enqueue_print_document(document=document, user=user, pos_device=pos_device, retry_failed=True)
     if idempotency_key:
-        request = PrintDocumentRequest.objects.create(
-            branch=branch, document=document, action='issue', idempotency_key=idempotency_key,
-            request_fingerprint=fingerprint,
-        )
+        try:
+            with transaction.atomic():
+                request = PrintDocumentRequest.objects.create(
+                    branch=branch, document=document, action='issue', idempotency_key=idempotency_key,
+                    request_fingerprint=fingerprint,
+                )
+        except IntegrityError:
+            request = PrintDocumentRequest.objects.select_related('document').get(
+                branch=branch, action='issue', idempotency_key=idempotency_key,
+            )
+            if request.request_fingerprint != fingerprint:
+                raise ValueError('Conflito de idempotência: a chave já foi usada para outra emissão.')
+            return request.document
         request.generated_jobs.set(document.print_jobs.filter(reprint_of__isnull=True))
         audit_log(actor=user, action='print_document.issue', obj=document, company=branch.company,
                   branch=branch, metadata={'idempotency_key': str(idempotency_key)})
@@ -435,6 +462,7 @@ def issue_print_document(*, branch, document_type, source_type, source_id, user=
 
 @transaction.atomic
 def reprint_print_document(*, document, user, reason='', idempotency_key=None):
+    document = PrintDocument.objects.select_for_update().get(pk=document.pk)
     fingerprint = _document_request_fingerprint(
         action='reprint', branch=document.branch, document_id=document.pk, reason=reason,
     )
@@ -460,10 +488,19 @@ def reprint_print_document(*, document, user, reason='', idempotency_key=None):
         for source in eligible_sources
     ]
     if idempotency_key:
-        request = PrintDocumentRequest.objects.create(
-            branch=document.branch, document=document, action='reprint', idempotency_key=idempotency_key,
-            request_fingerprint=fingerprint,
-        )
+        try:
+            with transaction.atomic():
+                request = PrintDocumentRequest.objects.create(
+                    branch=document.branch, document=document, action='reprint', idempotency_key=idempotency_key,
+                    request_fingerprint=fingerprint,
+                )
+        except IntegrityError:
+            request = PrintDocumentRequest.objects.prefetch_related('generated_jobs').get(
+                branch=document.branch, action='reprint', idempotency_key=idempotency_key,
+            )
+            if request.request_fingerprint != fingerprint:
+                raise ValueError('Conflito de idempotência: a chave já foi usada para outra reimpressão.')
+            return list(request.generated_jobs.order_by('id'))
         request.generated_jobs.set(reprints)
         audit_log(actor=user, action='print_document.reprint', obj=document, company=document.company,
                   branch=document.branch, metadata={'idempotency_key': str(idempotency_key), 'reason': reason})

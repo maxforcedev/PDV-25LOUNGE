@@ -1,14 +1,14 @@
-MISSÃO — Correção final de estado de impressão com múltiplas impressoras/cópias
+MISSÃO — Correção final do estado queued + hardening de concorrência na impressão
 
 Trabalhe no HEAD mais recente da main.
 
 Na última revisão, o HEAD era:
 
-fee6692cd3d2d8790d7238222a0f9d6460ec8a3c
+5f920aa7443776c35e94312a5ad4891586dd33d4
 
 Antes de alterar, confira o HEAD atual.
 
-NÃO refaça a arquitetura de impressão.
+NÃO refaça a arquitetura.
 
 Preservar tudo que já está correto:
 
@@ -21,16 +21,15 @@ ProductionJob
 PrintManager
 claim / lease / dispatch / reconcile
 UNCERTAIN
+retry != reprint
 NETWORK local
-roteamento por finalidade
-múltiplas impressoras por finalidade
+múltiplas impressoras
 múltiplas cópias
-Product -> ProductionDestination -> PrinterDevice
 GET da Mesa read-only
 snapshot/versionamento
-persistência de comprovantes
-fingerprint de idempotência
-generated_jobs para replay exato
+request_fingerprint
+generated_jobs
+persistência dos comprovantes
 margens ESC/POS
 wrapping
 feed/corte
@@ -43,187 +42,116 @@ NÃO execute:
 
 flutter analyze
 flutter test
-build Flutter
+build
 pytest
 npm test
 npm build
 npm lint
-backend suites
-frontend suites
+suites
 makemigrations --check
 
-EU FAREI O BUILD E OS TESTES MANUALMENTE.
+Eu farei a validação manual.
 
 ==================================================
-PROBLEMA ENCONTRADO
 
-O estado agregado de PrintDocument ainda está incorreto quando existem múltiplos jobs iniciais.
+CORRIGIR _print_document_effect()
+==================================================
+
+Existe uma inconsistência atual em:
+
+backend/apps/pos/views.py
+
+Hoje a função faz algo equivalente a:
+
+state = print_document_state(document)
+
+return {
+    ...
+    **state,
+    ...
+    'queued': jobs.filter(
+        status__in=(PENDING, PROCESSING)
+    ).exists(),
+}
+
+Isso está errado porque sobrescreve o queued já calculado corretamente por:
+
+print_document_state(document)
 
 Exemplo:
 
-CONTA DA MESA
-├─ Printer A → PRINTED
-└─ Printer B → FAILED antes do dispatch
+Printer A → FAILED antes do dispatch
+Printer B → PENDING
 
-Hoje o documento pode ficar simultaneamente:
+print_document_state() corretamente retorna:
 
-reprintEligible = true
-retryEligible = true
-
-porque:
-
-existe pelo menos um PRINTED;
-existe pelo menos um FAILED.
-
-E no Flutter a prioridade atual é:
-
-if (canReprint) return 'REIMPRIMIR';
-if (retryEligible) return 'TENTAR NOVAMENTE';
-
-Resultado:
-
-aparece REIMPRIMIR, quando na verdade a impressão inicial ainda não foi concluída em todos os destinos.
-
-Isso está errado.
-
-==================================================
-
-REGRA CORRETA DE ESTADO AGREGADO
-==================================================
-
-Para um PrintDocument, considerar APENAS os jobs iniciais:
-
-reprint_of IS NULL
-
-A prioridade deve ser:
-
-A) FAILED antes do dispatch
-
-Se existir qualquer job inicial:
-
-status = FAILED
-physical_dispatch_started_at IS NULL
-
-então:
-
-retryEligible = true
-reprintEligible = false
+retry_eligible = true
 queued = false
 
-ação:
+Mas _print_document_effect() sobrescreve e termina devolvendo:
 
-TENTAR NOVAMENTE
-
-==================================================
-2. PENDING / PROCESSING
-
-Se não houver FAILED elegível para retry, mas existir qualquer job inicial:
-
-PENDING
-ou
-PROCESSING
-
-então:
-
+retry_eligible = true
 queued = true
-reprintEligible = false
-retryEligible = false
 
-ação:
+Isso cria estado contraditório na API.
 
-IMPRESSÃO PENDENTE
+CORRIGIR.
 
-==================================================
-3. REPRINT ELIGIBLE
+_print_document_effect() deve usar print_document_state() como ÚNICA fonte da verdade para:
 
-reprintEligible = true SOMENTE quando:
+initial_printed
+retry_eligible
+queued
+reprint_eligible
 
-existe pelo menos um job inicial;
-TODOS os jobs iniciais estão em estado terminal seguro para reimpressão:
-PRINTED
-ou
-UNCERTAIN
-
-Exemplo:
-
-Printer A → PRINTED
-Printer B → UNCERTAIN
-
-então:
-
-REIMPRIMIR
-
-pois não existe mais job inicial pendente ou retry seguro.
-
-==================================================
-4. NÃO USAR ANY() PARA REPRINT ELIGIBLE
-
-Hoje existem pontos equivalentes a:
-
-jobs.filter(
-    reprint_of__isnull=True,
-    status__in=(PRINTED, UNCERTAIN),
-).exists()
-
-Isso só verifica se ALGUM job terminou.
-
-Trocar por lógica de conjunto completo.
+Remover qualquer recálculo duplicado desses campos.
 
 Exemplo conceitual:
 
-initial_jobs = todos os jobs iniciais
+state = print_document_state(document)
 
-reprintEligible =
-initial_jobs existem
-E
-todos initial_jobs estão em PRINTED ou UNCERTAIN
+return {
+    'id': document.pk,
+    'document_type': document.document_type,
+    **state,
+    'reprint_number': ...,
+    'print_jobs': ...,
+}
 ==================================================
-5. CORRIGIR TODOS OS SERIALIZERS/EFFECTS
+2. EVITAR DUPLICAÇÃO DA REGRA DE ESTADO
 
-Aplicar a mesma regra em todos os lugares que calculam estado de documento.
+Revisar o backend e garantir que não existam outras funções calculando esses estados de forma diferente.
 
-Revisar principalmente:
+Toda lógica agregada deve passar por:
 
-PrintDocumentSerializer
-PrintDocumentResultSerializer
-_print_document_effect()
-qualquer helper duplicado que calcule:
-initial_printed
-reprint_eligible
-queued
-retry_eligible
+print_document_state(document)
 
-Não deixar backend retornar estados contraditórios.
+Não duplicar regras com .exists() ou .filter() espalhadas.
 
 ==================================================
-6. INITIAL_PRINTED
+3. PRESERVAR REGRAS ATUAIS
 
-Revisar também initial_printed.
+A regra correta deve continuar:
 
-Para documento com múltiplos jobs:
+qualquer FAILED antes do dispatch
+→ retry_eligible = true
+→ queued = false
+→ reprint_eligible = false
 
-Printer A → PRINTED
-Printer B → FAILED
+senão qualquer PENDING/PROCESSING
+→ queued = true
+→ retry_eligible = false
+→ reprint_eligible = false
 
-initial_printed NÃO deve significar que a impressão inicial completa foi concluída.
+senão todos PRINTED/UNCERTAIN
+→ reprint_eligible = true
 
-Separar semanticamente:
-
-algum job impresso;
-impressão inicial completamente resolvida.
-
-Se initial_printed continuar existindo como booleano público, ele deve representar a conclusão adequada do conjunto inicial, não apenas exists(PRINTED).
-
-Preferência:
-
-initial_printed = todos os initial_jobs == PRINTED
-
-UNCERTAIN não significa impresso confirmado.
-
+todos PRINTED
+→ initial_printed = true
 ==================================================
-7. FLUTTER — ORDEM DOS ESTADOS
+4. FLUTTER
 
-Mesmo com o backend corrigido, reforçar a prioridade no Flutter:
+Preservar a prioridade atual:
 
 retryEligible
 → TENTAR NOVAMENTE
@@ -234,185 +162,110 @@ awaitingInitialPrint
 canReprint
 → REIMPRIMIR
 
-caso contrário
+senão
 → IMPRIMIR
 
-Não deixar canReprint ter prioridade sobre retry.
-
-A regra agregada deve vir correta do backend, mas a UI também deve ser defensiva.
+Não precisa alterar Flutter se não houver inconsistência nova.
 
 ==================================================
-8. AÇÃO DE RETRY
+5. HARDENING DE CONCORRÊNCIA
 
-Quando retryEligible = true:
+Revisar a criação de PrintJob de documento para garantir proteção contra duas requisições simultâneas tentando gerar a mesma execução física.
 
-a ação deve executar retry técnico dos jobs iniciais FAILED elegíveis.
-
-NÃO:
-
-criar nova emissão;
-criar reprint;
-reenviar jobs já PRINTED;
-reenviar UNCERTAIN.
-
-Exemplo:
-
-Printer A → PRINTED
-Printer B → FAILED BEFORE SEND
-
-TENTAR NOVAMENTE:
-
-Printer A → permanece PRINTED
-Printer B → volta para PENDING
-==================================================
-9. NÃO USAR retry_print_job() DE FORMA QUE AFETE BATCH ERRADO
-
-Revisar cuidadosamente retry_print_job().
-
-Ele atualmente pode trabalhar por batch_key.
-
-Para PrintDocument com múltiplas impressoras/cópias, garantir que retry de um job FAILED não resete também um job já PRINTED do mesmo documento.
-
-Se jobs de documento não usam batch_key, preservar isso.
-
-Se usarem futuramente, garantir filtro por elegibilidade individual.
-
-==================================================
-10. MÚLTIPLAS CÓPIAS
-
-Exemplo:
-
-copies = 2
-
-Printer A copy 1 → PRINTED
-Printer A copy 2 → FAILED
-
-Estado:
-
-TENTAR NOVAMENTE
-
-Retry:
-
-somente copy 2.
-
-Depois:
-
-copy 1 → PRINTED
-copy 2 → PRINTED
-
-Estado:
-
-REIMPRIMIR
-
-==================================================
-11. MÚLTIPLAS IMPRESSORAS
-
-Exemplo:
-
-TABLE_BILL
-
-Printer Caixa → PRINTED
-Printer Recepção → PENDING
-
-Estado:
-
-IMPRESSÃO PENDENTE
-
-Não:
-
-REIMPRIMIR
-
-==================================================
-12. UNCERTAIN
-
-Exemplo:
-
-Printer A → PRINTED
-Printer B → UNCERTAIN
-
-Não existe retry automático seguro.
-
-Estado final pode ser:
-
-REIMPRIMIR
-
-porque qualquer nova cópia precisa ser ação explícita.
-
-Não transformar UNCERTAIN em FAILED.
-
-==================================================
-13. DOCUMENTO SEM JOB
-
-Se existe PrintDocument mas não existe job inicial:
-
-IMPRIMIR
-
-Isso é válido principalmente em rota MANUAL antes da primeira impressão.
-
-==================================================
-14. DOCUMENTO DISABLED
-
-Se a rota estiver DISABLED:
-
-não gerar novos jobs.
-
-Não quebrar os estados históricos existentes.
-
-==================================================
-15. NÃO ALTERAR IDEMPOTÊNCIA
-
-A última rodada implementou:
-
-request_fingerprint
-generated_jobs
-replay exato
-
-PRESERVAR.
-
-Não reescrever sem necessidade.
-
-==================================================
-16. NÃO ALTERAR GET READ-ONLY
-
-Preservar:
-
-current_print_document()
-
-e o GET da Mesa sem criação de PrintDocument.
-
-==================================================
-17. NÃO ALTERAR TABLEPAYMENT FIX
-
-Preservar:
-
-TablePayment.printDocument
-
-e:
-
-TablePaymentSerializer.print_document
-
-O erro de build já foi corrigido.
-
-==================================================
-18. NÃO ALTERAR QUICK SALE PAYMENT FIX
-
-Preservar:
-
-QuickSaleCheckoutPayment.printDocument
-
-e o payload com:
+Hoje PrintJob possui constraint de idempotência voltada para production_job, mas não uma constraint específica equivalente para:
 
 print_document
++ printer_device
++ idempotency_key
+
+Avaliar adicionar constraint apropriada para PrintJob de documento.
+
+Objetivo:
+
+duas requisições simultâneas para a mesma intenção NÃO podem gerar dois jobs físicos equivalentes.
 
 ==================================================
-19. NÃO MEXER EM KOTLIN/GRADLE
+6. NÃO QUEBRAR MÚLTIPLAS CÓPIAS
 
-O commit anterior chamado fix erro kotlin corrigiu Dart/model.
+A constraint NÃO pode impedir:
 
-NÃO mexer em Kotlin/Gradle nesta missão.
+Printer A
+copy 1
+copy 2
+
+porque são cópias legítimas.
+
+Hoje a chave já é determinística por:
+
+document
+printer
+copy_number
+
+Portanto use a idempotency_key como parte da proteção.
 
 ==================================================
-20. NÃO COMEÇAR NOVO BLOCO
+7. CONCORRÊNCIA DE PrintDocumentRequest
+
+PrintDocumentRequest já possui:
+
+branch
+action
+idempotency_key
+
+com UniqueConstraint.
+
+Preservar.
+
+Se duas requisições simultâneas usarem a mesma chave:
+
+uma pode ganhar a corrida;
+
+a outra deve tratar o conflito como replay/idempotência, não como erro 500.
+
+Revisar issue_print_document() e reprint_print_document() para tratar IntegrityError de concorrência de forma segura, se necessário.
+
+==================================================
+8. CONCORRÊNCIA DE PrintDocument
+
+PrintDocument já possui UniqueConstraint em:
+
+branch
+document_type
+source_type
+source_id
+snapshot_hash
+
+Preservar.
+
+Se duas requisições tentarem criar o mesmo snapshot simultaneamente:
+
+não deixar isso virar erro 500.
+
+Uma deve criar.
+
+A outra deve recuperar o registro já criado.
+
+Fazer isso sem duplicar versionamento.
+
+==================================================
+9. NÃO ALTERAR COMPORTAMENTO DE NEGÓCIO
+
+NÃO mexer em:
+
+quando Mesa imprime produção;
+quando Venda Rápida imprime produção;
+cancelamento;
+Conta;
+Conferência;
+Recibo;
+Comprovante;
+Ticket;
+roteamento;
+destinos;
+permissões;
+Stone/USB/Bluetooth.
+==================================================
+10. NÃO COMEÇAR NOVO BLOCO
 
 NÃO implementar:
 
@@ -429,17 +282,15 @@ CHECKPOINT
 
 Ao terminar informe:
 
-como ficou a regra agregada de estado dos jobs iniciais;
-quando retryEligible fica true;
-quando queued fica true;
-quando reprintEligible fica true;
-como ficou initial_printed;
-como o Flutter prioriza TENTAR NOVAMENTE / PENDENTE / REIMPRIMIR / IMPRIMIR;
-como retry funciona com duas impressoras;
-como retry funciona com várias cópias;
-arquivos backend alterados;
-arquivos Flutter alterados;
-se restou algum ponto que dependa apenas de teste físico.
+como corrigiu o overwrite de queued;
+se print_document_state() ficou como única fonte da verdade;
+se adicionou constraint para PrintJob de documento;
+como protegeu múltiplas cópias;
+como tratou corrida na criação de PrintDocument;
+como tratou corrida em PrintDocumentRequest;
+migrations criadas;
+arquivos alterados;
+se restou algum ponto que dependa somente de teste físico.
 
 NÃO EXECUTE TESTES.
 
@@ -447,4 +298,4 @@ NÃO EXECUTE ANALYZE.
 
 NÃO EXECUTE BUILD.
 
-DEPOIS PARE.
+Depois pare.
