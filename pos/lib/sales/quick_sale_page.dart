@@ -162,64 +162,6 @@ class _QuickSalePageState extends State<QuickSalePage> {
 
   Future<void> _loadInitial() async {
     await Future.wait([_loadCatalog(), _loadCheckoutOptions()]);
-    await _resumeCheckout();
-  }
-
-  Future<void> _resumeCheckout() async {
-    if (!mounted) return;
-    final checkout = await widget.controller.recoverQuickSaleCheckout();
-    if (!mounted || checkout == null) return;
-    setState(() => _restoreCheckoutDraft(checkout));
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Venda em andamento recuperada.')),
-    );
-  }
-
-  void _restoreCheckoutDraft(QuickSaleCheckout checkout) {
-    final productsById = {
-      for (final product in _allCatalog) product.id: product
-    };
-    final items = <QuickSaleCartItem>[];
-    for (final checkoutItem in checkout.items) {
-      final input = checkoutItem.input;
-      final product = productsById[int.tryParse('${input['product']}')] ??
-          checkoutItem.recoveryProduct;
-      if (product == null) {
-        widget.controller.showTransientMessage(
-            'Não foi possível restaurar todos os dados desta venda. Tente novamente.');
-        return;
-      }
-      final modifiers = (input['modifiers'] as List? ?? const [])
-          .whereType<Map>()
-          .map((modifier) => Map<String, dynamic>.from(modifier))
-          .toList(growable: false);
-      final discount = input['discount'] is Map
-          ? QuickSaleDiscountIntent.fromJson(
-              Map<String, dynamic>.from(input['discount'] as Map))
-          : const QuickSaleDiscountIntent();
-      items.add(QuickSaleCartItem(
-        clientItemId:
-            input['client_item_id'] as String? ?? createIdempotencyKey(),
-        product: product,
-        quantity: input['quantity'] as String? ?? checkoutItem.quantity,
-        modifiers: modifiers,
-        notes: input['notes'] as String? ?? '',
-        discount: discount,
-      ));
-    }
-    _cart
-      ..clear()
-      ..addAll(items);
-    _lastValidatedCart = List<QuickSaleCartItem>.of(items);
-    _pendingCartMutations.clear();
-    _cartShortages.clear();
-    _preview = checkout.preview;
-    _loadingPreview = false;
-    _draft.customer = checkout.customer;
-    _discount = checkout.discountIntent;
-    _serviceFeeWaived = checkout.serviceFeeWaived;
-    _catalogLocked = !checkout.canEditFinancials;
-    _draft.changed();
   }
 
   Future<void> _openPayment(
@@ -249,16 +191,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
       ));
       return;
     }
-    final activeCheckout = await widget.controller.recoverQuickSaleCheckout();
-    if (!mounted) return;
-    setState(() {
-      if (activeCheckout == null) {
-        _catalogLocked = false;
-        _resetSaleDraftState();
-      } else {
-        _restoreCheckoutDraft(activeCheckout);
-      }
-    });
+    setState(_resetSaleDraftState);
   }
 
   Future<void> _loadCatalog() async {

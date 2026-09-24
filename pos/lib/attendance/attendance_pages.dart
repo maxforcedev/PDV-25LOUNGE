@@ -53,13 +53,18 @@ class _TablesPageState extends State<TablesPage> {
       );
       if (attendance == null || !mounted) return;
     }
-    await Navigator.of(context).push(MaterialPageRoute(
+    final result = await Navigator.of(context).push<TableAttendance>(MaterialPageRoute(
       builder: (_) => TableOrderPage(
         controller: widget.controller,
         attendance: attendance!,
       ),
     ));
-    if (mounted) await _load();
+    if (!mounted) return;
+    await _load();
+    if (mounted && result?.status == 'closed') {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Mesa fechada com sucesso.')));
+    }
   }
 
   Future<void> _groupSelected() async {

@@ -1172,9 +1172,12 @@ def complete_print_job(*, job_id, device, outcome, error='', metadata=None):
         item.last_error = (error or '')[:1000]
         item.executor_metadata = {'device_id': str(device.pk), **(metadata or {})}
         item.lease_until = None
+        if status == PrintJobStatus.FAILED and (metadata or {}).get('failed_before_send') is True:
+            item.physical_dispatch_started_at = None
         if status == PrintJobStatus.PRINTED:
             item.printed_at = now
-        item.save(update_fields=('status', 'last_error', 'executor_metadata', 'lease_until', 'printed_at', 'updated_at'))
+        item.save(update_fields=('status', 'last_error', 'executor_metadata', 'lease_until',
+                                 'physical_dispatch_started_at', 'printed_at', 'updated_at'))
         _record_printer_observation(
             item,
             status=PrinterOperationalStatus.ONLINE if status == PrintJobStatus.PRINTED else PrinterOperationalStatus.OFFLINE if item.is_test else PrinterOperationalStatus.FAILED,

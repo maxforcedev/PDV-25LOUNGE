@@ -535,6 +535,13 @@ class _TableOrderPageState extends State<TableOrderPage> {
           content: Text('Envie os itens novos antes de solicitar a conta.')));
       return;
     }
+    if (!_attendance.billRequested && !_attendance.orders
+        .expand((order) => order.items)
+        .any((item) => item.status == 'confirmed')) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Adicione e envie pelo menos um produto antes de solicitar a conta.')));
+      return;
+    }
     setState(() => _actionInProgress = true);
     final updated = await widget.controller.setTableBillRequested(
       attendanceId: _attendance.id,

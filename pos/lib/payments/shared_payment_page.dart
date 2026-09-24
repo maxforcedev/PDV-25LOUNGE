@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../cash/cash_models.dart' show createIdempotencyKey;
@@ -37,6 +39,7 @@ class SharedPaymentPage extends StatefulWidget {
 class _SharedPaymentPageState extends State<SharedPaymentPage> {
   late QuickSaleCheckout _checkout = widget.checkout;
   bool _working = false;
+  bool _checkoutCancelled = false;
 
   List<QuickSalePaymentMethod> get _methods => widget.options.paymentMethods;
   List<PaymentEqualSplitPart>? _equalSplitParts;
@@ -530,15 +533,26 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     if (!mounted) return;
     setState(() => _working = false);
     if (cancelled) {
+      _checkoutCancelled = true;
       await widget.onCancelled();
       if (mounted) Navigator.of(context).pop();
     }
+  }
+
+  Future<void> _cancelAbandonedCheckout() async {
+    if (_checkoutCancelled || _hasAppliedPayment) return;
+    _checkoutCancelled = await widget.controller.cancelQuickSaleCheckout(_checkout.id);
+    if (_checkoutCancelled) await widget.onCancelled();
   }
 
   @override
   Widget build(BuildContext context) => PopScope(
         canPop: !_hasAppliedPayment,
         onPopInvokedWithResult: (didPop, _) {
+          if (didPop) {
+            unawaited(_cancelAbandonedCheckout());
+            return;
+          }
           if (!didPop) {
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
               content: Text(

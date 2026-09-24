@@ -295,57 +295,9 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
       _closeKey = null;
       await widget.onClosed(closed);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('Mesa fechada com sucesso.')));
         Navigator.of(context).pop(closed);
       }
     }
-  }
-
-  Future<void> _showFinalReceiptAction(int attendanceId,
-      {PrintDocumentResult? document}) async {
-    await showDialog<void>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Mesa fechada'),
-          content: const Text('A mesa foi fechada com sucesso.'),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('FECHAR')),
-            FilledButton.icon(
-              onPressed: () async {
-                if (document?.awaitingInitialPrint == true) return;
-                final result = document?.canReprint == true
-                    ? await widget.controller.reprintPrintDocument(
-                        PrintDocumentReprintRequest(
-                          documentId: document!.id!,
-                          idempotencyKey: createIdempotencyKey(),
-                          reason: 'Reimpressão de recibo final de mesa',
-                        ),
-                      )
-                    : await widget.controller.requestPrintDocument(
-                        PrintDocumentRequest(
-                          type: PrintDocumentType.tableFinalReceipt,
-                          sourceType: 'table_attendance',
-                          sourceId: '$attendanceId',
-                          idempotencyKey: createIdempotencyKey(),
-                        ),
-                      );
-                if (result != null && context.mounted) {
-                  setDialogState(() {
-                    document = result;
-                  });
-                }
-              },
-              icon: const Icon(Icons.print_outlined),
-              label: Text('${document?.printActionLabel ?? 'IMPRIMIR'} RECIBO'),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 
   Future<void> _setCustomer() async {

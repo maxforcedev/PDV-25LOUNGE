@@ -136,7 +136,10 @@ class PrintManager with WidgetsBindingObserver {
       try {
         await _api.reportPrintResult(jobs.first.id, 'failed',
             error: result.detail,
-            metadata: {'printer_observed': result.printerObserved});
+            metadata: {
+              'printer_observed': result.printerObserved,
+              'failed_before_send': true,
+            });
         await _ledger.removeAll(ids);
       } catch (_) {}
       return;

@@ -1716,6 +1716,16 @@ def set_table_bill_requested(*, attendance, user, requested, idempotency_key, po
         idempotency_key=idempotency_key, payload={'attendance': attendance.pk, 'requested': requested})
     if replayed:
         return attendance, True
+    if requested:
+        if not TableOrderItem.objects.filter(
+            order__attendance=attendance, status=AttendanceOrderItemStatus.CONFIRMED,
+        ).exists():
+            raise AttendanceConflict(
+                'table_empty',
+                'Adicione e envie pelo menos um produto antes de solicitar a conta.',
+            )
+        if TableOrderItem.objects.filter(order__attendance=attendance, status=AttendanceOrderItemStatus.PENDING).exists():
+            raise AttendanceConflict('table_has_unsubmitted_items', 'Envie todos os itens para produção antes de solicitar a conta.')
     attendance.bill_requested_at = timezone.now() if requested else None
     attendance.bill_requested_by = user if requested else None
     attendance.save(update_fields=('bill_requested_at', 'bill_requested_by', 'updated_at'))
@@ -1725,10 +1735,6 @@ def set_table_bill_requested(*, attendance, user, requested, idempotency_key, po
               company=attendance.company, branch=attendance.branch, after=operation.result,
               metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
     if requested:
-        # A saved table order confirms every item immediately; pending rows would
-        # represent an order that has not entered the production lifecycle yet.
-        if TableOrderItem.objects.filter(order__attendance=attendance, status=AttendanceOrderItemStatus.PENDING).exists():
-            raise AttendanceConflict('table_has_unsubmitted_items', 'Envie todos os itens para produção antes de solicitar a conta.')
         from apps.production.models import PrintDocumentType
         from apps.production.services import issue_print_document
 

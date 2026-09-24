@@ -275,12 +275,9 @@ class ProductionTicketRenderer {
       ..._map(snapshot['financials']),
       ..._map(snapshot['summary']),
     };
+    financials['discount_total'] ??= _totalDiscount(financials);
     const labels = {
       'subtotal': 'Subtotal',
-      'promotion_discount_total': 'Promocoes',
-      'item_discount_total': 'Desconto por item',
-      'discount': 'Desconto',
-      'checkout_discount_total': 'Desconto',
       'discount_total': 'Desconto',
       'service_fee_total': 'Taxa de servico',
       'service_fee_amount': 'Taxa de servico',
@@ -293,7 +290,8 @@ class ProductionTicketRenderer {
     final rows = <MapEntry<String, String>>[];
     for (final entry in labels.entries) {
       final value = financials[entry.key];
-      if (value != null && '$value'.trim().isNotEmpty) {
+      if (value != null && '$value'.trim().isNotEmpty &&
+          (entry.key != 'discount_total' || _number(value) != 0)) {
         if (!rows.any((row) => row.value == entry.value)) {
           rows.add(MapEntry(entry.value, '$value'));
         }
@@ -377,7 +375,7 @@ class ProductionTicketRenderer {
   String _time(Map<String, dynamic> payload) {
     final instant = DateTime.tryParse('${payload['created_at'] ?? ''}')?.toLocal() ?? DateTime.now();
     String part(int value) => value.toString().padLeft(2, '0');
-    return '${part(instant.day)}/${part(instant.month)} ${part(instant.hour)}:${part(instant.minute)}';
+    return '${part(instant.day)}/${part(instant.month)}/${instant.year} ${part(instant.hour)}:${part(instant.minute)}';
   }
 
   void _reprintBanner(BytesBuilder bytes, int number, int width) {
@@ -404,8 +402,29 @@ class ProductionTicketRenderer {
   }
 
   void _lineIfPresent(BytesBuilder bytes, String label, String? value, int width) {
-    if (value != null && value.trim().isNotEmpty) _line(bytes, '$label: $value');
+    if (value != null && value.trim().isNotEmpty) {
+      _line(bytes, '$label: ${_dateLabel(label) ? _formatDate(value) : value}');
+    }
   }
+
+  bool _dateLabel(String label) => const {
+        'Data/hora', 'Aberta em', 'Fechada em', 'Impresso em',
+      }.contains(label);
+
+  String _formatDate(String value) {
+    final instant = DateTime.tryParse(value.replaceFirst(' ', 'T'))?.toLocal();
+    if (instant == null) return value;
+    String part(int number) => number.toString().padLeft(2, '0');
+    return '${part(instant.day)}/${part(instant.month)}/${instant.year} ${part(instant.hour)}:${part(instant.minute)}';
+  }
+
+  num _number(Object? value) => num.tryParse('${value ?? ''}'.replaceAll(',', '.')) ?? 0;
+
+  String _totalDiscount(Map<String, dynamic> values) => (
+        _number(values['promotion_discount_total']) +
+        _number(values['item_discount_total']) +
+        _number(values['checkout_discount_total'] ?? values['discount']),
+      ).toStringAsFixed(2);
 
   void _center(BytesBuilder bytes, String value, int width,
       {bool bold = false, bool large = false}) {
