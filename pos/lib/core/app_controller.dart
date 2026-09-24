@@ -691,6 +691,20 @@ class AppController extends ChangeNotifier {
       await _writeQuickCheckoutState({});
       return result;
     } on PosApiException catch (error) {
+      // A response can fail after the backend materializes the sale. Replay the
+      // same finalization key before leaving the POS on an editable checkout.
+      if (error.statusCode >= 500) {
+        try {
+          final replay = await _api.finalizeQuickSaleCheckout(
+              checkoutId: checkoutId, idempotencyKey: key);
+          await _writeQuickCheckoutState({});
+          return replay;
+        } on PosApiException {
+          // Keep the pending key so a later recovery keeps the same intent.
+        } on PosNetworkException {
+          // The normal error path below informs the operator of the uncertainty.
+        }
+      }
       if (error.statusCode < 500) {
         pending.remove(operation);
         await _writeQuickCheckoutState(
@@ -698,6 +712,16 @@ class AppController extends ChangeNotifier {
       }
       _handleApiError(error);
     } on PosNetworkException catch (error) {
+      try {
+        final replay = await _api.finalizeQuickSaleCheckout(
+            checkoutId: checkoutId, idempotencyKey: key);
+        await _writeQuickCheckoutState({});
+        return replay;
+      } on PosApiException {
+        // Keep the pending key for recovery; the original network error is clearer.
+      } on PosNetworkException {
+        // The original transport failure remains the user-facing result.
+      }
       _showTransientMessage(error.message);
     }
     return null;

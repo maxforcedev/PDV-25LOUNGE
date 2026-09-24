@@ -6,7 +6,7 @@ from rest_framework.response import Response
 
 from apps.base.audit import audit_log, model_snapshot
 
-from .models import PrintDocument, PrintDocumentType, PrintJob, PrintRoute, PrintRouteOverride, PrinterDevice, ProductionJob, Ticket
+from .models import PrintDocument, PrintDocumentRequest, PrintDocumentType, PrintJob, PrintRoute, PrintRouteOverride, PrinterDevice, ProductionJob, Ticket
 from .permissions import ProductionFunctionalPermission
 from .serializers import (
     PrintDocumentIssueSerializer, PrintDocumentResultSerializer, PrintDocumentSerializer, PrintJobSerializer,
@@ -261,6 +261,10 @@ class PrintDocumentViewSet(viewsets.ReadOnlyModelViewSet):
         serializer = ReprintSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         document = self.get_object()
+        key = serializer.validated_data.get('idempotency_key')
+        replayed = bool(key and PrintDocumentRequest.objects.filter(
+            branch=document.branch, action='reprint', idempotency_key=key,
+        ).exists())
         try:
             reprint_print_document(
                 document=document, user=request.user,
@@ -269,8 +273,9 @@ class PrintDocumentViewSet(viewsets.ReadOnlyModelViewSet):
             )
         except ValueError as error:
             raise ValidationError({'detail': str(error)})
-        audit_log(actor=request.user, action='print_document.reprint_requested', obj=document,
-                  company=document.company, branch=document.branch,
-                  metadata={'document_type': document.document_type, 'source_type': document.source_type,
-                            'source_id': document.source_id})
+        if not replayed:
+            audit_log(actor=request.user, action='print_document.reprint_requested', obj=document,
+                      company=document.company, branch=document.branch,
+                      metadata={'document_type': document.document_type, 'source_type': document.source_type,
+                                'source_id': document.source_id})
         return Response(PrintDocumentResultSerializer(document, context={'request': request}).data, status=201)

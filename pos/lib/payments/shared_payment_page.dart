@@ -399,6 +399,12 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       );
 
   Future<void> _reverse(QuickSaleCheckoutPayment payment) async {
+    if (_checkout.status != 'open') {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('A venda já foi concluída. Use o cancelamento da venda, não o estorno do checkout.'),
+      ));
+      return;
+    }
     final reason = await showDialog<String>(
       context: context,
       builder: (_) => PaymentReversalDialog(payment: _paymentDisplay(payment)),
@@ -674,7 +680,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
                 reversalReason:
                     _checkout.reversalFor(payment.id)?.reversalReason,
                 working: _working,
-                onReverse: () => _reverse(payment),
+                onReverse: _checkout.status == 'open' ? () => _reverse(payment) : null,
                 onPrint: _working ? null : () => _printPaymentReceipt(payment),
                 printTooltip: _paymentDocuments[payment.id]?.printActionLabel ?? 'IMPRIMIR COMPROVANTE',
               ))

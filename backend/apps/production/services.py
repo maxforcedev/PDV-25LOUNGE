@@ -123,10 +123,11 @@ def _document_request_fingerprint(*, action, branch, document_type=None,
                                   source_type=None, source_id=None,
                                   pos_device=None, document_id=None, reason='', snapshot_hash=None):
     intent = {
-        'action': action, 'branch_id': branch.pk, 'document_type': document_type,
+        'action': action, 'branch_id': str(branch.pk), 'document_type': str(document_type) if document_type is not None else None,
         'source_type': source_type, 'source_id': str(source_id) if source_id is not None else None,
-        'pos_device_id': getattr(pos_device, 'pk', None), 'document_id': document_id,
-        'reason': reason, 'snapshot_hash': snapshot_hash,
+        'pos_device_id': str(pos_device.pk) if pos_device is not None else None,
+        'document_id': str(document_id) if document_id is not None else None,
+        'reason': str(reason), 'snapshot_hash': str(snapshot_hash) if snapshot_hash is not None else None,
     }
     return sha256(json.dumps(intent, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
@@ -417,12 +418,13 @@ def issue_print_document(*, branch, document_type, source_type, source_id, user=
     current_snapshot_hash = sha256(json.dumps(
         current_snapshot, sort_keys=True, separators=(',', ':'), default=str,
     ).encode()).hexdigest()
-    fingerprint = _document_request_fingerprint(
-        action='issue', branch=branch, document_type=document_type,
-        source_type=source_type, source_id=source_id, pos_device=pos_device,
-        snapshot_hash=current_snapshot_hash,
-    )
+    fingerprint = None
     if idempotency_key:
+        fingerprint = _document_request_fingerprint(
+            action='issue', branch=branch, document_type=document_type,
+            source_type=source_type, source_id=source_id, pos_device=pos_device,
+            snapshot_hash=current_snapshot_hash,
+        )
         prior = PrintDocumentRequest.objects.select_related('document').filter(
             branch=branch, action='issue', idempotency_key=idempotency_key,
         ).first()
@@ -475,17 +477,12 @@ def reprint_print_document(*, document, user, reason='', idempotency_key=None):
                 raise ValueError('Conflito de idempotência: a chave já foi usada para outra reimpressão.')
             return list(prior.generated_jobs.order_by('id'))
     sources = list(document.print_jobs.filter(reprint_of__isnull=True).order_by('id'))
-    if not sources:
-        raise ValueError('O documento ainda não possui impressão inicial configurada.')
-    eligible_sources = [
-        source for source in sources
-        if source.status in (PrintJobStatus.PRINTED, PrintJobStatus.UNCERTAIN)
-    ]
-    if not eligible_sources:
+    from .serializers import print_document_state
+    if not print_document_state(document)['reprint_eligible']:
         raise ValueError('O documento só pode ser reimpresso após uma impressão inicial concluída.')
     reprints = [
         reprint_print_job(job=source, user=user, reason=reason)
-        for source in eligible_sources
+        for source in sources
     ]
     if idempotency_key:
         try:

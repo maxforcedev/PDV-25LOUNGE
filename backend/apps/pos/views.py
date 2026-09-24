@@ -172,8 +172,10 @@ def _issue_ticket_documents(sale, user, device):
                 source_type='ticket', source_id=ticket_id, user=user, pos_device=device,
                 automatic_only=True, metadata={'trigger': 'quick_sale_ticket'},
             )
-        except ValueError:
-            # Ticket creation is financial/stock business state; printing is secondary.
+        except Exception as error:
+            audit_log(actor=user, action='print_document.automatic_failed', obj=sale,
+                      company=sale.company, branch=sale.branch,
+                      metadata={'document_type': PrintDocumentType.TICKET, 'detail': str(error)})
             continue
 
 
@@ -2262,7 +2264,10 @@ class POSQuickCheckoutFinalizeView(POSQuickCheckoutView):
                 source_type='sale', source_id=sale.pk, user=operator, pos_device=device,
                 automatic_only=True, metadata={'trigger': 'quick_sale_finalized'},
             )
-        except ValueError:
+        except Exception as error:
+            audit_log(actor=operator, action='print_document.automatic_failed', obj=sale,
+                      company=sale.company, branch=sale.branch,
+                      metadata={'document_type': PrintDocumentType.QUICK_SALE_RECEIPT, 'detail': str(error)})
             document = None
         _issue_ticket_documents(sale, operator, device)
         response = Response({
@@ -2346,7 +2351,10 @@ class POSFinalizeSaleView(POSQuickSaleView):
                 source_type='sale', source_id=sale.pk, user=operator, pos_device=device,
                 automatic_only=True, metadata={'trigger': 'quick_sale_finalized'},
             )
-        except ValueError:
+        except Exception as error:
+            audit_log(actor=operator, action='print_document.automatic_failed', obj=sale,
+                      company=sale.company, branch=sale.branch,
+                      metadata={'document_type': PrintDocumentType.QUICK_SALE_RECEIPT, 'detail': str(error)})
             document = None
         _issue_ticket_documents(sale, operator, device)
         response = Response(
