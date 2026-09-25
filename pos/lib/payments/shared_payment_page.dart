@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../cash/cash_models.dart' show createIdempotencyKey;
 import '../core/app_controller.dart';
 import '../printing/models.dart';
+import '../printing/print_document_polling.dart';
 import '../sales/sale_models.dart';
 import '../sales/sale_presentation.dart';
 import '../sales/shared_authorization_dialog.dart';
@@ -48,6 +49,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
   int? _pendingEqualSplitIndex;
   bool _showSummaryDetails = false;
   final Map<String, PrintDocumentResult> _paymentDocuments = {};
+  final Set<String> _pollingPaymentDocuments = {};
   bool get _canDiscount =>
       widget.controller.bootstrapSnapshot?.permissions
           .contains('sales.apply_discount') ??
@@ -67,6 +69,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         _paymentDocuments[payment.id] = payment.printDocument!;
       }
     }
+    _pollPendingPaymentDocuments();
     _restorePendingPayment();
   }
 
@@ -90,6 +93,38 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         }
       }
     });
+    _pollPendingPaymentDocuments();
+  }
+
+  void _pollPendingPaymentDocuments() {
+    for (final payment in _checkout.payments) {
+      if (_paymentDocuments[payment.id]?.awaitingInitialPrint == true) {
+        unawaited(_pollPaymentDocument(payment));
+      }
+    }
+  }
+
+  Future<void> _pollPaymentDocument(QuickSaleCheckoutPayment payment) async {
+    if (!_pollingPaymentDocuments.add(payment.id)) return;
+    try {
+      await pollPrintDocument(
+        attempts: 15,
+        isMounted: () => mounted,
+        reload: () async {
+          final checkout =
+              await widget.controller.quickSaleCheckoutDetail(_checkout.id);
+          for (final entry in checkout?.payments ?? const <QuickSaleCheckoutPayment>[]) {
+            if (entry.id == payment.id) return entry.printDocument;
+          }
+          return null;
+        },
+        onUpdate: (document) {
+          if (mounted) setState(() => _paymentDocuments[payment.id] = document);
+        },
+      );
+    } finally {
+      _pollingPaymentDocuments.remove(payment.id);
+    }
   }
 
   bool get _canWaiveFee =>
@@ -477,6 +512,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     setState(() => _working = true);
     final document = _paymentDocuments[payment.id];
     if (document?.awaitingInitialPrint == true) {
+      unawaited(_pollPaymentDocument(payment));
       setState(() => _working = false);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('A impressão inicial ainda está pendente.')));
@@ -501,6 +537,9 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       _working = false;
       if (result != null) _paymentDocuments[payment.id] = result;
     });
+    if (result?.awaitingInitialPrint == true) {
+      unawaited(_pollPaymentDocument(payment));
+    }
   }
 
   Future<void> _cancel() async {

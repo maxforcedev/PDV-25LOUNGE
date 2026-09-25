@@ -45,6 +45,7 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
   bool _working = false;
   bool _details = false;
   final Map<int, PrintDocumentResult> _paymentDocuments = {};
+  final Set<int> _pollingPaymentDocuments = {};
 
   bool _can(String permission) =>
       widget.controller.bootstrapSnapshot?.permissions.contains(permission) ==
@@ -107,6 +108,34 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
     if (confirmed) {
       await widget.controller
           .writeTablePaymentPending(_attendance.id, const {});
+    }
+    for (final payment in _ledger?.payments ?? const <TablePayment>[]) {
+      final document = _paymentDocuments[payment.id];
+      if (document?.awaitingInitialPrint == true) {
+        unawaited(_pollPaymentDocument(payment));
+      }
+    }
+  }
+
+  Future<void> _pollPaymentDocument(TablePayment payment) async {
+    if (!_pollingPaymentDocuments.add(payment.id)) return;
+    try {
+      await pollPrintDocument(
+        attempts: 15,
+        isMounted: () => mounted,
+        reload: () async {
+          final ledger = await widget.controller.tablePaymentLedger(_attendance.id);
+          for (final entry in ledger?.payments ?? const <TablePayment>[]) {
+            if (entry.id == payment.id) return entry.printDocument;
+          }
+          return null;
+        },
+        onUpdate: (document) {
+          if (mounted) setState(() => _paymentDocuments[payment.id] = document);
+        },
+      );
+    } finally {
+      _pollingPaymentDocuments.remove(payment.id);
     }
   }
 
@@ -239,6 +268,7 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
     setState(() => _working = true);
     final document = _paymentDocuments[payment.id];
     if (document?.awaitingInitialPrint == true) {
+      unawaited(_pollPaymentDocument(payment));
       setState(() => _working = false);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('A impressão inicial ainda está pendente.')));
@@ -268,19 +298,7 @@ class _TablePaymentPageState extends State<TablePaymentPage> {
       }
     });
     if (result == null) return;
-    unawaited(pollPrintDocument(
-      isMounted: () => mounted,
-      reload: () async {
-        final ledger = await widget.controller.tablePaymentLedger(_attendance.id);
-        for (final entry in ledger?.payments ?? const <TablePayment>[]) {
-          if (entry.id == payment.id) return entry.printDocument;
-        }
-        return null;
-      },
-      onUpdate: (document) {
-        if (mounted) setState(() => _paymentDocuments[payment.id] = document);
-      },
-    ));
+    unawaited(_pollPaymentDocument(payment));
   }
 
   Future<void> _close() async {

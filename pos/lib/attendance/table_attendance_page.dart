@@ -1053,6 +1053,7 @@ class _TableConferencePageState extends State<_TableConferencePage> {
   bool _loading = true;
   String? _error;
   PrintDocumentResult? _document;
+  bool _polling = false;
   late TableAttendance _attendance = widget.attendance;
 
   @override
@@ -1074,10 +1075,14 @@ class _TableConferencePageState extends State<_TableConferencePage> {
         _document = attendance.printDocumentFor(PrintDocumentType.tableConference);
       }
     });
-    if (_document?.awaitingInitialPrint == true) _poll();
+    if (_document?.awaitingInitialPrint == true) unawaited(_poll());
   }
 
-  void _poll() => unawaited(pollPrintDocument(
+  Future<void> _poll() async {
+    if (_polling) return;
+    _polling = true;
+    try {
+      await pollPrintDocument(
         isMounted: () => mounted,
         reload: () async => (await widget.controller
                 .tableAttendanceDetail(_attendance.id))
@@ -1085,13 +1090,17 @@ class _TableConferencePageState extends State<_TableConferencePage> {
         onUpdate: (document) {
           if (mounted) setState(() => _document = document);
         },
-      ));
+      );
+    } finally {
+      _polling = false;
+    }
+  }
 
   Future<void> _print() async {
     if (_printing) return;
     setState(() => _printing = true);
     if (_document?.awaitingInitialPrint == true) {
-      _poll();
+      unawaited(_poll());
       setState(() => _printing = false);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('A impressão inicial ainda está pendente.')));

@@ -6,7 +6,7 @@ Future<void> pollPrintDocument({
   required Future<PrintDocumentResult?> Function() reload,
   required bool Function() isMounted,
   required void Function(PrintDocumentResult document) onUpdate,
-  int attempts = 5,
+  int attempts = 15,
   Duration interval = const Duration(seconds: 2),
 }) async {
   for (var attempt = 0; attempt < attempts; attempt++) {
