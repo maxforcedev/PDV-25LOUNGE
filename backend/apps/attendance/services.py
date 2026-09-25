@@ -1743,7 +1743,7 @@ def set_table_bill_requested(*, attendance, user, requested, idempotency_key, po
                 issue_print_document(
                     branch=attendance.branch, document_type=PrintDocumentType.TABLE_CONFERENCE,
                     source_type='table_attendance', source_id=attendance.pk, user=user,
-                    pos_device=pos_device, automatic_only=True,
+                    pos_device=pos_device, automatic_only=False,
                     metadata={'trigger': 'table_bill_requested'},
                 )
             except ValueError as error:

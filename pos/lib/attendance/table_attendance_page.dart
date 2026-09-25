@@ -110,6 +110,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
   Timer? _previewDebounce;
   int _previewRequestVersion = 0;
   Future<void> _cartMutationQueue = Future.value();
+  bool _pollingProduction = false;
 
   @override
   void initState() {
@@ -153,6 +154,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
     });
     _notifyCartChanged();
     _schedulePreview();
+    if (_hasPendingProductionPrint) unawaited(_pollProductionPrintStatus());
   }
 
   bool get _hasPendingProductionPrint => _attendance.orders
@@ -160,7 +162,10 @@ class _TableOrderPageState extends State<TableOrderPage> {
       .any((item) => {'pending', 'processing'}.contains(item.printStatus?.toLowerCase()));
 
   Future<void> _pollProductionPrintStatus() async {
-    for (var attempt = 0; attempt < 5 && _hasPendingProductionPrint; attempt++) {
+    if (_pollingProduction) return;
+    _pollingProduction = true;
+    try {
+    for (var attempt = 0; attempt < 15 && _hasPendingProductionPrint; attempt++) {
       await Future<void>.delayed(const Duration(seconds: 2));
       if (!mounted) return;
       final attendance = await widget.controller.tableAttendanceDetail(_attendance.id);
@@ -169,6 +174,9 @@ class _TableOrderPageState extends State<TableOrderPage> {
         _attendance = attendance;
         _billDocument = attendance.printDocumentFor(PrintDocumentType.tableConference);
       });
+    }
+    } finally {
+      _pollingProduction = false;
     }
   }
 
@@ -1066,12 +1074,24 @@ class _TableConferencePageState extends State<_TableConferencePage> {
         _document = attendance.printDocumentFor(PrintDocumentType.tableConference);
       }
     });
+    if (_document?.awaitingInitialPrint == true) _poll();
   }
+
+  void _poll() => unawaited(pollPrintDocument(
+        isMounted: () => mounted,
+        reload: () async => (await widget.controller
+                .tableAttendanceDetail(_attendance.id))
+            ?.printDocumentFor(PrintDocumentType.tableConference),
+        onUpdate: (document) {
+          if (mounted) setState(() => _document = document);
+        },
+      ));
 
   Future<void> _print() async {
     if (_printing) return;
     setState(() => _printing = true);
     if (_document?.awaitingInitialPrint == true) {
+      _poll();
       setState(() => _printing = false);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('A impressão inicial ainda está pendente.')));
@@ -1100,15 +1120,7 @@ class _TableConferencePageState extends State<_TableConferencePage> {
         _document = result;
       }
     });
-    unawaited(pollPrintDocument(
-      isMounted: () => mounted,
-      reload: () async => (await widget.controller
-              .tableAttendanceDetail(_attendance.id))
-          ?.printDocumentFor(PrintDocumentType.tableConference),
-      onUpdate: (document) {
-        if (mounted) setState(() => _document = document);
-      },
-    ));
+    _poll();
   }
 
   @override

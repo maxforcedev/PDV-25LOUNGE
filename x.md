@@ -1,595 +1,852 @@
-Continue a missão no HEAD atual.
+# MISSÃO — FECHAR PENDÊNCIAS DO CORE POS + CORRIGIR BUILD
+
+Continue no HEAD atual.
 
 Na última revisão, o HEAD era:
 
-`1c0e419eba67c73adc0fd81374078e55d7232334`
+`9450854f9c61f6ddcf775ecf9ec96b43c5dd3021`
 
 Antes de alterar, confira o HEAD atual.
 
-Além das correções pendentes de impressão já identificadas, adicionar estas regras funcionais.
+Esta missão deve corrigir TODAS as pendências abaixo sem regredir o que já foi implementado.
 
 ---
 
-# 1. REMOVER "RECUPERAR VENDA" DA VENDA RÁPIDA
+# 1. ERRO FATAL DE COMPILAÇÃO NO `production_ticket_renderer.dart`
 
-Hoje `QuickSalePage` faz recuperação automática.
+O build atual está quebrando com:
 
-Existe em `_loadInitial()`:
+```text
+lib/printing/production_ticket_renderer.dart:427:9:
+Error: The method 'toStringAsFixed' isn't defined for the type '(num)'.
 
-```dart
-await _resumeCheckout();
+).toStringAsFixed(2);
 
-e _resumeCheckout() chama:
+A causa está no código atual:
 
-widget.controller.recoverQuickSaleCheckout()
+String _totalDiscount(Map<String, dynamic> values) => (
+      _number(values['promotion_discount_total']) +
+      _number(values['item_discount_total']) +
+      _number(values['checkout_discount_total'] ?? values['discount']),
+    ).toStringAsFixed(2);
 
-depois restaura o carrinho e mostra:
+O , dentro dos parênteses transforma a expressão em um Record Dart:
 
-Venda em andamento recuperada.
+(num,)
 
-Também, ao voltar da tela de pagamento sem resultado, _openPayment() chama novamente:
+e não em num.
 
-recoverQuickSaleCheckout()
+Por isso:
 
-e restaura a venda antiga.
+toStringAsFixed()
 
-Não quero mais esse comportamento funcional.
+não existe nesse tipo.
 
-2. COMPORTAMENTO DESEJADO DA VENDA RÁPIDA
+CORRIGIR.
 
-Ao entrar em:
+Preferir algo explícito e legível:
 
-Venda Rápida
+String _totalDiscount(Map<String, dynamic> values) {
+  final total =
+      _number(values['promotion_discount_total']) +
+      _number(values['item_discount_total']) +
+      _number(values['checkout_discount_total'] ?? values['discount']);
 
-deve começar limpa.
+  return total.toStringAsFixed(2);
+}
 
-Não deve aparecer:
+ou solução equivalente.
 
-Venda em andamento recuperada.
+Não mascarar com cast de Record.
 
-Não deve restaurar automaticamente:
+A soma precisa continuar sendo numérica.
 
-produtos;
-cliente;
-desconto;
-taxa;
-carrinho;
-checkout antigo.
+2. AVISO KOTLIN / KGP
 
-Venda Rápida deve ser uma operação direta:
+Também apareceu orientação do Flutter relacionada ao Kotlin Gradle Plugin.
 
-abre Venda Rápida
-→ carrinho vazio
-→ faz venda
-→ conclui
-→ tela limpa
-3. IMPORTANTE: NÃO REMOVER SEGURANÇA DE IDEMPOTÊNCIA
+O projeto atual possui em:
 
-Não confundir:
+pos/android/settings.gradle
+id 'org.jetbrains.kotlin.android' version '2.2.20' apply false
 
-recuperar uma venda antiga para o operador
+e:
 
-com:
+id 'com.android.application' version '8.11.1' apply false
 
-reconciliar uma requisição incerta por falha de rede
+Java/JVM:
 
-A segunda precisa continuar existindo.
+17
 
-Preservar:
+IMPORTANTE:
 
-idempotência de criação;
-idempotência de pagamento;
-idempotência de finalização;
-proteção contra venda duplicada;
-proteção contra pagamento duplicado;
-reconciliação de uma requisição cujo resultado ficou incerto.
+O erro fatal mostrado no build atual NÃO é Kotlin.
 
-O que deve sair é a EXPERIÊNCIA de:
+O build parou no:
 
-fechei / saí da Venda Rápida
-→ entro depois
-→ sistema traz a venda antiga de volta
+Target kernel_snapshot_program failed
 
-Não destruir as proteções internas necessárias para descobrir se uma operação enviada ao backend foi ou não concluída.
+por causa do erro Dart de _totalDiscount().
 
-4. CHECKOUT ABANDONADO
+Portanto:
 
-Revisar corretamente o ciclo do QuickSaleCheckout.
+NÃO atualizar/downgrade Kotlin cegamente só porque apareceu a mensagem genérica:
+
+Potential fix: Your project's KGP version...
+
+Revise o aviso completo e a configuração Android existente.
+
+Se houver incompatibilidade REAL e explícita entre Flutter atual / Gradle / AGP / KGP, corrija somente a versão necessária.
+
+Se 2.2.20 já for válida para o ambiente atual, NÃO alterar.
+
+No checkpoint informe se foi necessária alguma alteração Android.
+
+3. STATUS DE IMPRESSÃO CONTINUA STALE
+
+O usuário confirmou no aparelho:
+
+Aguardando impressão
+
+só muda se sair da tela e entrar novamente.
+
+Isso continua acontecendo em alguns fluxos.
+
+Precisamos resolver definitivamente.
+
+4. PRODUÇÃO DA MESA
 
 Hoje existe:
 
-OPEN
-PAID
-FINALIZED
-CANCELLED
+_pollProductionPrintStatus()
 
-e existe endpoint:
+com aproximadamente:
 
-sales/checkouts/{id}/cancel/
+5 tentativas
+2 segundos
+≈ 10 segundos
 
-Não deixar checkouts OPEN abandonados indefinidamente só porque removemos a recuperação visual.
+Depois disso o polling termina.
 
-Quando o operador abandonar conscientemente uma Venda Rápida/checkout:
+Se o PrintManager concluir depois:
 
-sem pagamento aplicado
-→ cancelar o checkout de forma segura
-→ limpar estado local
+backend = PRINTED
+UI = Aguardando impressão
 
-Se já existir pagamento aplicado:
+até sair e voltar.
 
-NÃO cancelar silenciosamente
-NÃO perder pagamento
-NÃO simplesmente limpar estado
+CORRIGIR.
 
-Nesse caso, preservar as proteções financeiras existentes e exigir o fluxo correto de estorno/finalização conforme a arquitetura atual.
+Enquanto a tela da Mesa estiver visível e existir item com:
 
-Não inventar exclusão física.
+pending
+processing
 
-5. REMOVER CÓDIGO DE UX DE RECUPERAÇÃO QUE FICAR SEM USO
+iniciar acompanhamento limitado.
 
-Revisar principalmente:
+Não criar polling infinito.
 
-pos/lib/sales/quick_sale_page.dart
-pos/lib/core/app_controller.dart
+Pode utilizar uma janela maior e segura, por exemplo:
 
-Remover da UI o que ficar exclusivamente ligado à recuperação funcional, por exemplo:
+10 a 15 tentativas
+intervalo de 2 segundos
 
-_resumeCheckout()
-_restoreCheckoutDraft()
-Venda em andamento recuperada.
+ou solução equivalente.
 
-somente se realmente não houver outro uso necessário.
+Parar imediatamente quando nenhum item estiver:
 
-Não remover funções internas de recuperação de resultado incerto se elas forem necessárias para idempotência/segurança.
+pending
+processing
 
-6. SOLICITAR CONTA SEM PRODUTO É PROIBIDO
+Também iniciar esse acompanhamento quando _load() encontrar produção pendente, não somente imediatamente depois de salvar o pedido.
 
-Hoje o backend permite chegar em:
+Evitar múltiplos pollings simultâneos.
 
-set_table_bill_requested(...)
+Usar guard interno se necessário:
 
-sem verificar se a Mesa possui produto confirmado.
+_pollingProduction = true/false
+5. CONFERÊNCIA COM IMPRESSÃO PENDENTE NÃO ATUALIZA SOZINHA
 
-Isso precisa ser proibido.
+Hoje _TableConferencePage._load() consulta uma vez.
 
-Uma Mesa sem nenhum:
+Se entrar na tela com:
 
-TableOrderItem status = CONFIRMED
+_document.awaitingInitialPrint == true
 
-não pode solicitar conta.
+a UI fica:
 
-Também considerar Mesa que só possui itens:
+IMPRESSAO PENDENTE
 
-CANCELLED
+mesmo depois de o backend virar:
 
-como Mesa sem produtos para essa finalidade.
+PRINTED
 
-7. VALIDAÇÃO DEVE EXISTIR NO BACKEND
+Além disso, _print() atualmente faz:
 
-Em:
+if (_document?.awaitingInitialPrint == true) {
+    ...
+    return;
+}
 
-set_table_bill_requested(...)
+e retorna sem iniciar polling.
+
+CORRIGIR.
+
+Ao abrir Visualizar conferência:
+
+_load()
+→ encontrou documento queued?
+→ iniciar pollPrintDocument()
+
+Automaticamente.
+
+Se o operador tocar no ícone enquanto estiver pendente:
+
+não criar outra impressão
+não criar reprint
+
+mas pode:
+
+informar "A impressão inicial ainda está pendente."
++
+garantir que o polling esteja ativo
+
+Quando backend virar:
+
+PRINTED
+
+o botão deve mudar automaticamente para:
+
+REIMPRIMIR
+
+sem sair da tela.
+
+6. COMPROVANTES TAMBÉM DEVEM ACOMPANHAR ESTADO PENDENTE
+
+Aplicar a mesma regra onde existir PrintDocument visível:
+
+PAYMENT_RECEIPT da Mesa
+PAYMENT_RECEIPT da Venda Rápida
+TABLE_CONFERENCE
+
+Se a tela carregar um documento:
+
+queued = true
+
+iniciar acompanhamento.
+
+Não depender exclusivamente de o polling ter sido iniciado pela ação de imprimir naquela mesma tela.
+
+7. FAILED BEFORE SEND
+
+A correção recente deve ser preservada.
+
+Hoje o POS manda:
+
+'failed_before_send': true
 
 quando:
 
-requested = true
+não abriu conexão / nenhum byte foi enviado
 
-validar antes de efetivar a solicitação.
+e o backend limpa:
 
-Deve existir pelo menos um:
+physical_dispatch_started_at
 
-TableOrderItem
-order__attendance = attendance
-status = CONFIRMED
+para permitir:
 
-Se não existir:
+TENTAR NOVAMENTE
 
-HTTP 409
-code = table_empty
-
-ou código equivalente consistente.
-
-Mensagem:
-
-Adicione e envie pelo menos um produto antes de solicitar a conta.
-
-Não criar:
-
-bill_requested_at;
-bill_requested_by;
-PrintDocument;
-PrintJob;
-Conferência.
-8. VALIDAR ANTES DE ALTERAR O ESTADO
-
-Organizar set_table_bill_requested() para as validações ocorrerem antes de efetivar:
-
-bill_requested_at
-bill_requested_by
-
-Mesmo que a transação hoje faça rollback em exceção, deixar a ordem lógica correta e explícita.
-
-Fluxo:
-
-requested=true
-→ Mesa aberta?
-→ possui item confirmado?
-→ não possui pendência incompatível?
-→ então solicitar conta
-→ emitir Conferência
-9. BLOQUEIO TAMBÉM NO POS
-
-Na _toggleBill():
-
-antes de chamar o backend, verificar se a Mesa possui ao menos um item confirmado.
-
-Se não tiver:
-
-Adicione e envie pelo menos um produto antes de solicitar a conta.
-
-Não chamar a API desnecessariamente.
-
-Mas o backend continua sendo a autoridade.
-
-10. CARRINHO LOCAL NÃO CONTA COMO PRODUTO DA MESA
-
-Se existir produto apenas no carrinho ainda não enviado:
-
-NOVOS ITENS
-
-continua proibido solicitar conta.
-
-A regra já existente deve permanecer:
-
-Envie os itens novos antes de solicitar a conta.
-
-Fluxo correto:
-
-produto no carrinho
-→ Solicitar Conta
-→ bloquear
-
-SALVAR E ENVIAR PEDIDO
-→ item vira CONFIRMED
-
-Solicitar Conta
-→ permitido
-11. FECHAR MESA DEVE VOLTAR AO GRID DE MESAS
+Preservar.
 
 Regra definitiva:
-
-Pagamento
-→ FECHAR MESA
-→ backend retorna CLOSED
-→ sair da tela de pagamento
-→ sair do detalhe da Mesa
-→ voltar ao GRID DE MESAS
-→ atualizar grid
-→ mostrar sucesso
-
-Não permanecer:
-
-na tela de pagamento;
-na Mesa fechada;
-em modal de recibo;
-em qualquer tela intermediária.
-12. MENSAGEM DE SUCESSO DEVE APARECER NO GRID
-
-Hoje TablePaymentPage._close() mostra:
-
-Mesa fechada com sucesso.
-
-e logo depois faz:
-
-Navigator.of(context).pop(closed);
-
-Isso não é o melhor local, porque o SnackBar pertence à rota que está sendo fechada.
-
-Mover a responsabilidade visual para o grid.
-
-Fluxo recomendado:
-
-TablePaymentPage
-→ retorna TableAttendance CLOSED
-
-TableOrderPage
-→ recebe CLOSED
-→ retorna CLOSED
-
-TablesPage
-→ recebe CLOSED
-→ _load()
-→ mostra:
-   "Mesa fechada com sucesso."
-
-Assim a mensagem aparece no lugar correto:
-
-GRID DE MESAS
-13. TABLES PAGE DEVE CAPTURAR O RESULTADO
-
-Hoje _TablesPageState._open() faz:
-
-await Navigator.of(context).push(...)
-if (mounted) await _load();
-
-mas ignora o resultado.
-
-Alterar conceitualmente para:
-
-final result = await Navigator.push<TableAttendance>(...)
-→ reload grid
-→ se result.status == closed
-   mostrar sucesso
-
-Não precisa seguir exatamente essa implementação se existir solução melhor, mas o dono da mensagem final deve ser o grid.
-
-14. NÃO DUPLICAR SNACKBAR
-
-Depois dessa mudança, remover mensagem duplicada do TablePaymentPage.
-
-Deve aparecer uma única vez:
-
-Mesa fechada com sucesso.
-
-já no grid.
-
-15. IMPRESSÃO FINAL NÃO PODE SEGURAR NAVEGAÇÃO
-
-Preservar:
-
-fechar Mesa
-→ TABLE_FINAL_RECEIPT
-
-Mas impressão é efeito secundário.
-
-Nunca fazer:
-
-fechou Mesa
-→ esperar impressora
-→ só depois voltar ao grid
-
-Correto:
-
-backend confirmou CLOSED
-→ volta imediatamente ao grid
-→ PrintManager cuida do recibo
-
-Se impressão falhar:
-
-Mesa continua fechada.
-16. REMOVER CÓDIGO MORTO DE MODAL FINAL SE NÃO TIVER USO
-
-Ainda existe em TablePaymentPage:
-
-_showFinalReceiptAction(...)
-
-mesmo que o fluxo atual de _close() já não esteja chamando esse modal.
-
-Revisar.
-
-Se realmente não houver mais uso, remover para não voltar acidentalmente ao comportamento antigo de:
-
-Mesa fechada
-→ modal
-→ operador precisa fechar modal
-→ só depois navega
-17. PRESERVAR AS CORREÇÕES DE IMPRESSÃO QUE ESTÃO NA MESMA MISSÃO
-
-Ainda precisam ser corrigidos os problemas já identificados:
-
-STATUS STALE
-
-Quando documento/produção estiver:
-
-PENDING
-PROCESSING
-
-a tela visível deve acompanhar o backend e atualizar para:
-
-PRINTED
-FAILED
-UNCERTAIN
-
-sem exigir sair e voltar.
-
-Especialmente:
-
-Conferência;
-comprovante;
-status da produção no resumo da Mesa.
-18. FAILED BEFORE SEND DEVE DAR DIREITO A NOVA TENTATIVA
-
-Hoje existe um bug:
-
-startPrintDispatch()
-→ physical_dispatch_started_at preenchido
-→ Socket.connect falha antes de enviar qualquer byte
-→ transport retorna failedBeforeSend
-→ backend fica FAILED + physical_dispatch_started_at
-
-Então:
-
-retry_eligible = false
-reprint_eligible = false
-
-e o documento fica preso.
-
-Corrigir mantendo segurança:
 
 FAILED BEFORE SEND
 → TENTAR NOVAMENTE
 → não é reimpressão
 → sem tarja preta
 UNCERTAIN
-→ REIMPRIMIR explicitamente
+→ nenhum retry automático
+→ somente nova cópia explícita
+→ REIMPRESSÃO
 → tarja preta
 PRINTED
-→ REIMPRIMIR
+→ nova cópia somente REIMPRESSÃO
 → tarja preta
 
-Não permitir retry automático quando houver possibilidade de o papel ter sido enviado.
+Não enfraquecer essa segurança.
 
-19. DATAS DOS CUPONS EM PADRÃO BRASILEIRO
+8. SOLICITAR CONTA DEVE GERAR A PRIMEIRA CONFERÊNCIA
 
-Hoje alguns valores ISO chegam direto ao renderer.
+Hoje ainda existe no backend:
 
-Não imprimir:
+automatic_only=True
 
-2026-09-24T23:18:37.482193+00:00
+em:
 
-nem:
+set_table_bill_requested()
 
-2026-09-24 20:18
+Isso faz:
 
-Padronizar:
+TABLE_CONFERENCE = automatic
+→ imprime
 
-24/09/2026 20:18
+TABLE_CONFERENCE = manual
+→ Solicitar Conta NÃO imprime
 
-em todos os documentos térmicos.
-
-Criar helper central no renderer.
-
-Aplicar em:
-
-Conferência;
-recibo final;
-comprovante de pagamento;
-Ticket;
-demais datas dos documentos térmicos.
-20. CUPOM DEVE TER UMA ÚNICA LINHA DE DESCONTO
-
-Hoje o snapshot da Mesa possui:
-
-promotion_discount_total
-item_discount_total
-checkout_discount_total
-discount_total
-
-e discount_total já representa a soma.
-
-O cupom não deve imprimir:
-
-Promoções
-Desconto por item
-Desconto
-
-como três linhas.
-
-Usar:
-
-Subtotal
-Descontos
-Taxa de serviço
-TOTAL
-
-onde:
-
-Descontos = desconto total efetivo
-
-Se desconto total for zero:
-
-não imprimir a linha
-
-Não alterar a matemática financeira.
-
-É apenas apresentação do cupom.
-
-21. SOLICITAR CONTA / CONFERÊNCIA
-
-Preservar a regra definida:
+Mas a regra definida é:
 
 SOLICITAR CONTA
-→ TABLE_CONFERENCE
-→ primeira impressão da Conferência
+→ emitir a primeira CONFERÊNCIA DA CONTA
 
-e a impressão/reimpressão manual continua somente pelo:
+Portanto corrigir.
 
-ícone de impressora
-na tela Visualizar Conferência
+A ação explícita:
 
-Não recolocar:
+SOLICITAR CONTA
+
+deve ser o gatilho da primeira impressão.
+
+Comportamento esperado:
+
+rota disabled
+→ não imprime
+→ solicitação da conta continua válida
+rota manual
+→ Solicitar Conta cria/enfileira primeira impressão
+rota automatic
+→ Solicitar Conta cria/enfileira primeira impressão
+
+Pode usar:
+
+automatic_only=False
+
+ou solução arquitetural equivalente.
+
+Não imprimir diretamente pela UI.
+
+Continuar usando:
+
+PrintDocument
+PrintRoute
+PrintRouteOverride
+PrintJob
+PrintManager
+9. UMA ÚNICA PRIMEIRA IMPRESSÃO
+
+Preservar fortemente:
+
+mesmo PrintDocument
+mesmo snapshot
+→ apenas uma impressão inicial
+
+Se já existe initial PrintJob:
+
+não criar outra primeira impressão
+
+Nova cópia:
+
+REPRINT
+
+Se a inicial falhou antes de enviar:
+
+RETRY
+
+Não confundir RETRY com REPRINT.
+
+10. CONFERÊNCIA MANUAL SOMENTE NA TELA "VISUALIZAR CONFERÊNCIA"
+
+Preservar a mudança recente.
+
+Não voltar com:
 
 IMPRIMIR CONFERÊNCIA
 REIMPRIMIR CONFERÊNCIA
 
 no menu da Mesa.
 
-22. REIMPRESSÕES
+O único ponto manual deve ser:
 
-Preservar a tarja preta global recém-implementada:
+Mesa
+→ Visualizar conferência
+→ ícone de impressora
+11. TARJA PRETA EM TODA REIMPRESSÃO
 
+Preservar o _reprintBanner() atual com modo reverso ESC/POS:
+
+fundo preto
+texto branco
 REIMPRESSAO #N
 
-com fundo preto / texto branco.
+A regra é global.
 
-Primeira impressão não recebe tarja.
+Aplicar a:
 
-Retry de FAILED BEFORE SEND também não recebe tarja porque não é reimpressão.
+TABLE_CONFERENCE
+TABLE_FINAL_RECEIPT
+PAYMENT_RECEIPT
+QUICK_SALE_RECEIPT
+TICKET
+produção quando reimpressa
+demais PrintDocuments
 
-23. TICKETS
+Primeira impressão:
 
-Preservar a correção recente que passou:
+sem tarja
 
-pos_device
+Retry de FAILED BEFORE SEND:
 
-para Ticket de:
+sem tarja
+12. DATAS DOS CUPONS
 
-Mesa;
-Comanda;
-Venda Rápida.
+A correção recente deve ser preservada e revisada para todos os documentos.
 
-Não regredir PrintRouteOverride.TICKET.
+Nunca imprimir:
 
-24. RESULTADOS ESPERADOS
-Venda Rápida
+2026-09-24T23:18:37.482193+00:00
+
+ou:
+
+2026-09-24 20:18
+
+Formato desejado:
+
+24/09/2026 20:18
+
+Usar helper central.
+
+Aplicar a:
+
+Data/hora
+Aberta em
+Fechada em
+Impresso em
+issued_at
+created_at
+paid_at
+
+onde aparecerem em documentos térmicos.
+
+13. DESCONTOS — UMA ÚNICA LINHA
+
+A correção recente consolidou:
+
+promotion_discount_total
+item_discount_total
+checkout_discount_total
+
+em:
+
+discount_total
+
+Preservar.
+
+No cupom:
+
+SUBTOTAL
+DESCONTOS
+TAXA DE SERVICO
+TOTAL
+
+Não imprimir:
+
+Promoções
+Desconto por item
+Desconto da mesa
+
+separadamente.
+
+Se desconto for zero:
+
+não imprimir linha de desconto
+14. BUG NO DEDUPE DO RENDERER
+
+Existe atualmente:
+
+if (!rows.any((row) => row.value == entry.value))
+
+Mas:
+
+row.value = valor monetário
+entry.value = label
+
+Exemplo:
+
+row.value = "10.00"
+entry.value = "Taxa de servico"
+
+Essa comparação está errada.
+
+Pode gerar duplicatas como:
+
+Taxa de servico
+Taxa de servico
+
+ou:
+
+TOTAL
+TOTAL
+
+quando o snapshot possuir mais de um campo equivalente:
+
+service_fee_total
+service_fee_amount
+service_fee
+
+total_due
+total
+
+CORRIGIR.
+
+Deduplicar pelo label lógico.
+
+Exemplo conceitual:
+
+!rows.any((row) => row.key == entry.value)
+
+ou solução melhor.
+
+Definir prioridade coerente para campos equivalentes.
+
+Resultado esperado:
+
+Subtotal
+Descontos
+Taxa de servico
+TOTAL
+TOTAL PAGO
+SALDO A PAGAR
+
+cada label no máximo uma vez.
+
+15. VENDA RÁPIDA — NÃO RECUPERAR VENDA ANTIGA NA UI
+
+Preservar a remoção recente de:
+
+_resumeCheckout()
+_restoreCheckoutDraft()
+"Venda em andamento recuperada."
+
+Ao abrir Venda Rápida:
+
+carrinho vazio
+cliente vazio
+desconto vazio
+nova operação
+
+Não restaurar venda antiga visualmente.
+
+16. CHECKOUT ABANDONADO DA VENDA RÁPIDA AINDA ESTÁ FRÁGIL
+
+Hoje SharedPaymentPage faz:
+
+if (didPop) {
+    unawaited(_cancelAbandonedCheckout());
+}
+
+Isso significa:
+
+tela já saiu
+→ depois tenta cancelar checkout
+
+Se internet falhar:
+
+checkout continua OPEN
+estado local continua podendo apontar para ele
+
+Isso precisa ser corrigido.
+
+17. SAIR DE CHECKOUT SEM PAGAMENTO
+
+Se NÃO existe pagamento aplicado:
+
+operador tenta voltar
+→ cancelar checkout
+→ AGUARDAR confirmação do backend
+→ somente depois sair da tela
+
+Não usar:
+
+unawaited(...)
+
+para uma operação que determina se o checkout foi realmente abandonado.
+
+Se cancelamento falhar:
+
+permanecer na tela
+mostrar erro
+
+Não fingir que checkout foi descartado.
+
+18. CHECKOUT COM PAGAMENTO
+
+Se existe pagamento aplicado:
+
+não permitir sair abandonando
+
+Já existe regra semelhante.
+
+Preservar:
+
+Conclua ou estorne os pagamentos para sair desta venda.
+
+Nunca:
+
+limpar checkout silenciosamente
+cancelar com dinheiro aplicado
+usar checkout antigo como uma nova venda
+19. RECUPERAÇÃO INTERNA DE SEGURANÇA PODE CONTINUAR
+
+Não remover mecanismos internos necessários para:
+
+idempotência
+falha de rede
+resultado incerto
+reconciliação de pagamento
+reconciliação de finalização
+
+recoverQuickSaleCheckout() pode continuar existindo internamente se for necessário para essas garantias.
+
+Mas NÃO pode voltar a ser experiência de:
+
 abrir Venda Rápida
-→ carrinho vazio
-→ não recuperar venda antiga
-→ não mostrar "Venda em andamento recuperada"
-Mesa vazia
-Mesa aberta sem produto
-→ Solicitar Conta
-→ BLOQUEADO
-→ "Adicione e envie pelo menos um produto antes de solicitar a conta."
-Mesa com item apenas no carrinho
-produto não enviado
-→ Solicitar Conta
-→ BLOQUEADO
-→ "Envie os itens novos antes de solicitar a conta."
-Mesa com produto confirmado
-produto enviado
-→ Solicitar Conta
-→ permitido
-→ Conferência
-Fechamento
-último pagamento
-→ FECHAR MESA
-→ backend CLOSED
-→ retorna direto ao grid
-→ grid atualiza
-→ Mesa aparece livre
-→ "Mesa fechada com sucesso."
-25. ARQUIVOS A REVISAR
+→ venda velha reaparece
+20. NOVA VENDA NÃO PODE HERDAR CHECKOUT ANTIGO
+
+Hoje createQuickSaleCheckout() ainda pode encontrar:
+
+state['checkout_id']
+
+e chamar internamente:
+
+recoverQuickSaleCheckout()
+
+Revisar esse comportamento.
+
+Cenário:
+
+checkout antigo OPEN
+sem pagamento
+sem operação incerta
+
+Ao iniciar uma NOVA Venda Rápida:
+
+não restaurar
+não reutilizar silenciosamente
+
+Deve cancelar/encerrar o checkout antigo de maneira segura e criar um novo.
+
+Cenário:
+
+checkout antigo
+com pagamento
+ou operação financeira incerta
+
+Não reutilizar como venda nova.
+
+O sistema deve impedir a nova operação e orientar resolução financeira, sem expor a antiga como um carrinho recuperado normal.
+
+21. FECHAR MESA → GRID
+
+Preservar a correção atual.
+
+Fluxo correto:
+
+TablePaymentPage
+→ CLOSED
+→ pop(closed)
+
+TableOrderPage
+→ recebe CLOSED
+→ pop(closed)
+
+TablesPage
+→ recebe CLOSED
+→ recarrega grid
+→ mostra "Mesa fechada com sucesso."
+
+Não voltar a mostrar mensagem na tela que será fechada.
+
+Não reintroduzir modal de recibo final.
+
+22. MESA VAZIA NÃO SOLICITA CONTA
+
+Preservar backend e frontend.
+
+Backend deve continuar exigindo pelo menos um:
+
+TableOrderItem CONFIRMED
+
+Mensagem:
+
+Adicione e envie pelo menos um produto antes de solicitar a conta.
+
+Itens cancelados não contam.
+
+Produto apenas no carrinho local também não conta.
+
+23. TICKET
+
+Preservar as correções já feitas:
+
+Mesa → pos_device
+Comanda → pos_device
+Venda Rápida → pos_device
+
+A rota:
+
+TICKET
+
+continua respeitando:
+
+PrintRoute
+PrintRouteOverride
+inherit_branch
+POS de origem
+
+Produto:
+
+emits_ticket = true
+
+deve gerar Ticket uma única vez.
+
+Não duplicar impressão inicial.
+
+24. RECIBO FINAL DA MESA
+
+Preservar:
+
+TABLE_FINAL_RECEIPT
+
+ao fechar Mesa.
+
+Fechamento da Mesa NÃO depende do sucesso da impressão.
+
+Fluxo:
+
+Mesa CLOSED
+→ volta ao grid imediatamente
+→ PrintManager processa recibo
+25. CUPOM DE CONFERÊNCIA
+
+Preservar o novo layout:
+
+CONFERENCIA DA CONTA
+RELATORIO GERENCIAL
+*** NAO E DOCUMENTO FISCAL ***
+
+no mesmo estilo do recibo final.
+
+Mesa ainda aberta.
+
+Não incluir Fechada em.
+
+26. ARQUIVOS A REVISAR
 
 No mínimo:
+
+pos/lib/printing/production_ticket_renderer.dart
+pos/lib/printing/print_document_polling.dart
+pos/lib/printing/print_manager.dart
+
+pos/lib/attendance/table_attendance_page.dart
+pos/lib/attendance/attendance_pages.dart
+
+pos/lib/payments/table_payment_page.dart
+pos/lib/payments/shared_payment_page.dart
 
 pos/lib/sales/quick_sale_page.dart
 pos/lib/core/app_controller.dart
 
-pos/lib/attendance/table_attendance_page.dart
-pos/lib/attendance/attendance_pages.dart
-pos/lib/payments/table_payment_page.dart
-
 backend/apps/attendance/services.py
-
-pos/lib/printing/print_document_polling.dart
-pos/lib/printing/print_manager.dart
-pos/lib/printing/production_ticket_renderer.dart
-
 backend/apps/production/services.py
 backend/apps/production/serializers.py
 
-Alterar apenas o necessário.
+pos/android/settings.gradle
+pos/android/build.gradle
+pos/android/app/build.gradle
+
+Alterar somente o necessário.
+
+27. NÃO REGREDIR
+
+Preservar obrigatoriamente:
+
+retry != reprint
+UNCERTAIN
+physical_dispatch_started_at
+claim/lease
+idempotência
+PrintDocumentRequest
+hash + fallback legado
+PrintRoute / PrintRouteOverride
+NETWORK local
+quantidade 1.000x → 1x
+tarja preta de reimpressão
+Tickets
+Mesa vazia bloqueada
+fechamento voltando ao grid
+28. RESULTADOS ESPERADOS
+Build
+
+O código não pode mais conter a construção Dart inválida:
+
+(num,).toStringAsFixed(...)
+Impressão pendente
+PENDING
+→ tela acompanha backend
+→ PRINTED
+→ UI muda automaticamente
+
+sem sair e voltar.
+
+Falha antes do envio
+Socket nem conectou
+→ FAILED BEFORE SEND
+→ botão TENTAR NOVAMENTE
+Conferência
+Solicitar Conta
+→ primeira Conferência
+→ impressão inicial única
+
+Depois:
+
+nova cópia
+→ REIMPRESSÃO
+→ tarja preta
+Venda Rápida
+abrir módulo
+→ nova venda limpa
+
+Se abandonar checkout sem pagamento:
+
+cancelar no backend
+→ confirmar cancelamento
+→ só então sair
+Fechar Mesa
+Fechar Mesa
+→ CLOSED
+→ grid
+→ reload
+→ "Mesa fechada com sucesso."
+Cupom
+24/09/2026 20:18
+
+Uma única linha:
+
+Descontos
+
+Sem:
+
+Taxa de serviço
+Taxa de serviço
+
+ou:
+
+TOTAL
+TOTAL
+
+duplicados.
 
 REGRA CRÍTICA
 
@@ -610,30 +867,40 @@ makemigrations --check
 
 Eu farei os testes manualmente.
 
+Não execute build para validar o erro.
+Corrija estaticamente o código e informe no checkpoint.
+
 CHECKPOINT
 
 Ao terminar informe:
 
-o que foi removido da recuperação automática da Venda Rápida;
-quais mecanismos de idempotência/reconciliação foram preservados;
-como ficou checkout abandonado;
-como o backend bloqueia Solicitar Conta em Mesa sem produto;
-como a UI bloqueia Mesa vazia;
-como ficou a navegação após fechar Mesa;
-onde a mensagem "Mesa fechada com sucesso." passa a ser exibida;
-se removeu _showFinalReceiptAction() caso estivesse morto;
-como corrigiu atualização viva dos estados de impressão;
-como corrigiu FAILED BEFORE SEND;
-como ficaram as datas dos cupons;
-como consolidou os descontos em uma linha;
-se preservou Conferência, tarja de reimpressão e Tickets;
+como corrigiu o erro (num) / toStringAsFixed;
+se alterou ou não KGP e por quê;
+versão final de Kotlin/AGP se houve alteração;
+como ficou o polling de produção;
+como Conferência pendente passa a atualizar sozinha;
+como comprovantes pendentes passam a atualizar;
+como preservou FAILED BEFORE SEND;
+se Solicitar Conta agora dispara a primeira Conferência em rota manual/automatic;
+como garantiu uma única impressão inicial;
+como corrigiu o dedupe de Taxa/TOTAL;
+como ficaram os descontos;
+como ficaram as datas;
+como ficou a saída da Venda Rápida sem pagamento;
+como evita checkout antigo sendo usado por uma nova venda;
+como preservou operações financeiras incertas;
+se Fechar Mesa continua retornando ao grid;
+se Mesa vazia continua bloqueada;
+se Tickets continuam respeitando o POS/override;
 arquivos backend alterados;
 arquivos Flutter alterados;
+arquivos Android alterados;
 migrations criadas — não deveria precisar;
 pontos restantes para teste manual.
 
 NÃO EXECUTE TESTES.
 NÃO EXECUTE ANALYZE.
 NÃO EXECUTE BUILD.
+NÃO EXECUTE FLUTTER RUN.
 
 Depois pare.

@@ -292,7 +292,7 @@ class ProductionTicketRenderer {
       final value = financials[entry.key];
       if (value != null && '$value'.trim().isNotEmpty &&
           (entry.key != 'discount_total' || _number(value) != 0)) {
-        if (!rows.any((row) => row.value == entry.value)) {
+        if (!rows.any((row) => row.key == entry.value)) {
           rows.add(MapEntry(entry.value, '$value'));
         }
       }
@@ -420,11 +420,13 @@ class ProductionTicketRenderer {
 
   num _number(Object? value) => num.tryParse('${value ?? ''}'.replaceAll(',', '.')) ?? 0;
 
-  String _totalDiscount(Map<String, dynamic> values) => (
+  String _totalDiscount(Map<String, dynamic> values) {
+    final total =
         _number(values['promotion_discount_total']) +
         _number(values['item_discount_total']) +
-        _number(values['checkout_discount_total'] ?? values['discount']),
-      ).toStringAsFixed(2);
+        _number(values['checkout_discount_total'] ?? values['discount']);
+    return total.toStringAsFixed(2);
+  }
 
   void _center(BytesBuilder bytes, String value, int width,
       {bool bold = false, bool large = false}) {

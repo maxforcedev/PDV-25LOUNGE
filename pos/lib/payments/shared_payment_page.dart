@@ -40,6 +40,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
   late QuickSaleCheckout _checkout = widget.checkout;
   bool _working = false;
   bool _checkoutCancelled = false;
+  bool _allowPop = false;
 
   List<QuickSalePaymentMethod> get _methods => widget.options.paymentMethods;
   List<PaymentEqualSplitPart>? _equalSplitParts;
@@ -535,29 +536,40 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     if (cancelled) {
       _checkoutCancelled = true;
       await widget.onCancelled();
-      if (mounted) Navigator.of(context).pop();
+      if (mounted) {
+        setState(() => _allowPop = true);
+        Navigator.of(context).pop();
+      }
     }
   }
 
   Future<void> _cancelAbandonedCheckout() async {
     if (_checkoutCancelled || _hasAppliedPayment) return;
-    _checkoutCancelled = await widget.controller.cancelQuickSaleCheckout(_checkout.id);
-    if (_checkoutCancelled) await widget.onCancelled();
+    setState(() => _working = true);
+    final cancelled = await widget.controller.cancelQuickSaleCheckout(_checkout.id);
+    if (!mounted) return;
+    setState(() => _working = false);
+    if (!cancelled) return;
+    _checkoutCancelled = true;
+    await widget.onCancelled();
+    if (mounted) {
+      setState(() => _allowPop = true);
+      Navigator.of(context).pop();
+    }
   }
 
   @override
   Widget build(BuildContext context) => PopScope(
-        canPop: !_hasAppliedPayment,
-        onPopInvokedWithResult: (didPop, _) {
-          if (didPop) {
-            unawaited(_cancelAbandonedCheckout());
-            return;
-          }
-          if (!didPop) {
+        canPop: _allowPop,
+        onPopInvokedWithResult: (didPop, _) async {
+          if (didPop || _working) return;
+          if (_hasAppliedPayment) {
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
               content: Text(
                   'Conclua ou estorne os pagamentos para sair desta venda.'),
             ));
+          } else {
+            await _cancelAbandonedCheckout();
           }
         },
         child: Scaffold(
