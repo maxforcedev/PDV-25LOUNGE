@@ -478,6 +478,11 @@ class AppController extends ChangeNotifier {
     QuickSaleAuthorization? serviceFeeAuthorization,
   }) async {
     var state = await _quickCheckoutState();
+    if (state.isNotEmpty && state['checkout_id'] != checkoutId) {
+      _showTransientMessage(
+          'Resolva a venda anterior antes de alterar esta operação.');
+      return null;
+    }
     if (state['checkout_id'] == checkoutId) {
       final checkout = await recoverQuickSaleCheckout();
       state = await _quickCheckoutState();
