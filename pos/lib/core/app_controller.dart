@@ -153,13 +153,10 @@ class AppController extends ChangeNotifier {
     await _writeQuickCheckoutState(state);
   }
 
-  QuickSaleResult? _recoveredQuickSaleResult;
+  final Map<String, QuickSaleResult> _recoveredQuickSaleResults = {};
 
-  QuickSaleResult? takeRecoveredQuickSaleResult() {
-    final result = _recoveredQuickSaleResult;
-    _recoveredQuickSaleResult = null;
-    return result;
-  }
+  QuickSaleResult? takeRecoveredQuickSaleResult(String checkoutId) =>
+      _recoveredQuickSaleResults.remove(checkoutId);
 
   Future<QuickSaleResult?> _recoverFinalizedQuickSale(
       String checkoutId, Map<String, dynamic> state) async {
@@ -178,38 +175,43 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
+  bool _hasPendingQuickSaleFinalization(Map<String, dynamic> state) =>
+      (state['pending'] as Map?)?['finalize'] is String;
+
+  Future<QuickSaleCheckout?> _resolveRecoveredQuickSaleCheckout(
+      QuickSaleCheckout checkout, Map<String, dynamic> state) async {
+    if (checkout.status == 'finalized' && checkout.saleId != null) {
+      final result = await _recoverFinalizedQuickSale(checkout.id, state);
+      if (result != null) {
+        _recoveredQuickSaleResults[checkout.id] = result;
+      } else if (!_hasPendingQuickSaleFinalization(state)) {
+        await _writeQuickCheckoutState({});
+      }
+      return null;
+    }
+    if (_isTerminalQuickSaleCheckout(checkout)) {
+      await _writeQuickCheckoutState({});
+      return null;
+    }
+    await _reconcileQuickCheckoutState(checkout, state);
+    return checkout;
+  }
+
   Future<QuickSaleCheckout?> recoverQuickSaleCheckout() async {
     final state = await _quickCheckoutState();
     final id = state['checkout_id'] as String?;
     try {
       if (id != null) {
         final checkout = await _api.getQuickSaleCheckout(id);
-        if (checkout.status == 'finalized' && checkout.saleId != null) {
-          _recoveredQuickSaleResult = await _recoverFinalizedQuickSale(id, state);
-          if (_recoveredQuickSaleResult != null) return null;
-          return checkout;
-        }
-        if (_isTerminalQuickSaleCheckout(checkout)) {
-          await _writeQuickCheckoutState({});
-          return null;
-        }
-        await _reconcileQuickCheckoutState(checkout, state);
-        return checkout;
+        return _resolveRecoveredQuickSaleCheckout(checkout, state);
       }
       final creationKey = state['creation_idempotency_key'] as String?;
       if (creationKey == null) return null;
       final checkout = await _api.recoverQuickSaleCheckout(creationKey);
-      if (checkout.status == 'finalized' && checkout.saleId != null) {
-        _recoveredQuickSaleResult = await _recoverFinalizedQuickSale(checkout.id, state);
-        if (_recoveredQuickSaleResult != null) return null;
-        return checkout;
-      }
-      if (_isTerminalQuickSaleCheckout(checkout)) {
-        await _writeQuickCheckoutState({});
-        return null;
-      }
+      final resolved = await _resolveRecoveredQuickSaleCheckout(checkout, state);
+      if (resolved == null) return null;
       await _writeQuickCheckoutState({'checkout_id': checkout.id});
-      return checkout;
+      return resolved;
     } on PosApiException catch (error) {
       // Only an authoritative absence proves this operator checkout is gone.
       if (error.statusCode == 404) await _writeQuickCheckoutState({});
@@ -231,6 +233,30 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
+  bool _hasAppliedQuickSalePayment(QuickSaleCheckout checkout) => checkout
+      .payments
+      .any((payment) =>
+          !payment.isReversal && !checkout.hasReversalFor(payment.id));
+
+  Future<bool> _resolvePriorQuickSaleForNewIntent(
+      QuickSaleCheckout checkout, Map<String, dynamic> state) async {
+    if (_isTerminalQuickSaleCheckout(checkout)) {
+      await _writeQuickCheckoutState({});
+      return true;
+    }
+    if (_hasUncertainQuickCheckoutOperation(state)) {
+      _showTransientMessage(
+          'Existe uma operação financeira anterior aguardando confirmação. Resolva essa operação antes de iniciar uma nova venda.');
+      return false;
+    }
+    if (_hasAppliedQuickSalePayment(checkout)) {
+      _showTransientMessage(
+          'Existe uma venda anterior com pagamento aplicado. Conclua ou estorne os pagamentos antes de iniciar uma nova venda.');
+      return false;
+    }
+    return cancelQuickSaleCheckout(checkout.id);
+  }
+
   Future<QuickSaleCheckout?> createQuickSaleCheckout({
     required List<Map<String, dynamic>> items,
     required Map<String, dynamic> discount,
@@ -242,28 +268,6 @@ class AppController extends ChangeNotifier {
     QuickSaleAuthorization? serviceFeeAuthorization,
   }) async {
     final resolvedCustomerId = customer?.id ?? customerId;
-    var state = await _quickCheckoutState();
-    final existing = state['checkout_id'] as String?;
-    if (existing != null) {
-      final checkout = await recoverQuickSaleCheckout();
-      state = await _quickCheckoutState();
-      if (checkout == null) {
-        // Do not create another sale until persisted recovery has resolved.
-        if (state.isNotEmpty) return null;
-      } else {
-        if (!checkout.canEditFinancials) return checkout;
-        final hasAppliedPayment = checkout.payments.any((payment) =>
-            !payment.isReversal && !checkout.hasReversalFor(payment.id));
-        if (hasAppliedPayment || _hasUncertainQuickCheckoutOperation(state)) {
-          _showTransientMessage(
-              'Resolva os pagamentos ou a operação pendente da venda anterior antes de iniciar uma nova.');
-          return null;
-        }
-        if (!await cancelQuickSaleCheckout(checkout.id)) return null;
-        state = <String, dynamic>{};
-      }
-    }
-
     final request = _quickCheckoutCreationRequest(
       items: items,
       discount: discount,
@@ -273,44 +277,36 @@ class AppController extends ChangeNotifier {
       itemDiscountAuthorization: itemDiscountAuthorization,
       serviceFeeAuthorization: serviceFeeAuthorization,
     );
+    var state = await _quickCheckoutState();
+    final existing = state['checkout_id'] as String?;
+    if (existing != null) {
+      final checkout = await recoverQuickSaleCheckout();
+      state = await _quickCheckoutState();
+      if (checkout == null) {
+        // Do not create another sale until persisted recovery has resolved.
+        if (state.isNotEmpty) return null;
+      } else if (!await _resolvePriorQuickSaleForNewIntent(checkout, state)) {
+        return null;
+      }
+      state = await _quickCheckoutState();
+    }
+
     var key = state['creation_idempotency_key'] as String?;
     if (key != null &&
         _canonicalJson(state['creation_request']) != _canonicalJson(request)) {
       try {
         final checkout = await _api.recoverQuickSaleCheckout(key);
-        if (_isTerminalQuickSaleCheckout(checkout)) {
-          state = <String, dynamic>{};
-          key = null;
-        } else if (_quickCheckoutRequiresNewInstance(checkout, items)) {
-          return await _replaceHistoricalQuickCheckout(
-            checkout: checkout,
-            state: state,
-            items: items,
-            discount: discount,
-            serviceFeeWaived: serviceFeeWaived,
-            customerId: resolvedCustomerId,
-            discountAuthorization: discountAuthorization,
-            itemDiscountAuthorization: itemDiscountAuthorization,
-            serviceFeeAuthorization: serviceFeeAuthorization,
-          );
-        } else {
-          await _writeQuickCheckoutState({'checkout_id': checkout.id});
-          return await updateQuickSaleCheckout(
-            checkoutId: checkout.id,
-            items: items,
-            discount: discount,
-            serviceFeeWaived: serviceFeeWaived,
-            customerId: resolvedCustomerId,
-            discountAuthorization: discountAuthorization,
-            itemDiscountAuthorization: itemDiscountAuthorization,
-            serviceFeeAuthorization: serviceFeeAuthorization,
-          );
+        if (!await _resolvePriorQuickSaleForNewIntent(checkout, state)) {
+          return null;
         }
+        state = await _quickCheckoutState();
+        key = null;
       } on PosApiException catch (error) {
         if (error.statusCode != 404) {
           _handleApiError(error);
           return null;
         }
+        await _writeQuickCheckoutState({});
         state = <String, dynamic>{};
         key = null;
       } on PosNetworkException catch (error) {
@@ -389,63 +385,9 @@ class AppController extends ChangeNotifier {
 
   String _canonicalJson(Object? value) => jsonEncode(_canonicalizeJson(value));
 
-  bool _quickCheckoutItemsChanged(
-          QuickSaleCheckout checkout, List<Map<String, dynamic>> items) =>
-      _canonicalJson(checkout.items.map((item) => item.input).toList()) !=
-      _canonicalJson(items);
-
-  bool _quickCheckoutRequiresNewInstance(
-          QuickSaleCheckout checkout, List<Map<String, dynamic>> items) =>
-      _quickCheckoutItemsChanged(checkout, items) && checkout.hasPaymentHistory;
-
   bool _hasUncertainQuickCheckoutOperation(Map<String, dynamic> state) =>
       (state['payment_attempts'] as Map?)?.isNotEmpty == true ||
       (state['pending'] as Map?)?.isNotEmpty == true;
-
-  Future<QuickSaleCheckout?> _replaceHistoricalQuickCheckout({
-    required QuickSaleCheckout checkout,
-    required Map<String, dynamic> state,
-    required List<Map<String, dynamic>> items,
-    required Map<String, dynamic> discount,
-    required bool serviceFeeWaived,
-    required int? customerId,
-    QuickSaleAuthorization? discountAuthorization,
-    QuickSaleAuthorization? itemDiscountAuthorization,
-    QuickSaleAuthorization? serviceFeeAuthorization,
-  }) async {
-    if (!checkout.canEditFinancials ||
-        !_quickCheckoutRequiresNewInstance(checkout, items)) {
-      return checkout;
-    }
-    if (_hasUncertainQuickCheckoutOperation(state)) {
-      _showTransientMessage(
-          'Conclua a operação de pagamento pendente antes de alterar os itens.');
-      return checkout;
-    }
-    if (!await cancelQuickSaleCheckout(checkout.id)) return null;
-    return createQuickSaleCheckout(
-      items: items,
-      discount: discount,
-      serviceFeeWaived: serviceFeeWaived,
-      customerId: customerId,
-      discountAuthorization: discountAuthorization,
-      itemDiscountAuthorization: itemDiscountAuthorization,
-      serviceFeeAuthorization: serviceFeeAuthorization,
-    );
-  }
-
-  bool _quickCheckoutNeedsUpdate({
-    required QuickSaleCheckout checkout,
-    required List<Map<String, dynamic>> items,
-    required Map<String, dynamic> discount,
-    required bool serviceFeeWaived,
-    required int? customerId,
-  }) =>
-      _quickCheckoutItemsChanged(checkout, items) ||
-      _canonicalJson(checkout.discountIntent.toJson()) !=
-          _canonicalJson(discount) ||
-      checkout.serviceFeeWaived != serviceFeeWaived ||
-      checkout.customer?.id != customerId;
 
   Future<QuickSaleCheckout?> recordQuickSalePayment({
     required String checkoutId,
@@ -539,20 +481,12 @@ class AppController extends ChangeNotifier {
     if (state['checkout_id'] == checkoutId) {
       final checkout = await recoverQuickSaleCheckout();
       state = await _quickCheckoutState();
-      if (checkout != null &&
-          checkout.canEditFinancials &&
-          _quickCheckoutRequiresNewInstance(checkout, items)) {
-        return _replaceHistoricalQuickCheckout(
-          checkout: checkout,
-          state: state,
-          items: items,
-          discount: discount,
-          serviceFeeWaived: serviceFeeWaived,
-          customerId: customerId,
-          discountAuthorization: discountAuthorization,
-          itemDiscountAuthorization: itemDiscountAuthorization,
-          serviceFeeAuthorization: serviceFeeAuthorization,
-        );
+      if (checkout == null || checkout.id != checkoutId) return null;
+      if (_hasUncertainQuickCheckoutOperation(state) ||
+          _hasAppliedQuickSalePayment(checkout)) {
+        _showTransientMessage(
+            'Resolva a operação financeira pendente antes de alterar esta venda.');
+        return null;
       }
     }
     try {
@@ -567,24 +501,6 @@ class AppController extends ChangeNotifier {
         serviceFeeAuthorization: serviceFeeAuthorization?.toJson(),
       );
     } on PosApiException catch (error) {
-      if (error.code == 'checkout_requires_new_instance' &&
-          state['checkout_id'] == checkoutId) {
-      final checkout = await recoverQuickSaleCheckout();
-      state = await _quickCheckoutState();
-      if (checkout != null) {
-          return _replaceHistoricalQuickCheckout(
-            checkout: checkout,
-            state: state,
-            items: items,
-            discount: discount,
-            serviceFeeWaived: serviceFeeWaived,
-            customerId: customerId,
-            discountAuthorization: discountAuthorization,
-            itemDiscountAuthorization: itemDiscountAuthorization,
-            serviceFeeAuthorization: serviceFeeAuthorization,
-          );
-        }
-      }
       _handleApiError(error);
     } on PosNetworkException catch (error) {
       _showTransientMessage(error.message);
@@ -681,14 +597,18 @@ class AppController extends ChangeNotifier {
         try {
           final current = await _api.getQuickSaleCheckout(checkoutId);
           if (current.status == 'finalized' && current.saleId != null) {
-            _recoveredQuickSaleResult = await _recoverFinalizedQuickSale(checkoutId, state);
+            final result =
+                await _recoverFinalizedQuickSale(checkoutId, state);
+            if (result != null) {
+              _recoveredQuickSaleResults[checkoutId] = result;
+            }
           }
         } on PosApiException {
           // Preserve the original conflict below when authoritative recovery fails.
         } on PosNetworkException {
           // Preserve the original conflict below when the state cannot be read.
         }
-        if (_recoveredQuickSaleResult != null) return null;
+        if (_recoveredQuickSaleResults.containsKey(checkoutId)) return null;
       }
       if (error.statusCode < 500) {
         pending.remove(operation);

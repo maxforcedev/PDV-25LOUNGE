@@ -163,7 +163,8 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     if (updated != null && mounted) {
       _replaceCheckout(updated);
     } else {
-      final recovered = widget.controller.takeRecoveredQuickSaleResult();
+      final recovered =
+          widget.controller.takeRecoveredQuickSaleResult(_checkout.id);
       if (recovered != null && mounted) {
         await widget.onCompleted(recovered);
         if (mounted) Navigator.of(context).pop(recovered);
