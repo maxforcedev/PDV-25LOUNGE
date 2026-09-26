@@ -33,7 +33,7 @@ class SharedTablesGrid extends StatelessWidget {
         itemCount: tables.length,
         itemBuilder: (_, index) {
           final table = tables[index];
-          final disabled = isDisabled?.call(table) ?? table.legacyOccupied;
+          final disabled = isDisabled?.call(table) ?? false;
           return SharedTableCard(
             table: table,
             disabled: disabled,
@@ -66,18 +66,10 @@ class SharedTableCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final locked = table.legacyOccupied;
-    final color = locked
-        ? Colors.orange
-        : table.isOpen
-            ? Colors.red
-            : Colors.green;
-    final label = statusLabel ??
-        (locked
-            ? 'ATENDIMENTO LEGADO'
-            : localizedAttendanceStatus(table.status));
+    final color = table.isOpen ? Colors.red : Colors.green;
+    final label = statusLabel ?? localizedAttendanceStatus(table.status);
     return Opacity(
-      opacity: disabled && !locked ? .55 : 1,
+      opacity: disabled ? .55 : 1,
       child: Card(
         child: InkWell(
           borderRadius: BorderRadius.circular(12),

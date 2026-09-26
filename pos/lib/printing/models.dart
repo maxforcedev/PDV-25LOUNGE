@@ -1,4 +1,5 @@
 enum PrintDocumentType {
+  // Historical compatibility for persisted jobs; never requested by modern UI.
   tableBill('table_bill'),
   tableConference('table_conference'),
   tableFinalReceipt('table_final_receipt'),

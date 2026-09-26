@@ -67,7 +67,6 @@ def _batch_key(idempotency_key, destination_id, device_id, event):
 
 
 INITIAL_DOCUMENT_TYPES = (
-    PrintDocumentType.TABLE_BILL,
     PrintDocumentType.TABLE_CONFERENCE,
     PrintDocumentType.TABLE_FINAL_RECEIPT,
     PrintDocumentType.QUICK_SALE_RECEIPT,
@@ -468,8 +467,10 @@ def enqueue_print_document(*, document, user=None, pos_device=None, retry_failed
 
 @transaction.atomic
 def issue_print_document(*, branch, document_type, source_type, source_id, user=None, pos_device=None,
-                         automatic_only=False, metadata=None, idempotency_key=None):
+                          automatic_only=False, metadata=None, idempotency_key=None):
     document_type = normalize_print_document_type(document_type)
+    if document_type == PrintDocumentType.TABLE_BILL:
+        raise ValueError('TABLE_BILL é compatibilidade histórica e não pode mais ser emitido.')
     _source, current_snapshot = _document_snapshot(
         document_type=document_type, source_type=source_type,
         source_id=source_id, branch=branch,

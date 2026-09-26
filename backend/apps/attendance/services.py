@@ -104,62 +104,6 @@ def _audit_metadata(metadata=None, **values):
 
 
 @transaction.atomic
-def open_table(*, branch, table_id, user, idempotency_key, people_count=None, identifier='', notes='', customer_id=None, audit_metadata=None):
-    """Open exactly one primary POS-5 command for a physical table."""
-    from apps.commands.models import Command, CommandStatus, Table, TableStatus
-
-    branch = _active_branch(branch)
-    require_branch_feature(branch, 'tables')
-    require_branch_feature(branch, 'commands')
-    operation, replayed = _operation(
-        branch=branch, operation_type=AttendanceOperationType.OPEN_TABLE,
-        idempotency_key=idempotency_key,
-        payload={
-            'table': table_id, 'people_count': people_count, 'identifier': identifier,
-            'notes': notes, 'customer': customer_id,
-        },
-    )
-    if replayed:
-        return AttendanceCommand.objects.get(pk=operation.result['command_id']), True
-    table = Table.objects.select_for_update().filter(
-        pk=table_id, branch=branch, status=TableStatus.ACTIVE,
-    ).first()
-    if table is None:
-        raise AttendanceConflict('table_not_found', 'Mesa não encontrada na filial atual.')
-    if Command.objects.select_for_update().filter(table=table, status=CommandStatus.OPEN).exists():
-        raise AttendanceConflict(
-            'table_in_legacy_use',
-            'A mesa possui atendimento aberto no fluxo legado e não pode ser aberta no POS agora.',
-        )
-    if TableAttendance.objects.select_for_update().filter(table=table, status=TableAttendanceStatus.OPEN).exists():
-        raise AttendanceConflict('table_in_table_attendance_use', 'A mesa possui atendimento aberto no novo fluxo de Mesa.')
-    existing = AttendanceCommand.objects.select_for_update().filter(
-        table=table, is_primary=True, status=AttendanceCommandStatus.OPEN,
-    ).first()
-    if existing:
-        operation.result = {'command_id': existing.pk}
-        operation.save(update_fields=('result', 'updated_at'))
-        return existing, True
-    customer = _customer(branch, customer_id)
-    command = AttendanceCommand.objects.create(
-        company=branch.company, branch=branch, table=table, is_primary=True,
-        number=_next_number(branch), identifier=identifier, notes=notes,
-        people_count=people_count, customer=customer, opened_by=user,
-        opened_by_name_snapshot=_operator_name(user), table_name_snapshot=table.name,
-        customer_name_snapshot=customer.name if customer else '',
-    )
-    operation.result = {'command_id': command.pk}
-    operation.save(update_fields=('result', 'updated_at'))
-    audit_log(
-        actor=user, action='attendance.table.open', obj=command,
-        company=branch.company, branch=branch,
-        after=model_snapshot(command, ('table_id', 'number', 'is_primary', 'people_count', 'status')),
-        metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)),
-    )
-    return command, False
-
-
-@transaction.atomic
 def open_command(*, branch, user, idempotency_key, identifier='', customer_id=None, table_id=None,
                  people_count=None, notes='', audit_metadata=None):
     from apps.commands.models import Table, TableStatus
@@ -1110,8 +1054,8 @@ def preview_table_payment_allocations(*, attendance, allocations):
 
 @transaction.atomic
 def open_table_attendance(*, branch, table_id, user, idempotency_key, people_count=None,
-                          responsible_name='', notes='', customer_id=None, audit_metadata=None):
-    from apps.commands.models import Command, CommandStatus, Table, TableStatus
+                           responsible_name='', notes='', customer_id=None, audit_metadata=None):
+    from apps.commands.models import Table, TableStatus
     from .models import TableAttendance, TableAttendanceStatus
 
     branch = _active_branch(branch)
@@ -1127,8 +1071,6 @@ def open_table_attendance(*, branch, table_id, user, idempotency_key, people_cou
     table = Table.objects.select_for_update().filter(pk=table_id, branch=branch, status=TableStatus.ACTIVE).first()
     if not table:
         raise AttendanceConflict('table_not_found', 'Mesa não encontrada na filial atual.')
-    if Command.objects.select_for_update().filter(table=table, status=CommandStatus.OPEN).exists() or AttendanceCommand.objects.select_for_update().filter(table=table, status=AttendanceCommandStatus.OPEN).exists():
-        raise AttendanceConflict('table_in_legacy_use', 'A mesa possui atendimento aberto no fluxo legado.')
     existing = TableAttendance.objects.select_for_update().filter(table=table, status=TableAttendanceStatus.OPEN).first()
     if existing:
         operation.result = {'attendance_id': existing.pk}

@@ -1,8 +1,6 @@
-from decimal import Decimal
-
 from django.db import transaction
-from django.db.models import CharField, Count, DecimalField, F, OuterRef, Q, Subquery, Sum, Value
-from django.db.models.functions import Coalesce, Concat
+from django.db.models import Count, DecimalField, F, Q, Sum, Value
+from django.db.models.functions import Coalesce
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -14,12 +12,12 @@ from apps.companies.selectors import eligible_branch_users, user_has_branch_perm
 from apps.sales.models import PaymentMethod
 from apps.sales.serializers import CalculationOutputSerializer, SaleUserOptionSerializer
 from apps.sales.services import calculate_command_preview
-from .models import Command, CommandPayment, CommandPaymentStatus, CommandStatus, OrderItem, Table, TableStatus
+from .models import Command, CommandPayment, CommandPaymentStatus, CommandStatus, OrderItem, Table
 from .permissions import CommandFunctionalPermission, TableFunctionalPermission
 from .serializers import (
     BatchTableSerializer, CancelOrderItemSerializer, CommandCalculationSerializer,
     CommandSerializer, ConfirmOrderItemSerializer, CreateOrderItemSerializer,
-    FinalizeCommandSerializer, OpenCommandSerializer, OperationalTableSerializer,
+    FinalizeCommandSerializer, OpenCommandSerializer,
     OrderItemSerializer, TableSerializer, TransferItemsSerializer, TransferTableSerializer,
     MergeCommandSerializer, SplitCommandSerializer, CommandPaymentSerializer,
     RecordCommandPaymentSerializer, ReverseCommandPaymentSerializer, SetCommandCustomerSerializer,
@@ -30,6 +28,7 @@ from .services import (
     set_command_customer,
     merge_commands, split_command, transfer_command_items, transfer_command_table,
     record_command_payment, reverse_command_payment, command_payment_summary,
+    _has_open_table_attendance,
 )
 
 
@@ -62,6 +61,7 @@ class TableViewSet(viewsets.ModelViewSet):
         if serializer.validated_data and (
             serializer.instance.commands.filter(status=CommandStatus.OPEN).exists()
             or serializer.instance.attendance_commands.filter(status='open').exists()
+            or _has_open_table_attendance(serializer.instance)
         ):
             raise ValidationError({'table': 'Não é possível alterar a estrutura de uma mesa com atendimento ou comanda aberta vinculada.'})
         fields = ('branch_id', 'name', 'seats', 'status')
@@ -121,52 +121,6 @@ class TableViewSet(viewsets.ModelViewSet):
 
     def perform_destroy(self, instance):
         delete_table(table=instance, user=self.request.user)
-
-    @action(detail=False, methods=('get',), url_path='operational')
-    def operational(self, request):
-        tables_queryset = self.get_queryset()
-        tables_queryset = tables_queryset.filter(status=TableStatus.ACTIVE)
-        tables = list(tables_queryset)
-        table_ids = [table.pk for table in tables]
-        money_field = DecimalField(max_digits=14, decimal_places=2)
-        payment_totals = CommandPayment.objects.filter(
-            command_id=OuterRef('pk'), status=CommandPaymentStatus.APPLIED,
-            reversal__isnull=True,
-        ).values('command_id').annotate(total=Sum('amount')).values('total')
-        open_commands = Command.objects.filter(
-            table_id__in=table_ids, status=CommandStatus.OPEN
-        ).select_related('opened_by').annotate(
-            open_items_count=Count(
-                'orders__items', filter=Q(orders__items__status='pending')
-            ),
-            confirmed_total=Coalesce(
-                Sum(
-                    F('orders__items__unit_price') * F('orders__items__quantity'),
-                    filter=Q(orders__items__status='confirmed'), output_field=money_field,
-                ),
-                Value(Decimal('0.00'), output_field=money_field),
-            ),
-            paid_total=Coalesce(
-                Subquery(payment_totals, output_field=money_field),
-                Value(Decimal('0.00'), output_field=money_field),
-            ),
-            opened_by_name=Concat(
-                F('opened_by__first_name'), Value(' '), F('opened_by__last_name'),
-                output_field=CharField(),
-            ),
-        ).order_by('table_id', 'created_at', 'id')
-        by_table = {table_id: [] for table_id in table_ids}
-        for command in open_commands:
-            by_table[command.table_id].append(command)
-        for table in tables:
-            commands = by_table[table.pk]
-            table.open_commands = commands
-            table.open_commands_count = len(commands)
-            table.open_commands_total = sum(
-                (command.confirmed_total for command in commands), Decimal('0.00')
-            )
-        return Response(OperationalTableSerializer(tables, many=True).data)
-
 
 class CommandViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = CommandSerializer
@@ -487,3 +441,4 @@ class OrderItemViewSet(viewsets.ReadOnlyModelViewSet):
             **serializer.validated_data,
         )
         return Response(OrderItemSerializer(result).data)
+from decimal import Decimal

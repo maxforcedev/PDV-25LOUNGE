@@ -2200,19 +2200,6 @@ export interface Table {
   name: string;
   seats: number;
   status: string;
-  operational_status?: "free" | "occupied";
-  open_commands_count?: number;
-  open_commands_total?: string;
-  open_commands?: Array<{
-    id: number;
-    command_number: string;
-    identifier: string;
-    open_items_count: number;
-    confirmed_total: string;
-    paid_total: string;
-    opened_at: string;
-    opened_by_name: string;
-  }>;
   created_at: string;
   updated_at: string;
 }

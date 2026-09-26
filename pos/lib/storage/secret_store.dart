@@ -7,8 +7,6 @@ abstract class SecretStore {
   Future<String?> readOperatorSession();
   Future<void> writeOperatorSession(String token);
   Future<void> clearOperatorSession();
-  Future<String?> readPendingSaleIntents() async => null;
-  Future<void> writePendingSaleIntents(String value) async {}
 }
 
 abstract interface class QuickSaleCheckoutStateStore {
@@ -70,7 +68,6 @@ class FlutterSecretStore
 
   static const _deviceCredentialKey = 'core_pos.device_credential';
   static const _operatorSessionKey = 'core_pos.operator_session';
-  static const _pendingSaleIntentsKey = 'core_pos.pending_sale_intents';
   static const _quickSaleCheckoutStateKey = 'core_pos.quick_sale_checkout';
   static const _tablePaymentStateKey = 'core_pos.table_payment_state';
   static const _printLedgerStateKey = 'core_pos.print_ledger';
@@ -100,14 +97,6 @@ class FlutterSecretStore
   @override
   Future<void> clearOperatorSession() =>
       _storage.delete(key: _operatorSessionKey);
-
-  @override
-  Future<String?> readPendingSaleIntents() =>
-      _storage.read(key: _pendingSaleIntentsKey);
-
-  @override
-  Future<void> writePendingSaleIntents(String value) =>
-      _storage.write(key: _pendingSaleIntentsKey, value: value);
 
   @override
   Future<String?> readQuickSaleCheckoutState() =>

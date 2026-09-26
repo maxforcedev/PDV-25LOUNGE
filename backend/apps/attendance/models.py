@@ -33,6 +33,7 @@ class AttendancePaymentStatus(models.TextChoices):
 
 
 class AttendanceOperationType(models.TextChoices):
+    # Historical legacy-table operation retained only to read existing records.
     OPEN_TABLE = 'open_table', 'Abrir mesa'
     OPEN_COMMAND = 'open_command', 'Abrir comanda'
     ADD_ITEMS = 'add_items', 'Adicionar itens'

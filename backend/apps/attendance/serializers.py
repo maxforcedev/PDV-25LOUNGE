@@ -57,14 +57,6 @@ class AttendancePaymentSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class AttendanceOpenTableSerializer(serializers.Serializer):
-    idempotency_key = serializers.UUIDField()
-    people_count = serializers.IntegerField(min_value=1, required=False, allow_null=True)
-    identifier = serializers.CharField(max_length=100, required=False, allow_blank=True, default='')
-    notes = serializers.CharField(max_length=1000, required=False, allow_blank=True, default='')
-    customer = serializers.IntegerField(min_value=1, required=False, allow_null=True)
-
-
 class AttendanceOpenCommandSerializer(serializers.Serializer):
     idempotency_key = serializers.UUIDField()
     identifier = serializers.CharField(max_length=100, required=False, allow_blank=True, default='')

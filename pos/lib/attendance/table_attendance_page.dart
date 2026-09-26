@@ -609,7 +609,6 @@ class _TableOrderPageState extends State<TableOrderPage> {
               .where((table) =>
                   table.id == _attendance.tableId ||
                   (table.isOpen &&
-                      !table.legacyOccupied &&
                       table.attendance != null &&
                       table.attendance!.id != _attendance.id))
               .toList(growable: false),
@@ -1515,7 +1514,6 @@ class _TableTransferDestinationPage extends StatelessWidget {
     final destinations = tables.where((table) =>
         table.id != sourceTableId &&
         table.isOpen &&
-        !table.legacyOccupied &&
         table.attendance != null);
     return Scaffold(
       appBar: AppBar(title: const Text('Destino dos itens')),
@@ -1531,7 +1529,6 @@ class _TableTransferDestinationPage extends StatelessWidget {
             isDisabled: (table) =>
                 table.id == sourceTableId ||
                 !table.isOpen ||
-                table.legacyOccupied ||
                 table.attendance == null,
             statusLabel: (table) =>
                 table.id == sourceTableId ? 'MESA ATUAL' : null,

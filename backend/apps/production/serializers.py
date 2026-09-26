@@ -251,6 +251,11 @@ class _RouteSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
+        document_type = attrs.get('document_type', getattr(self.instance, 'document_type', None))
+        if self.instance is None and document_type == PrintDocumentType.TABLE_BILL:
+            raise serializers.ValidationError(
+                {'document_type': 'TABLE_BILL é compatibilidade histórica e não aceita novas rotas.'}
+            )
         mode = attrs.get('mode', getattr(self.instance, 'mode', PrintRouteMode.DISABLED))
         devices = attrs.get('printer_devices')
         if devices is None and self.instance:
@@ -348,3 +353,10 @@ class PrintDocumentIssueSerializer(serializers.Serializer):
     ))
     source_id = serializers.CharField(max_length=64)
     idempotency_key = serializers.UUIDField()
+
+    def validate_document_type(self, value):
+        if value == PrintDocumentType.TABLE_BILL:
+            raise serializers.ValidationError(
+                'TABLE_BILL é compatibilidade histórica e não pode mais ser emitido.'
+            )
+        return value

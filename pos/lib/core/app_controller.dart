@@ -43,7 +43,6 @@ class AppController extends ChangeNotifier {
   final DeviceDescriptor _device;
   final _transientFeedback = TransientFeedback();
   final Map<String, String> _uncertainCashOperationKeys = {};
-  final Map<String, String> _uncertainSaleKeys = {};
 
   String? get _quickCheckoutOperatorId => selectedOperator?.id;
 
@@ -695,8 +694,6 @@ class AppController extends ChangeNotifier {
 
   AppPhase phase = AppPhase.loading;
   bool busy = false;
-  bool finalizingSale = false;
-  String? saleFinalizationError;
   String? errorMessage;
   TransientAlert? get transientAlert => _transientFeedback.alert;
   PairingDiscovery? discovery;
@@ -724,7 +721,6 @@ class AppController extends ChangeNotifier {
   Future<void> initialize() async {
     final credentialCache = _credentialCache;
     await credentialCache?.warmCredentials();
-    await _restoreUncertainSaleIntents();
     final hasDeviceCredential = credentialCache != null
         ? credentialCache.hasDeviceCredential
         : await _secrets.readDeviceCredential() != null;
@@ -1739,155 +1735,6 @@ class AppController extends ChangeNotifier {
       _showTransientMessage(error.message);
     }
     return null;
-  }
-
-  Future<QuickSaleResult?> finalizeQuickSale({
-    required List<Map<String, dynamic>> items,
-    required int cashSessionId,
-    required List<Map<String, dynamic>> payments,
-    required Map<String, dynamic> discount,
-    required bool serviceFeeWaived,
-    QuickSaleCustomer? customer,
-    QuickSaleAuthorization? discountAuthorization,
-    QuickSaleAuthorization? itemDiscountAuthorization,
-    QuickSaleAuthorization? serviceFeeAuthorization,
-  }) async {
-    final snapshot = bootstrapSnapshot;
-    if (finalizingSale) {
-      _showTransientMessage('A venda já está sendo finalizada. Aguarde.');
-      return null;
-    }
-    if (snapshot == null) {
-      saleFinalizationError =
-          'A sessão do POS não está disponível. Entre novamente.';
-      _showTransientMessage(saleFinalizationError!);
-      return null;
-    }
-    String? payload;
-    late final String key;
-    var createdIntent = false;
-    try {
-      payload = jsonEncode(<String, dynamic>{
-        'items': items,
-        'cash_session': cashSessionId,
-        'payments': payments,
-        'discount': discount,
-        'service_fee_waived': serviceFeeWaived,
-        'customer': customer?.id,
-        if (discountAuthorization != null)
-          'discount_authorization': discountAuthorization.idempotencyIdentity,
-        if (itemDiscountAuthorization != null)
-          'item_discount_authorization':
-              itemDiscountAuthorization.idempotencyIdentity,
-        if (serviceFeeAuthorization != null)
-          'service_fee_authorization':
-              serviceFeeAuthorization.idempotencyIdentity,
-      });
-      final existingKey = _uncertainSaleKeys[payload];
-      createdIntent = existingKey == null;
-      key = existingKey ?? createIdempotencyKey();
-      _uncertainSaleKeys[payload] = key;
-      await _persistUncertainSaleIntents();
-    } catch (_) {
-      if (createdIntent && payload != null) _uncertainSaleKeys.remove(payload);
-      saleFinalizationError =
-          'Não foi possível preparar a venda para envio. Tente novamente.';
-      _showTransientMessage(saleFinalizationError!);
-      notifyListeners();
-      return null;
-    }
-    final fingerprint = payload;
-    finalizingSale = true;
-    saleFinalizationError = null;
-    _clearTransientMessage();
-    notifyListeners();
-    try {
-      final result = await _api.finalizeQuickSale(
-        idempotencyKey: key,
-        items: items,
-        cashSessionId: cashSessionId,
-        payments: payments,
-        discount: discount,
-        serviceFeeWaived: serviceFeeWaived,
-        customerId: customer?.id,
-        discountAuthorization: discountAuthorization?.toJson(),
-        itemDiscountAuthorization: itemDiscountAuthorization?.toJson(),
-        serviceFeeAuthorization: serviceFeeAuthorization?.toJson(),
-      );
-      bootstrapSnapshot = snapshot.withCash(result.cash);
-      _uncertainSaleKeys.remove(fingerprint);
-      try {
-        await _persistUncertainSaleIntents();
-      } catch (_) {
-        // A sale accepted by the server is safe; a later retry uses its key.
-      }
-      syncStatus = syncStatus.succeeded();
-      final tickets = result.ticketNumbers.isEmpty
-          ? ''
-          : ' Tickets: ${result.ticketNumbers.join(', ')}.';
-      _showTransientMessage(
-          'Venda ${result.saleNumber} concluida com sucesso.$tickets',
-          tone: TransientAlertTone.success,
-          notify: false);
-      return result;
-    } on PosApiException catch (error) {
-      if (error.statusCode < 500) {
-        _uncertainSaleKeys.remove(fingerprint);
-        try {
-          await _persistUncertainSaleIntents();
-        } catch (_) {
-          // The response is definitive, so local cleanup cannot affect the sale.
-        }
-      }
-      _handleApiError(error);
-      saleFinalizationError = error.message;
-    } on PosNetworkException catch (error) {
-      syncStatus = syncStatus.failed(error.message);
-      _showTransientMessage(error.message, notify: false);
-      saleFinalizationError = error.message;
-    } catch (_) {
-      saleFinalizationError =
-          'Não foi possível preparar a venda para envio. Tente novamente.';
-      _showTransientMessage(saleFinalizationError!, notify: false);
-    } finally {
-      finalizingSale = false;
-      notifyListeners();
-    }
-    return null;
-  }
-
-  Future<void> _restoreUncertainSaleIntents() async {
-    final encoded = await _secrets.readPendingSaleIntents();
-    if (encoded == null || encoded.isEmpty) return;
-    try {
-      final payload = jsonDecode(encoded) as Map<String, dynamic>;
-      final intents = payload['intents'] as List<dynamic>? ?? const [];
-      for (final raw in intents) {
-        final intent = Map<String, dynamic>.from(raw as Map);
-        final body = intent['payload'];
-        final key = intent['idempotency_key'] as String?;
-        if (body is Map<String, dynamic> && key != null) {
-          _uncertainSaleKeys[jsonEncode(body)] = key;
-        }
-      }
-    } catch (_) {
-      // Corrupt local state must not prevent an operator from opening the POS.
-      await _secrets.writePendingSaleIntents('');
-    }
-  }
-
-  Future<void> _persistUncertainSaleIntents() {
-    final intents = _uncertainSaleKeys.entries
-        .map((entry) => <String, dynamic>{
-              'fingerprint': base64UrlEncode(utf8.encode(entry.key)),
-              'payload':
-                  Map<String, dynamic>.from(jsonDecode(entry.key) as Map),
-              'idempotency_key': entry.value,
-            })
-        .toList(growable: false);
-    return _secrets.writePendingSaleIntents(
-      jsonEncode(<String, dynamic>{'intents': intents}),
-    );
   }
 
   Future<void> forgetDevice() async {

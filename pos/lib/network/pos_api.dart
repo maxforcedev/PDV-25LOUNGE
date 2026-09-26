@@ -324,18 +324,6 @@ abstract class PosApi {
     required String idempotencyKey,
   }) =>
       throw UnimplementedError();
-  Future<QuickSaleResult> finalizeQuickSale({
-    required String idempotencyKey,
-    required List<Map<String, dynamic>> items,
-    required int cashSessionId,
-    required List<Map<String, dynamic>> payments,
-    required Map<String, dynamic> discount,
-    required bool serviceFeeWaived,
-    int? customerId,
-    Map<String, dynamic>? discountAuthorization,
-    Map<String, dynamic>? itemDiscountAuthorization,
-    Map<String, dynamic>? serviceFeeAuthorization,
-  });
   Future<TicketValidationResult> lookupTicket(
       {String? validationCode, int? ticketNumber});
   Future<TicketValidationResult> validateTicket(
@@ -1507,35 +1495,6 @@ class HttpPosApi implements PosApi, PosCredentialCache {
       QuickSaleResult.fromJson(await _request(
           'POST', 'sales/checkouts/$checkoutId/finalize/',
           body: {'idempotency_key': idempotencyKey}));
-
-  @override
-  Future<QuickSaleResult> finalizeQuickSale({
-    required String idempotencyKey,
-    required List<Map<String, dynamic>> items,
-    required int cashSessionId,
-    required List<Map<String, dynamic>> payments,
-    required Map<String, dynamic> discount,
-    required bool serviceFeeWaived,
-    int? customerId,
-    Map<String, dynamic>? discountAuthorization,
-    Map<String, dynamic>? itemDiscountAuthorization,
-    Map<String, dynamic>? serviceFeeAuthorization,
-  }) async =>
-      QuickSaleResult.fromJson(await _request('POST', 'sales/', body: {
-        'idempotency_key': idempotencyKey,
-        'items': items,
-        'cash_session': cashSessionId,
-        'payments': payments,
-        'discount': discount,
-        'service_fee_waived': serviceFeeWaived,
-        if (customerId != null) 'customer': customerId,
-        if (discountAuthorization != null)
-          'discount_authorization': discountAuthorization,
-        if (itemDiscountAuthorization != null)
-          'item_discount_authorization': itemDiscountAuthorization,
-        if (serviceFeeAuthorization != null)
-          'service_fee_authorization': serviceFeeAuthorization,
-      }));
 
   @override
   Future<TicketValidationResult> lookupTicket(

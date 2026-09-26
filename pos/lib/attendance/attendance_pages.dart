@@ -44,7 +44,6 @@ class _TablesPageState extends State<TablesPage> {
   }
 
   Future<void> _open(AttendanceTable table) async {
-    if (table.legacyOccupied) return;
     var attendance = table.attendance;
     if (attendance == null) {
       attendance = await widget.controller.openAttendanceTable(
@@ -119,68 +118,6 @@ class _TablesPageState extends State<TablesPage> {
                       : null,
                 ),
               ),
-      );
-}
-
-class _OpenTableDetails {
-  const _OpenTableDetails(
-      {this.peopleCount, this.responsibleName = '', this.notes = ''});
-  final int? peopleCount;
-  final String responsibleName;
-  final String notes;
-}
-
-class _OpenTableDialog extends StatefulWidget {
-  const _OpenTableDialog();
-
-  @override
-  State<_OpenTableDialog> createState() => _OpenTableDialogState();
-}
-
-class _OpenTableDialogState extends State<_OpenTableDialog> {
-  final _people = TextEditingController();
-  final _responsible = TextEditingController();
-  final _notes = TextEditingController();
-
-  @override
-  void dispose() {
-    _people.dispose();
-    _responsible.dispose();
-    _notes.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: const Text('Abrir mesa'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(
-              controller: _people,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Pessoas')),
-          TextField(
-              controller: _responsible,
-              decoration: const InputDecoration(labelText: 'Responsável')),
-          TextField(
-              controller: _notes,
-              maxLines: 2,
-              decoration: const InputDecoration(labelText: 'Observações')),
-        ]),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('CANCELAR')),
-          FilledButton(
-            onPressed: () => Navigator.pop(
-                context,
-                _OpenTableDetails(
-                  peopleCount: int.tryParse(_people.text),
-                  responsibleName: _responsible.text.trim(),
-                  notes: _notes.text.trim(),
-                )),
-            child: const Text('ABRIR'),
-          ),
-        ],
       );
 }
 
@@ -856,7 +793,7 @@ class _TablePicker extends StatelessWidget {
                   onTap: () =>
                       Navigator.pop(context, const _TableTarget(null))),
               ...tables
-                  .where((table) => table.isOpen && !table.legacyOccupied)
+                  .where((table) => table.isOpen)
                   .map((table) => ListTile(
                       title: Text(table.name),
                       subtitle: Text(table.isOpen ? 'Ocupada' : 'Livre'),

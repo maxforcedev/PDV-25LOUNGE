@@ -686,7 +686,7 @@ def create_table(*, branch, name, seats=0, user):
     return table
 
 
-def _open_table_attendance_exists(table):
+def _open_command_attendance_exists(table):
     from apps.attendance.models import AttendanceCommand, AttendanceCommandStatus
 
     return AttendanceCommand.objects.filter(
@@ -694,10 +694,19 @@ def _open_table_attendance_exists(table):
     ).exists()
 
 
+def _has_open_table_attendance(table):
+    from apps.attendance.models import TableAttendance, TableAttendanceStatus
+
+    return TableAttendance.objects.filter(
+        table=table, status=TableAttendanceStatus.OPEN,
+    ).exists()
+
+
 def _assert_table_without_open_attendance(table):
     if (
         Command.objects.filter(table=table, status=CommandStatus.OPEN).exists()
-        or _open_table_attendance_exists(table)
+        or _open_command_attendance_exists(table)
+        or _has_open_table_attendance(table)
     ):
         raise ValidationError({
             'status': (

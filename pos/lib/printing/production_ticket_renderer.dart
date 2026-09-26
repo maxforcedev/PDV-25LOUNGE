@@ -94,6 +94,7 @@ class ProductionTicketRenderer {
     }
     switch (type) {
       case PrintDocumentType.tableBill:
+        // Retained solely to reconcile and render historical persisted jobs.
         _center(bytes, 'CONTA', width, bold: true, large: true);
         _tableDocument(bytes, snapshot, width,
             fiscalLabel: null, detailed: detailed);

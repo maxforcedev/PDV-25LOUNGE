@@ -8,7 +8,6 @@ class AttendanceTable {
     required this.status,
     required this.total,
     required this.balance,
-    this.legacyOccupied = false,
     this.billRequested = false,
     this.group,
     this.attendance,
@@ -22,7 +21,6 @@ class AttendanceTable {
         status: json['status'] as String? ?? 'free',
         total: json['total'] as String? ?? '0.00',
         balance: json['balance'] as String? ?? '0.00',
-        legacyOccupied: json['legacy_occupied'] == true,
         billRequested: json['bill_requested'] == true,
         group: json['group'] is Map<String, dynamic>
             ? AttendanceTableGroup.fromJson(
@@ -40,7 +38,6 @@ class AttendanceTable {
   final String status;
   final String total;
   final String balance;
-  final bool legacyOccupied;
   final bool billRequested;
   final AttendanceTableGroup? group;
   final TableAttendance? attendance;

@@ -8,7 +8,6 @@ import { useAuth } from "@/providers/auth-provider";
 import type { PosDevice, PrintDocumentFormat, PrintDocumentType, PrintRoute, PrintRouteMode, PrintRouteOverride, PrinterDevice } from "@/types";
 
 const documentTypes: Array<{ value: PrintDocumentType; label: string; format: boolean }> = [
-  { value: "table_bill", label: "Conta da mesa", format: true },
   { value: "table_conference", label: "Conferencia", format: true },
   { value: "table_final_receipt", label: "Recibo final da mesa", format: true },
   { value: "quick_sale_receipt", label: "Recibo venda rapida", format: true },

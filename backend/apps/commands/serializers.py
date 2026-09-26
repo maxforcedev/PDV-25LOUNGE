@@ -19,35 +19,6 @@ class TableSerializer(serializers.ModelSerializer):
         return ' '.join((value or '').split())
 
 
-class OperationalCommandSerializer(serializers.Serializer):
-    id = serializers.IntegerField()
-    command_number = serializers.CharField()
-    identifier = serializers.CharField()
-    open_items_count = serializers.IntegerField()
-    confirmed_total = serializers.DecimalField(max_digits=14, decimal_places=2)
-    paid_total = serializers.DecimalField(max_digits=14, decimal_places=2)
-    opened_at = serializers.DateTimeField(source='created_at')
-    opened_by_name = serializers.CharField()
-
-
-class OperationalTableSerializer(TableSerializer):
-    operational_status = serializers.SerializerMethodField()
-    open_commands_count = serializers.IntegerField(read_only=True)
-    open_commands_total = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
-    open_commands = OperationalCommandSerializer(many=True, read_only=True)
-
-    class Meta(TableSerializer.Meta):
-        fields = TableSerializer.Meta.fields + (
-            'operational_status', 'open_commands_count', 'open_commands_total', 'open_commands',
-        )
-        read_only_fields = TableSerializer.Meta.read_only_fields + (
-            'operational_status', 'open_commands_count', 'open_commands_total', 'open_commands',
-        )
-
-    def get_operational_status(self, table):
-        return 'occupied' if table.open_commands_count else 'free'
-
-
 class BatchTableSerializer(serializers.Serializer):
     branch = serializers.IntegerField(min_value=1)
     prefix = serializers.CharField(max_length=50, required=False, allow_blank=True)

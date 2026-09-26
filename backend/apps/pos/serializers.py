@@ -6,7 +6,7 @@ from rest_framework import serializers
 from apps.cash.serializers import StrictMoneyField
 from apps.companies.models import Customer
 from apps.companies.services import create_customer, prepare_customer
-from apps.sales.serializers import DiscountIntentField, ItemInputSerializer, PaymentInputSerializer
+from apps.sales.serializers import DiscountIntentField, ItemInputSerializer
 
 from .models import BranchPOSSettings, POSDevice, POSDeviceSettings
 from .services import effective_cash_settings, effective_settings
@@ -183,15 +183,6 @@ class POSDiscountAuthorizationValidationSerializer(POSDiscountAuthorizationSeria
         if not isinstance(data, dict) or set(data) != expected:
             raise serializers.ValidationError('A autorização deve informar tipo, usuário e PIN.')
         return serializers.Serializer.to_internal_value(self, data)
-
-
-class POSFinalizeSaleSerializer(POSSalePreviewSerializer):
-    customer = serializers.IntegerField(required=False, allow_null=True)
-    idempotency_key = serializers.UUIDField()
-    payments = PaymentInputSerializer(many=True, allow_empty=False)
-    discount_authorization = POSDiscountAuthorizationSerializer(required=False)
-    item_discount_authorization = POSDiscountAuthorizationSerializer(required=False)
-    service_fee_authorization = POSDiscountAuthorizationSerializer(required=False)
 
 
 class POSQuickCheckoutCreateSerializer(POSSalePreviewSerializer):

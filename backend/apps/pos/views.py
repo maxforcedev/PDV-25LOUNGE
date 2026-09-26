@@ -46,7 +46,7 @@ from apps.attendance.models import (
 from apps.attendance.serializers import (
     AttendanceCancelItemSerializer, AttendanceCommandSerializer, AttendanceConfirmItemSerializer,
     AttendanceFinalizeSerializer, AttendanceItemsSerializer,
-    AttendanceOpenCommandSerializer, AttendanceOpenTableSerializer,
+    AttendanceOpenCommandSerializer,
     AttendanceOrderItemSerializer, AttendancePaymentInputSerializer,
     AttendancePaymentSerializer, AttendanceReversePaymentSerializer, AttendanceTransferCommandSerializer,
     AttendanceTransferItemsSerializer, AttendanceBillRequestSerializer, AttendanceTableGroupSerializer,
@@ -58,7 +58,7 @@ from apps.attendance.serializers import (
 from apps.attendance.services import (
     AttendanceConflict, add_order_items, cancel_order_item, command_summary, confirm_order_item,
     finalize_command as finalize_attendance_command, open_command as open_attendance_command,
-    open_table as open_attendance_table, record_payment as record_attendance_payment,
+    record_payment as record_attendance_payment,
     reverse_payment as reverse_attendance_payment,
     group_tables as group_attendance_tables, separate_table_from_group,
     set_bill_requested,
@@ -88,7 +88,7 @@ from apps.sales.serializers import (
 )
 from apps.sales.services import (
     assess_sale_stock_availability, calculate_preview, catalog_product_operational_states,
-    catalog_products_with_available_stock, finalize_sale, validate_discount_authorization,
+    catalog_products_with_available_stock, validate_discount_authorization,
     payment_method_presentation,
 )
 from apps.sales.quick_checkout import (
@@ -107,7 +107,7 @@ from .serializers import (
     POSAdminDeviceSerializer, POSDeviceSettingsSerializer, POSOpenCashSessionSerializer,
     POSSelectCashSessionSerializer,
     POSCustomerSerializer, POSDiscountAuthorizationValidationSerializer,
-    POSFinalizeSaleSerializer, POSSalePreviewSerializer, POSStockAvailabilitySerializer,
+    POSSalePreviewSerializer, POSStockAvailabilitySerializer,
     POSTablePreviewSerializer,
     POSQuickCheckoutCancelSerializer, POSQuickCheckoutCreateSerializer,
     POSQuickCheckoutFinalizeSerializer, POSQuickCheckoutUpdateSerializer,
@@ -883,7 +883,7 @@ class POSAttendanceView(POSCashView):
 
 class POSTablesView(POSAttendanceView):
     def get(self, request):
-        from apps.commands.models import Command, CommandStatus, Table, TableStatus
+        from apps.commands.models import Table, TableStatus
 
         device, _, permissions, _ = self.context(request)
         self._require(permissions, 'tables.view', 'Você não possui permissão para consultar mesas nesta filial.')
@@ -895,11 +895,6 @@ class POSTablesView(POSAttendanceView):
         grouped = {table.pk: None for table in tables}
         for attendance in attendances:
             grouped[attendance.table_id] = attendance
-        legacy_ids = set(Command.objects.filter(
-            branch=device.branch, status=CommandStatus.OPEN, table_id__in=grouped,
-        ).values_list('table_id', flat=True)) | set(AttendanceCommand.objects.filter(
-            branch=device.branch, status=AttendanceCommandStatus.OPEN, table_id__in=grouped,
-        ).values_list('table_id', flat=True))
         active_memberships = AttendanceTableGroupMembership.objects.filter(
             table_id__in=grouped, left_at__isnull=True, group__is_active=True,
         ).select_related('group', 'table')
@@ -914,8 +909,7 @@ class POSTablesView(POSAttendanceView):
             membership = memberships_by_table.get(table.pk)
             payload.append({
                 'id': table.pk, 'name': table.name, 'capacity': table.seats,
-                'status': 'occupied' if attendance or table.pk in legacy_ids else 'free',
-                'legacy_occupied': table.pk in legacy_ids,
+                'status': 'occupied' if attendance else 'free',
                 'attendance': TableAttendanceSerializer(attendance).data if attendance else None,
                 'total': summary['total_due'] if summary else '0.00',
                 'balance': summary['remaining_balance'] if summary else '0.00',
@@ -1481,7 +1475,6 @@ class POSTableAttendanceView(POSAttendanceView):
         ).data
         documents = []
         for document_type in (
-            PrintDocumentType.TABLE_BILL,
             PrintDocumentType.TABLE_CONFERENCE,
             PrintDocumentType.TABLE_FINAL_RECEIPT,
         ):
@@ -1725,7 +1718,7 @@ class POSTableAttendanceBillView(POSTableAttendanceView):
         payload = TableAttendanceSerializer(attendance).data
         if self.requested:
             document = PrintDocument.objects.filter(
-                branch=device.branch, document_type=PrintDocumentType.TABLE_BILL,
+                branch=device.branch, document_type=PrintDocumentType.TABLE_CONFERENCE,
                 source_type='table_attendance', source_id=str(attendance.pk),
             ).order_by('-version', '-id').first()
             if document:
@@ -2301,82 +2294,6 @@ class POSQuickCheckoutCancelView(POSQuickCheckoutView):
             _quick_checkout_conflict(error)
         response = Response(_quick_checkout_payload(self._checkout(device, operator, checkout.pk), permissions=permissions))
         if replayed:
-            response['Idempotency-Replayed'] = 'true'
-        return response
-
-
-class POSFinalizeSaleView(POSQuickSaleView):
-    def post(self, request):
-        device, operator, permissions, operator_session = self.context(request)
-        if 'sales.create' not in permissions:
-            raise PermissionDenied('Você não possui permissão para realizar vendas nesta filial.')
-        serializer = POSFinalizeSaleSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        data = serializer.validated_data
-        customer = None
-        if data.get('customer') is not None:
-            customer = Customer.objects.filter(
-                pk=data['customer'], company_id=device.branch.company_id,
-                status=Status.ACTIVE,
-            ).first()
-            if customer is None:
-                raise ValidationError({'customer': 'Cliente inválido, inativo ou fora da empresa.'})
-        sale = finalize_sale(
-            branch=device.branch,
-            user=operator,
-            operation_type=OperationType.SALE,
-            seller_user=operator,
-            customer=customer,
-            items=self._items(data['items']),
-            payments=data['payments'],
-            discount=data['discount'],
-            service_fee_waived=data['service_fee_waived'],
-            discount_authorization=data.get('discount_authorization'),
-            item_discount_authorization=data.get('item_discount_authorization'),
-            service_fee_authorization=data.get('service_fee_authorization'),
-            idempotency_key=data['idempotency_key'],
-            channel=SalesChannel.COUNTER,
-            pos_device=device,
-            allow_pos_only=True,
-            audit_metadata=self.audit_metadata(device, operator_session),
-            pos_permission_codes=permissions,
-            pos_device_validated=True,
-        )
-        replayed = bool(getattr(sale, '_idempotency_replayed', False))
-        request.branch_context = device.branch
-        sale = Sale.objects.select_related(
-            'company', 'branch', 'cash_session', 'created_by', 'seller_user', 'pos_device',
-        ).prefetch_related('items__product', 'payments__payment_method').get(pk=sale.pk)
-        try:
-            document = issue_print_document(
-                branch=device.branch, document_type=PrintDocumentType.QUICK_SALE_RECEIPT,
-                source_type='sale', source_id=sale.pk, user=operator, pos_device=device,
-                automatic_only=True, metadata={'trigger': 'quick_sale_finalized'},
-            )
-        except Exception as error:
-            audit_log(actor=operator, action='print_document.automatic_failed', obj=sale,
-                      company=sale.company, branch=sale.branch,
-                      metadata={'document_type': PrintDocumentType.QUICK_SALE_RECEIPT, 'detail': str(error)})
-            document = None
-        _issue_ticket_documents(sale, operator, device)
-        response = Response(
-            {
-                'sale': SaleSerializer(sale, context={'request': request}).data,
-                'cash_state': cash_state_for_device(device, permissions, operator),
-                'effects': {
-                    'tickets': _ticket_print_effects(sale),
-                    'production_job_count': sum(
-                        item.production_jobs.filter(event='new').count()
-                        for item in sale.items.all()
-                    ),
-                    'print_document_id': document.pk if document else None,
-                    'print_document': _print_document_effect(document) if document else None,
-                },
-            },
-            status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED,
-        )
-        if replayed:
-            request.audit_fallback_suppressed = True
             response['Idempotency-Replayed'] = 'true'
         return response
 
