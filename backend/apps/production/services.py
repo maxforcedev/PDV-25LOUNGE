@@ -335,8 +335,16 @@ def _existing_print_document(*, branch, document_type, source_type, source_id, s
 
 def create_print_document(*, branch, document_type, source_type, source_id, user=None, metadata=None):
     document_type = normalize_print_document_type(document_type)
+    if document_type == PrintDocumentType.TABLE_BILL:
+        # Historical documents remain readable, but this legacy type is never emitted again.
+        existing = PrintDocument.objects.filter(
+            branch=branch, document_type=document_type, source_type=source_type,
+            source_id=str(source_id),
+        ).order_by('-version', '-id').first()
+        if existing:
+            return existing, False
+        raise ValueError('TABLE_BILL é compatibilidade histórica e não pode mais ser criado.')
     valid_sources = {
-        PrintDocumentType.TABLE_BILL: {'table_attendance'},
         PrintDocumentType.TABLE_CONFERENCE: {'table_attendance'},
         PrintDocumentType.TABLE_FINAL_RECEIPT: {'table_attendance'},
         PrintDocumentType.QUICK_SALE_RECEIPT: {'sale'},

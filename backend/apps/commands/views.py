@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.db import transaction
 from django.db.models import Count, DecimalField, F, Q, Sum, Value
 from django.db.models.functions import Coalesce
@@ -441,4 +443,3 @@ class OrderItemViewSet(viewsets.ReadOnlyModelViewSet):
             **serializer.validated_data,
         )
         return Response(OrderItemSerializer(result).data)
-from decimal import Decimal

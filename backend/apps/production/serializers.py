@@ -252,9 +252,9 @@ class _RouteSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         attrs = super().validate(attrs)
         document_type = attrs.get('document_type', getattr(self.instance, 'document_type', None))
-        if self.instance is None and document_type == PrintDocumentType.TABLE_BILL:
+        if document_type == PrintDocumentType.TABLE_BILL:
             raise serializers.ValidationError(
-                {'document_type': 'TABLE_BILL é compatibilidade histórica e não aceita novas rotas.'}
+                {'document_type': 'TABLE_BILL é compatibilidade histórica e não aceita configuração operacional.'}
             )
         mode = attrs.get('mode', getattr(self.instance, 'mode', PrintRouteMode.DISABLED))
         devices = attrs.get('printer_devices')
