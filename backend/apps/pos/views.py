@@ -162,7 +162,9 @@ def _ticket_print_effects(sale):
 
 
 def _issue_ticket_documents(sale, user, device):
-    ticket_ids = sale.items.filter(product__emits_ticket).values_list('sale_ticket__id', flat=True)
+    ticket_ids = sale.items.filter(
+        product__emits_ticket=True,
+    ).values_list('sale_ticket__id', flat=True)
     for ticket_id in ticket_ids:
         if not ticket_id:
             continue
