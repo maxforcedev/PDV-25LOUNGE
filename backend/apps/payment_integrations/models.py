@@ -62,6 +62,10 @@ class PaymentProvider(BaseModel):
                 raise ValidationError({'code': 'O código do provedor não pode ser alterado.'})
         validate_non_sensitive_metadata(self.capabilities, 'capabilities')
 
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
 
 class PaymentProviderConnectionEnvironment(models.TextChoices):
     SANDBOX = 'sandbox', 'Sandbox'
@@ -94,6 +98,10 @@ class PaymentProviderConnection(BaseModel):
         validate_non_sensitive_metadata(self.configuration, 'configuration')
         validate_non_sensitive_metadata(self.capabilities_override, 'capabilities_override')
 
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
 
 class PaymentTerminal(BaseModel):
     connection = models.ForeignKey(PaymentProviderConnection, on_delete=models.PROTECT, related_name='terminals')
@@ -124,6 +132,10 @@ class PaymentTerminal(BaseModel):
             raise ValidationError(errors)
         validate_non_sensitive_metadata(self.capabilities, 'capabilities')
         validate_non_sensitive_metadata(self.metadata, 'metadata')
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
 
 class PaymentIntentOriginType(models.TextChoices):
@@ -202,6 +214,8 @@ class PaymentIntent(BaseModel):
             errors['provider_connection'] = 'A conexão deve pertencer à empresa.'
         elif self.provider_connection.status != Status.ACTIVE:
             errors['provider_connection'] = 'A conexão deve estar ativa.'
+        elif self.provider_connection.provider.status != Status.ACTIVE:
+            errors['provider_connection'] = 'O provedor da conexão deve estar ativo.'
         elif self.provider_connection.branch_id and self.provider_connection.branch_id != self.branch_id:
             errors['provider_connection'] = 'A conexão não é válida para esta filial.'
         if self.terminal_id:
@@ -213,6 +227,17 @@ class PaymentIntent(BaseModel):
                 errors['terminal'] = 'O terminal deve estar ativo.'
         if errors:
             raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        if self._state.adding:
+            if self.status != PaymentIntentStatus.CREATED:
+                raise ValidationError({'status': 'PaymentIntent deve ser criado no estado CREATED.'})
+        else:
+            original = PaymentIntent.objects.get(pk=self.pk)
+            if original.status != self.status and not getattr(self, '_allow_status_transition', False):
+                raise ValidationError({'status': 'Use os serviços de PaymentIntent para alterar o estado.'})
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
         raise ValidationError('PaymentIntent é histórico operacional e não pode ser excluído.')
@@ -278,8 +303,14 @@ class PaymentAttempt(BaseModel):
         errors = {}
         if self.amount is not None and self.amount <= 0:
             errors['amount'] = 'O valor deve ser maior que zero.'
+        if self.amount is not None and self.intent_id and self.amount != self.intent.amount:
+            errors['amount'] = 'O valor da tentativa deve ser igual ao valor do intent.'
         if self.provider_connection.company_id != self.intent.company_id:
             errors['provider_connection'] = 'A conexão deve pertencer à empresa do intent.'
+        elif self.provider_connection.status != Status.ACTIVE:
+            errors['provider_connection'] = 'A conexão da tentativa deve estar ativa.'
+        elif self.provider_connection.provider.status != Status.ACTIVE:
+            errors['provider_connection'] = 'O provedor da conexão deve estar ativo.'
         elif self.provider_connection.branch_id and self.provider_connection.branch_id != self.intent.branch_id:
             errors['provider_connection'] = 'A conexão não é válida para a filial do intent.'
         if self.terminal_id:
@@ -287,10 +318,23 @@ class PaymentAttempt(BaseModel):
                 errors['terminal'] = 'O terminal deve pertencer à conexão da tentativa.'
             elif self.terminal.branch_id != self.intent.branch_id:
                 errors['terminal'] = 'O terminal deve pertencer à filial do intent.'
+            elif self.terminal.status != Status.ACTIVE:
+                errors['terminal'] = 'O terminal da tentativa deve estar ativo.'
         if errors:
             raise ValidationError(errors)
         validate_non_sensitive_metadata(self.request_metadata, 'request_metadata')
         validate_non_sensitive_metadata(self.response_metadata, 'response_metadata')
+
+    def save(self, *args, **kwargs):
+        if self._state.adding:
+            if self.status != PaymentAttemptStatus.CREATED:
+                raise ValidationError({'status': 'PaymentAttempt deve ser criada no estado CREATED.'})
+        else:
+            original = PaymentAttempt.objects.get(pk=self.pk)
+            if original.status != self.status and not getattr(self, '_allow_status_transition', False):
+                raise ValidationError({'status': 'Use os serviços de PaymentAttempt para alterar o estado.'})
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
         raise ValidationError('PaymentAttempt é histórico operacional e não pode ser excluído.')

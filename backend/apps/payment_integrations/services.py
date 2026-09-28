@@ -19,6 +19,9 @@ class PaymentIntegrationConflict(Exception):
         super().__init__(message)
 
 
+_UNSET = object()
+
+
 def _fingerprint(payload):
     return hashlib.sha256(json.dumps(
         payload, sort_keys=True, separators=(',', ':'), default=str,
@@ -80,7 +83,29 @@ def create_payment_intent(*, company, branch, pos_device, operator, origin_type,
     return intent, False
 
 
-def create_payment_attempt(*, intent, provider_connection=None, terminal=None, amount=None,
+def _save_intent_status(intent, status):
+    intent.status = status
+    intent._allow_status_transition = True
+    try:
+        intent.save(update_fields=(
+            'status', 'approved_at', 'applied_at', 'cancelled_at', 'updated_at',
+        ))
+    finally:
+        delattr(intent, '_allow_status_transition')
+
+
+def _save_attempt_status(attempt, status):
+    attempt.status = status
+    attempt._allow_status_transition = True
+    try:
+        attempt.save(update_fields=(
+            'status', 'response_metadata', 'started_at', 'completed_at', 'updated_at',
+        ))
+    finally:
+        delattr(attempt, '_allow_status_transition')
+
+
+def create_payment_attempt(*, intent, provider_connection=None, terminal=_UNSET,
                            request_metadata=None):
     with transaction.atomic():
         intent = PaymentIntent.objects.select_for_update().get(pk=intent.pk)
@@ -99,18 +124,16 @@ def create_payment_attempt(*, intent, provider_connection=None, terminal=None, a
                 'intent_not_ready', 'O intent deve estar pronto ou concluído sem sucesso para nova tentativa.',
             )
         previous_status = intent.status
-        intent.status = PaymentIntentStatus.PROCESSING
-        intent.save(update_fields=('status', 'updated_at'))
+        _save_intent_status(intent, PaymentIntentStatus.PROCESSING)
         latest = intent.attempts.order_by('-attempt_number').values_list('attempt_number', flat=True).first()
         attempt = PaymentAttempt(
             intent=intent,
             provider_connection=provider_connection or intent.provider_connection,
-            terminal=terminal if terminal is not None else intent.terminal,
+            terminal=intent.terminal if terminal is _UNSET else terminal,
             attempt_number=(latest or 0) + 1,
-            amount=amount if amount is not None else intent.amount,
+            amount=intent.amount,
             request_metadata=request_metadata or {},
         )
-        attempt.full_clean()
         attempt.save()
     audit_log(
         actor=intent.operator, action='payment_attempt.created', obj=attempt,
@@ -127,10 +150,7 @@ def create_payment_attempt(*, intent, provider_connection=None, terminal=None, a
 _INTENT_TRANSITIONS = {
     PaymentIntentStatus.CREATED: {PaymentIntentStatus.READY, PaymentIntentStatus.CANCELLED, PaymentIntentStatus.ERROR},
     PaymentIntentStatus.READY: {PaymentIntentStatus.CANCELLED, PaymentIntentStatus.ERROR},
-    PaymentIntentStatus.PROCESSING: {
-        PaymentIntentStatus.APPROVED, PaymentIntentStatus.DECLINED, PaymentIntentStatus.CANCELLED,
-        PaymentIntentStatus.ERROR, PaymentIntentStatus.UNKNOWN,
-    },
+    PaymentIntentStatus.PROCESSING: set(),
     PaymentIntentStatus.DECLINED: set(),
     PaymentIntentStatus.CANCELLED: set(),
     PaymentIntentStatus.ERROR: set(),
@@ -168,7 +188,6 @@ def transition_payment_intent(*, intent, status, actor=None):
                 'invalid_intent_transition', f'Transição inválida: {intent.status} para {status}.',
             )
         previous = intent.status
-        intent.status = status
         now = timezone.now()
         if status == PaymentIntentStatus.APPROVED:
             intent.approved_at = now
@@ -176,7 +195,7 @@ def transition_payment_intent(*, intent, status, actor=None):
             intent.applied_at = now
         elif status == PaymentIntentStatus.CANCELLED:
             intent.cancelled_at = now
-        intent.save(update_fields=('status', 'approved_at', 'applied_at', 'cancelled_at', 'updated_at'))
+        _save_intent_status(intent, status)
     audit_log(actor=actor or intent.operator, action='payment_intent.status_changed', obj=intent,
               company=intent.company, branch=intent.branch,
               before={'status': previous}, after={'status': status})
@@ -184,26 +203,78 @@ def transition_payment_intent(*, intent, status, actor=None):
 
 
 def transition_payment_attempt(*, attempt, status, actor=None, response_metadata=None):
+    if status != PaymentAttemptStatus.PROCESSING:
+        raise PaymentIntegrationConflict(
+            'attempt_result_requires_resolution',
+            'Resultados de tentativa devem ser registrados por resolve_payment_attempt.',
+        )
     with transaction.atomic():
         attempt = PaymentAttempt.objects.select_for_update().select_related('intent').get(pk=attempt.pk)
         if status not in _ATTEMPT_TRANSITIONS[attempt.status]:
             raise PaymentIntegrationConflict(
                 'invalid_attempt_transition', f'Transição inválida: {attempt.status} para {status}.',
             )
+        previous = attempt.status
         if response_metadata is not None:
             attempt.response_metadata = response_metadata
-        attempt.full_clean()
-        previous = attempt.status
-        attempt.status = status
-        if status == PaymentAttemptStatus.PROCESSING and not attempt.started_at:
+        if not attempt.started_at:
             attempt.started_at = timezone.now()
-        if status in {
-            PaymentAttemptStatus.APPROVED, PaymentAttemptStatus.DECLINED, PaymentAttemptStatus.CANCELLED,
-            PaymentAttemptStatus.ERROR, PaymentAttemptStatus.UNKNOWN,
-        }:
-            attempt.completed_at = timezone.now()
-        attempt.save(update_fields=('status', 'response_metadata', 'started_at', 'completed_at', 'updated_at'))
+        _save_attempt_status(attempt, status)
     audit_log(actor=actor or attempt.intent.operator, action='payment_attempt.status_changed', obj=attempt,
               company=attempt.intent.company, branch=attempt.intent.branch,
               before={'status': previous}, after={'status': status}, metadata={'intent_id': str(attempt.intent_id)})
     return attempt
+
+
+_RESULT_INTENT_STATUS = {
+    PaymentAttemptStatus.APPROVED: PaymentIntentStatus.APPROVED,
+    PaymentAttemptStatus.DECLINED: PaymentIntentStatus.DECLINED,
+    PaymentAttemptStatus.CANCELLED: PaymentIntentStatus.CANCELLED,
+    PaymentAttemptStatus.ERROR: PaymentIntentStatus.ERROR,
+    PaymentAttemptStatus.UNKNOWN: PaymentIntentStatus.UNKNOWN,
+}
+
+
+def resolve_payment_attempt(*, attempt, status, actor=None, response_metadata=None):
+    if status not in _RESULT_INTENT_STATUS:
+        raise PaymentIntegrationConflict('invalid_attempt_result', 'Informe um resultado final válido da tentativa.')
+    with transaction.atomic():
+        attempt = PaymentAttempt.objects.select_for_update().select_related('intent').get(pk=attempt.pk)
+        intent = PaymentIntent.objects.select_for_update().get(pk=attempt.intent_id)
+        if attempt.status not in {PaymentAttemptStatus.PROCESSING, PaymentAttemptStatus.UNKNOWN}:
+            raise PaymentIntegrationConflict(
+                'attempt_not_processing', 'A tentativa deve estar processando ou desconhecida para ser resolvida.',
+            )
+        if status not in _ATTEMPT_TRANSITIONS[attempt.status]:
+            raise PaymentIntegrationConflict(
+                'invalid_attempt_transition', f'Transição inválida: {attempt.status} para {status}.',
+            )
+        expected_intent_status = (
+            PaymentIntentStatus.UNKNOWN
+            if attempt.status == PaymentAttemptStatus.UNKNOWN
+            else PaymentIntentStatus.PROCESSING
+        )
+        if intent.status != expected_intent_status:
+            raise PaymentIntegrationConflict(
+                'intent_attempt_state_conflict', 'O intent não está no estado compatível com a tentativa.',
+            )
+        previous_attempt = attempt.status
+        previous_intent = intent.status
+        if response_metadata is not None:
+            attempt.response_metadata = response_metadata
+        attempt.completed_at = timezone.now()
+        _save_attempt_status(attempt, status)
+        intent_status = _RESULT_INTENT_STATUS[status]
+        if intent_status == PaymentIntentStatus.APPROVED:
+            intent.approved_at = timezone.now()
+        elif intent_status == PaymentIntentStatus.CANCELLED:
+            intent.cancelled_at = timezone.now()
+        _save_intent_status(intent, intent_status)
+    audit_log(actor=actor or intent.operator, action='payment_attempt.status_changed', obj=attempt,
+              company=intent.company, branch=intent.branch,
+              before={'status': previous_attempt}, after={'status': status},
+              metadata={'intent_id': str(intent.pk)})
+    audit_log(actor=actor or intent.operator, action='payment_intent.status_changed', obj=intent,
+              company=intent.company, branch=intent.branch,
+              before={'status': previous_intent}, after={'status': intent.status})
+    return attempt, intent
