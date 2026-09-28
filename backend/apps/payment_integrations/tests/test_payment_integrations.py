@@ -88,7 +88,7 @@ class PaymentIntegrationsTests(TestCase):
 
     def test_attempt_numbers_are_sequential(self):
         intent, _ = self.create_intent()
-        transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
+        intent = transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
         first = self.start_attempt(intent)
         _first, declined_intent = resolve_payment_attempt(
             attempt=first, status=PaymentAttemptStatus.DECLINED,
@@ -97,6 +97,23 @@ class PaymentIntegrationsTests(TestCase):
 
         self.assertEqual((first.attempt_number, second.attempt_number), (1, 2))
         self.assertEqual(declined_intent.status, PaymentIntentStatus.DECLINED)
+
+    def test_declined_attempt_can_be_retried_and_approved_without_applying(self):
+        intent, _ = self.create_intent()
+        transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
+        first = self.start_attempt(intent)
+        _first, declined_intent = resolve_payment_attempt(
+            attempt=first, status=PaymentAttemptStatus.DECLINED,
+        )
+        second = self.start_attempt(declined_intent)
+        approved_attempt, approved_intent = resolve_payment_attempt(
+            attempt=second, status=PaymentAttemptStatus.APPROVED,
+        )
+
+        self.assertEqual(first.status, PaymentAttemptStatus.DECLINED)
+        self.assertEqual(approved_attempt.status, PaymentAttemptStatus.APPROVED)
+        self.assertEqual(approved_intent.status, PaymentIntentStatus.APPROVED)
+        self.assertIsNone(approved_intent.applied_at)
 
     def test_unknown_is_preserved_until_authoritative_transition(self):
         intent, _ = self.create_intent()
@@ -145,6 +162,149 @@ class PaymentIntegrationsTests(TestCase):
                 intent=intent, provider_connection=self.connection, terminal=self.terminal,
                 attempt_number=1, amount=Decimal('101.00'),
             )
+
+    def test_intent_structural_fields_are_immutable_after_creation(self):
+        intent, _ = self.create_intent()
+        other_method = PaymentMethod.objects.create(
+            company=self.company, code='debit_card', name='Débito', status=Status.ACTIVE,
+        )
+        other_connection = PaymentProviderConnection.objects.create(
+            company=self.company, provider=self.provider, name='Contrato alternativo',
+            environment=PaymentProviderConnectionEnvironment.SANDBOX, status=Status.ACTIVE,
+        )
+        changes = {
+            'amount': Decimal('101.00'),
+            'origin_id': str(uuid4()),
+            'payment_method': other_method,
+            'provider_connection': other_connection,
+            'terminal': None,
+            'idempotency_key': uuid4(),
+            'request_fingerprint': 'a' * 64,
+        }
+
+        for field, value in changes.items():
+            intent.refresh_from_db()
+            setattr(intent, field, value)
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                intent.save()
+
+        intent.refresh_from_db()
+        intent.amount = Decimal('101.00')
+        intent.origin_id = str(uuid4())
+        with self.assertRaises(ValidationError):
+            intent.save()
+
+    def test_direct_attempt_creation_requires_processing_intent(self):
+        intent, _ = self.create_intent()
+
+        with self.assertRaises(ValidationError):
+            PaymentAttempt.objects.create(
+                intent=intent, provider_connection=self.connection, terminal=self.terminal,
+                attempt_number=1, amount=intent.amount,
+            )
+
+        intent = transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
+        with self.assertRaises(ValidationError):
+            PaymentAttempt.objects.create(
+                intent=intent, provider_connection=self.connection, terminal=self.terminal,
+                attempt_number=1, amount=intent.amount,
+            )
+
+        attempt = create_payment_attempt(intent=intent)
+        self.assertEqual(attempt.status, PaymentAttemptStatus.CREATED)
+        intent.refresh_from_db()
+        self.assertEqual(intent.status, PaymentIntentStatus.PROCESSING)
+
+    def test_inactive_terminal_blocks_new_attempt(self):
+        intent, _ = self.create_intent()
+        transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
+        self.terminal.status = Status.INACTIVE
+        self.terminal.save()
+
+        with self.assertRaises(ValidationError):
+            create_payment_attempt(intent=intent)
+
+    def test_inactive_connection_blocks_new_attempt(self):
+        intent, _ = self.create_intent()
+        transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
+        self.connection.status = Status.INACTIVE
+        self.connection.save()
+
+        with self.assertRaises(ValidationError):
+            create_payment_attempt(intent=intent)
+
+    def test_inactive_provider_blocks_new_attempt(self):
+        intent, _ = self.create_intent()
+        transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
+        self.provider.status = Status.INACTIVE
+        self.provider.save()
+
+        with self.assertRaises(ValidationError):
+            create_payment_attempt(intent=intent)
+
+    def test_terminal_deactivated_after_processing_does_not_block_approved_result(self):
+        intent, _ = self.create_intent()
+        transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
+        attempt = self.start_attempt(intent)
+        self.terminal.status = Status.INACTIVE
+        self.terminal.save()
+
+        resolved_attempt, resolved_intent = resolve_payment_attempt(
+            attempt=attempt, status=PaymentAttemptStatus.APPROVED,
+        )
+
+        self.assertEqual(resolved_attempt.status, PaymentAttemptStatus.APPROVED)
+        self.assertEqual(resolved_intent.status, PaymentIntentStatus.APPROVED)
+
+    def test_connection_deactivated_after_processing_does_not_block_result(self):
+        intent, _ = self.create_intent()
+        transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
+        attempt = self.start_attempt(intent)
+        self.connection.status = Status.INACTIVE
+        self.connection.save()
+
+        resolved_attempt, resolved_intent = resolve_payment_attempt(
+            attempt=attempt, status=PaymentAttemptStatus.DECLINED,
+        )
+
+        self.assertEqual(resolved_attempt.status, PaymentAttemptStatus.DECLINED)
+        self.assertEqual(resolved_intent.status, PaymentIntentStatus.DECLINED)
+
+    def test_provider_deactivated_after_processing_does_not_block_result(self):
+        intent, _ = self.create_intent()
+        transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
+        attempt = self.start_attempt(intent)
+        self.provider.status = Status.INACTIVE
+        self.provider.save()
+
+        resolved_attempt, resolved_intent = resolve_payment_attempt(
+            attempt=attempt, status=PaymentAttemptStatus.ERROR,
+        )
+
+        self.assertEqual(resolved_attempt.status, PaymentAttemptStatus.ERROR)
+        self.assertEqual(resolved_intent.status, PaymentIntentStatus.ERROR)
+
+    def test_deactivated_resources_do_not_block_unknown_reconciliation(self):
+        for resource in (self.terminal, self.connection, self.provider):
+            with self.subTest(resource=resource.__class__.__name__):
+                intent, _ = self.create_intent()
+                transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
+                attempt = self.start_attempt(intent)
+                resource.status = Status.INACTIVE
+                resource.save()
+
+                unknown_attempt, unknown_intent = resolve_payment_attempt(
+                    attempt=attempt, status=PaymentAttemptStatus.UNKNOWN,
+                )
+                reconciled_attempt, reconciled_intent = resolve_payment_attempt(
+                    attempt=unknown_attempt, status=PaymentAttemptStatus.APPROVED,
+                )
+
+                self.assertEqual(unknown_intent.status, PaymentIntentStatus.UNKNOWN)
+                self.assertEqual(reconciled_attempt.status, PaymentAttemptStatus.APPROVED)
+                self.assertEqual(reconciled_intent.status, PaymentIntentStatus.APPROVED)
+                resource.status = Status.ACTIVE
+                resource.save()
 
     def test_provider_swap_requires_explicit_terminal_none_when_no_terminal_is_used(self):
         other_provider = PaymentProvider.objects.create(
@@ -204,15 +364,12 @@ class PaymentIntegrationsTests(TestCase):
                 metadata={'authorization_header': 'secret'},
             )
         intent, _ = self.create_intent()
+        transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
         with self.assertRaises(ValidationError):
-            PaymentAttempt.objects.create(
-                intent=intent, provider_connection=self.connection, terminal=self.terminal,
-                attempt_number=1, amount=intent.amount, request_metadata={'token': 'secret'},
+            create_payment_attempt(
+                intent=intent, request_metadata={'token': 'secret'},
             )
-        attempt = PaymentAttempt.objects.create(
-            intent=intent, provider_connection=self.connection, terminal=self.terminal,
-            attempt_number=1, amount=intent.amount,
-        )
+        attempt = create_payment_attempt(intent=intent)
         attempt.response_metadata = {'authorization': 'secret'}
         with self.assertRaises(ValidationError):
             attempt.save()

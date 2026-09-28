@@ -210,11 +210,12 @@ class PaymentIntent(BaseModel):
             errors['payment_method'] = 'A forma de pagamento deve pertencer à empresa.'
         elif self.payment_method.status != Status.ACTIVE:
             errors['payment_method'] = 'A forma de pagamento deve estar ativa.'
+        require_active_resources = getattr(self, '_require_active_resources', self._state.adding)
         if self.provider_connection.company_id != self.company_id:
             errors['provider_connection'] = 'A conexão deve pertencer à empresa.'
-        elif self.provider_connection.status != Status.ACTIVE:
+        elif require_active_resources and self.provider_connection.status != Status.ACTIVE:
             errors['provider_connection'] = 'A conexão deve estar ativa.'
-        elif self.provider_connection.provider.status != Status.ACTIVE:
+        elif require_active_resources and self.provider_connection.provider.status != Status.ACTIVE:
             errors['provider_connection'] = 'O provedor da conexão deve estar ativo.'
         elif self.provider_connection.branch_id and self.provider_connection.branch_id != self.branch_id:
             errors['provider_connection'] = 'A conexão não é válida para esta filial.'
@@ -223,7 +224,7 @@ class PaymentIntent(BaseModel):
                 errors['terminal'] = 'O terminal deve pertencer à conexão selecionada.'
             elif self.terminal.branch_id != self.branch_id:
                 errors['terminal'] = 'O terminal deve pertencer à filial.'
-            elif self.terminal.status != Status.ACTIVE:
+            elif require_active_resources and self.terminal.status != Status.ACTIVE:
                 errors['terminal'] = 'O terminal deve estar ativo.'
         if errors:
             raise ValidationError(errors)
@@ -234,6 +235,14 @@ class PaymentIntent(BaseModel):
                 raise ValidationError({'status': 'PaymentIntent deve ser criado no estado CREATED.'})
         else:
             original = PaymentIntent.objects.get(pk=self.pk)
+            immutable_fields = (
+                'company_id', 'branch_id', 'pos_device_id', 'operator_id', 'origin_type',
+                'origin_id', 'payment_method_id', 'amount', 'provider_connection_id',
+                'terminal_id', 'idempotency_key', 'request_fingerprint',
+            )
+            changed = [field for field in immutable_fields if getattr(original, field) != getattr(self, field)]
+            if changed:
+                raise ValidationError({'intent': 'Os campos estruturais de PaymentIntent são imutáveis.'})
             if original.status != self.status and not getattr(self, '_allow_status_transition', False):
                 raise ValidationError({'status': 'Use os serviços de PaymentIntent para alterar o estado.'})
         self.full_clean()
@@ -301,24 +310,28 @@ class PaymentAttempt(BaseModel):
     def clean(self):
         super().clean()
         errors = {}
+        intent = PaymentIntent.objects.get(pk=self.intent_id)
         if self.amount is not None and self.amount <= 0:
             errors['amount'] = 'O valor deve ser maior que zero.'
-        if self.amount is not None and self.intent_id and self.amount != self.intent.amount:
+        if self.amount is not None and self.amount != intent.amount:
             errors['amount'] = 'O valor da tentativa deve ser igual ao valor do intent.'
-        if self.provider_connection.company_id != self.intent.company_id:
+        require_active_resources = getattr(self, '_require_active_resources', self._state.adding)
+        if self._state.adding and intent.status != PaymentIntentStatus.PROCESSING:
+            errors['intent'] = 'PaymentAttempt só pode ser criada para um intent em PROCESSING.'
+        if self.provider_connection.company_id != intent.company_id:
             errors['provider_connection'] = 'A conexão deve pertencer à empresa do intent.'
-        elif self.provider_connection.status != Status.ACTIVE:
+        elif require_active_resources and self.provider_connection.status != Status.ACTIVE:
             errors['provider_connection'] = 'A conexão da tentativa deve estar ativa.'
-        elif self.provider_connection.provider.status != Status.ACTIVE:
+        elif require_active_resources and self.provider_connection.provider.status != Status.ACTIVE:
             errors['provider_connection'] = 'O provedor da conexão deve estar ativo.'
-        elif self.provider_connection.branch_id and self.provider_connection.branch_id != self.intent.branch_id:
+        elif self.provider_connection.branch_id and self.provider_connection.branch_id != intent.branch_id:
             errors['provider_connection'] = 'A conexão não é válida para a filial do intent.'
         if self.terminal_id:
             if self.terminal.connection_id != self.provider_connection_id:
                 errors['terminal'] = 'O terminal deve pertencer à conexão da tentativa.'
-            elif self.terminal.branch_id != self.intent.branch_id:
+            elif self.terminal.branch_id != intent.branch_id:
                 errors['terminal'] = 'O terminal deve pertencer à filial do intent.'
-            elif self.terminal.status != Status.ACTIVE:
+            elif require_active_resources and self.terminal.status != Status.ACTIVE:
                 errors['terminal'] = 'O terminal da tentativa deve estar ativo.'
         if errors:
             raise ValidationError(errors)
