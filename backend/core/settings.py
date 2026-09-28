@@ -107,6 +107,7 @@ INSTALLED_APPS = [
     'apps.commands',
     'apps.attendance',
     'apps.production',
+    'apps.payment_integrations',
     'apps.reports',
     'apps.saas',
     'apps.pos',

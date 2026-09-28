@@ -1,1141 +1,871 @@
-# MISSÃO — REMOVER DEFINITIVAMENTE MESAS LEGADO E LIMPAR LEGADO DO CORE POS
+# MISSÃO PAY-0 — PAYMENT PROVIDER FOUNDATION
 
-Continue no HEAD atual.
+Vamos iniciar a arquitetura de pagamentos integrados do CORE PDV.
 
-Na última revisão, o HEAD era:
+OBJETIVO PRINCIPAL:
 
-`fc24b415d160e8f7c1f5e1e6749e97fd25f6b929`
+Criar uma camada GENÉRICA para integração com múltiplos provedores/adquirentes/maquininhas, preparada para:
 
-Antes de alterar, confira o HEAD atual.
-
-Esta é uma missão de LIMPEZA ARQUITETURAL.
-
-Objetivo:
-
-1. remover definitivamente o fluxo antigo de Mesa;
-2. deixar somente a Mesa nova baseada em `TableAttendance`;
-3. remover código morto/legado do POS que já foi substituído;
-4. retirar `TABLE_BILL` do runtime moderno;
-5. remover o antigo fluxo direto da Venda Rápida;
-6. corrigir o Backoffice `/mesas`, que ainda usa o modelo antigo;
-7. NÃO implementar, redesenhar ou refatorar COMANDAS nesta missão.
-
----
-
-# REGRA ABSOLUTA — NÃO MEXER EM COMANDAS
-
-COMANDAS ainda serão planejadas e implementadas em uma próxima etapa.
-
-NÃO modificar comportamento de:
-
-```text
-CommandsPage
-CommandDetailPage
-
-/api/v1/pos/commands/
-/api/v1/pos/commands/*
-/api/v1/pos/command-items/*
-/api/v1/pos/command-payments/*
-
-AttendanceCommand
-AttendanceOrder
-AttendanceOrderItem
-AttendancePayment
-
-Command
-Order
-OrderItem
-CommandPayment
-
-Não redesenhar:
-
-abertura de Comanda;
-fechamento de Comanda;
-pagamentos de Comanda;
-itens de Comanda;
-transferência de Comanda;
-transferência entre Comandas;
-produção de Comanda;
-tickets de Comanda;
-relatórios de Comanda.
-
-Não mexer em:
-
-/comandas
-/relatorios/mesas-comandas
-
-salvo referências estritamente necessárias para remover o antigo comportamento operacional da página /mesas, conforme descrito abaixo.
-
-Não tomar decisões novas sobre como Mesa e Comanda irão se relacionar.
-
-Isso será outra missão.
-
-1. DEFINIÇÃO OFICIAL DE MESA
-
-A partir desta missão, a arquitetura oficial é:
-
-commands.Table
-    ↓
-attendance.TableAttendance
-    ↓
-attendance.TableOrder
-    ↓
-attendance.TableOrderItem
-    ↓
-attendance.TablePayment
-    ↓
-sales.Sale
-
-commands.Table CONTINUA EXISTINDO.
-
-Apesar de estar dentro do app Django commands, ela é atualmente a entidade física/cadastral da Mesa:
-
-filial;
-nome;
-quantidade de lugares;
-status;
-soft delete.
-
-NÃO remover:
-
-apps.commands.models.Table
-
-NÃO criar outra entidade Table.
-
-NÃO migrar Table para outro app nesta missão.
-
-2. TableAttendance É A ÚNICA FONTE OPERACIONAL DA MESA
-
-Para o módulo Mesa:
-
-Mesa livre
-→ não existe TableAttendance OPEN
-
-Mesa ocupada
-→ existe TableAttendance OPEN
-
-Mesa fechada
-→ TableAttendance CLOSED
-
-Não determinar mais estado operacional da Mesa a partir de:
-
-Command
-AttendanceCommand
-legacy_occupied
-is_primary
-open_commands
-
-Isso pertence aos fluxos antigos / futuros de Comanda, não ao motor atual de Mesa.
-
-3. FLUTTER — REMOVER legacyOccupied
-
-Hoje existe em:
-
-pos/lib/attendance/attendance_models.dart
-
-campo:
-
-legacyOccupied
-
-e parsing:
-
-json['legacy_occupied']
-
-REMOVER.
-
-Também remover todas as regras no Flutter do tipo:
-
-if (table.legacyOccupied) ...
-
-ou:
-
-disabled = table.legacyOccupied
-
-Revisar principalmente:
-
-pos/lib/attendance/attendance_pages.dart
-pos/lib/attendance/shared_tables_grid.dart
-pos/lib/attendance/attendance_models.dart
-
-O grid deve usar somente:
-
-table.status
-table.attendance
-
-do motor novo.
-
-4. REMOVER COMPONENTES MORTOS DA MESA ANTIGA NO FLUTTER
-
-Em:
-
-pos/lib/attendance/attendance_pages.dart
-
-existem atualmente classes antigas sem uso:
-
-_OpenTableDetails
-_OpenTableDialog
-_OpenTableDialogState
-
-A Mesa nova abre pelo fluxo atual de:
-
-openAttendanceTable(...)
-
-Remover os componentes mortos e imports relacionados, desde que a busca estática confirme que não possuem caller.
-
-Não alterar a UI atual da Mesa nova.
-
-5. BACKEND POS — POSTablesView
-
-Hoje POSTablesView ainda cria:
-
-legacy_ids
-
-consultando:
-
-Command
-AttendanceCommand
-
-e responde:
-
-{
-  "legacy_occupied": true
-}
-
-REMOVER essa compatibilidade.
-
-O payload de Mesa deve ser baseado somente em:
-
-TableAttendance status=OPEN
-
-Conceitualmente:
-
-attendance existe
-→ occupied
-
-attendance não existe
-→ free
-
-Não consultar Command ou AttendanceCommand para determinar o estado operacional da Mesa.
-
-Remover imports mortos resultantes dessa mudança.
-
-6. REMOVER SERVIÇO ANTIGO open_table()
-
-Em:
-
-backend/apps/attendance/services.py
-
-existe:
-
-def open_table(...)
-
-com docstring semelhante a:
-
-Open exactly one primary POS-5 command for a physical table.
-
-Esse serviço:
-
-exige tables;
-exige commands;
-cria AttendanceCommand;
-usa is_primary;
-representa o motor antigo onde Mesa era uma Comanda principal.
-
-O endpoint atual de Mesa usa:
-
-open_table_attendance(...)
-
-Portanto:
-
-FAZER BUSCA ESTÁTICA NO REPOSITÓRIO.
-
-Se open_table() não possui nenhum caller moderno fora do fluxo antigo, REMOVER:
-
-open_table(...)
-
-e limpar imports relacionados.
-
-NÃO substituir por Comanda.
-
-NÃO alterar open_command().
-
-7. REMOVER AttendanceOpenTableSerializer
-
-Em:
-
-backend/apps/attendance/serializers.py
-
-existe:
-
-AttendanceOpenTableSerializer
-
-A Mesa nova usa:
-
-TableAttendanceOpenSerializer
-
-Confirmar por busca estática e remover o serializer antigo se não possuir caller.
-
-Limpar imports no:
-
-backend/apps/pos/views.py
-8. AttendanceOperationType.OPEN_TABLE
-
-Existe histórico antigo:
-
-OPEN_TABLE = 'open_table'
-
-enquanto a Mesa nova usa:
-
-TABLE_OPEN = 'table_open'
-
-NÃO apagar registros históricos do banco.
-
-NÃO criar migration destrutiva só para remover o valor antigo.
-
-Se a choice antiga precisar permanecer para leitura histórica, manter com comentário explícito de HISTÓRICO.
-
-Mas nenhum fluxo runtime novo pode criar:
-
-OPEN_TABLE
-
-A Mesa nova deve continuar criando:
-
-TABLE_OPEN
-9. open_table_attendance() — RETIRAR DEPENDÊNCIA DO MOTOR ANTIGO
-
-Hoje o serviço novo ainda verifica algo semelhante a:
-
-Command.objects...
-AttendanceCommand.objects...
-
-e gera:
-
-table_in_legacy_use
-
-Essa regra veio da convivência temporária entre motores.
-
-A fonte operacional da Mesa agora é:
-
-TableAttendance
-
-Portanto remover do motor novo a dependência de:
-
-Command
-AttendanceCommand
-table_in_legacy_use
-
-A abertura deve verificar:
-
-Table válida/ativa
-TableAttendance OPEN existente
-
-e nada além disso para determinar se a Mesa está operacionalmente ocupada.
+* Cielo;
+* Stone;
+* Getnet;
+* Rede;
+* PagBank;
+* Mercado Pago;
+* outros providers futuros.
 
 IMPORTANTE:
 
-isso NÃO significa implementar integração entre Mesa e Comanda.
+NÃO estamos criando um novo motor financeiro.
 
-Não mexer em Comanda.
+O motor financeiro atual do CORE continua sendo a fonte da verdade:
 
-O relacionamento futuro Mesa ↔ Comanda será definido depois.
+Venda Rápida:
+`QuickSaleCheckout`
+→ `QuickSalePayment`
+→ `Sale`
+→ `sales.Payment`
 
-10. BACKOFFICE /mesas ESTÁ NO MODELO ANTIGO
+Mesa:
+`TableAttendance`
+→ `TablePayment`
+→ `Sale`
+→ `sales.Payment`
 
-Hoje:
+Comandas ficam FORA DE ESCOPO nesta missão.
 
-frontend/src/app/(private)/mesas/page.tsx
+A nova camada servirá exclusivamente para representar:
 
-usa:
+* intenção de cobrança;
+* execução externa;
+* tentativa;
+* autorização;
+* rejeição;
+* cancelamento;
+* estado desconhecido;
+* dados retornados pela adquirente;
+* terminal utilizado;
+* rastreabilidade;
+* futura reconciliação.
 
-tables/operational/
+A MAQUININHA NÃO CRIA VENDA.
+A MAQUININHA NÃO BAIXA ESTOQUE.
+A MAQUININHA NÃO SUBSTITUI QuickSalePayment/TablePayment.
+A MAQUININHA NÃO FINALIZA Sale diretamente.
 
-e trabalha com:
+---
 
-open_commands
-operational_status por Command
-pagamento parcial de Command
-link /comandas/{id}
-POST commands/open/
-modal Nova comanda
+# 1. CRIAR NOVO DOMÍNIO
 
-Isso precisa sair.
+Criar um app Django isolado para essa responsabilidade.
 
-A página /mesas nesta etapa será exclusivamente:
+Sugestão de nome:
 
-CADASTRO E CONFIGURAÇÃO FÍSICA DE MESAS
+`backend/apps/payment_integrations/`
 
-Deve permitir:
+Evitar chamar simplesmente de `payments`, porque já existe o domínio financeiro de pagamentos dentro de `sales`, POS e attendance.
 
-listar mesas;
-criar mesa;
-editar nome;
-editar lugares;
-excluir/arquivar;
-configurar intervalo/lote;
-pesquisar por nome.
+Adicionar corretamente ao projeto Django.
 
-Não deve abrir atendimento.
+Criar estrutura limpa de:
 
-Não deve abrir Comanda.
+* models;
+* services;
+* selectors, caso necessário;
+* admin;
+* migrations;
+* testes direcionados do domínio.
 
-Não deve mostrar:
+NÃO criar endpoints públicos ainda se não forem necessários para PAY-0.
 
-LIVRE
-OCUPADA
-PAGAMENTO PARCIAL
-open_commands
-open_commands_total
-open_commands_count
+---
 
-Não deve possuir:
+# 2. PAYMENT PROVIDER
 
-Abrir mesa
-Adicionar comanda
-Nova comanda
-links /comandas/*
+Criar entidade global:
 
-A operação da Mesa acontece no CORE POS.
+`PaymentProvider`
 
-11. BACKOFFICE NÃO DEVE IMPLEMENTAR A NOVA OPERAÇÃO DE MESA AGORA
+Ela representa o tipo/provider suportado pela plataforma.
 
-Não transformar /mesas em outro POS web.
+Exemplos futuros:
 
-Não implementar:
+`CIELO`
+`STONE`
+`GETNET`
+`REDE`
+`PAGBANK`
 
-adicionar produtos
-pagamentos
-Solicitar Conta
-fechamento
+Mas NÃO implemente lógica específica desses providers nesta missão.
 
-no Backoffice nesta missão.
+Campos conceituais:
 
-/mesas é cadastro físico.
+* id;
+* code;
+* name;
+* status;
+* integration_type;
+* capabilities;
+* created_at;
+* updated_at.
 
-CORE POS é a operação.
+`code` deve ser único e estável.
 
-12. REMOVER tables/operational/ SE NÃO HOUVER MAIS CALLER
+Possíveis tipos de integração devem ser genéricos, por exemplo:
 
-Existe atualmente no backend:
+* LOCAL_DEEP_LINK;
+* NATIVE_SDK;
+* SERVER_API;
+* HYBRID.
 
-TableViewSet.operational
+`capabilities` pode preparar recursos como:
 
-que monta:
+* credit_card;
+* debit_card;
+* voucher;
+* pix;
+* installments;
+* refund;
+* reconciliation;
+* local_app;
+* native_sdk.
 
-open_commands
-open_commands_count
-open_commands_total
-operational_status
+Não hardcodar comportamento Cielo/Stone no model.
 
-FAZER BUSCA ESTÁTICA em frontend, POS e backend.
+---
 
-Se depois da mudança de /mesas não existir nenhum caller:
+# 3. PAYMENT PROVIDER CONNECTION
 
-REMOVER:
+Criar:
 
-TableViewSet.operational
+`PaymentProviderConnection`
 
-e os serializers exclusivos dele:
+Representa uma configuração/contrato de um tenant com determinado provider.
 
-OperationalCommandSerializer
-OperationalTableSerializer
+Exemplo conceitual:
 
-Essa é a ÚNICA limpeza permitida dentro de apps.commands relacionada a Comandas nesta missão.
+Empresa: 25 Lounge
+Provider: Cielo
+Environment: PRODUCTION
+Status: ACTIVE
 
-NÃO alterar nenhum comportamento de Command.
+Campos mínimos:
 
-13. LIMPAR O TYPE Table DO FRONTEND
+* company;
+* branch opcional, permitindo conexão válida para empresa inteira ou específica de filial;
+* provider;
+* name;
+* environment;
+* status;
+* configuration JSON somente para dados NÃO sensíveis;
+* capabilities override, se fizer sentido;
+* created_at;
+* updated_at.
 
-Hoje o type possui campos antigos:
+Validar obrigatoriamente:
 
-operational_status
-open_commands_count
-open_commands_total
-open_commands
+se `branch` existir, ela precisa pertencer à `company`.
 
-Depois de remover o endpoint antigo, verificar callers.
+Ambientes:
 
-Se forem usados somente pelo /mesas antigo, remover.
+* SANDBOX;
+* PRODUCTION.
 
-Preservar:
+Estados pelo menos:
 
-id
-branch
-name
-seats
-status
-created_at
-updated_at
+* ACTIVE;
+* INACTIVE.
 
-Não alterar os types de Command.
+IMPORTANTE:
 
-14. PROTEÇÃO DE EDIÇÃO/EXCLUSÃO DA MESA FÍSICA
+NÃO armazenar nesta missão:
 
-Hoje as proteções do Backoffice ainda estão centradas nos motores antigos.
+* client_secret em texto puro;
+* access_token;
+* senha;
+* chave privada;
+* qualquer segredo sensível.
 
-Precisamos proteger a Mesa física quando existir atendimento NOVO aberto:
+A arquitetura segura de credentials será feita na missão específica de conexão do provider.
 
-TableAttendance.objects.filter(
-    table=table,
-    status=TableAttendanceStatus.OPEN,
-).exists()
+Não inventar criptografia improvisada.
 
-Ao editar estrutura de Mesa com atendimento novo aberto:
+---
 
-BLOQUEAR.
+# 4. PAYMENT TERMINAL
 
-Ao excluir/arquivar Mesa com atendimento novo aberto:
+Criar:
 
-BLOQUEAR.
+`PaymentTerminal`
 
-Mensagem conceitual:
+Representa a maquininha/terminal externo que pode executar uma transação.
 
-Não é possível alterar/excluir esta mesa enquanto houver um atendimento aberto.
-Feche o atendimento antes de continuar.
+Isso precisa suportar múltiplas maquininhas por filial.
 
-Preservar as proteções existentes relacionadas a Comandas.
+Exemplo:
 
-Não redesenhar Comanda.
+Filial Duque de Caxias
+→ CORE POS Caixa 01
+→ Cielo Caixa 01
 
-Apenas ADICIONAR TableAttendance como fonte oficial do atendimento de Mesa novo.
+Outra:
 
-15. CORRIGIR HELPER ENGANOSO DE ATENDIMENTO ABERTO
+Filial Duque de Caxias
+→ CORE POS Bar
+→ Stone Bar
 
-Em:
+Campos:
 
-backend/apps/commands/services.py
+* connection;
+* branch;
+* pos_device opcional;
+* name;
+* external_id opcional;
+* status;
+* capabilities;
+* metadata NÃO sensível;
+* created_at;
+* updated_at.
 
-há helper semelhante a:
+Validações:
 
-_open_table_attendance_exists()
+1. branch deve pertencer à mesma empresa da connection;
+2. se connection possuir branch específica, terminal obrigatoriamente pertence àquela branch;
+3. se existir `pos_device`, ele deve pertencer à mesma branch;
+4. não assumir relação 1:1 entre POS e terminal.
 
-mas atualmente ele consulta:
+Um POS poderá futuramente possuir mais de um terminal/provider disponível.
 
-AttendanceCommand
+Não criar dependência:
 
-e não TableAttendance.
+`device_type == STONE_POS`
 
-Isso está semanticamente errado.
+para decidir provider.
 
-Refatorar nomes/helpers para que:
+Provider de pagamento e tipo do dispositivo são conceitos separados.
 
-atendimento de Mesa
-→ TableAttendance
+---
 
-e:
+# 5. PAYMENT INTENT
 
-Comanda
-→ estruturas de Comanda
+Criar:
 
-continuem separados.
+`PaymentIntent`
 
-Não alterar regras de negócio de Comandas.
+Essa será a entidade central da nova arquitetura.
 
-16. TABLE_BILL É LEGADO DO MOTOR DE IMPRESSÃO DA MESA
+Ela representa:
 
-A arquitetura oficial agora é:
+“o CORE pretende cobrar este valor por meio de um provider externo”.
 
-SOLICITAR CONTA
-→ TABLE_CONFERENCE
+Utilizar UUID como PK.
 
-e:
+Campos conceituais:
 
-FECHAR MESA
-→ TABLE_FINAL_RECEIPT
+* id UUID;
+* company;
+* branch;
+* pos_device;
+* operator;
+* origin_type;
+* origin_id;
+* payment_method;
+* amount;
+* provider_connection;
+* terminal opcional;
+* status;
+* idempotency_key;
+* request_fingerprint;
+* created_at;
+* updated_at;
+* approved_at opcional;
+* applied_at opcional;
+* cancelled_at opcional.
 
-Logo:
+Tipos de origem preparados:
 
-TABLE_BILL
+* QUICK_SALE;
+* TABLE;
+* COMMAND;
+* OTHER, somente se realmente necessário.
 
-não deve mais fazer parte do runtime moderno.
+ATENÇÃO:
 
-17. BUG ATUAL DO POSTableAttendanceBillView
+COMMAND pode existir apenas como enum/preparação arquitetural.
 
-Hoje set_table_bill_requested() emite:
+NÃO integrar Comandas agora.
 
-PrintDocumentType.TABLE_CONFERENCE
+`origin_id` deve permitir representar IDs UUID ou inteiros sem criar GenericForeignKey frágil.
 
-mas POSTableAttendanceBillView procura:
+Pode utilizar string normalizada.
 
-PrintDocumentType.TABLE_BILL
+---
 
-para montar o effects.
+# 6. ESTADOS DO PAYMENT INTENT
 
-CORRIGIR IMEDIATAMENTE.
+Preparar pelo menos:
 
-Após Solicitar Conta, o documento retornado em effects deve ser:
+`CREATED`
+`READY`
+`PROCESSING`
+`APPROVED`
+`DECLINED`
+`CANCELLED`
+`ERROR`
+`UNKNOWN`
+`APPLIED`
+`REVERSED`
 
-TABLE_CONFERENCE
-18. POSTableAttendanceView NÃO DEVE MAIS EXPOR TABLE_BILL
+Semântica importante:
 
-Hoje consulta:
+`APPROVED`
 
-TABLE_BILL
-TABLE_CONFERENCE
-TABLE_FINAL_RECEIPT
+significa:
 
-Mudar para:
+provedor informou que o pagamento foi aprovado.
 
-TABLE_CONFERENCE
-TABLE_FINAL_RECEIPT
+NÃO significa que o pagamento já foi aplicado no ledger financeiro do CORE.
 
-Comprovantes de pagamentos continuam no ledger próprio.
+`APPLIED`
 
-19. REMOVER TABLE_BILL DAS ROTAS ATIVAS
+significa:
 
-Remover TABLE_BILL de:
+o CORE conseguiu vincular/aplicar aquela autorização ao pagamento interno.
 
-INITIAL_DOCUMENT_TYPES
+Essa separação é obrigatória.
 
-Não criar rota default nova para esse documento.
+---
 
-Remover da configuração atual de rotas no Backoffice:
+# 7. UNKNOWN É ESTADO DE PRIMEIRA CLASSE
 
-Conta da mesa
+Nunca assumir:
 
-Devem permanecer:
+“não recebi callback = pagamento falhou”.
 
-Conferência
-Recibo final da mesa
-Recibo venda rápida
-Comprovante de pagamento
-Ticket
-20. NÃO DESTRUIR HISTÓRICO TABLE_BILL
+Cenário:
 
-Podem existir:
+CORE
+→ solicita R$ 100
+→ adquirente aprova
+→ app fecha/perde callback
 
-PrintDocument
-PrintJob
-PrintRoute
+Nesse caso poderemos terminar com:
 
-históricos com:
+`UNKNOWN`
 
-table_bill
+e posteriormente consultar/reconciliar.
 
-NÃO apagar esses registros.
+Não converter automaticamente `UNKNOWN` para `DECLINED` ou `ERROR`.
 
-NÃO fazer migration para deletá-los.
+---
 
-Se o enum/model precisar reconhecer:
+# 8. IDEMPOTÊNCIA
 
-table_bill
+PaymentIntent deve possuir idempotência própria.
 
-para leitura de histórico ou jobs antigos, manter compatibilidade mínima.
+Criar:
 
-Mas:
+* `idempotency_key`;
+* `request_fingerprint`.
 
-novo documento
-nova rota
-nova emissão
-nova UI
+Sugestão:
 
-NÃO deve criar ou oferecer TABLE_BILL.
+unicidade por empresa + idempotency_key.
 
-O renderer antigo pode permanecer somente se necessário para imprimir/reconciliar job histórico já persistido.
+Uma repetição com mesma chave e mesmo fingerprint:
 
-Marcar claramente como compatibilidade histórica, não runtime atual.
+→ retorna/reutiliza o mesmo intent.
 
-21. FLUTTER — NÃO USAR PrintDocumentType.tableBill NO FLUXO NOVO
+Mesma chave com payload diferente:
 
-Fazer busca estática.
+→ conflito de idempotência.
 
-Nenhuma tela moderna de Mesa deve solicitar:
+Seguir o padrão seguro já utilizado pelo CORE em Venda Rápida e Sale.
 
-PrintDocumentType.tableBill
+Não criar uma implementação completamente diferente se pudermos reutilizar os princípios já existentes.
 
-Conferência:
+---
 
-PrintDocumentType.tableConference
+# 9. PAYMENT ATTEMPT
 
-Recibo final:
+Criar:
 
-PrintDocumentType.tableFinalReceipt
-22. REMOVER VENDA RÁPIDA DIRETA ANTIGA
+`PaymentAttempt`
 
-A Venda Rápida atual oficial é:
+Uma intenção poderá ter uma ou várias tentativas.
 
-QuickSaleCheckout
-→ QuickSaleCheckoutPayment
-→ finalizeQuickSaleCheckout()
+Exemplo:
 
-Existe ainda um fluxo antigo paralelo:
+PaymentIntent R$ 200 crédito
 
-finalizeQuickSale(...)
+Attempt 1:
+Cielo
+DECLINED
 
-que envia diretamente:
+Attempt 2:
+Cielo
+CANCELLED
 
-POST /api/v1/pos/sales/
+Attempt 3:
+Stone
+APPROVED
 
-Esse caminho não deve coexistir com o checkout persistente atual.
+Campos conceituais:
 
-23. FLUTTER — REMOVER finalizeQuickSale() LEGADO
+* id UUID;
+* intent;
+* attempt_number;
+* status;
+* amount;
 
-Em:
+identificadores genéricos:
 
-pos/lib/core/app_controller.dart
+* provider_transaction_id;
+* provider_order_id;
+* provider_reference;
+* terminal_external_id;
 
-remover, se busca estática confirmar ausência de caller moderno:
+autorização:
 
-finalizeQuickSale(...)
+* authorization_code;
+* nsu;
 
-e todo estado exclusivo desse fluxo:
+cartão:
 
-_uncertainSaleKeys
-finalizingSale
-saleFinalizationError
+* card_brand;
+* card_mask;
 
-_restoreUncertainSaleIntents()
-_persistUncertainSaleIntents()
+operação:
 
-Remover também a chamada:
+* installments;
+* payment_product;
+* payment_product_detail;
 
-_restoreUncertainSaleIntents()
+retorno provider:
 
-de initialize().
+* provider_status;
+* provider_status_code;
+* provider_message;
 
-NÃO remover recovery/idempotência do QuickSaleCheckout.
+tempos:
 
-24. PosApi — REMOVER FINALIZAÇÃO DIRETA ANTIGA
+* started_at;
+* completed_at;
 
-Remover do contrato e implementação:
+snapshots técnicos:
 
-finalizeQuickSale(...)
+* request_metadata;
+* response_metadata;
 
-que chama:
+created_at;
+updated_at.
 
-POST sales/
+Não criar:
 
-Preservar:
+* cielo_nsu;
+* stone_nsu;
+* cielo_transaction_id;
+* stone_transaction_id.
 
-createQuickSaleCheckout
-recoverQuickSaleCheckout
-getQuickSaleCheckout
-updateQuickSaleCheckout
-recordQuickSalePayment
-reverseQuickSalePayment
-previewQuickSalePayment
-finalizeQuickSaleCheckout
-cancelQuickSaleCheckout
-25. BACKEND — REMOVER ENDPOINT DIRETO ANTIGO DA VENDA RÁPIDA
+Todos os campos precisam ser provider-neutral.
 
-Fazer busca estática primeiro.
+---
 
-Se não existir caller moderno:
+# 10. SEGURANÇA DOS METADADOS
 
-remover:
+`request_metadata` e `response_metadata` NÃO podem virar depósito de segredo.
 
-POSFinalizeSaleView
-POSFinalizeSaleSerializer
+Não persistir:
 
-e:
+* access_token;
+* client_secret;
+* passwords;
+* credentials completas;
+* chave privada;
+* Authorization header.
 
-path('sales/', POSFinalizeSaleView.as_view(), ...)
+Adicionar comentário/documentação explícita sobre isso.
 
-NÃO alterar:
+Se for simples e seguro, criar função central de sanitização/redaction para metadata técnico.
 
-sales/preview/
-sales/availability/
-sales/checkout-options/
-sales/checkouts/*
-26. SECURE STORAGE — REMOVER ESTADO DA VENDA DIRETA ANTIGA
+Não inventar sistema complexo de secrets nesta etapa.
 
-O fluxo antigo ainda possui:
+---
 
-core_pos.pending_sale_intents
+# 11. TENTATIVAS E CONCORRÊNCIA
 
-e:
+A criação de `PaymentAttempt` deve ser transacional.
 
-readPendingSaleIntents()
-writePendingSaleIntents()
+`attempt_number` deve ser sequencial por intent:
 
-Se após remover finalizeQuickSale() não houver caller:
+1
+2
+3
+...
 
-REMOVER.
+Criar constraint:
 
-Preservar:
+`intent + attempt_number` único.
 
-core_pos.quick_sale_checkout
-core_pos.table_payment_state
-core_pos.print_ledger
-device credential
-operator session
-27. NÃO REMOVER RECOVERY ATUAL DO QUICK SALE
+Evitar condição de corrida ao gerar o número da tentativa.
 
-IMPORTANTE.
+Usar lock no PaymentIntent quando necessário.
 
-Não remover:
+---
 
-recoverQuickSaleCheckout()
+# 12. TRANSIÇÕES DE ESTADO
 
-Nem a máquina atual de:
+Não espalhar:
 
-creation_idempotency_key
-creation_request
-payment_attempts
-pending finalize
-checkout_id
-recovered result por checkoutId
+`intent.status = ...`
 
-Esse é o motor atual e já foi corrigido.
+pelo sistema inteiro.
 
-28. MANTER FALLBACK DE STORAGE ANTIGO DO QUICK CHECKOUT
+Criar serviço central para transições.
 
-Em _quickCheckoutState() existe compatibilidade com registro antigo:
+Algo conceitualmente como:
 
-operator_id
+`transition_payment_intent(...)`
 
-Esse fallback pode conter operação financeira de dispositivo atualizado.
+e, se necessário:
 
-NÃO remover nesta missão sem uma migração explícita e segura.
+`transition_payment_attempt(...)`
 
-É compatibilidade de dados, não motor antigo de Venda Rápida.
+Definir transições permitidas.
 
-29. MANTER MIGRAÇÃO DE CREDENCIAL DE DISPOSITIVO
+Não permitir coisas absurdas como:
 
-Em authenticate_device() existe fallback para dispositivos antigos com:
+`DECLINED -> APPLIED`
 
-credential_hash
-credential_fingerprint vazio
+sem nova tentativa/aprovação válida.
 
-e depois ele atualiza o fingerprint.
+Não criar uma state machine excessivamente complexa, mas centralizar as regras.
 
-NÃO remover.
+Toda alteração relevante deve ser auditável.
 
-Isso protege dispositivos já pareados.
+---
 
-Não confundir compatibilidade de autenticação com código legado de negócio.
+# 13. INTEGRIDADE
 
-30. NÃO APAGAR MIGRATIONS HISTÓRICAS
+PaymentIntent deve validar:
 
-NÃO deletar migrations antigas.
+* amount > 0;
+* payment_method pertence à company;
+* payment_method está ativo quando o intent é criado;
+* branch pertence à company;
+* POSDevice pertence à branch;
+* provider_connection pertence à mesma company;
+* provider_connection ativa;
+* se connection tem branch específica, deve ser a mesma branch;
+* terminal pertence à connection;
+* terminal pertence à branch;
+* terminal ativo.
 
-NÃO reescrever migrations aplicadas.
+PaymentAttempt:
 
-NÃO apagar modelos/colunas históricos de Comanda nesta missão.
+* amount > 0;
+* pertence ao intent;
+* tentativa não pode apontar para terminal/provider incompatível.
 
-Limpeza de runtime != reescrever histórico do banco.
+---
 
-31. NÃO MEXER NA IMPRESSÃO QUE JÁ ESTÁ CORRETA
+# 14. PAYMENT METHOD CONTINUA SENDO FORMA FINANCEIRA
 
-Preservar integralmente:
+NÃO criar métodos como:
 
-PrintManager
-claim
-lease
-dispatch
-physical_dispatch_started_at
-FAILED BEFORE SEND
-UNCERTAIN
-retry != reprint
-local ledger
-polling
-tarja preta de REIMPRESSÃO
-PrintRoute
-PrintRouteOverride
-NETWORK local
+`cielo_credit_card`
+`stone_credit_card`
+`cielo_debit`
+`stone_debit`
 
-Só limpar o documento legado:
+Continuamos usando:
 
-TABLE_BILL
+`cash`
+`pix`
+`credit_card`
+`debit_card`
+`food_voucher`
+`meal_voucher`
 
-conforme regras acima.
+Provider é OUTRA dimensão.
 
-32. NÃO MEXER EM PAGAMENTOS DA MESA
+Exemplo:
 
-Preservar:
+PaymentMethod:
+`credit_card`
 
-pagamento parcial;
-pagamento por valor;
-pagar restante;
-divisão por pessoas;
-pagamento por itens;
-allocations;
-estorno;
-descontos;
-taxa de serviço;
-autorizações;
-cash session;
-idempotência.
-33. NÃO MEXER NO FECHAMENTO DA MESA
+Provider:
+`CIELO`
 
-Preservar:
+Terminal:
+`Cielo Caixa 01`
 
-pagar
-→ fechar Mesa
-→ backend CLOSED
-→ Sale
-→ TABLE_FINAL_RECEIPT
-→ voltar para grid
-→ recarregar grid
-→ Mesa livre
-→ "Mesa fechada com sucesso."
-34. NÃO MEXER EM PRODUÇÃO/TICKETS
+Isso é obrigatório.
 
-Preservar:
+---
 
-Salvar e enviar pedido
-→ TableOrderItem CONFIRMED
-→ baixa estoque
-→ ProductionJob
-→ Ticket se emits_ticket=true
+# 15. NÃO ALTERAR OS LEDGERS EXISTENTES
 
-Preservar cancelamento:
+PAY-0 NÃO deve alterar comportamento de:
 
-cancelar item
-→ devolução estoque
-→ ProductionJob CANCEL
-→ cancelamento Ticket
-35. NÃO MEXER EM CAIXA
+`QuickSaleCheckout`
 
-Preservar:
+`QuickSalePayment`
 
-FIXED;
-FLEXIBLE;
-seleção;
-abertura;
-entrada;
-sangria;
-resumo;
-fechamento.
-36. NÃO MEXER EM PAREAMENTO/AUTH
+`QuickSalePaymentAllocation`
 
-Preservar:
+`TableAttendance`
 
-identificação da filial;
-OTP;
-credential;
-device auth;
-operador;
-PIN;
-bootstrap;
-version gate;
-device status;
-permissões.
-37. SINCRONIZAÇÃO NÃO É ALVO DESTA MISSÃO
+`TablePayment`
 
-A Central de Sincronização atualmente faz principalmente:
+`TablePaymentAllocation`
 
-heartbeat
-bootstrap
-status
+`sales.Sale`
 
-Não implementar o motor offline/sync completo agora.
+`sales.Payment`
 
-Não expandir escopo.
+`CommandPayment`
 
-38. INVENTÁRIO/RELATÓRIOS DO POS NÃO SÃO ALVO
+`AttendancePayment`
 
-Hoje estão:
+Não adicionar ainda lógica de provider dentro desses services.
 
-not_implemented
+Não mudar:
 
-Não implementar nesta missão.
+`record_quick_checkout_payment()`
 
-39. BUSCA ESTÁTICA OBRIGATÓRIA ANTES DE REMOVER CÓDIGO
+`reverse_quick_checkout_payment()`
 
-Antes de excluir qualquer:
+`record_table_payment()`
 
-class
-function
-serializer
-endpoint
-type
-field
+`reverse_table_payment()`
 
-fazer busca estática no repositório por referências.
+`finalize_quick_checkout()`
 
-Se ainda houver caller legítimo fora do legado descrito:
+`finalize_sale()`
 
-NÃO apagar cegamente.
+Nesta missão estamos construindo a FUNDAÇÃO isolada.
 
-Entender o uso e preservar o necessário.
+---
 
-40. RESULTADO ESPERADO — MESA
+# 16. NÃO MEXER EM COMANDAS
 
-Depois da limpeza:
+Não alterar:
 
-commands.Table
-→ configuração física
+* endpoints de Commands;
+* models de Commands;
+* CommandPayment;
+* AttendanceCommand;
+* telas de Comanda;
+* fluxo de fechamento de Comanda.
 
-TableAttendance
-→ operação da Mesa
+O suporte futuro a COMMAND pode ficar apenas preparado no enum `origin_type`.
 
-Não existe mais no POS:
+---
 
-legacyOccupied
-legacy_occupied
-Mesa = AttendanceCommand principal
-Mesa = Command
-41. RESULTADO ESPERADO — BACKOFFICE MESAS
-/mesas
+# 17. NÃO IMPLEMENTAR CIELO AINDA
 
-deve ser:
+Não adicionar ainda:
 
-CADASTRO DE MESAS
+* Deep Link Cielo;
+* Client ID;
+* Access Token;
+* callback Android;
+* intents Android;
+* SDK Cielo;
+* classes `CieloPaymentAdapter`.
 
-Mesa 1    4 lugares
-Mesa 2    6 lugares
-Mesa 3    2 lugares
+Também não implementar Stone.
 
-Criar
-Editar
-Excluir/arquivar
-Gerar intervalo
-Pesquisar
+PAY-0 é 100% provider-neutral.
 
-Não:
+---
 
-Abrir Mesa
-Nova Comanda
-Adicionar Comanda
-Pagamento parcial
-Abrir atendimento
-open_commands
-42. RESULTADO ESPERADO — DOCUMENTOS DA MESA
+# 18. NÃO ALTERAR FLUTTER NESTA MISSÃO
 
-Runtime atual:
+Ainda não criar:
 
-SOLICITAR CONTA
-→ TABLE_CONFERENCE
+`PaymentProviderAdapter` no Flutter.
 
-FECHAR MESA
-→ TABLE_FINAL_RECEIPT
+Não modificar Venda Rápida.
 
-PAGAMENTO
-→ PAYMENT_RECEIPT
+Não modificar Mesa.
 
-Nenhum fluxo novo usa:
+Primeiro consolidar o domínio backend.
 
-TABLE_BILL
-43. RESULTADO ESPERADO — VENDA RÁPIDA
+Flutter entrará no PAY-1/PAY-2.
 
-Somente:
+---
 
-QuickSaleCheckout
-→ pagamentos persistentes
-→ finalizeQuickSaleCheckout
+# 19. AUDITORIA
 
-Não existe mais o caminho operacional paralelo:
+Usar o sistema de auditoria existente do CORE.
 
-finalizeQuickSale
-→ POST /pos/sales/
-44. ARQUIVOS A REVISAR
+Registrar pelo menos:
 
-No mínimo:
+* payment_intent.created;
+* mudança relevante de status;
+* payment_attempt.created;
+* mudança relevante de status.
 
-pos/lib/attendance/attendance_models.dart
-pos/lib/attendance/attendance_pages.dart
-pos/lib/attendance/shared_tables_grid.dart
+Nunca registrar secrets.
 
-pos/lib/core/app_controller.dart
-pos/lib/network/pos_api.dart
-pos/lib/storage/secret_store.dart
+Metadata de auditoria pode conter IDs e estados, mas não credenciais.
 
-pos/lib/printing/models.dart
-pos/lib/printing/production_ticket_renderer.dart
+---
 
-backend/apps/attendance/models.py
-backend/apps/attendance/serializers.py
-backend/apps/attendance/services.py
+# 20. SOFT DELETE / HISTÓRICO
 
-backend/apps/pos/urls.py
-backend/apps/pos/views.py
-backend/apps/pos/serializers.py
+Transações financeiras e intents não devem ser apagados fisicamente como fluxo normal.
 
-backend/apps/production/models.py
-backend/apps/production/services.py
+`PaymentIntent` e `PaymentAttempt` são históricos operacionais.
 
-backend/apps/commands/views.py
-backend/apps/commands/serializers.py
-backend/apps/commands/services.py
+Não implementar delete operacional desses registros.
 
-frontend/src/app/(private)/mesas/page.tsx
-frontend/src/components/document-print-routes.tsx
-frontend/src/types/index.ts
+ProviderConnection/Terminal podem utilizar status INACTIVE em vez de exclusão quando já possuírem histórico relacionado.
 
-Lembrando:
+Usar `PROTECT` nas relações financeiras importantes.
 
-alterações em apps.commands nesta missão são SOMENTE as necessárias para:
+---
 
-cadastro físico de Table
-proteção por TableAttendance
-remoção do antigo endpoint operacional de Mesas
+# 21. ADMIN
 
-NÃO mexer em negócio de Comandas.
+Registrar os novos models no Django Admin para conseguirmos inspecionar durante desenvolvimento.
 
-45. MIGRATIONS
+No admin:
 
-A princípio NÃO deveria ser necessária migration.
+* IDs;
+* empresa;
+* filial;
+* provider;
+* terminal;
+* amount;
+* status;
+* timestamps;
+* referências externas.
 
-Não estamos apagando dados históricos nem schema principal.
+Não mostrar segredo porque PAY-0 nem deve armazená-los.
 
-Se encontrar necessidade real de migration:
+---
 
-PARE e informe no checkpoint antes de tentar fazer limpeza destrutiva.
+# 22. MIGRATIONS
 
-REGRA CRÍTICA — NÃO EXECUTAR TESTES
+Nesta missão MIGRATIONS SÃO ESPERADAS.
 
-NÃO execute:
+Criar migrations normais do novo domínio.
 
-flutter analyze
-flutter test
-flutter build
-flutter run
-pytest
-npm test
-npm build
-npm lint
-suites
-makemigrations --check
+Não fazer migration destrutiva em models existentes.
 
-Não executar testes automáticos.
+Não alterar dados financeiros históricos.
 
-Não executar build.
+---
 
-Não executar analyze.
+# 23. TESTES DIRECIONADOS
 
-Eu farei os testes manualmente.
+Pode criar e executar SOMENTE testes backend direcionados para o novo domínio `payment_integrations`.
 
-CHECKPOINT
+Cobrir principalmente:
 
-Ao terminar informe:
+* criação válida de PaymentIntent;
+* amount <= 0 bloqueado;
+* company/branch incompatível bloqueado;
+* POS de outra filial bloqueado;
+* provider connection incompatível bloqueado;
+* terminal incompatível bloqueado;
+* idempotência;
+* conflito de fingerprint;
+* tentativa sequencial;
+* concorrência lógica do attempt_number, se viável;
+* transições válidas;
+* transições inválidas;
+* UNKNOWN preservado;
+* APPROVED não vira APPLIED automaticamente.
 
-qual era exatamente o fluxo antigo de Mesa encontrado;
-se removeu legacyOccupied do Flutter;
-se removeu legacy_occupied do backend;
-se POSTablesView passou a usar somente TableAttendance;
-se removeu o open_table() antigo;
-se removeu AttendanceOpenTableSerializer;
-o que fez com AttendanceOperationType.OPEN_TABLE histórico;
-como ficou open_table_attendance();
-como ficou o Backoffice /mesas;
-se removeu tables/operational/;
-quais serializers operacionais antigos de Mesa foram removidos;
-como ficou o type Table do frontend;
-como edição de Mesa é bloqueada com TableAttendance OPEN;
-como exclusão de Mesa é bloqueada com TableAttendance OPEN;
-como corrigiu POSTableAttendanceBillView para TABLE_CONFERENCE;
-onde TABLE_BILL deixou de ser oferecido no runtime;
-o que foi mantido somente para compatibilidade histórica de TABLE_BILL;
-se removeu o antigo finalizeQuickSale();
-se removeu POST /api/v1/pos/sales/;
-se removeu POSFinalizeSaleView/serializer antigos;
-se removeu _uncertainSaleKeys e pending sale intents antigos;
-se preservou integralmente o recovery atual do QuickSaleCheckout;
-se preservou o fallback antigo por operator_id;
-se preservou upgrade credential_hash → fingerprint;
-confirme explicitamente que NÃO alterou lógica de Comandas;
-confirme que NÃO alterou /comandas;
-confirme que NÃO alterou relatórios de Comandas;
-arquivos Flutter alterados;
-arquivos backend alterados;
-arquivos frontend alterados;
-migrations criadas — esperado: nenhuma;
-qualquer código legado encontrado que decidiu NÃO remover, e por quê;
-pontos restantes para teste manual.
+NÃO rode suíte global.
 
-NÃO EXECUTE TESTES.
-NÃO EXECUTE ANALYZE.
-NÃO EXECUTE BUILD.
-NÃO EXECUTE FLUTTER RUN.
+NÃO rode Flutter.
 
-Depois pare.
+NÃO rode build do app.
+
+---
+
+# 24. CRITÉRIO DE SUCESSO DO PAY-0
+
+Ao final precisamos conseguir representar, SEM Cielo/Stone específicas:
+
+Empresa A
+↓
+Filial X
+↓
+PaymentProviderConnection
+↓
+PaymentTerminal
+↓
+PaymentIntent R$ 100 CREDIT_CARD
+↓
+Attempt #1 DECLINED
+↓
+Attempt #2 APPROVED
+
+mantendo:
+
+`PaymentIntent = APPROVED`
+
+sem criar:
+
+`QuickSalePayment`
+
+sem criar:
+
+`TablePayment`
+
+sem criar:
+
+`Sale`
+
+porque a aplicação financeira será feita somente nas próximas missões.
+
+---
+
+# 25. NÃO ANTECIPAR PAY-1
+
+Não conecte a nova arquitetura à Venda Rápida ainda.
+
+Não tente “aproveitar e já deixar funcionando”.
+
+Quero revisar a fundação antes.
+
+---
+
+# CHECKPOINT OBRIGATÓRIO
+
+Ao terminar, informe:
+
+1. arquitetura criada;
+2. models criados;
+3. campos principais;
+4. constraints;
+5. regras de estado;
+6. mecanismo de idempotência;
+7. mecanismo de geração de attempts;
+8. como protegeu metadata sensível;
+9. arquivos alterados;
+10. migrations criadas;
+11. testes direcionados criados/executados e resultado;
+12. confirmação explícita de que NÃO alterou:
+
+* QuickSalePayment;
+* TablePayment;
+* sales.Payment;
+* finalize_quick_checkout;
+* finalize_sale;
+* Comandas;
+* Flutter;
+
+13. qualquer decisão arquitetural que precisou tomar e não estava especificada acima.
+
+Depois PARE.
+
+Não avance para Cielo.
+Não avance para Stone.
+WSLNão avance para PAY-1.
