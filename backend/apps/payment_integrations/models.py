@@ -38,7 +38,14 @@ class PaymentProviderIntegrationType(models.TextChoices):
     HYBRID = 'hybrid', 'Hybrid'
 
 
+class PaymentProviderQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValidationError('Use save() para alterar PaymentProvider e preservar validações de integridade.')
+
+
 class PaymentProvider(BaseModel):
+    objects = PaymentProviderQuerySet.as_manager()
+
     code = models.SlugField(max_length=50, unique=True)
     name = models.CharField(max_length=100)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
@@ -72,7 +79,14 @@ class PaymentProviderConnectionEnvironment(models.TextChoices):
     PRODUCTION = 'production', 'Production'
 
 
+class PaymentProviderConnectionQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValidationError('Use save() para alterar PaymentProviderConnection e preservar validações de integridade.')
+
+
 class PaymentProviderConnection(BaseModel):
+    objects = PaymentProviderConnectionQuerySet.as_manager()
+
     company = models.ForeignKey('companies.Company', on_delete=models.PROTECT, related_name='payment_provider_connections')
     branch = models.ForeignKey('companies.Branch', on_delete=models.PROTECT, related_name='payment_provider_connections', null=True, blank=True)
     provider = models.ForeignKey(PaymentProvider, on_delete=models.PROTECT, related_name='connections')
@@ -108,7 +122,14 @@ class PaymentProviderConnection(BaseModel):
         return super().save(*args, **kwargs)
 
 
+class PaymentTerminalQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValidationError('Use save() para alterar PaymentTerminal e preservar validações de integridade.')
+
+
 class PaymentTerminal(BaseModel):
+    objects = PaymentTerminalQuerySet.as_manager()
+
     connection = models.ForeignKey(PaymentProviderConnection, on_delete=models.PROTECT, related_name='terminals')
     branch = models.ForeignKey('companies.Branch', on_delete=models.PROTECT, related_name='payment_terminals')
     pos_device = models.ForeignKey('pos.POSDevice', on_delete=models.PROTECT, related_name='payment_terminals', null=True, blank=True)

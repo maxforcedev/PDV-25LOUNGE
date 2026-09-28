@@ -300,6 +300,68 @@ class PaymentIntegrationsTests(TestCase):
         with self.assertRaises(ValidationError):
             self.terminal.save()
 
+    def test_configuration_querysets_block_updates_and_instance_saves_remain_allowed(self):
+        other_provider = PaymentProvider.objects.create(
+            code='queryset-other', name='Outro provedor queryset', status=Status.ACTIVE,
+            integration_type='server_api',
+        )
+        other_connection = PaymentProviderConnection.objects.create(
+            company=self.company, provider=self.provider, name='Outra conexão queryset',
+            environment=PaymentProviderConnectionEnvironment.SANDBOX, status=Status.ACTIVE,
+        )
+        other_operator = User.objects.create_user(
+            email='pay0-queryset@example.com', password='Strong-password-123!',
+        )
+        other_company = create_company_with_matrix(
+            creator=other_operator, trade_name='Outra queryset', legal_name='Outra queryset Ltda',
+        )
+        other_branch = other_company.branches.get(is_matrix=True)
+
+        self.provider.code = 'provider-save-bypass'
+        with self.assertRaises(ValidationError):
+            self.provider.save()
+        self.provider.refresh_from_db()
+
+        updates = (
+            ('provider_code', PaymentProvider.objects.filter(pk=self.provider.pk), {'code': 'provider-update-bypass'}),
+            ('connection_provider', PaymentProviderConnection.objects.filter(pk=self.connection.pk), {'provider': other_provider}),
+            ('connection_company', PaymentProviderConnection.objects.filter(pk=self.connection.pk), {'company': other_company}),
+            ('connection_sensitive_configuration', PaymentProviderConnection.objects.filter(pk=self.connection.pk), {
+                'configuration': {'access_token': 'secret'},
+            }),
+            ('terminal_connection', PaymentTerminal.objects.filter(pk=self.terminal.pk), {'connection': other_connection}),
+            ('terminal_branch', PaymentTerminal.objects.filter(pk=self.terminal.pk), {'branch': other_branch}),
+            ('terminal_external_id', PaymentTerminal.objects.filter(pk=self.terminal.pk), {'external_id': 'queryset-bypass'}),
+            ('terminal_sensitive_metadata', PaymentTerminal.objects.filter(pk=self.terminal.pk), {
+                'metadata': {'authorization': 'secret'},
+            }),
+        )
+        for name, queryset, values in updates:
+            with self.subTest(update=name), self.assertRaises(ValidationError):
+                queryset.update(**values)
+
+        self.provider.name = 'Provedor administrado'
+        self.provider.status = Status.INACTIVE
+        self.provider.capabilities = {'supports_refunds': False}
+        self.provider.save()
+        self.connection.name = 'Conexão administrada'
+        self.connection.status = Status.INACTIVE
+        self.connection.configuration = {'merchant_reference': 'updated'}
+        self.connection.capabilities_override = {'capture_mode': 'manual'}
+        self.connection.save()
+        self.terminal.name = 'Terminal administrado'
+        self.terminal.status = Status.INACTIVE
+        self.terminal.capabilities = {'accepts_nfc': True}
+        self.terminal.metadata = {'location': 'counter'}
+        self.terminal.save()
+
+        self.provider.refresh_from_db()
+        self.connection.refresh_from_db()
+        self.terminal.refresh_from_db()
+        self.assertEqual(self.provider.name, 'Provedor administrado')
+        self.assertEqual(self.connection.name, 'Conexão administrada')
+        self.assertEqual(self.terminal.name, 'Terminal administrado')
+
     def test_direct_attempt_creation_requires_processing_intent(self):
         intent, _ = self.create_intent()
 
