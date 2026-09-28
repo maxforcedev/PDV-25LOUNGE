@@ -206,11 +206,11 @@ class PaymentIntent(BaseModel):
             errors['branch'] = 'A filial deve pertencer à empresa.'
         if self.pos_device.branch_id != self.branch_id:
             errors['pos_device'] = 'O POS deve pertencer à filial.'
+        require_active_resources = getattr(self, '_require_active_resources', self._state.adding)
         if self.payment_method.company_id != self.company_id:
             errors['payment_method'] = 'A forma de pagamento deve pertencer à empresa.'
-        elif self.payment_method.status != Status.ACTIVE:
+        elif require_active_resources and self.payment_method.status != Status.ACTIVE:
             errors['payment_method'] = 'A forma de pagamento deve estar ativa.'
-        require_active_resources = getattr(self, '_require_active_resources', self._state.adding)
         if self.provider_connection.company_id != self.company_id:
             errors['provider_connection'] = 'A conexão deve pertencer à empresa.'
         elif require_active_resources and self.provider_connection.status != Status.ACTIVE:
@@ -260,6 +260,18 @@ class PaymentAttemptStatus(models.TextChoices):
     CANCELLED = 'cancelled', 'Cancelada'
     ERROR = 'error', 'Erro'
     UNKNOWN = 'unknown', 'Desconhecido'
+
+
+PAYMENT_ATTEMPT_STRUCTURAL_FIELDS = (
+    'intent_id', 'provider_connection_id', 'terminal_id', 'attempt_number', 'amount',
+)
+
+PAYMENT_ATTEMPT_RESULT_FIELDS = (
+    'provider_transaction_id', 'provider_order_id', 'provider_reference', 'terminal_external_id',
+    'authorization_code', 'nsu', 'card_brand', 'card_mask', 'installments', 'payment_product',
+    'payment_product_detail', 'provider_status', 'provider_status_code', 'provider_message',
+    'request_metadata', 'response_metadata', 'started_at', 'completed_at',
+)
 
 
 class PaymentAttemptQuerySet(models.QuerySet):
@@ -318,6 +330,10 @@ class PaymentAttempt(BaseModel):
         require_active_resources = getattr(self, '_require_active_resources', self._state.adding)
         if self._state.adding and intent.status != PaymentIntentStatus.PROCESSING:
             errors['intent'] = 'PaymentAttempt só pode ser criada para um intent em PROCESSING.'
+        if intent.payment_method.company_id != intent.company_id:
+            errors['payment_method'] = 'A forma de pagamento deve pertencer à empresa do intent.'
+        elif require_active_resources and intent.payment_method.status != Status.ACTIVE:
+            errors['payment_method'] = 'A forma de pagamento deve estar ativa.'
         if self.provider_connection.company_id != intent.company_id:
             errors['provider_connection'] = 'A conexão deve pertencer à empresa do intent.'
         elif require_active_resources and self.provider_connection.status != Status.ACTIVE:
@@ -344,6 +360,18 @@ class PaymentAttempt(BaseModel):
                 raise ValidationError({'status': 'PaymentAttempt deve ser criada no estado CREATED.'})
         else:
             original = PaymentAttempt.objects.get(pk=self.pk)
+            changed_structural_fields = [
+                field for field in PAYMENT_ATTEMPT_STRUCTURAL_FIELDS
+                if getattr(original, field) != getattr(self, field)
+            ]
+            if changed_structural_fields:
+                raise ValidationError({'attempt': 'Os campos estruturais de PaymentAttempt são imutáveis.'})
+            changed_result_fields = [
+                field for field in PAYMENT_ATTEMPT_RESULT_FIELDS
+                if getattr(original, field) != getattr(self, field)
+            ]
+            if changed_result_fields and not getattr(self, '_allow_result_update', False):
+                raise ValidationError({'attempt': 'Use os serviços de PaymentAttempt para registrar resultados.'})
             if original.status != self.status and not getattr(self, '_allow_status_transition', False):
                 raise ValidationError({'status': 'Use os serviços de PaymentAttempt para alterar o estado.'})
         self.full_clean()

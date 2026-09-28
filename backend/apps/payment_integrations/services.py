@@ -8,7 +8,8 @@ from django.utils import timezone
 from apps.base.audit import audit_log
 
 from .models import (
-    PaymentAttempt, PaymentAttemptStatus, PaymentIntent, PaymentIntentStatus,
+    PAYMENT_ATTEMPT_RESULT_FIELDS, PaymentAttempt, PaymentAttemptStatus, PaymentIntent,
+    PaymentIntentStatus,
 )
 
 
@@ -94,15 +95,31 @@ def _save_intent_status(intent, status):
         delattr(intent, '_allow_status_transition')
 
 
-def _save_attempt_status(attempt, status):
+def _save_attempt_status(attempt, status, result_fields=()):
     attempt.status = status
     attempt._allow_status_transition = True
+    attempt._allow_result_update = True
     try:
-        attempt.save(update_fields=(
-            'status', 'response_metadata', 'started_at', 'completed_at', 'updated_at',
-        ))
+        attempt.save(update_fields=tuple(dict.fromkeys((
+            'status', 'response_metadata', 'started_at', 'completed_at', *result_fields, 'updated_at',
+        ))))
     finally:
         delattr(attempt, '_allow_status_transition')
+        delattr(attempt, '_allow_result_update')
+
+
+def _apply_attempt_result_data(attempt, result_data):
+    if not result_data:
+        return ()
+    invalid_fields = set(result_data) - set(PAYMENT_ATTEMPT_RESULT_FIELDS)
+    if invalid_fields:
+        raise PaymentIntegrationConflict(
+            'invalid_attempt_result_data',
+            f'Campos de resultado inválidos: {", ".join(sorted(invalid_fields))}.',
+        )
+    for field, value in result_data.items():
+        setattr(attempt, field, value)
+    return tuple(result_data)
 
 
 def create_payment_attempt(*, intent, provider_connection=None, terminal=_UNSET,
@@ -202,7 +219,7 @@ def transition_payment_intent(*, intent, status, actor=None):
     return intent
 
 
-def transition_payment_attempt(*, attempt, status, actor=None, response_metadata=None):
+def transition_payment_attempt(*, attempt, status, actor=None, response_metadata=None, result_data=None):
     if status != PaymentAttemptStatus.PROCESSING:
         raise PaymentIntegrationConflict(
             'attempt_result_requires_resolution',
@@ -215,11 +232,17 @@ def transition_payment_attempt(*, attempt, status, actor=None, response_metadata
                 'invalid_attempt_transition', f'Transição inválida: {attempt.status} para {status}.',
             )
         previous = attempt.status
+        result_fields = _apply_attempt_result_data(attempt, result_data)
         if response_metadata is not None:
             attempt.response_metadata = response_metadata
+            result_fields = (*result_fields, 'response_metadata')
         if not attempt.started_at:
             attempt.started_at = timezone.now()
-        _save_attempt_status(attempt, status)
+        attempt._require_active_resources = True
+        try:
+            _save_attempt_status(attempt, status, result_fields)
+        finally:
+            delattr(attempt, '_require_active_resources')
     audit_log(actor=actor or attempt.intent.operator, action='payment_attempt.status_changed', obj=attempt,
               company=attempt.intent.company, branch=attempt.intent.branch,
               before={'status': previous}, after={'status': status}, metadata={'intent_id': str(attempt.intent_id)})
@@ -235,7 +258,7 @@ _RESULT_INTENT_STATUS = {
 }
 
 
-def resolve_payment_attempt(*, attempt, status, actor=None, response_metadata=None):
+def resolve_payment_attempt(*, attempt, status, actor=None, response_metadata=None, result_data=None):
     if status not in _RESULT_INTENT_STATUS:
         raise PaymentIntegrationConflict('invalid_attempt_result', 'Informe um resultado final válido da tentativa.')
     with transaction.atomic():
@@ -260,10 +283,12 @@ def resolve_payment_attempt(*, attempt, status, actor=None, response_metadata=No
             )
         previous_attempt = attempt.status
         previous_intent = intent.status
+        result_fields = _apply_attempt_result_data(attempt, result_data)
         if response_metadata is not None:
             attempt.response_metadata = response_metadata
+            result_fields = (*result_fields, 'response_metadata')
         attempt.completed_at = timezone.now()
-        _save_attempt_status(attempt, status)
+        _save_attempt_status(attempt, status, result_fields)
         intent_status = _RESULT_INTENT_STATUS[status]
         if intent_status == PaymentIntentStatus.APPROVED:
             intent.approved_at = timezone.now()
