@@ -99,6 +99,11 @@ class PaymentProviderConnection(BaseModel):
         validate_non_sensitive_metadata(self.capabilities_override, 'capabilities_override')
 
     def save(self, *args, **kwargs):
+        if self.pk:
+            original = PaymentProviderConnection.objects.get(pk=self.pk)
+            immutable_fields = ('company_id', 'branch_id', 'provider_id', 'environment')
+            if any(getattr(original, field) != getattr(self, field) for field in immutable_fields):
+                raise ValidationError({'connection': 'Os campos estruturais de PaymentProviderConnection são imutáveis.'})
         self.full_clean()
         return super().save(*args, **kwargs)
 
@@ -134,6 +139,13 @@ class PaymentTerminal(BaseModel):
         validate_non_sensitive_metadata(self.metadata, 'metadata')
 
     def save(self, *args, **kwargs):
+        if self.pk:
+            original = PaymentTerminal.objects.get(pk=self.pk)
+            immutable_fields = ('connection_id', 'branch_id')
+            if any(getattr(original, field) != getattr(self, field) for field in immutable_fields):
+                raise ValidationError({'terminal': 'Os campos estruturais de PaymentTerminal são imutáveis.'})
+            if original.external_id != self.external_id and self.payment_attempts.exists():
+                raise ValidationError({'external_id': 'O identificador externo não pode mudar após uso em tentativa.'})
         self.full_clean()
         return super().save(*args, **kwargs)
 

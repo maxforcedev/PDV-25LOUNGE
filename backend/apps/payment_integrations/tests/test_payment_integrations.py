@@ -134,11 +134,30 @@ class PaymentIntegrationsTests(TestCase):
         with self.assertRaises(PaymentIntegrationConflict) as context:
             create_payment_attempt(intent=unknown)
         self.assertEqual(context.exception.code, 'intent_unknown')
+        with self.assertRaises(PaymentIntegrationConflict):
+            transition_payment_intent(intent=unknown, status=PaymentIntentStatus.APPROVED)
         reconciled_attempt, reconciled_intent = resolve_payment_attempt(
             attempt=unknown_attempt, status=PaymentAttemptStatus.APPROVED,
         )
         self.assertEqual(reconciled_attempt.status, PaymentAttemptStatus.APPROVED)
         self.assertEqual(reconciled_intent.status, PaymentIntentStatus.APPROVED)
+
+    def test_unknown_attempt_can_be_reconciled_to_declined_only_by_resolution(self):
+        intent, _ = self.create_intent()
+        transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
+        attempt = self.start_attempt(intent)
+        unknown_attempt, unknown_intent = resolve_payment_attempt(
+            attempt=attempt, status=PaymentAttemptStatus.UNKNOWN,
+        )
+
+        with self.assertRaises(PaymentIntegrationConflict):
+            transition_payment_intent(intent=unknown_intent, status=PaymentIntentStatus.DECLINED)
+        reconciled_attempt, reconciled_intent = resolve_payment_attempt(
+            attempt=unknown_attempt, status=PaymentAttemptStatus.DECLINED,
+        )
+
+        self.assertEqual(reconciled_attempt.status, PaymentAttemptStatus.DECLINED)
+        self.assertEqual(reconciled_intent.status, PaymentIntentStatus.DECLINED)
 
     def test_approved_does_not_apply_automatically_and_invalid_transition_is_rejected(self):
         intent, _ = self.create_intent()
@@ -200,6 +219,86 @@ class PaymentIntegrationsTests(TestCase):
         intent.origin_id = str(uuid4())
         with self.assertRaises(ValidationError):
             intent.save()
+
+    def test_connection_identity_is_immutable_but_administration_is_allowed(self):
+        other_operator = User.objects.create_user(
+            email='pay0-connection@example.com', password='Strong-password-123!',
+        )
+        other_company = create_company_with_matrix(
+            creator=other_operator, trade_name='Outra conexão', legal_name='Outra conexão Ltda',
+        )
+        other_provider = PaymentProvider.objects.create(
+            code='other-connection', name='Outro provedor', status=Status.ACTIVE,
+            integration_type='server_api',
+        )
+        changes = {
+            'company': other_company,
+            'branch': other_company.branches.get(is_matrix=True),
+            'provider': other_provider,
+            'environment': PaymentProviderConnectionEnvironment.PRODUCTION,
+        }
+
+        for field, value in changes.items():
+            self.connection.refresh_from_db()
+            setattr(self.connection, field, value)
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                self.connection.save()
+
+        self.connection.refresh_from_db()
+        self.connection.name = 'Contrato renomeado'
+        self.connection.status = Status.INACTIVE
+        self.connection.configuration = {'merchant_reference': 'updated'}
+        self.connection.capabilities_override = {'capture_mode': 'manual'}
+        self.connection.save()
+        self.connection.refresh_from_db()
+        self.assertEqual(self.connection.name, 'Contrato renomeado')
+        self.assertEqual(self.connection.status, Status.INACTIVE)
+        self.assertEqual(self.connection.configuration, {'merchant_reference': 'updated'})
+
+    def test_terminal_identity_and_external_id_history_protection(self):
+        other_connection = PaymentProviderConnection.objects.create(
+            company=self.company, provider=self.provider, name='Outro contrato terminal',
+            environment=PaymentProviderConnectionEnvironment.SANDBOX, status=Status.ACTIVE,
+        )
+        other_operator = User.objects.create_user(
+            email='pay0-terminal@example.com', password='Strong-password-123!',
+        )
+        other_company = create_company_with_matrix(
+            creator=other_operator, trade_name='Outro terminal', legal_name='Outro terminal Ltda',
+        )
+        changes = {
+            'connection': other_connection,
+            'branch': other_company.branches.get(is_matrix=True),
+        }
+
+        for field, value in changes.items():
+            self.terminal.refresh_from_db()
+            setattr(self.terminal, field, value)
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                self.terminal.save()
+
+        other_device = POSDevice.objects.create(
+            branch=self.branch, name='Caixa 2', status=POSDevice.Status.ACTIVE,
+        )
+        self.terminal.refresh_from_db()
+        self.terminal.name = 'Terminal renomeado'
+        self.terminal.status = Status.INACTIVE
+        self.terminal.pos_device = other_device
+        self.terminal.external_id = 'terminal-before-history'
+        self.terminal.save()
+        self.terminal.refresh_from_db()
+        self.assertEqual(self.terminal.name, 'Terminal renomeado')
+        self.assertEqual(self.terminal.status, Status.INACTIVE)
+        self.assertEqual(self.terminal.pos_device_id, other_device.pk)
+
+        self.terminal.status = Status.ACTIVE
+        self.terminal.save()
+        intent, _ = self.create_intent()
+        transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
+        create_payment_attempt(intent=intent)
+        self.terminal.external_id = 'terminal-after-history'
+        with self.assertRaises(ValidationError):
+            self.terminal.save()
 
     def test_direct_attempt_creation_requires_processing_intent(self):
         intent, _ = self.create_intent()

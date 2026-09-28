@@ -171,10 +171,7 @@ _INTENT_TRANSITIONS = {
     PaymentIntentStatus.DECLINED: set(),
     PaymentIntentStatus.CANCELLED: set(),
     PaymentIntentStatus.ERROR: set(),
-    PaymentIntentStatus.UNKNOWN: {
-        PaymentIntentStatus.APPROVED, PaymentIntentStatus.DECLINED,
-        PaymentIntentStatus.CANCELLED, PaymentIntentStatus.ERROR,
-    },
+    PaymentIntentStatus.UNKNOWN: set(),
     PaymentIntentStatus.APPROVED: {PaymentIntentStatus.APPLIED},
     PaymentIntentStatus.APPLIED: {PaymentIntentStatus.REVERSED},
     PaymentIntentStatus.REVERSED: set(),
