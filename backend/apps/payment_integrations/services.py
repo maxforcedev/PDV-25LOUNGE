@@ -9,7 +9,7 @@ from apps.base.audit import audit_log
 
 from .models import (
     PAYMENT_ATTEMPT_RESULT_FIELDS, PaymentAttempt, PaymentAttemptStatus, PaymentIntent,
-    PaymentIntentStatus,
+    PaymentIntentOriginType, PaymentIntentStatus,
 )
 
 
@@ -22,6 +22,16 @@ class PaymentIntegrationConflict(Exception):
 
 _UNSET = object()
 
+_BLOCKING_QUICK_SALE_INTENT_STATUSES = (
+    PaymentIntentStatus.CREATED,
+    PaymentIntentStatus.READY,
+    PaymentIntentStatus.PROCESSING,
+    PaymentIntentStatus.DECLINED,
+    PaymentIntentStatus.ERROR,
+    PaymentIntentStatus.UNKNOWN,
+    PaymentIntentStatus.APPROVED,
+)
+
 
 def _fingerprint(payload):
     return hashlib.sha256(json.dumps(
@@ -29,9 +39,27 @@ def _fingerprint(payload):
     ).encode()).hexdigest()
 
 
+def _blocking_quick_sale_intent(origin_type, origin_id):
+    if origin_type != PaymentIntentOriginType.QUICK_SALE:
+        return None
+    return PaymentIntent.objects.select_for_update().filter(
+        origin_type=PaymentIntentOriginType.QUICK_SALE,
+        origin_id=str(origin_id).strip(),
+        status__in=_BLOCKING_QUICK_SALE_INTENT_STATUSES,
+    ).first()
+
+
+def _blocking_quick_sale_conflict():
+    return PaymentIntegrationConflict(
+        'blocking_quick_sale_intent',
+        'Já existe um intent bloqueante para esta venda rápida.',
+    )
+
+
 def create_payment_intent(*, company, branch, pos_device, operator, origin_type, origin_id,
-                          payment_method, amount, provider_connection, terminal,
-                          idempotency_key):
+                           payment_method, amount, provider_connection, terminal,
+                           idempotency_key, application_context=None):
+    application_context = {} if application_context is None else application_context
     payload = {
         'branch': branch.pk,
         'pos_device': str(pos_device.pk),
@@ -42,6 +70,7 @@ def create_payment_intent(*, company, branch, pos_device, operator, origin_type,
         'amount': str(amount),
         'provider_connection': provider_connection.pk,
         'terminal': str(terminal.pk) if terminal else None,
+        'application_context': application_context,
     }
     fingerprint = _fingerprint(payload)
     try:
@@ -56,19 +85,26 @@ def create_payment_intent(*, company, branch, pos_device, operator, origin_type,
                         'A chave de idempotência já foi usada com outros dados.',
                     )
                 return existing, True
+            if _blocking_quick_sale_intent(origin_type, origin_id):
+                raise _blocking_quick_sale_conflict()
             intent = PaymentIntent(
                 company=company, branch=branch, pos_device=pos_device, operator=operator,
                 origin_type=origin_type, origin_id=str(origin_id), payment_method=payment_method,
                 amount=amount, provider_connection=provider_connection, terminal=terminal,
                 idempotency_key=idempotency_key, request_fingerprint=fingerprint,
+                application_context=application_context,
             )
             intent.full_clean()
             intent.save()
     except IntegrityError:
         with transaction.atomic():
-            existing = PaymentIntent.objects.select_for_update().get(
+            existing = PaymentIntent.objects.select_for_update().filter(
                 company=company, idempotency_key=idempotency_key,
-            )
+            ).first()
+            if not existing and _blocking_quick_sale_intent(origin_type, origin_id):
+                raise _blocking_quick_sale_conflict()
+        if not existing:
+            raise
         if existing.request_fingerprint != fingerprint:
             raise PaymentIntegrationConflict(
                 'idempotency_key_conflict',
@@ -135,10 +171,10 @@ def create_payment_attempt(*, intent, provider_connection=None, terminal=_UNSET,
             raise PaymentIntegrationConflict('intent_terminal', 'O intent financeiro não aceita novas tentativas.')
         if intent.status not in {
             PaymentIntentStatus.READY, PaymentIntentStatus.DECLINED,
-            PaymentIntentStatus.CANCELLED, PaymentIntentStatus.ERROR,
+            PaymentIntentStatus.ERROR,
         }:
             raise PaymentIntegrationConflict(
-                'intent_not_ready', 'O intent deve estar pronto ou concluído sem sucesso para nova tentativa.',
+                'intent_not_ready', 'O intent deve estar pronto, recusado ou com erro para nova tentativa.',
             )
         previous_status = intent.status
         _save_intent_status(intent, PaymentIntentStatus.PROCESSING)
@@ -168,12 +204,12 @@ _INTENT_TRANSITIONS = {
     PaymentIntentStatus.CREATED: {PaymentIntentStatus.READY, PaymentIntentStatus.CANCELLED, PaymentIntentStatus.ERROR},
     PaymentIntentStatus.READY: {PaymentIntentStatus.CANCELLED, PaymentIntentStatus.ERROR},
     PaymentIntentStatus.PROCESSING: set(),
-    PaymentIntentStatus.DECLINED: set(),
+    PaymentIntentStatus.DECLINED: {PaymentIntentStatus.CANCELLED},
     PaymentIntentStatus.CANCELLED: set(),
-    PaymentIntentStatus.ERROR: set(),
+    PaymentIntentStatus.ERROR: {PaymentIntentStatus.CANCELLED},
     PaymentIntentStatus.UNKNOWN: set(),
-    PaymentIntentStatus.APPROVED: {PaymentIntentStatus.APPLIED},
-    PaymentIntentStatus.APPLIED: {PaymentIntentStatus.REVERSED},
+    PaymentIntentStatus.APPROVED: set(),
+    PaymentIntentStatus.APPLIED: set(),
     PaymentIntentStatus.REVERSED: set(),
 }
 
@@ -205,8 +241,6 @@ def transition_payment_intent(*, intent, status, actor=None):
         now = timezone.now()
         if status == PaymentIntentStatus.APPROVED:
             intent.approved_at = now
-        elif status == PaymentIntentStatus.APPLIED:
-            intent.applied_at = now
         elif status == PaymentIntentStatus.CANCELLED:
             intent.cancelled_at = now
         _save_intent_status(intent, status)

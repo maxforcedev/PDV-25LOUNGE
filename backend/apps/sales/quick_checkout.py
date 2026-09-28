@@ -5,6 +5,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Sum
+from django.utils import timezone
 
 from apps.base.audit import audit_log
 from apps.cash.models import CashSession, CashSessionStatus
@@ -17,7 +18,8 @@ from apps.inventory.reservations import (
 from apps.products.models import SalesChannel
 from apps.pos.models import (
     QuickSaleCheckout, QuickSaleCheckoutItem, QuickSalePayment,
-    QuickSalePaymentAllocation, QuickSaleCheckoutStatus, QuickSalePaymentStatus,
+    QuickSalePaymentAllocation, QuickSaleCheckoutStatus, QuickSalePaymentSourceType,
+    QuickSalePaymentStatus,
 )
 
 from .models import OperationType, PaymentMethod, PaymentMethodCode
@@ -32,6 +34,12 @@ class QuickCheckoutConflict(Exception):
         self.code = code
         self.message = message
         super().__init__(message)
+
+
+_BLOCKING_PAYMENT_INTENT_STATUSES = (
+    'created', 'ready', 'processing', 'declined', 'error', 'unknown', 'approved',
+)
+_QUICK_UNSET = object()
 
 
 def _fingerprint(payload):
@@ -57,6 +65,72 @@ def _financial_snapshot(preview):
         },
         'discount_intent': preview['discount_intent'],
     }
+
+
+def _blocking_payment_intent(checkout, *, lock=False, exclude_id=None):
+    from apps.payment_integrations.models import PaymentIntent, PaymentIntentOriginType
+
+    intents = PaymentIntent.objects.filter(
+        origin_type=PaymentIntentOriginType.QUICK_SALE,
+        origin_id=str(checkout.pk),
+        status__in=_BLOCKING_PAYMENT_INTENT_STATUSES,
+    )
+    if exclude_id:
+        intents = intents.exclude(pk=exclude_id)
+    if lock:
+        intents = intents.select_for_update()
+    return intents.first()
+
+
+def _ensure_checkout_without_blocking_intent(checkout, *, exclude_id=None):
+    if _blocking_payment_intent(checkout, lock=True, exclude_id=exclude_id):
+        raise QuickCheckoutConflict(
+            'payment_intent_in_progress',
+            'O checkout possui uma cobrança externa pendente ou reutilizável.',
+        )
+
+
+def _frozen_application_context(checkout, *, mode, amount, allocations, remaining):
+    if mode == 'value':
+        resolved_amount = strict_decimal(amount, field='amount', decimal_places=2, max_digits=14)
+        resolved_allocations = []
+    elif mode == 'remaining':
+        resolved_amount = remaining
+        resolved_allocations = []
+    elif mode == 'items':
+        resolved_amount, resolved_allocations = _allocation_amount(checkout, allocations)
+    else:
+        raise ValidationError({'mode': 'Modo de pagamento inválido.'})
+    if resolved_amount <= 0 or resolved_amount > remaining:
+        raise QuickCheckoutConflict('payment_exceeds_remaining', 'O pagamento deve estar dentro do saldo restante.')
+    return {
+        'mode': mode,
+        'amount': f'{resolved_amount:.2f}',
+        'allocations': [
+            {
+                'item': allocation['item'].pk,
+                'allocated_quantity': format(allocation['allocated_quantity'], 'f'),
+                'amount': f'{allocation["amount"]:.2f}',
+            }
+            for allocation in sorted(resolved_allocations, key=lambda row: row['item'].pk)
+        ],
+    }, resolved_amount
+
+
+def _validate_quick_sale_intent_context(intent, checkout):
+    from apps.payment_integrations.models import PaymentIntentOriginType
+
+    context = intent.application_context or {}
+    if (
+        intent.origin_type != PaymentIntentOriginType.QUICK_SALE
+        or intent.origin_id != str(checkout.pk)
+        or intent.company_id != checkout.company_id
+        or intent.branch_id != checkout.branch_id
+        or intent.pos_device_id != checkout.pos_device_id
+        or str(context.get('amount')) != f'{intent.amount:.2f}'
+    ):
+        raise QuickCheckoutConflict('payment_intent_context_invalid', 'O contexto congelado do intent é inválido.')
+    return context
 
 
 @transaction.atomic
@@ -149,6 +223,7 @@ def update_quick_checkout(*, checkout, pos_device, user, permissions, raw_items,
                           discount_authorization=None, item_discount_authorization=None,
                           service_fee_authorization=None, audit_metadata=None):
     _current_session, checkout, _sessions = _lock_checkout_session(checkout.pk, user=user)
+    _ensure_checkout_without_blocking_intent(checkout)
     paid, _remaining = checkout_balance(checkout, lock=True)
     if checkout.status != QuickSaleCheckoutStatus.OPEN or paid:
         raise QuickCheckoutConflict('checkout_not_editable', 'Itens não podem mudar após o primeiro pagamento.')
@@ -393,6 +468,215 @@ def preview_quick_checkout_payment(*, checkout, allocations):
 
 
 @transaction.atomic
+def create_quick_sale_payment_intent(*, checkout, user, payment_method_id, mode, amount,
+                                     allocations, provider_connection, terminal, idempotency_key,
+                                     audit_metadata=None):
+    from apps.payment_integrations.models import PaymentIntentStatus
+    from apps.payment_integrations.services import (
+        PaymentIntegrationConflict, create_payment_intent, transition_payment_intent,
+    )
+
+    session, checkout, _sessions = _lock_checkout_session(checkout.pk, user=user)
+    if session.status != CashSessionStatus.OPEN:
+        raise QuickCheckoutConflict('cash_session_closed', 'Não é possível iniciar cobrança após o fechamento do caixa.')
+    if checkout.status != QuickSaleCheckoutStatus.OPEN:
+        raise QuickCheckoutConflict('checkout_closed', 'O checkout já foi finalizado.')
+    paid, remaining = checkout_balance(checkout, lock=True)
+    method = PaymentMethod.objects.select_for_update().filter(
+        pk=payment_method_id, company=checkout.company, status=Status.ACTIVE,
+    ).first()
+    if not method:
+        raise ValidationError({'payment_method': 'Forma de pagamento inválida ou inativa.'})
+    if method.code == PaymentMethodCode.CASH:
+        raise ValidationError({'payment_method': 'Dinheiro não pode usar integração de provedor.'})
+    context, resolved_amount = _frozen_application_context(
+        checkout, mode=mode, amount=amount, allocations=allocations or [], remaining=remaining,
+    )
+    try:
+        intent, replayed = create_payment_intent(
+            company=checkout.company, branch=checkout.branch, pos_device=checkout.pos_device,
+            operator=user, origin_type='quick_sale', origin_id=checkout.pk,
+            payment_method=method, amount=resolved_amount,
+            provider_connection=provider_connection, terminal=terminal,
+            application_context=context, idempotency_key=idempotency_key,
+        )
+    except PaymentIntegrationConflict as error:
+        raise QuickCheckoutConflict(error.code, error.message) from error
+    if not replayed:
+        intent = transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY, actor=user)
+        audit_log(
+            actor=user, action='quick_sale_payment_intent.created', obj=intent,
+            company=checkout.company, branch=checkout.branch,
+            after={'checkout_id': str(checkout.pk), 'intent_id': str(intent.pk), 'amount': str(intent.amount)},
+            metadata=audit_metadata or {},
+        )
+    return intent, replayed
+
+
+@transaction.atomic
+def start_quick_sale_payment_attempt(*, checkout, intent, user, provider_connection=None,
+                                     terminal=_QUICK_UNSET, request_metadata=None,
+                                     audit_metadata=None):
+    from apps.payment_integrations.models import PaymentIntent, PaymentIntentStatus
+    from apps.payment_integrations.services import (
+        PaymentIntegrationConflict, create_payment_attempt, transition_payment_attempt,
+    )
+
+    session, checkout, _sessions = _lock_checkout_session(checkout.pk, user=user)
+    intent = PaymentIntent.objects.select_for_update().get(pk=intent.pk)
+    _validate_quick_sale_intent_context(intent, checkout)
+    if session.status != CashSessionStatus.OPEN or checkout.status != QuickSaleCheckoutStatus.OPEN:
+        raise QuickCheckoutConflict('checkout_not_payable', 'O checkout ou a sessão de caixa não permite cobrança.')
+    if intent.status not in (PaymentIntentStatus.READY, PaymentIntentStatus.DECLINED, PaymentIntentStatus.ERROR):
+        raise QuickCheckoutConflict('payment_intent_not_ready', 'O intent não aceita uma nova tentativa.')
+    paid, _remaining = checkout_balance(checkout, lock=True)
+    try:
+        validate_checkout_reservation(checkout, paid=True, renew_if_unpaid=paid == Decimal('0.00'))
+        kwargs = {
+            'intent': intent,
+            'provider_connection': provider_connection,
+            'request_metadata': request_metadata,
+        }
+        if terminal is not _QUICK_UNSET:
+            kwargs['terminal'] = terminal
+        attempt = create_payment_attempt(**kwargs)
+        attempt = transition_payment_attempt(attempt=attempt, status='processing', actor=user)
+    except StockReservationConflict as error:
+        raise QuickCheckoutConflict('stock_unavailable', error.message) from error
+    except PaymentIntegrationConflict as error:
+        raise QuickCheckoutConflict(error.code, error.message) from error
+    audit_log(
+        actor=user, action='quick_sale_payment_attempt.started', obj=attempt,
+        company=checkout.company, branch=checkout.branch,
+        after={'checkout_id': str(checkout.pk), 'intent_id': str(intent.pk), 'attempt_id': str(attempt.pk)},
+        metadata=audit_metadata or {},
+    )
+    return attempt
+
+
+@transaction.atomic
+def resolve_quick_sale_payment_attempt(*, checkout, attempt, status, user, response_metadata=None,
+                                       result_data=None, audit_metadata=None):
+    from apps.payment_integrations.models import PaymentAttempt, PaymentAttemptStatus, PaymentIntent
+    from apps.payment_integrations.services import PaymentIntegrationConflict, resolve_payment_attempt
+
+    _session, checkout, _sessions = _lock_checkout_session(checkout.pk, user=user)
+    attempt = PaymentAttempt.objects.select_for_update().select_related('intent').get(pk=attempt.pk)
+    intent = PaymentIntent.objects.select_for_update().get(pk=attempt.intent_id)
+    _validate_quick_sale_intent_context(intent, checkout)
+    try:
+        resolved_attempt, resolved_intent = resolve_payment_attempt(
+            attempt=attempt, status=status, actor=user, response_metadata=response_metadata,
+            result_data=result_data,
+        )
+    except PaymentIntegrationConflict as error:
+        raise QuickCheckoutConflict(error.code, error.message) from error
+    if status in {
+        PaymentAttemptStatus.DECLINED, PaymentAttemptStatus.ERROR, PaymentAttemptStatus.CANCELLED,
+    }:
+        paid, _remaining = checkout_balance(checkout, lock=True)
+        if paid == Decimal('0.00'):
+            restore_checkout_reservation_expiry(checkout)
+    audit_log(
+        actor=user, action='quick_sale_payment_attempt.resolved', obj=resolved_attempt,
+        company=checkout.company, branch=checkout.branch,
+        after={'checkout_id': str(checkout.pk), 'intent_id': str(resolved_intent.pk), 'status': status},
+        metadata=audit_metadata or {},
+    )
+    return resolved_attempt, resolved_intent
+
+
+@transaction.atomic
+def cancel_quick_sale_payment_intent(*, checkout, intent, user, audit_metadata=None):
+    from apps.payment_integrations.models import PaymentIntent, PaymentIntentStatus
+    from apps.payment_integrations.services import PaymentIntegrationConflict, transition_payment_intent
+
+    _session, checkout, _sessions = _lock_checkout_session(checkout.pk, user=user)
+    intent = PaymentIntent.objects.select_for_update().get(pk=intent.pk)
+    _validate_quick_sale_intent_context(intent, checkout)
+    if intent.status not in {
+        PaymentIntentStatus.CREATED, PaymentIntentStatus.READY,
+        PaymentIntentStatus.DECLINED, PaymentIntentStatus.ERROR,
+    }:
+        raise QuickCheckoutConflict('payment_intent_not_cancellable', 'O intent não pode ser cancelado neste estado.')
+    try:
+        intent = transition_payment_intent(intent=intent, status=PaymentIntentStatus.CANCELLED, actor=user)
+    except PaymentIntegrationConflict as error:
+        raise QuickCheckoutConflict(error.code, error.message) from error
+    paid, _remaining = checkout_balance(checkout, lock=True)
+    if paid == Decimal('0.00'):
+        restore_checkout_reservation_expiry(checkout)
+    audit_log(
+        actor=user, action='quick_sale_payment_intent.cancelled', obj=intent,
+        company=checkout.company, branch=checkout.branch,
+        after={'checkout_id': str(checkout.pk), 'intent_id': str(intent.pk)}, metadata=audit_metadata or {},
+    )
+    return intent
+
+
+@transaction.atomic
+def apply_approved_quick_sale_payment_intent(*, checkout, intent, user, audit_metadata=None):
+    from apps.payment_integrations.models import PaymentAttempt, PaymentAttemptStatus, PaymentIntent, PaymentIntentStatus
+
+    session, checkout, _sessions = _lock_checkout_session(checkout.pk, user=user)
+    intent = PaymentIntent.objects.select_for_update().get(pk=intent.pk)
+    context = _validate_quick_sale_intent_context(intent, checkout)
+    attempt = PaymentAttempt.objects.select_for_update().filter(
+        intent=intent, status=PaymentAttemptStatus.APPROVED,
+    ).order_by('-attempt_number').first()
+    if attempt:
+        existing = QuickSalePayment.objects.select_for_update().filter(source_payment_attempt=attempt).first()
+        if existing:
+            if existing.checkout_id != checkout.pk:
+                raise QuickCheckoutConflict('payment_intent_apply_conflict', 'A tentativa já foi aplicada em outro checkout.')
+            return existing, True
+    if intent.status != PaymentIntentStatus.APPROVED:
+        raise QuickCheckoutConflict('payment_intent_not_approved', 'O intent deve estar aprovado para aplicação.')
+    if session.status != CashSessionStatus.OPEN or checkout.status != QuickSaleCheckoutStatus.OPEN:
+        raise QuickCheckoutConflict('checkout_not_payable', 'O checkout ou a sessão de caixa não permite aplicação.')
+    if not attempt:
+        raise QuickCheckoutConflict('approved_attempt_missing', 'O intent aprovado não possui tentativa aprovada.')
+    paid, remaining = checkout_balance(checkout, lock=True)
+    if intent.amount > remaining:
+        raise QuickCheckoutConflict('payment_exceeds_remaining', 'O intent aprovado excede o saldo atual do checkout.')
+    allocations = context.get('allocations') or []
+    payment = QuickSalePayment.objects.create(
+        checkout=checkout, payment_method=intent.payment_method, amount=intent.amount,
+        operator=intent.operator, cash_session=checkout.cash_session,
+        source_type=QuickSalePaymentSourceType.PROVIDER, source_payment_attempt=attempt,
+        idempotency_key=intent.pk,
+        request_fingerprint=_fingerprint({'intent': str(intent.pk), 'attempt': str(attempt.pk), 'context': context}),
+    )
+    items = {
+        item.pk: item for item in QuickSaleCheckoutItem.objects.select_for_update().filter(
+            checkout=checkout, pk__in=[row.get('item') for row in allocations],
+        )
+    }
+    if len(items) != len(allocations):
+        raise QuickCheckoutConflict('payment_intent_context_invalid', 'As alocações congeladas não pertencem ao checkout.')
+    for row in allocations:
+        QuickSalePaymentAllocation.objects.create(
+            payment=payment, item=items[row['item']],
+            allocated_quantity=Decimal(str(row['allocated_quantity'])),
+            amount=Decimal(str(row['amount'])),
+        )
+    intent.status = PaymentIntentStatus.APPLIED
+    intent.applied_at = timezone.now()
+    intent._allow_status_transition = True
+    try:
+        intent.save(update_fields=('status', 'applied_at', 'updated_at'))
+    finally:
+        delattr(intent, '_allow_status_transition')
+    audit_log(
+        actor=user, action='quick_sale_provider_payment.applied', obj=payment,
+        company=checkout.company, branch=checkout.branch,
+        after={'checkout_id': str(checkout.pk), 'intent_id': str(intent.pk), 'attempt_id': str(attempt.pk)},
+        metadata=audit_metadata or {},
+    )
+    return payment, False
+
+
+@transaction.atomic
 def record_quick_checkout_payment(*, checkout, user, payment_method_id, mode, amount,
                                     received_amount, allocations, idempotency_key,
                                     pos_device,
@@ -404,6 +688,7 @@ def record_quick_checkout_payment(*, checkout, user, payment_method_id, mode, am
 
     active_session = current_pos_cash_session(pos_device, for_update=True)
     session, checkout, _sessions = _lock_checkout_session(checkout.pk, user=user)
+    _ensure_checkout_without_blocking_intent(checkout)
     if session.status != CashSessionStatus.OPEN:
         raise QuickCheckoutConflict('cash_session_closed', 'Não é possível registrar pagamento após o fechamento do caixa.')
     if session.pk != active_session.pk:
@@ -475,6 +760,7 @@ def reverse_quick_checkout_payment(*, payment, user, reason, idempotency_key, au
     if payment_hint is None:
         raise QuickCheckoutConflict('payment_not_found', 'Pagamento não encontrado.')
     session, checkout, _sessions = _lock_checkout_session(payment_hint, user=user)
+    _ensure_checkout_without_blocking_intent(checkout)
     checkout_balance(checkout, lock=True)
     payment = QuickSalePayment.objects.select_for_update(of=('self',)).select_related(
         'checkout', 'payment_method', 'cash_session',
@@ -492,6 +778,11 @@ def reverse_quick_checkout_payment(*, payment, user, reason, idempotency_key, au
         raise QuickCheckoutConflict('idempotency_key_conflict', 'A chave de idempotência já foi usada com outros dados.')
     if payment.status != QuickSalePaymentStatus.APPLIED or hasattr(payment, 'reversal'):
         raise QuickCheckoutConflict('payment_already_reversed', 'O pagamento já foi estornado.')
+    if payment.source_type == QuickSalePaymentSourceType.PROVIDER:
+        raise QuickCheckoutConflict(
+            'provider_reversal_required',
+            'Pagamento de provedor exige reversão no provedor externo.',
+        )
     reversal = QuickSalePayment.objects.create(
         checkout=payment.checkout, payment_method=payment.payment_method, amount=payment.amount,
         received_amount=payment.received_amount, change_amount=payment.change_amount, operator=user,
@@ -518,6 +809,7 @@ def reverse_quick_checkout_payment(*, payment, user, reason, idempotency_key, au
 @transaction.atomic
 def cancel_quick_checkout(*, checkout, user, audit_metadata=None):
     _session, checkout, _sessions = _lock_checkout_session(checkout.pk, user=user)
+    _ensure_checkout_without_blocking_intent(checkout)
     if checkout.status == QuickSaleCheckoutStatus.CANCELLED:
         return checkout, True
     if checkout.status != QuickSaleCheckoutStatus.OPEN:
@@ -537,6 +829,7 @@ def cancel_quick_checkout(*, checkout, user, audit_metadata=None):
 @transaction.atomic
 def finalize_quick_checkout(*, checkout, user, permissions, idempotency_key, audit_metadata=None):
     session, checkout, _sessions = _lock_checkout_session(checkout.pk, user=user)
+    _ensure_checkout_without_blocking_intent(checkout)
     if checkout.status == QuickSaleCheckoutStatus.FINALIZED:
         if checkout.sale:
             return checkout.sale, True
@@ -552,12 +845,13 @@ def finalize_quick_checkout(*, checkout, user, permissions, idempotency_key, aud
         )
     except StockReservationConflict as error:
         raise QuickCheckoutConflict('stock_unavailable', error.message) from error
+    quick_sale_payments = list(checkout.payments.filter(
+        status=QuickSalePaymentStatus.APPLIED, reversal__isnull=True,
+    ).select_related('payment_method'))
     payments = [
         {'payment_method': payment.payment_method_id, 'amount': payment.amount,
          **({'received_amount': payment.received_amount} if payment.received_amount is not None else {})}
-        for payment in checkout.payments.filter(
-            status=QuickSalePaymentStatus.APPLIED, reversal__isnull=True,
-        ).select_related('payment_method')
+        for payment in quick_sale_payments
     ]
     sale = finalize_sale(
         branch=checkout.branch, user=user, operation_type=OperationType.SALE,
@@ -571,6 +865,7 @@ def finalize_quick_checkout(*, checkout, user, permissions, idempotency_key, aud
         frozen_quick_discount_approved_by=checkout.discount_approved_by,
         frozen_quick_item_discount_approved_by=checkout.item_discount_approved_by,
         frozen_quick_service_fee_waived_by=checkout.service_fee_waived_by,
+        quick_sale_payment_sources=quick_sale_payments,
         allow_closed_cash_session=session.status == CashSessionStatus.CLOSED,
         stock_reservation=reservation,
     )

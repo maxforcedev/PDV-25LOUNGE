@@ -305,6 +305,7 @@ class PaymentSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'payment_method', 'payment_method_name', 'payment_method_code',
             'amount', 'received_amount', 'change_amount', 'source_command_payment',
+            'source_quick_sale_payment',
             'occurred_at', 'created_at',
         )
 

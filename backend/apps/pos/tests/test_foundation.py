@@ -25,7 +25,11 @@ from apps.companies.services import (
 )
 from apps.pos.models import (
     AuthenticationChallenge, BranchPOSSettings, POSDevice, POSDeviceSettings,
-    POSOperatorPinAttempt, POSOperatorSession, POSRequestRateLimit, QuickSalePayment,
+    POSOperatorPinAttempt, POSOperatorSession, POSRequestRateLimit, QuickSaleCheckout, QuickSalePayment,
+)
+from apps.payment_integrations.models import (
+    PaymentAttemptStatus, PaymentProvider, PaymentProviderConnection,
+    PaymentProviderConnectionEnvironment, PaymentTerminal,
 )
 from apps.pos.services import (
     _mask_email, authenticate_device, authenticate_operator_session,
@@ -36,6 +40,10 @@ from apps.pos.serializers import POSCustomerSerializer
 from apps.inventory.models import Stock
 from apps.products.models import Category, InventoryBehavior, Product, ProductBranchConfig, Unit
 from apps.sales.services import ensure_default_payment_methods
+from apps.sales.quick_checkout import (
+    apply_approved_quick_sale_payment_intent, create_quick_sale_payment_intent,
+    resolve_quick_sale_payment_attempt, start_quick_sale_payment_attempt,
+)
 
 
 class POSFoundationContractTests(SimpleTestCase):
@@ -1087,6 +1095,71 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(recorded.status_code, 409, recorded.data)
         self.assertEqual(recorded.data['code'], 'cash_context_changed')
         self.assertFalse(QuickSalePayment.objects.filter(checkout_id=checkout.data['id']).exists())
+
+    def test_provider_payment_flows_from_quick_checkout_to_sale_payment(self):
+        operator, paired = self.login_pos_operator()
+        register = CashRegister.objects.create(branch=self.branch, name='Provider checkout cash')
+        BranchPOSSettings.objects.create(branch=self.branch, cash_binding_mode='FLEXIBLE')
+        opened = self.client.post(
+            reverse('pos:cash-session-open'),
+            {'register': register.pk, 'opening_amount': '0.00'}, format='json',
+        )
+        self.assertEqual(opened.status_code, 201, opened.data)
+        checkout_response = self.client.post(
+            reverse('pos:quick-checkout-create'),
+            {
+                key: value for key, value in self.pos_sale_payload(SimpleNamespace(pk=opened.data['id'])).items()
+                if key not in {'cash_session', 'payments'}
+            },
+            format='json',
+        )
+        self.assertEqual(checkout_response.status_code, 201, checkout_response.data)
+        checkout = QuickSaleCheckout.objects.get(pk=checkout_response.data['id'])
+        device = POSDevice.objects.get(pk=paired.data['device']['id'])
+        method = next(method for method in ensure_default_payment_methods(self.company) if method.code != 'cash')
+        provider = PaymentProvider.objects.create(
+            code='provider-e2e', name='Provider E2E', integration_type='server_api',
+        )
+        connection = PaymentProviderConnection.objects.create(
+            company=self.company, provider=provider, name='Contrato E2E',
+            environment=PaymentProviderConnectionEnvironment.SANDBOX,
+        )
+        terminal = PaymentTerminal.objects.create(
+            connection=connection, branch=self.branch, pos_device=device, name='Terminal E2E',
+        )
+
+        intent, replayed = create_quick_sale_payment_intent(
+            checkout=checkout, user=operator, payment_method_id=method.pk, mode='remaining',
+            amount=None, allocations=[], provider_connection=connection, terminal=terminal,
+            idempotency_key=uuid4(),
+        )
+        self.assertFalse(replayed)
+        self.assertEqual(intent.status, 'ready')
+        attempt = start_quick_sale_payment_attempt(checkout=checkout, intent=intent, user=operator)
+        approved_attempt, approved_intent = resolve_quick_sale_payment_attempt(
+            checkout=checkout, attempt=attempt, user=operator, status=PaymentAttemptStatus.APPROVED,
+        )
+        self.assertEqual(approved_intent.status, 'approved')
+        self.assertFalse(QuickSalePayment.objects.filter(checkout=checkout).exists())
+
+        payment, applied_replay = apply_approved_quick_sale_payment_intent(
+            checkout=checkout, intent=approved_intent, user=operator,
+        )
+        replay, applied_replay_again = apply_approved_quick_sale_payment_intent(
+            checkout=checkout, intent=approved_intent, user=operator,
+        )
+        self.assertFalse(applied_replay)
+        self.assertTrue(applied_replay_again)
+        self.assertEqual(replay.pk, payment.pk)
+        self.assertEqual(payment.source_payment_attempt_id, approved_attempt.pk)
+
+        finalized = self.client.post(
+            reverse('pos:quick-checkout-finalize', args=[checkout.pk]),
+            {'idempotency_key': str(uuid4())}, format='json',
+        )
+        self.assertEqual(finalized.status_code, 200, finalized.data)
+        sale_payment = payment.final_payment
+        self.assertEqual(sale_payment.source_quick_sale_payment_id, payment.pk)
 
     def test_pos_finalize_sale_uses_active_cash_session_inside_service_transaction(self):
         operator, paired = self.login_pos_operator()

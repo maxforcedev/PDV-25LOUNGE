@@ -47,13 +47,14 @@ class PaymentIntegrationsTests(TestCase):
             name='Terminal Caixa 1', status=Status.ACTIVE,
         )
 
-    def create_intent(self, *, amount=Decimal('100.00'), key=None):
+    def create_intent(self, *, amount=Decimal('100.00'), key=None, origin_id=None,
+                      application_context=None):
         return create_payment_intent(
             company=self.company, branch=self.branch, pos_device=self.device,
             operator=self.operator, origin_type=PaymentIntentOriginType.QUICK_SALE,
-            origin_id=uuid4(), payment_method=self.method, amount=amount,
+            origin_id=origin_id or uuid4(), payment_method=self.method, amount=amount,
             provider_connection=self.connection, terminal=self.terminal,
-            idempotency_key=key or uuid4(),
+            idempotency_key=key or uuid4(), application_context=application_context,
         )
 
     def start_attempt(self, intent):
@@ -92,6 +93,44 @@ class PaymentIntegrationsTests(TestCase):
         with self.assertRaises(PaymentIntegrationConflict) as context:
             self.create_intent(key=key, amount=Decimal('101.00'))
         self.assertEqual(context.exception.code, 'idempotency_key_conflict')
+
+    def test_application_context_is_sensitive_safe_immutable_and_idempotent(self):
+        key = uuid4()
+        origin_id = uuid4()
+        context = {'checkout': {'channel': 'counter'}, 'display': {'locale': 'pt-BR'}}
+        intent, replayed = self.create_intent(
+            key=key, origin_id=origin_id, application_context=context,
+        )
+        replay, replayed_again = self.create_intent(
+            key=key, origin_id=origin_id, application_context=context,
+        )
+
+        self.assertFalse(replayed)
+        self.assertTrue(replayed_again)
+        self.assertEqual(replay.pk, intent.pk)
+        self.assertEqual(intent.application_context, context)
+        with self.assertRaises(PaymentIntegrationConflict) as context_error:
+            self.create_intent(
+                key=key, origin_id=origin_id,
+                application_context={'checkout': {'channel': 'mobile'}},
+            )
+        self.assertEqual(context_error.exception.code, 'idempotency_key_conflict')
+
+        intent.application_context = {'checkout': {'channel': 'mobile'}}
+        with self.assertRaises(ValidationError):
+            intent.save()
+        with self.assertRaises(ValidationError):
+            self.create_intent(application_context={'credentials': {'token': 'secret'}})
+
+    def test_quick_sale_allows_only_one_blocking_intent_per_origin(self):
+        origin_id = uuid4()
+        first, _ = self.create_intent(origin_id=origin_id)
+
+        with self.assertRaises(PaymentIntegrationConflict) as context:
+            self.create_intent(origin_id=origin_id)
+
+        self.assertEqual(context.exception.code, 'blocking_quick_sale_intent')
+        self.assertEqual(PaymentIntentStatus.CREATED, first.status)
 
     def test_attempt_numbers_are_sequential(self):
         intent, _ = self.create_intent()
@@ -171,6 +210,8 @@ class PaymentIntegrationsTests(TestCase):
         self.assertIsNone(approved.applied_at)
         with self.assertRaises(PaymentIntegrationConflict):
             transition_payment_intent(intent=approved, status=PaymentIntentStatus.DECLINED)
+        with self.assertRaises(PaymentIntegrationConflict):
+            transition_payment_intent(intent=approved, status=PaymentIntentStatus.APPLIED)
 
     def test_provider_result_cannot_be_applied_directly_to_intent(self):
         intent, _ = self.create_intent()
@@ -362,6 +403,22 @@ class PaymentIntegrationsTests(TestCase):
         self.assertEqual(self.connection.name, 'Conexão administrada')
         self.assertEqual(self.terminal.name, 'Terminal administrado')
 
+    def test_payment_querysets_block_bulk_create_and_bulk_update(self):
+        intent, _ = self.create_intent()
+
+        bulk_operations = (
+            (PaymentProvider.objects, self.provider, ['name']),
+            (PaymentProviderConnection.objects, self.connection, ['name']),
+            (PaymentTerminal.objects, self.terminal, ['name']),
+            (PaymentIntent.objects, intent, ['status']),
+            (PaymentAttempt.objects, None, ['status']),
+        )
+        for queryset, instance, fields in bulk_operations:
+            with self.subTest(model=queryset.model.__name__, operation='create'), self.assertRaises(ValidationError):
+                queryset.bulk_create([])
+            with self.subTest(model=queryset.model.__name__, operation='update'), self.assertRaises(ValidationError):
+                queryset.bulk_update([instance] if instance else [], fields)
+
     def test_direct_attempt_creation_requires_processing_intent(self):
         intent, _ = self.create_intent()
 
@@ -382,6 +439,29 @@ class PaymentIntegrationsTests(TestCase):
         self.assertEqual(attempt.status, PaymentAttemptStatus.CREATED)
         intent.refresh_from_db()
         self.assertEqual(intent.status, PaymentIntentStatus.PROCESSING)
+
+    def test_cancelled_intent_cannot_be_retried_and_declined_or_error_can_be_cancelled(self):
+        cancelled, _ = self.create_intent()
+        cancelled = transition_payment_intent(
+            intent=cancelled, status=PaymentIntentStatus.CANCELLED,
+        )
+        with self.assertRaises(PaymentIntegrationConflict) as context:
+            create_payment_attempt(intent=cancelled)
+        self.assertEqual(context.exception.code, 'intent_not_ready')
+
+        errored, _ = self.create_intent()
+        errored = transition_payment_intent(intent=errored, status=PaymentIntentStatus.ERROR)
+        errored = transition_payment_intent(intent=errored, status=PaymentIntentStatus.CANCELLED)
+        self.assertEqual(errored.status, PaymentIntentStatus.CANCELLED)
+
+        declined, _ = self.create_intent()
+        transition_payment_intent(intent=declined, status=PaymentIntentStatus.READY)
+        attempt = self.start_attempt(declined)
+        _attempt, declined = resolve_payment_attempt(
+            attempt=attempt, status=PaymentAttemptStatus.DECLINED,
+        )
+        declined = transition_payment_intent(intent=declined, status=PaymentIntentStatus.CANCELLED)
+        self.assertEqual(declined.status, PaymentIntentStatus.CANCELLED)
 
     def test_attempt_structural_fields_are_immutable_and_service_updates_result_data(self):
         intent, _ = self.create_intent()

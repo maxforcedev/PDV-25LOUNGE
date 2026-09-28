@@ -42,6 +42,12 @@ class PaymentProviderQuerySet(models.QuerySet):
     def update(self, **kwargs):
         raise ValidationError('Use save() para alterar PaymentProvider e preservar validações de integridade.')
 
+    def bulk_create(self, objs, *args, **kwargs):
+        raise ValidationError('Criações em massa de PaymentProvider não são permitidas.')
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        raise ValidationError('Alterações em massa de PaymentProvider não são permitidas.')
+
 
 class PaymentProvider(BaseModel):
     objects = PaymentProviderQuerySet.as_manager()
@@ -82,6 +88,12 @@ class PaymentProviderConnectionEnvironment(models.TextChoices):
 class PaymentProviderConnectionQuerySet(models.QuerySet):
     def update(self, **kwargs):
         raise ValidationError('Use save() para alterar PaymentProviderConnection e preservar validações de integridade.')
+
+    def bulk_create(self, objs, *args, **kwargs):
+        raise ValidationError('Criações em massa de PaymentProviderConnection não são permitidas.')
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        raise ValidationError('Alterações em massa de PaymentProviderConnection não são permitidas.')
 
 
 class PaymentProviderConnection(BaseModel):
@@ -125,6 +137,12 @@ class PaymentProviderConnection(BaseModel):
 class PaymentTerminalQuerySet(models.QuerySet):
     def update(self, **kwargs):
         raise ValidationError('Use save() para alterar PaymentTerminal e preservar validações de integridade.')
+
+    def bulk_create(self, objs, *args, **kwargs):
+        raise ValidationError('Criações em massa de PaymentTerminal não são permitidas.')
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        raise ValidationError('Alterações em massa de PaymentTerminal não são permitidas.')
 
 
 class PaymentTerminal(BaseModel):
@@ -194,6 +212,12 @@ class PaymentIntentQuerySet(models.QuerySet):
     def update(self, **kwargs):
         raise ValidationError('Use os serviços de PaymentIntent para alterar o estado.')
 
+    def bulk_create(self, objs, *args, **kwargs):
+        raise ValidationError('Criações em massa de PaymentIntent não são permitidas.')
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        raise ValidationError('Alterações em massa de PaymentIntent não são permitidas.')
+
     def delete(self):
         raise ValidationError('PaymentIntent é histórico operacional e não pode ser excluído.')
 
@@ -215,6 +239,7 @@ class PaymentIntent(BaseModel):
     status = models.CharField(max_length=10, choices=PaymentIntentStatus.choices, default=PaymentIntentStatus.CREATED, db_index=True)
     idempotency_key = models.UUIDField(editable=False)
     request_fingerprint = models.CharField(max_length=64, editable=False)
+    application_context = models.JSONField(default=dict, blank=True)
     approved_at = models.DateTimeField(null=True, blank=True)
     applied_at = models.DateTimeField(null=True, blank=True)
     cancelled_at = models.DateTimeField(null=True, blank=True)
@@ -224,6 +249,19 @@ class PaymentIntent(BaseModel):
         constraints = [
             models.CheckConstraint(condition=Q(amount__gt=0), name='payment_intent_amount_positive'),
             models.UniqueConstraint(fields=('company', 'idempotency_key'), name='payment_intent_company_idempotency_unique'),
+            models.UniqueConstraint(
+                fields=('origin_id',),
+                condition=Q(
+                    origin_type=PaymentIntentOriginType.QUICK_SALE,
+                    status__in=(
+                        PaymentIntentStatus.CREATED, PaymentIntentStatus.READY,
+                        PaymentIntentStatus.PROCESSING, PaymentIntentStatus.DECLINED,
+                        PaymentIntentStatus.ERROR, PaymentIntentStatus.UNKNOWN,
+                        PaymentIntentStatus.APPROVED,
+                    ),
+                ),
+                name='payment_intent_quick_sale_blocking_unique',
+            ),
         ]
         indexes = [models.Index(fields=('branch', 'status', 'created_at'), name='pay_intent_branch_status_idx')]
 
@@ -261,6 +299,7 @@ class PaymentIntent(BaseModel):
                 errors['terminal'] = 'O terminal deve estar ativo.'
         if errors:
             raise ValidationError(errors)
+        validate_non_sensitive_metadata(self.application_context, 'application_context')
 
     def save(self, *args, **kwargs):
         if self._state.adding:
@@ -271,7 +310,7 @@ class PaymentIntent(BaseModel):
             immutable_fields = (
                 'company_id', 'branch_id', 'pos_device_id', 'operator_id', 'origin_type',
                 'origin_id', 'payment_method_id', 'amount', 'provider_connection_id',
-                'terminal_id', 'idempotency_key', 'request_fingerprint',
+                'terminal_id', 'idempotency_key', 'request_fingerprint', 'application_context',
             )
             changed = [field for field in immutable_fields if getattr(original, field) != getattr(self, field)]
             if changed:
@@ -310,6 +349,12 @@ PAYMENT_ATTEMPT_RESULT_FIELDS = (
 class PaymentAttemptQuerySet(models.QuerySet):
     def update(self, **kwargs):
         raise ValidationError('Use os serviços de PaymentAttempt para alterar o estado.')
+
+    def bulk_create(self, objs, *args, **kwargs):
+        raise ValidationError('Criações em massa de PaymentAttempt não são permitidas.')
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        raise ValidationError('Alterações em massa de PaymentAttempt não são permitidas.')
 
     def delete(self):
         raise ValidationError('PaymentAttempt é histórico operacional e não pode ser excluído.')

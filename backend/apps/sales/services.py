@@ -110,10 +110,10 @@ def _authorization_identity(authorization):
 
 
 def _sale_idempotency_payload(*, actor, operation_type, cash_session, beneficiary_user, customer,
-                              seller_user, discount_authorization, items, discount,
-                              charged_amount, payments, service_fee_waived,
-                              service_fee_authorization, item_discount_authorization,
-                              channel):
+                               seller_user, discount_authorization, items, discount,
+                               charged_amount, payments, service_fee_waived,
+                               service_fee_authorization, item_discount_authorization,
+                               channel, quick_sale_payment_sources=None):
     def identity(value):
         return value.pk if hasattr(value, 'pk') else value
 
@@ -171,6 +171,11 @@ def _sale_idempotency_payload(*, actor, operation_type, cash_session, beneficiar
     # Preserve fingerprints from before Customer existed when no customer is assigned.
     if customer is not None:
         payload['customer'] = identity(customer)
+    if quick_sale_payment_sources is not None:
+        payload['quick_sale_payment_sources'] = [
+            identity(source) if source is not None else None
+            for source in quick_sale_payment_sources
+        ]
     return payload
 
 
@@ -1872,9 +1877,15 @@ def _reconcile_modifier_component_costs(snapshots, stocks):
             ).quantize(CENT, rounding=ROUND_HALF_UP)
 
 
-def _prepare_payments(company, raw_payments, total, *, free_consumption):
+def _prepare_payments(company, raw_payments, total, *, free_consumption,
+                      quick_sale_payment_sources=None):
     if not isinstance(raw_payments, list):
         raise ValidationError({'payments': 'Informe uma lista de pagamentos.'})
+    if (
+        quick_sale_payment_sources is not None
+        and len(quick_sale_payment_sources) != len(raw_payments)
+    ):
+        raise ValidationError({'payments': 'Proveniência de pagamentos de checkout rápido inconsistente.'})
     if free_consumption:
         if raw_payments:
             raise ValidationError({'payments': 'Consumação gratuita não aceita pagamento.'})
@@ -1896,7 +1907,18 @@ def _prepare_payments(company, raw_payments, total, *, free_consumption):
     remaining_cash_rows = []
     for index, raw_payment in enumerate(raw_payments):
         method = methods.get(str(raw_payment['payment_method']))
-        if not method or method.company_id != company.pk or method.status != Status.ACTIVE:
+        quick_sale_source = (
+            quick_sale_payment_sources[index]
+            if quick_sale_payment_sources is not None else None
+        )
+        if (
+            not method
+            or method.company_id != company.pk
+            or (
+                method.status != Status.ACTIVE
+                and quick_sale_source is None
+            )
+        ):
             raise ValidationError({'payments': f'Pagamento {index + 1}: método inativo ou inválido para esta empresa.'})
         raw_amount = raw_payment.get('amount')
         is_remaining_cash = (
@@ -1950,6 +1972,59 @@ def _prepare_payments(company, raw_payments, total, *, free_consumption):
     if paid != total:
         raise ValidationError({'payments': f'A soma dos pagamentos deve ser {total:.2f}.'})
     return prepared
+
+
+def _locked_quick_sale_payment_sources(sources, *, company, branch):
+    if sources is None:
+        return None
+    if not isinstance(sources, list):
+        raise ValidationError({'payments': 'Informe uma lista de proveniências de checkout rápido.'})
+    source_ids = [_pk(source) if source is not None else None for source in sources]
+    non_null_ids = [source_id for source_id in source_ids if source_id is not None]
+    if len({str(source_id) for source_id in non_null_ids}) != len(non_null_ids):
+        raise ValidationError({'payments': 'Não repita pagamentos de checkout rápido.'})
+
+    from apps.pos.models import QuickSalePayment, QuickSalePaymentStatus
+
+    locked = {
+        str(source.pk): source
+        for source in QuickSalePayment.objects.select_for_update().filter(
+            pk__in=non_null_ids,
+        ).select_related('checkout', 'payment_method')
+    }
+    resolved = []
+    for index, source_id in enumerate(source_ids):
+        if source_id is None:
+            resolved.append(None)
+            continue
+        source = locked.get(str(source_id))
+        if source is None:
+            raise ValidationError({'payments': f'Pagamento {index + 1}: origem de checkout rápido inválida.'})
+        if (
+            source.checkout.company_id != company.pk
+            or source.checkout.branch_id != branch.pk
+        ):
+            raise ValidationError({'payments': f'Pagamento {index + 1}: origem fora da empresa ou filial da venda.'})
+        if source.status != QuickSalePaymentStatus.APPLIED:
+            raise ValidationError({'payments': f'Pagamento {index + 1}: origem de checkout rápido não está aplicada.'})
+        if QuickSalePayment.objects.filter(reversal_of_id=source.pk).exists():
+            raise ValidationError({'payments': f'Pagamento {index + 1}: origem de checkout rápido está estornada.'})
+        resolved.append(source)
+    return resolved
+
+
+def _validate_quick_sale_payment_sources(prepared_payments, sources):
+    if sources is None:
+        return
+    for index, ((method, amount, received), source) in enumerate(zip(prepared_payments, sources)):
+        if source is None:
+            continue
+        if source.payment_method_id != method.pk:
+            raise ValidationError({'payments': f'Pagamento {index + 1}: método diferente da origem de checkout rápido.'})
+        if source.amount != amount:
+            raise ValidationError({'payments': f'Pagamento {index + 1}: valor diferente da origem de checkout rápido.'})
+        if source.received_amount != received:
+            raise ValidationError({'payments': f'Pagamento {index + 1}: recebido diferente da origem de checkout rápido.'})
 
 
 def _frozen_command_snapshots(order_items, branch):
@@ -2140,8 +2215,9 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
                        idempotency_key=None, channel=SalesChannel.COUNTER,
                         confirmed_order_items=None, internal_permission_code=None,
                         precomputed_financials=None, payment_sources=None, pos_device=None,
-                          attendance_payment_sources=None, table_payment_sources=None,
-                          allow_pos_only=False, audit_metadata=None,
+                           attendance_payment_sources=None, table_payment_sources=None,
+                           quick_sale_payment_sources=None,
+                           allow_pos_only=False, audit_metadata=None,
                          pos_permission_codes=None, pos_device_validated=False,
                            frozen_quick_preview=None, frozen_quick_discount_approved_by=None,
                            frozen_quick_item_discount_approved_by=None,
@@ -2212,6 +2288,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         service_fee_authorization=service_fee_authorization,
         item_discount_authorization=item_discount_authorization,
         channel=channel,
+        quick_sale_payment_sources=quick_sale_payment_sources,
     ))
     replay = Sale.objects.filter(
         company=company,
@@ -2406,10 +2483,15 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         commission_amount = financials['commission_amount']
         total = financials['total']
 
+    quick_sale_payment_sources = _locked_quick_sale_payment_sources(
+        quick_sale_payment_sources, company=company, branch=branch,
+    )
     prepared_payments = _prepare_payments(
         company, payments or [], total,
         free_consumption=(operation_type == OperationType.CONSUMPTION and total == 0),
+        quick_sale_payment_sources=quick_sale_payment_sources,
     )
+    _validate_quick_sale_payment_sources(prepared_payments, quick_sale_payment_sources)
     sale = Sale.objects.create(
         company=company, branch=branch, cash_session=session, pos_device=pos_device,
         sale_number=next_sale_number(company), operation_type=operation_type,
@@ -2470,6 +2552,11 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         raise ValidationError({'payments': 'Proveniência de pagamentos inconsistente.'})
     if table_payment_sources is not None and len(table_payment_sources) != len(prepared_payments):
         raise ValidationError({'payments': 'Proveniência de pagamentos inconsistente.'})
+    if (
+        quick_sale_payment_sources is not None
+        and len(quick_sale_payment_sources) != len(prepared_payments)
+    ):
+        raise ValidationError({'payments': 'Proveniência de pagamentos de checkout rápido inconsistente.'})
     for index, (method, amount, received) in enumerate(prepared_payments):
         source = payment_sources[index] if payment_sources is not None else None
         attendance_source = (
@@ -2477,11 +2564,16 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             if attendance_payment_sources is not None else None
         )
         table_source = table_payment_sources[index] if table_payment_sources is not None else None
+        quick_sale_source = (
+            quick_sale_payment_sources[index]
+            if quick_sale_payment_sources is not None else None
+        )
         Payment.objects.create(
             sale=sale, payment_method=method, amount=amount, received_amount=received,
             source_command_payment=source, source_attendance_payment=attendance_source,
             source_table_payment=table_source,
-            occurred_at=(source or attendance_source or table_source).created_at if (source or attendance_source or table_source) else None,
+            source_quick_sale_payment=quick_sale_source,
+            occurred_at=(source or attendance_source or table_source or quick_sale_source).created_at if (source or attendance_source or table_source or quick_sale_source) else None,
         )
     movement_type = (
         MovementType.CONSUMPTION

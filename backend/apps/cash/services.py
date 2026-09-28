@@ -700,6 +700,15 @@ def close_session(
         quick_checkouts = list(QuickSaleCheckout.objects.select_for_update().filter(
             cash_session=session, status=QuickSaleCheckoutStatus.OPEN,
         ).order_by('pk'))
+        from apps.payment_integrations.models import PaymentIntent, PaymentIntentOriginType
+
+        blocking_quick_sale_intent_ids = list(
+            PaymentIntent.objects.select_for_update().filter(
+                origin_type=PaymentIntentOriginType.QUICK_SALE,
+                origin_id__in=[str(checkout.pk) for checkout in quick_checkouts],
+                status__in=('created', 'ready', 'processing', 'declined', 'error', 'unknown', 'approved'),
+            ).values_list('pk', flat=True)
+        )
         list(QuickSalePayment.objects.select_for_update(of=('self',)).filter(
             checkout__in=quick_checkouts,
         ).values_list('pk', flat=True))
@@ -711,6 +720,7 @@ def close_session(
         if not (
             blocked_payment_ids or blocked_attendance_payment_ids
             or blocked_table_payment_ids or blocked_quick_checkout_ids
+            or blocking_quick_sale_intent_ids
         ):
             expected = calculate_expected_amount(session)
             session.status = CashSessionStatus.CLOSED
@@ -752,11 +762,13 @@ def close_session(
                     'table_payment_ids': blocked_table_payment_ids,
                     'quick_checkout_count': len(blocked_quick_checkout_ids),
                     'quick_checkout_ids': blocked_quick_checkout_ids,
+                    'quick_sale_payment_intent_count': len(blocking_quick_sale_intent_ids),
+                    'quick_sale_payment_intent_ids': [str(intent_id) for intent_id in blocking_quick_sale_intent_ids],
                 })
     raise ValidationError({
         'cash_session': (
             'Não é possível fechar a sessão: há pagamentos parciais em aberto '
-            f'({len(blocked_payment_ids) + len(blocked_attendance_payment_ids) + len(blocked_table_payment_ids) + len(blocked_quick_checkout_ids)} pendência(s), incluindo comandas, Mesas ou Venda Rápida).'
+            f'({len(blocked_payment_ids) + len(blocked_attendance_payment_ids) + len(blocked_table_payment_ids) + len(blocked_quick_checkout_ids) + len(blocking_quick_sale_intent_ids)} pendência(s), incluindo comandas, Mesas ou Venda Rápida).'
         )
     })
 

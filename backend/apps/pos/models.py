@@ -213,8 +213,27 @@ class QuickSaleCheckoutStatus(models.TextChoices):
 
 
 class QuickSalePaymentStatus(models.TextChoices):
-    APPLIED = 'applied', 'Manual aplicado'
+    APPLIED = 'applied', 'Aplicado'
     REVERSED = 'reversed', 'Estorno'
+
+
+class QuickSalePaymentSourceType(models.TextChoices):
+    MANUAL = 'manual', 'Manual'
+    PROVIDER = 'provider', 'Provedor'
+
+
+class QuickSalePaymentQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValidationError('Pagamentos de checkout são imutáveis.')
+
+    def delete(self):
+        raise ValidationError('Pagamentos de checkout não podem ser excluídos.')
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        raise ValidationError('Alterações em massa de pagamentos de checkout não são permitidas.')
+
+    def bulk_create(self, objs, *args, **kwargs):
+        raise ValidationError('Criações em massa de pagamentos de checkout não são permitidas.')
 
 
 class QuickSaleCheckout(BaseModel):
@@ -296,12 +315,26 @@ class QuickSaleCheckoutItem(BaseModel):
 
 class QuickSalePayment(BaseModel):
     """Manual tender ledger. Reversals are new rows and never delete the original."""
+    objects = QuickSalePaymentQuerySet.as_manager()
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     checkout = models.ForeignKey(QuickSaleCheckout, on_delete=models.PROTECT, related_name='payments')
     payment_method = models.ForeignKey('sales.PaymentMethod', on_delete=models.PROTECT, related_name='quick_sale_payments')
     payment_method_name = models.CharField(max_length=100)
     payment_method_code = models.CharField(max_length=50)
-    source_type = models.CharField(max_length=20, default='manual', editable=False)
+    source_type = models.CharField(
+        max_length=20,
+        choices=QuickSalePaymentSourceType.choices,
+        default=QuickSalePaymentSourceType.MANUAL,
+        editable=False,
+    )
+    source_payment_attempt = models.OneToOneField(
+        'payment_integrations.PaymentAttempt',
+        on_delete=models.PROTECT,
+        related_name='quick_sale_payment',
+        blank=True,
+        null=True,
+    )
     status = models.CharField(max_length=10, choices=QuickSalePaymentStatus.choices, default=QuickSalePaymentStatus.APPLIED)
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     received_amount = models.DecimalField(max_digits=14, decimal_places=2, blank=True, null=True)
@@ -334,6 +367,40 @@ class QuickSalePayment(BaseModel):
                 errors['received_amount'] = 'Dinheiro exige valor recebido igual ou maior ao aplicado.'
         elif self.received_amount is not None or self.change_amount is not None:
             errors['payment_method'] = 'Somente dinheiro aceita recebido ou troco.'
+        if self.source_type == QuickSalePaymentSourceType.MANUAL:
+            if self.source_payment_attempt_id:
+                errors['source_payment_attempt'] = 'Pagamento manual não pode ter tentativa de provedor.'
+        elif self.source_type == QuickSalePaymentSourceType.PROVIDER:
+            if not self.source_payment_attempt_id:
+                errors['source_payment_attempt'] = 'Pagamento de provedor exige tentativa aprovada.'
+            else:
+                source_attempt = self.source_payment_attempt
+                source_intent = source_attempt.intent
+                if self.payment_method.code == 'cash':
+                    errors['payment_method'] = 'Dinheiro não pode ser aplicado por provedor.'
+                if source_attempt.status != 'approved':
+                    errors['source_payment_attempt'] = 'A tentativa do provedor deve estar aprovada.'
+                if source_intent.origin_type != 'quick_sale' or source_intent.origin_id != str(self.checkout_id):
+                    errors['source_payment_attempt'] = 'A tentativa deve ter origem neste checkout.'
+                if source_intent.company_id != self.checkout.company_id:
+                    errors['source_payment_attempt'] = 'O intent deve pertencer à empresa do checkout.'
+                if source_intent.branch_id != self.checkout.branch_id:
+                    errors['source_payment_attempt'] = 'O intent deve pertencer à filial do checkout.'
+                if source_attempt.provider_connection.company_id != self.checkout.company_id:
+                    errors['source_payment_attempt'] = 'A conexão da tentativa deve pertencer à empresa do checkout.'
+                if (
+                    source_attempt.provider_connection.branch_id
+                    and source_attempt.provider_connection.branch_id != self.checkout.branch_id
+                ):
+                    errors['source_payment_attempt'] = 'A conexão da tentativa deve pertencer à filial do checkout.'
+                if source_attempt.terminal_id and source_attempt.terminal.branch_id != self.checkout.branch_id:
+                    errors['source_payment_attempt'] = 'O terminal da tentativa deve pertencer à filial do checkout.'
+                if source_intent.payment_method_id != self.payment_method_id:
+                    errors['payment_method'] = 'A forma de pagamento deve corresponder à do intent.'
+                if source_intent.amount != self.amount or source_attempt.amount != self.amount:
+                    errors['amount'] = 'O valor deve corresponder ao da tentativa do provedor.'
+        else:
+            errors['source_type'] = 'Origem do pagamento inválida.'
         if errors:
             raise ValidationError(errors)
 
@@ -354,7 +421,23 @@ class QuickSalePayment(BaseModel):
         raise ValidationError('Pagamentos de checkout não podem ser excluídos.')
 
 
+class QuickSalePaymentAllocationQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValidationError('Alocações de pagamento são imutáveis.')
+
+    def delete(self):
+        raise ValidationError('Alocações de pagamento não podem ser excluídas.')
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        raise ValidationError('Alterações em massa de alocações de pagamento não são permitidas.')
+
+    def bulk_create(self, objs, *args, **kwargs):
+        raise ValidationError('Criações em massa de alocações de pagamento não são permitidas.')
+
+
 class QuickSalePaymentAllocation(BaseModel):
+    objects = QuickSalePaymentAllocationQuerySet.as_manager()
+
     payment = models.ForeignKey(QuickSalePayment, on_delete=models.PROTECT, related_name='allocations')
     item = models.ForeignKey(QuickSaleCheckoutItem, on_delete=models.PROTECT, related_name='payment_allocations')
     allocated_quantity = models.DecimalField(max_digits=14, decimal_places=3)

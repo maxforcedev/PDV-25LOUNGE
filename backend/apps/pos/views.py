@@ -1938,19 +1938,31 @@ class POSSaleCheckoutOptionsView(POSQuickSaleView):
 
 
 def _quick_checkout_payload(checkout, *, permissions=()):
+    from apps.payment_integrations.models import PaymentIntent, PaymentIntentOriginType
+
+    blocking_intent = PaymentIntent.objects.filter(
+        origin_type=PaymentIntentOriginType.QUICK_SALE,
+        origin_id=str(checkout.pk),
+        status__in=('created', 'ready', 'processing', 'declined', 'error', 'unknown', 'approved'),
+    ).order_by('created_at').first()
     paid, remaining = checkout_balance(checkout)
     session_status = checkout.cash_session.status if checkout.cash_session_id else None
     session_open = session_status == CashSessionStatus.OPEN
-    editable = checkout.status == QuickSaleCheckoutStatus.OPEN and paid == Decimal('0.00') and session_open
+    editable = (
+        checkout.status == QuickSaleCheckoutStatus.OPEN and paid == Decimal('0.00')
+        and session_open and not blocking_intent
+    )
     can_finalize = (
         checkout.status == QuickSaleCheckoutStatus.OPEN
         and remaining == Decimal('0.00')
         and session_status in (CashSessionStatus.OPEN, CashSessionStatus.CLOSED)
+        and not blocking_intent
     )
     can_reverse = (
         checkout.status == QuickSaleCheckoutStatus.OPEN
         and session_open
         and 'sales.payments.reverse' in permissions
+        and not blocking_intent
     )
     available_quantities = checkout_available_quantities(checkout)
     has_payment_history = QuickSalePayment.objects.filter(checkout=checkout).exists()
@@ -1958,8 +1970,11 @@ def _quick_checkout_payload(checkout, *, permissions=()):
         checkout.status == QuickSaleCheckoutStatus.OPEN
         and remaining > Decimal('0.00')
         and session_open
+        and not blocking_intent
     )
-    payments = list(checkout.payments.select_related('payment_method').prefetch_related('allocations').order_by('created_at', 'id'))
+    payments = list(checkout.payments.select_related(
+        'payment_method', 'source_payment_attempt',
+    ).prefetch_related('allocations').order_by('created_at', 'id'))
     payment_documents = {
         document.source_id: document
         for document in PrintDocument.objects.filter(
@@ -1982,6 +1997,10 @@ def _quick_checkout_payload(checkout, *, permissions=()):
         'preview': checkout.financial_snapshot,
         'paid_amount': str(paid),
         'remaining_amount': str(remaining),
+        'payment_integration': (
+            {'intent_id': str(blocking_intent.pk), 'status': blocking_intent.status}
+            if blocking_intent else None
+        ),
         'has_payment_history': has_payment_history,
         'operational_status': (
             'finalized' if checkout.status == QuickSaleCheckoutStatus.FINALIZED else
@@ -2045,7 +2064,9 @@ def _quick_checkout_payload(checkout, *, permissions=()):
                 'received_amount': str(payment.received_amount) if payment.received_amount is not None else None,
                 'change_amount': str(payment.change_amount) if payment.change_amount is not None else None,
                 'idempotency_key': str(payment.idempotency_key),
-                'status': payment.status, 'reversal_of': payment.reversal_of_id,
+                'status': payment.status, 'source_type': payment.source_type,
+                'payment_attempt_id': str(payment.source_payment_attempt_id) if payment.source_payment_attempt_id else None,
+                'reversal_of': payment.reversal_of_id,
                 'reversal_reason': payment.reversal_reason,
                 'allocations': [
                     {

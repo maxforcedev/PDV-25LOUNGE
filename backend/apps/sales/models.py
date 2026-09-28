@@ -776,6 +776,10 @@ class Payment(ImmutableHistoricalModel):
         'attendance.TablePayment', on_delete=models.PROTECT,
         related_name='final_payment', blank=True, null=True,
     )
+    source_quick_sale_payment = models.OneToOneField(
+        'pos.QuickSalePayment', on_delete=models.PROTECT,
+        related_name='final_payment', blank=True, null=True,
+    )
     # Command tender is recorded before the sale exists; retain its business timestamp.
     occurred_at = models.DateTimeField(blank=True, null=True)
 
@@ -796,11 +800,61 @@ class Payment(ImmutableHistoricalModel):
     def clean(self):
         super().clean()
         errors = {}
+        quick_sale_source_is_valid = False
         if self.amount is not None and self.amount <= 0:
             errors['amount'] = 'O valor deve ser maior que zero.'
         if self.sale_id and self.payment_method_id and self.sale.company_id != self.payment_method.company_id:
             errors['payment_method'] = 'A forma de pagamento deve pertencer à empresa da venda.'
-        if self.payment_method_id and self.payment_method.status != Status.ACTIVE:
+        if self.source_quick_sale_payment_id:
+            from apps.pos.models import QuickSalePayment, QuickSalePaymentStatus
+
+            source = self.source_quick_sale_payment
+            if any((
+                self.source_command_payment_id,
+                self.source_attendance_payment_id,
+                self.source_table_payment_id,
+            )):
+                errors['source_quick_sale_payment'] = (
+                    'Pagamento de checkout rápido não pode compartilhar outra proveniência.'
+                )
+            if not self.sale_id or (
+                source.checkout.company_id != self.sale.company_id
+                or source.checkout.branch_id != self.sale.branch_id
+            ):
+                errors['source_quick_sale_payment'] = (
+                    'O pagamento de checkout rápido deve pertencer à empresa e filial da venda.'
+                )
+            if source.payment_method_id != self.payment_method_id:
+                errors['payment_method'] = (
+                    'A forma de pagamento deve corresponder ao pagamento de checkout rápido.'
+                )
+            if source.amount != self.amount:
+                errors['amount'] = 'O valor deve corresponder ao pagamento de checkout rápido.'
+            if source.received_amount != self.received_amount:
+                errors['received_amount'] = (
+                    'O valor recebido deve corresponder ao pagamento de checkout rápido.'
+                )
+            if source.status != QuickSalePaymentStatus.APPLIED:
+                errors['source_quick_sale_payment'] = (
+                    'O pagamento de checkout rápido deve estar aplicado.'
+                )
+            if QuickSalePayment.objects.filter(reversal_of_id=source.pk).exists():
+                errors['source_quick_sale_payment'] = (
+                    'O pagamento de checkout rápido não pode estar estornado.'
+                )
+            quick_sale_source_is_valid = not any((
+                self.source_command_payment_id,
+                self.source_attendance_payment_id,
+                self.source_table_payment_id,
+            )) and not any(
+                field in errors
+                for field in ('source_quick_sale_payment', 'payment_method', 'amount', 'received_amount')
+            )
+        if (
+            self.payment_method_id
+            and self.payment_method.status != Status.ACTIVE
+            and not quick_sale_source_is_valid
+        ):
             errors['payment_method'] = 'A forma de pagamento está inativa.'
         if self.payment_method_id and self.payment_method.code == PaymentMethodCode.CASH:
             if self.received_amount is not None and self.received_amount < self.amount:
@@ -828,10 +882,13 @@ class Payment(ImmutableHistoricalModel):
                 setattr(self, field, Decimal(value))
             except (TypeError, ValueError):
                 raise ValidationError({field: 'Informe um valor válido.'})
-        if self.payment_method_id:
+        if self.source_quick_sale_payment_id:
+            self.payment_method_name = self.source_quick_sale_payment.payment_method_name
+            self.payment_method_code = self.source_quick_sale_payment.payment_method_code
+        elif self.payment_method_id:
             self.payment_method_name = self.payment_method.name
             self.payment_method_code = self.payment_method.code
-            if self.payment_method.code == PaymentMethodCode.CASH and self.received_amount is not None:
-                self.change_amount = self.received_amount - self.amount
+        if self.payment_method_id and self.payment_method.code == PaymentMethodCode.CASH and self.received_amount is not None:
+            self.change_amount = self.received_amount - self.amount
         self.full_clean()
         return super().save(*args, **kwargs)
