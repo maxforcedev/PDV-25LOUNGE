@@ -271,7 +271,7 @@ async function getAll<T>(path: string, options?: HttpOptions): Promise<T[]> {
   const results: T[] = [];
   let next: string | null = path;
   while (next) {
-    const page = await request<PaginatedResponse<T> | T[]>(next, options);
+    const page: PaginatedResponse<T> | T[] = await request(next, options);
     // A few nested resources intentionally return a direct array instead of DRF pagination.
     if (Array.isArray(page)) {
       results.push(...page);

@@ -153,6 +153,7 @@ export interface TenantDetail extends TenantSummary {
 
 export interface GlobalSettings {
   id: number;
+  public_signup_enabled: boolean;
   auto_approve_signups: boolean;
   past_due_days: number;
   restricted_after_days: number;

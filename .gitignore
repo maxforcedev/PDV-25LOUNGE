@@ -6,6 +6,7 @@ frontend/node_modules/
 
 .next/
 frontend/.next/
+*.tsbuildinfo
 prds/
 out/
 dist/

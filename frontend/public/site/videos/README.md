@@ -1,5 +1,8 @@
-# Vídeos reais do CORE
+# Teaser do CORE
 
-O teaser deve ser publicado como `core-teaser.mp4` com poster `core-teaser-poster.webp`. Defina `NEXT_PUBLIC_CORE_TEASER_URL` e, opcionalmente, `NEXT_PUBLIC_CORE_TEASER_POSTER_URL` no ambiente de build para habilitar o player.
+| Arquivo | Uso | Proporção e resolução mínima | Formato |
+| --- | --- | --- | --- |
+| `core-teaser.mp4` | Seção "Veja o CORE em operação" | 16:9, 1920 x 1080 | MP4 H.264, sem áudio obrigatório |
+| `core-teaser-poster.webp` | Poster do player | 16:9, 1920 x 1080 | WebP ou AVIF |
 
-Enquanto não houver vídeo real, o site informa que o material está em preparação sem simular telas do produto.
+Publique os arquivos e defina `NEXT_PUBLIC_CORE_TEASER_URL=/site/videos/core-teaser.mp4`. Opcionalmente, defina `NEXT_PUBLIC_CORE_TEASER_POSTER_URL=/site/videos/core-teaser-poster.webp`.

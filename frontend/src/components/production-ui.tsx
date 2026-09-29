@@ -77,12 +77,18 @@ function destinationName(job: PrintJob, destinations: ProductionDestination[]) {
 }
 
 const documentLabels: Record<NonNullable<PrintJob["document_type"]>, string> = {
-  TABLE_BILL: "Conta da mesa",
-  TABLE_CONFERENCE: "Conferencia",
-  TABLE_FINAL_RECEIPT: "Recibo final da mesa",
-  QUICK_SALE_RECEIPT: "Recibo venda rapida",
-  PAYMENT_RECEIPT: "Comprovante de pagamento",
-  TICKET: "Ticket",
+  table_bill: "Conta da mesa",
+  table_conference: "Conferencia",
+  table_final_receipt: "Recibo final da mesa",
+  quick_sale_receipt: "Recibo venda rapida",
+  payment_receipt: "Comprovante de pagamento",
+  ticket: "Ticket",
+  report: "Relatório",
+  fiscal_receipt: "Recibo fiscal",
+  label: "Etiqueta",
+  delivery_order: "Pedido de entrega",
+  cash_closing: "Fechamento de caixa",
+  cash_opening: "Abertura de caixa",
 };
 
 function jobLabel(job: PrintJob) {

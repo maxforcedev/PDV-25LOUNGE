@@ -1,664 +1,379 @@
-Quero que você reformule completamente o site institucional público do CORE PDV.
+Quero fazer uma nova rodada de refinamento do site institucional público do CORE PDV em cima do que já foi implementado.
 
-Antes de alterar qualquer arquivo, analise o projeto atual, entenda a arquitetura existente e reutilize obrigatoriamente a stack, os padrões, os componentes e os tokens já usados no projeto.
+IMPORTANTE: eu gostei da direção atual. NÃO quero reconstruir o site do zero e NÃO quero trocar a arquitetura.
 
-Não quero outro projeto separado.
+Quero melhorar o que já existe.
 
-STACK ATUAL:
+Antes de alterar, analise novamente os arquivos atuais e trabalhe em cima do commit mais recente.
 
-Frontend:
-- Next.js 16
-- React 19
-- TypeScript
-- Tailwind CSS 4
+A base evoluiu bastante, mas ainda existem:
+- partes visualmente muito cruas;
+- falta de imagens e presença visual;
+- alguns textos que parecem instruções internas em vez de copy comercial;
+- placeholders técnicos aparecendo para o visitante;
+- pontos técnicos pendentes no fluxo comercial;
+- footer fraco;
+- ausência de gerenciamento de cookies.
 
-Backend:
-- Django
-- Django REST Framework
-- PostgreSQL
-
-O objetivo é reinventar o institucional do CORE, sem alterar desnecessariamente o Backoffice autenticado ou o CORE POS.
+O objetivo agora é dar acabamento de produto real.
 
 ---
 
-# 1. OBJETIVO DO NOVO SITE
+# 1. DIREÇÃO GERAL
 
-O novo site precisa:
+Quero que o institucional fique:
 
-- apresentar profissionalmente o CORE;
-- explicar claramente o produto;
-- diferenciar CORE POS de CORE Backoffice;
-- mostrar as principais soluções;
-- transmitir confiança;
-- gerar leads comerciais;
-- servir também como apresentação institucional para clientes, parceiros, adquirentes e empresas que estiverem avaliando o CORE;
-- eliminar a aparência atual de landing page genérica.
+- mais premium;
+- mais visual;
+- mais maduro;
+- mais institucional;
+- mais confiável;
+- com mais personalidade CORE;
+- menos seco;
+- menos “texto + borda”;
+- com produto real aparecendo mais;
+- com fotografias e screenshots participando da composição.
 
-O resultado precisa parecer desenvolvido por uma equipe de produto/design que realmente conhece o sistema.
+Continuam valendo TODAS as restrições anteriores.
 
----
+NÃO quero:
 
-# 2. REGRA VISUAL PRINCIPAL
-
-O SITE NÃO PODE PARECER FEITO POR IA.
-
-Evite completamente padrões visuais genéricos de sites criados automaticamente.
-
-NÃO usar:
-
+- aparência de site feito por IA;
 - fonte serifada;
-- títulos serifados;
-- emojis;
-- fundos quadriculados;
+- fundo quadriculado;
 - grid decorativo;
-- fundo com pontinhos;
+- pontinhos;
 - glow azul em tudo;
 - neon;
-- blur exagerado;
 - glassmorphism;
 - gradientes aleatórios;
-- cards para absolutamente tudo;
-- dezenas de quadrados com ícones genéricos;
-- ícones apenas para preencher espaço;
-- ilustrações genéricas;
-- imagens criadas por IA;
-- elementos 3D genéricos;
-- robôs;
-- foguetes;
-- formas abstratas aleatórias;
+- emojis;
+- dezenas de cards iguais;
+- ícones genéricos usados para preencher espaço;
 - mockups falsos;
-- dashboards falsos;
-- gráficos inventados;
+- dashboard falso;
+- gráfico inventado;
 - números fictícios;
 - depoimentos fictícios;
 - logos fictícios;
-- clientes fictícios;
-- contadores falsos;
-- slogans genéricos de startup;
-- animações apenas para enfeite.
+- imagens geradas por IA para fingir que são o produto.
 
-Evitar aparência de:
-
-- template do Framer;
-- v0;
-- landing page genérica de SaaS;
-- site de startup de IA;
-- fintech neon;
-- crypto.
-
-O CORE precisa ter identidade própria.
+O CORE real continua sendo o principal elemento visual.
 
 ---
 
-# 3. DIREÇÃO VISUAL
+# 2. HERO — MANTER A DIREÇÃO, MELHORAR A COMPOSIÇÃO
 
-Quero um site:
-
-- moderno;
-- limpo;
-- profissional;
-- tecnológico;
-- operacional;
-- brasileiro;
-- confiável;
-- premium sem exagero.
-
-O PRODUTO deve ser o principal elemento visual.
-
-Priorizar:
-
-- bastante espaço em branco;
-- tipografia sans-serif forte;
-- hierarquia clara;
-- títulos grandes, mas sem exagero;
-- screenshots reais;
-- imagens reais;
-- vídeos reais;
-- blocos visuais maiores;
-- menos cards;
-- divisões claras entre assuntos;
-- azul CORE utilizado com controle;
-- bordas e superfícies discretas;
-- animações sutis somente quando fizerem sentido.
-
-Não inventar visual apenas para preencher espaço.
-
----
-
-# 4. IDENTIDADE VISUAL OFICIAL
-
-Utilizar a identidade atual do CORE.
-
-Primary:
-#3454D1
-
-Primary Dark:
-#2945B6
-
-Texto principal:
-#283C50
-
-Canvas:
-#F0F2F8
-
-Surface:
-#FFFFFF
-
-Muted:
-#64748B
-
-Border:
-#E2E8F0
-
-Success:
-#17C666
-
-Warning:
-#FFA21D
-
-Danger:
-#EA4D4D
-
-Dark mode:
-
-Canvas:
-#101722
-
-Surface:
-#182230
-
-Surface muted:
-#222F40
-
-Surface raised:
-#1D2A3A
-
-Texto:
-#E4EBF3
-
-Muted:
-#A9B7C8
-
-Border:
-#344458
-
-Focus:
-#91A4FF
-
-Não transformar o dark mode em neon.
-
----
-
-# 5. PRODUTO REAL COMO ELEMENTO VISUAL
-
-Hoje o site possui elementos ilustrativos/fictícios que fazem parecer uma landing page de template.
-
-Quero eliminar isso.
-
-Não criar dashboard fictício em JSX.
-
-Não criar gráfico falso.
-
-Não inventar métricas para parecer que o sistema está funcionando.
-
-Não criar browser fake com números inventados.
-
-Quero utilizar screenshots REAIS do CORE.
-
-Prepare a arquitetura de assets para receber imagens como:
-
-- dashboard;
-- venda rápida;
-- seleção de operador;
-- mesas;
-- pagamentos;
-- produtos;
-- estoque;
-- compras;
-- relatórios;
-- financeiro;
-- filiais;
-- usuários;
-- CORE POS em dispositivo real;
-- produção/impressão.
-
-Exemplo de organização:
-
-`/public/site/screenshots/`
-`/public/site/videos/`
-`/public/site/images/`
-
-Se algum asset ainda não existir, NÃO inventar uma interface para substituir.
-
-Deixe um placeholder técnico discreto ou documente o asset pendente.
-
----
-
-# 6. POSICIONAMENTO DO CORE
-
-Existe uma separação fundamental que o site precisa deixar clara.
-
-## CORE POS = OPERAÇÃO
-
-A operação acontece no CORE POS.
-
-Exemplos:
-
-- venda;
-- atendimento;
-- operador;
-- caixa;
-- mesas;
-- comandas;
-- pedidos;
-- pagamentos;
-- impressão;
-- produção;
-- fechamento operacional.
-
-## CORE BACKOFFICE = GESTÃO
-
-A gestão acontece no CORE Backoffice.
-
-Exemplos:
-
-- dashboard;
-- produtos;
-- estoque;
-- compras;
-- fornecedores;
-- relatórios;
-- financeiro;
-- filiais;
-- usuários;
-- permissões;
-- auditoria;
-- configurações;
-- integrações.
-
-Não apresentar operações do POS como se acontecessem no Backoffice.
-
-O site precisa comunicar que os dois trabalham juntos, mas possuem papéis diferentes.
-
----
-
-# 7. NAVEGAÇÃO PRINCIPAL
-
-Reestruturar a navegação pública pensando em:
-
-- Home
-- Soluções
-- Integrações
-- Segmentos
-- Planos
-- Empresa
-- Ajuda
-
-Na área direita:
-
-- Entrar
-- Solicitar demonstração
-
-Adicionar `/solucoes`.
-
-Criar também `/contato`.
-
-Outras páginas podem ser criadas conforme necessidade real da arquitetura, mas não inventar páginas vazias apenas para encher menu.
-
----
-
-# 8. HOME
-
-Quero reconstruir a Home.
-
-Ela precisa contar uma história mais profissional.
-
-Uma direção possível:
-
-1. Hero
-2. O que o CORE conecta
-3. Teaser em vídeo
-4. CORE POS
-5. CORE Backoffice
-6. Fluxo conectado
-7. Principais soluções
-8. Multiempresa / multifilial
-9. Pagamentos e integrações
-10. Segmentos
-11. CTA comercial final
-
----
-
-# 9. HERO
-
-A comunicação deve caminhar para algo como:
+Gostei da direção do Hero atual:
 
 “Sua operação inteira. Conectada pelo CORE.”
 
-ou:
+Não quero abandonar essa linguagem.
 
-“Seu negócio acontece em vários lugares. O CORE conecta todos eles.”
+Porém o bloco que aparece ao lado contendo:
 
-Texto conceitual:
+“Do atendimento à gestão”
 
-“PDV, pagamentos, mesas, estoque, compras, financeiro e gestão em uma plataforma criada para operações que não podem parar.”
+“CORE POS registra a operação. CORE Backoffice transforma esse contexto em controle.”
 
-Não precisa utilizar exatamente essas frases.
+“Os dois ambientes têm papéis diferentes e trabalham sobre a mesma rotina da empresa.”
 
-Escreva algo profissional e direto, sem slogan vazio.
+deve ser substituído.
 
-CTA principal:
+Não quero aquele bloco textual ocupando o destaque visual principal.
 
-“Solicitar demonstração”
+## Quero no lugar:
 
-→ `/contato`
+UMA IMAGEM FORTE.
 
-CTA secundário:
+Pode ser, preferencialmente:
 
-“Ver o CORE em ação”
+- fotografia real do CORE POS em equipamento;
+- produto sendo utilizado em uma operação;
+- composição real CORE POS + Backoffice;
+- equipamento POS em primeiro plano com produto real;
+- outro asset real que comunique tecnologia + operação.
 
-→ seção do teaser.
+A parte direita do Hero deve funcionar como prova visual do produto.
 
-Manter:
+Não criar mockup falso.
 
-“Entrar”
+Se eu ainda não tiver enviado o asset definitivo, deixe tecnicamente preparado, mas sem mostrar para o visitante textos como:
 
-→ `/login`
+“imagem pendente”
 
-para clientes existentes.
+“asset pendente”
 
----
+“screenshot pendente”
 
-# 10. TEASER EM VÍDEO
-
-Quero uma seção importante na Home mostrando o CORE em funcionamento através de vídeo.
-
-Não criar animação falsa do sistema.
-
-Não reconstruir telas em HTML.
-
-O vídeo posteriormente será produzido utilizando:
-
-- CORE POS real;
-- CORE Backoffice real;
-- fluxos reais;
-- screenshots reais;
-- eventualmente equipamentos reais.
-
-Preparar o site para receber assets como:
-
-`/public/site/videos/core-teaser.mp4`
-
-e:
-
-`/public/site/videos/core-teaser-poster.webp`
-
-A seção pode utilizar uma comunicação como:
-
-“Veja o CORE em operação.”
-
-ou:
-
-“Do atendimento à gestão. Veja como o CORE conecta sua operação.”
-
-O vídeo deve mostrar conceitualmente:
-
-CORE POS
-→ operação
-→ venda
-→ pagamento
-→ estoque/processos
-→ Backoffice
-→ gestão.
-
-Implementar player de forma profissional.
-
-Requisitos:
-
-- sem autoplay com áudio;
-- responsivo;
-- poster otimizado;
-- controles adequados;
-- carregamento eficiente;
-- possibilidade de abrir em modal ou reproduzir inline;
-- acessibilidade;
-- sem player visualmente poluído.
-
-Enquanto o vídeo final não existir, deixar estrutura pronta e asset pendente claramente documentado.
+ou caminho de arquivo.
 
 ---
 
-# 11. CORE POS NA HOME
+# 3. REMOVER COPY QUE PARECE INSTRUÇÃO PARA IA
 
-Criar uma seção específica para o CORE POS.
-
-Mensagem principal:
-
-“A operação acontece aqui.”
-
-Mostrar e explicar de forma realista:
-
-- venda rápida;
-- operadores;
-- atendimento;
-- mesas;
-- pedidos;
-- pagamentos;
-- impressão;
-- fluxo operacional.
-
-Utilizar screenshots/fotos reais quando disponíveis.
-
-Não criar mockup falso de POS.
-
----
-
-# 12. CORE BACKOFFICE NA HOME
-
-Criar seção específica para o Backoffice.
-
-Mensagem principal:
-
-“A gestão acontece aqui.”
-
-Mostrar:
-
-- dashboard;
-- produtos;
-- estoque;
-- compras;
-- relatórios;
-- financeiro;
-- filiais;
-- usuários;
-- acompanhamento da operação.
-
-Utilizar produto real como prova.
-
----
-
-# 13. FLUXO CONECTADO
-
-Mostrar de forma simples que os módulos trabalham juntos.
+Existem atualmente alguns textos públicos que não devem aparecer para o visitante.
 
 Por exemplo:
 
-Venda
-→ Pagamento
-→ Caixa
-→ Estoque
-→ Gestão
+“Do atendimento à gestão, sem reconstruir o produto para a apresentação.”
 
-Não precisa transformar isso em cards.
+Isso é uma regra interna do projeto, NÃO é copy comercial.
 
-Pode utilizar tipografia, linhas, setas e screenshots reais.
+Também remover/reformular textos como:
 
-Precisa parecer um fluxo de produto, não um infográfico de template.
+“Não apresentamos certificações ou integrações sem comprovação.”
+
+“A demonstração deve confirmar a configuração adequada para cada operação.”
+
+“O site não declara parceria, homologação ou disponibilidade comercial sem validação específica.”
+
+As REGRAS por trás dessas frases continuam obrigatórias.
+
+Ou seja:
+
+- não inventar homologação;
+- não inventar integração;
+- não inventar certificação;
+- não inventar funcionalidade.
+
+Mas o visitante não precisa ler nossas instruções internas.
+
+Transforme essas áreas em comunicação comercial natural.
 
 ---
 
-# 14. `/solucoes`
+# 4. “O QUE O CORE CONECTA” ESTÁ MUITO CRU
 
-Criar página:
+Hoje temos algo próximo de:
 
-`/solucoes`
+“O que o CORE conecta”
 
-Essa página deve apresentar as principais áreas do CORE.
+Venda → Pagamento → Caixa → Estoque → Gestão
 
-Não quero uma grade com dezenas de cards genéricos.
+A ideia é boa.
 
-Estruture por fluxos reais.
+A execução está muito simples.
 
-## CORE POS / VENDAS
+Quero transformar isso em uma seção visual forte.
 
-Mostrar:
+## Quero comunicar:
 
+VENDA
+→ PAGAMENTO
+→ CAIXA
+→ ESTOQUE
+→ GESTÃO
+
+Mas não quero cinco palavras perdidas no meio da página.
+
+Criar uma composição visual própria do CORE.
+
+Pode trabalhar com:
+
+- tipografia forte;
+- linha de fluxo;
+- conectores;
+- transições;
+- pequenas imagens reais;
+- elementos do produto;
+- composição desktop horizontal e mobile vertical.
+
+Não transformar isso em cinco cards genéricos com cinco ícones.
+
+Essa seção precisa explicar visualmente uma das maiores propostas do CORE:
+
+**a informação nasce na operação e continua conectada até a gestão.**
+
+---
+
+# 5. CORE POS E CORE BACKOFFICE
+
+Manter a separação atual porque está correta:
+
+## CORE POS
+A operação acontece aqui.
+
+## CORE Backoffice
+A gestão acontece aqui.
+
+Mas essas duas seções precisam ganhar mais presença visual quando os assets estiverem disponíveis.
+
+Não quero que pareçam apenas:
+
+texto de um lado + placeholder cinza do outro.
+
+Usar screenshots reais em destaque.
+
+Pode utilizar:
+- recortes grandes;
+- detalhes de tela;
+- screenshot inteiro;
+- foto do equipamento;
+- composições editoriais simples.
+
+Sem criar notebook/browser fake envolvendo tudo.
+
+---
+
+# 6. CORRIGIR `ProductEvidence`
+
+O componente atual não está adequado para produção.
+
+Hoje ele recebe um caminho de asset, mas em vez de renderizar a imagem real, mostra para o visitante:
+
+“Screenshot real pendente”
+
+e até o caminho:
+
+`/site/screenshots/...`
+
+Isso NÃO pode acontecer.
+
+## Quero corrigir:
+
+`ProductEvidence` deve efetivamente renderizar o asset real quando existir.
+
+Utilizar a solução adequada do Next.js, preferencialmente `next/image` quando aplicável.
+
+Precisa existir:
+- dimensões/proporção adequada;
+- `alt`;
+- otimização;
+- responsividade;
+- carregamento apropriado.
+
+Quando o asset não estiver disponível:
+
+NÃO mostrar caminho interno.
+
+NÃO mostrar “screenshot pendente”.
+
+NÃO mostrar mensagem de desenvolvedor.
+
+A seção pode:
+- ser omitida;
+- utilizar composição neutra;
+- ou ter fallback visual institucional discreto.
+
+Mas nada técnico deve vazar para produção.
+
+---
+
+# 7. TEASER EM VÍDEO
+
+A ideia do vídeo continua.
+
+Quero ter uma seção forte mostrando:
+
+**Veja o CORE em operação.**
+
+O vídeo será do produto REAL.
+
+Pode mostrar:
+- CORE POS;
 - venda;
-- operadores;
-- caixa;
-- atendimento;
-- descontos/permissões;
-- fluxo operacional.
-
-Sempre deixando claro que acontece no CORE POS.
-
----
-
-## MESAS E COMANDAS
-
-Mostrar:
-
 - mesas;
-- atendimento;
-- pedido;
-- itens;
-- divisão;
-- fechamento.
+- pagamento;
+- operação;
+- Backoffice;
+- estoque;
+- gestão.
 
-Não inventar funcionalidades.
+Porém hoje, quando o vídeo não existe, aparece algo como:
 
-Verifique o estado real do produto e o roadmap antes de escrever afirmações definitivas.
+“Vídeo do CORE em preparação”
+
+e caminho de arquivo.
+
+REMOVER isso da interface pública.
+
+## Comportamento correto:
+
+Se o vídeo estiver configurado:
+→ mostrar seção completa.
+
+Se o vídeo não estiver configurado:
+→ ocultar o player ou apresentar uma composição institucional adequada.
+
+Nunca mostrar mensagens de desenvolvimento.
+
+Preparar corretamente:
+
+- poster;
+- preload;
+- controles;
+- responsividade;
+- acessibilidade;
+- lazy loading quando adequado;
+- sem autoplay com áudio.
 
 ---
 
-## PAGAMENTOS
+# 8. PAGAMENTOS E INTEGRAÇÕES PRECISAM DE MUITO MAIS PRESENÇA VISUAL
 
-Direção de comunicação:
+Hoje essa área está correta conceitualmente, mas visualmente está fraca.
+
+Essa seção merece ser uma das partes mais marcantes da Home.
+
+## Quero imagens de equipamentos de pagamento.
+
+Quero uma faixa/carrossel horizontal com maquininhas/dispositivos passando para o lado.
+
+Pode funcionar como:
+
+- carrossel;
+- slider;
+- marquee muito suave;
+- track horizontal com movimento discreto.
+
+Precisa parecer premium.
+
+Não quero carrossel genérico cheio de cards.
+
+Quero os EQUIPAMENTOS sendo protagonistas.
+
+Exemplos de material visual:
+- Stone;
+- Cielo;
+- Getnet;
+- Rede;
+- Mercado Pago;
+- outros equipamentos compatíveis com o planejamento real.
+
+IMPORTANTE:
+
+Antes de colocar marca, logo ou declarar integração/homologação, verificar o status real.
+
+Imagem de dispositivo também deve ter origem adequada/autorizada para uso no site.
+
+Não afirmar:
+- “Parceiro oficial”;
+- “Homologado”;
+- “Integrado”;
+- “Disponível”;
+
+sem comprovação real.
+
+Podemos comunicar arquitetura multi-provider sem inventar status comercial.
+
+O texto conceitual:
 
 “Pagamento faz parte da venda. Não deveria ser outro processo.”
 
-Explicar arquitetura de pagamentos integrada ao fluxo da venda.
+pode continuar.
 
-Não afirmar parceria ou homologação sem comprovação.
-
----
-
-## ESTOQUE E COMPRAS
-
-Mostrar:
-
-Compra
-→ Entrada
-→ Estoque
-→ Transferência
-→ Venda
-→ Perda
-→ Inventário
-
-Explicar rastreabilidade das movimentações.
+Quero que a parte visual fique muito mais forte.
 
 ---
 
-## GESTÃO E RELATÓRIOS
+# 9. SEGMENTOS ESTÁ MUITO CRU
 
-Apresentar o Backoffice.
+Hoje temos basicamente texto.
 
-Mostrar:
+Quero uma seção visual.
 
-- dashboards;
-- vendas;
-- recebimentos;
-- estoque;
-- CMV;
-- performance;
-- relatórios;
-- financeiro.
-
----
-
-## MULTIEMPRESA E MULTIFILIAL
-
-Mostrar arquitetura:
-
-Empresa
-→ Filiais
-→ Usuários
-→ Dispositivos
-
-Mensagem conceitual:
-
-“Uma loja ou várias. O controle continua no mesmo lugar.”
-
----
-
-## SEGURANÇA E AUDITORIA
-
-Mostrar apenas o que realmente existe ou está previsto oficialmente.
-
-Exemplos:
-
-- RBAC;
-- permissões;
-- contexto de filial;
-- dispositivos;
-- sessões;
-- auditoria;
-- isolamento entre tenants;
-- API segura.
-
-Não inventar certificações.
-
----
-
-# 15. PAGAMENTOS E INTEGRAÇÕES
-
-Muito cuidado com essa parte.
-
-Não inventar:
-
-- parceria;
-- homologação;
-- aprovação;
-- certificação;
-- clientes;
-- transações;
-- números comerciais;
-- disponibilidade.
-
-Antes de exibir nome/logo/status de:
-
-- Stone;
-- Cielo;
-- Rede;
-- Getnet;
-- Mercado Pago;
-- qualquer outro provider;
-
-verifique o estado real da integração no projeto.
-
-Se não houver segurança sobre o status, utilizar comunicação genérica:
-
-“Arquitetura preparada para múltiplos provedores de pagamento.”
-
-Não utilizar logo de terceiros sem base real para isso.
-
----
-
-# 16. SEGMENTOS
-
-Não posicionar o CORE exclusivamente como sistema para restaurante.
-
-Pode trabalhar segmentos compatíveis como:
+Segmentos possíveis:
 
 - bares;
 - restaurantes;
@@ -668,628 +383,772 @@ Pode trabalhar segmentos compatíveis como:
 - pizzarias;
 - lanchonetes;
 - food service;
-- varejo;
-- outras operações presenciais compatíveis.
+- varejo compatível;
+- outras operações presenciais.
 
-Não inventar funcionalidades específicas de um segmento se elas não existem.
+Mas NÃO quero:
+
+uma grade com 9 cards e 9 ícones genéricos.
+
+## Quero fotografia.
+
+Pode existir uma composição utilizando fotografias reais que representem:
+
+- balcão;
+- salão;
+- bar;
+- restaurante;
+- operação noturna;
+- atendimento;
+- varejo.
+
+Trabalhar com layout mais editorial.
+
+Fotos grandes.
+
+Pouco texto.
+
+Boa tipografia.
+
+Pode destacar segmentos em cima ou ao lado das imagens.
+
+O objetivo é fazer o visitante se enxergar usando o CORE.
 
 ---
 
-# 17. CAPTAÇÃO DE CLIENTES
+# 10. SEGURANÇA E AUDITORIA TAMBÉM PRECISA DE IMAGEM
 
-Neste momento o site NÃO terá contratação automática.
+Hoje essa seção também está muito simples.
 
-O visitante NÃO deve conseguir:
+Quero dar mais peso visual.
 
-- criar Tenant sozinho;
-- criar Empresa sozinho;
-- criar Owner sozinho;
-- iniciar assinatura automaticamente;
-- pagar online;
-- cadastrar cartão;
-- comprar plano sem contato comercial.
+A seção deve transmitir:
 
-O fluxo será:
+- controle;
+- rastreabilidade;
+- responsabilidade;
+- permissões;
+- segurança operacional;
+- histórico;
+- dispositivos;
+- contexto por filial.
+
+Podemos utilizar:
+
+- screenshot real de auditoria;
+- screenshot de usuários/permissões;
+- screenshot de sessões/dispositivos;
+- detalhe real do Backoffice.
+
+Não precisa usar cadeado gigante, escudo 3D ou estética de cybersecurity.
+
+Quero mostrar segurança através do PRODUTO.
+
+---
+
+# 11. `/solucoes` TAMBÉM PRECISA RECEBER O MESMO REFINAMENTO
+
+Não quero melhorar somente a Home.
+
+A página `/solucoes` precisa seguir a mesma direção visual.
+
+Atualmente ela também depende muito de:
+
+texto + placeholder.
+
+Melhorar progressivamente as áreas com screenshots reais.
+
+Manter os blocos:
+
+- CORE POS / Vendas;
+- Mesas e Comandas;
+- Pagamentos;
+- Estoque e Compras;
+- Gestão e Relatórios;
+- Multiempresa e Multifilial;
+- Segurança e Auditoria.
+
+Mas não escrever instruções internas no conteúdo.
+
+Exemplo atual que deve ser removido/reformulado:
+
+“O site não declara parceria, homologação ou disponibilidade comercial sem validação específica.”
+
+Essa regra é para VOCÊ, não para o visitante.
+
+---
+
+# 12. FOOTER — REFAZER
+
+O footer atual ficou desagradável.
+
+Quero redesenhar completamente o footer mantendo simplicidade.
+
+Ele precisa parecer rodapé de uma empresa de software profissional.
+
+## Quero organizar melhor:
+
+### Marca
+- Logo CORE;
+- pequena descrição institucional.
+
+### Produto
+- Soluções;
+- CORE POS;
+- Gestão;
+- Planos;
+- Integrações.
+
+### Empresa
+- Sobre/Empresa;
+- Contato;
+- Segurança.
+
+### Suporte
+- Ajuda;
+- Área do cliente;
+- canais de atendimento.
+
+### Legal
+- Privacidade;
+- Cookies;
+- Termos.
+
+### Informações institucionais
+Quando estiverem configuradas:
+- razão social;
+- CNPJ;
+- cidade/estado;
+- e-mail;
+- outros dados reais necessários.
+
+Não inventar nada que ainda não esteja cadastrado.
+
+Visualmente:
+
+- melhorar espaçamento;
+- melhorar hierarquia;
+- melhorar distribuição;
+- melhorar linha inferior;
+- deixar menos “lista de links jogada”.
+
+Pode usar uma área final discretamente diferenciada do restante da página, mas sem glow, neon ou gradientão.
+
+---
+
+# 13. “EMPRESA” NO HEADER
+
+Hoje “Empresa” aponta para `/#empresa`.
+
+Porém essa seção é apenas CTA comercial:
+
+“Vamos conversar”.
+
+Isso não corresponde a “Empresa”.
+
+Corrigir.
+
+Tem duas opções:
+
+1. criar uma página/seção institucional real sobre o CORE;
+ou
+2. remover “Empresa” do menu enquanto essa página não estiver pronta.
+
+NÃO manter link com nome “Empresa” levando para CTA de vendas.
+
+Preferencialmente preparar posteriormente:
+
+`/empresa`
+
+ou:
+
+`/sobre`
+
+com:
+- quem é o CORE;
+- o que construímos;
+- proposta;
+- informações institucionais reais;
+- contato.
+
+Sem inventar história, números ou equipe.
+
+---
+
+# 14. COOKIES — FALTA IMPLEMENTAR
+
+Quero implementar gerenciamento de consentimento de cookies no site público.
+
+Não quero apenas um banner fake que não controla nada.
+
+## Criar:
+
+### Cookie Consent Banner
+
+Visual:
+- discreto;
+- profissional;
+- integrado à identidade CORE;
+- responsivo;
+- não bloquear a página inteira.
+
+Mensagem clara em português.
+
+Ações:
+
+- “Aceitar”
+- “Recusar”
+- “Configurar” / “Preferências”
+
+ou uma estrutura equivalente simples e correta.
+
+## Categorias
+
+Preparar pelo menos:
+
+### Necessários
+Sempre ativos quando forem tecnicamente necessários para funcionamento e segurança.
+
+### Analytics
+Desativados até consentimento, caso sejam implementados.
+
+### Marketing
+Desativados até consentimento, caso sejam implementados no futuro.
+
+Não ativar cookie não essencial antes da escolha do usuário.
+
+## Persistência
+
+Salvar preferência de consentimento.
+
+Não mostrar o banner novamente a cada navegação.
+
+Preparar também possibilidade de:
+- alterar preferência posteriormente;
+- link “Preferências de cookies” no Footer.
+
+Preferencialmente versionar o consentimento para conseguirmos solicitar novamente se a política mudar futuramente.
+
+## Importante
+
+Não instalar Google Analytics, Meta Pixel ou outras ferramentas nesta missão sem necessidade explícita.
+
+O sistema deve ficar preparado para respeitar consentimento quando esses scripts forem adicionados.
+
+---
+
+# 15. PRIVACIDADE E TERMOS
+
+Hoje o Footer depende de `institutional_links`.
+
+Revisar isso.
+
+Precisamos ter uma estratégia clara para:
+
+- Política de Privacidade;
+- Política de Cookies;
+- Termos de Uso.
+
+Se as páginas/documentos definitivos ainda não existirem:
+
+NÃO inventar conteúdo jurídico.
+
+Deixar a estrutura pronta e informar quais documentos reais precisam ser fornecidos.
+
+O consentimento de cookies deve apontar para a política correspondente quando ela estiver disponível.
+
+---
+
+# 16. FLUXO COMERCIAL — MANTER
+
+A arquitetura implementada de Lead está no caminho certo.
+
+Manter:
 
 Visitante
-→ site CORE
 → Solicitar demonstração
-→ formulário
-→ Lead salvo
-→ equipe CORE recebe
-→ contato humano
-→ criação do cliente posteriormente.
-
----
-
-# 18. `/contato`
-
-Criar página:
-
-`/contato`
-
-Formulário simples.
-
-Campos:
-
-- Nome
-- Empresa
-- WhatsApp
-- E-mail
-- Segmento
-- Mensagem opcional
-
-Capturar automaticamente quando disponível:
-
-- página de origem;
-- plano de interesse;
-- utm_source;
-- utm_medium;
-- utm_campaign.
-
-Não pedir dados desnecessários.
-
-Não pedir:
-
-- senha;
-- cartão;
-- dados bancários;
-- CNPJ obrigatoriamente.
-
-CTA:
-
-“Quero conhecer o CORE”
-
-Após sucesso:
-
-“Recebemos seu contato. Nossa equipe falará com você.”
-
-Não dizer que conta foi criada.
-
----
-
-# 19. BACKEND DE LEADS
-
-Utilizar obrigatoriamente o backend Django/DRF já existente.
-
-Não criar backend paralelo.
-
-Criar uma entidade comercial simples.
-
-Sugestão:
-
-`CommercialLead`
-
-Campos possíveis:
-
-- id
-- name
-- company_name
-- whatsapp
-- email
-- segment
-- message
-- source_path
-- plan_interest
-- utm_source
-- utm_medium
-- utm_campaign
-- status
-- created_at
-- updated_at
-
-Status inicial:
-
-`NEW`
-
-Pode preparar enum para futura evolução como:
-
-- NEW
-- CONTACTED
-- QUALIFIED
-- LOST
-- CONVERTED
-
-Mas NÃO desenvolver CRM completo agora.
-
----
-
-# 20. ENDPOINT DE LEADS
-
-Criar endpoint público coerente com a arquitetura atual.
-
-Por exemplo:
-
-`POST /api/v1/public/leads/`
-
-ou equivalente seguindo o padrão existente.
-
-Implementar:
-
-- serializer;
-- validação;
-- normalização;
-- rate limiting;
-- tratamento de erro;
-- proteção básica contra spam;
-- honeypot simples se fizer sentido.
-
-Não armazenar dados desnecessários.
-
----
-
-# 21. REGRA CRÍTICA DE ENVIO
-
-Primeiro:
-
-SALVAR O LEAD NO BANCO.
-
-Depois:
-
-TENTAR ENVIAR A NOTIFICAÇÃO.
-
-Se o SMTP falhar:
-
-O lead NÃO pode ser perdido.
-
-Se o lead foi salvo corretamente, o frontend não deve informar ao visitante que o envio do formulário falhou somente porque a notificação de e-mail falhou.
-
-Registrar o erro técnico adequadamente para acompanhamento.
-
----
-
-# 22. E-MAIL COMERCIAL
-
-Reutilizar a infraestrutura Django Mail / SMTP existente.
-
-Não hardcode meu e-mail no código.
-
-Criar configuração própria.
-
-Exemplo:
-
-`SALES_LEAD_EMAIL`
-
-ou configuração equivalente dentro das configurações globais se isso fizer mais sentido no projeto.
-
-O e-mail recebido deve conter:
-
-- nome;
-- empresa;
-- WhatsApp;
-- e-mail;
-- segmento;
-- mensagem;
-- página de origem;
-- plano de interesse;
-- UTMs;
-- data/hora.
-
----
-
-# 23. SELF-SERVICE PÚBLICO ATUAL
-
-Hoje existe arquitetura pública de signup.
-
-Não destruir essa arquitetura.
-
-Ela poderá ser utilizada futuramente.
-
-Preservar:
-
-- provisioning;
-- criação automática de Owner;
-- empresa;
-- filial;
-- trial;
-- billing mode;
-- auto approve;
-- estruturas já desenvolvidas.
-
-Porém ela deve ficar DESATIVADA publicamente neste momento.
-
-Não basta remover o botão no frontend.
-
-O backend também precisa impedir provisionamento público.
-
-Criar configuração clara, preferencialmente integrada à configuração SaaS atual.
-
-Exemplo:
+→ `/contato`
+→ CommercialLead
+→ banco
+→ notificação
+→ contato humano.
+
+Não voltar com auto cadastro.
+
+Manter:
 
 `public_signup_enabled = False`
 
-Quando estiver desativado:
-
-`PublicSignupView`
-
-não deve provisionar clientes.
-
-Retornar resposta apropriada orientando para contato comercial.
-
-Preservar tudo necessário para reativação futura.
-
----
-
-# 24. `/cadastro`
-
-A rota atual:
-
-`/cadastro`
-
-não deve mais criar contas.
-
-Redirecionar:
+por padrão.
 
 `/cadastro`
 → `/contato`
 
-Preservar query params relevantes.
-
-Exemplo:
-
-`/cadastro?plano=123`
-
-deve virar:
-
-`/contato?plano=123`
+Planos:
+→ `/contato?plano=...`
 
 ---
 
-# 25. `/planos`
+# 17. CORRIGIR CONFIGURAÇÃO REAL DO E-MAIL NO DEPLOY
 
-Os planos podem continuar sendo exibidos.
+Foi identificado um problema importante.
 
-Mas os CTAs precisam mudar.
+O backend já possui:
 
-Remover comportamento de contratação automática.
+`SALES_LEAD_EMAIL`
 
-Utilizar algo como:
+e infraestrutura SMTP.
+
+Porém o `docker-stack.yml` precisa efetivamente repassar para o container as configurações necessárias.
+
+Revisar e corrigir.
+
+Garantir passagem apropriada de:
+
+- SALES_LEAD_EMAIL
+- DEFAULT_FROM_EMAIL
+- EMAIL_HOST
+- EMAIL_PORT
+- EMAIL_HOST_USER
+- EMAIL_HOST_PASSWORD
+- EMAIL_USE_TLS
+- EMAIL_USE_SSL
+- EMAIL_TIMEOUT
+
+Não expor secrets no repositório.
+
+Quando necessário utilizar Docker Secrets ou mecanismo equivalente coerente com a infraestrutura atual.
+
+O comportamento precisa continuar:
+
+Lead salvo
+→ tenta e-mail.
+
+SMTP falhou
+→ Lead permanece salvo.
+
+---
+
+# 18. `public_signup_enabled` NO PLATFORM ADMIN
+
+Foi adicionado no backend:
+
+`GlobalSaaSSettings.public_signup_enabled`
+
+mas essa configuração ainda não está corretamente representada na interface do Platform Admin.
+
+Quero corrigir.
+
+Adicionar ao tipo `GlobalSettings` e à interface de configurações.
+
+Preciso conseguir visualizar/controlar:
+
+**Cadastro público**
+- Ativado
+- Desativado
+
+Neste momento deve permanecer:
+
+**DESATIVADO**
+
+Respeitar o padrão de ações críticas/configurações já utilizado pelo Platform Admin.
+
+Não criar configuração paralela.
+
+---
+
+# 19. PLANOS — PEQUENO REFINAMENTO
+
+A lógica atual está correta:
 
 “Falar sobre este plano”
 
-ou:
+→ `/contato?plano=...`
 
-“Solicitar demonstração”
+Manter.
 
-Destino:
+Porém revisar visualmente a página para garantir que não volte a parecer aquela grade genérica de SaaS.
 
-`/contato?plano=<id>`
+Também revisar o badge:
 
-O formulário deve reconhecer automaticamente o plano selecionado.
+“Disponível”
 
-Não iniciar checkout.
+Não quero que o primeiro plano receba automaticamente destaque apenas porque é o primeiro array se isso não representar regra comercial real.
 
-Não solicitar cartão.
+Se existe plano recomendado/destaque, essa informação deve vir de dado/configuração real.
 
----
+Não inferir:
 
-# 26. HEADER
+`index === 0`
 
-Atualizar o Header público.
-
-Adicionar:
-
-“Soluções”
-
-Substituir:
-
-“Criar conta”
-
-por:
-
-“Solicitar demonstração”
-
-Manter:
-
-“Entrar”
-
-Também organizar melhor a navegação para não ficar com aparência de menu improvisado.
+como “plano em destaque”.
 
 ---
 
-# 27. FOOTER
+# 20. CORRIGIR NUMERAÇÃO CORE POS / BACKOFFICE
 
-Reformular o Footer para transmitir empresa real.
+Na Home atual, os itens do CORE POS aparecem repetindo:
 
-Adicionar links institucionais relevantes:
+`01`
 
-- Soluções
-- Integrações
-- Segmentos
-- Planos
-- Segurança
-- Empresa
-- Ajuda
-- Contato
-- Privacidade
-- Termos
-- Área do cliente
+e os do Backoffice repetindo:
 
-Deixar preparado para informações reais como:
+`02`
 
-- CORE PDV;
-- razão social;
-- CNPJ;
-- e-mail comercial;
-- suporte;
-- cidade/estado;
-- redes oficiais.
+Isso parece erro visual.
 
-Não inventar dados ausentes.
+Se:
+
+`01 = CORE POS`
+
+e:
+
+`02 = CORE Backoffice`
+
+o número deve identificar a SEÇÃO, não cada item.
+
+Corrigir a composição.
 
 ---
 
-# 28. RESPONSIVIDADE
+# 21. HEADER MOBILE
 
-Desktop e mobile precisam ser tratados corretamente.
+Revisar também o Header mobile depois das mudanças.
 
-Não simplesmente diminuir o desktop.
+Hoje a estrutura usa `<details>`.
 
-Revisar:
+Pode permanecer se estiver acessível e funcional, mas verificar:
 
-- Header;
-- menu;
-- Hero;
-- vídeo;
-- screenshots;
-- textos;
-- soluções;
-- planos;
-- formulário;
-- CTAs;
-- Footer.
-
----
-
-# 29. PERFORMANCE
-
-Não sacrificar performance em nome do visual.
-
-Evitar:
-
-- bibliotecas pesadas sem necessidade;
-- WebGL;
-- animações exageradas;
-- vídeos carregados imediatamente sem necessidade;
-- imagens gigantes.
-
-Usar quando apropriado:
-
-- Next Image;
-- WebP;
-- AVIF;
-- lazy loading;
-- poster de vídeo;
-- preload somente para recursos críticos.
-
----
-
-# 30. ACESSIBILIDADE
-
-Manter:
-
-- HTML semântico;
-- headings corretos;
-- contraste;
+- abrir/fechar;
+- foco;
 - navegação por teclado;
-- focus visible;
-- aria quando necessário;
-- alt text;
-- prefers-reduced-motion.
+- clique externo;
+- navegação depois de selecionar item;
+- tamanho dos alvos;
+- organização dos CTAs.
+
+Não trocar biblioteca só por trocar.
 
 ---
 
-# 31. SEO
+# 22. ASSETS REAIS
 
-Revisar metadata de cada página.
+Ao final desta missão quero receber uma lista EXATA dos assets necessários.
 
-Direção conceitual:
+Não simplesmente:
 
-Title:
-“CORE PDV | PDV, gestão e pagamentos para sua operação”
+“faltam imagens”.
 
-Description:
-“Conecte vendas, caixa, estoque, mesas, compras, pagamentos e gestão em uma única plataforma.”
+Quero algo como:
 
-Pode melhorar a redação.
+1. `hero-operation.webp`
+   - proporção recomendada
+   - resolução mínima
+   - conteúdo esperado.
 
-Criar metadata específica por página.
+2. `core-pos-venda.webp`
+   - screenshot da Venda Rápida.
 
-Preparar Structured Data factual quando adequado:
+3. `backoffice-dashboard.webp`
+   - dashboard real.
 
-- Organization;
-- SoftwareApplication.
+4. `mesas.webp`
 
-Não inventar:
+5. `estoque-compras.webp`
 
-- avaliações;
-- estrelas;
-- quantidade de clientes;
-- reviews.
+6. `relatorios.webp`
 
----
+7. `auditoria.webp`
 
-# 32. CÓDIGO
+8. fotos dos dispositivos de pagamento.
 
-Não concentrar o institucional inteiro dentro de um único `page.tsx`.
+9. fotos de segmentos.
 
-Criar componentes reutilizáveis quando realmente fizer sentido.
+10. vídeo teaser + poster.
 
-Por outro lado:
+Para cada asset informar:
 
-NÃO criar componente para cada pequeno elemento apenas para parecer arquitetura sofisticada.
+- onde será usado;
+- proporção;
+- resolução recomendada;
+- formato.
 
-Quero código:
-
-- simples;
-- legível;
-- consistente;
-- reutilizável;
-- alinhado ao restante do projeto.
-
-Reutilizar componentes existentes quando forem bons.
-
-Remover componentes antigos somente depois de confirmar que não são usados.
-
-Não deixar legado morto.
+Assim eu consigo produzir/enviar os arquivos corretamente.
 
 ---
 
-# 33. NÃO ALTERAR SEM NECESSIDADE
+# 23. NÃO DEIXAR PLACEHOLDER TÉCNICO VISÍVEL
 
-Não mexer desnecessariamente em:
+Regra absoluta:
 
+Em produção o visitante NUNCA deve visualizar:
+
+- “pendente”;
+- “asset pendente”;
+- “screenshot pendente”;
+- “vídeo em preparação”;
+- TODO;
+- caminho `/public/...`;
+- caminho `/site/...`;
+- instruções para desenvolvedor;
+- notas da missão;
+- texto explicando que algo ainda não foi implementado.
+
+Quando algo não tiver asset:
+
+ou ocultar,
+ou usar fallback institucional apropriado.
+
+---
+
+# 24. LIMPEZA DO REPOSITÓRIO
+
+Revisar também o commit anterior.
+
+Não quero artefatos desnecessários versionados.
+
+Verificar especialmente:
+
+`frontend/tsconfig.tsbuildinfo`
+
+Se for artefato gerado e não houver motivo explícito para versionamento, remover e colocar no `.gitignore`.
+
+Também revisar arquivos como:
+
+`web-painel.md`
+
+`x.md`
+
+Não remover automaticamente se tiverem finalidade real.
+
+Mas identificar claramente:
+- o que são;
+- por que estão versionados;
+- se pertencem ao produto;
+- se são apenas arquivos temporários de missão/log.
+
+Não quero lixo de execução acumulando no repositório.
+
+---
+
+# 25. TESTES / BUILD
+
+O último commit não possui CI/status registrado no GitHub.
+
+Nesta rodada, antes de declarar concluído:
+
+Executar os checks já previstos pelo projeto.
+
+Validar no mínimo o que for aplicável:
+
+Frontend:
+- lint;
+- TypeScript;
+- build.
+
+Backend:
+- checks;
+- migrations;
+- testes afetados;
+- CommercialLead;
+- signup público bloqueado.
+
+Não alterar testes apenas para fazê-los passar sem resolver causa real.
+
+Informar exatamente o que foi executado e o resultado.
+
+---
+
+# 26. RESPONSIVIDADE
+
+Essa nova camada visual precisa funcionar de verdade em:
+
+- desktop grande;
+- notebook;
+- tablet;
+- mobile.
+
+A presença de fotos não pode quebrar mobile.
+
+No mobile:
+
+- reorganizar fluxo;
+- controlar crop;
+- manter texto legível;
+- evitar carrossel impossível de usar;
+- manter CTA acessível;
+- footer não pode virar uma lista gigante desorganizada.
+
+---
+
+# 27. PERFORMANCE
+
+Com novas imagens e fotos, performance passa a ser ainda mais importante.
+
+Aplicar:
+
+- Next Image quando adequado;
+- WebP/AVIF;
+- `sizes`;
+- dimensões corretas;
+- lazy load abaixo da dobra;
+- prioridade apenas no Hero quando necessário;
+- poster otimizado;
+- evitar carregar todos os assets pesados imediatamente.
+
+O carrossel de equipamentos também não pode causar custo exagerado.
+
+---
+
+# 28. ACESSIBILIDADE
+
+Fotos e screenshots precisam ter:
+
+- alt coerente;
+- sem descrição inútil;
+- elementos decorativos corretamente marcados;
+- contraste;
+- foco;
+- controle de movimento;
+- `prefers-reduced-motion`.
+
+Se houver movimento automático nas maquininhas, respeitar `prefers-reduced-motion`.
+
+---
+
+# 29. OBJETIVO VISUAL FINAL
+
+Quero sair de:
+
+“site correto, mas cru”
+
+para:
+
+“produto sério, visualmente forte e convincente”.
+
+Quero mais:
+
+FOTO.
+PRODUTO.
+OPERAÇÃO.
+SCREENSHOT REAL.
+EQUIPAMENTO REAL.
+IDENTIDADE CORE.
+
+E menos:
+
+CARD.
+ÍCONE.
+TEXTO SOLTO.
+PLACEHOLDER.
+DECORAÇÃO GENÉRICA.
+
+O site precisa passar a sensação de que o CORE existe, funciona e está sendo construído por uma empresa que conhece operação presencial.
+
+---
+
+# 30. ORDEM DE EXECUÇÃO
+
+Executar em blocos controlados.
+
+## WEB-REFINO-1 — CORREÇÕES DE PUBLICAÇÃO
+
+Primeiro resolver:
+
+- textos internos vazando para a interface;
+- placeholders técnicos;
+- `ProductEvidence`;
+- fallback do vídeo;
+- numeração 01/02;
+- link “Empresa”;
+- problemas de deploy do e-mail;
+- controle `public_signup_enabled` no Platform Admin;
+- limpeza técnica evidente.
+
+## WEB-REFINO-2 — HOME VISUAL
+
+Depois:
+
+- Hero com imagem;
+- fluxo “O que o CORE conecta”;
 - CORE POS;
-- regras de negócio operacionais;
-- estoque;
-- pagamentos internos;
-- RBAC;
-- permissions;
-- Backoffice autenticado;
-- CORE Admin;
-- arquitetura SaaS interna.
+- Backoffice;
+- pagamentos/equipamentos;
+- segmentos/fotos;
+- segurança/auditoria.
 
-Mudanças backend desta missão devem ficar restritas principalmente a:
+## WEB-REFINO-3 — FOOTER + COOKIES
 
-- Leads;
-- e-mail comercial;
-- bloqueio seguro do signup público.
+Depois:
 
----
+- novo Footer;
+- Cookie Consent;
+- preferências;
+- estrutura legal.
 
-# 34. CONTEÚDO
+## WEB-REFINO-4 — `/solucoes`
 
-Não usar Lorem Ipsum.
+Aplicar a mesma qualidade visual e remover copy inadequada.
 
-Não criar texto genérico só para preencher espaço.
+## WEB-REFINO-5 — QUALIDADE FINAL
 
-Toda afirmação precisa estar baseada:
+- mobile;
+- acessibilidade;
+- performance;
+- SEO;
+- build;
+- lint;
+- testes;
+- limpeza.
 
-- no produto atual;
-- na arquitetura atual;
-- ou no roadmap oficialmente definido.
-
-Se não souber se uma funcionalidade realmente existe:
-
-NÃO INVENTE.
-
-Marque para validação.
+Não sair alterando tudo sem controle.
 
 ---
 
-# 35. ORDEM DE EXECUÇÃO
+# 31. ENTREGA FINAL
 
-Primeiro faça uma análise do site atual e dos arquivos afetados.
+Ao terminar cada bloco, informe:
 
-Depois execute em blocos.
-
-Sugestão:
-
-## WEB-1
-Fundação visual + arquitetura do institucional.
-
-## WEB-2
-Header + Home + Footer.
-
-## WEB-3
-`/solucoes`.
-
-## WEB-4
-`/contato` + backend de Leads + e-mail.
-
-## WEB-5
-Bloqueio do signup público + `/cadastro` redirect + atualização de `/planos`.
-
-## WEB-6
-Teaser em vídeo + preparação dos assets reais.
-
-## WEB-7
-Integrações / Segmentos / Empresa / Segurança e demais páginas institucionais necessárias.
-
-## WEB-8
-SEO + acessibilidade + performance + limpeza de legado.
-
-Pode reorganizar se encontrar uma divisão tecnicamente melhor depois de analisar o projeto, mas não misture toda a implementação sem controle.
-
----
-
-# 36. CRITÉRIOS DE ACEITE
-
-O novo site NÃO pode:
-
-- parecer criado por IA;
-- utilizar fonte serifada;
-- utilizar fundo quadriculado;
-- utilizar emojis;
-- utilizar glow excessivo;
-- utilizar glassmorphism exagerado;
-- utilizar dezenas de cards iguais;
-- possuir dashboard fake;
-- possuir gráficos inventados;
-- possuir números inventados;
-- confundir CORE POS com Backoffice;
-- permitir criação automática de cliente;
-- iniciar checkout;
-- afirmar parceria inexistente;
-- inventar funcionalidades;
-- inventar certificações;
-- utilizar imagens falsas do produto.
-
-O novo site DEVE:
-
-- possuir identidade CORE;
-- parecer profissional;
-- apresentar produto real;
-- explicar CORE POS;
-- explicar CORE Backoffice;
-- possuir `/solucoes`;
-- possuir `/contato`;
-- captar leads;
-- enviar notificação comercial;
-- manter signup automático desativado publicamente;
-- preservar arquitetura futura;
-- ter teaser em vídeo;
-- ser responsivo;
-- ter boa performance;
-- possuir SEO básico;
-- possuir acessibilidade adequada.
-
----
-
-# 37. ENTREGA
-
-Ao concluir cada bloco, me entregue objetivamente:
-
-1. resumo do que foi feito;
+1. resumo;
 2. arquivos alterados;
 3. arquivos criados;
-4. migrations criadas;
-5. endpoints criados;
-6. endpoints alterados;
-7. componentes removidos;
-8. legado removido;
-9. mudanças de navegação;
-10. fluxo comercial final;
-11. configuração necessária para e-mail comercial;
-12. como ficou o bloqueio do signup público;
-13. assets reais que ainda preciso fornecer;
-14. funcionalidades citadas no site que foram validadas no código;
-15. pendências ou riscos encontrados.
+4. arquivos removidos;
+5. componentes criados;
+6. componentes substituídos;
+7. correções de copy;
+8. correções backend;
+9. alterações no `docker-stack.yml`;
+10. configuração SMTP necessária;
+11. como ficou `public_signup_enabled`;
+12. como funciona o Cookie Consent;
+13. quais cookies são considerados necessários;
+14. quais scripts ficam condicionados a consentimento;
+15. assets que faltam;
+16. especificação exata de cada asset;
+17. comandos de validação executados;
+18. resultado de lint/build/test;
+19. pendências restantes.
 
 Não responda apenas “feito”.
 
-Quero conseguir validar tecnicamente cada entrega.
+---
 
 # PRINCÍPIO FINAL
 
-Não invente o CORE para melhorar o marketing.
+Não quero que você reinvente novamente a identidade que acabou de ser construída.
 
-Mostre melhor o produto que já existe.
+Quero amadurecê-la.
 
-CORE POS representa a operação.
+O problema agora não é falta de estrutura.
 
-CORE Backoffice representa gestão e controle.
+É falta de acabamento, imagens reais, presença visual e alguns ajustes técnicos.
 
-O site deve conectar essas duas histórias, transmitir confiança e transformar interesse em contato comercial.
+O CORE precisa parecer menos uma página montada por componentes e mais uma marca de software real.
 
-Quero um site que pareça um produto de software real e consolidado, não uma landing page criada automaticamente.
+CORE POS = operação.
+
+CORE Backoffice = gestão.
+
+O site conecta os dois.
+
+E o produto real, as fotografias, equipamentos e screenshots devem fazer cada vez mais parte da narrativa visual.

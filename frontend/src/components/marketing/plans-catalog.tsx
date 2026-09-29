@@ -43,10 +43,9 @@ export function PlansCatalog() {
 
   return (
     <div className={`grid gap-5 ${plans.length > 2 ? "lg:grid-cols-3" : "mx-auto max-w-4xl md:grid-cols-2"}`}>
-      {plans.map((plan, index) => (
-        <article key={plan.id} className={`card relative flex flex-col overflow-hidden p-6 sm:p-7 ${index === 0 ? "border-primary/35 shadow-[0_18px_50px_rgba(52,84,209,0.10)]" : ""}`}>
-          {index === 0 && <span className="absolute right-0 top-0 rounded-bl-xl bg-primary px-3 py-1.5 text-[10px] font-extrabold uppercase tracking-wider text-white">Disponível</span>}
-          <div className="pr-16">
+      {plans.map((plan) => (
+        <article key={plan.id} className="card flex flex-col overflow-hidden p-6 sm:p-7">
+          <div>
             <p className="marketing-eyebrow">{plan.code}</p>
             <h2 className="mt-3 text-2xl font-black tracking-tight text-fg">{plan.name}</h2>
           </div>

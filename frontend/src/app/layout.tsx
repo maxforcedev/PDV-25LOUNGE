@@ -3,6 +3,7 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/providers/auth-provider";
 import { BrandingProvider } from "@/providers/branding-provider";
+import { CookieConsent } from "@/components/marketing/cookie-consent";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -21,7 +22,7 @@ export default function RootLayout({
       </head>
       <body className={inter.className}>
         <BrandingProvider>
-          <AuthProvider>{children}</AuthProvider>
+          <AuthProvider>{children}<CookieConsent /></AuthProvider>
         </BrandingProvider>
       </body>
     </html>
