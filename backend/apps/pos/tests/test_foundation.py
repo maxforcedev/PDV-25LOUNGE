@@ -1401,12 +1401,17 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(reversal.reversal_of_id, manual_payment.pk)
 
     def test_provider_fallback_uses_the_approved_attempt_connection(self):
-        operator, _device, _session, checkout, method, connection, terminal = self.create_provider_checkout()
+        operator, device, _session, checkout, method, connection, terminal = self.create_provider_checkout()
         intent = self.create_provider_intent(checkout, operator, method, connection, terminal)
         first = start_quick_sale_payment_attempt(checkout=checkout, intent=intent, user=operator)
         _first, declined_intent = resolve_quick_sale_payment_attempt(
             checkout=checkout, attempt=first, user=operator, status=PaymentAttemptStatus.DECLINED,
         )
+        reassigned_device = POSDevice.objects.create(
+            branch=self.branch, name='Fallback reassignment', status=POSDevice.Status.ACTIVE,
+        )
+        terminal.pos_device = reassigned_device
+        terminal.save()
         fallback_provider = PaymentProvider.objects.create(
             code=f'fallback-{uuid4().hex[:8]}', name='Fallback', integration_type='server_api',
         )
@@ -1414,9 +1419,13 @@ class POSFoundationIntegrationTests(TestCase):
             company=self.company, provider=fallback_provider, name='Fallback connection',
             environment=PaymentProviderConnectionEnvironment.SANDBOX,
         )
+        fallback_terminal = PaymentTerminal.objects.create(
+            connection=fallback_connection, branch=self.branch, pos_device=device,
+            name='Fallback terminal',
+        )
         second = start_quick_sale_payment_attempt(
             checkout=checkout, intent=declined_intent, user=operator,
-            provider_connection=fallback_connection, terminal=None,
+            provider_connection=fallback_connection, terminal=fallback_terminal,
         )
         approved_attempt, approved_intent = resolve_quick_sale_payment_attempt(
             checkout=checkout, attempt=second, user=operator, status=PaymentAttemptStatus.APPROVED,
@@ -1426,6 +1435,8 @@ class POSFoundationIntegrationTests(TestCase):
         )
 
         self.assertEqual(approved_attempt.provider_connection_id, fallback_connection.pk)
+        self.assertEqual(approved_attempt.terminal_id, fallback_terminal.pk)
+        self.assertEqual(approved_attempt.provider_connection.provider_id, fallback_provider.pk)
         self.assertEqual(payment.source_payment_attempt_id, approved_attempt.pk)
 
     def test_provider_payment_flows_from_quick_checkout_to_sale_payment(self):

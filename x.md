@@ -1,407 +1,395 @@
-# MISSÃO PAY-1.3 — FECHAMENTO FINAL PRÉ-CIELO
-
-O PAY-1.2 corrigiu corretamente os bloqueadores anteriores.
+# MISSÃO PAY-1.4 — ÚLTIMO AJUSTE DO FALLBACK MULTI-PROVIDER
 
 HEAD atual analisado:
 
-`01d0f3e24cb75d8f4fb82d55b05a235de3d7df6b`
+`50b88686830384506c3a3d3b952ad5b755a5a287`
 
-Restaram SOMENTE 2 ajustes antes de liberar o PAY-2 / Cielo:
+O PAY-1.3 corrigiu corretamente:
 
-1. transições históricas/cancelamento não podem revalidar vínculo atual Terminal ↔ POS;
-2. eliminar inversão de locks entre POSDevice e CashSession.
+* transições históricas após reatribuição de Terminal;
+* cancelamento de Intent;
+* ordem de locks `POSDevice → CashSession`;
+* abertura, seleção e fechamento de caixa no POS.
 
-Corrigir SOMENTE estes pontos.
+Restou SOMENTE um caso funcional antes de liberar o PAY-2 / Cielo:
+
+**retry/fallback usando outro provider/terminal após o terminal original do Intent ter sido reatribuído.**
+
+Corrigir SOMENTE esse ponto.
 
 NÃO implementar Cielo.
 NÃO implementar Stone.
 NÃO mexer em Flutter.
-NÃO integrar Mesa.
+NÃO mexer em Mesa.
 NÃO mexer em Comandas.
 
 ---
 
-# 1. TERMINAL ↔ POS É VALIDAÇÃO OPERACIONAL, NÃO HISTÓRICA
+# 1. PROBLEMA ATUAL
 
-Hoje o resultado de Attempt após PROCESSING já não revalida corretamente o vínculo atual:
-
-`terminal.pos_device == intent.pos_device`
-
-Isso está certo.
-
-Porém `transition_payment_intent()` ainda chama `_save_intent_status()` com:
-
-`validate_terminal_pos_binding=True`
-
-por padrão.
-
-Isso pode prender um Intent antigo.
-
-Cenário:
-
-```text
-Intent READY
-Terminal T → POS A
-
-Backoffice reatribui:
-Terminal T → POS B
-
-operador tenta:
-READY → CANCELLED
-```
-
-O cancelamento NÃO pode falhar porque o terminal foi reatribuído administrativamente.
-
-Outro cenário:
-
-```text
-Attempt PROCESSING
-Terminal muda POS A → POS B
-Attempt → DECLINED
-
-operador:
-DECLINED → CANCELLED
-```
-
-Também deve funcionar.
-
-REGRA DEFINITIVA:
-
-A compatibilidade atual:
-
-`terminal.pos_device_id IS NULL OR terminal.pos_device_id == intent.pos_device_id`
-
-é obrigatória SOMENTE ao:
-
-* criar novo PaymentIntent;
-* criar novo PaymentAttempt;
-* iniciar `CREATED → PROCESSING`.
-
-Depois disso, o vínculo atual do terminal NÃO pode impedir transições históricas/administrativas.
-
-Não revalidar Terminal ↔ POS em:
-
-* CANCELLED;
-* DECLINED;
-* ERROR;
-* UNKNOWN;
-* APPROVED;
-* reconciliação;
-* demais persistências históricas de status.
-
-Continuar SEMPRE validando integridade estrutural:
-
-* terminal.connection == attempt/provider connection;
-* terminal.branch == intent.branch;
-* connection.company == intent.company;
-* demais invariantes estruturais existentes.
-
-Não relaxar essas validações.
-
----
-
-# 2. AJUSTAR `_save_intent_status`
-
-Revisar `_save_intent_status()`.
-
-Hoje:
+Hoje `create_payment_attempt()` faz:
 
 ```python
-def _save_intent_status(
+_save_intent_status(
     intent,
-    status,
-    *,
+    PaymentIntentStatus.PROCESSING,
     validate_terminal_pos_binding=True,
 )
 ```
 
-Esse default é perigoso para transições históricas.
+antes de criar o novo `PaymentAttempt`.
 
-Escolher solução clara.
+Isso revalida:
 
-Preferência:
+`PaymentIntent.terminal`
 
-o vínculo Terminal ↔ POS deve ser explicitamente exigido SOMENTE nos pontos de início de operação, e não como default de qualquer mudança de status.
+ou seja, o terminal ORIGINAL armazenado no Intent.
 
-Pode mudar o default para:
+Porém um retry pode usar:
 
-```text
-False
-```
+* outro provider;
+* outra connection;
+* outro terminal;
+* ou nenhum terminal.
 
-desde que os pontos de criação/start continuem validando explicitamente.
-
-Ou preservar assinatura atual e passar `False` em TODAS as transições históricas.
-
-O importante é deixar impossível que:
+Cenário:
 
 ```text
-terminal foi reatribuído
+Intent
+Provider inicial = Cielo
+Terminal original = Cielo T1
+POS = A
+
 ↓
-cancelamento/reconciliação histórica trava
+Attempt #1
+Cielo T1
+DECLINED
+
+↓
+administrativamente
+Cielo T1 é reatribuído para POS B
+
+↓
+retry/fallback
+Provider = Stone
+Terminal = Stone T2
+POS = A
 ```
+
+Stone T2 é perfeitamente válido para POS A.
+
+Porém, antes de criar Attempt #2, o sistema tenta mover o Intent para PROCESSING e revalida o terminal histórico T1.
+
+Como T1 agora pertence ao POS B:
+
+```text
+Intent → PROCESSING
+↓
+valida T1
+↓
+falha
+```
+
+O fallback válido nunca é criado.
 
 ---
 
-# 3. TESTES DO TERMINAL REATRIBUÍDO
+# 2. REGRA CORRETA
 
-Adicionar testes específicos.
+`PaymentIntent.terminal` representa a configuração inicial/original do Intent.
 
-## READY → CANCELLED
+O terminal OPERACIONAL de cada tentativa é:
 
-```text
-Intent READY
-Terminal inicialmente POS A
-Terminal reatribuído POS B
-cancel Intent
-→ CANCELLED
-```
+`PaymentAttempt.terminal`.
 
-deve funcionar.
+Portanto:
 
-## DECLINED → CANCELLED
+ao iniciar uma NOVA tentativa, a validação Terminal ↔ POS deve ser feita sobre o terminal que efetivamente será usado pelo novo `PaymentAttempt`.
 
-```text
-Attempt PROCESSING
-Terminal A → B
-Attempt DECLINED
-Intent DECLINED
-cancel Intent
-→ CANCELLED
-```
-
-deve funcionar.
-
-## ERROR → CANCELLED
-
-Mesmo princípio.
-
-## Nova operação
-
-Depois da reatribuição:
-
-```text
-novo Intent/Attempt do POS A
-usando Terminal agora ligado ao POS B
-```
-
-→ continua bloqueado.
-
-Ou seja:
-
-```text
-operação histórica → conclui
-operação nova incompatível → bloqueia
-```
+Não sobre o terminal histórico original do Intent.
 
 ---
 
-# 4. PADRONIZAR ORDEM DE LOCKS POSDEVICE → CASHSESSION
+# 3. AJUSTAR `create_payment_attempt()`
 
-A auditoria encontrou inversão de locks.
-
-Hoje o pagamento integrado segue corretamente:
+Ao mover:
 
 ```text
-POSDevice
-→ CashSession
-→ QuickSaleCheckout
-→ PaymentIntent / Attempt
-→ Ledger
+READY / DECLINED / ERROR
+→ PROCESSING
 ```
 
-Porém outros fluxos POS ainda podem fazer:
+não revalidar o terminal histórico do Intent.
 
-```text
-CashSession
-→ POSDevice
+Ou seja, conceitualmente:
+
+```python
+_save_intent_status(
+    intent,
+    PaymentIntentStatus.PROCESSING,
+    validate_terminal_pos_binding=False,
+)
 ```
 
-Isso permite deadlock.
+Depois criar:
+
+```python
+attempt = PaymentAttempt(
+    ...
+    terminal=terminal_real_da_tentativa,
+)
+```
+
+E deixar:
+
+`PaymentAttempt.clean() / save()`
+
+validar o terminal efetivamente selecionado.
+
+---
+
+# 4. NÃO RELAXAR A VALIDAÇÃO DA NOVA TENTATIVA
+
+O novo `PaymentAttempt` continua obrigatoriamente validando:
+
+* provider connection pertence à company;
+* connection é válida para branch;
+* provider ACTIVE no início;
+* connection ACTIVE no início;
+* terminal ACTIVE no início;
+* terminal pertence à connection;
+* terminal pertence à branch;
+* se `terminal.pos_device != NULL`:
+  `terminal.pos_device == intent.pos_device`;
+* PaymentMethod ACTIVE no início;
+* amount == Intent.amount.
+
+Nada disso deve ser removido.
+
+---
+
+# 5. TRANSAÇÃO DEVE FAZER ROLLBACK SE O NOVO TERMINAL FOR INVÁLIDO
+
+O fluxo deve continuar atômico.
 
 Exemplo:
 
 ```text
-Transação A
-start payment
-lock POSDevice
-espera CashSession
+Intent DECLINED
+↓
+tenta novo Attempt
+↓
+Intent temporariamente → PROCESSING
+↓
+novo terminal é inválido
+↓
+PaymentAttempt.save() falha
+↓
+ROLLBACK
 ```
 
-simultaneamente:
+Resultado final:
 
 ```text
-Transação B
-troca/fecha caixa
-lock CashSession
-espera POSDevice
+Intent continua DECLINED
+nenhum Attempt novo criado
 ```
 
-Resultado:
-
-`DEADLOCK`
-
-Padronizar mutações que mexem simultaneamente em:
-
-* `POSDevice.active_cash_session`;
-* `CashSession`;
-
-para sempre seguir:
-
-```text
-POSDevice
-→ CashSession
-```
-
-quando o contexto for uma operação do POS.
+Adicionar teste explícito para isso.
 
 ---
 
-# 5. POS CASH SESSION SELECT
+# 6. FALLBACK VÁLIDO DEVE FUNCIONAR
 
-Revisar:
-
-`POSCashSessionSelectView`
-
-Hoje ele busca/trava CashSession antes do POSDevice.
-
-Corrigir ordem.
-
-Fluxo esperado:
+Adicionar teste:
 
 ```text
-transaction.atomic
+Intent inicial:
+Provider A
+Terminal A1
+POS A
+
 ↓
-lock POSDevice
+Attempt #1
+DECLINED
+
 ↓
-resolver/validar branch/configuração
+Terminal A1 é reatribuído → POS B
+
 ↓
-lock CashSession alvo
-↓
-validar OPEN/ACTIVE
-↓
-device.active_cash_session = session
+criar Attempt #2:
+Provider B
+Terminal B1
+POS A
 ```
 
-Não utilizar `QuerySet.update()` de forma que perca o lock já obtido ou bypass de validações relevantes.
+B1 pertence corretamente ao POS A.
 
-Preservar:
+Resultado esperado:
 
-* FLEXIBLE somente;
-* permissões;
-* mesma branch;
-* register ACTIVE;
-* session OPEN;
-* auditoria.
+```text
+Attempt #2 CREATED
+↓
+PROCESSING
+↓
+APPROVED
+```
+
+e depois:
+
+```text
+QuickSalePayment
+→ source_payment_attempt = Attempt #2
+```
+
+Provider real do pagamento:
+
+`Provider B`.
 
 ---
 
-# 6. POS CASH SESSION OPEN / BIND
+# 7. RETRY USANDO O TERMINAL ORIGINAL AGORA INVÁLIDO DEVE CONTINUAR BLOQUEADO
 
-Revisar o endpoint que:
-
-* abre CashSession;
-* depois vincula ao `POSDevice.active_cash_session`.
-
-Hoje ele pode fazer:
+Cenário:
 
 ```text
-open_session → lock CashSession/register
+Intent original:
+Terminal T1 / POS A
+
 ↓
-lock POSDevice
+Attempt #1 DECLINED
+
+↓
+T1 é reatribuído → POS B
+
+↓
+retry sem passar outro terminal
 ```
 
-Padronizar para evitar inversão.
+Como `_UNSET` reutiliza o terminal original T1:
 
-Antes de iniciar o fluxo de abertura/vínculo pelo POS:
+o novo `PaymentAttempt` deve falhar.
+
+Isso é correto.
+
+Validar:
 
 ```text
-lock POSDevice
+Intent permanece DECLINED
+Attempt #2 NÃO existe
 ```
-
-Depois:
-
-```text
-open/lock CashSession e CashRegister
-```
-
-Garantir que não sejam criadas duas sessões/vínculos concorrentes por corrida.
-
-Não alterar regras de `open_session()` fora do necessário.
 
 ---
 
-# 7. POS CASH SESSION CLOSE
+# 8. FALLBACK SEM TERMINAL DEVE FUNCIONAR QUANDO O PROVIDER PERMITIR
 
-Revisar:
+Preservar a semântica já existente:
 
-`POSCashSessionCloseView`
-
-Hoje:
-
-```text
-close_session()
-↓
-depois limpa POSDevice.active_cash_session
+```python
+terminal=None
 ```
 
-e o `close_session()` começa travando CashSession.
+deve significar explicitamente:
 
-Para chamada via POS precisamos manter:
+**esta tentativa não usa terminal vinculado.**
 
-```text
-POSDevice
-→ CashSession
-```
+Não confundir com `_UNSET`.
 
-Solução deve evitar alterar indevidamente os fluxos Backoffice que chamam `close_session()` sem POSDevice.
-
-Pode criar wrapper POS específico ou adquirir lock do device no View antes do service.
-
-Exemplo conceitual:
+Teste:
 
 ```text
-transaction.atomic
+Intent inicial com Terminal T1
+Attempt #1 DECLINED
+T1 depois incompatível
 ↓
-lock POSDevice
-↓
-close_session(...)
-↓
-limpar active_cash_session
+Attempt #2 com outra Connection
+terminal=None
 ```
 
-Como o lock do device já está adquirido antes de `close_session()` travar sessão, a ordem fica consistente.
+Se todas as outras regras forem válidas:
 
-Preservar toda a lógica atual de fechamento.
+→ deve criar a tentativa normalmente.
 
 ---
 
-# 8. LIMPEZA DE ACTIVE CASH SESSION
+# 9. PRESERVAR `_UNSET`
 
-Ao fechar uma sessão pelo POS:
+A diferença deve continuar sendo:
 
-limpar `active_cash_session` somente dos dispositivos que realmente apontam para aquela sessão, preservando comportamento atual.
+```text
+terminal=_UNSET
+→ reutiliza intent.terminal
 
-Se houver mais de um device apontando para a mesma sessão e isso for permitido pela arquitetura atual, não introduzir comportamento novo além do existente.
+terminal=None
+→ tentativa explicitamente sem terminal
 
-Mas garantir que qualquer lock de device usado seja feito ANTES do lock de CashSession quando ambos participarem da mesma transação.
+terminal=T2
+→ utiliza T2
+```
+
+Não alterar esse contrato.
 
 ---
 
-# 9. NÃO CRIAR NOVA INVERSÃO
+# 10. TESTE PROVIDER FALLBACK COMPLETO
 
-Auditar todos os pontos alterados nesta missão procurando sequências:
+Adicionar ou ampliar o teste existente para provar:
 
 ```text
-CashSession select_for_update
-→ POSDevice select_for_update
+Intent Provider A
+Terminal A1
+
+Attempt #1 A
+→ DECLINED
+
+A1 reatribuído para outro POS
+
+Attempt #2 Provider B
+Terminal B1 válido
+→ APPROVED
+
+apply
+↓
+QuickSalePayment
+→ Attempt #2
+→ Provider B
 ```
 
-nos fluxos POS.
+Não deve apontar para:
 
-Dentro de operações POS envolvendo ambos, não deixar essa ordem.
+* Provider A;
+* Terminal A1;
+* connection original apenas porque está no Intent.
 
-Padrão oficial:
+---
+
+# 11. NÃO ALTERAR RESULTADOS HISTÓRICOS
+
+Preservar tudo que PAY-1.3 já corrigiu:
+
+depois de PROCESSING:
+
+mudanças administrativas em:
+
+* Provider.status;
+* Connection.status;
+* Terminal.status;
+* PaymentMethod.status;
+* Terminal.pos_device;
+
+não podem impedir:
+
+* APPROVED;
+* DECLINED;
+* ERROR;
+* UNKNOWN;
+* reconciliação.
+
+---
+
+# 12. NÃO ALTERAR LOCK ORDER
+
+Preservar exatamente a ordem corrigida:
 
 ```text
 POSDevice
@@ -412,167 +400,52 @@ POSDevice
 → QuickSalePayment
 ```
 
-Nem todo fluxo precisa travar todos.
+Não mexer novamente em:
 
-Mas, se travar mais de um, respeitar essa ordem.
+* POSCashSessionOpenView;
+* POSCashSessionSelectView;
+* POSCashSessionCloseView;
 
----
+a menos que seja estritamente necessário por regressão comprovada.
 
-# 10. NÃO MUDAR O LOCK ORDER DE DOMÍNIOS QUE NÃO ENVOLVEM POSDEVICE
-
-Não sair refatorando todo o sistema de Cash.
-
-Backoffice e services genéricos podem continuar com suas regras existentes desde que não façam depois um lock de POSDevice na mesma transação.
-
-A missão é corrigir especificamente a interseção:
-
-`POSDevice ↔ CashSession`
+Esta missão NÃO é sobre Cash.
 
 ---
 
-# 11. TESTES DE LOCK ORDER FUNCIONAL
+# 13. NÃO ALTERAR OUTROS COMPONENTES
 
-Não precisamos criar teste artificial de deadlock com threads se isso tornar a suíte frágil.
+NÃO mexer em:
 
-Mas adicionar testes funcionais que garantam:
-
-## Select
-
-```text
-POSDevice
-Caixa A ativo
-selecionar Caixa B
-→ vínculo atualizado corretamente
-```
-
-## Start provider vs cash context
-
-Preservar:
-
-```text
-checkout Caixa A
-POS troca para B
-start Attempt
-→ cash_context_changed
-```
-
-## Close
-
-```text
-POS vinculado Caixa A
-close Caixa A
-→ session CLOSED
-→ device.active_cash_session = NULL
-```
-
-## Provider PROCESSING
-
-```text
-Attempt PROCESSING no Caixa A
-tentativa de fechar caixa
-→ continua bloqueada
-```
-
-Não quebrar os testes PAY-1.2 existentes.
-
----
-
-# 12. TESTES DE REGRESSÃO OBRIGATÓRIOS
-
-Preservar todos estes comportamentos:
-
-* Terminal reatribuído pós-PROCESSING → APPROVED funciona;
-* UNKNOWN → APPROVED funciona;
-* Provider/Connection/Terminal INACTIVE pós-PROCESSING não bloqueiam resultado;
-* PaymentMethod INACTIVE pós-PROCESSING não bloqueia resultado;
-* cancel_session bloqueia checkout pago;
-* provider_transaction conflict faz rollback;
-* provider payment service-only;
-* sales.Payment Quick Sale source service-only;
-* partial payment;
-* provider fallback;
-* reversal provider bloqueado;
-* application_context protegido;
-* callback replay.
-
----
-
-# 13. NÃO ALTERAR PAYMENT FLOW
-
-Não mexer na semântica de:
-
-* PaymentIntent;
-* PaymentAttempt;
 * QuickSalePayment;
-* APPROVED;
-* APPLIED;
-* provider_transaction_id;
+* sales.Payment;
 * application_context;
-* fallback;
-* reversal.
-
-Exceto o necessário para retirar a revalidação histórica Terminal ↔ POS.
-
----
-
-# 14. NÃO ALTERAR MESA
-
-NÃO mexer em:
-
-* TableAttendance;
-* TablePayment;
-* TablePaymentAllocation;
-* services/endpoints/telas de Mesa.
+* provider_transaction_id;
+* callback replay;
+* reversal;
+* CashSession rules;
+* estoque/reservas;
+* Mesa;
+* Comandas;
+* Flutter.
 
 ---
 
-# 15. NÃO ALTERAR COMANDAS
+# 14. MIGRATIONS
 
-NÃO mexer em:
-
-* Command;
-* AttendanceCommand;
-* CommandPayment;
-* AttendancePayment;
-* services/endpoints/telas de Comanda.
-
----
-
-# 16. NÃO IMPLEMENTAR PROVIDER REAL
-
-Ainda NÃO implementar:
-
-* Cielo;
-* Stone;
-* Deep Link;
-* SDK;
-* Client ID;
-* Access Token;
-* callback Android;
-* Flutter;
-* platform channel.
-
----
-
-# 17. MIGRATIONS
-
-Esses ajustes não parecem exigir schema change.
+Não há alteração de schema esperada.
 
 NÃO criar migration sem necessidade real.
 
-NÃO editar migrations existentes.
+NÃO editar migrations anteriores.
 
 ---
 
-# 18. TESTES PERMITIDOS
+# 15. TESTES PERMITIDOS
 
-Pode executar SOMENTE testes direcionados relacionados a:
+Pode executar SOMENTE testes direcionados de:
 
 * `payment_integrations`;
-* Quick Sale;
-* POS cash session;
-* cash/session;
-* sales finalization afetada.
+* Quick Sale provider bridge.
 
 NÃO executar:
 
@@ -586,25 +459,23 @@ NÃO executar:
 
 # CHECKPOINT FINAL
 
-Ao terminar, informe:
+Ao terminar informe:
 
-1. como Terminal ↔ POS passou a ser apenas validação de início de operação;
-2. como READY → CANCELLED funciona após reatribuição;
-3. como DECLINED/ERROR → CANCELLED funcionam após reatribuição;
-4. como novas operações continuam bloqueando Terminal incompatível;
-5. qual passou a ser a ordem oficial de locks;
-6. quais endpoints POS foram ajustados;
-7. como `POSCashSessionSelectView` ficou;
-8. como abertura/vínculo de caixa ficou;
-9. como fechamento via POS ficou;
-10. testes adicionados;
-11. resultados dos testes direcionados;
-12. arquivos alterados;
-13. migrations criadas, se houver;
-14. confirmação de que NÃO alterou Mesa;
-15. confirmação de que NÃO alterou Comandas;
-16. confirmação de que NÃO alterou Flutter;
-17. confirmação de que NÃO implementou Cielo nem Stone.
+1. como `create_payment_attempt()` deixou de validar o terminal histórico do Intent;
+2. onde o terminal REAL da tentativa continua sendo validado;
+3. teste de fallback com outro provider + outro terminal;
+4. teste de retry com terminal original incompatível;
+5. teste de `terminal=None`;
+6. confirmação de rollback quando novo terminal é inválido;
+7. confirmação de que QuickSalePayment aponta para o Attempt aprovado correto;
+8. arquivos alterados;
+9. migrations criadas, se houver;
+10. resultado dos testes direcionados;
+11. confirmação de que NÃO alterou Cash;
+12. confirmação de que NÃO alterou Mesa;
+13. confirmação de que NÃO alterou Comandas;
+14. confirmação de que NÃO alterou Flutter;
+15. confirmação de que NÃO implementou Cielo nem Stone.
 
 Depois PARE.
 

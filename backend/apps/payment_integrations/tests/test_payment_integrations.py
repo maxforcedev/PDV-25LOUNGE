@@ -688,6 +688,80 @@ class PaymentIntegrationsTests(TestCase):
                 )
                 self.assertEqual(cancelled.status, PaymentIntentStatus.CANCELLED)
 
+    def test_retry_uses_its_own_terminal_and_rolls_back_when_it_is_invalid(self):
+        other_device = POSDevice.objects.create(
+            branch=self.branch, name='Caixa fallback', status=POSDevice.Status.ACTIVE,
+        )
+        intent, _ = self.create_intent()
+        transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
+        first = self.start_attempt(intent)
+        _first, declined_intent = resolve_payment_attempt(
+            attempt=first, status=PaymentAttemptStatus.DECLINED,
+        )
+        self.terminal.pos_device = other_device
+        self.terminal.save()
+
+        with self.assertRaises(ValidationError):
+            create_payment_attempt(intent=declined_intent)
+        declined_intent.refresh_from_db()
+        self.assertEqual(declined_intent.status, PaymentIntentStatus.DECLINED)
+        self.assertEqual(declined_intent.attempts.count(), 1)
+
+        fallback_provider = PaymentProvider.objects.create(
+            code='retry-fallback', name='Retry fallback', status=Status.ACTIVE,
+            integration_type='server_api',
+        )
+        fallback_connection = PaymentProviderConnection.objects.create(
+            company=self.company, provider=fallback_provider, name='Retry connection',
+            environment=PaymentProviderConnectionEnvironment.SANDBOX, status=Status.ACTIVE,
+        )
+        invalid_terminal = PaymentTerminal.objects.create(
+            connection=fallback_connection, branch=self.branch, pos_device=other_device,
+            name='Invalid retry terminal', status=Status.ACTIVE,
+        )
+        with self.assertRaises(ValidationError):
+            create_payment_attempt(
+                intent=declined_intent, provider_connection=fallback_connection,
+                terminal=invalid_terminal,
+            )
+        declined_intent.refresh_from_db()
+        self.assertEqual(declined_intent.status, PaymentIntentStatus.DECLINED)
+        self.assertEqual(declined_intent.attempts.count(), 1)
+        fallback_terminal = PaymentTerminal.objects.create(
+            connection=fallback_connection, branch=self.branch, pos_device=self.device,
+            name='Retry terminal', status=Status.ACTIVE,
+        )
+        retry = create_payment_attempt(
+            intent=declined_intent, provider_connection=fallback_connection,
+            terminal=fallback_terminal,
+        )
+        self.assertEqual(retry.provider_connection_id, fallback_connection.pk)
+        self.assertEqual(retry.terminal_id, fallback_terminal.pk)
+
+    def test_retry_without_terminal_does_not_revalidate_the_original_terminal(self):
+        other_device = POSDevice.objects.create(
+            branch=self.branch, name='Caixa sem terminal', status=POSDevice.Status.ACTIVE,
+        )
+        intent, _ = self.create_intent()
+        transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
+        first = self.start_attempt(intent)
+        _first, declined_intent = resolve_payment_attempt(
+            attempt=first, status=PaymentAttemptStatus.DECLINED,
+        )
+        self.terminal.pos_device = other_device
+        self.terminal.save()
+        fallback_connection = PaymentProviderConnection.objects.create(
+            company=self.company, provider=self.provider, name='Sem terminal',
+            environment=PaymentProviderConnectionEnvironment.SANDBOX, status=Status.ACTIVE,
+        )
+
+        retry = create_payment_attempt(
+            intent=declined_intent, provider_connection=fallback_connection, terminal=None,
+        )
+
+        self.assertIsNone(retry.terminal_id)
+        self.assertEqual(retry.provider_connection_id, fallback_connection.pk)
+
     def test_final_result_replay_is_idempotent_and_protects_provider_identity(self):
         intent, _ = self.create_intent()
         transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
