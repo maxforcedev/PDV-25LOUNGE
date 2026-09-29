@@ -32,6 +32,7 @@ from apps.payment_integrations.services import (
     create_payment_attempt,
     create_payment_intent,
     resolve_payment_attempt,
+    transition_payment_attempt,
     transition_payment_intent,
 )
 from apps.pos.models import POSDevice, QuickSalePayment
@@ -317,6 +318,16 @@ class CieloSmartAdapterTests(SimpleTestCase):
                 self.command_payload(self.attempt(), merchant_code=merchant_code)
             self.assertEqual(config_error.exception.code, 'cielo_configuration_invalid')
 
+    def test_callback_ignores_current_connection_configuration(self):
+        attempt = self.attempt()
+        attempt.provider_connection.configuration = {'credit_installment_mode': 'invalid'}
+
+        result = self.adapter.parse_payment_callback(
+            attempt=attempt, response=self.approved_callback(attempt), responsecode=None,
+        )
+
+        self.assertEqual(result.status, PaymentAttemptStatus.APPROVED)
+
     def test_unprovable_callbacks_are_unknown_never_approved(self):
         attempt = self.attempt()
         malformed = (
@@ -380,7 +391,7 @@ class CieloAdapterBridgeTests(TestCase):
             name='Cielo Terminal', status=Status.ACTIVE,
         )
 
-    def test_parse_then_resolve_approves_attempt_without_creating_quick_sale_payment(self):
+    def test_processing_attempt_resolves_after_connection_configuration_change(self):
         intent, _ = create_payment_intent(
             company=self.company, branch=self.branch, pos_device=self.device, operator=self.operator,
             origin_type=PaymentIntentOriginType.QUICK_SALE, origin_id=uuid4(),
@@ -389,8 +400,28 @@ class CieloAdapterBridgeTests(TestCase):
             _quick_sale_bridge=True,
         )
         intent = transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
+        self.assertEqual(intent.status, PaymentIntentStatus.READY)
         attempt = create_payment_attempt(intent=intent)
+        self.assertEqual(attempt.status, PaymentAttemptStatus.CREATED)
+        intent.refresh_from_db()
+        self.assertEqual(intent.status, PaymentIntentStatus.PROCESSING)
+        attempt = transition_payment_attempt(
+            attempt=attempt, status=PaymentAttemptStatus.PROCESSING,
+        )
+        self.assertEqual(attempt.status, PaymentAttemptStatus.PROCESSING)
         adapter = CieloSmartAdapter()
+        self.connection.configuration = {'credit_installment_mode': 'invalid'}
+        self.connection.save()
+        with self.assertRaises(PaymentIntegrationConflict) as build_error:
+            adapter.build_payment_command(
+                attempt=attempt,
+                callback_url='core://payment/callback?source=cielo',
+                items=[{
+                    'name': 'Coffee', 'quantity': 2, 'sku': 'COFFEE-001',
+                    'unitOfMeasure': 'UN', 'unitPrice': 525,
+                }],
+            )
+        self.assertEqual(build_error.exception.code, 'cielo_configuration_invalid')
         response = base64.b64encode(json.dumps({
             'id': 'order-bridge-123',
             'reference': f'CORE-{attempt.id}',

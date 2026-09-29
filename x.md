@@ -1,289 +1,276 @@
-# MISSÃO PAY-2.0.1 — FECHAMENTO DO ADAPTER CIELO
+# MISSÃO PAY-2.0.2 — FECHAMENTO HISTÓRICO DO ADAPTER CIELO
 
 HEAD atual analisado:
 
-`0a98819adb2821eff5b953514a277a4c2f997c2a`
+`216d8b0783403352c4c48f25f2397e8b91a42ba3`
 
-O PAY-2.0 criou corretamente:
+O PAY-2.0.1 corrigiu corretamente:
 
-* adapter registry provider-neutral;
-* `CieloSmartAdapter`;
-* provider Cielo via migration;
-* secrets via `env_or_file()` / Docker Secrets;
-* Deep Link encapsulado;
-* mapping de PaymentMethod → paymentCode;
-* amount em centavos;
-* reference por PaymentAttempt;
-* parser de callback;
-* ProviderPaymentResult;
-* integração com `resolve_payment_attempt()`.
+* JSON de erro `{code, reason}`;
+* precedência sobre `responsecode`;
+* parser rejeitando provider não-Cielo;
+* reutilização do provider da migration;
+* `value` como string;
+* `merchantCode` com 16 dígitos;
+* preservação de secrets;
+* mapping APPROVED/PIX/CANCELLED.
 
-Porém a auditoria encontrou 3 bloqueadores e 2 ajustes de contrato antes do PAY-2.1.
+Restaram SOMENTE 2 ajustes antes de liberar o PAY-2.1:
 
-Corrigir SOMENTE os pontos abaixo.
+1. callback histórico não pode depender da configuração administrativa atual da Connection;
+2. corrigir o teste bridge para respeitar `CREATED → PROCESSING → APPROVED`.
+
+Corrigir SOMENTE estes pontos.
 
 NÃO implementar Flutter.
-NÃO mexer no AndroidManifest.
+NÃO mexer em AndroidManifest.
 NÃO abrir Deep Link real.
 NÃO implementar recovery.
 NÃO implementar reversal.
+NÃO mexer em Cash.
 NÃO mexer em Mesa.
 NÃO mexer em Comandas.
 NÃO alterar o motor PAY-1.
 
 ---
 
-# 1. CORRIGIR OS CÓDIGOS DE ERRO CIELO
-
-Hoje o parser trata:
-
-```text
-responsecode = 1
-responsecode = 2
-responsecode = 3
-responsecode = 4
-```
-
-como:
-
-```text
-1 → CANCELLED
-2 → ERROR
-3 → ERROR
-4 → ERROR
-```
-
-Isso está incompleto.
-
-Na Cielo Smart, cenários de erro podem retornar:
-
-```text
-responsecode=0
-```
-
-enquanto o conteúdo Base64 de:
-
-`response`
-
-decodifica para JSON como:
-
-```json
-{
-  "code": 1,
-  "reason": "CANCELADO PELO USUÁRIO"
-}
-```
-
-Ou equivalente para codes 2, 3 e 4.
-
-Portanto:
-
-o parser precisa PRIMEIRO interpretar corretamente o `response`.
-
----
-
-# 2. ORDEM CORRETA DO PARSER
-
-Implementar fluxo defensivo:
-
-```text
-parse_payment_callback()
-
-1. validar Attempt pertence à Cielo
-2. interpretar responsecode
-3. tentar decodificar response Base64
-4. interpretar JSON
-5. identificar se JSON é:
-   a) erro Cielo
-   b) Order/payment
-6. normalizar ProviderPaymentResult
-```
-
-Não assumir que:
-
-`responsecode`
-
-sozinho representa o erro financeiro.
-
----
-
-# 3. JSON DE ERRO CIELO
-
-Se o JSON decodificado possuir estrutura de erro:
-
-```text
-code
-reason
-```
-
-mapear:
-
-```text
-code = 1
-→ PaymentAttempt CANCELLED
-
-code = 2
-→ PaymentAttempt ERROR
-
-code = 3
-→ PaymentAttempt ERROR
-
-code = 4
-→ PaymentAttempt ERROR
-```
-
-Preservar:
-
-```text
-provider_status_code = code
-provider_message = reason sanitizado
-```
-
-`reason` deve passar pelo mesmo mecanismo de sanitização já existente.
-
-Não persistir resposta raw.
-
----
-
-# 4. RESPONSECODE NÃO PODE SOBRESCREVER O JSON REAL
-
-Exemplo:
-
-```text
-responsecode = 0
-
-response decoded:
-{
-    "code": 1,
-    "reason": "CANCELADO PELO USUÁRIO"
-}
-```
-
-Resultado:
-
-```text
-CANCELLED
-```
-
-NÃO:
-
-```text
-UNKNOWN
-APPROVED
-ERROR GENÉRICO
-```
-
-O JSON decodificado é a evidência principal nesse cenário.
-
----
-
-# 5. RESPONSECODE DE ERRO SEM RESPONSE UTILIZÁVEL
-
-Se existir `responsecode` conhecido de erro e não houver `response` decodificável suficiente:
-
-pode continuar utilizando o mapping seguro de `responsecode`.
-
-Mas NÃO permitir que um `responsecode` aparentemente neutro ignore um JSON de erro válido.
-
----
-
-# 6. TESTES DE ERRO REAL CIELO
-
-Adicionar fixtures como:
-
-```text
-responsecode = 0
-
-response = Base64(
-    {
-        "code": 1,
-        "reason": "CANCELADO PELO USUÁRIO"
-    }
-)
-```
-
-Esperado:
-
-```text
-CANCELLED
-provider_status_code = "1"
-```
-
-Também:
-
-```text
-code 2 → ERROR
-code 3 → ERROR
-code 4 → ERROR
-```
-
-Testar reason sanitizado.
-
----
-
-# 7. PARSER DEVE VALIDAR O PROVIDER DO ATTEMPT
+# 1. PROBLEMA: PARSER DEPENDE DA CONFIGURAÇÃO ATUAL DA CONNECTION
 
 Hoje:
 
-`build_payment_command()`
-
-valida que a connection é Cielo.
-
-Porém:
-
-`parse_payment_callback()`
-
-não valida.
-
-Isso permite conceitualmente:
-
-```text
-Attempt Stone
-↓
-CieloSmartAdapter.parse_payment_callback(...)
-↓
-APPROVED
+```python
+parse_payment_callback(...)
 ```
 
-Isso não pode acontecer.
+chama:
 
-No início do parser validar:
+```python
+self._connection_configuration(attempt)
+```
+
+Isso valida não apenas identidade Cielo, mas também configuração operacional atual como:
+
+```text
+merchant_code
+credit_installment_mode
+whitelist de keys
+```
+
+Isso não pode acontecer ao registrar resultado de uma tentativa já iniciada.
+
+Exemplo crítico:
+
+```text
+10:00
+Attempt Cielo PROCESSING
+
+Connection.configuration:
+{
+    "credit_installment_mode": "store"
+}
+
+↓
+10:01
+Admin altera configuração da Connection
+
+↓
+10:02
+Cielo retorna APPROVED
+```
+
+O CORE NÃO pode rejeitar o callback porque a configuração administrativa mudou depois do PROCESSING.
+
+---
+
+# 2. SEPARAR VALIDAÇÃO OPERACIONAL DE VALIDAÇÃO HISTÓRICA
+
+Criar duas responsabilidades claras.
+
+## Operação nova
+
+Para:
+
+```text
+build_payment_command()
+```
+
+continuar usando validação COMPLETA da configuração atual:
+
+* provider code;
+* integration_type;
+* merchant_code;
+* credit_installment_mode;
+* chaves permitidas.
+
+Algo como:
+
+```python
+_connection_configuration(attempt)
+```
+
+pode continuar existindo para isso.
+
+---
+
+# 3. CALLBACK HISTÓRICO
+
+Para:
+
+```python
+parse_payment_callback()
+```
+
+criar helper separado, por exemplo:
+
+```python
+_assert_cielo_attempt(attempt)
+```
+
+ou equivalente.
+
+Ele deve validar apenas a identidade histórica necessária do Attempt.
+
+No mínimo:
 
 ```text
 attempt.provider_connection.provider.code == "cielo"
 ```
 
-e:
+A `provider_connection` do PaymentAttempt já é estruturalmente imutável.
 
-```text
-integration_type == "local_deep_link"
-```
-
-Reutilizar `_connection_configuration()` ou criar helper semântico melhor.
-
-Se inválido:
-
-```text
-cielo_connection_invalid
-```
-
-Não retornar UNKNOWN.
-
-É erro de domínio/chamada incorreta do adapter.
+Não usar a configuração administrativa atual para decidir se um callback histórico pode ser interpretado.
 
 ---
 
-# 8. TESTE PARSER COM OUTRO PROVIDER
+# 4. NÃO REVALIDAR CONFIGURAÇÃO ATUAL NO CALLBACK
 
-Criar Attempt/provider fake:
+O parser NÃO deve depender de:
 
 ```text
-provider.code = stone
+connection.configuration atual
+merchant_code atual
+credit_installment_mode atual
+novas keys adicionadas depois
+status atual da connection
+status atual do provider
+status atual do terminal
+PaymentMethod.status atual
+terminal.pos_device atual
 ```
 
-Chamar:
+para interpretar o retorno de uma operação já PROCESSING.
+
+Esse comportamento precisa seguir o mesmo princípio já adotado no PAY-1:
 
 ```text
+início da operação
+→ valida recursos/configuração atuais
+
+resultado histórico
+→ registra fato da operação que já começou
+```
+
+---
+
+# 5. INTEGRATION_TYPE
+
+Não fazer o callback histórico depender de mudança administrativa de `integration_type` se isso puder impedir resultado já iniciado.
+
+Hoje esse campo é estrutural do PaymentProvider e pode não mudar na prática, mas a regra deve ser conceitualmente correta.
+
+Para callback:
+
+o principal vínculo é:
+
+```text
+attempt.provider_connection.provider.code == cielo
+```
+
+Não transformar mudança administrativa futura em bloqueador de callback histórico.
+
+---
+
+# 6. TESTE: CONFIGURAÇÃO MUDA DEPOIS DE PROCESSING
+
+Adicionar teste:
+
+```text
+Connection Cielo válida
+
+↓
+PaymentAttempt PROCESSING
+
+↓
+alterar PaymentProviderConnection.configuration
+```
+
+Por exemplo:
+
+```text
+credit_installment_mode:
+store → administrator
+```
+
+ou outra alteração válida.
+
+Depois:
+
+```text
+callback Cielo APPROVED
+```
+
+Esperado:
+
+```text
+parse_payment_callback()
+→ APPROVED
+```
+
+E depois:
+
+```text
+resolve_payment_attempt()
+→ Attempt APPROVED
+→ Intent APPROVED
+```
+
+---
+
+# 7. TESTE: CONFIGURAÇÃO FICA INVÁLIDA PARA NOVA COBRANÇA
+
+Simular cenário ainda mais forte.
+
+Depois do Attempt estar PROCESSING:
+
+alterar `configuration` de forma que seria considerada inválida pelo builder.
+
+Se o próprio model impedir persistência dessa config inválida, usar uma alteração administrativa válida que demonstre a independência histórica.
+
+O objetivo do teste é provar:
+
+```text
+callback não chama _connection_configuration()
+```
+
+ou equivalente.
+
+Nova cobrança:
+
+```text
+build_payment_command()
+```
+
+deve continuar validando a configuração atual normalmente.
+
+---
+
+# 8. PARSER AINDA DEVE REJEITAR ATTEMPT DE OUTRO PROVIDER
+
+Preservar teste:
+
+```text
+Attempt provider = stone
+
 CieloSmartAdapter.parse_payment_callback(...)
 ```
 
@@ -294,461 +281,299 @@ PaymentIntegrationConflict
 code = cielo_connection_invalid
 ```
 
+Não relaxar isso.
+
 ---
 
-# 9. CORRIGIR TESTE DE INTEGRAÇÃO QUE DUPLICA PROVIDER CIELO
+# 9. CORRIGIR TESTE BRIDGE CREATED → APPROVED
 
-A migration:
-
-`0004_cielo_smart_provider.py`
-
-já cria:
+Hoje o teste:
 
 ```text
-PaymentProvider(code="cielo")
+test_parse_then_resolve_approves_attempt_without_creating_quick_sale_payment
 ```
 
-Mas:
+faz conceitualmente:
 
-`CieloAdapterBridgeTests.setUp()`
+```text
+create_payment_attempt()
+→ CREATED
 
-faz novamente:
+↓
+resolve_payment_attempt(APPROVED)
+```
 
-```python
-PaymentProvider.objects.create(
-    code='cielo',
-    ...
+Isso viola o contrato do motor.
+
+A sequência correta é:
+
+```text
+create_payment_attempt()
+↓
+PaymentAttempt CREATED
+
+↓
+transition_payment_attempt(
+    status=PROCESSING
+)
+
+↓
+parse callback Cielo
+
+↓
+resolve_payment_attempt(
+    status=APPROVED
 )
 ```
 
-`PaymentProvider.code` é UNIQUE.
-
-Corrigir o teste para reutilizar o provider criado pela migration.
-
-Usar algo como:
-
-```text
-PaymentProvider.objects.get(code='cielo')
-```
-
-ou `get_or_create()` apenas se houver razão forte.
-
-Preferência:
-
-`get(code='cielo')`
-
-porque o objetivo do teste também deve provar que a migration realmente disponibiliza o provider.
-
-Não mascarar migration ausente.
-
 ---
 
-# 10. TESTE DA DATA MIGRATION
+# 10. IMPORTAR TRANSITION_PAYMENT_ATTEMPT NO TESTE
 
-Adicionar teste ou garantia direcionada de que após migrations:
-
-```text
-PaymentProvider.objects.get(code='cielo')
-```
-
-possui:
-
-```text
-name = Cielo Smart
-integration_type = local_deep_link
-```
-
-e capabilities esperadas.
-
-Não criar segundo provider.
-
----
-
-# 11. VALUE DEVE SEGUIR O CONTRATO OFICIAL CIELO
-
-Hoje:
+No teste bridge, usar o service oficial:
 
 ```python
-"value": amount_cents
+transition_payment_attempt(
+    attempt=attempt,
+    status=PaymentAttemptStatus.PROCESSING,
+)
 ```
 
-está sendo enviado como inteiro.
+Não alterar o status diretamente via ORM.
 
-Alterar para:
-
-```python
-"value": str(amount_cents)
-```
-
-Exemplos:
-
-```text
-R$ 1,00
-→ "100"
-
-R$ 10,50
-→ "1050"
-
-R$ 100,00
-→ "10000"
-```
-
-O helper interno:
-
-```text
-amount_to_cents()
-```
-
-pode continuar retornando `int`.
-
-A conversão para string ocorre apenas no payload Cielo.
+Não criar bypass só para o teste.
 
 ---
 
-# 12. SAFE METADATA PODE CONTINUAR USANDO INTEGER
+# 11. TESTE BRIDGE FINAL DEVE PROVAR
 
-Em:
-
-```text
-safe_metadata.amount_cents
-```
-
-pode manter:
+Fluxo completo:
 
 ```text
-1050
+PaymentIntent CREATED
+↓
+READY
+↓
+PaymentAttempt CREATED
+↓
+PROCESSING
+↓
+Cielo callback APPROVED
+↓
+ProviderPaymentResult APPROVED
+↓
+resolve_payment_attempt()
+↓
+PaymentAttempt APPROVED
+↓
+PaymentIntent APPROVED
 ```
 
-como inteiro.
+E confirmar:
 
-Não há necessidade de alterar o contrato interno do CORE.
+```text
+QuickSalePayment NÃO existe
+```
 
-Apenas o payload Cielo usa string.
+porque:
+
+```text
+APPROVED != APPLIED
+```
+
+O adapter não pode aplicar automaticamente.
 
 ---
 
-# 13. TESTE VALUE STRING
+# 12. TESTE CALLBACK HISTÓRICO + CONFIG CHANGE
 
-No teste que decodifica o Base64:
+Criar teste de integração ou adapter apropriado:
 
-validar:
-
-```python
-payload['value'] == '1050'
+```text
+Attempt PROCESSING
+↓
+Connection.configuration muda
+↓
+parse callback APPROVED
+↓
+resolve
 ```
 
-e também:
+Resultado:
 
-```python
-isinstance(payload['value'], str)
+```text
+Attempt APPROVED
+Intent APPROVED
 ```
+
+Isso é obrigatório antes de PAY-2.1.
 
 ---
 
-# 14. VALIDAR MERCHANTCODE
+# 13. PRESERVAR BUILD PAYMENT
 
-Hoje `merchant_code` aceita praticamente qualquer string sanitizada.
-
-Restringir ao formato Cielo esperado:
+Não alterar o comportamento aprovado de:
 
 ```text
-16 dígitos
+build_payment_command()
 ```
 
-Exemplo válido:
+Ele continua validando:
 
-```text
-1234567890123456
-```
-
-Rejeitar:
-
-```text
-abc
-123
-123456789012345
-12345678901234567
-1234-5678...
-```
-
-Se ausente:
-
-continua válido.
+* provider Cielo;
+* configuração atual;
+* merchantCode;
+* installment mode;
+* paymentCode;
+* credentials;
+* items;
+* amount;
+* callback URL.
 
 ---
 
-# 15. NÃO CONVERTER MERCHANTCODE PARA INTEGER
+# 14. PRESERVAR PARSER DE ERROS
 
-Preservar como string.
+Não regredir:
 
-Isso evita:
+```text
+Base64 {code:1}
+→ CANCELLED
 
-* perda de zero à esquerda;
-* conversões inesperadas;
-* mudança de contrato.
+code 2
+→ ERROR
+
+code 3
+→ ERROR
+
+code 4
+→ ERROR
+```
+
+E:
+
+```text
+responsecode fallback
+```
+
+quando `response` não for utilizável.
 
 ---
 
-# 16. TESTES MERCHANTCODE
+# 15. PRESERVAR SUCCESS CALLBACK
 
-Adicionar:
-
-```text
-merchant_code ausente
-→ payload sem merchantCode
-```
+Não alterar sem necessidade:
 
 ```text
-merchant_code 16 dígitos
-→ aceito
-```
-
-```text
-merchant_code inválido
-→ cielo_configuration_invalid
-```
-
----
-
-# 17. NÃO REGREDIR PROTEÇÃO DE SECRETS
-
-Preservar integralmente:
-
-```text
-ProviderLaunchCommand.uri
-→ repr=False
-```
-
-e custom `__repr__`.
-
-Garantir que:
-
-* clientID;
-* accessToken;
-* Base64;
-* URI completa;
-
-não apareçam em:
-
-* `safe_metadata`;
-* logs;
-* audit;
-* exception messages;
-* request_metadata;
-* response_metadata.
-
----
-
-# 18. NÃO PERSISTIR RESPONSE RAW
-
-Mesmo após começar a interpretar JSON de erro:
-
-NÃO salvar:
-
-```text
-response original
-Base64
-JSON completo
-```
-
-Salvar apenas whitelist:
-
-```text
-provider
-provider_status
-provider_status_code
-provider_message sanitizado
-order_id quando houver
-reference quando houver
-terminal quando houver
-product quando houver
-```
-
----
-
-# 19. CALLBACK DE SUCESSO CONTINUA IGUAL
-
-Preservar mapping atual:
-
-```text
-statusCode 0 → APPROVED
+statusCode 0 → APPROVED PIX
 statusCode 1 → APPROVED
 statusCode 2 → CANCELLED
 ```
 
-E preservar:
-
-```text
-paymentFields.paymentTransactionId
-→ provider_transaction_id
-```
-
-```text
-Order.id
-→ provider_order_id
-```
-
-```text
-Order.reference
-→ provider_reference
-```
-
-```text
-authCode
-→ authorization_code
-```
-
-```text
-cieloCode
-→ nsu
-```
-
-Não regredir isso.
-
----
-
-# 20. CALLBACK APPROVED CONTINUA EXIGINDO IDENTIDADE
-
 Preservar:
 
-```text
-statusCode 0/1
-+
-provider_transaction_id vazio
-→ UNKNOWN
-```
-
-Nunca aprovar sem identidade externa canônica.
-
----
-
-# 21. VALIDAR REFERENCE
-
-Preservar:
-
-```text
-reference ausente
-→ pode continuar avaliação conforme contrato atual
-
-reference presente e diferente
-→ UNKNOWN
-```
-
-Não associar callback de outra tentativa.
+* transaction ID;
+* order ID;
+* reference;
+* auth code;
+* NSU;
+* brand;
+* mask;
+* installments;
+* product;
+* terminal.
 
 ---
 
-# 22. VALIDAR AMOUNT
+# 16. PRESERVAR UNKNOWN
 
-Preservar:
+Continuar retornando UNKNOWN para:
 
-```text
-payment.amount
-==
-PaymentAttempt.amount em centavos
-```
+* Base64 inválido;
+* JSON inválido;
+* payments ausente;
+* amount divergente;
+* reference divergente;
+* transaction ID ausente em APPROVED;
+* resultado ambíguo.
 
-Se divergir:
-
-```text
-UNKNOWN
-```
-
-Não alterar `Attempt.amount`.
+Não transformar dúvida em DECLINED.
 
 ---
 
-# 23. RESULTADO AMBÍGUO
-
-Preservar:
-
-```text
-mais de um payment candidato válido
-→ UNKNOWN
-```
-
-Não selecionar `payments[0]`.
-
----
-
-# 24. CARD MASK
-
-Preservar proteção contra PAN completo.
-
-Não alterar `_safe_mask()` de forma que permita salvar número completo de cartão.
-
----
-
-# 25. REGISTRY
-
-Não alterar arquitetura provider-neutral.
+# 17. NÃO ALTERAR SECRETS
 
 Continuar:
 
 ```text
-provider.code
-↓
-registry
-↓
-adapter
+clientID/accessToken
+→ settings/env_or_file/Docker Secrets
 ```
 
-Não adicionar `if cielo` em services financeiros.
+Nunca persistir/logar:
+
+* Client-ID;
+* Access Token;
+* URI Deep Link;
+* Base64 request.
 
 ---
 
-# 26. MIGRATION 0004
+# 18. NÃO ALTERAR PROVIDER MIGRATION
 
-NÃO editar migration já criada se ela já foi commitada.
+A migration:
 
-Se precisar corrigir alguma característica persistida do provider Cielo:
+```text
+0004_cielo_smart_provider.py
+```
 
-criar `0005`.
+já está correta.
 
-Mas os bloqueadores descritos nesta missão não parecem exigir alteração de schema/provider data.
+NÃO editar.
 
-Portanto:
-
-provavelmente nenhuma migration nova.
+NÃO criar nova migration para estes ajustes.
 
 ---
 
-# 27. NÃO ALTERAR MOTOR FINANCEIRO
+# 19. NÃO ALTERAR PAY-1
 
 NÃO mexer em:
 
 * PaymentIntent machine;
 * PaymentAttempt machine;
+* resolve semantics;
+* UNKNOWN semantics;
 * QuickSalePayment;
 * sales.Payment;
-* apply bridge;
 * provider fallback;
-* provider transaction uniqueness;
-* Cash;
+* cash session;
 * estoque;
-* lock order.
+* lock ordering.
+
+O teste deve se adaptar ao motor existente.
+
+Não o contrário.
 
 ---
 
-# 28. NÃO IMPLEMENTAR PAY-2.1
+# 20. NÃO IMPLEMENTAR PAY-2.1
 
 Ainda NÃO criar:
 
-* endpoint POS Cielo;
-* endpoint callback;
-* Flutter code;
-* Android bridge;
+* endpoints POS Cielo;
+* Flutter;
+* Android Intent;
 * MethodChannel;
-* Intent Android;
+* callback Activity;
 * Manifest;
 * foreground service;
-* custom scheme real.
+* custom scheme final.
 
 ---
 
-# 29. NÃO IMPLEMENTAR RECOVERY
+# 21. NÃO IMPLEMENTAR RECOVERY
 
-Ainda não implementar:
+Ainda não criar:
 
 ```text
 lio://order
@@ -756,9 +581,9 @@ lio://order
 
 ---
 
-# 30. NÃO IMPLEMENTAR REVERSAL
+# 22. NÃO IMPLEMENTAR REVERSAL
 
-Ainda não implementar:
+Ainda não criar:
 
 ```text
 lio://payment-reversal
@@ -766,56 +591,33 @@ lio://payment-reversal
 
 ---
 
-# 31. TESTES DIRECIONADOS OBRIGATÓRIOS
+# 23. TESTES DIRECIONADOS
 
-Executar somente testes relacionados a:
+Executar SOMENTE:
 
 ```text
-payment_integrations
 test_cielo_adapter
+payment_integrations tests diretamente relacionados
 ```
 
-Garantir cobertura de:
-
-```text
-provider Cielo da migration
-registry
-credentials missing
-secret-safe repr
-paymentCode
-value string
-merchantCode
-Deep Link
-callback APPROVED
-callback PIX
-callback CANCELLED statusCode 2
-JSON error code 1
-JSON error code 2
-JSON error code 3
-JSON error code 4
-responsecode fallback
-invalid Base64
-invalid JSON
-amount mismatch
-reference mismatch
-missing transaction id
-ambiguous payments
-parser with non-Cielo Attempt
-bridge resolve_payment_attempt
-QuickSalePayment não criado automaticamente
-```
+Não executar suíte completa.
 
 ---
 
-# 32. NÃO EXECUTAR
+# 24. TESTES OBRIGATÓRIOS
 
-NÃO executar:
+Garantir pelo menos:
 
-* suíte completa;
-* Flutter;
-* build;
-* analyze;
-* lint global.
+```text
+build exige configuração Cielo válida
+callback de Attempt Cielo não depende da config atual
+callback de provider não-Cielo é rejeitado
+CREATED → PROCESSING → APPROVED bridge
+QuickSalePayment não é criado no APPROVED
+JSON errors continuam funcionando
+APPROVED callback continua funcionando
+UNKNOWN continua funcionando
+```
 
 ---
 
@@ -823,28 +625,25 @@ NÃO executar:
 
 Ao terminar informe:
 
-1. como passou a interpretar JSON `{code, reason}`;
-2. precedência entre `response` e `responsecode`;
-3. mapping final codes 1/2/3/4;
-4. como parser valida provider Cielo;
-5. como corrigiu teste que duplicava `code='cielo'`;
-6. confirmação de que provider da migration é reutilizado;
-7. como `value` é serializado;
-8. validação de `merchantCode`;
-9. confirmação de que secrets continuam protegidos;
-10. confirmação de que response raw não é persistido;
-11. testes adicionados/ajustados;
-12. resultado dos testes direcionados;
-13. arquivos alterados;
-14. migrations criadas, se houver;
-15. confirmação de que NÃO alterou PAY-1;
-16. confirmação de que NÃO alterou Cash;
-17. confirmação de que NÃO alterou Mesa;
-18. confirmação de que NÃO alterou Comandas;
-19. confirmação de que NÃO alterou Flutter;
-20. confirmação de que NÃO implementou recovery;
-21. confirmação de que NÃO implementou reversal;
-22. confirmação de que NÃO abriu Deep Link real.
+1. qual helper passou a validar callback histórico;
+2. diferença entre validação do build e validação do parser;
+3. confirmação de que callback não depende de `connection.configuration`;
+4. teste de config alterada após PROCESSING;
+5. como corrigiu o teste `CREATED → PROCESSING → APPROVED`;
+6. confirmação de que `transition_payment_attempt()` oficial foi usado;
+7. confirmação de que QuickSalePayment não é criado automaticamente;
+8. testes adicionados/ajustados;
+9. resultado dos testes direcionados;
+10. arquivos alterados;
+11. migrations criadas — esperado: nenhuma;
+12. confirmação de que NÃO alterou PAY-1;
+13. confirmação de que NÃO alterou Cash;
+14. confirmação de que NÃO alterou Mesa;
+15. confirmação de que NÃO alterou Comandas;
+16. confirmação de que NÃO alterou Flutter;
+17. confirmação de que NÃO implementou recovery;
+18. confirmação de que NÃO implementou reversal;
+19. confirmação de que NÃO abriu Deep Link real.
 
 Depois PARE.
 

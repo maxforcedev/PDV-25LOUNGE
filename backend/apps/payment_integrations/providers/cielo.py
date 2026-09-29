@@ -128,13 +128,17 @@ def _error_result(code, reason):
 class CieloSmartAdapter(PaymentProviderAdapter):
     provider_code = 'cielo'
 
+    def _assert_cielo_attempt(self, attempt):
+        if attempt.provider_connection.provider.code != self.provider_code:
+            raise PaymentIntegrationConflict(
+                'cielo_connection_invalid', 'A conexão não pertence ao provider Cielo Smart.',
+            )
+
     def _connection_configuration(self, attempt):
         connection = attempt.provider_connection
         provider = connection.provider
-        if (
-            provider.code != self.provider_code
-            or provider.integration_type != PaymentProviderIntegrationType.LOCAL_DEEP_LINK
-        ):
+        self._assert_cielo_attempt(attempt)
+        if provider.integration_type != PaymentProviderIntegrationType.LOCAL_DEEP_LINK:
             raise PaymentIntegrationConflict(
                 'cielo_connection_invalid', 'A conexão não pertence ao provider Cielo Smart.',
             )
@@ -249,8 +253,8 @@ class CieloSmartAdapter(PaymentProviderAdapter):
         )
 
     def parse_payment_callback(self, *, attempt, response, responsecode=None):
-        # A Cielo parser must never normalize a callback for another provider.
-        self._connection_configuration(attempt)
+        # Historical callbacks must not be affected by later administrative changes.
+        self._assert_cielo_attempt(attempt)
         error_code = str(responsecode).strip() if responsecode not in (None, '') else ''
         try:
             raw = base64.b64decode(str(response or ''), validate=True)
