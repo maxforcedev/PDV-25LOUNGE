@@ -41,6 +41,8 @@ def env_or_file(name, default=_MISSING):
 
 
 SECRET_KEY = env_or_file('SECRET_KEY')
+CIELO_SMART_CLIENT_ID = env_or_file('CIELO_SMART_CLIENT_ID', default=None)
+CIELO_SMART_ACCESS_TOKEN = env_or_file('CIELO_SMART_ACCESS_TOKEN', default=None)
 DEBUG = env('DEBUG')
 ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=[])
 CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=[])
