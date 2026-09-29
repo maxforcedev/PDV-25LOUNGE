@@ -422,6 +422,7 @@ class TenantSaaSState(BaseModel):
 
 class GlobalSaaSSettings(BaseModel):
     singleton = models.BooleanField(default=True, unique=True, editable=False)
+    public_signup_enabled = models.BooleanField(default=False)
     auto_approve_signups = models.BooleanField(default=True)
     past_due_days = models.PositiveSmallIntegerField(default=3)
     restricted_after_days = models.PositiveSmallIntegerField(default=10)
@@ -464,6 +465,48 @@ class GlobalSaaSSettings(BaseModel):
     def save(self, *args, **kwargs):
         if not self.pk and type(self).objects.exists():
             raise ValidationError('Existe apenas uma configuracao global SaaS.')
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+
+class CommercialLead(BaseModel):
+    class Status(models.TextChoices):
+        NEW = 'NEW', 'Novo'
+        CONTACTED = 'CONTACTED', 'Contatado'
+        QUALIFIED = 'QUALIFIED', 'Qualificado'
+        LOST = 'LOST', 'Perdido'
+        CONVERTED = 'CONVERTED', 'Convertido'
+
+    name = models.CharField(max_length=150)
+    company_name = models.CharField(max_length=150)
+    whatsapp = models.CharField(max_length=24)
+    email = models.EmailField()
+    segment = models.CharField(max_length=100)
+    message = models.TextField(blank=True)
+    source_path = models.CharField(max_length=500, blank=True)
+    plan_interest = models.CharField(max_length=100, blank=True)
+    utm_source = models.CharField(max_length=150, blank=True)
+    utm_medium = models.CharField(max_length=150, blank=True)
+    utm_campaign = models.CharField(max_length=150, blank=True)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.NEW)
+
+    class Meta:
+        ordering = ('-created_at', '-id')
+
+    def clean(self):
+        self.name = ' '.join((self.name or '').split())
+        self.company_name = ' '.join((self.company_name or '').split())
+        self.whatsapp = ''.join(char for char in (self.whatsapp or '') if char.isdigit() or char == '+')
+        self.email = (self.email or '').strip().lower()
+        self.segment = ' '.join((self.segment or '').split())
+        self.message = (self.message or '').strip()
+        self.source_path = (self.source_path or '').strip()[:500]
+        self.plan_interest = ' '.join((self.plan_interest or '').split())
+        self.utm_source = (self.utm_source or '').strip()
+        self.utm_medium = (self.utm_medium or '').strip()
+        self.utm_campaign = (self.utm_campaign or '').strip()
+
+    def save(self, *args, **kwargs):
         self.full_clean()
         return super().save(*args, **kwargs)
 

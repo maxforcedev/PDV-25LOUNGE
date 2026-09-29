@@ -265,6 +265,7 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'login': '10/minute',
         'signup': '5/hour',
+        'commercial_lead': '10/hour',
         'password_reset': '5/hour',
         'password_reset_confirm': '10/hour',
     },
@@ -316,3 +317,4 @@ DEFAULT_FROM_EMAIL = env(
     'DEFAULT_FROM_EMAIL',
     default='CORE PDV <nao-responda@corepdv.com>',
 )
+SALES_LEAD_EMAIL = env_or_file('SALES_LEAD_EMAIL', default=None)

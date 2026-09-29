@@ -38,7 +38,7 @@ export function PlansCatalog() {
   }
 
   if (!plans.length) {
-    return <div className="card mx-auto max-w-xl p-8 text-center"><h2 className="text-lg font-bold text-fg">Novas adesões temporariamente indisponíveis</h2><p className="mt-2 text-sm leading-6 text-muted">Nenhum plano público está disponível neste momento. Consulte a Central de Ajuda para outros canais de contato.</p><Link href="/ajuda" className="btn btn-secondary mt-6">Abrir Central de Ajuda</Link></div>;
+    return <div className="card mx-auto max-w-xl p-8 text-center"><h2 className="text-lg font-bold text-fg">Planos sob consulta</h2><p className="mt-2 text-sm leading-6 text-muted">Fale com a equipe CORE para conhecer as opções adequadas à sua operação.</p><Link href="/contato" className="btn btn-secondary mt-6">Solicitar demonstração</Link></div>;
   }
 
   return (
@@ -53,14 +53,14 @@ export function PlansCatalog() {
           <p className="mt-4 min-h-12 text-[13px] leading-6 text-muted">{plan.description || "Controle operacional conectado para sua empresa."}</p>
           <div className="mt-6 border-y border-subtle py-5">
             <div className="flex items-end gap-2"><strong className="text-3xl font-black tracking-[-0.04em] text-fg">{formatBRL(plan.price)}</strong><span className="pb-1 text-xs text-muted">/{plan.billing_period_months === 1 ? "mês" : `${plan.billing_period_months} meses`}</span></div>
-            {plan.trial_days > 0 && <p className="mt-2 text-xs font-semibold text-success-strong">{plan.trial_days} dias para experimentar, sem cartão</p>}
+            {plan.trial_days > 0 && <p className="mt-2 text-xs font-semibold text-success-strong">{plan.trial_days} dias de trial disponíveis sob consulta</p>}
           </div>
           <ul className="mt-6 flex-1 space-y-3 text-sm text-fg">
             <li className="flex items-center gap-3"><span className="flex size-7 items-center justify-center rounded-full bg-info-surface text-info-strong"><Users className="size-3.5" /></span>{limitLabel(plan.limits.users, "usuário", "usuários")}</li>
             <li className="flex items-center gap-3"><span className="flex size-7 items-center justify-center rounded-full bg-info-surface text-info-strong"><Building2 className="size-3.5" /></span>{limitLabel(plan.limits.branches, "filial", "filiais")}</li>
-            <li className="flex items-center gap-3"><span className="flex size-7 items-center justify-center rounded-full bg-success-surface text-success-strong"><Check className="size-3.5" /></span>Cadastro sem cartão ou gateway</li>
+            <li className="flex items-center gap-3"><span className="flex size-7 items-center justify-center rounded-full bg-success-surface text-success-strong"><Check className="size-3.5" /></span>Atendimento comercial antes da contratação</li>
           </ul>
-          <Link href={`/cadastro?plano=${plan.id}`} className="btn btn-primary mt-7 h-12 w-full rounded-xl">Escolher {plan.name}<ArrowRight className="size-4" /></Link>
+          <Link href={`/contato?plano=${plan.id}`} className="btn btn-primary mt-7 h-12 w-full rounded-xl">Falar sobre este plano<ArrowRight className="size-4" /></Link>
         </article>
       ))}
     </div>

@@ -10,6 +10,7 @@ from apps.companies.models import Company
 from .models import (
     BillingRecord,
     Capability,
+    CommercialLead,
     CycleUsage,
     GlobalSaaSSettings,
     Plan,
@@ -354,6 +355,41 @@ class GlobalSaaSSettingsSerializer(serializers.ModelSerializer):
             'id', 'enforcement_enabled', 'enforcement_enabled_at',
             'enforcement_enabled_by', 'created_at', 'updated_at',
         )
+
+
+class CommercialLeadSerializer(serializers.ModelSerializer):
+    honeypot = serializers.CharField(required=False, allow_blank=True, write_only=True, trim_whitespace=False)
+
+    class Meta:
+        model = CommercialLead
+        fields = (
+            'name', 'company_name', 'whatsapp', 'email', 'segment', 'message',
+            'source_path', 'plan_interest', 'utm_source', 'utm_medium', 'utm_campaign', 'honeypot',
+        )
+        extra_kwargs = {
+            'message': {'required': False, 'allow_blank': True},
+            'source_path': {'required': False, 'allow_blank': True},
+            'plan_interest': {'required': False, 'allow_blank': True},
+            'utm_source': {'required': False, 'allow_blank': True},
+            'utm_medium': {'required': False, 'allow_blank': True},
+            'utm_campaign': {'required': False, 'allow_blank': True},
+        }
+
+    def validate_whatsapp(self, value):
+        digits = ''.join(char for char in value if char.isdigit())
+        if not 10 <= len(digits) <= 15:
+            raise serializers.ValidationError('Informe um WhatsApp válido com DDD.')
+        return value
+
+    def validate_source_path(self, value):
+        if value and not value.startswith('/'):
+            raise serializers.ValidationError('A origem deve ser um caminho interno.')
+        return value
+
+    def validate(self, attrs):
+        if attrs.pop('honeypot', ''):
+            raise serializers.ValidationError('Não foi possível enviar o contato.')
+        return attrs
 
 
 class PublicBrandingSerializer(serializers.ModelSerializer):

@@ -1,7 +1,10 @@
 import hashlib
+import logging
 from decimal import Decimal
 
 from django.contrib.auth import authenticate, login, logout
+from django.conf import settings
+from django.core.mail import send_mail
 from django.db.models import Q
 from django.middleware.csrf import get_token
 from django.utils import timezone
@@ -24,6 +27,7 @@ from apps.companies.services import transfer_company_owner
 from .models import (
     BillingRecord,
     Capability,
+    CommercialLead,
     GlobalSaaSSettings,
     Plan,
     PlanEntitlement,
@@ -39,6 +43,7 @@ from .serializers import (
     BillingRecordSerializer,
     CancellationRequestSerializer,
     CapabilitySerializer,
+    CommercialLeadSerializer,
     CycleUsageSerializer,
     GlobalSaaSSettingsSerializer,
     ManualPaymentSerializer,
@@ -58,6 +63,9 @@ from .serializers import (
     SupportSessionSerializer,
     TenantSaaSStateSerializer,
 )
+
+
+logger = logging.getLogger(__name__)
 from .services import (
     approve_tenant,
     archive_tenant,
@@ -136,6 +144,46 @@ class PublicSettingsView(APIView):
         return Response(PublicBrandingSerializer(instance).data)
 
 
+def _notify_commercial_lead(lead):
+    if not settings.SALES_LEAD_EMAIL:
+        return
+    fields = (
+        ('Nome', lead.name), ('Empresa', lead.company_name), ('WhatsApp', lead.whatsapp),
+        ('E-mail', lead.email), ('Segmento', lead.segment), ('Mensagem', lead.message or '-'),
+        ('Página de origem', lead.source_path or '-'), ('Plano de interesse', lead.plan_interest or '-'),
+        ('UTM source', lead.utm_source or '-'), ('UTM medium', lead.utm_medium or '-'),
+        ('UTM campaign', lead.utm_campaign or '-'), ('Recebido em', lead.created_at.isoformat()),
+    )
+    send_mail(
+        subject=f'Novo lead comercial CORE: {lead.name}',
+        message='\n'.join(f'{label}: {value}' for label, value in fields),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[settings.SALES_LEAD_EMAIL],
+        fail_silently=False,
+    )
+
+
+@method_decorator(csrf_protect, name='dispatch')
+class PublicCommercialLeadView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'commercial_lead'
+
+    def post(self, request):
+        serializer = CommercialLeadSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        lead = serializer.save()
+        try:
+            _notify_commercial_lead(lead)
+        except Exception:
+            logger.exception('Commercial lead notification failed for lead_id=%s.', lead.pk)
+        return Response(
+            {'id': lead.pk, 'detail': 'Recebemos seu contato. Nossa equipe falará com você.'},
+            status=status.HTTP_201_CREATED,
+        )
+
+
 @method_decorator(csrf_protect, name='dispatch')
 class PlatformLoginView(APIView):
     authentication_classes = []
@@ -207,6 +255,15 @@ class PublicSignupView(APIView):
     throttle_scope = 'signup'
 
     def post(self, request):
+        settings_instance = GlobalSaaSSettings.objects.first()
+        if not settings_instance or not settings_instance.public_signup_enabled:
+            return Response(
+                {
+                    'code': 'public_signup_disabled',
+                    'detail': 'O cadastro público está indisponível. Solicite uma demonstração comercial.',
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
         serializer = ProvisioningSerializer(
             data=request.data,
             context={'source': ProvisioningOperation.Source.PUBLIC_SIGNUP},

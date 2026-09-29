@@ -686,6 +686,7 @@ class PublicSignupCsrfTests(TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
+        GlobalSaaSSettings.objects.create(public_signup_enabled=True)
         valid = APIClient(enforce_csrf_checks=True)
         csrf_response = valid.get(reverse('accounts:csrf'))
         token = csrf_response.data['csrf_token']
@@ -701,6 +702,12 @@ class PublicSignupCsrfTests(TestCase):
         )
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(response.data['id'], operation_id)
+
+    def test_public_signup_is_disabled_by_default_without_provisioning(self):
+        client = APIClient()
+        response = client.post(reverse('saas-public-signup'), {}, format='json')
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data['code'], 'public_signup_disabled')
 
 
 class Tenant360PermissionTests(TestCase):

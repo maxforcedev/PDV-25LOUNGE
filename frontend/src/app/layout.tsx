@@ -7,8 +7,8 @@ import { BrandingProvider } from "@/providers/branding-provider";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Core PDV",
-  description: "Gestão centralizada da sua empresa.",
+  title: { default: "CORE PDV | Operação e gestão conectadas", template: "%s | CORE PDV" },
+  description: "Conecte vendas, caixa, estoque, mesas, compras, pagamentos e gestão em uma única plataforma.",
 };
 
 export default function RootLayout({
