@@ -30,9 +30,11 @@ from apps.pos.models import (
     POSOperatorPinAttempt, POSOperatorSession, POSRequestRateLimit, QuickSaleCheckout, QuickSalePayment,
 )
 from apps.payment_integrations.models import (
-    PaymentAttemptStatus, PaymentIntent, PaymentProvider, PaymentProviderConnection,
+    PaymentAttempt, PaymentAttemptStatus, PaymentIntent, PaymentProvider, PaymentProviderConnection,
     PaymentProviderConnectionEnvironment, PaymentTerminal,
 )
+from apps.payment_integrations.services import PaymentIntegrationConflict
+from apps.pos.provider_payments import resolve_provider_resources
 from apps.pos.services import (
     _mask_email, authenticate_device, authenticate_operator_session,
     create_pin_reset_token, effective_settings, pairing_channels, set_pos_pin,
@@ -309,12 +311,85 @@ class POSFoundationIntegrationTests(TestCase):
         )
         return operator, device, checkout.cash_session, checkout, method, connection, terminal
 
+    def start_configured_cielo_payment(self):
+        _operator, device, _session, checkout, _method, _connection, _terminal = self.create_provider_checkout()
+        cielo = PaymentProvider.objects.get(code='cielo')
+        connection = PaymentProviderConnection.objects.create(
+            company=self.company, provider=cielo, name='Cielo local',
+            environment=PaymentProviderConnectionEnvironment.SANDBOX,
+            configuration={'merchant_code': '1234567890123456'},
+        )
+        PaymentTerminal.objects.create(
+            connection=connection, branch=self.branch, pos_device=device, name='Cielo deste POS',
+        )
+        method = next(
+            item for item in ensure_default_payment_methods(self.company)
+            if item.code == 'credit_card'
+        )
+        started = self.client.post(
+            reverse('pos:quick-sale-provider-payment-start', args=[checkout.pk]),
+            {
+                'payment_method': method.pk, 'provider': 'cielo', 'mode': 'remaining',
+                'idempotency_key': str(uuid4()),
+            },
+            format='json',
+        )
+        self.assertEqual(started.status_code, 200, started.data)
+        return checkout, started
+
     def create_provider_intent(self, checkout, operator, method, connection, terminal, *, mode='remaining', amount=None):
         return create_quick_sale_payment_intent(
             checkout=checkout, user=operator, payment_method_id=method.pk, mode=mode,
             amount=amount, allocations=[], provider_connection=connection, terminal=terminal,
             idempotency_key=uuid4(),
         )[0]
+
+    def test_provider_resource_resolution_prefers_branch_and_rejects_ambiguity(self):
+        _operator, device, _session, checkout, _method, _connection, _terminal = self.create_provider_checkout()
+        cielo = PaymentProvider.objects.get(code='cielo')
+        company_connection = PaymentProviderConnection.objects.create(
+            company=self.company, provider=cielo, name='Cielo company',
+            environment=PaymentProviderConnectionEnvironment.SANDBOX,
+        )
+        branch_connection = PaymentProviderConnection.objects.create(
+            company=self.company, branch=self.branch, provider=cielo, name='Cielo branch',
+            environment=PaymentProviderConnectionEnvironment.SANDBOX,
+        )
+        PaymentTerminal.objects.create(
+            connection=company_connection, branch=self.branch, pos_device=device, name='Company terminal',
+        )
+        PaymentTerminal.objects.create(
+            connection=branch_connection, branch=self.branch, pos_device=device, name='Branch terminal',
+        )
+
+        connection, _terminal = resolve_provider_resources(checkout=checkout, provider_code='cielo')
+
+        self.assertEqual(connection.pk, branch_connection.pk)
+        PaymentProviderConnection.objects.create(
+            company=self.company, branch=self.branch, provider=cielo, name='Cielo branch duplicate',
+            environment=PaymentProviderConnectionEnvironment.SANDBOX,
+        )
+        with self.assertRaises(PaymentIntegrationConflict) as context:
+            resolve_provider_resources(checkout=checkout, provider_code='cielo')
+        self.assertEqual(context.exception.code, 'payment_provider_connection_ambiguous')
+
+    def test_provider_resource_resolution_rejects_a_terminal_from_another_pos(self):
+        _operator, device, _session, checkout, _method, _connection, _terminal = self.create_provider_checkout()
+        cielo = PaymentProvider.objects.get(code='cielo')
+        connection = PaymentProviderConnection.objects.create(
+            company=self.company, branch=self.branch, provider=cielo, name='Cielo branch',
+            environment=PaymentProviderConnectionEnvironment.SANDBOX,
+        )
+        other_device = POSDevice.objects.create(
+            branch=self.branch, name='Outro POS', status=POSDevice.Status.ACTIVE,
+        )
+        PaymentTerminal.objects.create(
+            connection=connection, branch=self.branch, pos_device=other_device, name='Outro terminal',
+        )
+
+        with self.assertRaises(PaymentIntegrationConflict) as context:
+            resolve_provider_resources(checkout=checkout, provider_code='cielo')
+        self.assertEqual(context.exception.code, 'payment_provider_terminal_unavailable')
 
     def test_generated_licensing_code_is_short_and_unambiguous(self):
         self.assertRegex(
@@ -1728,10 +1803,22 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(started.status_code, 200, started.data)
         self.assertEqual(replayed.status_code, 200, replayed.data)
         self.assertEqual(started['Cache-Control'], 'no-store')
+        self.assertIn('launch_uri', started.data)
+        self.assertTrue(started.data['launch_available'])
         self.assertEqual(started.data['intent_id'], replayed.data['intent_id'])
         self.assertEqual(started.data['attempt_id'], replayed.data['attempt_id'])
+        self.assertTrue(replayed.data['replayed'])
+        self.assertFalse(replayed.data['launch_available'])
+        self.assertNotIn('launch_uri', replayed.data)
         self.assertEqual(PaymentIntent.objects.filter(origin_id=str(checkout.pk)).count(), 1)
+        self.assertEqual(PaymentAttempt.objects.filter(intent__origin_id=str(checkout.pk)).count(), 1)
         self.assertEqual(QuickSalePayment.objects.filter(checkout=checkout).count(), 0)
+        current = self.client.get(reverse('pos:quick-checkout-detail', args=[checkout.pk]))
+        self.assertEqual(current.status_code, 200, current.data)
+        self.assertEqual(current.data['payment_integration']['intent_status'], 'processing')
+        self.assertEqual(current.data['payment_integration']['attempt_status'], 'processing')
+        self.assertTrue(current.data['payment_integration']['requires_recovery'])
+        self.assertFalse(current.data['payment_integration']['can_retry'])
         attempt = PaymentIntent.objects.get(pk=started.data['intent_id']).attempts.get()
         self.assertEqual(attempt.status, PaymentAttemptStatus.PROCESSING)
         self.assertNotIn('launch_uri', attempt.request_metadata)
@@ -1785,3 +1872,53 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(QuickSalePayment.objects.filter(checkout=checkout).count(), 1)
         intent = PaymentIntent.objects.get(pk=started.data['intent_id'])
         self.assertEqual(intent.status, 'applied')
+
+    @override_settings(
+        CIELO_SMART_CLIENT_ID='cielo-client-id-for-test',
+        CIELO_SMART_ACCESS_TOKEN='cielo-access-token-for-test',
+    )
+    def test_cielo_cancelled_callback_releases_the_quick_sale_checkout(self):
+        checkout, started = self.start_configured_cielo_payment()
+        response = base64.b64encode(json.dumps({
+            'reference': f"CORE-{started.data['attempt_id']}",
+            'payments': [{
+                'amount': '2000', 'installments': 0,
+                'paymentFields': {'statusCode': '2'},
+            }],
+        }).encode()).decode()
+
+        resolved = self.client.post(
+            reverse('pos:quick-sale-provider-payment-result', args=[checkout.pk, started.data['attempt_id']]),
+            {'response': response}, format='json',
+        )
+
+        self.assertEqual(resolved.status_code, 200, resolved.data)
+        intent = PaymentIntent.objects.get(pk=started.data['intent_id'])
+        self.assertEqual(intent.status, PaymentAttemptStatus.CANCELLED)
+        self.assertEqual(intent.attempts.get().status, PaymentAttemptStatus.CANCELLED)
+        self.assertEqual(QuickSalePayment.objects.filter(checkout=checkout).count(), 0)
+        self.assertIsNone(resolved.data['payment_integration'])
+        self.assertTrue(resolved.data['capabilities']['can_record_payment'])
+
+    @override_settings(
+        CIELO_SMART_CLIENT_ID='cielo-client-id-for-test',
+        CIELO_SMART_ACCESS_TOKEN='cielo-access-token-for-test',
+    )
+    def test_cielo_error_callback_keeps_a_retryable_provider_payment(self):
+        checkout, started = self.start_configured_cielo_payment()
+        response = base64.b64encode(json.dumps({
+            'code': '3', 'reason': 'Falha no terminal',
+        }).encode()).decode()
+
+        resolved = self.client.post(
+            reverse('pos:quick-sale-provider-payment-result', args=[checkout.pk, started.data['attempt_id']]),
+            {'response': response}, format='json',
+        )
+
+        self.assertEqual(resolved.status_code, 200, resolved.data)
+        intent = PaymentIntent.objects.get(pk=started.data['intent_id'])
+        self.assertEqual(intent.status, PaymentAttemptStatus.ERROR)
+        self.assertEqual(intent.attempts.get().status, PaymentAttemptStatus.ERROR)
+        self.assertEqual(QuickSalePayment.objects.filter(checkout=checkout).count(), 0)
+        self.assertTrue(resolved.data['payment_integration']['can_retry'])
+        self.assertTrue(resolved.data['payment_integration']['can_cancel'])

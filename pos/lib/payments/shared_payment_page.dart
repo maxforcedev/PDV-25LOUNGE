@@ -55,6 +55,9 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
   final CieloPaymentBridge _cieloBridge = CieloPaymentBridge();
   StreamSubscription<CieloPaymentCallback>? _cieloCallbacks;
   String? _activeProviderAttemptId;
+  CieloPaymentCallback? _pendingCieloCallback;
+  bool _resolvingProviderCallback = false;
+  bool _checkingNativeCallback = false;
   bool get _canDiscount =>
       widget.controller.bootstrapSnapshot?.permissions
           .contains('sales.apply_discount') ??
@@ -76,8 +79,8 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     }
     _pollPendingPaymentDocuments();
     _restorePendingPayment();
-    _cieloCallbacks = _cieloBridge.callbacks.listen(_resolveCieloCallback);
-    unawaited(_consumePendingCieloCallback());
+    _cieloCallbacks = _cieloBridge.callbacks.listen(_receiveCieloCallback);
+    _schedulePendingProviderCallback();
   }
 
   @override
@@ -90,32 +93,73 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
   QuickSalePaymentIntegration? get _providerPayment =>
       _checkout.paymentIntegration;
 
-  Future<void> _consumePendingCieloCallback() async {
+  String? get _expectedProviderAttemptId =>
+      _providerPayment?.attemptId ?? _activeProviderAttemptId;
+
+  void _receiveCieloCallback(CieloPaymentCallback callback) {
+    if (callback.attemptId != _expectedProviderAttemptId) return;
+    _pendingCieloCallback = callback;
+    if (mounted) setState(() {});
+    _schedulePendingProviderCallback();
+  }
+
+  void _schedulePendingProviderCallback() {
+    if (_working || _resolvingProviderCallback || _checkingNativeCallback) {
+      return;
+    }
+    unawaited(_drainPendingProviderCallback());
+  }
+
+  Future<void> _drainPendingProviderCallback() async {
+    if (_working || _resolvingProviderCallback) return;
+    if (_pendingCieloCallback == null && !_checkingNativeCallback) {
+      _checkingNativeCallback = true;
+      try {
+        final callback = await _cieloBridge.getPendingCallback();
+        if (callback != null &&
+            callback.attemptId == _expectedProviderAttemptId) {
+          _pendingCieloCallback = callback;
+          if (mounted) setState(() {});
+        }
+      } on PlatformException {
+        // The bridge is unavailable outside Android Cielo devices.
+      } finally {
+        _checkingNativeCallback = false;
+      }
+    }
+    final callback = _pendingCieloCallback;
+    if (callback == null ||
+        callback.attemptId != _expectedProviderAttemptId ||
+        _working) {
+      return;
+    }
+    _resolvingProviderCallback = true;
+    if (mounted) setState(() => _working = true);
     try {
-      final callback = await _cieloBridge.getPendingCallback();
-      if (callback != null) await _resolveCieloCallback(callback);
-    } on PlatformException {
-      // The native bridge is unavailable outside Android Cielo devices.
+      final updated = await widget.controller.resolveQuickSaleProviderPayment(
+        checkoutId: _checkout.id,
+        attemptId: callback.attemptId,
+        response: callback.response,
+        responseCode: callback.responseCode,
+      );
+      if (updated != null) {
+        await _cieloBridge.acknowledgeCallback(callback.attemptId);
+        _pendingCieloCallback = null;
+        _activeProviderAttemptId = null;
+        if (mounted) _replaceCheckout(updated);
+      }
+    } catch (_) {
+      // Keep the callback for the explicit confirmation retry after a network failure.
+    } finally {
+      _resolvingProviderCallback = false;
+      if (mounted) setState(() => _working = false);
     }
   }
 
-  Future<void> _resolveCieloCallback(CieloPaymentCallback callback) async {
-    final expectedAttempt =
-        _providerPayment?.attemptId ?? _activeProviderAttemptId;
-    if (_working || callback.attemptId != expectedAttempt) return;
-    setState(() => _working = true);
-    final updated = await widget.controller.resolveQuickSaleProviderPayment(
-      checkoutId: _checkout.id,
-      attemptId: callback.attemptId,
-      response: callback.response,
-      responseCode: callback.responseCode,
-    );
-    if (updated != null) {
-      await _cieloBridge.acknowledgeCallback(callback.attemptId);
-      _activeProviderAttemptId = null;
-      if (mounted) _replaceCheckout(updated);
-    }
-    if (mounted) setState(() => _working = false);
+  void _finishedWorking() {
+    if (!mounted) return;
+    setState(() => _working = false);
+    _schedulePendingProviderCallback();
   }
 
   Future<void> _restorePendingPayment() async {
@@ -205,7 +249,6 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       itemDiscountAuthorization: itemDiscountAuthorization,
       serviceFeeAuthorization: serviceFeeAuthorization,
     );
-    if (mounted) setState(() => _working = false);
     if (updated != null && mounted) {
       _replaceCheckout(updated);
     } else {
@@ -216,6 +259,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         if (mounted) Navigator.of(context).pop(recovered);
       }
     }
+    _finishedWorking();
   }
 
   Future<QuickSaleAuthorization?> _requestAuthorization(String type) async {
@@ -410,15 +454,27 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       allocations: attempt.allocations,
     );
     if (launch == null) {
-      if (mounted) setState(() => _working = false);
+      // A timeout can still have created a PROCESSING attempt. Reload the
+      // authoritative checkout rather than offering another charge.
+      final current =
+          await widget.controller.quickSaleCheckoutDetail(_checkout.id);
+      if (current != null && mounted) _replaceCheckout(current);
+      _finishedWorking();
       return false;
     }
     _activeProviderAttemptId = launch.attemptId;
+    if (launch.launchUri == null) {
+      final current =
+          await widget.controller.quickSaleCheckoutDetail(_checkout.id);
+      if (current != null && mounted) _replaceCheckout(current);
+      _finishedWorking();
+      return false;
+    }
     try {
       // launchUri is intentionally scoped to this call and never written to POS storage.
       await _cieloBridge.launch(
         attemptId: launch.attemptId,
-        launchUri: launch.launchUri,
+        launchUri: launch.launchUri!,
       );
     } on PlatformException {
       final updated = await widget.controller.reportProviderLaunchFailed(
@@ -426,14 +482,14 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         attemptId: launch.attemptId,
       );
       if (updated != null && mounted) _replaceCheckout(updated);
-      if (mounted) setState(() => _working = false);
+      _finishedWorking();
       return false;
     }
     if (mounted) {
       final current =
           await widget.controller.quickSaleCheckoutDetail(_checkout.id);
       if (current != null) _replaceCheckout(current);
-      setState(() => _working = false);
+      _finishedWorking();
     }
     return true;
   }
@@ -448,22 +504,24 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     );
     if (launch != null) {
       _activeProviderAttemptId = launch.attemptId;
-      try {
-        await _cieloBridge.launch(
-            attemptId: launch.attemptId, launchUri: launch.launchUri);
-      } on PlatformException {
-        final updated = await widget.controller.reportProviderLaunchFailed(
-          checkoutId: _checkout.id,
-          attemptId: launch.attemptId,
-        );
-        if (updated != null && mounted) _replaceCheckout(updated);
+      if (launch.launchUri != null) {
+        try {
+          await _cieloBridge.launch(
+              attemptId: launch.attemptId, launchUri: launch.launchUri!);
+        } on PlatformException {
+          final updated = await widget.controller.reportProviderLaunchFailed(
+            checkoutId: _checkout.id,
+            attemptId: launch.attemptId,
+          );
+          if (updated != null && mounted) _replaceCheckout(updated);
+        }
       }
     }
     if (mounted) {
       final current =
           await widget.controller.quickSaleCheckoutDetail(_checkout.id);
       if (current != null) _replaceCheckout(current);
-      setState(() => _working = false);
+      _finishedWorking();
     }
   }
 
@@ -476,7 +534,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       intentId: integration.intentId,
     );
     if (updated != null && mounted) _replaceCheckout(updated);
-    if (mounted) setState(() => _working = false);
+    _finishedWorking();
   }
 
   Future<void> _cancelProviderPayment() async {
@@ -488,7 +546,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       intentId: integration.intentId,
     );
     if (updated != null && mounted) _replaceCheckout(updated);
-    if (mounted) setState(() => _working = false);
+    _finishedWorking();
   }
 
   Future<bool> _recordPayment(QuickSalePaymentAttempt attempt,
@@ -507,7 +565,6 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       receivedAmount: attempt.receivedAmount,
       allocations: attempt.allocations,
     );
-    if (mounted) setState(() => _working = false);
     if (updated != null && mounted) {
       _replaceCheckout(updated,
           preserveEqualSplit:
@@ -523,6 +580,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     } else {
       await _restorePendingPayment();
     }
+    _finishedWorking();
     return updated != null;
   }
 
@@ -639,19 +697,19 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       reason: reason,
       authorization: authorization,
     );
-    if (mounted) setState(() => _working = false);
     if (updated != null && mounted) _replaceCheckout(updated);
+    _finishedWorking();
   }
 
   Future<void> _finish() async {
     setState(() => _working = true);
     final result =
         await widget.controller.finalizeQuickSaleCheckout(_checkout.id);
-    if (mounted) setState(() => _working = false);
     if (result != null && mounted) {
       await widget.onCompleted(result);
       if (mounted) Navigator.of(context).pop(result);
     }
+    _finishedWorking();
   }
 
   Future<void> _printPaymentReceipt(QuickSaleCheckoutPayment payment) async {
@@ -660,7 +718,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     final document = _paymentDocuments[payment.id];
     if (document?.awaitingInitialPrint == true) {
       unawaited(_pollPaymentDocument(payment));
-      setState(() => _working = false);
+      _finishedWorking();
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('A impressão inicial ainda está pendente.')));
       return;
@@ -683,9 +741,9 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
           );
     if (!mounted) return;
     setState(() {
-      _working = false;
       if (result != null) _paymentDocuments[payment.id] = result;
     });
+    _finishedWorking();
     if (result?.awaitingInitialPrint == true) {
       unawaited(_pollPaymentDocument(payment));
     }
@@ -726,7 +784,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     final cancelled =
         await widget.controller.cancelQuickSaleCheckout(_checkout.id);
     if (!mounted) return;
-    setState(() => _working = false);
+    _finishedWorking();
     if (cancelled) {
       _checkoutCancelled = true;
       await widget.onCancelled();
@@ -745,7 +803,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     final cancelled =
         await widget.controller.cancelQuickSaleCheckout(_checkout.id);
     if (!mounted) return;
-    setState(() => _working = false);
+    _finishedWorking();
     if (!cancelled) return;
     _checkoutCancelled = true;
     await widget.onCancelled();
@@ -879,11 +937,43 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
   Widget? _providerAction() {
     final integration = _providerPayment;
     if (integration == null) return null;
+    if (_pendingCieloCallback != null) {
+      return Container(
+        padding: const EdgeInsets.all(12),
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('RETORNO DA CIELO RECEBIDO'),
+            const Text('AGUARDANDO CONFIRMAÇÃO NO CORE'),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: _working ? null : _schedulePendingProviderCallback,
+              icon: const Icon(Icons.sync),
+              label: const Text('TENTAR CONFIRMAR PAGAMENTO'),
+            ),
+          ],
+        ),
+      );
+    }
     if (integration.canApply) {
-      return OutlinedButton.icon(
-        onPressed: _working ? null : _applyProviderPayment,
-        icon: const Icon(Icons.sync),
-        label: const Text('TENTAR REGISTRAR NO CORE'),
+      return Container(
+        padding: const EdgeInsets.all(12),
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('PAGAMENTO APROVADO NA CIELO'),
+            const Text(
+                'O pagamento foi aprovado, mas ainda precisa ser registrado no CORE.'),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: _working ? null : _applyProviderPayment,
+              icon: const Icon(Icons.sync),
+              label: const Text('TENTAR REGISTRAR NO CORE'),
+            ),
+          ],
+        ),
       );
     }
     if (integration.canRetry || integration.canCancel) {

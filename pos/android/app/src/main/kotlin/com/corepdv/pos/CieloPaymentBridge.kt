@@ -24,7 +24,9 @@ object CieloPaymentBridge {
                     if (attemptId != null && pendingCallback?.get("attempt_id") == attemptId) {
                         pendingCallback = null
                         activeAttemptId = null
-                        CieloPaymentForegroundService.stop(channel.context)
+                        appContext?.let { context ->
+                            CieloPaymentForegroundService.stop(context)
+                        }
                     }
                     result.success(null)
                 }

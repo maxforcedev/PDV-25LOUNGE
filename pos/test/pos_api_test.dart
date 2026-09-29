@@ -234,6 +234,37 @@ void main() {
     expect(launch.attemptId, 'attempt-1');
     expect(launch.launchUri, 'lio://payment?request=secret');
   });
+
+  test('parses a replayed provider start without a reusable launch URI',
+      () async {
+    final api = HttpPosApi(
+      baseUrl: 'https://core.example',
+      secrets: _MemorySecretStore(),
+      client: MockClient((request) async => http.Response(
+            jsonEncode({
+              'provider': 'cielo',
+              'intent_id': 'intent-1',
+              'attempt_id': 'attempt-1',
+              'status': 'processing',
+              'replayed': true,
+              'launch_available': false,
+            }),
+            200,
+          )),
+    );
+
+    final launch = await api.startQuickSaleProviderPayment(
+      checkoutId: 'checkout-1',
+      paymentMethodId: 3,
+      provider: 'cielo',
+      mode: 'remaining',
+      idempotencyKey: 'intent-1',
+    );
+
+    expect(launch.launchUri, isNull);
+    expect(launch.replayed, isTrue);
+    expect(launch.launchAvailable, isFalse);
+  });
 }
 
 class _MemorySecretStore implements SecretStore {

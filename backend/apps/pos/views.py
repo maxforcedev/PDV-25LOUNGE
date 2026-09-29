@@ -2209,6 +2209,9 @@ def _start_provider_payment(*, checkout, operator, data, audit_metadata):
                 'payment_intent_not_processing',
                 'A cobrança idempotente não possui tentativa em processamento.',
             )
+        # A replay only confirms the operation already exists. Reissuing its URI
+        # could open the same external charge for a second time.
+        return intent, attempt, None, True
     else:
         attempt = start_quick_sale_payment_attempt(
             checkout=checkout, intent=intent, user=operator, provider_connection=connection,
@@ -2231,7 +2234,7 @@ def _start_provider_payment(*, checkout, operator, data, audit_metadata):
         if isinstance(error, PaymentIntegrationConflict):
             raise QuickCheckoutConflict(error.code, error.message) from error
         raise QuickCheckoutConflict('payment_provider_unavailable', 'O provedor de pagamento não está disponível.') from error
-    return intent, attempt, command, replayed
+    return intent, attempt, command, False
 
 
 class POSQuickCheckoutView(POSQuickSaleView):
@@ -2347,16 +2350,23 @@ class POSQuickSaleProviderPaymentStartView(POSQuickCheckoutView):
             )
         except (QuickCheckoutConflict, PaymentIntegrationConflict) as error:
             _quick_checkout_conflict(QuickCheckoutConflict(error.code, error.message))
-        response = Response({
+        payload = {
             'provider': serializer.validated_data['provider'],
             'intent_id': str(intent.pk),
             'attempt_id': str(attempt.pk),
             'status': attempt.status,
-            'operation': command.operation,
-            'launch_uri': command.uri,
-            'safe_metadata': command.safe_metadata,
-        })
-        response['Cache-Control'] = 'no-store'
+            'replayed': replayed,
+            'launch_available': command is not None,
+        }
+        if command is not None:
+            payload.update({
+                'operation': command.operation,
+                'launch_uri': command.uri,
+                'safe_metadata': command.safe_metadata,
+            })
+        response = Response(payload)
+        if command is not None:
+            response['Cache-Control'] = 'no-store'
         if replayed:
             response['Idempotency-Replayed'] = 'true'
         return response

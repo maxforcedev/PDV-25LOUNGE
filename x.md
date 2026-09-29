@@ -1,539 +1,475 @@
-# MISSÃO PAY-2.1 — CIELO SMART DEEP LINK NO CORE POS
+# MISSÃO PAY-2.1.1 — FECHAMENTO DE CALLBACK, START INCERTO E BRIDGE ANDROID
 
-HEAD BASE:
+HEAD atual analisado:
 
-`44bbb9476b86b6111c9ccf9f05f36906293be980`
+`804532f518c82cfcf8efb4f2514ecc771f1cf97e`
 
-O PAY-2.0 está ENCERRADO.
+O PAY-2.1 implementou corretamente a base do fluxo real:
 
-Já temos:
+* endpoints provider-neutral;
+* resolução de Connection Cielo;
+* Terminal vinculado ao POS;
+* criação de Intent + Attempt;
+* launch command;
+* Manifest Cielo;
+* callback Activity;
+* foreground service;
+* MethodChannel;
+* Flutter bridge;
+* callback → backend;
+* APPROVED → APPLIED;
+* retry/cancel/apply;
+* proteção do `launch_uri`.
 
-```text
-PaymentIntent
-PaymentAttempt
-Provider Registry
-CieloSmartAdapter
-Deep Link builder
-Callback parser
-UNKNOWN
-APPROVED != APPLIED
-QuickSale provider bridge
-```
+Porém a auditoria encontrou 3 bloqueadores antes do primeiro teste físico.
 
-Agora implementar o primeiro fluxo REAL:
+Corrigir SOMENTE estes pontos e completar os testes críticos.
 
-```text
-CORE POS
-↓
-Backend
-↓
-PaymentIntent / PaymentAttempt PROCESSING
-↓
-Cielo launch command
-↓
-Android
-↓
-Cielo Smart
-↓
-callback Android
-↓
-Flutter
-↓
-Backend
-↓
-PaymentAttempt
-↓
-PaymentIntent
-↓
-QuickSalePayment
-```
-
-Nesta missão implementar SOMENTE pagamento Cielo via Deep Link na VENDA RÁPIDA.
-
-NÃO integrar Mesa.
-
-NÃO integrar Comandas.
-
-NÃO implementar recovery Cielo ainda.
-
-NÃO implementar reversal Cielo ainda.
-
-NÃO alterar o motor PAY-1.
+NÃO implementar recovery Cielo via consulta.
+NÃO implementar reversal.
+NÃO mexer em Mesa.
+NÃO mexer em Comandas.
+NÃO alterar PAY-1.
 
 ---
 
-# 1. PRINCÍPIO FUNDAMENTAL
+# 1. CORRIGIR ERRO DE COMPILAÇÃO NO ANDROID
 
-O Flutter NÃO decide se o pagamento foi aprovado.
+Hoje em:
 
-O Android NÃO decide se o pagamento foi aprovado.
+`CieloPaymentBridge.kt`
 
-O callback Cielo NÃO pode virar pagamento local diretamente.
+existe algo equivalente a:
 
-Fluxo obrigatório:
-
-```text
-callback raw da Cielo
-↓
-Flutter apenas encaminha
-↓
-backend
-↓
-CieloSmartAdapter.parse_payment_callback()
-↓
-ProviderPaymentResult
-↓
-resolve_quick_sale_payment_attempt()
-↓
-se APPROVED
-apply_approved_quick_sale_payment_intent()
-↓
-QuickSalePayment
+```kotlin
+CieloPaymentForegroundService.stop(channel.context)
 ```
 
-Não criar atalhos.
+`MethodChannel` não possui `context`.
 
----
+O próprio bridge já mantém:
 
-# 2. ENDPOINTS PROVIDER-NEUTRAL
-
-Não criar endpoints chamados:
-
-```text
-/cielo/pay
-/cielo/callback
+```kotlin
+private var appContext: Context? = null
 ```
 
-Criar endpoints operacionais provider-neutral dentro do Quick Sale.
-
-Sugestão:
-
-```text
-POST
-/sales/checkouts/<checkout_id>/provider-payments/start/
-
-POST
-/sales/checkouts/<checkout_id>/provider-payments/attempts/<attempt_id>/result/
-
-POST
-/sales/checkouts/<checkout_id>/provider-payments/intents/<intent_id>/apply/
-
-POST
-/sales/checkouts/<checkout_id>/provider-payments/intents/<intent_id>/retry/
-
-POST
-/sales/checkouts/<checkout_id>/provider-payments/intents/<intent_id>/cancel/
-
-POST
-/sales/checkouts/<checkout_id>/provider-payments/attempts/<attempt_id>/launch-failed/
-```
-
-Podem ajustar nomes se houver padrão melhor no projeto.
-
-Mas NÃO colocar Cielo no path.
-
----
-
-# 3. START PROVIDER PAYMENT
-
-Payload inicial:
-
-```text
-payment_method
-mode
-amount
-allocations
-idempotency_key
-provider = cielo
-```
-
-Para PAY-2.1:
-
-```text
-installments = 1
-```
-
-para crédito.
-
-Não implementar seletor avançado de parcelamento ainda.
-
-Parcelamento completo + enabledproducts será fase posterior.
-
----
-
-# 4. POS NÃO ESCOLHE CONNECTION NEM TERMINAL POR ID
-
-O cliente NÃO deve poder mandar:
-
-```text
-provider_connection_id
-terminal_id
-```
-
-e escolher uma conexão arbitrária.
-
-O backend resolve isso.
-
-Para Cielo LOCAL_DEEP_LINK:
-
-```text
-Provider.code = cielo
-status ACTIVE
-
-PaymentProviderConnection
-company = checkout.company
-status ACTIVE
-branch = checkout.branch OU NULL
-```
-
-Preferência:
-
-```text
-connection específica da branch
-↓
-connection company-wide
-```
-
-Se houver mais de uma Connection elegível na mesma prioridade:
-
-```text
-payment_provider_connection_ambiguous
-```
-
-NÃO escolher `.first()` silenciosamente.
-
----
-
-# 5. TERMINAL CIELO DO POS
-
-Para integração local:
-
-resolver:
-
-```text
-PaymentTerminal
-connection = connection Cielo selecionada
-branch = checkout.branch
-pos_device = device atual
-status ACTIVE
-```
-
-Para PAY-2.1 exigir vínculo EXATO:
-
-```text
-terminal.pos_device == POSDevice atual
-```
-
-Não usar terminal de outra máquina.
-
-Não usar terminal `pos_device=NULL` como fallback automático.
-
-Se não houver:
-
-```text
-payment_provider_terminal_unavailable
-```
-
----
-
-# 6. PAYMENT METHOD COMPATÍVEL
-
-Usar capabilities/provider adapter para validar.
-
-Cielo PAY-2.1 pode operar:
-
-```text
-credit_card → 1x
-debit_card
-pix
-food_voucher
-meal_voucher
-```
-
-Cash nunca.
-
-Não criar PaymentMethod Cielo.
-
-Continua:
-
-```text
-payment_method = credit_card
-provider = cielo
-```
-
----
-
-# 7. CHECKOUT OPTIONS
-
-Hoje:
-
-`POSSaleCheckoutOptionsView`
-
-retorna PaymentMethods apenas com metadata manual.
-
-Adicionar metadata de captura SEM alterar o significado financeiro de PaymentMethod.
-
-Exemplo:
-
-```json
-{
-  "id": 3,
-  "code": "credit_card",
-  "name": "Cartão de crédito",
-  "kind": "credit",
-  "capture": {
-    "mode": "provider",
-    "provider": "cielo",
-    "integration_type": "local_deep_link"
-  }
-}
-```
-
-Se Cielo não estiver disponível para aquele POS:
-
-```text
-capture.mode = manual
-```
-
-ou ausência de provider capture.
-
-Não reaproveitar `source_type` do ledger para representar configuração operacional se isso gerar ambiguidade.
-
----
-
-# 8. NÃO FAZER FALLBACK AUTOMÁTICO PARA MANUAL
-
-Se Cielo estiver selecionada:
-
-```text
-Cielo falhou
-```
-
-NÃO fazer automaticamente:
-
-```text
-recordQuickSalePayment()
-```
-
-Isso pode duplicar cobrança.
-
-Principalmente em:
-
-```text
-PROCESSING
-UNKNOWN
-APPROVED
-```
-
-Nunca converter falha integrada em pagamento manual automaticamente.
-
----
-
-# 9. IDEMPOTÊNCIA DO START
-
-O endpoint start deve ser idempotente.
-
-Mesmo:
-
-```text
-checkout
-payment data
-idempotency_key
-```
-
-não pode criar:
-
-```text
-Intent #1
-Intent #2
-```
-
-nem:
-
-```text
-Attempt #1
-Attempt #2
-```
-
-por retry HTTP.
-
-Se o mesmo start já criou:
-
-```text
-Intent
-+
-Attempt PROCESSING
-```
-
-retornar a mesma identidade operacional.
-
-Não criar nova tentativa silenciosamente.
-
----
-
-# 10. NÃO RELANÇAR CIELO AUTOMATICAMENTE EM RECOVERY LOCAL
-
-Se o app reiniciar e existir:
-
-```text
-Attempt PROCESSING
-```
-
-NÃO reconstruir e abrir automaticamente:
-
-```text
-lio://payment
-```
-
-Isso poderia cobrar novamente.
-
-Mostrar estado pendente.
-
-Recovery real Cielo será PAY-2.2/PAY-2.3.
-
----
-
-# 11. ITEMS CIELO
-
-Agora precisamos transformar o checkout persistido em itens Cielo.
-
-Criar helper dedicado.
+Usar o contexto da aplicação.
 
 Exemplo conceitual:
 
-```text
-cielo_items_from_quick_checkout(checkout)
+```kotlin
+appContext?.let { context ->
+    CieloPaymentForegroundService.stop(context)
+}
 ```
 
-Usar SOMENTE snapshots persistidos do checkout.
-
-NÃO buscar preço atual do Product.
-
-NÃO recalcular promoção atual.
-
-NÃO recalcular modificadores atuais.
-
-NÃO usar catálogo atual.
-
-O checkout é a fonte.
+Não depender de `channel.context`.
 
 ---
 
-# 12. TODOS OS ITENS REAIS
+# 2. ACK DO CALLBACK
 
-A Cielo trabalha com Order e exige itens.
-
-Não criar:
+Ao receber:
 
 ```text
-"Geral"
-"Venda CORE"
-"Pagamento CORE"
+acknowledgeCallback
 ```
 
-como item fake único.
+e o `attempt_id` corresponder ao callback pendente:
 
-Enviar os itens reais persistidos no QuickSaleCheckout.
+executar:
 
-Se algum item não puder ser convertido de forma segura:
+```text
+pendingCallback = null
+activeAttemptId = null
+stop foreground service
+```
 
-retornar erro controlado.
+usando `appContext`.
 
-NÃO fabricar valor.
+Se `appContext == null`:
+
+não quebrar o MethodChannel.
+
+Responder normalmente e preservar segurança.
 
 ---
 
-# 13. CIELO ITEM
+# 3. CALLBACK NÃO PODE SER DESCARTADO POR `_working`
 
-Cada item normalizado deve fornecer:
+Hoje existe lógica:
 
-```text
-name
-quantity
-sku
-unitOfMeasure
-unitPrice
+```dart
+if (_working || callback.attemptId != expectedAttempt) return;
 ```
 
-Valores monetários em centavos exatos.
+Isso é incorreto para `_working`.
 
-`sku`:
+Se callback Cielo chegar enquanto outro trecho da tela ainda está trabalhando:
 
-usar snapshot/internal_code quando disponível.
+NÃO descartar.
 
-Fallback permitido:
+Armazenar/serializar para processamento posterior.
+
+Pode utilizar:
 
 ```text
-produto-{product_id}
+_pendingCieloCallback
 ```
 
-desde que determinístico.
-
-Nunca random.
+em memória Flutter.
 
 ---
 
-# 14. VALORES CONGELADOS
+# 4. DIFERENCIAR CALLBACK ERRADO DE CALLBACK TEMPORARIAMENTE BLOQUEADO
 
-Os itens enviados devem refletir o checkout congelado.
-
-Não usar:
+Se:
 
 ```text
-Product.sale_price atual
+callback.attemptId != expectedAttempt
 ```
 
-depois que o checkout já foi criado.
+NÃO processar financeiramente.
 
-Isso é importante porque:
+Mas também não dar ACK indevido.
+
+Pode manter o callback nativo pendente.
+
+Se:
 
 ```text
-preço pode mudar
-produto pode ser arquivado
-promoção pode mudar
+callback.attemptId == expectedAttempt
+_working == true
 ```
 
-durante a cobrança.
+guardar localmente para processamento assim que `_working` voltar para false.
 
 ---
 
-# 15. START FLOW BACKEND
+# 5. DRENAR CALLBACK PENDENTE APÓS `_working`
 
-Fluxo:
+Criar helper centralizado, por exemplo:
 
 ```text
-validar POS/device/operator
+_schedulePendingProviderCallback()
+_drainPendingProviderCallback()
+```
+
+Ao finalizar qualquer operação relevante e `_working` voltar para `false`:
+
+verificar:
+
+1. callback Flutter guardado;
+2. callback nativo via `getPendingCallback()`.
+
+Se houver callback esperado:
+
+reenviar ao backend.
+
+Evitar loops/reentrância.
+
+---
+
+# 6. NÃO PROCESSAR O MESMO CALLBACK EM PARALELO
+
+Adicionar flag específica, por exemplo:
+
+```text
+_resolvingProviderCallback
+```
+
+ou mecanismo equivalente.
+
+Evitar:
+
+```text
+stream callback
++
+getPendingCallback
+```
+
+processarem o mesmo payload simultaneamente.
+
+Somente UMA chamada ao backend por vez.
+
+Replay HTTP posterior continua permitido.
+
+---
+
+# 7. FALHA DE INTERNET DEPOIS DO CALLBACK
+
+Cenário crítico:
+
+```text
+Cielo APPROVED
 ↓
-resolver checkout
+callback chega ao Flutter
 ↓
-resolver Provider Cielo
+POST result backend
 ↓
-resolver Connection
+rede cai
+```
+
+Resultado correto:
+
+```text
+NÃO ACK
+NÃO limpar callback
+NÃO marcar ERROR
+NÃO abrir Cielo novamente
+```
+
+Callback continua disponível para novo envio.
+
+---
+
+# 8. UI DE CALLBACK PENDENTE
+
+Se existe:
+
+```text
+callback Cielo já recebido
+```
+
+mas ainda não confirmado pelo backend:
+
+mostrar algo como:
+
+```text
+RETORNO DA CIELO RECEBIDO
+AGUARDANDO CONFIRMAÇÃO NO CORE
+```
+
+Disponibilizar:
+
+```text
+TENTAR CONFIRMAR PAGAMENTO
+```
+
+Esse botão:
+
+* NÃO abre Cielo;
+* NÃO cria Attempt;
+* NÃO cria Intent;
+* NÃO faz retry provider.
+
+Apenas reenvia o MESMO callback ao backend.
+
+---
+
+# 9. CALLBACK PENDENTE NÃO É RECOVERY CIELO
+
+Importante:
+
+isso NÃO é:
+
+```text
+lio://order
+```
+
+Nós já possuímos o callback.
+
+Estamos apenas reenviando ao backend.
+
+Portanto implementar isso nesta missão.
+
+---
+
+# 10. ACK SOMENTE DEPOIS DE BACKEND CONFIRMAR
+
+Somente chamar:
+
+```dart
+acknowledgeCallback(attemptId)
+```
+
+depois que:
+
+```text
+resolveQuickSaleProviderPayment()
+```
+
+retornar checkout válido.
+
+Se houver:
+
+* timeout;
+* network error;
+* 5xx;
+* resposta inválida;
+
+NÃO ACK.
+
+---
+
+# 11. CALLBACK CANCELLED / ERROR TAMBÉM PRECISA DE ACK
+
+Se backend confirmar corretamente:
+
+```text
+CANCELLED
+ERROR
+APPROVED/APPLIED
+```
+
+então ACK pode ser feito.
+
+ACK significa:
+
+```text
+backend recebeu e registrou o resultado
+```
+
+não significa APPROVED.
+
+---
+
+# 12. START INCERTO
+
+Hoje:
+
+```text
+POST provider-payments/start
 ↓
-resolver Terminal deste POS
+timeout / rede cai
 ↓
-create_quick_sale_payment_intent()
-↓
-Intent READY
-↓
-start_quick_sale_payment_attempt()
-↓
+launch == null
+```
+
+pode deixar servidor com:
+
+```text
+Intent PROCESSING
 Attempt PROCESSING
-↓
-CieloSmartAdapter.build_payment_command()
-↓
-retornar launch command
 ```
 
-Nunca gerar Deep Link antes do Attempt estar PROCESSING.
+e Flutter com checkout antigo.
+
+Isso precisa ser corrigido.
 
 ---
 
-# 16. RESPONSE DO START
+# 13. APÓS START INCERTO, RECARREGAR CHECKOUT
 
-Retornar SOMENTE o necessário.
+Se:
 
-Exemplo:
+```text
+startQuickSaleProviderPayment()
+```
+
+não retornar resultado por:
+
+* timeout;
+* network exception;
+* erro incerto 5xx;
+
+o POS deve imediatamente tentar:
+
+```text
+GET checkout atual
+```
+
+antes de liberar a UI.
+
+---
+
+# 14. SE SERVIDOR MOSTRAR PROCESSING
+
+Se o checkout atualizado retornar:
+
+```text
+payment_integration.intent_status = processing
+```
+
+ou:
+
+```text
+unknown
+approved
+```
+
+NÃO permitir nova cobrança.
+
+Atualizar a tela para o estado oficial do backend.
+
+Não chamar Cielo automaticamente.
+
+---
+
+# 15. SE START REALMENTE NÃO EXISTE NO SERVIDOR
+
+Se reload comprovar:
+
+```text
+payment_integration == null
+```
+
+e:
+
+```text
+can_record_payment == true
+```
+
+a UI pode voltar a permitir nova tentativa.
+
+---
+
+# 16. NÃO RELANÇAR URI DE START INCERTO
+
+Se servidor já tem Attempt PROCESSING mas o cliente não recebeu a URI:
+
+NÃO tentar reconstruir URI.
+
+NÃO abrir Cielo.
+
+NÃO criar novo Attempt.
+
+Mostrar:
+
+```text
+PAGAMENTO AGUARDANDO CONFIRMAÇÃO
+```
+
+Até recovery futuro ou ação segura.
+
+---
+
+# 17. IDEMPOTÊNCIA DO START CONTINUA
+
+Preservar:
+
+```text
+mesma idempotency_key
+→ mesmo Intent
+→ mesmo Attempt
+```
+
+Mas não usar replay HTTP para relançar automaticamente a Cielo.
+
+A existência do Attempt PROCESSING deve ser tratada como operação potencialmente iniciada.
+
+---
+
+# 18. NÃO EXPOR NOVAMENTE LAUNCH_URI AUTOMATICAMENTE
+
+Reavaliar comportamento atual:
+
+```text
+start idempotent replay
+→ retorna launch_uri novamente
+```
+
+Isso pode ser perigoso se o primeiro response chegou e a Cielo já foi aberta.
+
+Para PAY-2.1.1:
+
+se request for replay idempotente de um Attempt PROCESSING já existente:
+
+NÃO incentivar o cliente a abrir novamente.
+
+Preferência:
+
+retornar estado operacional sem URI reutilizável, por exemplo:
 
 ```json
 {
@@ -541,979 +477,97 @@ Exemplo:
   "intent_id": "...",
   "attempt_id": "...",
   "status": "processing",
-  "operation": "payment",
-  "launch_uri": "<secret-bearing URI>",
-  "safe_metadata": {}
+  "replayed": true,
+  "launch_available": false
 }
 ```
 
-`launch_uri` é sensível.
+OU retornar conflito seguro como:
 
-Adicionar:
+```text
+payment_attempt_already_processing
+```
+
+desde que o Flutter então recupere o checkout.
+
+O objetivo é simples:
+
+**replay de START nunca pode causar segunda abertura da mesma cobrança.**
+
+---
+
+# 19. PRIMEIRO START CONTINUA RETORNANDO URI
+
+A primeira criação real:
+
+```text
+novo Intent
+novo Attempt PROCESSING
+```
+
+continua retornando:
+
+```text
+launch_uri
+```
+
+com:
 
 ```text
 Cache-Control: no-store
 ```
 
-na resposta.
+Somente replay posterior deve ser tratado com cautela.
 
 ---
 
-# 17. EXCEÇÃO CONTROLADA PARA O LAUNCH URI
+# 20. AJUSTAR MODEL FLUTTER DE START
 
-PAY-2.0 definiu corretamente que secrets não entram em APIs administrativas.
-
-PAY-2.1 terá UMA exceção operacional inevitável:
-
-o endpoint autenticado do POS pode entregar:
+Se necessário, permitir:
 
 ```text
-launch_uri
+launch_uri nullable
 ```
 
-ao dispositivo que executará a Cielo.
-
-Essa URI contém Client-ID / Access Token em Base64.
-
-Portanto:
-
-NÃO salvar no banco.
-
-NÃO salvar no PaymentAttempt.
-
-NÃO salvar em AuditLog.
-
-NÃO logar.
-
-NÃO incluir em exception.
-
-NÃO incluir em debugPrint.
-
-NÃO persistir no Flutter.
-
-Passar diretamente:
+e campos como:
 
 ```text
-backend response
+replayed
+launch_available
+```
+
+Não obrigar o Flutter a receber URI em todo replay.
+
+---
+
+# 21. UI NÃO ABRE CIELO SE URI AUSENTE
+
+Se resposta representar replay já PROCESSING:
+
+```text
+launchUri == null
+```
+
+Flutter:
+
+```text
+NÃO chama MethodChannel
 ↓
-memória Flutter
+recarrega checkout
 ↓
-MethodChannel
-↓
-Android
-↓
-Cielo
-```
-
-e descartar.
-
----
-
-# 18. RESULT ENDPOINT
-
-O cliente envia:
-
-```text
-response
-responsecode
-```
-
-recebidos da Cielo.
-
-E apenas isso relacionado ao resultado externo.
-
-O cliente NÃO pode mandar:
-
-```text
-status=approved
-provider_transaction_id
-authCode
-nsu
-amount aprovado
-```
-
-como autoridade.
-
-Backend:
-
-```text
-load Attempt
-↓
-get adapter pelo provider do Attempt
-↓
-parse_payment_callback()
-↓
-resolve_quick_sale_payment_attempt()
+mostra estado PROCESSING
 ```
 
 ---
 
-# 19. SCOPE DO ATTEMPT
+# 22. APPROVED / APPLY PENDING — MENSAGEM EXPLÍCITA
 
-Antes de processar callback validar:
+Quando:
 
 ```text
-Attempt
-→ Intent
-→ checkout atual
-→ company atual
-→ branch atual
-→ POSDevice atual
-→ operator/context
+intent_status = approved
+can_apply = true
 ```
-
-Um POS não pode enviar callback para Attempt de:
-
-* outro checkout;
-* outro device;
-* outra branch;
-* outra empresa.
-
----
-
-# 20. APPROVED
-
-Se parser retornar:
-
-```text
-APPROVED
-```
-
-fazer:
-
-```text
-resolve_quick_sale_payment_attempt()
-```
-
-Depois:
-
-```text
-apply_approved_quick_sale_payment_intent()
-```
-
-Resultado:
-
-```text
-PaymentAttempt APPROVED
-PaymentIntent APPLIED
-QuickSalePayment PROVIDER
-```
-
-Retornar checkout atualizado.
-
----
-
-# 21. APPROVED MAS APPLY FALHA
-
-Cenário possível:
-
-```text
-Cielo APPROVED
-↓
-CORE registra Attempt APPROVED
-↓
-apply local falha
-```
-
-NUNCA tentar outra cobrança.
-
-Preservar:
-
-```text
-Intent APPROVED
-Attempt APPROVED
-```
-
-Responder algo como:
-
-```text
-provider_approved_apply_pending
-```
-
-A UI deve mostrar:
-
-```text
-PAGAMENTO APROVADO NA CIELO
-AGUARDANDO REGISTRO NO CORE
-```
-
-e oferecer apenas:
-
-```text
-TENTAR REGISTRAR NOVAMENTE
-```
-
-Não:
-
-```text
-PAGAR NOVAMENTE
-```
-
----
-
-# 22. APPLY ENDPOINT
-
-O endpoint:
-
-```text
-.../intents/<intent_id>/apply/
-```
-
-deve apenas chamar:
-
-```text
-apply_approved_quick_sale_payment_intent()
-```
-
-É idempotente.
-
-Não conversa novamente com Cielo.
-
-Não gera novo Attempt.
-
-Não gera novo Deep Link.
-
----
-
-# 23. CALLBACK CANCELLED
-
-Cielo:
-
-```text
-code 1
-```
-
-ou pagamento status cancelado.
-
-Resultado:
-
-```text
-Attempt CANCELLED
-Intent CANCELLED
-```
-
-Não criar QuickSalePayment.
-
-Checkout volta a permitir operação normal.
-
----
-
-# 24. CALLBACK ERROR
-
-Resultado:
-
-```text
-Attempt ERROR
-Intent ERROR
-```
-
-Não criar QuickSalePayment.
-
-Não registrar manualmente.
-
-UI pode oferecer:
-
-```text
-TENTAR NOVAMENTE
-CANCELAR COBRANÇA
-```
-
----
-
-# 25. RETRY
-
-Retry usa o MESMO PaymentIntent.
-
-Fluxo:
-
-```text
-Intent ERROR / DECLINED
-↓
-resolver Connection/Terminal atuais
-↓
-start_quick_sale_payment_attempt()
-↓
-novo PaymentAttempt
-↓
-PROCESSING
-↓
-novo launch command
-```
-
-Isso aproveita o fallback/retry que fechamos no PAY-1.4.
-
-Não criar Intent novo.
-
----
-
-# 26. CANCEL INTENT
-
-Para:
-
-```text
-READY
-ERROR
-DECLINED
-```
-
-permitir endpoint operacional que chama:
-
-```text
-cancel_quick_sale_payment_intent()
-```
-
-Não criar bypass de status.
-
-PROCESSING / UNKNOWN / APPROVED continuam protegidos pelo motor.
-
----
-
-# 27. LAUNCH FAILED ANTES DE ABRIR CIELO
-
-Se Android conseguir determinar com certeza:
-
-```text
-Cielo app não instalado
-Intent não resolvível
-startActivity falhou ANTES de abrir o provider
-```
-
-o Flutter pode avisar o backend através do endpoint:
-
-```text
-launch-failed
-```
-
-Backend pode resolver Attempt como:
-
-```text
-ERROR
-```
-
-com metadata segura:
-
-```text
-provider_status = launch_error
-```
-
-Sem inventar resultado Cielo.
-
----
-
-# 28. NÃO MARCAR ERROR SE O LAUNCH FOI INCERTO
-
-Se:
-
-```text
-Cielo abriu
-```
-
-mas:
-
-```text
-callback não voltou
-app reiniciou
-processo foi interrompido
-```
-
-NÃO marcar ERROR.
-
-NÃO marcar DECLINED.
-
-NÃO iniciar nova cobrança.
-
-Manter:
-
-```text
-PROCESSING
-```
-
-ou usar UNKNOWN apenas quando houver fluxo explícito seguro para isso.
-
-Recovery Cielo será próxima fase.
-
----
-
-# 29. QUICK CHECKOUT PAYLOAD
-
-Expandir:
-
-```text
-payment_integration
-```
-
-para recuperação de UI.
-
-Hoje temos:
-
-```text
-intent_id
-status
-```
-
-Adicionar de forma segura:
-
-```text
-intent_id
-intent_status
-attempt_id
-attempt_status
-provider
-can_retry
-can_cancel
-can_apply
-requires_recovery
-```
-
-Nunca:
-
-```text
-launch_uri
-credentials
-raw callback
-```
-
----
-
-# 30. ANDROID MANIFEST — PACKAGE VISIBILITY
-
-Adicionar:
-
-```xml
-<queries>
-    <package android:name="com.ads.lio.uriappclient" />
-</queries>
-```
-
-Obrigatório para Android 11+ segundo Cielo.
-
----
-
-# 31. ANDROID MANIFEST — CIELO INTEGRATION TYPE
-
-Dentro de:
-
-```xml
-<application>
-```
-
-adicionar:
-
-```xml
-<meta-data
-    android:name="cs_integration_type"
-    android:value="uri" />
-```
-
-Não remover metadata Flutter existente.
-
----
-
-# 32. CALLBACK URI
-
-Usar contrato próprio e estável.
-
-Sugestão:
-
-```text
-corepdv://cielo-payment-response
-```
-
-Registrar Activity específica:
-
-```text
-CieloResponseActivity
-```
-
-com:
-
-```text
-ACTION_VIEW
-CATEGORY_DEFAULT
-scheme = corepdv
-host = cielo-payment-response
-```
-
-O MESMO callback deve ser usado no:
-
-```text
-urlCallback
-```
-
-do Deep Link.
-
----
-
-# 33. NÃO USAR MAINACTIVITY COMO PARSER FINANCEIRO
-
-A Activity Android não interpreta:
-
-```text
-APPROVED
-ERROR
-CANCELLED
-```
-
-Ela apenas captura:
-
-```text
-response
-responsecode
-```
-
-e entrega ao Flutter.
-
-Backend interpreta.
-
----
-
-# 34. FOREGROUND SERVICE
-
-A documentação Cielo alerta que Android pode matar o aplicativo integrador quando ele fica em background durante o pagamento.
-
-Implementar:
-
-```text
-CieloPaymentForegroundService
-```
-
-ou nome equivalente.
-
-Durante pagamento:
-
-```text
-startForeground()
-↓
-notificação ativa
-↓
-launch Cielo
-↓
-aguarda callback
-```
-
-Notificação simples:
-
-```text
-Pagamento em andamento
-```
-
-Não colocar:
-
-* valor;
-* nome cliente;
-* cartão;
-* token;
-* NSU;
-* URI.
-
----
-
-# 35. FOREGROUND SERVICE E TARGET SDK
-
-Adicionar permissões/declarations compatíveis com o targetSdk atual do projeto.
-
-Não usar um foreground-service type semanticamente falso apenas para compilar.
-
-Documentar no checkpoint qual tipo/permissão foi necessário para o target atual.
-
-Manter compatibilidade com o ambiente Cielo Smart / Android 10.
-
----
-
-# 36. LAUNCH CIELO
-
-O Intent deve ser:
-
-```text
-Intent.ACTION_VIEW
-Uri.parse(launchUri)
-```
-
-com:
-
-```text
-FLAG_ACTIVITY_CLEAR_TOP
-```
-
-e preferencialmente direcionado ao pacote:
-
-```text
-com.ads.lio.uriappclient
-```
-
-para não entregar uma URI com credenciais para aplicativo arbitrário.
-
-Antes:
-
-verificar se existe Activity compatível.
-
-Se não existir:
-
-```text
-cielo_app_unavailable
-```
-
----
-
-# 37. METHODCHANNEL
-
-O projeto já usa MethodChannel para scanner beep.
-
-Criar canal separado:
-
-```text
-core_pos/cielo_payment
-```
-
-Não misturar com:
-
-```text
-core_pos/scanner_beep
-```
-
-Contrato conceitual:
-
-```text
-Flutter → Android:
-launchPayment
-
-Android → Flutter:
-paymentCallback
-
-Flutter → Android:
-getPendingCallback
-```
-
-Pode adaptar nomes mantendo responsabilidades claras.
-
----
-
-# 38. PAYLOAD FLUTTER → ANDROID
-
-Enviar somente:
-
-```text
-attempt_id
-launch_uri
-```
-
-Não enviar:
-
-* Client-ID separado;
-* Access Token separado;
-* PaymentMethod;
-* amount para Android decidir;
-* status esperado.
-
-Android apenas executa URI.
-
----
-
-# 39. CALLBACK ANDROID → FLUTTER
-
-Retornar:
-
-```text
-attempt_id
-response
-responsecode
-```
-
-Não retornar status financeiro calculado pelo Android.
-
----
-
-# 40. RESPONSE ACTIVITY
-
-`CieloResponseActivity` deve:
-
-```text
-receber Intent ACTION_VIEW
-↓
-ler URI
-↓
-obter response
-↓
-obter responsecode
-↓
-entregar ao bridge/service
-↓
-retornar o usuário ao CORE POS
-↓
-finish()
-```
-
-Não logar URI inteira.
-
-Não logar `response`.
-
----
-
-# 41. RESULTADO PENDENTE NATIVO
-
-Como existe foreground service, manter em memória o callback até o Flutter consumi-lo.
-
-Se Flutter estiver temporariamente sem listener:
-
-```text
-getPendingCallback
-```
-
-deve recuperá-lo.
-
-Após ACK/consumo:
-
-limpar.
-
-Não persistir launch URI.
-
-Se processo inteiro morrer:
-
-não inventar resultado.
-
-O backend continuará com Attempt PROCESSING para futura reconciliação.
-
----
-
-# 42. FLUTTER SERVICE
-
-Criar camada isolada, por exemplo:
-
-```text
-payments/provider_payment_bridge.dart
-payments/cielo_payment_bridge.dart
-```
-
-Não colocar MethodChannel diretamente dentro da UI.
-
-Responsabilidades:
-
-```text
-launch()
-callback stream/result
-pending callback
-```
-
----
-
-# 43. API FLUTTER
-
-Adicionar em:
-
-```text
-PosApi
-HttpPosApi
-```
-
-operações:
-
-```text
-startQuickSaleProviderPayment()
-resolveQuickSaleProviderPayment()
-retryQuickSaleProviderPayment()
-cancelQuickSaleProviderPayment()
-applyQuickSaleProviderPayment()
-reportProviderLaunchFailed()
-```
-
-Criar models específicos.
-
-Não usar Maps soltos em toda UI.
-
----
-
-# 44. NÃO LOGAR LAUNCH URI NO HTTP CLIENT
-
-Hoje o POS tem logs de erro HTTP.
-
-Garantir que endpoint provider não faça:
-
-```text
-debugPrint(response.body)
-```
-
-se o body puder conter `launch_uri`.
-
-Em qualquer erro relacionado ao start:
-
-sanitizar.
-
-Nenhum log pode conter:
-
-```text
-clientID
-accessToken
-lio://payment?...request=
-```
-
----
-
-# 45. PAYMENT ENTRY UI
-
-Reutilizar:
-
-```text
-SharedPaymentPage
-PaymentEntryPage
-```
-
-Não criar uma tela de pagamento Cielo totalmente separada.
-
-Se método possuir:
-
-```text
-capture.mode = provider
-provider = cielo
-```
-
-o botão final deixa de ser:
-
-```text
-CONFIRMAR PAGAMENTO MANUAL
-```
-
-e passa a ser algo como:
-
-```text
-PAGAR NA CIELO
-```
-
----
-
-# 46. PAY-2.1 SEM PARCELAMENTO AVANÇADO
-
-Nesta missão:
-
-```text
-credit_card
-→ 1x
-```
-
-Débito/PIX/vouchers podem usar seus mappings já existentes.
-
-Não criar interface de:
-
-```text
-2x
-3x
-...
-```
-
-ainda.
-
-Parcelamento + enabledproducts virá depois.
-
----
-
-# 47. START NO FLUTTER
-
-Fluxo após operador confirmar valor:
-
-```text
-API start provider payment
-↓
-recebe intent_id / attempt_id / launch_uri
-↓
-guarda IDs operacionais
-↓
-NÃO persiste launch_uri
-↓
-chama native bridge
-↓
-Cielo abre
-```
-
----
-
-# 48. CALLBACK NO FLUTTER
-
-Quando callback chegar:
-
-```text
-working = true
-↓
-POST result backend
-↓
-backend parse/resolve/apply
-↓
-recebe checkout atualizado
-↓
-_replaceCheckout()
-```
-
-Se pagamento zerou saldo:
-
-NÃO finalizar venda automaticamente.
-
-Manter botão:
-
-```text
-FINALIZAR VENDA
-```
-
-e fluxo atual.
-
----
-
-# 49. UX PROCESSING
-
-Enquanto provider estiver PROCESSING:
-
-bloquear:
-
-* novo pagamento;
-* edição financeira;
-* cancelamento do checkout;
-* saída destrutiva.
-
-Mostrar estado claro:
-
-```text
-PAGAMENTO EM PROCESSAMENTO NA CIELO
-```
-
-Não mostrar botão para cobrar novamente.
-
----
-
-# 50. UX ERROR
-
-Se Intent ERROR:
-
-mostrar:
-
-```text
-Não foi possível concluir o pagamento na Cielo.
-```
-
-Ações:
-
-```text
-TENTAR NOVAMENTE
-CANCELAR COBRANÇA
-```
-
-Retry usa mesmo Intent.
-
----
-
-# 51. UX CANCELLED
-
-Se Cielo retornar cancelamento:
-
-```text
-Pagamento cancelado.
-```
-
-Checkout volta ao estado operacional.
-
-Não criar pagamento.
-
----
-
-# 52. UX APPROVED/APPLY PENDING
-
-Se provider aprovou mas apply local não concluiu:
 
 mostrar claramente:
 
@@ -1521,205 +575,464 @@ mostrar claramente:
 PAGAMENTO APROVADO NA CIELO
 ```
 
-e:
+e abaixo:
+
+```text
+O pagamento foi aprovado, mas ainda precisa ser registrado no CORE.
+```
+
+Botão:
 
 ```text
 TENTAR REGISTRAR NO CORE
 ```
 
-Não disponibilizar:
+Não mostrar botão de cobrar novamente.
+
+---
+
+# 23. PROCESSING SEM CALLBACK
+
+Se:
 
 ```text
-PAGAR NOVAMENTE
+Attempt PROCESSING
+```
+
+e não existe callback pendente:
+
+mostrar:
+
+```text
+PAGAMENTO EM PROCESSAMENTO NA CIELO
+```
+
+Sem ações de retry.
+
+Recovery externo continua futuro.
+
+---
+
+# 24. PROCESSING COM CALLBACK PENDENTE
+
+Se existe callback local pendente:
+
+mostrar:
+
+```text
+RETORNO DA CIELO RECEBIDO
+AGUARDANDO CONFIRMAÇÃO NO CORE
+```
+
+Botão:
+
+```text
+TENTAR CONFIRMAR PAGAMENTO
 ```
 
 ---
 
-# 53. APP RESTART
+# 25. FOREGROUND SERVICE
 
-Ao reabrir checkout:
+Foreground service deve continuar ativo enquanto callback não foi confirmado/ACKado.
 
-usar:
-
-```text
-payment_integration
-```
-
-do backend.
-
-Se status:
+Quando backend receber resultado com sucesso:
 
 ```text
-PROCESSING
-UNKNOWN
+ACK
+↓
+stop service
 ```
 
-não lançar Cielo novamente.
+Se POST result falhar:
 
-Mostrar:
-
-```text
-Pagamento aguardando confirmação.
-```
-
-Recovery será fase seguinte.
+serviço continua.
 
 ---
 
-# 54. NÃO USAR `url_launcher` PARA CIELO
+# 26. RESPONSE ACTIVITY
 
-Mesmo que já exista:
+Preservar:
 
 ```text
-url_launcher
+ACTION_VIEW
+↓
+response
+responsecode
+↓
+pendingCallback
+↓
+MainActivity
 ```
 
-no projeto, NÃO usar para pagamento Cielo.
-
-Precisamos:
-
-* foreground service;
-* package targeting;
-* callback Activity;
-* bridge controlado.
-
-Usar bridge nativo.
+Não interpretar estado financeiro no Android.
 
 ---
 
-# 55. SEGURANÇA DO CALLBACK
+# 27. NÃO LOGAR CALLBACK RAW
 
-Callback custom URI pode ser invocado por outro aplicativo.
+Preservar:
 
-Portanto nunca confiar no Android como origem financeira.
-
-Proteções permanecem no backend:
+NÃO logar:
 
 ```text
-Attempt esperado
-reference
-amount
-provider
-provider_transaction_id
-state machine
+response
+responsecode completo se contiver payload sensível
+callback URI
+launch URI
 ```
-
-O Android apenas transporta o payload.
 
 ---
 
-# 56. TESTES BACKEND OBRIGATÓRIOS
+# 28. TESTE KOTLIN / COMPILAÇÃO DE CONTRATO
+
+Adicionar teste simples se houver infraestrutura, ou pelo menos garantir código compilável.
+
+Corrigir explicitamente:
+
+```text
+channel.context
+```
+
+Não deixar referência inexistente.
+
+---
+
+# 29. TESTES BACKEND — START REPLAY
+
+Adicionar teste:
+
+```text
+primeiro start
+→ PROCESSING
+→ possui launch_uri
+
+segundo start mesma idempotency key
+→ mesmo Intent
+→ mesmo Attempt
+→ NÃO oferece URI que possa ser relançada automaticamente
+```
+
+Validar:
+
+```text
+Intent count = 1
+Attempt count = 1
+```
+
+---
+
+# 30. TESTE BACKEND — START TIMEOUT SIMULADO / RECOVERY STATE
+
+Não precisa simular rede real.
+
+Provar via endpoints:
+
+```text
+start cria PROCESSING
+↓
+GET checkout
+↓
+payment_integration mostra:
+intent_status=processing
+attempt_status=processing
+requires_recovery=true
+can_retry=false
+```
+
+---
+
+# 31. TESTE BACKEND — CALLBACK REPLAY
+
+Preservar teste:
+
+```text
+POST result
+POST mesmo result
+```
+
+Esperado:
+
+```text
+1 QuickSalePayment
+```
+
+---
+
+# 32. TESTE BACKEND — CANCELLED
+
+Adicionar callback Cielo cancelado.
+
+Esperado:
+
+```text
+Attempt CANCELLED
+Intent CANCELLED
+QuickSalePayment count = 0
+checkout liberado
+```
+
+---
+
+# 33. TESTE BACKEND — ERROR
+
+Adicionar:
+
+```text
+{code: 3}
+```
+
+ou equivalente.
+
+Esperado:
+
+```text
+Attempt ERROR
+Intent ERROR
+QuickSalePayment = 0
+can_retry = true
+can_cancel = true
+```
+
+---
+
+# 34. TESTE BACKEND — CONNECTION PRIORITY
 
 Cobrir:
 
 ```text
-Cielo disponível no checkout-options
-Cielo indisponível sem terminal
-connection branch > company
-connection ambígua bloqueia
-terminal de outro POS bloqueia
-cash não usa provider
-start cria Intent + PROCESSING Attempt
-start idempotente
-start não cria QuickSalePayment
-launch_uri não persiste
-result APPROVED → APPLIED
-result replay → mesmo QuickSalePayment
-CANCELLED → nenhum payment
-ERROR → nenhum payment
-apply retry não gera nova cobrança
-retry cria novo Attempt no mesmo Intent
-attempt de outro checkout/device rejeitado
-client não controla status financeiro
+Connection branch
++
+Connection company-wide
 ```
 
----
-
-# 57. TESTES DE SEGREDOS
-
-Confirmar que:
+Esperado:
 
 ```text
-launch_uri
-clientID
-accessToken
+branch vence
 ```
-
-não aparecem em:
-
-* AuditLog;
-* PaymentAttempt.request_metadata;
-* PaymentAttempt.response_metadata;
-* checkout payload;
-* exceptions;
-* safe metadata.
-
-Apenas o response operacional start contém `launch_uri`.
 
 ---
 
-# 58. TESTES FLUTTER DIRECIONADOS
+# 35. TESTE BACKEND — AMBIGUIDADE
 
-Cobrir somente componentes afetados:
+Duas Connections da mesma prioridade:
 
 ```text
-parse capture metadata
-parse provider launch response
-provider method não chama recordQuickSalePayment manual
-callback chama result endpoint
-APPROVED atualiza checkout
-ERROR mostra retry
-PROCESSING bloqueia nova cobrança
-APPROVED apply-pending não relança Cielo
-restart com PROCESSING não relança
+payment_provider_connection_ambiguous
+```
+
+Não escolher primeira.
+
+---
+
+# 36. TESTE BACKEND — TERMINAL OUTRO POS
+
+Terminal Cielo:
+
+```text
+pos_device = outro device
+```
+
+Esperado:
+
+```text
+payment_provider_terminal_unavailable
 ```
 
 ---
 
-# 59. ANDROID TEST / CONTRATO
+# 37. TESTE BACKEND — SCOPE
 
-Se houver estrutura simples para teste Kotlin, pode testar parser de URI/bridge.
+Callback de Attempt pertencente a:
 
-Não criar instrumentação pesada nesta missão.
+* outro checkout;
+* outro POS;
+* outra branch;
 
-Não precisa executar emulador automaticamente.
+deve falhar.
 
 ---
 
-# 60. NÃO IMPLEMENTAR RECOVERY CIELO
+# 38. TESTES FLUTTER — CALLBACK DURANTE WORKING
 
-Ainda NÃO chamar:
+Criar teste para:
+
+```text
+_working = true
+callback chega
+```
+
+Esperado:
+
+```text
+callback não é descartado
+```
+
+Depois:
+
+```text
+_working = false
+↓
+callback é processado
+```
+
+---
+
+# 39. TESTE FLUTTER — RESULT NETWORK FAILURE
+
+Callback:
+
+```text
+backend resolve falha
+```
+
+Esperado:
+
+```text
+acknowledgeCallback NÃO chamado
+callback preservado
+```
+
+Depois operador toca:
+
+```text
+TENTAR CONFIRMAR PAGAMENTO
+```
+
+e o mesmo callback é reenviado.
+
+---
+
+# 40. TESTE FLUTTER — ACK
+
+Backend resolve com sucesso:
+
+Esperado:
+
+```text
+acknowledgeCallback chamado uma vez
+```
+
+e callback local limpo.
+
+---
+
+# 41. TESTE FLUTTER — START INCERTO
+
+`startQuickSaleProviderPayment()` falha por network/timeout.
+
+Esperado:
+
+```text
+recarrega checkout
+```
+
+Se checkout retorna PROCESSING:
+
+```text
+não abre Cielo
+não permite nova cobrança
+```
+
+---
+
+# 42. TESTE FLUTTER — REPLAY SEM URI
+
+Resposta de replay:
+
+```text
+processing
+launchUri = null
+```
+
+Esperado:
+
+```text
+não chama native bridge
+```
+
+---
+
+# 43. TESTE FLUTTER — APPLY PENDING
+
+Checkout:
+
+```text
+intent_status = approved
+can_apply = true
+```
+
+Esperado:
+
+texto:
+
+```text
+PAGAMENTO APROVADO NA CIELO
+```
+
+e botão:
+
+```text
+TENTAR REGISTRAR NO CORE
+```
+
+Sem opção de pagar novamente.
+
+---
+
+# 44. TESTE FLUTTER — PROCESSING RESTART
+
+Abrir tela com:
+
+```text
+payment_integration.processing
+```
+
+Esperado:
+
+```text
+não chama start
+não chama retry
+não abre Cielo
+```
+
+Se houver callback nativo pendente:
+
+processa o callback.
+
+Se não houver:
+
+mantém estado pendente.
+
+---
+
+# 45. NÃO IMPLEMENTAR RECOVERY CIELO
+
+NÃO chamar:
 
 ```text
 lio://order
 lio://orders
 ```
 
-Nenhuma consulta de pedido nesta missão.
-
-Se callback se perder:
-
-```text
-PROCESSING
-```
-
-permanece protegido.
+Ainda.
 
 ---
 
-# 61. NÃO IMPLEMENTAR REVERSAL
+# 46. NÃO IMPLEMENTAR REVERSAL
 
-Ainda NÃO chamar:
+NÃO chamar:
 
 ```text
 lio://payment-reversal
 ```
 
-O bloqueio atual de provider reversal continua.
+Ainda.
 
 ---
 
-# 62. NÃO ALTERAR MESA
+# 47. NÃO ALTERAR MESA
 
 NÃO mexer em:
 
@@ -1732,7 +1045,7 @@ Mesa endpoints
 
 ---
 
-# 63. NÃO ALTERAR COMANDAS
+# 48. NÃO ALTERAR COMANDAS
 
 NÃO mexer em:
 
@@ -1745,58 +1058,48 @@ Comanda UI
 
 ---
 
-# 64. NÃO ALTERAR MOTOR PAY-1
+# 49. NÃO ALTERAR PAY-1
 
-Preservar:
+NÃO mexer nas state machines de:
 
 ```text
 PaymentIntent
 PaymentAttempt
-UNKNOWN
-APPROVED
-APPLIED
-provider fallback
-transaction uniqueness
-cash context
-lock ordering
 QuickSalePayment
 sales.Payment
 ```
 
-Cielo deve usar o motor.
-
-Não modificar o motor para adaptar a Cielo.
+Usar o motor atual.
 
 ---
 
-# 65. MIGRATIONS
+# 50. MIGRATIONS
 
-Não há schema change obrigatório esperado.
+Nenhuma migration esperada.
 
-Não criar migration sem necessidade real.
-
-NÃO editar migrations existentes.
+NÃO criar migration sem necessidade real.
 
 ---
 
-# 66. TESTES PERMITIDOS
+# 51. TESTES PERMITIDOS
 
 Pode executar SOMENTE testes direcionados relacionados a:
 
 ```text
-payment_integrations Cielo
-POS Quick Sale provider endpoints
-Flutter payment/provider components
+Cielo adapter
+POS provider payment endpoints
+Flutter provider payment flow
 ```
+
+Pode compilar/testar somente o módulo Android necessário para confirmar que o Kotlin alterado compila, se isso for indispensável para validar a correção do `channel.context`.
 
 NÃO executar:
 
-* suíte completa;
-* flutter analyze global;
-* flutter build;
-* build APK;
-* testes de Mesa;
-* testes de Comandas.
+* suíte completa backend;
+* Flutter analyze global;
+* Flutter build global;
+* testes Mesa;
+* testes Comandas.
 
 ---
 
@@ -1804,43 +1107,38 @@ NÃO executar:
 
 Ao terminar informar:
 
-1. endpoints criados;
-2. como Connection Cielo é resolvida;
-3. como Terminal Cielo é resolvido por POS;
-4. como provider aparece no checkout options;
-5. como itens Cielo são montados;
-6. idempotência do start;
-7. formato do start response;
-8. como launch_uri é protegido;
-9. contrato MethodChannel;
-10. alterações no AndroidManifest;
-11. package visibility Cielo;
-12. `cs_integration_type=uri`;
-13. callback scheme/host;
-14. ResponseActivity;
-15. ForegroundService;
-16. permissões/tipo de foreground service usados;
-17. como Cielo é lançada;
-18. como callback chega ao Flutter;
-19. como callback chega ao backend;
-20. como APPROVED vira APPLIED;
-21. como apply-pending funciona;
-22. comportamento CANCELLED;
-23. comportamento ERROR;
-24. retry;
-25. comportamento quando callback se perde;
-26. recuperação do estado após restart;
-27. alterações na SharedPaymentPage;
-28. testes backend;
-29. testes Flutter;
-30. resultado dos testes direcionados;
-31. arquivos alterados;
-32. migrations criadas, se houver;
-33. confirmação de que secrets não foram persistidos/logados;
-34. confirmação de que NÃO alterou Mesa;
-35. confirmação de que NÃO alterou Comandas;
-36. confirmação de que NÃO implementou recovery Cielo;
-37. confirmação de que NÃO implementou reversal Cielo.
+1. como corrigiu `channel.context`;
+2. como o foreground service é encerrado no ACK;
+3. como callback durante `_working` é preservado;
+4. como callbacks pendentes são drenados;
+5. como evita processamento paralelo do mesmo callback;
+6. comportamento quando POST result falha por rede;
+7. como funciona "TENTAR CONFIRMAR PAGAMENTO";
+8. quando ACK acontece;
+9. como START incerto recupera checkout;
+10. comportamento quando servidor já possui PROCESSING;
+11. como replay do START evita relançar Cielo;
+12. formato novo do start replay, se alterado;
+13. comportamento de launch_uri nullable;
+14. mensagem APPROVED/APPLY pending;
+15. testes CANCELLED;
+16. testes ERROR;
+17. teste Connection branch > company;
+18. teste Connection ambígua;
+19. teste terminal de outro POS;
+20. teste scope outro checkout/device;
+21. testes Flutter de callback pendente;
+22. testes Flutter de start incerto;
+23. resultado dos testes direcionados;
+24. confirmação de compilação do bridge Android alterado, se executada;
+25. arquivos alterados;
+26. migrations criadas — esperado: nenhuma;
+27. confirmação de que secrets não são persistidos/logados;
+28. confirmação de que NÃO alterou PAY-1;
+29. confirmação de que NÃO alterou Mesa;
+30. confirmação de que NÃO alterou Comandas;
+31. confirmação de que NÃO implementou recovery Cielo;
+32. confirmação de que NÃO implementou reversal Cielo.
 
 Depois PARE.
 

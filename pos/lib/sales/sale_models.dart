@@ -490,8 +490,10 @@ class QuickSaleProviderPaymentLaunch {
     required this.intentId,
     required this.attemptId,
     required this.status,
-    required this.operation,
-    required this.launchUri,
+    this.operation,
+    this.launchUri,
+    this.replayed = false,
+    this.launchAvailable = false,
   });
 
   factory QuickSaleProviderPaymentLaunch.fromJson(Map<String, dynamic> json) =>
@@ -500,17 +502,21 @@ class QuickSaleProviderPaymentLaunch {
         intentId: json['intent_id'] as String,
         attemptId: json['attempt_id'] as String,
         status: json['status'] as String,
-        operation: json['operation'] as String,
-        launchUri: json['launch_uri'] as String,
+        operation: json['operation'] as String?,
+        launchUri: json['launch_uri'] as String?,
+        replayed: json['replayed'] == true,
+        launchAvailable: json['launch_available'] == true,
       );
 
   final String provider;
   final String intentId;
   final String attemptId;
   final String status;
-  final String operation;
+  final String? operation;
   // This value must stay in memory only and is never serialized into POS state.
-  final String launchUri;
+  final String? launchUri;
+  final bool replayed;
+  final bool launchAvailable;
 }
 
 class QuickSalePaymentIntegration {
