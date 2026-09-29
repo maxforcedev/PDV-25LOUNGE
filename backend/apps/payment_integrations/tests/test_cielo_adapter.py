@@ -26,6 +26,7 @@ from apps.payment_integrations.providers.cielo import (
     amount_to_cents,
     get_cielo_credentials,
 )
+from apps.payment_integrations.providers.registry import get_adapter
 from apps.payment_integrations.services import (
     PaymentIntegrationConflict,
     create_payment_attempt,
@@ -154,6 +155,9 @@ class CieloSmartAdapterTests(SimpleTestCase):
             with self.subTest(amount=invalid), self.assertRaises(PaymentIntegrationConflict):
                 amount_to_cents(invalid)
 
+    def test_registry_resolves_the_cielo_adapter(self):
+        self.assertIsInstance(get_adapter('cielo'), CieloSmartAdapter)
+
     @override_settings(
         CIELO_SMART_CLIENT_ID='cielo-client-id-for-test',
         CIELO_SMART_ACCESS_TOKEN='cielo-access-token-for-test',
@@ -185,7 +189,8 @@ class CieloSmartAdapterTests(SimpleTestCase):
         command, payload = self.command_payload(attempt)
 
         self.assertEqual(payload['reference'], f'CORE-{attempt.id}')
-        self.assertEqual(payload['value'], 1050)
+        self.assertEqual(payload['value'], '1050')
+        self.assertIsInstance(payload['value'], str)
         self.assertEqual(payload['items'], self.items())
         self.assertNotIn('merchantCode', payload)
         self.assertEqual(command.safe_metadata, {
@@ -197,8 +202,8 @@ class CieloSmartAdapterTests(SimpleTestCase):
             'merchant_code_present': False,
         })
 
-        _command, configured_payload = self.command_payload(attempt, merchant_code='merchant-123')
-        self.assertEqual(configured_payload['merchantCode'], 'merchant-123')
+        _command, configured_payload = self.command_payload(attempt, merchant_code='1234567890123456')
+        self.assertEqual(configured_payload['merchantCode'], '1234567890123456')
 
     @override_settings(
         CIELO_SMART_CLIENT_ID='cielo-client-id-for-test',
@@ -253,6 +258,14 @@ class CieloSmartAdapterTests(SimpleTestCase):
         self.assert_secret_absent(card.safe_metadata)
         self.assertNotIn('payments', card.safe_metadata)
 
+        cancelled = self.adapter.parse_payment_callback(
+            attempt=attempt,
+            response=self.approved_callback(attempt, status_code=2),
+            responsecode=None,
+        )
+        self.assertEqual(cancelled.status, PaymentAttemptStatus.CANCELLED)
+        self.assertEqual(cancelled.result_data['provider_status_code'], '2')
+
     def test_callback_error_codes_are_final_non_approval_results_with_sanitized_reason(self):
         expected = {
             '1': PaymentAttemptStatus.CANCELLED,
@@ -269,6 +282,40 @@ class CieloSmartAdapterTests(SimpleTestCase):
                 self.assertEqual(result.result_data['provider_status_code'], responsecode)
                 self.assertTrue(result.result_data['provider_message'])
                 self.assert_secret_absent(result.safe_metadata)
+
+    def test_json_error_payload_has_precedence_over_neutral_responsecode(self):
+        expected = {
+            '1': PaymentAttemptStatus.CANCELLED,
+            '2': PaymentAttemptStatus.ERROR,
+            '3': PaymentAttemptStatus.ERROR,
+            '4': PaymentAttemptStatus.ERROR,
+        }
+        for code, status in expected.items():
+            with self.subTest(code=code):
+                response = base64.b64encode(json.dumps({
+                    'code': int(code),
+                    'reason': 'CANCELADO accessToken=provider-secret',
+                }).encode('utf-8')).decode('ascii')
+                result = self.adapter.parse_payment_callback(
+                    attempt=self.attempt(), response=response, responsecode='0',
+                )
+                self.assertEqual(result.status, status)
+                self.assertEqual(result.result_data['provider_status_code'], code)
+                self.assertNotIn('provider-secret', result.result_data['provider_message'])
+
+    def test_parser_rejects_non_cielo_attempt_and_invalid_merchant_code(self):
+        attempt = self.attempt()
+        attempt.provider_connection.provider.code = 'stone'
+        with self.assertRaises(PaymentIntegrationConflict) as provider_error:
+            self.adapter.parse_payment_callback(
+                attempt=attempt, response='', responsecode=None,
+            )
+        self.assertEqual(provider_error.exception.code, 'cielo_connection_invalid')
+
+        for merchant_code in ('abc', '123', '123456789012345', '12345678901234567', '1234-5678-9012-3456'):
+            with self.subTest(merchant_code=merchant_code), self.assertRaises(PaymentIntegrationConflict) as config_error:
+                self.command_payload(self.attempt(), merchant_code=merchant_code)
+            self.assertEqual(config_error.exception.code, 'cielo_configuration_invalid')
 
     def test_unprovable_callbacks_are_unknown_never_approved(self):
         attempt = self.attempt()
@@ -318,10 +365,12 @@ class CieloAdapterBridgeTests(TestCase):
             company=self.company, code=PaymentMethodCode.CREDIT_CARD,
             name='Crédito Cielo', status=Status.ACTIVE,
         )
-        self.provider = PaymentProvider.objects.create(
-            code='cielo', name='Cielo Smart', status=Status.ACTIVE,
-            integration_type='local_deep_link',
-        )
+        self.provider = PaymentProvider.objects.get(code='cielo')
+        self.assertEqual(self.provider.name, 'Cielo Smart')
+        self.assertEqual(self.provider.integration_type, 'local_deep_link')
+        self.assertTrue(self.provider.capabilities['payment'])
+        self.assertTrue(self.provider.capabilities['reversal'])
+        self.assertTrue(self.provider.capabilities['recovery'])
         self.connection = PaymentProviderConnection.objects.create(
             company=self.company, provider=self.provider, name='Cielo Sandbox',
             environment=PaymentProviderConnectionEnvironment.SANDBOX, status=Status.ACTIVE,

@@ -40,6 +40,7 @@ _SENSITIVE_TEXT = re.compile(
     r'\b(access[_ -]?token|client[_ -]?id|authorization|secret|password)\s*[:=]\s*\S+',
     re.IGNORECASE,
 )
+_MERCHANT_CODE = re.compile(r'\d{16}\Z')
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,24 @@ def _unknown(reason, *, metadata=None):
     )
 
 
+def _error_result(code, reason):
+    status, fallback_message = _ERROR_STATUS[code]
+    message = _safe_text(reason) or fallback_message
+    provider_status = 'cancelled' if status == PaymentAttemptStatus.CANCELLED else 'error'
+    return ProviderPaymentResult(
+        status=status,
+        result_data={
+            'provider_status': provider_status,
+            'provider_status_code': code,
+            'provider_message': message,
+        },
+        safe_metadata={
+            'provider': 'cielo', 'provider_status': provider_status,
+            'provider_status_code': code, 'provider_message': message,
+        },
+    )
+
+
 @register_adapter
 class CieloSmartAdapter(PaymentProviderAdapter):
     provider_code = 'cielo'
@@ -127,9 +146,12 @@ class CieloSmartAdapter(PaymentProviderAdapter):
                 'cielo_configuration_invalid', 'A configuração da conexão Cielo é inválida.',
             )
         merchant_code = configuration.get('merchant_code')
-        if merchant_code is not None and not _safe_text(merchant_code, limit=150):
+        if merchant_code is not None and (
+            not isinstance(merchant_code, str)
+            or not _MERCHANT_CODE.fullmatch(merchant_code)
+        ):
             raise PaymentIntegrationConflict(
-                'cielo_configuration_invalid', 'merchant_code não pode ser vazio.',
+                'cielo_configuration_invalid', 'merchant_code deve possuir exatamente 16 dígitos.',
             )
         mode = configuration.get('credit_installment_mode', 'store')
         if mode not in _INSTALLMENT_CODES:
@@ -204,7 +226,7 @@ class CieloSmartAdapter(PaymentProviderAdapter):
             'installments': cielo_installments,
             'items': items,
             'paymentCode': payment_code,
-            'value': amount_cents,
+            'value': str(amount_cents),
         }
         if merchant_code:
             request['merchantCode'] = merchant_code
@@ -227,28 +249,22 @@ class CieloSmartAdapter(PaymentProviderAdapter):
         )
 
     def parse_payment_callback(self, *, attempt, response, responsecode=None):
+        # A Cielo parser must never normalize a callback for another provider.
+        self._connection_configuration(attempt)
         error_code = str(responsecode).strip() if responsecode not in (None, '') else ''
-        if error_code in _ERROR_STATUS:
-            status, message = _ERROR_STATUS[error_code]
-            return ProviderPaymentResult(
-                status=status,
-                result_data={
-                    'provider_status': 'cancelled' if status == PaymentAttemptStatus.CANCELLED else 'error',
-                    'provider_status_code': error_code,
-                    'provider_message': message,
-                },
-                safe_metadata={
-                    'provider': self.provider_code, 'provider_error_code': error_code,
-                    'provider_message': message,
-                },
-            )
         try:
             raw = base64.b64decode(str(response or ''), validate=True)
-            order = json.loads(raw.decode('utf-8'))
+            payload = json.loads(raw.decode('utf-8'))
         except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            if error_code in _ERROR_STATUS:
+                return _error_result(error_code, '')
             return _unknown('Resposta Cielo não comprovável.')
-        if not isinstance(order, dict):
+        if not isinstance(payload, dict):
             return _unknown('Estrutura da resposta Cielo é inválida.')
+        payload_error_code = str(payload.get('code')).strip() if payload.get('code') is not None else ''
+        if payload_error_code in _ERROR_STATUS and 'reason' in payload:
+            return _error_result(payload_error_code, payload.get('reason'))
+        order = payload
         reference = order.get('reference')
         expected_reference = _reference(attempt)
         if reference not in (None, '') and str(reference) != expected_reference:
