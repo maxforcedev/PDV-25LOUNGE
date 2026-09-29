@@ -2340,37 +2340,41 @@ class POSCashSessionOpenView(POSCashView):
         require_branch_feature(device.branch, 'cash_register')
         serializer = POSOpenCashSessionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        mode, configured_register = effective_cash_settings(device)
         requested_register = serializer.validated_data.get('register')
-        if mode == 'FIXED':
-            if requested_register is not None:
-                raise DomainValidationError(
-                    code='fixed_cash_register',
-                    message='Este dispositivo usa o caixa configurado para ele.',
-                )
-            register = CashRegister.objects.filter(
-                pk=getattr(configured_register, 'pk', None), branch=device.branch,
-                status=CashRegisterStatus.ACTIVE,
-            ).first()
-            if not register:
-                error = DomainValidationError(
-                    code='cash_register_unavailable',
-                    message='O caixa configurado para este dispositivo não está ativo.',
-                )
-                error.status_code = status.HTTP_409_CONFLICT
-                raise error
-        else:
-            if requested_register is None:
-                raise DomainValidationError(
-                    code='cash_register_required',
-                    message='Selecione um caixa para abrir a sessão.',
-                    details={'register': ['Este campo é obrigatório.']},
-                )
-            register = get_object_or_404(
-                CashRegister, pk=requested_register, branch=device.branch,
-                status=CashRegisterStatus.ACTIVE,
-            )
         with transaction.atomic():
+            # All POS cash-context mutations take the device before the drawer.
+            device = POSDevice.objects.select_for_update().select_related(
+                'branch__company',
+            ).get(pk=device.pk)
+            mode, configured_register = effective_cash_settings(device)
+            if mode == 'FIXED':
+                if requested_register is not None:
+                    raise DomainValidationError(
+                        code='fixed_cash_register',
+                        message='Este dispositivo usa o caixa configurado para ele.',
+                    )
+                register = CashRegister.objects.filter(
+                    pk=getattr(configured_register, 'pk', None), branch=device.branch,
+                    status=CashRegisterStatus.ACTIVE,
+                ).first()
+                if not register:
+                    error = DomainValidationError(
+                        code='cash_register_unavailable',
+                        message='O caixa configurado para este dispositivo não está ativo.',
+                    )
+                    error.status_code = status.HTTP_409_CONFLICT
+                    raise error
+            else:
+                if requested_register is None:
+                    raise DomainValidationError(
+                        code='cash_register_required',
+                        message='Selecione um caixa para abrir a sessão.',
+                        details={'register': ['Este campo é obrigatório.']},
+                    )
+                register = get_object_or_404(
+                    CashRegister, pk=requested_register, branch=device.branch,
+                    status=CashRegisterStatus.ACTIVE,
+                )
             session = open_session(
                 cash_register=register,
                 opening_amount=serializer.validated_data['opening_amount'],
@@ -2379,9 +2383,8 @@ class POSCashSessionOpenView(POSCashView):
                 allow_pos_only=True,
                 audit_metadata=self.audit_metadata(device, operator_session),
             )
-            POSDevice.objects.select_for_update().filter(pk=device.pk).update(
-                active_cash_session=session,
-            )
+            device.active_cash_session = session
+            device.save(update_fields=('active_cash_session', 'updated_at'))
         data = CashSessionSerializer(session).data
         data['cash_state'] = self.mutation_state(device, permissions, session, operator)
         return Response(data, status=status.HTTP_201_CREATED)
@@ -2397,13 +2400,16 @@ class POSCashSessionSelectView(POSCashView):
         )
         serializer = POSSelectCashSessionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        mode, _configured_register = effective_cash_settings(device)
-        if mode != 'FLEXIBLE':
-            raise DomainValidationError(
-                code='fixed_cash_register',
-                message='Este dispositivo usa o caixa configurado para ele.',
-            )
         with transaction.atomic():
+            device = POSDevice.objects.select_for_update().select_related(
+                'branch__company',
+            ).get(pk=device.pk)
+            mode, _configured_register = effective_cash_settings(device)
+            if mode != 'FLEXIBLE':
+                raise DomainValidationError(
+                    code='fixed_cash_register',
+                    message='Este dispositivo usa o caixa configurado para ele.',
+                )
             session = CashSession.objects.select_for_update().select_related(
                 'cash_register', 'opened_by',
             ).filter(
@@ -2418,9 +2424,8 @@ class POSCashSessionSelectView(POSCashView):
                 )
                 error.status_code = status.HTTP_409_CONFLICT
                 raise error
-            POSDevice.objects.select_for_update().filter(pk=device.pk).update(
-                active_cash_session=session,
-            )
+            device.active_cash_session = session
+            device.save(update_fields=('active_cash_session', 'updated_at'))
             audit_log(
                 actor=operator, action='pos.cash_session.select', obj=session,
                 company=device.branch.company, branch=device.branch,
@@ -2528,10 +2533,22 @@ class POSCashSessionWithdrawalView(POSCashSessionMovementView):
 class POSCashSessionCloseView(POSCashView):
     def post(self, request, session_id):
         device, operator, permissions, operator_session = self.context(request)
-        session = self.session_for_device(session_id, device)
+        # Validate scope before locking devices selected by a client-supplied ID.
+        self.session_for_device(session_id, device)
         serializer = CloseSessionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         with transaction.atomic():
+            # Lock every device that will be cleared before closing the drawer.
+            # Ordering by primary key keeps multi-device cleanup deterministic.
+            device_id = device.pk
+            devices = list(POSDevice.objects.select_for_update().select_related(
+                'branch__company',
+            ).filter(
+                Q(pk=device_id) | Q(active_cash_session_id=session_id),
+                branch=device.branch,
+            ).order_by('pk'))
+            device = next(item for item in devices if item.pk == device_id)
+            session = self.session_for_device(session_id, device)
             session = close_session(
                 cash_session=session,
                 **serializer.validated_data,
@@ -2540,9 +2557,10 @@ class POSCashSessionCloseView(POSCashView):
                 allow_pos_only=True,
                 audit_metadata=self.audit_metadata(device, operator_session),
             )
-            POSDevice.objects.filter(active_cash_session=session).update(
-                active_cash_session=None,
-            )
+            for locked_device in devices:
+                if locked_device.active_cash_session_id == session.pk:
+                    locked_device.active_cash_session = None
+                    locked_device.save(update_fields=('active_cash_session', 'updated_at'))
         data = CashSessionSerializer(session).data
         data['cash_state'] = self.mutation_state(device, permissions, session, operator)
         return Response(data)

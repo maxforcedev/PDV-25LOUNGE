@@ -125,7 +125,7 @@ def create_payment_intent(*, company, branch, pos_device, operator, origin_type,
     return intent, False
 
 
-def _save_intent_status(intent, status, *, validate_terminal_pos_binding=True):
+def _save_intent_status(intent, status, *, validate_terminal_pos_binding=False):
     intent.status = status
     intent._allow_status_transition = True
     intent._validate_terminal_pos_binding = validate_terminal_pos_binding
@@ -199,7 +199,10 @@ def create_payment_attempt(*, intent, provider_connection=None, terminal=_UNSET,
                 'intent_not_ready', 'O intent deve estar pronto, recusado ou com erro para nova tentativa.',
             )
         previous_status = intent.status
-        _save_intent_status(intent, PaymentIntentStatus.PROCESSING)
+        _save_intent_status(
+            intent, PaymentIntentStatus.PROCESSING,
+            validate_terminal_pos_binding=True,
+        )
         latest = intent.attempts.order_by('-attempt_number').values_list('attempt_number', flat=True).first()
         attempt = PaymentAttempt(
             intent=intent,

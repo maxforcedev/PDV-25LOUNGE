@@ -657,6 +657,37 @@ class PaymentIntegrationsTests(TestCase):
         with self.assertRaises(ValidationError):
             create_payment_attempt(intent=next_intent)
 
+    def test_terminal_reassignment_does_not_block_historical_intent_cancellation(self):
+        other_device = POSDevice.objects.create(
+            branch=self.branch, name='Caixa histórico', status=POSDevice.Status.ACTIVE,
+        )
+
+        ready_intent, _ = self.create_intent()
+        transition_payment_intent(intent=ready_intent, status=PaymentIntentStatus.READY)
+        self.terminal.pos_device = other_device
+        self.terminal.save()
+        cancelled = transition_payment_intent(
+            intent=ready_intent, status=PaymentIntentStatus.CANCELLED,
+        )
+        self.assertEqual(cancelled.status, PaymentIntentStatus.CANCELLED)
+
+        for outcome in (PaymentAttemptStatus.DECLINED, PaymentAttemptStatus.ERROR):
+            with self.subTest(outcome=outcome):
+                self.terminal.pos_device = self.device
+                self.terminal.save()
+                intent, _ = self.create_intent()
+                transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
+                attempt = self.start_attempt(intent)
+                self.terminal.pos_device = other_device
+                self.terminal.save()
+                _attempt, resolved_intent = resolve_payment_attempt(
+                    attempt=attempt, status=outcome,
+                )
+                cancelled = transition_payment_intent(
+                    intent=resolved_intent, status=PaymentIntentStatus.CANCELLED,
+                )
+                self.assertEqual(cancelled.status, PaymentIntentStatus.CANCELLED)
+
     def test_final_result_replay_is_idempotent_and_protects_provider_identity(self):
         intent, _ = self.create_intent()
         transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)

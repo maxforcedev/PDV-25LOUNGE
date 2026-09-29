@@ -1,16 +1,17 @@
-# MISSÃO PAY-1.2 — FECHAMENTO DEFINITIVO PRÉ-PROVIDER
+# MISSÃO PAY-1.3 — FECHAMENTO FINAL PRÉ-CIELO
 
-O PAY-1.1 corrigiu grande parte dos bloqueadores, mas a auditoria encontrou 4 pontos que ainda precisam ser resolvidos ANTES de qualquer integração real com Cielo/Stone.
+O PAY-1.2 corrigiu corretamente os bloqueadores anteriores.
 
-HEAD analisado:
+HEAD atual analisado:
 
-`003dc3a26554371f4fad946c94810ff2af51213a`
+`01d0f3e24cb75d8f4fb82d55b05a235de3d7df6b`
 
-Objetivo desta missão:
+Restaram SOMENTE 2 ajustes antes de liberar o PAY-2 / Cielo:
 
-FECHAR DEFINITIVAMENTE o bridge backend de pagamentos externos antes do PAY-2.
+1. transições históricas/cancelamento não podem revalidar vínculo atual Terminal ↔ POS;
+2. eliminar inversão de locks entre POSDevice e CashSession.
 
-Corrigir SOMENTE os pontos abaixo.
+Corrigir SOMENTE estes pontos.
 
 NÃO implementar Cielo.
 NÃO implementar Stone.
@@ -20,701 +21,512 @@ NÃO mexer em Comandas.
 
 ---
 
-# 1. TERMINAL REATRIBUÍDO APÓS PROCESSING NÃO PODE BLOQUEAR RESULTADO
+# 1. TERMINAL ↔ POS É VALIDAÇÃO OPERACIONAL, NÃO HISTÓRICA
 
-Hoje `PaymentTerminal.pos_device` é mutável, o que está correto operacionalmente.
+Hoje o resultado de Attempt após PROCESSING já não revalida corretamente o vínculo atual:
 
-Porém `PaymentIntent.clean()` / `PaymentAttempt.clean()` verificam:
+`terminal.pos_device == intent.pos_device`
 
-`terminal.pos_device_id == intent.pos_device_id`
+Isso está certo.
 
-inclusive quando estamos persistindo resultado de uma tentativa que JÁ entrou em PROCESSING.
+Porém `transition_payment_intent()` ainda chama `_save_intent_status()` com:
 
-Cenário crítico:
+`validate_terminal_pos_binding=True`
+
+por padrão.
+
+Isso pode prender um Intent antigo.
+
+Cenário:
 
 ```text
-10:00
-Terminal T vinculado ao POS A
-Attempt → PROCESSING
+Intent READY
+Terminal T → POS A
 
-10:01
-Backoffice reatribui Terminal T → POS B
+Backoffice reatribui:
+Terminal T → POS B
 
-10:02
-Provider retorna APPROVED
+operador tenta:
+READY → CANCELLED
 ```
 
-O CORE NÃO pode rejeitar o APPROVED porque o vínculo administrativo atual do terminal mudou.
+O cancelamento NÃO pode falhar porque o terminal foi reatribuído administrativamente.
 
-REGRA:
+Outro cenário:
 
-A compatibilidade:
+```text
+Attempt PROCESSING
+Terminal muda POS A → POS B
+Attempt → DECLINED
+
+operador:
+DECLINED → CANCELLED
+```
+
+Também deve funcionar.
+
+REGRA DEFINITIVA:
+
+A compatibilidade atual:
 
 `terminal.pos_device_id IS NULL OR terminal.pos_device_id == intent.pos_device_id`
 
-deve ser obrigatória:
+é obrigatória SOMENTE ao:
 
-* na criação do Intent;
-* na criação do Attempt;
-* no início `CREATED → PROCESSING`.
+* criar novo PaymentIntent;
+* criar novo PaymentAttempt;
+* iniciar `CREATED → PROCESSING`.
 
-Depois que o Attempt estiver PROCESSING:
+Depois disso, o vínculo atual do terminal NÃO pode impedir transições históricas/administrativas.
 
-NÃO revalidar vínculo operacional atual do `terminal.pos_device` para registrar:
+Não revalidar Terminal ↔ POS em:
 
-* APPROVED;
+* CANCELLED;
 * DECLINED;
 * ERROR;
-* CANCELLED;
 * UNKNOWN;
-* reconciliação de UNKNOWN.
+* APPROVED;
+* reconciliação;
+* demais persistências históricas de status.
 
-A tentativa já iniciada deve preservar seu fato histórico.
+Continuar SEMPRE validando integridade estrutural:
 
-IMPORTANTE:
+* terminal.connection == attempt/provider connection;
+* terminal.branch == intent.branch;
+* connection.company == intent.company;
+* demais invariantes estruturais existentes.
 
-Continuar validando SEMPRE a integridade estrutural:
-
-* terminal pertence à connection da tentativa;
-* terminal pertence à branch correta;
-* connection pertence à empresa correta.
-
-Apenas o vínculo OPERACIONAL atual `pos_device` deixa de bloquear após PROCESSING.
-
-Adicionar teste:
-
-```text
-Terminal → POS A
-Attempt PROCESSING
-Terminal é reatribuído → POS B
-resolve APPROVED
-→ deve funcionar
-```
-
-Também testar UNKNOWN → APPROVED nesse cenário.
+Não relaxar essas validações.
 
 ---
 
-# 2. CANCEL_SESSION DEVE BLOQUEAR QUALQUER CHECKOUT ABERTO COM VALOR PAGO
+# 2. AJUSTAR `_save_intent_status`
 
-`cancel_session()` agora bloqueia checkout parcialmente pago:
+Revisar `_save_intent_status()`.
 
-`paid > 0 AND remaining > 0`
-
-Isso não é suficiente.
-
-Cenário crítico:
-
-```text
-Checkout R$100
-↓
-Provider APPLIED R$100
-↓
-paid = 100
-remaining = 0
-↓
-checkout continua OPEN aguardando finalize
-```
-
-Hoje o caixa pode ser CANCELLED.
-
-Depois `finalize_quick_checkout()` não consegue materializar a Sale porque CashSession CANCELLED não é aceita.
-
-Resultado:
-
-dinheiro recebido sem Sale final.
-
-REGRA:
-
-Para `cancel_session()`:
-
-qualquer QuickSaleCheckout OPEN com:
-
-`paid > 0`
-
-deve bloquear o cancelamento da CashSession.
-
-Não importa se:
-
-* pagamento parcial;
-* pagamento total;
-* manual;
-* provider;
-* combinação dos dois.
-
-Portanto:
-
-```text
-OPEN checkout
-paid > 0
-→ cash session NÃO pode ser CANCELLED
-```
-
-`close_session()` mantém a lógica atual.
-
-Diferença:
-
-CLOSED pode permitir materialização posterior do checkout pago.
-
-CANCELLED NÃO.
-
-Adicionar testes:
-
-1. checkout parcial pago → cancel bloqueado;
-2. checkout 100% pago manual → cancel bloqueado;
-3. checkout 100% pago provider → cancel bloqueado;
-4. checkout sem pagamento/intents → cancel continua permitido.
-
----
-
-# 3. DUPLICIDADE DE PROVIDER_TRANSACTION_ID NÃO PODE VAZAR INTEGRITYERROR
-
-A constraint criada está correta:
-
-```text
-(provider_connection, provider_transaction_id)
-UNIQUE
-quando provider_transaction_id != ''
-```
-
-Manter essa constraint.
-
-Porém o service NÃO deve deixar `IntegrityError` bruto chegar ao caller.
-
-Hoje o teste aceita:
-
-`assertRaises(IntegrityError)`
-
-Isso não é aceitável para provider real.
-
-Cenário:
-
-```text
-Attempt A
-provider_transaction_id = TX123
-```
-
-Depois:
-
-```text
-Attempt B
-mesma connection
-provider_transaction_id = TX123
-```
-
-Resultado esperado:
-
-`PaymentIntegrationConflict`
-
-com código explícito, por exemplo:
-
-`provider_transaction_conflict`
-
-ou:
-
-`duplicate_provider_transaction`
-
-NÃO retornar erro bruto de banco.
-
-A operação deve permanecer atômica.
-
-Se a tentativa duplicada estava PROCESSING:
-
-após falha, deve continuar no estado anterior coerente por rollback.
-
-Não marcar Intent como APPROVED.
-
-Não persistir parcialmente result_data.
-
-Adicionar testes:
-
-* duplicate ID na mesma Connection → conflito de domínio;
-* Attempt/Intent não avançam;
-* mesma string em Connection diferente → permitido.
-
----
-
-# 4. SALES.PAYMENT COM SOURCE QUICK SALE TAMBÉM DEVE SER SERVICE-ONLY
-
-O caminho oficial de `finalize_sale()` agora valida corretamente que os sources pertencem ao QuickSaleCheckout correto.
-
-Porém ainda existe bypass por criação direta de `sales.Payment`.
-
-Hoje alguém internamente poderia fazer algo equivalente a:
+Hoje:
 
 ```python
-Payment.objects.create(
-    sale=sale_b,
-    source_quick_sale_payment=payment_checkout_a,
-    ...
+def _save_intent_status(
+    intent,
+    status,
+    *,
+    validate_terminal_pos_binding=True,
 )
 ```
 
-e, se empresa/filial/método/valor coincidirem e `checkout.sale` ainda estiver NULL, a validação pode aceitar.
+Esse default é perigoso para transições históricas.
 
-Isso não pode acontecer.
+Escolher solução clara.
 
-REGRA:
+Preferência:
 
-Quando:
+o vínculo Terminal ↔ POS deve ser explicitamente exigido SOMENTE nos pontos de início de operação, e não como default de qualquer mudança de status.
 
-`source_quick_sale_payment != NULL`
-
-a criação de `sales.Payment` deve ser permitida SOMENTE pelo fluxo oficial:
-
-`finalize_sale()`.
-
-Usar mecanismo service-only equivalente ao utilizado para provider QuickSalePayment.
-
-Exemplo conceitual:
-
-`_allow_quick_sale_source_creation`
-
-ou mecanismo equivalente.
-
-Fluxos normais SEM `source_quick_sale_payment` continuam inalterados.
-
-Mesa/Comanda continuam funcionando normalmente.
-
-Adicionar teste:
+Pode mudar o default para:
 
 ```text
-QuickSalePayment do Checkout A
-+
-Payment.objects.create direto para Sale B
-→ bloqueado
+False
 ```
 
-E:
+desde que os pontos de criação/start continuem validando explicitamente.
+
+Ou preservar assinatura atual e passar `False` em TODAS as transições históricas.
+
+O importante é deixar impossível que:
 
 ```text
-finalize_quick_checkout()
-→ cria sales.Payment normalmente
+terminal foi reatribuído
+↓
+cancelamento/reconciliação histórica trava
 ```
 
 ---
 
-# 5. PAYMENT CLEAN CONTINUA VALIDANDO PROVENIÊNCIA
+# 3. TESTES DO TERMINAL REATRIBUÍDO
 
-Além do service-only, preservar as validações atuais:
+Adicionar testes específicos.
 
-* mesma company;
-* mesma branch;
-* payment method;
-* amount;
-* received amount;
-* source APPLIED;
-* source não estornado;
-* apenas uma proveniência por Payment.
+## READY → CANCELLED
 
-Não remover essas proteções.
+```text
+Intent READY
+Terminal inicialmente POS A
+Terminal reatribuído POS B
+cancel Intent
+→ CANCELLED
+```
 
-Service-only é uma camada ADICIONAL.
+deve funcionar.
+
+## DECLINED → CANCELLED
+
+```text
+Attempt PROCESSING
+Terminal A → B
+Attempt DECLINED
+Intent DECLINED
+cancel Intent
+→ CANCELLED
+```
+
+deve funcionar.
+
+## ERROR → CANCELLED
+
+Mesmo princípio.
+
+## Nova operação
+
+Depois da reatribuição:
+
+```text
+novo Intent/Attempt do POS A
+usando Terminal agora ligado ao POS B
+```
+
+→ continua bloqueado.
+
+Ou seja:
+
+```text
+operação histórica → conclui
+operação nova incompatível → bloqueia
+```
 
 ---
 
-# 6. LOCK ORDER DO START QUICK SALE ATTEMPT
+# 4. PADRONIZAR ORDEM DE LOCKS POSDEVICE → CASHSESSION
 
-Revisar `start_quick_sale_payment_attempt()`.
+A auditoria encontrou inversão de locks.
 
-Hoje precisamos manter ordem de locks consistente para evitar deadlock com troca de caixa do POS.
-
-O padrão financeiro do POS já usa:
+Hoje o pagamento integrado segue corretamente:
 
 ```text
 POSDevice
-→ active CashSession
-→ checkout
-→ ledger
+→ CashSession
+→ QuickSaleCheckout
+→ PaymentIntent / Attempt
+→ Ledger
 ```
 
-Garanta que o start do pagamento integrado não faça ordem inversa problemática como:
+Porém outros fluxos POS ainda podem fazer:
 
 ```text
 CashSession
-→ Checkout
 → POSDevice
-→ CashSession
 ```
 
-Preferir resolver/bloquear `current_pos_cash_session(..., for_update=True)` ANTES de bloquear checkout/session, seguindo o mesmo princípio usado no pagamento manual.
+Isso permite deadlock.
 
-Depois validar:
-
-`active_session.pk == checkout.cash_session_id`
-
-Não relaxar a segurança.
-
-Adicionar teste concorrencial simples se a suíte permitir; caso não, pelo menos teste funcional de troca de caixa.
-
----
-
-# 7. TESTES OBRIGATÓRIOS — CASH SESSION
-
-Adicionar testes específicos:
-
-## close_session
-
-* Intent PROCESSING → bloqueado;
-* Intent UNKNOWN → bloqueado;
-* Intent APPROVED não APPLIED → bloqueado.
-
-## cancel_session
-
-* Intent PROCESSING → bloqueado;
-* Intent UNKNOWN → bloqueado;
-* Intent APPROVED → bloqueado;
-* checkout parcialmente pago → bloqueado;
-* checkout totalmente pago → bloqueado;
-* provider APPLIED + checkout OPEN → bloqueado.
-
----
-
-# 8. TESTES OBRIGATÓRIOS — CASH CONTEXT
-
-Cenário:
+Exemplo:
 
 ```text
-Checkout criado no Caixa A
-POS muda para Caixa B
-start_quick_sale_payment_attempt
+Transação A
+start payment
+lock POSDevice
+espera CashSession
 ```
 
-→ bloqueado.
-
-Depois testar:
+simultaneamente:
 
 ```text
-Checkout Caixa A
-Attempt PROCESSING
-POS muda para Caixa B
-provider APPROVED
-```
-
-→ resultado deve ser aceito.
-
-Apply deve continuar usando o CashSession ORIGINAL do checkout.
-
----
-
-# 9. TESTES OBRIGATÓRIOS — TERMINAL LIFECYCLE
-
-Testar:
-
-```text
-Terminal ligado POS A
-Intent POS A
-Attempt PROCESSING
-Terminal reatribuído POS B
-APPROVED
-```
-
-→ permitido.
-
-E:
-
-```text
-novo Attempt POS A usando Terminal agora POS B
-```
-
-→ bloqueado.
-
-Isso prova a diferença entre:
-
-* iniciar operação nova;
-* concluir operação histórica existente.
-
----
-
-# 10. TESTES OBRIGATÓRIOS — APPLICATION CONTEXT
-
-Adicionar cobertura direta para:
-
-* mode inválido;
-* `value` com allocations;
-* `remaining` com allocations;
-* item externo;
-* item duplicado;
-* quantidade <= 0;
-* quantidade excedida;
-* amount de allocation adulterado;
-* soma diferente do Intent.amount.
-
-Nenhum deles pode criar `QuickSalePayment`.
-
----
-
-# 11. TESTE UNKNOWN COMPLETO
-
-Fluxo obrigatório:
-
-```text
-Attempt PROCESSING
-↓
-UNKNOWN
-↓
-checkout bloqueado
-↓
-close_session bloqueado
-↓
-cancel_session bloqueado
-↓
-reserva continua protegida
-↓
-reconcile APPROVED
-↓
-apply
-↓
-Intent APPLIED
-↓
-QuickSalePayment PROVIDER
-```
-
-Também validar:
-
-`UNKNOWN → nova tentativa`
-
-continua bloqueado.
-
----
-
-# 12. TESTE CRASH / RECOVERY
-
-Simular:
-
-```text
-Attempt PROCESSING
-↓
-APPROVED
-↓
-Intent APPROVED
-↓
-nenhum QuickSalePayment ainda
-```
-
-Depois:
-
-```text
-apply_approved_quick_sale_payment_intent()
-```
-
-deve criar payment.
-
-Replay:
-
-```text
-apply novamente
-```
-
-deve retornar o MESMO payment.
-
-Validar exatamente 1 `QuickSalePayment`.
-
----
-
-# 13. TESTE PARTIAL PAYMENT
-
-Cenário obrigatório:
-
-```text
-Checkout R$100
-↓
-Manual R$30
-↓
-Provider Intent R$70
-↓
-APPROVED
-↓
-APPLIED
+Transação B
+troca/fecha caixa
+lock CashSession
+espera POSDevice
 ```
 
 Resultado:
 
+`DEADLOCK`
+
+Padronizar mutações que mexem simultaneamente em:
+
+* `POSDevice.active_cash_session`;
+* `CashSession`;
+
+para sempre seguir:
+
 ```text
-paid = 100
-remaining = 0
+POSDevice
+→ CashSession
 ```
 
-Validar:
-
-* reserva continua protegida;
-* finalização gera 2 `sales.Payment`;
-* provider source aponta para o Attempt correto;
-* manual source continua manual.
+quando o contexto for uma operação do POS.
 
 ---
 
-# 14. PAYMENTMETHOD DESATIVADO APÓS PROCESSING
+# 5. POS CASH SESSION SELECT
 
-Teste:
+Revisar:
+
+`POSCashSessionSelectView`
+
+Hoje ele busca/trava CashSession antes do POSDevice.
+
+Corrigir ordem.
+
+Fluxo esperado:
 
 ```text
-PaymentMethod ACTIVE
+transaction.atomic
 ↓
-Attempt PROCESSING
+lock POSDevice
 ↓
-PaymentMethod INACTIVE
+resolver/validar branch/configuração
 ↓
-APPROVED
+lock CashSession alvo
 ↓
-apply
+validar OPEN/ACTIVE
 ↓
-finalize
+device.active_cash_session = session
 ```
 
-Tudo deve funcionar.
+Não utilizar `QuerySet.update()` de forma que perca o lock já obtido ou bypass de validações relevantes.
 
-`sales.Payment.payment_method_name/code`
+Preservar:
 
-devem usar os snapshots históricos do `QuickSalePayment`.
-
-Novo pagamento usando esse método INACTIVE continua proibido.
+* FLEXIBLE somente;
+* permissões;
+* mesma branch;
+* register ACTIVE;
+* session OPEN;
+* auditoria.
 
 ---
 
-# 15. PROVIDER REVERSAL
+# 6. POS CASH SESSION OPEN / BIND
 
-Adicionar teste direto:
+Revisar o endpoint que:
+
+* abre CashSession;
+* depois vincula ao `POSDevice.active_cash_session`.
+
+Hoje ele pode fazer:
 
 ```text
-QuickSalePayment source_type=PROVIDER
+open_session → lock CashSession/register
 ↓
-reverse_quick_checkout_payment()
+lock POSDevice
 ```
 
-→ conflito:
+Padronizar para evitar inversão.
 
-`provider_reversal_required`
+Antes de iniciar o fluxo de abertura/vínculo pelo POS:
 
-Pagamento manual continua reversível.
-
----
-
-# 16. CHECKOUT BLOCKING
-
-Adicionar testes para Intent:
-
-* READY;
-* PROCESSING;
-* DECLINED;
-* ERROR;
-* UNKNOWN;
-* APPROVED.
-
-Enquanto bloqueante:
-
-impedir:
-
-* update checkout;
-* manual payment;
-* reverse;
-* cancel checkout;
-* finalize.
+```text
+lock POSDevice
+```
 
 Depois:
 
-`Intent CANCELLED`
-
-→ checkout volta ao fluxo normal.
-
----
-
-# 17. PROVIDER FALLBACK
-
-Preservar e testar:
-
 ```text
-Intent Provider A
-↓
-Attempt #1 Provider A → DECLINED
-↓
-Attempt #2 Provider B → APPROVED
-↓
-QuickSalePayment
+open/lock CashSession e CashRegister
 ```
 
-O source deve apontar para Attempt #2 / Provider B.
+Garantir que não sejam criadas duas sessões/vínculos concorrentes por corrida.
 
-Nunca para a Connection original apenas por estar no Intent.
+Não alterar regras de `open_session()` fora do necessário.
 
 ---
 
-# 18. CALLBACK REPLAY
+# 7. POS CASH SESSION CLOSE
 
-Preservar comportamento novo:
+Revisar:
+
+`POSCashSessionCloseView`
+
+Hoje:
 
 ```text
-APPROVED + TX123
+close_session()
 ↓
-APPROVED + TX123 novamente
+depois limpa POSDevice.active_cash_session
 ```
 
-→ replay seguro.
+e o `close_session()` começa travando CashSession.
 
-Pode enriquecer campos vazios posteriores.
+Para chamada via POS precisamos manter:
 
-Não pode trocar:
+```text
+POSDevice
+→ CashSession
+```
 
-* provider_transaction_id;
-* provider_order_id;
-* provider_reference;
-* authorization_code;
-* nsu.
+Solução deve evitar alterar indevidamente os fluxos Backoffice que chamam `close_session()` sem POSDevice.
 
-Resultado final diferente continua conflito.
+Pode criar wrapper POS específico ou adquirir lock do device no View antes do service.
+
+Exemplo conceitual:
+
+```text
+transaction.atomic
+↓
+lock POSDevice
+↓
+close_session(...)
+↓
+limpar active_cash_session
+```
+
+Como o lock do device já está adquirido antes de `close_session()` travar sessão, a ordem fica consistente.
+
+Preservar toda a lógica atual de fechamento.
 
 ---
 
-# 19. RESULTADO DE CALLBACK NÃO DEVE REVALIDAR RECURSOS OPERACIONAIS ATUAIS
+# 8. LIMPEZA DE ACTIVE CASH SESSION
 
-Além do Terminal/POS, garantir que mudanças depois de PROCESSING em:
+Ao fechar uma sessão pelo POS:
 
-* Provider status;
-* Connection status;
-* Terminal status;
-* PaymentMethod status;
-* terminal.pos_device;
+limpar `active_cash_session` somente dos dispositivos que realmente apontam para aquela sessão, preservando comportamento atual.
 
-não impeçam registro do resultado histórico.
+Se houver mais de um device apontando para a mesma sessão e isso for permitido pela arquitetura atual, não introduzir comportamento novo além do existente.
 
-Estrutura histórica ainda deve ser coerente.
+Mas garantir que qualquer lock de device usado seja feito ANTES do lock de CashSession quando ambos participarem da mesma transação.
 
 ---
 
-# 20. PAYLOAD
+# 9. NÃO CRIAR NOVA INVERSÃO
+
+Auditar todos os pontos alterados nesta missão procurando sequências:
+
+```text
+CashSession select_for_update
+→ POSDevice select_for_update
+```
+
+nos fluxos POS.
+
+Dentro de operações POS envolvendo ambos, não deixar essa ordem.
+
+Padrão oficial:
+
+```text
+POSDevice
+→ CashSession
+→ QuickSaleCheckout
+→ PaymentIntent
+→ PaymentAttempt
+→ QuickSalePayment
+```
+
+Nem todo fluxo precisa travar todos.
+
+Mas, se travar mais de um, respeitar essa ordem.
+
+---
+
+# 10. NÃO MUDAR O LOCK ORDER DE DOMÍNIOS QUE NÃO ENVOLVEM POSDEVICE
+
+Não sair refatorando todo o sistema de Cash.
+
+Backoffice e services genéricos podem continuar com suas regras existentes desde que não façam depois um lock de POSDevice na mesma transação.
+
+A missão é corrigir especificamente a interseção:
+
+`POSDevice ↔ CashSession`
+
+---
+
+# 11. TESTES DE LOCK ORDER FUNCIONAL
+
+Não precisamos criar teste artificial de deadlock com threads se isso tornar a suíte frágil.
+
+Mas adicionar testes funcionais que garantam:
+
+## Select
+
+```text
+POSDevice
+Caixa A ativo
+selecionar Caixa B
+→ vínculo atualizado corretamente
+```
+
+## Start provider vs cash context
 
 Preservar:
 
 ```text
-source = provider
-source_type = provider
+checkout Caixa A
+POS troca para B
+start Attempt
+→ cash_context_changed
 ```
 
-para provider payment.
-
-Manual:
+## Close
 
 ```text
-source = manual
-source_type = manual
+POS vinculado Caixa A
+close Caixa A
+→ session CLOSED
+→ device.active_cash_session = NULL
 ```
 
-Não reintroduzir inconsistência.
+## Provider PROCESSING
+
+```text
+Attempt PROCESSING no Caixa A
+tentativa de fechar caixa
+→ continua bloqueada
+```
+
+Não quebrar os testes PAY-1.2 existentes.
 
 ---
 
-# 21. NÃO ALTERAR MESA
+# 12. TESTES DE REGRESSÃO OBRIGATÓRIOS
+
+Preservar todos estes comportamentos:
+
+* Terminal reatribuído pós-PROCESSING → APPROVED funciona;
+* UNKNOWN → APPROVED funciona;
+* Provider/Connection/Terminal INACTIVE pós-PROCESSING não bloqueiam resultado;
+* PaymentMethod INACTIVE pós-PROCESSING não bloqueia resultado;
+* cancel_session bloqueia checkout pago;
+* provider_transaction conflict faz rollback;
+* provider payment service-only;
+* sales.Payment Quick Sale source service-only;
+* partial payment;
+* provider fallback;
+* reversal provider bloqueado;
+* application_context protegido;
+* callback replay.
+
+---
+
+# 13. NÃO ALTERAR PAYMENT FLOW
+
+Não mexer na semântica de:
+
+* PaymentIntent;
+* PaymentAttempt;
+* QuickSalePayment;
+* APPROVED;
+* APPLIED;
+* provider_transaction_id;
+* application_context;
+* fallback;
+* reversal.
+
+Exceto o necessário para retirar a revalidação histórica Terminal ↔ POS.
+
+---
+
+# 14. NÃO ALTERAR MESA
 
 NÃO mexer em:
 
 * TableAttendance;
 * TablePayment;
 * TablePaymentAllocation;
-* serviços/endpoints/telas de Mesa.
+* services/endpoints/telas de Mesa.
 
 ---
 
-# 22. NÃO ALTERAR COMANDAS
+# 15. NÃO ALTERAR COMANDAS
 
 NÃO mexer em:
 
@@ -722,15 +534,13 @@ NÃO mexer em:
 * AttendanceCommand;
 * CommandPayment;
 * AttendancePayment;
-* serviços/endpoints/telas de Comanda.
-
-Alterações genéricas em `sales.Payment` devem preservar totalmente esses fluxos.
+* services/endpoints/telas de Comanda.
 
 ---
 
-# 23. NÃO IMPLEMENTAR PROVIDER REAL
+# 16. NÃO IMPLEMENTAR PROVIDER REAL
 
-Ainda NÃO adicionar:
+Ainda NÃO implementar:
 
 * Cielo;
 * Stone;
@@ -739,31 +549,30 @@ Ainda NÃO adicionar:
 * Client ID;
 * Access Token;
 * callback Android;
-* platform channel;
-* Flutter.
-
-PAY-1.2 continua backend/provider-neutral.
+* Flutter;
+* platform channel.
 
 ---
 
-# 24. MIGRATIONS
+# 17. MIGRATIONS
 
-A migration `0003_paymentattempt_provider_transaction_unique.py` deve ser preservada.
+Esses ajustes não parecem exigir schema change.
 
-Criar nova migration SOMENTE se realmente necessário.
+NÃO criar migration sem necessidade real.
 
-Não editar migrations já criadas.
+NÃO editar migrations existentes.
 
 ---
 
-# 25. TESTES PERMITIDOS
+# 18. TESTES PERMITIDOS
 
 Pode executar SOMENTE testes direcionados relacionados a:
 
 * `payment_integrations`;
 * Quick Sale;
-* Cash Session afetada pelo bridge;
-* sales finalization de Quick Sale.
+* POS cash session;
+* cash/session;
+* sales finalization afetada.
 
 NÃO executar:
 
@@ -777,33 +586,25 @@ NÃO executar:
 
 # CHECKPOINT FINAL
 
-Ao terminar, informar:
+Ao terminar, informe:
 
-1. como terminal reatribuído pós-PROCESSING deixou de bloquear resultado;
-2. como cancel_session trata checkout 100% pago;
-3. como duplicate provider_transaction_id virou conflito de domínio;
-4. como sales.Payment com Quick Sale source virou service-only;
-5. como ficou a ordem de locks no start do Attempt;
-6. testes de close_session;
-7. testes de cancel_session;
-8. testes de cash context;
-9. testes de terminal lifecycle;
-10. testes de application_context;
-11. teste UNKNOWN;
-12. teste crash/recovery;
-13. teste partial payment;
-14. teste PaymentMethod inativo;
-15. teste provider reversal;
-16. teste checkout blocking;
-17. teste provider fallback;
-18. teste callback replay;
-19. arquivos alterados;
-20. migrations criadas;
-21. resultados dos testes direcionados;
-22. confirmação explícita de que NÃO alterou Mesa;
-23. confirmação explícita de que NÃO alterou Comandas;
-24. confirmação explícita de que NÃO alterou Flutter;
-25. confirmação explícita de que NÃO implementou Cielo nem Stone.
+1. como Terminal ↔ POS passou a ser apenas validação de início de operação;
+2. como READY → CANCELLED funciona após reatribuição;
+3. como DECLINED/ERROR → CANCELLED funcionam após reatribuição;
+4. como novas operações continuam bloqueando Terminal incompatível;
+5. qual passou a ser a ordem oficial de locks;
+6. quais endpoints POS foram ajustados;
+7. como `POSCashSessionSelectView` ficou;
+8. como abertura/vínculo de caixa ficou;
+9. como fechamento via POS ficou;
+10. testes adicionados;
+11. resultados dos testes direcionados;
+12. arquivos alterados;
+13. migrations criadas, se houver;
+14. confirmação de que NÃO alterou Mesa;
+15. confirmação de que NÃO alterou Comandas;
+16. confirmação de que NÃO alterou Flutter;
+17. confirmação de que NÃO implementou Cielo nem Stone.
 
 Depois PARE.
 
