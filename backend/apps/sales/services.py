@@ -2594,13 +2594,20 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             quick_sale_payment_sources[index]
             if quick_sale_payment_sources is not None else None
         )
-        Payment.objects.create(
+        payment = Payment(
             sale=sale, payment_method=method, amount=amount, received_amount=received,
             source_command_payment=source, source_attendance_payment=attendance_source,
             source_table_payment=table_source,
             source_quick_sale_payment=quick_sale_source,
             occurred_at=(source or attendance_source or table_source or quick_sale_source).created_at if (source or attendance_source or table_source or quick_sale_source) else None,
         )
+        if quick_sale_source is not None:
+            payment._allow_quick_sale_source_creation = True
+        try:
+            payment.save()
+        finally:
+            if quick_sale_source is not None:
+                delattr(payment, '_allow_quick_sale_source_creation')
     movement_type = (
         MovementType.CONSUMPTION
         if operation_type == OperationType.CONSUMPTION else MovementType.SALE

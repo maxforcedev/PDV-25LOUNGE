@@ -2,7 +2,6 @@ from decimal import Decimal
 from uuid import uuid4
 
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError
 from django.test import TestCase
 
 from apps.accounts.models import User
@@ -585,7 +584,7 @@ class PaymentIntegrationsTests(TestCase):
         self.assertEqual(resolved_attempt.authorization_code, '123456')
         self.assertEqual(resolved_attempt.nsu, '789')
 
-    def test_provider_transaction_id_is_unique_per_connection_when_present(self):
+    def test_provider_transaction_id_conflict_is_domain_error_and_rolls_back(self):
         first_intent, _ = self.create_intent()
         transition_payment_intent(intent=first_intent, status=PaymentIntentStatus.READY)
         first_attempt = self.start_attempt(first_intent)
@@ -597,11 +596,66 @@ class PaymentIntegrationsTests(TestCase):
         second_intent, _ = self.create_intent()
         transition_payment_intent(intent=second_intent, status=PaymentIntentStatus.READY)
         second_attempt = self.start_attempt(second_intent)
-        with self.assertRaises(IntegrityError):
+        with self.assertRaises(PaymentIntegrationConflict) as context:
             resolve_payment_attempt(
                 attempt=second_attempt, status=PaymentAttemptStatus.APPROVED,
                 result_data={'provider_transaction_id': 'provider-transaction-unique'},
             )
+        self.assertEqual(context.exception.code, 'provider_transaction_conflict')
+        second_attempt.refresh_from_db()
+        second_intent.refresh_from_db()
+        self.assertEqual(second_attempt.status, PaymentAttemptStatus.PROCESSING)
+        self.assertEqual(second_attempt.provider_transaction_id, '')
+        self.assertEqual(second_intent.status, PaymentIntentStatus.PROCESSING)
+
+        other_connection = PaymentProviderConnection.objects.create(
+            company=self.company, provider=self.provider, name='Outro contrato',
+            environment=PaymentProviderConnectionEnvironment.SANDBOX, status=Status.ACTIVE,
+        )
+        third_intent, _ = self.create_intent()
+        transition_payment_intent(intent=third_intent, status=PaymentIntentStatus.READY)
+        third_attempt = create_payment_attempt(
+            intent=third_intent, provider_connection=other_connection, terminal=None,
+        )
+        third_attempt = transition_payment_attempt(
+            attempt=third_attempt, status=PaymentAttemptStatus.PROCESSING,
+        )
+        resolved_attempt, resolved_intent = resolve_payment_attempt(
+            attempt=third_attempt, status=PaymentAttemptStatus.APPROVED,
+            result_data={'provider_transaction_id': 'provider-transaction-unique'},
+        )
+        self.assertEqual(resolved_attempt.provider_connection_id, other_connection.pk)
+        self.assertEqual(resolved_intent.status, PaymentIntentStatus.APPROVED)
+
+    def test_terminal_reassignment_after_processing_preserves_historical_results(self):
+        other_device = POSDevice.objects.create(
+            branch=self.branch, name='Caixa 2', status=POSDevice.Status.ACTIVE,
+        )
+        intent, _ = self.create_intent()
+        transition_payment_intent(intent=intent, status=PaymentIntentStatus.READY)
+        attempt = self.start_attempt(intent)
+
+        self.terminal.pos_device = other_device
+        self.terminal.save()
+        unknown_attempt, unknown_intent = resolve_payment_attempt(
+            attempt=attempt, status=PaymentAttemptStatus.UNKNOWN,
+        )
+        resolved_attempt, resolved_intent = resolve_payment_attempt(
+            attempt=unknown_attempt, status=PaymentAttemptStatus.APPROVED,
+        )
+
+        self.assertEqual(unknown_intent.status, PaymentIntentStatus.UNKNOWN)
+        self.assertEqual(resolved_attempt.status, PaymentAttemptStatus.APPROVED)
+        self.assertEqual(resolved_intent.status, PaymentIntentStatus.APPROVED)
+
+        self.terminal.pos_device = self.device
+        self.terminal.save()
+        next_intent, _ = self.create_intent()
+        transition_payment_intent(intent=next_intent, status=PaymentIntentStatus.READY)
+        self.terminal.pos_device = other_device
+        self.terminal.save()
+        with self.assertRaises(ValidationError):
+            create_payment_attempt(intent=next_intent)
 
     def test_final_result_replay_is_idempotent_and_protects_provider_identity(self):
         intent, _ = self.create_intent()

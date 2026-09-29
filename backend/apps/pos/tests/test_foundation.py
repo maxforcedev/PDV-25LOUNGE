@@ -14,10 +14,10 @@ from django.test import TestCase
 from apps.accounts.models import User
 from apps.base.exceptions import DomainValidationError
 from apps.base.models import AuditLog
-from apps.cash.models import CashMovement, CashRegister
-from apps.cash.services import open_session
+from apps.cash.models import CashMovement, CashRegister, CashSessionStatus
+from apps.cash.services import cancel_session, close_session, open_session
 from apps.companies.models import (
-    AccessProfile, Branch, Customer, FunctionalPermission, UserBranchAccess, UserCompanyAccess,
+    AccessProfile, Branch, Customer, FunctionalPermission, Status, UserBranchAccess, UserCompanyAccess,
     UserPermissionBlock,
 )
 from apps.companies.services import (
@@ -28,7 +28,7 @@ from apps.pos.models import (
     POSOperatorPinAttempt, POSOperatorSession, POSRequestRateLimit, QuickSaleCheckout, QuickSalePayment,
 )
 from apps.payment_integrations.models import (
-    PaymentAttemptStatus, PaymentProvider, PaymentProviderConnection,
+    PaymentAttemptStatus, PaymentIntent, PaymentProvider, PaymentProviderConnection,
     PaymentProviderConnectionEnvironment, PaymentTerminal,
 )
 from apps.pos.services import (
@@ -39,10 +39,14 @@ from apps.pos.services import (
 from apps.pos.serializers import POSCustomerSerializer
 from apps.inventory.models import Stock
 from apps.products.models import Category, InventoryBehavior, Product, ProductBranchConfig, Unit
+from apps.sales.models import Payment
 from apps.sales.services import ensure_default_payment_methods
 from apps.sales.quick_checkout import (
-    apply_approved_quick_sale_payment_intent, create_quick_sale_payment_intent,
-    resolve_quick_sale_payment_attempt, start_quick_sale_payment_attempt,
+    QuickCheckoutConflict, apply_approved_quick_sale_payment_intent,
+    cancel_quick_checkout, create_quick_sale_payment_intent, checkout_balance,
+    finalize_quick_checkout, record_quick_checkout_payment,
+    resolve_quick_sale_payment_attempt, reverse_quick_checkout_payment,
+    start_quick_sale_payment_attempt,
 )
 
 
@@ -267,6 +271,48 @@ class POSFoundationIntegrationTests(TestCase):
                 'received_amount': '100.00',
             }],
         }
+
+    def create_provider_checkout(self):
+        operator, paired = self.login_pos_operator()
+        register = CashRegister.objects.create(branch=self.branch, name=f'Provider cash {uuid4()}')
+        BranchPOSSettings.objects.get_or_create(
+            branch=self.branch, defaults={'cash_binding_mode': 'FLEXIBLE'},
+        )
+        opened = self.client.post(
+            reverse('pos:cash-session-open'),
+            {'register': register.pk, 'opening_amount': '0.00'}, format='json',
+        )
+        self.assertEqual(opened.status_code, 201, opened.data)
+        checkout_response = self.client.post(
+            reverse('pos:quick-checkout-create'),
+            {
+                key: value for key, value in self.pos_sale_payload(SimpleNamespace(pk=opened.data['id'])).items()
+                if key not in {'cash_session', 'payments'}
+            },
+            format='json',
+        )
+        self.assertEqual(checkout_response.status_code, 201, checkout_response.data)
+        checkout = QuickSaleCheckout.objects.get(pk=checkout_response.data['id'])
+        device = POSDevice.objects.get(pk=paired.data['device']['id'])
+        method = next(method for method in ensure_default_payment_methods(self.company) if method.code != 'cash')
+        provider = PaymentProvider.objects.create(
+            code=f'provider-{uuid4().hex[:8]}', name='Provider', integration_type='server_api',
+        )
+        connection = PaymentProviderConnection.objects.create(
+            company=self.company, provider=provider, name='Contrato',
+            environment=PaymentProviderConnectionEnvironment.SANDBOX,
+        )
+        terminal = PaymentTerminal.objects.create(
+            connection=connection, branch=self.branch, pos_device=device, name='Terminal',
+        )
+        return operator, device, checkout.cash_session, checkout, method, connection, terminal
+
+    def create_provider_intent(self, checkout, operator, method, connection, terminal, *, mode='remaining', amount=None):
+        return create_quick_sale_payment_intent(
+            checkout=checkout, user=operator, payment_method_id=method.pk, mode=mode,
+            amount=amount, allocations=[], provider_connection=connection, terminal=terminal,
+            idempotency_key=uuid4(),
+        )[0]
 
     def test_generated_licensing_code_is_short_and_unambiguous(self):
         self.assertRegex(
@@ -1096,6 +1142,292 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(recorded.data['code'], 'cash_context_changed')
         self.assertFalse(QuickSalePayment.objects.filter(checkout_id=checkout.data['id']).exists())
 
+    def test_provider_attempt_start_rejects_a_switched_cash_context(self):
+        operator, device, _session, checkout, method, connection, terminal = self.create_provider_checkout()
+        intent = self.create_provider_intent(checkout, operator, method, connection, terminal)
+        other_session = open_session(
+            CashRegister.objects.create(branch=self.branch, name='Cash context B'),
+            '0.00', operator, self.branch, allow_pos_only=True,
+        )
+        device.active_cash_session = other_session
+        device.save(update_fields=('active_cash_session', 'updated_at'))
+
+        with self.assertRaises(QuickCheckoutConflict) as context:
+            start_quick_sale_payment_attempt(checkout=checkout, intent=intent, user=operator)
+
+        self.assertEqual(context.exception.code, 'cash_context_changed')
+        self.assertFalse(intent.attempts.exists())
+
+    def test_provider_result_and_apply_keep_the_original_checkout_cash_context(self):
+        operator, device, session, checkout, method, connection, terminal = self.create_provider_checkout()
+        intent = self.create_provider_intent(checkout, operator, method, connection, terminal)
+        attempt = start_quick_sale_payment_attempt(checkout=checkout, intent=intent, user=operator)
+        other_session = open_session(
+            CashRegister.objects.create(branch=self.branch, name='Result context B'),
+            '0.00', operator, self.branch, allow_pos_only=True,
+        )
+        device.active_cash_session = other_session
+        device.save(update_fields=('active_cash_session', 'updated_at'))
+
+        approved_attempt, approved_intent = resolve_quick_sale_payment_attempt(
+            checkout=checkout, attempt=attempt, user=operator, status=PaymentAttemptStatus.APPROVED,
+        )
+        payment, _replayed = apply_approved_quick_sale_payment_intent(
+            checkout=checkout, intent=approved_intent, user=operator,
+        )
+
+        self.assertEqual(approved_attempt.status, PaymentAttemptStatus.APPROVED)
+        self.assertEqual(payment.cash_session_id, session.pk)
+        self.assertNotEqual(payment.cash_session_id, other_session.pk)
+
+    def test_close_and_cancel_block_processing_unknown_and_approved_provider_intents(self):
+        operator, _device, session, checkout, method, connection, terminal = self.create_provider_checkout()
+        intent = self.create_provider_intent(checkout, operator, method, connection, terminal)
+        attempt = start_quick_sale_payment_attempt(checkout=checkout, intent=intent, user=operator)
+
+        def assert_session_actions_blocked():
+            with self.assertRaises(ValidationError):
+                close_session(session, '0.00', operator, self.branch, allow_pos_only=True)
+            with self.assertRaises(ValidationError):
+                cancel_session(session, 'PAY-1.2 test', operator, self.branch)
+            session.refresh_from_db()
+            self.assertEqual(session.status, CashSessionStatus.OPEN)
+
+        assert_session_actions_blocked()
+        attempt, _intent = resolve_quick_sale_payment_attempt(
+            checkout=checkout, attempt=attempt, user=operator, status=PaymentAttemptStatus.UNKNOWN,
+        )
+        assert_session_actions_blocked()
+        _attempt, _intent = resolve_quick_sale_payment_attempt(
+            checkout=checkout, attempt=attempt, user=operator, status=PaymentAttemptStatus.APPROVED,
+        )
+        assert_session_actions_blocked()
+
+    def test_cancel_session_blocks_any_paid_open_checkout_and_allows_unpaid_checkout(self):
+        operator, device, partial_session, partial_checkout, _method, _connection, _terminal = self.create_provider_checkout()
+        cash_method = self.company.payment_methods.get(code='cash')
+        record_quick_checkout_payment(
+            checkout=partial_checkout, user=operator, payment_method_id=cash_method.pk,
+            mode='value', amount='5.00', received_amount='5.00', allocations=[],
+            idempotency_key=uuid4(), pos_device=device,
+        )
+        with self.assertRaises(ValidationError):
+            cancel_session(partial_session, 'Partial payment', operator, self.branch)
+
+        operator, device, manual_session, manual_checkout, _method, _connection, _terminal = self.create_provider_checkout()
+        record_quick_checkout_payment(
+            checkout=manual_checkout, user=operator, payment_method_id=cash_method.pk,
+            mode='remaining', amount=None, received_amount='20.00', allocations=[],
+            idempotency_key=uuid4(), pos_device=device,
+        )
+        with self.assertRaises(ValidationError):
+            cancel_session(manual_session, 'Full manual payment', operator, self.branch)
+
+        operator, _device, provider_session, provider_checkout, method, connection, terminal = self.create_provider_checkout()
+        intent = self.create_provider_intent(provider_checkout, operator, method, connection, terminal)
+        attempt = start_quick_sale_payment_attempt(checkout=provider_checkout, intent=intent, user=operator)
+        _attempt, approved_intent = resolve_quick_sale_payment_attempt(
+            checkout=provider_checkout, attempt=attempt, user=operator, status=PaymentAttemptStatus.APPROVED,
+        )
+        apply_approved_quick_sale_payment_intent(
+            checkout=provider_checkout, intent=approved_intent, user=operator,
+        )
+        with self.assertRaises(ValidationError):
+            cancel_session(provider_session, 'Provider payment', operator, self.branch)
+
+        operator, _device, unpaid_session, _checkout, _method, _connection, _terminal = self.create_provider_checkout()
+        cancelled = cancel_session(unpaid_session, 'No payments', operator, self.branch)
+        self.assertEqual(cancelled.status, CashSessionStatus.CANCELLED)
+
+    def test_unknown_intent_blocks_checkout_until_reconciled_and_applies_once(self):
+        operator, device, session, checkout, method, connection, terminal = self.create_provider_checkout()
+        intent = self.create_provider_intent(checkout, operator, method, connection, terminal)
+        attempt = start_quick_sale_payment_attempt(checkout=checkout, intent=intent, user=operator)
+        attempt, unknown_intent = resolve_quick_sale_payment_attempt(
+            checkout=checkout, attempt=attempt, user=operator, status=PaymentAttemptStatus.UNKNOWN,
+        )
+        cash_method = self.company.payment_methods.get(code='cash')
+
+        with self.assertRaises(QuickCheckoutConflict) as context:
+            record_quick_checkout_payment(
+                checkout=checkout, user=operator, payment_method_id=cash_method.pk,
+                mode='value', amount='1.00', received_amount='1.00', allocations=[],
+                idempotency_key=uuid4(), pos_device=device,
+            )
+        self.assertEqual(context.exception.code, 'payment_intent_in_progress')
+        with self.assertRaises(QuickCheckoutConflict):
+            cancel_quick_checkout(checkout=checkout, user=operator)
+        with self.assertRaises(QuickCheckoutConflict):
+            finalize_quick_checkout(
+                checkout=checkout, user=operator, permissions=[], idempotency_key=uuid4(),
+            )
+        with self.assertRaises(QuickCheckoutConflict):
+            start_quick_sale_payment_attempt(checkout=checkout, intent=unknown_intent, user=operator)
+        with self.assertRaises(ValidationError):
+            close_session(session, '0.00', operator, self.branch, allow_pos_only=True)
+        with self.assertRaises(ValidationError):
+            cancel_session(session, 'Unknown provider result', operator, self.branch)
+
+        _attempt, approved_intent = resolve_quick_sale_payment_attempt(
+            checkout=checkout, attempt=attempt, user=operator, status=PaymentAttemptStatus.APPROVED,
+        )
+        payment, replayed = apply_approved_quick_sale_payment_intent(
+            checkout=checkout, intent=approved_intent, user=operator,
+        )
+        replay, replayed_again = apply_approved_quick_sale_payment_intent(
+            checkout=checkout, intent=approved_intent, user=operator,
+        )
+        self.assertFalse(replayed)
+        self.assertTrue(replayed_again)
+        self.assertEqual(payment.pk, replay.pk)
+        self.assertEqual(QuickSalePayment.objects.filter(checkout=checkout).count(), 1)
+
+    def test_apply_rejects_every_invalid_frozen_application_context(self):
+        cases = (
+            ('invalid-mode', lambda item: {'mode': 'invalid', 'allocations': []}),
+            ('value-with-allocations', lambda item: {
+                'mode': 'value', 'allocations': [{'item': item.pk, 'allocated_quantity': '1', 'amount': '20.00'}],
+            }),
+            ('remaining-with-allocations', lambda item: {
+                'mode': 'remaining', 'allocations': [{'item': item.pk, 'allocated_quantity': '1', 'amount': '20.00'}],
+            }),
+            ('external-item', lambda item: {
+                'mode': 'items', 'allocations': [{'item': 999999999, 'allocated_quantity': '1', 'amount': '20.00'}],
+            }),
+            ('duplicate-item', lambda item: {
+                'mode': 'items', 'allocations': [
+                    {'item': item.pk, 'allocated_quantity': '1', 'amount': '10.00'},
+                    {'item': item.pk, 'allocated_quantity': '1', 'amount': '10.00'},
+                ],
+            }),
+            ('nonpositive-quantity', lambda item: {
+                'mode': 'items', 'allocations': [{'item': item.pk, 'allocated_quantity': '0', 'amount': '20.00'}],
+            }),
+            ('excessive-quantity', lambda item: {
+                'mode': 'items', 'allocations': [{'item': item.pk, 'allocated_quantity': '2', 'amount': '20.00'}],
+            }),
+            ('tampered-allocation-amount', lambda item: {
+                'mode': 'items', 'allocations': [{'item': item.pk, 'allocated_quantity': '1', 'amount': '19.00'}],
+            }),
+            ('allocation-total-different-from-intent', lambda item: {
+                'mode': 'items', 'allocations': [{'item': item.pk, 'allocated_quantity': '1', 'amount': '20.00'}],
+                'amount': '19.00',
+            }),
+        )
+        for name, build_context in cases:
+            with self.subTest(context=name):
+                operator, _device, _session, checkout, method, connection, terminal = self.create_provider_checkout()
+                intent = self.create_provider_intent(checkout, operator, method, connection, terminal)
+                attempt = start_quick_sale_payment_attempt(checkout=checkout, intent=intent, user=operator)
+                _attempt, approved_intent = resolve_quick_sale_payment_attempt(
+                    checkout=checkout, attempt=attempt, user=operator, status=PaymentAttemptStatus.APPROVED,
+                )
+                context = {
+                    'amount': f'{approved_intent.amount:.2f}',
+                    **build_context(checkout.items.get()),
+                }
+                # The model normally prevents this write; apply must still defend
+                # against data already compromised outside the application layer.
+                PaymentIntent._base_manager.filter(pk=approved_intent.pk).update(
+                    application_context=context,
+                )
+                with self.assertRaises(QuickCheckoutConflict) as error:
+                    apply_approved_quick_sale_payment_intent(
+                        checkout=checkout, intent=approved_intent, user=operator,
+                    )
+                self.assertEqual(error.exception.code, 'payment_intent_context_invalid')
+                self.assertFalse(QuickSalePayment.objects.filter(checkout=checkout).exists())
+
+    def test_partial_manual_and_provider_payment_finalize_with_two_sources(self):
+        operator, device, _session, checkout, method, connection, terminal = self.create_provider_checkout()
+        cash_method = self.company.payment_methods.get(code='cash')
+        manual_payment, _replayed = record_quick_checkout_payment(
+            checkout=checkout, user=operator, payment_method_id=cash_method.pk,
+            mode='value', amount='5.00', received_amount='5.00', allocations=[],
+            idempotency_key=uuid4(), pos_device=device,
+        )
+        intent = self.create_provider_intent(checkout, operator, method, connection, terminal)
+        attempt = start_quick_sale_payment_attempt(checkout=checkout, intent=intent, user=operator)
+        approved_attempt, approved_intent = resolve_quick_sale_payment_attempt(
+            checkout=checkout, attempt=attempt, user=operator, status=PaymentAttemptStatus.APPROVED,
+        )
+        provider_payment, _replayed = apply_approved_quick_sale_payment_intent(
+            checkout=checkout, intent=approved_intent, user=operator,
+        )
+        paid, remaining = checkout_balance(checkout)
+
+        finalized = self.client.post(
+            reverse('pos:quick-checkout-finalize', args=[checkout.pk]),
+            {'idempotency_key': str(uuid4())}, format='json',
+        )
+        self.assertEqual(finalized.status_code, 200, finalized.data)
+        manual_payment.refresh_from_db()
+        sale = manual_payment.final_payment.sale
+
+        self.assertEqual(paid, Decimal('20.00'))
+        self.assertEqual(remaining, Decimal('0.00'))
+        self.assertEqual(sale.payments.count(), 2)
+        self.assertEqual(provider_payment.source_payment_attempt_id, approved_attempt.pk)
+        self.assertEqual(provider_payment.final_payment.source_quick_sale_payment_id, provider_payment.pk)
+        self.assertEqual(manual_payment.final_payment.source_quick_sale_payment_id, manual_payment.pk)
+        self.assertEqual(Payment.objects.filter(sale=sale).count(), 2)
+
+    def test_provider_payment_requires_provider_reversal_while_manual_payment_can_reverse(self):
+        operator, device, _session, checkout, method, connection, terminal = self.create_provider_checkout()
+        manual_method = self.company.payment_methods.get(code='cash')
+        manual_payment, _replayed = record_quick_checkout_payment(
+            checkout=checkout, user=operator, payment_method_id=manual_method.pk,
+            mode='value', amount='5.00', received_amount='5.00', allocations=[],
+            idempotency_key=uuid4(), pos_device=device,
+        )
+        intent = self.create_provider_intent(checkout, operator, method, connection, terminal)
+        attempt = start_quick_sale_payment_attempt(checkout=checkout, intent=intent, user=operator)
+        _attempt, approved_intent = resolve_quick_sale_payment_attempt(
+            checkout=checkout, attempt=attempt, user=operator, status=PaymentAttemptStatus.APPROVED,
+        )
+        provider_payment, _replayed = apply_approved_quick_sale_payment_intent(
+            checkout=checkout, intent=approved_intent, user=operator,
+        )
+
+        with self.assertRaises(QuickCheckoutConflict) as context:
+            reverse_quick_checkout_payment(
+                payment=provider_payment, user=operator, reason='Provider test', idempotency_key=uuid4(),
+            )
+        self.assertEqual(context.exception.code, 'provider_reversal_required')
+        reversal, replayed = reverse_quick_checkout_payment(
+            payment=manual_payment, user=operator, reason='Manual test', idempotency_key=uuid4(),
+        )
+        self.assertFalse(replayed)
+        self.assertEqual(reversal.reversal_of_id, manual_payment.pk)
+
+    def test_provider_fallback_uses_the_approved_attempt_connection(self):
+        operator, _device, _session, checkout, method, connection, terminal = self.create_provider_checkout()
+        intent = self.create_provider_intent(checkout, operator, method, connection, terminal)
+        first = start_quick_sale_payment_attempt(checkout=checkout, intent=intent, user=operator)
+        _first, declined_intent = resolve_quick_sale_payment_attempt(
+            checkout=checkout, attempt=first, user=operator, status=PaymentAttemptStatus.DECLINED,
+        )
+        fallback_provider = PaymentProvider.objects.create(
+            code=f'fallback-{uuid4().hex[:8]}', name='Fallback', integration_type='server_api',
+        )
+        fallback_connection = PaymentProviderConnection.objects.create(
+            company=self.company, provider=fallback_provider, name='Fallback connection',
+            environment=PaymentProviderConnectionEnvironment.SANDBOX,
+        )
+        second = start_quick_sale_payment_attempt(
+            checkout=checkout, intent=declined_intent, user=operator,
+            provider_connection=fallback_connection, terminal=None,
+        )
+        approved_attempt, approved_intent = resolve_quick_sale_payment_attempt(
+            checkout=checkout, attempt=second, user=operator, status=PaymentAttemptStatus.APPROVED,
+        )
+        payment, _replayed = apply_approved_quick_sale_payment_intent(
+            checkout=checkout, intent=approved_intent, user=operator,
+        )
+
+        self.assertEqual(approved_attempt.provider_connection_id, fallback_connection.pk)
+        self.assertEqual(payment.source_payment_attempt_id, approved_attempt.pk)
+
     def test_provider_payment_flows_from_quick_checkout_to_sale_payment(self):
         operator, paired = self.login_pos_operator()
         register = CashRegister.objects.create(branch=self.branch, name='Provider checkout cash')
@@ -1136,6 +1468,8 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertFalse(replayed)
         self.assertEqual(intent.status, 'ready')
         attempt = start_quick_sale_payment_attempt(checkout=checkout, intent=intent, user=operator)
+        method.status = Status.INACTIVE
+        method.save()
         approved_attempt, approved_intent = resolve_quick_sale_payment_attempt(
             checkout=checkout, attempt=attempt, user=operator, status=PaymentAttemptStatus.APPROVED,
         )
@@ -1167,6 +1501,13 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(finalized.status_code, 200, finalized.data)
         sale_payment = payment.final_payment
         self.assertEqual(sale_payment.source_quick_sale_payment_id, payment.pk)
+        self.assertEqual(sale_payment.payment_method_code, method.code)
+        self.assertEqual(sale_payment.payment_method_name, method.name)
+        with self.assertRaises(ValidationError):
+            Payment.objects.create(
+                sale=sale_payment.sale, payment_method=method, amount=payment.amount,
+                source_quick_sale_payment=payment,
+            )
 
     def test_pos_finalize_sale_uses_active_cash_session_inside_service_transaction(self):
         operator, paired = self.login_pos_operator()

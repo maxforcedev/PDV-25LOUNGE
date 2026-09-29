@@ -125,15 +125,17 @@ def create_payment_intent(*, company, branch, pos_device, operator, origin_type,
     return intent, False
 
 
-def _save_intent_status(intent, status):
+def _save_intent_status(intent, status, *, validate_terminal_pos_binding=True):
     intent.status = status
     intent._allow_status_transition = True
+    intent._validate_terminal_pos_binding = validate_terminal_pos_binding
     try:
         intent.save(update_fields=(
             'status', 'approved_at', 'applied_at', 'cancelled_at', 'updated_at',
         ))
     finally:
         delattr(intent, '_allow_status_transition')
+        delattr(intent, '_validate_terminal_pos_binding')
 
 
 def _save_attempt_status(attempt, status, result_fields=()):
@@ -334,62 +336,79 @@ _RESULT_INTENT_STATUS = {
 def resolve_payment_attempt(*, attempt, status, actor=None, response_metadata=None, result_data=None):
     if status not in _RESULT_INTENT_STATUS:
         raise PaymentIntegrationConflict('invalid_attempt_result', 'Informe um resultado final válido da tentativa.')
-    with transaction.atomic():
-        attempt = PaymentAttempt.objects.select_for_update().select_related('intent').get(pk=attempt.pk)
-        intent = PaymentIntent.objects.select_for_update().get(pk=attempt.intent_id)
-        if attempt.status in {
-            PaymentAttemptStatus.APPROVED,
-            PaymentAttemptStatus.DECLINED,
-            PaymentAttemptStatus.CANCELLED,
-            PaymentAttemptStatus.ERROR,
-        }:
-            if status != attempt.status:
+    transaction_id = (result_data or {}).get('provider_transaction_id')
+    try:
+        with transaction.atomic():
+            attempt = PaymentAttempt.objects.select_for_update().select_related('intent').get(pk=attempt.pk)
+            intent = PaymentIntent.objects.select_for_update().get(pk=attempt.intent_id)
+            if attempt.status in {
+                PaymentAttemptStatus.APPROVED,
+                PaymentAttemptStatus.DECLINED,
+                PaymentAttemptStatus.CANCELLED,
+                PaymentAttemptStatus.ERROR,
+            }:
+                if status != attempt.status:
+                    raise PaymentIntegrationConflict(
+                        'attempt_result_conflict',
+                        'A tentativa já possui um resultado final diferente.',
+                    )
+                result_fields = _apply_attempt_result_data(attempt, result_data)
+                if response_metadata is not None and response_metadata != attempt.response_metadata:
+                    attempt.response_metadata = response_metadata
+                    result_fields = (*result_fields, 'response_metadata')
+                if result_fields:
+                    attempt._allow_result_update = True
+                    try:
+                        attempt.save(update_fields=tuple(dict.fromkeys((*result_fields, 'updated_at'))))
+                    finally:
+                        delattr(attempt, '_allow_result_update')
+                return attempt, intent
+            if attempt.status not in {PaymentAttemptStatus.PROCESSING, PaymentAttemptStatus.UNKNOWN}:
                 raise PaymentIntegrationConflict(
-                    'attempt_result_conflict',
-                    'A tentativa já possui um resultado final diferente.',
+                    'attempt_not_processing', 'A tentativa deve estar processando ou desconhecida para ser resolvida.',
                 )
+            if status not in _ATTEMPT_TRANSITIONS[attempt.status]:
+                raise PaymentIntegrationConflict(
+                    'invalid_attempt_transition', f'Transição inválida: {attempt.status} para {status}.',
+                )
+            expected_intent_status = (
+                PaymentIntentStatus.UNKNOWN
+                if attempt.status == PaymentAttemptStatus.UNKNOWN
+                else PaymentIntentStatus.PROCESSING
+            )
+            if intent.status != expected_intent_status:
+                raise PaymentIntegrationConflict(
+                    'intent_attempt_state_conflict', 'O intent não está no estado compatível com a tentativa.',
+                )
+            previous_attempt = attempt.status
+            previous_intent = intent.status
             result_fields = _apply_attempt_result_data(attempt, result_data)
-            if response_metadata is not None and response_metadata != attempt.response_metadata:
+            if transaction_id and PaymentAttempt.objects.select_for_update().filter(
+                provider_connection=attempt.provider_connection,
+                provider_transaction_id=transaction_id,
+            ).exclude(pk=attempt.pk).exists():
+                raise PaymentIntegrationConflict(
+                    'provider_transaction_conflict',
+                    'O identificador da transação já pertence a outra tentativa desta conexão.',
+                )
+            if response_metadata is not None:
                 attempt.response_metadata = response_metadata
                 result_fields = (*result_fields, 'response_metadata')
-            if result_fields:
-                attempt._allow_result_update = True
-                try:
-                    attempt.save(update_fields=tuple(dict.fromkeys((*result_fields, 'updated_at'))))
-                finally:
-                    delattr(attempt, '_allow_result_update')
-            return attempt, intent
-        if attempt.status not in {PaymentAttemptStatus.PROCESSING, PaymentAttemptStatus.UNKNOWN}:
+            attempt.completed_at = timezone.now()
+            _save_attempt_status(attempt, status, result_fields)
+            intent_status = _RESULT_INTENT_STATUS[status]
+            if intent_status == PaymentIntentStatus.APPROVED:
+                intent.approved_at = timezone.now()
+            elif intent_status == PaymentIntentStatus.CANCELLED:
+                intent.cancelled_at = timezone.now()
+            _save_intent_status(intent, intent_status, validate_terminal_pos_binding=False)
+    except IntegrityError as error:
+        if transaction_id:
             raise PaymentIntegrationConflict(
-                'attempt_not_processing', 'A tentativa deve estar processando ou desconhecida para ser resolvida.',
-            )
-        if status not in _ATTEMPT_TRANSITIONS[attempt.status]:
-            raise PaymentIntegrationConflict(
-                'invalid_attempt_transition', f'Transição inválida: {attempt.status} para {status}.',
-            )
-        expected_intent_status = (
-            PaymentIntentStatus.UNKNOWN
-            if attempt.status == PaymentAttemptStatus.UNKNOWN
-            else PaymentIntentStatus.PROCESSING
-        )
-        if intent.status != expected_intent_status:
-            raise PaymentIntegrationConflict(
-                'intent_attempt_state_conflict', 'O intent não está no estado compatível com a tentativa.',
-            )
-        previous_attempt = attempt.status
-        previous_intent = intent.status
-        result_fields = _apply_attempt_result_data(attempt, result_data)
-        if response_metadata is not None:
-            attempt.response_metadata = response_metadata
-            result_fields = (*result_fields, 'response_metadata')
-        attempt.completed_at = timezone.now()
-        _save_attempt_status(attempt, status, result_fields)
-        intent_status = _RESULT_INTENT_STATUS[status]
-        if intent_status == PaymentIntentStatus.APPROVED:
-            intent.approved_at = timezone.now()
-        elif intent_status == PaymentIntentStatus.CANCELLED:
-            intent.cancelled_at = timezone.now()
-        _save_intent_status(intent, intent_status)
+                'provider_transaction_conflict',
+                'O identificador da transação já pertence a outra tentativa desta conexão.',
+            ) from error
+        raise
     audit_log(actor=actor or intent.operator, action='payment_attempt.status_changed', obj=attempt,
               company=intent.company, branch=intent.branch,
               before={'status': previous_attempt}, after={'status': status},

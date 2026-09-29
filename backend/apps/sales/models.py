@@ -809,6 +809,10 @@ class Payment(ImmutableHistoricalModel):
             from apps.pos.models import QuickSalePayment, QuickSalePaymentStatus
 
             source = self.source_quick_sale_payment
+            if not getattr(self, '_allow_quick_sale_source_creation', False):
+                errors['source_quick_sale_payment'] = (
+                    'Pagamento de checkout rápido só pode ser materializado pela finalização oficial.'
+                )
             if any((
                 self.source_command_payment_id,
                 self.source_attendance_payment_id,

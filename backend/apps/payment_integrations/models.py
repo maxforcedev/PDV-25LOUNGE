@@ -290,12 +290,19 @@ class PaymentIntent(BaseModel):
             errors['provider_connection'] = 'O provedor da conexão deve estar ativo.'
         elif self.provider_connection.branch_id and self.provider_connection.branch_id != self.branch_id:
             errors['provider_connection'] = 'A conexão não é válida para esta filial.'
+        validate_terminal_pos_binding = getattr(
+            self, '_validate_terminal_pos_binding', self._state.adding,
+        )
         if self.terminal_id:
             if self.terminal.connection_id != self.provider_connection_id:
                 errors['terminal'] = 'O terminal deve pertencer à conexão selecionada.'
             elif self.terminal.branch_id != self.branch_id:
                 errors['terminal'] = 'O terminal deve pertencer à filial.'
-            elif self.terminal.pos_device_id and self.terminal.pos_device_id != self.pos_device_id:
+            elif (
+                validate_terminal_pos_binding
+                and self.terminal.pos_device_id
+                and self.terminal.pos_device_id != self.pos_device_id
+            ):
                 errors['terminal'] = 'O terminal deve estar vinculado ao POS selecionado.'
             elif require_active_resources and self.terminal.status != Status.ACTIVE:
                 errors['terminal'] = 'O terminal deve estar ativo.'
@@ -427,12 +434,21 @@ class PaymentAttempt(BaseModel):
             errors['provider_connection'] = 'O provedor da conexão deve estar ativo.'
         elif self.provider_connection.branch_id and self.provider_connection.branch_id != intent.branch_id:
             errors['provider_connection'] = 'A conexão não é válida para a filial do intent.'
+        validate_terminal_pos_binding = getattr(
+            self,
+            '_validate_terminal_pos_binding',
+            self._state.adding or self.status == PaymentAttemptStatus.PROCESSING,
+        )
         if self.terminal_id:
             if self.terminal.connection_id != self.provider_connection_id:
                 errors['terminal'] = 'O terminal deve pertencer à conexão da tentativa.'
             elif self.terminal.branch_id != intent.branch_id:
                 errors['terminal'] = 'O terminal deve pertencer à filial do intent.'
-            elif self.terminal.pos_device_id and self.terminal.pos_device_id != intent.pos_device_id:
+            elif (
+                validate_terminal_pos_binding
+                and self.terminal.pos_device_id
+                and self.terminal.pos_device_id != intent.pos_device_id
+            ):
                 errors['terminal'] = 'O terminal deve estar vinculado ao POS do intent.'
             elif require_active_resources and self.terminal.status != Status.ACTIVE:
                 errors['terminal'] = 'O terminal da tentativa deve estar ativo.'

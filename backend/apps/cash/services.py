@@ -801,15 +801,15 @@ def cancel_session(cash_session, reason, user, current_branch):
         list(QuickSalePayment.objects.select_for_update(of=('self',)).filter(
             checkout__in=quick_checkouts,
         ).values_list('pk', flat=True))
-        partial_checkout_ids = []
+        paid_checkout_ids = []
         for checkout in quick_checkouts:
-            paid, remaining = checkout_balance(checkout, lock=True)
-            if paid > Decimal('0.00') and remaining > Decimal('0.00'):
-                partial_checkout_ids.append(str(checkout.pk))
-        if blocking_intent_ids or partial_checkout_ids:
+            paid, _remaining = checkout_balance(checkout, lock=True)
+            if paid > Decimal('0.00'):
+                paid_checkout_ids.append(str(checkout.pk))
+        if blocking_intent_ids or paid_checkout_ids:
             blocked = {
                 'quick_sale_payment_intent_ids': [str(intent_id) for intent_id in blocking_intent_ids],
-                'quick_checkout_ids': partial_checkout_ids,
+                'quick_checkout_ids': paid_checkout_ids,
             }
         else:
             before = {'status': CashSessionStatus.OPEN}

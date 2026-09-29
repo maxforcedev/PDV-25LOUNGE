@@ -577,6 +577,10 @@ def start_quick_sale_payment_attempt(*, checkout, intent, user, provider_connect
         PaymentIntegrationConflict, create_payment_attempt, transition_payment_attempt,
     )
 
+    # Match POS tender writes: device -> active session -> checkout -> ledger.
+    from apps.pos.services import current_pos_cash_session
+
+    active_session = current_pos_cash_session(intent.pos_device, for_update=True)
     session, checkout, _sessions = _lock_checkout_session(checkout.pk, user=user)
     intent = PaymentIntent.objects.select_for_update().get(pk=intent.pk)
     _validate_quick_sale_intent_context(intent, checkout)
@@ -584,9 +588,6 @@ def start_quick_sale_payment_attempt(*, checkout, intent, user, provider_connect
         raise QuickCheckoutConflict('checkout_not_payable', 'O checkout ou a sessão de caixa não permite cobrança.')
     if intent.status not in (PaymentIntentStatus.READY, PaymentIntentStatus.DECLINED, PaymentIntentStatus.ERROR):
         raise QuickCheckoutConflict('payment_intent_not_ready', 'O intent não aceita uma nova tentativa.')
-    from apps.pos.services import current_pos_cash_session
-
-    active_session = current_pos_cash_session(intent.pos_device, for_update=True)
     if active_session.pk != checkout.cash_session_id:
         raise QuickCheckoutConflict(
             'cash_context_changed',
