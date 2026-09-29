@@ -2060,6 +2060,7 @@ def _quick_checkout_payload(checkout, *, permissions=()):
                 'payment_method_name': payment.payment_method_name,
                 'payment_method_code': payment.payment_method_code,
                 **payment_method_presentation(payment.payment_method_code),
+                'source': payment.source_type,
                 'amount': str(payment.amount),
                 'received_amount': str(payment.received_amount) if payment.received_amount is not None else None,
                 'change_amount': str(payment.change_amount) if payment.change_amount is not None else None,

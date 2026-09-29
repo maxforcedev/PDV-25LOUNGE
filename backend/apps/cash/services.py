@@ -773,30 +773,69 @@ def close_session(
     })
 
 
-@transaction.atomic
 def cancel_session(cash_session, reason, user, current_branch):
-    session = CashSession.objects.select_for_update().select_related(
-        'cash_register', 'branch', 'branch__company'
-    ).get(pk=_pk(cash_session))
-    _validate_current_branch(current_branch, session.branch, user, 'cash_registers.close')
-    if session.opened_by_id != user.pk and not user_has_branch_permission(
-        user, session.branch_id, 'cash_registers.administer_others',
-    ):
-        raise PermissionDenied('Você não pode anular uma sessão aberta por outro usuário.')
-    if session.status != CashSessionStatus.OPEN:
-        raise ValidationError({'cash_session': 'Somente sessões abertas podem ser anuladas.'})
-    before = {'status': CashSessionStatus.OPEN}
-    session.status = CashSessionStatus.CANCELLED
-    session.cancelled_by = user
-    session.cancelled_at = timezone.now()
-    session.cancellation_reason = (reason or '').strip()
-    session.save(update_fields=(
-        'status', 'cancelled_by', 'cancelled_at', 'cancellation_reason', 'updated_at',
-    ))
-    audit_log(actor=user, action='cash_session.cancel', obj=session,
-              company=session.branch.company, branch=session.branch, before=before,
-              after=model_snapshot(session, ('status', 'cancelled_by_id', 'cancelled_at', 'cancellation_reason')))
-    return session
+    blocked = None
+    with transaction.atomic():
+        session = CashSession.objects.select_for_update().select_related(
+            'cash_register', 'branch', 'branch__company'
+        ).get(pk=_pk(cash_session))
+        _validate_current_branch(current_branch, session.branch, user, 'cash_registers.close')
+        if session.opened_by_id != user.pk and not user_has_branch_permission(
+            user, session.branch_id, 'cash_registers.administer_others',
+        ):
+            raise PermissionDenied('Você não pode anular uma sessão aberta por outro usuário.')
+        if session.status != CashSessionStatus.OPEN:
+            raise ValidationError({'cash_session': 'Somente sessões abertas podem ser anuladas.'})
+        from apps.pos.models import QuickSaleCheckout, QuickSaleCheckoutStatus, QuickSalePayment
+        from apps.payment_integrations.models import PaymentIntent, PaymentIntentOriginType
+        from apps.sales.quick_checkout import checkout_balance
+
+        quick_checkouts = list(QuickSaleCheckout.objects.select_for_update().filter(
+            cash_session=session, status=QuickSaleCheckoutStatus.OPEN,
+        ).order_by('pk'))
+        blocking_intent_ids = list(PaymentIntent.objects.select_for_update().filter(
+            origin_type=PaymentIntentOriginType.QUICK_SALE,
+            origin_id__in=[str(checkout.pk) for checkout in quick_checkouts],
+            status__in=('created', 'ready', 'processing', 'declined', 'error', 'unknown', 'approved'),
+        ).values_list('pk', flat=True))
+        list(QuickSalePayment.objects.select_for_update(of=('self',)).filter(
+            checkout__in=quick_checkouts,
+        ).values_list('pk', flat=True))
+        partial_checkout_ids = []
+        for checkout in quick_checkouts:
+            paid, remaining = checkout_balance(checkout, lock=True)
+            if paid > Decimal('0.00') and remaining > Decimal('0.00'):
+                partial_checkout_ids.append(str(checkout.pk))
+        if blocking_intent_ids or partial_checkout_ids:
+            blocked = {
+                'quick_sale_payment_intent_ids': [str(intent_id) for intent_id in blocking_intent_ids],
+                'quick_checkout_ids': partial_checkout_ids,
+            }
+        else:
+            before = {'status': CashSessionStatus.OPEN}
+            session.status = CashSessionStatus.CANCELLED
+            session.cancelled_by = user
+            session.cancelled_at = timezone.now()
+            session.cancellation_reason = (reason or '').strip()
+            session.save(update_fields=(
+                'status', 'cancelled_by', 'cancelled_at', 'cancellation_reason', 'updated_at',
+            ))
+            audit_log(actor=user, action='cash_session.cancel', obj=session,
+                      company=session.branch.company, branch=session.branch, before=before,
+                      after=model_snapshot(session, ('status', 'cancelled_by_id', 'cancelled_at', 'cancellation_reason')))
+            return session
+    if blocked:
+        audit_log(
+            actor=user, action='cash_session.cancel_blocked', obj=session,
+            company=session.branch.company, branch=session.branch,
+            metadata={
+                'reason': 'quick_sale_external_payment_pending',
+                **blocked,
+            },
+        )
+        raise ValidationError({
+            'cash_session': 'Não é possível anular a sessão com pagamentos externos ou parciais pendentes.'
+        })
 
 
 @transaction.atomic

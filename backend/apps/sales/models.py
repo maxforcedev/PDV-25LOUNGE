@@ -824,6 +824,10 @@ class Payment(ImmutableHistoricalModel):
                 errors['source_quick_sale_payment'] = (
                     'O pagamento de checkout rápido deve pertencer à empresa e filial da venda.'
                 )
+            if source.checkout.sale_id and source.checkout.sale_id != self.sale_id:
+                errors['source_quick_sale_payment'] = (
+                    'O pagamento de checkout rápido pertence a outra venda.'
+                )
             if source.payment_method_id != self.payment_method_id:
                 errors['payment_method'] = (
                     'A forma de pagamento deve corresponder ao pagamento de checkout rápido.'

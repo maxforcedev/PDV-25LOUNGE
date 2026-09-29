@@ -133,6 +133,60 @@ def _validate_quick_sale_intent_context(intent, checkout):
     return context
 
 
+def _validated_application_context_allocations(intent, checkout, context):
+    mode = context.get('mode')
+    allocations = context.get('allocations')
+    if mode not in {'value', 'remaining', 'items'} or not isinstance(allocations, list):
+        raise QuickCheckoutConflict('payment_intent_context_invalid', 'O modo ou as alocações do intent são inválidos.')
+    if mode in {'value', 'remaining'}:
+        if allocations:
+            raise QuickCheckoutConflict('payment_intent_context_invalid', 'Este modo não aceita alocações por item.')
+        return []
+    item_ids = [row.get('item') if isinstance(row, dict) else None for row in allocations]
+    if not item_ids or len(item_ids) != len(set(item_ids)):
+        raise QuickCheckoutConflict('payment_intent_context_invalid', 'As alocações do intent são inválidas.')
+    try:
+        expected_amount, expected_allocations = _allocation_amount(
+            checkout,
+            [
+                {
+                    'item': row['item'],
+                    'allocated_quantity': strict_decimal(
+                        row.get('allocated_quantity'), field='application_context.allocated_quantity',
+                        decimal_places=3, max_digits=14,
+                    ),
+                }
+                for row in allocations
+            ],
+        )
+    except (KeyError, TypeError, ValueError, ValidationError, QuickCheckoutConflict) as error:
+        raise QuickCheckoutConflict('payment_intent_context_invalid', 'As alocações congeladas são inválidas.') from error
+    if expected_amount != intent.amount:
+        raise QuickCheckoutConflict('payment_intent_context_invalid', 'As alocações não correspondem ao valor do intent.')
+    by_item = {row['item'].pk: row for row in expected_allocations}
+    for row in allocations:
+        expected = by_item.get(row['item'])
+        if not expected:
+            raise QuickCheckoutConflict('payment_intent_context_invalid', 'A alocação não pertence ao checkout.')
+        try:
+            allocated_quantity = strict_decimal(
+                row.get('allocated_quantity'), field='application_context.allocated_quantity',
+                decimal_places=3, max_digits=14,
+            )
+            amount = strict_decimal(
+                row.get('amount'), field='application_context.amount', decimal_places=2, max_digits=14,
+            )
+        except ValidationError as error:
+            raise QuickCheckoutConflict('payment_intent_context_invalid', 'A alocação possui valores inválidos.') from error
+        if (
+            allocated_quantity <= 0 or amount <= 0
+            or allocated_quantity != expected['allocated_quantity']
+            or amount != expected['amount']
+        ):
+            raise QuickCheckoutConflict('payment_intent_context_invalid', 'A alocação não corresponde ao contexto congelado.')
+    return expected_allocations
+
+
 @transaction.atomic
 def create_quick_checkout(*, branch, pos_device, user, permissions, raw_items,
                           discount, service_fee_waived, customer_id, idempotency_key,
@@ -499,6 +553,7 @@ def create_quick_sale_payment_intent(*, checkout, user, payment_method_id, mode,
             payment_method=method, amount=resolved_amount,
             provider_connection=provider_connection, terminal=terminal,
             application_context=context, idempotency_key=idempotency_key,
+            _quick_sale_bridge=True,
         )
     except PaymentIntegrationConflict as error:
         raise QuickCheckoutConflict(error.code, error.message) from error
@@ -529,6 +584,14 @@ def start_quick_sale_payment_attempt(*, checkout, intent, user, provider_connect
         raise QuickCheckoutConflict('checkout_not_payable', 'O checkout ou a sessão de caixa não permite cobrança.')
     if intent.status not in (PaymentIntentStatus.READY, PaymentIntentStatus.DECLINED, PaymentIntentStatus.ERROR):
         raise QuickCheckoutConflict('payment_intent_not_ready', 'O intent não aceita uma nova tentativa.')
+    from apps.pos.services import current_pos_cash_session
+
+    active_session = current_pos_cash_session(intent.pos_device, for_update=True)
+    if active_session.pk != checkout.cash_session_id:
+        raise QuickCheckoutConflict(
+            'cash_context_changed',
+            'O checkout pertence a outro contexto de caixa deste POS.',
+        )
     paid, _remaining = checkout_balance(checkout, lock=True)
     try:
         validate_checkout_reservation(checkout, paid=True, renew_if_unpaid=paid == Decimal('0.00'))
@@ -627,9 +690,20 @@ def apply_approved_quick_sale_payment_intent(*, checkout, intent, user, audit_me
     if attempt:
         existing = QuickSalePayment.objects.select_for_update().filter(source_payment_attempt=attempt).first()
         if existing:
-            if existing.checkout_id != checkout.pk:
-                raise QuickCheckoutConflict('payment_intent_apply_conflict', 'A tentativa já foi aplicada em outro checkout.')
-            return existing, True
+            if (
+                existing.checkout_id != checkout.pk
+                or existing.payment_method_id != intent.payment_method_id
+                or existing.amount != intent.amount
+                or existing.source_payment_attempt_id != attempt.pk
+                or attempt.intent_id != intent.pk
+            ):
+                raise QuickCheckoutConflict('payment_intent_apply_conflict', 'A tentativa possui pagamento aplicado inconsistente.')
+            if intent.status == PaymentIntentStatus.APPLIED:
+                return existing, True
+            raise QuickCheckoutConflict(
+                'payment_intent_apply_inconsistency',
+                'Existe pagamento de provedor sem intent aplicado correspondente.',
+            )
     if intent.status != PaymentIntentStatus.APPROVED:
         raise QuickCheckoutConflict('payment_intent_not_approved', 'O intent deve estar aprovado para aplicação.')
     if session.status != CashSessionStatus.OPEN or checkout.status != QuickSaleCheckoutStatus.OPEN:
@@ -639,26 +713,23 @@ def apply_approved_quick_sale_payment_intent(*, checkout, intent, user, audit_me
     paid, remaining = checkout_balance(checkout, lock=True)
     if intent.amount > remaining:
         raise QuickCheckoutConflict('payment_exceeds_remaining', 'O intent aprovado excede o saldo atual do checkout.')
-    allocations = context.get('allocations') or []
-    payment = QuickSalePayment.objects.create(
+    allocations = _validated_application_context_allocations(intent, checkout, context)
+    payment = QuickSalePayment(
         checkout=checkout, payment_method=intent.payment_method, amount=intent.amount,
         operator=intent.operator, cash_session=checkout.cash_session,
         source_type=QuickSalePaymentSourceType.PROVIDER, source_payment_attempt=attempt,
         idempotency_key=intent.pk,
         request_fingerprint=_fingerprint({'intent': str(intent.pk), 'attempt': str(attempt.pk), 'context': context}),
     )
-    items = {
-        item.pk: item for item in QuickSaleCheckoutItem.objects.select_for_update().filter(
-            checkout=checkout, pk__in=[row.get('item') for row in allocations],
-        )
-    }
-    if len(items) != len(allocations):
-        raise QuickCheckoutConflict('payment_intent_context_invalid', 'As alocações congeladas não pertencem ao checkout.')
+    payment._allow_provider_creation = True
+    try:
+        payment.save()
+    finally:
+        delattr(payment, '_allow_provider_creation')
     for row in allocations:
         QuickSalePaymentAllocation.objects.create(
-            payment=payment, item=items[row['item']],
-            allocated_quantity=Decimal(str(row['allocated_quantity'])),
-            amount=Decimal(str(row['amount'])),
+            payment=payment, item=row['item'],
+            allocated_quantity=row['allocated_quantity'], amount=row['amount'],
         )
     intent.status = PaymentIntentStatus.APPLIED
     intent.applied_at = timezone.now()
@@ -866,6 +937,7 @@ def finalize_quick_checkout(*, checkout, user, permissions, idempotency_key, aud
         frozen_quick_item_discount_approved_by=checkout.item_discount_approved_by,
         frozen_quick_service_fee_waived_by=checkout.service_fee_waived_by,
         quick_sale_payment_sources=quick_sale_payments,
+        quick_sale_checkout=checkout,
         allow_closed_cash_session=session.status == CashSessionStatus.CLOSED,
         stock_reservation=reservation,
     )

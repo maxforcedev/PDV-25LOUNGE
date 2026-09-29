@@ -1974,7 +1974,7 @@ def _prepare_payments(company, raw_payments, total, *, free_consumption,
     return prepared
 
 
-def _locked_quick_sale_payment_sources(sources, *, company, branch):
+def _locked_quick_sale_payment_sources(sources, *, company, branch, checkout=None):
     if sources is None:
         return None
     if not isinstance(sources, list):
@@ -2003,6 +2003,7 @@ def _locked_quick_sale_payment_sources(sources, *, company, branch):
         if (
             source.checkout.company_id != company.pk
             or source.checkout.branch_id != branch.pk
+            or (checkout is not None and source.checkout_id != _pk(checkout))
         ):
             raise ValidationError({'payments': f'Pagamento {index + 1}: origem fora da empresa ou filial da venda.'})
         if source.status != QuickSalePaymentStatus.APPLIED:
@@ -2215,8 +2216,8 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
                        idempotency_key=None, channel=SalesChannel.COUNTER,
                         confirmed_order_items=None, internal_permission_code=None,
                         precomputed_financials=None, payment_sources=None, pos_device=None,
-                           attendance_payment_sources=None, table_payment_sources=None,
-                           quick_sale_payment_sources=None,
+                            attendance_payment_sources=None, table_payment_sources=None,
+                            quick_sale_payment_sources=None, quick_sale_checkout=None,
                            allow_pos_only=False, audit_metadata=None,
                          pos_permission_codes=None, pos_device_validated=False,
                            frozen_quick_preview=None, frozen_quick_discount_approved_by=None,
@@ -2248,6 +2249,15 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         and allow_pos_only and pos_device is not None
     ):
         raise ValidationError({'operation': 'Snapshot de checkout rápido inválido.'})
+    if quick_sale_payment_sources is not None and not (
+        operation_type == OperationType.SALE
+        and channel == SalesChannel.COUNTER
+        and allow_pos_only
+        and pos_device is not None
+        and frozen_quick_preview is not None
+        and quick_sale_checkout is not None
+    ):
+        raise ValidationError({'payments': 'Proveniência de checkout rápido só é válida na finalização do checkout.'})
     if allow_closed_cash_session and frozen_quick_preview is None:
         raise ValidationError({'operation': 'Sessão fechada só pode materializar checkout rápido já pago.'})
     branch = _active_branch(
@@ -2363,6 +2373,21 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
             cash_session, branch, required=True,
             allow_closed=allow_closed_cash_session,
         )
+
+    if quick_sale_payment_sources is not None:
+        from apps.pos.models import QuickSaleCheckout
+
+        checkout = QuickSaleCheckout.objects.select_for_update().get(pk=_pk(quick_sale_checkout))
+        if (
+            checkout.company_id != company.pk
+            or checkout.branch_id != branch.pk
+            or checkout.pos_device_id != pos_device.pk
+            or checkout.cash_session_id != session.pk
+            or checkout.operator_id != _pk(user)
+            or _pk(seller_user) != checkout.operator_id
+            or checkout.financial_snapshot != frozen_quick_preview
+        ):
+            raise ValidationError({'payments': 'O checkout de origem não corresponde à finalização.'})
 
     if confirmed_order_items is None:
         snapshots, requirements, content_requirements, subtotal = _prepare_products(
@@ -2485,6 +2510,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
 
     quick_sale_payment_sources = _locked_quick_sale_payment_sources(
         quick_sale_payment_sources, company=company, branch=branch,
+        checkout=quick_sale_checkout,
     )
     prepared_payments = _prepare_payments(
         company, payments or [], total,

@@ -409,6 +409,12 @@ class QuickSalePayment(BaseModel):
         # cannot distinguish a new immutable ledger row from an update.
         if self.pk and type(self).objects.filter(pk=self.pk).exists():
             raise ValidationError('Pagamentos de checkout são imutáveis.')
+        if (
+            self._state.adding
+            and self.source_type == QuickSalePaymentSourceType.PROVIDER
+            and not getattr(self, '_allow_provider_creation', False)
+        ):
+            raise ValidationError({'source_type': 'Pagamento de provedor deve ser criado pela ponte oficial.'})
         if self.payment_method_id:
             self.payment_method_name = self.payment_method.name
             self.payment_method_code = self.payment_method.code

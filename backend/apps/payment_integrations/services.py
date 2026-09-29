@@ -58,7 +58,12 @@ def _blocking_quick_sale_conflict():
 
 def create_payment_intent(*, company, branch, pos_device, operator, origin_type, origin_id,
                            payment_method, amount, provider_connection, terminal,
-                           idempotency_key, application_context=None):
+                           idempotency_key, application_context=None, _quick_sale_bridge=False):
+    if origin_type == PaymentIntentOriginType.QUICK_SALE and not _quick_sale_bridge:
+        raise PaymentIntegrationConflict(
+            'quick_sale_bridge_required',
+            'PaymentIntent de venda rápida deve ser criado pela ponte dedicada.',
+        )
     application_context = {} if application_context is None else application_context
     payload = {
         'branch': branch.pk,
@@ -153,9 +158,24 @@ def _apply_attempt_result_data(attempt, result_data):
             'invalid_attempt_result_data',
             f'Campos de resultado inválidos: {", ".join(sorted(invalid_fields))}.',
         )
+    identity_fields = {
+        'provider_transaction_id', 'provider_order_id', 'provider_reference',
+        'authorization_code', 'nsu',
+    }
+    for field in identity_fields & set(result_data):
+        current = getattr(attempt, field)
+        value = result_data[field]
+        if current not in ('', None) and current != value:
+            raise PaymentIntegrationConflict(
+                'provider_identity_conflict',
+                f'O identificador de provedor {field} não pode ser alterado.',
+            )
+    changed_fields = []
     for field, value in result_data.items():
-        setattr(attempt, field, value)
-    return tuple(result_data)
+        if getattr(attempt, field) != value:
+            setattr(attempt, field, value)
+            changed_fields.append(field)
+    return tuple(changed_fields)
 
 
 def create_payment_attempt(*, intent, provider_connection=None, terminal=_UNSET,
@@ -233,6 +253,28 @@ _ATTEMPT_TRANSITIONS = {
 def transition_payment_intent(*, intent, status, actor=None):
     with transaction.atomic():
         intent = PaymentIntent.objects.select_for_update().get(pk=intent.pk)
+        if status == PaymentIntentStatus.CANCELLED:
+            attempts = list(intent.attempts.select_for_update().order_by('-attempt_number'))
+            if any(attempt.status in {
+                PaymentAttemptStatus.PROCESSING,
+                PaymentAttemptStatus.UNKNOWN,
+                PaymentAttemptStatus.APPROVED,
+            } for attempt in attempts):
+                raise PaymentIntegrationConflict(
+                    'intent_cancellation_attempt_conflict',
+                    'O intent não pode ser cancelado com tentativa em processamento, desconhecida ou aprovada.',
+                )
+            expected_attempt_status = {
+                PaymentIntentStatus.DECLINED: PaymentAttemptStatus.DECLINED,
+                PaymentIntentStatus.ERROR: PaymentAttemptStatus.ERROR,
+            }.get(intent.status)
+            if expected_attempt_status and (
+                not attempts or attempts[0].status != expected_attempt_status
+            ):
+                raise PaymentIntegrationConflict(
+                    'intent_cancellation_latest_attempt_conflict',
+                    'O último resultado da tentativa deve corresponder ao estado do intent.',
+                )
         if status not in _INTENT_TRANSITIONS[intent.status]:
             raise PaymentIntegrationConflict(
                 'invalid_intent_transition', f'Transição inválida: {intent.status} para {status}.',
@@ -295,6 +337,28 @@ def resolve_payment_attempt(*, attempt, status, actor=None, response_metadata=No
     with transaction.atomic():
         attempt = PaymentAttempt.objects.select_for_update().select_related('intent').get(pk=attempt.pk)
         intent = PaymentIntent.objects.select_for_update().get(pk=attempt.intent_id)
+        if attempt.status in {
+            PaymentAttemptStatus.APPROVED,
+            PaymentAttemptStatus.DECLINED,
+            PaymentAttemptStatus.CANCELLED,
+            PaymentAttemptStatus.ERROR,
+        }:
+            if status != attempt.status:
+                raise PaymentIntegrationConflict(
+                    'attempt_result_conflict',
+                    'A tentativa já possui um resultado final diferente.',
+                )
+            result_fields = _apply_attempt_result_data(attempt, result_data)
+            if response_metadata is not None and response_metadata != attempt.response_metadata:
+                attempt.response_metadata = response_metadata
+                result_fields = (*result_fields, 'response_metadata')
+            if result_fields:
+                attempt._allow_result_update = True
+                try:
+                    attempt.save(update_fields=tuple(dict.fromkeys((*result_fields, 'updated_at'))))
+                finally:
+                    delattr(attempt, '_allow_result_update')
+            return attempt, intent
         if attempt.status not in {PaymentAttemptStatus.PROCESSING, PaymentAttemptStatus.UNKNOWN}:
             raise PaymentIntegrationConflict(
                 'attempt_not_processing', 'A tentativa deve estar processando ou desconhecida para ser resolvida.',

@@ -1141,6 +1141,13 @@ class POSFoundationIntegrationTests(TestCase):
         )
         self.assertEqual(approved_intent.status, 'approved')
         self.assertFalse(QuickSalePayment.objects.filter(checkout=checkout).exists())
+        with self.assertRaises(ValidationError):
+            QuickSalePayment.objects.create(
+                checkout=checkout, payment_method=method, amount=approved_intent.amount,
+                operator=operator, cash_session=checkout.cash_session,
+                source_type='provider', source_payment_attempt=approved_attempt,
+                idempotency_key=uuid4(), request_fingerprint='direct-provider-payment',
+            )
 
         payment, applied_replay = apply_approved_quick_sale_payment_intent(
             checkout=checkout, intent=approved_intent, user=operator,

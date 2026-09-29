@@ -295,6 +295,8 @@ class PaymentIntent(BaseModel):
                 errors['terminal'] = 'O terminal deve pertencer à conexão selecionada.'
             elif self.terminal.branch_id != self.branch_id:
                 errors['terminal'] = 'O terminal deve pertencer à filial.'
+            elif self.terminal.pos_device_id and self.terminal.pos_device_id != self.pos_device_id:
+                errors['terminal'] = 'O terminal deve estar vinculado ao POS selecionado.'
             elif require_active_resources and self.terminal.status != Status.ACTIVE:
                 errors['terminal'] = 'O terminal deve estar ativo.'
         if errors:
@@ -394,6 +396,11 @@ class PaymentAttempt(BaseModel):
         constraints = [
             models.CheckConstraint(condition=Q(amount__gt=0), name='payment_attempt_amount_positive'),
             models.UniqueConstraint(fields=('intent', 'attempt_number'), name='payment_attempt_intent_number_unique'),
+            models.UniqueConstraint(
+                fields=('provider_connection', 'provider_transaction_id'),
+                condition=~Q(provider_transaction_id=''),
+                name='payment_attempt_connection_transaction_unique',
+            ),
         ]
         indexes = [models.Index(fields=('intent', 'status', 'attempt_number'), name='pay_attempt_intent_status_idx')]
 
@@ -425,6 +432,8 @@ class PaymentAttempt(BaseModel):
                 errors['terminal'] = 'O terminal deve pertencer à conexão da tentativa.'
             elif self.terminal.branch_id != intent.branch_id:
                 errors['terminal'] = 'O terminal deve pertencer à filial do intent.'
+            elif self.terminal.pos_device_id and self.terminal.pos_device_id != intent.pos_device_id:
+                errors['terminal'] = 'O terminal deve estar vinculado ao POS do intent.'
             elif require_active_resources and self.terminal.status != Status.ACTIVE:
                 errors['terminal'] = 'O terminal da tentativa deve estar ativo.'
         if errors:
