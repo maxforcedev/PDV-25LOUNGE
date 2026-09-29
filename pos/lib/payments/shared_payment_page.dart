@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../cash/cash_models.dart' show createIdempotencyKey;
 import '../core/app_controller.dart';
@@ -12,6 +13,7 @@ import '../sales/shared_authorization_dialog.dart';
 import '../sales/shared_customer_dialog.dart';
 import '../sales/shared_discount_dialog.dart';
 import 'payment_contract.dart';
+import 'cielo_payment_bridge.dart';
 import 'payment_flow_components.dart';
 import 'quick_sale_payment_adapter.dart';
 import 'shared_payment_widgets.dart';
@@ -50,6 +52,9 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
   bool _showSummaryDetails = false;
   final Map<String, PrintDocumentResult> _paymentDocuments = {};
   final Set<String> _pollingPaymentDocuments = {};
+  final CieloPaymentBridge _cieloBridge = CieloPaymentBridge();
+  StreamSubscription<CieloPaymentCallback>? _cieloCallbacks;
+  String? _activeProviderAttemptId;
   bool get _canDiscount =>
       widget.controller.bootstrapSnapshot?.permissions
           .contains('sales.apply_discount') ??
@@ -71,6 +76,46 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     }
     _pollPendingPaymentDocuments();
     _restorePendingPayment();
+    _cieloCallbacks = _cieloBridge.callbacks.listen(_resolveCieloCallback);
+    unawaited(_consumePendingCieloCallback());
+  }
+
+  @override
+  void dispose() {
+    _cieloCallbacks?.cancel();
+    _cieloBridge.dispose();
+    super.dispose();
+  }
+
+  QuickSalePaymentIntegration? get _providerPayment =>
+      _checkout.paymentIntegration;
+
+  Future<void> _consumePendingCieloCallback() async {
+    try {
+      final callback = await _cieloBridge.getPendingCallback();
+      if (callback != null) await _resolveCieloCallback(callback);
+    } on PlatformException {
+      // The native bridge is unavailable outside Android Cielo devices.
+    }
+  }
+
+  Future<void> _resolveCieloCallback(CieloPaymentCallback callback) async {
+    final expectedAttempt =
+        _providerPayment?.attemptId ?? _activeProviderAttemptId;
+    if (_working || callback.attemptId != expectedAttempt) return;
+    setState(() => _working = true);
+    final updated = await widget.controller.resolveQuickSaleProviderPayment(
+      checkoutId: _checkout.id,
+      attemptId: callback.attemptId,
+      response: callback.response,
+      responseCode: callback.responseCode,
+    );
+    if (updated != null) {
+      await _cieloBridge.acknowledgeCallback(callback.attemptId);
+      _activeProviderAttemptId = null;
+      if (mounted) _replaceCheckout(updated);
+    }
+    if (mounted) setState(() => _working = false);
   }
 
   Future<void> _restorePendingPayment() async {
@@ -113,7 +158,8 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         reload: () async {
           final checkout =
               await widget.controller.quickSaleCheckoutDetail(_checkout.id);
-          for (final entry in checkout?.payments ?? const <QuickSaleCheckoutPayment>[]) {
+          for (final entry
+              in checkout?.payments ?? const <QuickSaleCheckoutPayment>[]) {
             if (entry.id == payment.id) return entry.printDocument;
           }
           return null;
@@ -339,11 +385,110 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       receivedAmount: payment.receivedAmount,
       allocations: allocations,
     );
+    if (method.usesProviderCapture) {
+      return _startProviderPayment(attempt, method);
+    }
     return _recordPayment(
       attempt,
       preserveEqualSplit: fromEqualSplit,
       equalSplitIndex: equalSplitIndex,
     );
+  }
+
+  Future<bool> _startProviderPayment(
+      QuickSalePaymentAttempt attempt, QuickSalePaymentMethod method) async {
+    final provider = method.capture?.provider;
+    if (provider == null) return false;
+    setState(() => _working = true);
+    final launch = await widget.controller.startQuickSaleProviderPayment(
+      checkoutId: _checkout.id,
+      paymentMethodId: attempt.paymentMethodId,
+      provider: provider,
+      mode: attempt.mode,
+      idempotencyKey: attempt.intentId,
+      amount: attempt.amount,
+      allocations: attempt.allocations,
+    );
+    if (launch == null) {
+      if (mounted) setState(() => _working = false);
+      return false;
+    }
+    _activeProviderAttemptId = launch.attemptId;
+    try {
+      // launchUri is intentionally scoped to this call and never written to POS storage.
+      await _cieloBridge.launch(
+        attemptId: launch.attemptId,
+        launchUri: launch.launchUri,
+      );
+    } on PlatformException {
+      final updated = await widget.controller.reportProviderLaunchFailed(
+        checkoutId: _checkout.id,
+        attemptId: launch.attemptId,
+      );
+      if (updated != null && mounted) _replaceCheckout(updated);
+      if (mounted) setState(() => _working = false);
+      return false;
+    }
+    if (mounted) {
+      final current =
+          await widget.controller.quickSaleCheckoutDetail(_checkout.id);
+      if (current != null) _replaceCheckout(current);
+      setState(() => _working = false);
+    }
+    return true;
+  }
+
+  Future<void> _retryProviderPayment() async {
+    final integration = _providerPayment;
+    if (integration == null || _working) return;
+    setState(() => _working = true);
+    final launch = await widget.controller.retryQuickSaleProviderPayment(
+      checkoutId: _checkout.id,
+      intentId: integration.intentId,
+    );
+    if (launch != null) {
+      _activeProviderAttemptId = launch.attemptId;
+      try {
+        await _cieloBridge.launch(
+            attemptId: launch.attemptId, launchUri: launch.launchUri);
+      } on PlatformException {
+        final updated = await widget.controller.reportProviderLaunchFailed(
+          checkoutId: _checkout.id,
+          attemptId: launch.attemptId,
+        );
+        if (updated != null && mounted) _replaceCheckout(updated);
+      }
+    }
+    if (mounted) {
+      final current =
+          await widget.controller.quickSaleCheckoutDetail(_checkout.id);
+      if (current != null) _replaceCheckout(current);
+      setState(() => _working = false);
+    }
+  }
+
+  Future<void> _applyProviderPayment() async {
+    final integration = _providerPayment;
+    if (integration == null || _working) return;
+    setState(() => _working = true);
+    final updated = await widget.controller.applyQuickSaleProviderPayment(
+      checkoutId: _checkout.id,
+      intentId: integration.intentId,
+    );
+    if (updated != null && mounted) _replaceCheckout(updated);
+    if (mounted) setState(() => _working = false);
+  }
+
+  Future<void> _cancelProviderPayment() async {
+    final integration = _providerPayment;
+    if (integration == null || _working) return;
+    setState(() => _working = true);
+    final updated = await widget.controller.cancelQuickSaleProviderPayment(
+      checkoutId: _checkout.id,
+      intentId: integration.intentId,
+    );
+    if (updated != null && mounted) _replaceCheckout(updated);
+    if (mounted) setState(() => _working = false);
   }
 
   Future<bool> _recordPayment(QuickSalePaymentAttempt attempt,
@@ -449,7 +594,8 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
   Future<void> _reverse(QuickSaleCheckoutPayment payment) async {
     if (_checkout.status != 'open') {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('A venda já foi concluída. Use o cancelamento da venda, não o estorno do checkout.'),
+        content: Text(
+            'A venda já foi concluída. Use o cancelamento da venda, não o estorno do checkout.'),
       ));
       return;
     }
@@ -522,14 +668,16 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     final result = document?.canReprint == true
         ? await widget.controller.reprintPrintDocument(
             PrintDocumentReprintRequest(
-              documentId: document!.id!, idempotencyKey: createIdempotencyKey(),
+              documentId: document!.id!,
+              idempotencyKey: createIdempotencyKey(),
               reason: 'Reimpressão de comprovante de pagamento',
             ),
           )
         : await widget.controller.requestPrintDocument(
             PrintDocumentRequest(
               type: PrintDocumentType.paymentReceipt,
-              sourceType: 'quick_sale_payment', sourceId: payment.id,
+              sourceType: 'quick_sale_payment',
+              sourceId: payment.id,
               idempotencyKey: createIdempotencyKey(),
             ),
           );
@@ -545,6 +693,12 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
 
   Future<void> _cancel() async {
     if (_working) return;
+    if (_providerPayment != null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Resolva a cobrança Cielo antes de cancelar a venda.'),
+      ));
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -584,9 +738,12 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
   }
 
   Future<void> _cancelAbandonedCheckout() async {
-    if (_checkoutCancelled || _hasAppliedPayment) return;
+    if (_checkoutCancelled || _hasAppliedPayment || _providerPayment != null) {
+      return;
+    }
     setState(() => _working = true);
-    final cancelled = await widget.controller.cancelQuickSaleCheckout(_checkout.id);
+    final cancelled =
+        await widget.controller.cancelQuickSaleCheckout(_checkout.id);
     if (!mounted) return;
     setState(() => _working = false);
     if (!cancelled) return;
@@ -685,15 +842,16 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
           body: PaymentPageLayout(
             summary: _summaryData,
             methodGrid: _methodGrid(),
-            pendingAction: _pendingPayment == null
-                ? null
-                : OutlinedButton.icon(
-                    onPressed: _working || !_checkout.canRecordPayment
-                        ? null
-                        : () => _recordPayment(_pendingPayment!),
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('TENTAR NOVAMENTE'),
-                  ),
+            pendingAction: _providerAction() ??
+                (_pendingPayment == null
+                    ? null
+                    : OutlinedButton.icon(
+                        onPressed: _working || !_checkout.canRecordPayment
+                            ? null
+                            : () => _recordPayment(_pendingPayment!),
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('TENTAR NOVAMENTE'),
+                      )),
             history: _paymentHistory(),
             summaryPanel: _summary(context),
           ),
@@ -715,6 +873,44 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
               );
         if (method != null && mounted) await _choose(method);
       },
+    );
+  }
+
+  Widget? _providerAction() {
+    final integration = _providerPayment;
+    if (integration == null) return null;
+    if (integration.canApply) {
+      return OutlinedButton.icon(
+        onPressed: _working ? null : _applyProviderPayment,
+        icon: const Icon(Icons.sync),
+        label: const Text('TENTAR REGISTRAR NO CORE'),
+      );
+    }
+    if (integration.canRetry || integration.canCancel) {
+      return Row(children: [
+        if (integration.canRetry)
+          Expanded(
+              child: OutlinedButton.icon(
+            onPressed: _working ? null : _retryProviderPayment,
+            icon: const Icon(Icons.refresh),
+            label: const Text('TENTAR NOVAMENTE'),
+          )),
+        if (integration.canRetry && integration.canCancel)
+          const SizedBox(width: 8),
+        if (integration.canCancel)
+          Expanded(
+              child: OutlinedButton(
+            onPressed: _working ? null : _cancelProviderPayment,
+            child: const Text('CANCELAR COBRANÇA'),
+          )),
+      ]);
+    }
+    return Container(
+      padding: const EdgeInsets.all(12),
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: Text(integration.requiresRecovery
+          ? 'PAGAMENTO EM PROCESSAMENTO NA CIELO'
+          : 'PAGAMENTO AGUARDANDO CONFIRMAÇÃO.'),
     );
   }
 
@@ -754,9 +950,11 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
                 reversalReason:
                     _checkout.reversalFor(payment.id)?.reversalReason,
                 working: _working,
-                onReverse: _checkout.status == 'open' ? () => _reverse(payment) : null,
+                onReverse:
+                    _checkout.status == 'open' ? () => _reverse(payment) : null,
                 onPrint: _working ? null : () => _printPaymentReceipt(payment),
-                printTooltip: _paymentDocuments[payment.id]?.printActionLabel ?? 'IMPRIMIR COMPROVANTE',
+                printTooltip: _paymentDocuments[payment.id]?.printActionLabel ??
+                    'IMPRIMIR COMPROVANTE',
               ))
           .toList(growable: false),
     );

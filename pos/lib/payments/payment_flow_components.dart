@@ -611,7 +611,9 @@ class _PaymentEntryPageState extends State<PaymentEntryPage> {
                               ),
                             )
                         : null,
-                    child: const Text('CONFIRMAR PAGAMENTO MANUAL'),
+                    child: Text(widget.method.usesProviderCapture
+                        ? 'PAGAR NA CIELO'
+                        : 'CONFIRMAR PAGAMENTO MANUAL'),
                   ),
                 ]),
           ),

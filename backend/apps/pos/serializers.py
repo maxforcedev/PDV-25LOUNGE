@@ -236,6 +236,33 @@ class POSQuickCheckoutPaymentSerializer(serializers.Serializer):
         return attrs
 
 
+class POSQuickSaleProviderPaymentStartSerializer(POSQuickCheckoutPaymentSerializer):
+    provider = serializers.ChoiceField(choices=('cielo',))
+
+    def to_internal_value(self, data):
+        allowed = {'payment_method', 'mode', 'amount', 'allocations', 'idempotency_key', 'provider'}
+        if not isinstance(data, dict) or set(data) - allowed:
+            raise serializers.ValidationError('Payload de pagamento por provedor inválido.')
+        return super().to_internal_value(data)
+
+
+class POSQuickSaleProviderPaymentResultSerializer(serializers.Serializer):
+    response = serializers.CharField(required=False, allow_blank=True, default='')
+    responsecode = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=None)
+
+    def to_internal_value(self, data):
+        if not isinstance(data, dict) or set(data) - {'response', 'responsecode'}:
+            raise serializers.ValidationError('O resultado do provedor é inválido.')
+        return super().to_internal_value(data)
+
+
+class POSQuickSaleProviderLaunchFailedSerializer(serializers.Serializer):
+    def to_internal_value(self, data):
+        if not isinstance(data, dict) or data:
+            raise serializers.ValidationError('O aviso de falha no lançamento não aceita detalhes externos.')
+        return super().to_internal_value(data)
+
+
 class POSQuickCheckoutPaymentPreviewSerializer(serializers.Serializer):
     allocations = serializers.ListField(child=serializers.DictField(), allow_empty=False)
 

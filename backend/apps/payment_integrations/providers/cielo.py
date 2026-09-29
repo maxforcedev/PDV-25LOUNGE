@@ -135,7 +135,12 @@ class CieloSmartAdapter(PaymentProviderAdapter):
             )
 
     def _connection_configuration(self, attempt):
+        # Launch uses the current operational connection; callback parsing below
+        # intentionally does not depend on this mutable administrative state.
         connection = attempt.provider_connection
+        manager = getattr(type(connection), 'objects', None)
+        if manager is not None and attempt.provider_connection_id:
+            connection = manager.select_related('provider').get(pk=attempt.provider_connection_id)
         provider = connection.provider
         self._assert_cielo_attempt(attempt)
         if provider.integration_type != PaymentProviderIntegrationType.LOCAL_DEEP_LINK:

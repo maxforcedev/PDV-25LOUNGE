@@ -302,6 +302,43 @@ abstract class PosApi {
     List<Map<String, dynamic>> allocations = const [],
   }) =>
       throw UnimplementedError();
+  Future<QuickSaleProviderPaymentLaunch> startQuickSaleProviderPayment({
+    required String checkoutId,
+    required int paymentMethodId,
+    required String provider,
+    required String mode,
+    required String idempotencyKey,
+    String? amount,
+    List<Map<String, dynamic>> allocations = const [],
+  }) =>
+      throw UnimplementedError();
+  Future<QuickSaleCheckout> resolveQuickSaleProviderPayment({
+    required String checkoutId,
+    required String attemptId,
+    required String response,
+    String? responseCode,
+  }) =>
+      throw UnimplementedError();
+  Future<QuickSaleProviderPaymentLaunch> retryQuickSaleProviderPayment({
+    required String checkoutId,
+    required String intentId,
+  }) =>
+      throw UnimplementedError();
+  Future<QuickSaleCheckout> cancelQuickSaleProviderPayment({
+    required String checkoutId,
+    required String intentId,
+  }) =>
+      throw UnimplementedError();
+  Future<QuickSaleCheckout> applyQuickSaleProviderPayment({
+    required String checkoutId,
+    required String intentId,
+  }) =>
+      throw UnimplementedError();
+  Future<QuickSaleCheckout> reportProviderLaunchFailed({
+    required String checkoutId,
+    required String attemptId,
+  }) =>
+      throw UnimplementedError();
   Future<QuickSaleCheckout> reverseQuickSalePayment({
     required String checkoutId,
     required String paymentId,
@@ -440,6 +477,7 @@ class HttpPosApi implements PosApi, PosCredentialCache {
     String method,
     String path, {
     Map<String, dynamic>? body,
+    bool sensitiveResponse = false,
   }) async {
     http.Response response;
     logPosDebugTiming('$method request_started');
@@ -470,7 +508,7 @@ class HttpPosApi implements PosApi, PosCredentialCache {
     if (kDebugMode && response.statusCode >= 400) {
       debugPrint(
         '[POS HTTP ERROR] method=$method path=$path '
-        'status=${response.statusCode} body=${response.body}',
+        'status=${response.statusCode} body=${sensitiveResponse ? '[redacted]' : response.body}',
       );
     }
     final decoded =
@@ -559,7 +597,8 @@ class HttpPosApi implements PosApi, PosCredentialCache {
       PrintDocumentRequest request) async {
     final payload = await _request('POST', 'printing/documents/issue/',
         body: request.toJson());
-    return PrintDocumentResult.fromJson(Map<String, dynamic>.from(payload as Map));
+    return PrintDocumentResult.fromJson(
+        Map<String, dynamic>.from(payload as Map));
   }
 
   @override
@@ -570,7 +609,8 @@ class HttpPosApi implements PosApi, PosCredentialCache {
       'printing/documents/${request.documentId}/reprint/',
       body: request.toJson(),
     );
-    return PrintDocumentResult.fromJson(Map<String, dynamic>.from(payload as Map));
+    return PrintDocumentResult.fromJson(
+        Map<String, dynamic>.from(payload as Map));
   }
 
   @override
@@ -612,8 +652,8 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   @override
   Future<List<int>> reconcilePrintJobs(
       List<Map<String, dynamic>> entries) async {
-    final payload =
-        await _request('POST', 'printing/reconcile/', body: {'entries': entries});
+    final payload = await _request('POST', 'printing/reconcile/',
+        body: {'entries': entries});
     return (payload['job_ids'] as List<dynamic>? ?? const [])
         .whereType<num>()
         .map((id) => id.toInt())
@@ -1476,6 +1516,87 @@ class HttpPosApi implements PosApi, PosCredentialCache {
         'POST',
         'sales/checkouts/$checkoutId/cancel/',
         body: const {},
+      ));
+
+  @override
+  Future<QuickSaleProviderPaymentLaunch> startQuickSaleProviderPayment({
+    required String checkoutId,
+    required int paymentMethodId,
+    required String provider,
+    required String mode,
+    required String idempotencyKey,
+    String? amount,
+    List<Map<String, dynamic>> allocations = const [],
+  }) async =>
+      QuickSaleProviderPaymentLaunch.fromJson(await _request(
+        'POST',
+        'sales/checkouts/$checkoutId/provider-payments/start/',
+        sensitiveResponse: true,
+        body: {
+          'payment_method': paymentMethodId,
+          'provider': provider,
+          'mode': mode,
+          'idempotency_key': idempotencyKey,
+          if (amount != null) 'amount': amount,
+          if (allocations.isNotEmpty) 'allocations': allocations,
+        },
+      ));
+
+  @override
+  Future<QuickSaleCheckout> resolveQuickSaleProviderPayment({
+    required String checkoutId,
+    required String attemptId,
+    required String response,
+    String? responseCode,
+  }) async =>
+      QuickSaleCheckout.fromJson(await _request(
+        'POST',
+        'sales/checkouts/$checkoutId/provider-payments/attempts/$attemptId/result/',
+        body: {
+          'response': response,
+          if (responseCode != null) 'responsecode': responseCode,
+        },
+      ));
+
+  @override
+  Future<QuickSaleProviderPaymentLaunch> retryQuickSaleProviderPayment({
+    required String checkoutId,
+    required String intentId,
+  }) async =>
+      QuickSaleProviderPaymentLaunch.fromJson(await _request(
+        'POST',
+        'sales/checkouts/$checkoutId/provider-payments/intents/$intentId/retry/',
+        sensitiveResponse: true,
+      ));
+
+  @override
+  Future<QuickSaleCheckout> cancelQuickSaleProviderPayment({
+    required String checkoutId,
+    required String intentId,
+  }) async =>
+      QuickSaleCheckout.fromJson(await _request(
+        'POST',
+        'sales/checkouts/$checkoutId/provider-payments/intents/$intentId/cancel/',
+      ));
+
+  @override
+  Future<QuickSaleCheckout> applyQuickSaleProviderPayment({
+    required String checkoutId,
+    required String intentId,
+  }) async =>
+      QuickSaleCheckout.fromJson(await _request(
+        'POST',
+        'sales/checkouts/$checkoutId/provider-payments/intents/$intentId/apply/',
+      ));
+
+  @override
+  Future<QuickSaleCheckout> reportProviderLaunchFailed({
+    required String checkoutId,
+    required String attemptId,
+  }) async =>
+      QuickSaleCheckout.fromJson(await _request(
+        'POST',
+        'sales/checkouts/$checkoutId/provider-payments/attempts/$attemptId/launch-failed/',
       ));
 
   @override

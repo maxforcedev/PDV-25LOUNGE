@@ -1,3 +1,5 @@
+import base64
+import json
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1689,3 +1691,97 @@ class POSFoundationIntegrationTests(TestCase):
             reverse('pos:cash-session-entry', args=[opened.data['id']]), payload, format='json',
         )
         self.assertEqual(AuditLog.objects.count(), audit_count)
+
+    @override_settings(
+        CIELO_SMART_CLIENT_ID='cielo-client-id-for-test',
+        CIELO_SMART_ACCESS_TOKEN='cielo-access-token-for-test',
+    )
+    def test_provider_start_is_idempotent_and_does_not_persist_launch_uri(self):
+        _operator, device, _session, checkout, _method, _connection, _terminal = self.create_provider_checkout()
+        cielo = PaymentProvider.objects.get(code='cielo')
+        connection = PaymentProviderConnection.objects.create(
+            company=self.company, provider=cielo, name='Cielo local',
+            environment=PaymentProviderConnectionEnvironment.SANDBOX,
+            configuration={'merchant_code': '1234567890123456'},
+        )
+        PaymentTerminal.objects.create(
+            connection=connection, branch=self.branch, pos_device=device, name='Cielo deste POS',
+        )
+        method = next(
+            item for item in ensure_default_payment_methods(self.company)
+            if item.code == 'credit_card'
+        )
+        payload = {
+            'payment_method': method.pk, 'provider': 'cielo', 'mode': 'remaining',
+            'idempotency_key': str(uuid4()),
+        }
+
+        started = self.client.post(
+            reverse('pos:quick-sale-provider-payment-start', args=[checkout.pk]), payload,
+            format='json',
+        )
+        replayed = self.client.post(
+            reverse('pos:quick-sale-provider-payment-start', args=[checkout.pk]), payload,
+            format='json',
+        )
+
+        self.assertEqual(started.status_code, 200, started.data)
+        self.assertEqual(replayed.status_code, 200, replayed.data)
+        self.assertEqual(started['Cache-Control'], 'no-store')
+        self.assertEqual(started.data['intent_id'], replayed.data['intent_id'])
+        self.assertEqual(started.data['attempt_id'], replayed.data['attempt_id'])
+        self.assertEqual(PaymentIntent.objects.filter(origin_id=str(checkout.pk)).count(), 1)
+        self.assertEqual(QuickSalePayment.objects.filter(checkout=checkout).count(), 0)
+        attempt = PaymentIntent.objects.get(pk=started.data['intent_id']).attempts.get()
+        self.assertEqual(attempt.status, PaymentAttemptStatus.PROCESSING)
+        self.assertNotIn('launch_uri', attempt.request_metadata)
+        self.assertNotIn(started.data['launch_uri'], str(AuditLog.objects.values_list('after', 'metadata')))
+
+    @override_settings(
+        CIELO_SMART_CLIENT_ID='cielo-client-id-for-test',
+        CIELO_SMART_ACCESS_TOKEN='cielo-access-token-for-test',
+    )
+    def test_cielo_callback_is_parsed_by_backend_and_applied_once(self):
+        _operator, device, _session, checkout, _method, _connection, _terminal = self.create_provider_checkout()
+        cielo = PaymentProvider.objects.get(code='cielo')
+        connection = PaymentProviderConnection.objects.create(
+            company=self.company, provider=cielo, name='Cielo local',
+            environment=PaymentProviderConnectionEnvironment.SANDBOX,
+            configuration={'merchant_code': '1234567890123456'},
+        )
+        PaymentTerminal.objects.create(
+            connection=connection, branch=self.branch, pos_device=device, name='Cielo deste POS',
+        )
+        method = next(
+            item for item in ensure_default_payment_methods(self.company)
+            if item.code == 'credit_card'
+        )
+        started = self.client.post(
+            reverse('pos:quick-sale-provider-payment-start', args=[checkout.pk]),
+            {
+                'payment_method': method.pk, 'provider': 'cielo', 'mode': 'remaining',
+                'idempotency_key': str(uuid4()),
+            },
+            format='json',
+        )
+        self.assertEqual(started.status_code, 200, started.data)
+        response = base64.b64encode(json.dumps({
+            'reference': f"CORE-{started.data['attempt_id']}",
+            'payments': [{
+                'amount': '2000', 'installments': 0,
+                'paymentFields': {'statusCode': '0', 'paymentTransactionId': 'transaction-1'},
+            }],
+        }).encode()).decode()
+        callback_url = reverse(
+            'pos:quick-sale-provider-payment-result',
+            args=[checkout.pk, started.data['attempt_id']],
+        )
+
+        resolved = self.client.post(callback_url, {'response': response}, format='json')
+        replayed = self.client.post(callback_url, {'response': response}, format='json')
+
+        self.assertEqual(resolved.status_code, 200, resolved.data)
+        self.assertEqual(replayed.status_code, 200, replayed.data)
+        self.assertEqual(QuickSalePayment.objects.filter(checkout=checkout).count(), 1)
+        intent = PaymentIntent.objects.get(pk=started.data['intent_id'])
+        self.assertEqual(intent.status, 'applied')

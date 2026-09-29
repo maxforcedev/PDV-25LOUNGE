@@ -1,5 +1,6 @@
 from decimal import Decimal, InvalidOperation
 from time import perf_counter
+from types import SimpleNamespace
 
 from django.db import transaction
 from django.db.models import Prefetch, Q
@@ -93,9 +94,12 @@ from apps.sales.services import (
 )
 from apps.sales.quick_checkout import (
     QuickCheckoutConflict, cancel_quick_checkout, checkout_available_quantities, checkout_balance,
-    checkout_can_pay_by_items, create_quick_checkout,
+    checkout_can_pay_by_items, create_quick_checkout, create_quick_sale_payment_intent,
     finalize_quick_checkout, record_quick_checkout_payment,
-    preview_quick_checkout_payment, reverse_quick_checkout_payment, update_quick_checkout,
+    preview_quick_checkout_payment, resolve_quick_sale_payment_attempt,
+    reverse_quick_checkout_payment, start_quick_sale_payment_attempt,
+    apply_approved_quick_sale_payment_intent, cancel_quick_sale_payment_intent,
+    update_quick_checkout,
 )
 
 from .authentication import POSDeviceAuthentication, require_device, require_operator_session
@@ -112,7 +116,13 @@ from .serializers import (
     POSQuickCheckoutCancelSerializer, POSQuickCheckoutCreateSerializer,
     POSQuickCheckoutFinalizeSerializer, POSQuickCheckoutUpdateSerializer,
     POSQuickCheckoutPaymentPreviewSerializer, POSQuickCheckoutPaymentSerializer, POSQuickCheckoutReverseSerializer,
+    POSQuickSaleProviderLaunchFailedSerializer, POSQuickSaleProviderPaymentResultSerializer,
+    POSQuickSaleProviderPaymentStartSerializer,
     POSTicketLookupSerializer, POSTicketValidateSerializer,
+)
+from .provider_payments import (
+    CIELO_CALLBACK_URL, cielo_capture_available, cielo_items_from_quick_checkout,
+    cielo_supports_payment_method, resolve_provider_resources,
 )
 from .services import (
     assert_branch_device_limit, authenticate_operator, cash_state_for_device, confirm_pairing,
@@ -1919,9 +1929,20 @@ class POSSaleCheckoutOptionsView(POSQuickSaleView):
         methods = PaymentMethod.objects.filter(
             company_id=device.branch.company_id, status=Status.ACTIVE,
         ).order_by('name', 'id').values('id', 'code', 'name')
+        cielo_available = cielo_capture_available(checkout=SimpleNamespace(
+            company=device.branch.company, branch=device.branch, pos_device=device,
+        ))
+        provider_codes = {'credit_card', 'debit_card', 'pix', 'food_voucher', 'meal_voucher'}
         return Response({
             'payment_methods': [
-                {**method, **payment_method_presentation(method['code'])}
+                {
+                    **method,
+                    **payment_method_presentation(method['code']),
+                    **({'capture': {
+                        'mode': 'provider', 'provider': 'cielo',
+                        'integration_type': 'local_deep_link',
+                    }} if cielo_available and method['code'] in provider_codes else {}),
+                }
                 for method in methods
             ],
             'cash_binding_mode': mode,
@@ -1938,7 +1959,9 @@ class POSSaleCheckoutOptionsView(POSQuickSaleView):
 
 
 def _quick_checkout_payload(checkout, *, permissions=()):
-    from apps.payment_integrations.models import PaymentIntent, PaymentIntentOriginType
+    from apps.payment_integrations.models import (
+        PaymentAttempt, PaymentIntent, PaymentIntentOriginType, PaymentIntentStatus,
+    )
 
     blocking_intent = PaymentIntent.objects.filter(
         origin_type=PaymentIntentOriginType.QUICK_SALE,
@@ -1982,6 +2005,10 @@ def _quick_checkout_payload(checkout, *, permissions=()):
             source_type='quick_sale_payment', source_id__in=[str(payment.pk) for payment in payments],
         )
     }
+    latest_attempt = (
+        PaymentAttempt.objects.filter(intent=blocking_intent).order_by('-attempt_number').first()
+        if blocking_intent else None
+    )
     return {
         'id': str(checkout.pk),
         'status': checkout.status,
@@ -1998,7 +2025,24 @@ def _quick_checkout_payload(checkout, *, permissions=()):
         'paid_amount': str(paid),
         'remaining_amount': str(remaining),
         'payment_integration': (
-            {'intent_id': str(blocking_intent.pk), 'status': blocking_intent.status}
+            {
+                'intent_id': str(blocking_intent.pk),
+                'intent_status': blocking_intent.status,
+                'attempt_id': str(latest_attempt.pk) if latest_attempt else None,
+                'attempt_status': latest_attempt.status if latest_attempt else None,
+                'provider': blocking_intent.provider_connection.provider.code,
+                'can_retry': blocking_intent.status in {
+                    PaymentIntentStatus.DECLINED, PaymentIntentStatus.ERROR,
+                },
+                'can_cancel': blocking_intent.status in {
+                    PaymentIntentStatus.CREATED, PaymentIntentStatus.READY,
+                    PaymentIntentStatus.DECLINED, PaymentIntentStatus.ERROR,
+                },
+                'can_apply': blocking_intent.status == PaymentIntentStatus.APPROVED,
+                'requires_recovery': blocking_intent.status in {
+                    PaymentIntentStatus.PROCESSING, PaymentIntentStatus.UNKNOWN,
+                },
+            }
             if blocking_intent else None
         ),
         'has_payment_history': has_payment_history,
@@ -2103,6 +2147,93 @@ def _get_quick_checkout(device, operator, checkout_id):
     )
 
 
+def _scoped_provider_attempt(checkout, attempt_id):
+    from apps.payment_integrations.models import PaymentAttempt, PaymentIntentOriginType
+
+    return get_object_or_404(
+        PaymentAttempt.objects.select_related(
+            'intent__provider_connection__provider', 'intent__payment_method',
+            'provider_connection__provider',
+        ),
+        pk=attempt_id,
+        intent__origin_type=PaymentIntentOriginType.QUICK_SALE,
+        intent__origin_id=str(checkout.pk),
+        intent__company=checkout.company,
+        intent__branch=checkout.branch,
+        intent__pos_device=checkout.pos_device,
+        intent__operator=checkout.operator,
+    )
+
+
+def _scoped_provider_intent(checkout, intent_id):
+    from apps.payment_integrations.models import PaymentIntent, PaymentIntentOriginType
+
+    return get_object_or_404(
+        PaymentIntent.objects.select_related('provider_connection__provider', 'payment_method'),
+        pk=intent_id,
+        origin_type=PaymentIntentOriginType.QUICK_SALE,
+        origin_id=str(checkout.pk), company=checkout.company, branch=checkout.branch,
+        pos_device=checkout.pos_device, operator=checkout.operator,
+    )
+
+
+def _start_provider_payment(*, checkout, operator, data, audit_metadata):
+    from apps.payment_integrations.models import PaymentAttempt, PaymentAttemptStatus
+    from apps.payment_integrations.providers.registry import get_adapter
+    from apps.payment_integrations.services import PaymentIntegrationConflict
+    from apps.sales.models import PaymentMethod
+
+    connection, terminal = resolve_provider_resources(
+        checkout=checkout, provider_code=data['provider'],
+    )
+    method = PaymentMethod.objects.filter(
+        pk=data['payment_method'], company=checkout.company, status=Status.ACTIVE,
+    ).first()
+    if not method or not cielo_supports_payment_method(method.code):
+        raise QuickCheckoutConflict(
+            'payment_provider_method_unsupported',
+            'A forma de pagamento não é suportada pelo provedor.',
+        )
+    intent, replayed = create_quick_sale_payment_intent(
+        checkout=checkout, user=operator, payment_method_id=data['payment_method'],
+        mode=data['mode'], amount=data.get('amount'), allocations=data['allocations'],
+        provider_connection=connection, terminal=terminal,
+        idempotency_key=data['idempotency_key'], audit_metadata=audit_metadata,
+    )
+    if replayed:
+        attempt = PaymentAttempt.objects.select_related(
+            'intent__payment_method', 'provider_connection__provider',
+        ).filter(intent=intent, status=PaymentAttemptStatus.PROCESSING).order_by('-attempt_number').first()
+        if not attempt:
+            raise QuickCheckoutConflict(
+                'payment_intent_not_processing',
+                'A cobrança idempotente não possui tentativa em processamento.',
+            )
+    else:
+        attempt = start_quick_sale_payment_attempt(
+            checkout=checkout, intent=intent, user=operator, provider_connection=connection,
+            terminal=terminal, audit_metadata=audit_metadata,
+        )
+    try:
+        command = get_adapter(data['provider']).build_payment_command(
+            attempt=attempt, callback_url=CIELO_CALLBACK_URL,
+            items=cielo_items_from_quick_checkout(checkout), installments=1,
+        )
+    except (LookupError, PaymentIntegrationConflict) as error:
+        # This failure is proven before a URI is returned to Android, so the attempt
+        # can safely become ERROR without asserting anything about the provider.
+        resolve_quick_sale_payment_attempt(
+            checkout=checkout, attempt=attempt, status=PaymentAttemptStatus.ERROR, user=operator,
+            response_metadata={'provider': data['provider'], 'provider_status': 'launch_error'},
+            result_data={'provider_status': 'launch_error', 'provider_message': 'Não foi possível iniciar a cobrança.'},
+            audit_metadata=audit_metadata,
+        )
+        if isinstance(error, PaymentIntegrationConflict):
+            raise QuickCheckoutConflict(error.code, error.message) from error
+        raise QuickCheckoutConflict('payment_provider_unavailable', 'O provedor de pagamento não está disponível.') from error
+    return intent, attempt, command, replayed
+
+
 class POSQuickCheckoutView(POSQuickSaleView):
     def _checkout(self, device, operator, checkout_id):
         return _get_quick_checkout(device, operator, checkout_id)
@@ -2198,6 +2329,198 @@ class POSQuickCheckoutPaymentView(POSQuickCheckoutView):
         if replayed:
             response['Idempotency-Replayed'] = 'true'
         return response
+
+
+class POSQuickSaleProviderPaymentStartView(POSQuickCheckoutView):
+    def post(self, request, checkout_id):
+        from apps.payment_integrations.services import PaymentIntegrationConflict
+
+        device, operator, permissions, operator_session = self.context(request)
+        self._require(permissions, 'sales.create', 'Você não possui permissão para realizar vendas nesta filial.')
+        serializer = POSQuickSaleProviderPaymentStartSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        checkout = self._checkout(device, operator, checkout_id)
+        try:
+            intent, attempt, command, replayed = _start_provider_payment(
+                checkout=checkout, operator=operator, data=serializer.validated_data,
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+        except (QuickCheckoutConflict, PaymentIntegrationConflict) as error:
+            _quick_checkout_conflict(QuickCheckoutConflict(error.code, error.message))
+        response = Response({
+            'provider': serializer.validated_data['provider'],
+            'intent_id': str(intent.pk),
+            'attempt_id': str(attempt.pk),
+            'status': attempt.status,
+            'operation': command.operation,
+            'launch_uri': command.uri,
+            'safe_metadata': command.safe_metadata,
+        })
+        response['Cache-Control'] = 'no-store'
+        if replayed:
+            response['Idempotency-Replayed'] = 'true'
+        return response
+
+
+class POSQuickSaleProviderPaymentResultView(POSQuickCheckoutView):
+    def post(self, request, checkout_id, attempt_id):
+        from apps.payment_integrations.models import PaymentAttemptStatus
+        from apps.payment_integrations.providers.registry import get_adapter
+        from apps.payment_integrations.services import PaymentIntegrationConflict
+
+        device, operator, permissions, operator_session = self.context(request)
+        self._require(permissions, 'sales.create', 'Você não possui permissão para realizar vendas nesta filial.')
+        serializer = POSQuickSaleProviderPaymentResultSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        checkout = self._checkout(device, operator, checkout_id)
+        attempt = _scoped_provider_attempt(checkout, attempt_id)
+        try:
+            result = get_adapter(attempt.provider_connection.provider.code).parse_payment_callback(
+                attempt=attempt, response=serializer.validated_data['response'],
+                responsecode=serializer.validated_data['responsecode'],
+            )
+            _attempt, intent = resolve_quick_sale_payment_attempt(
+                checkout=checkout, attempt=attempt, status=result.status, user=operator,
+                response_metadata=result.safe_metadata, result_data=result.result_data,
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+            apply_pending = False
+            if result.status == PaymentAttemptStatus.APPROVED:
+                try:
+                    apply_approved_quick_sale_payment_intent(
+                        checkout=checkout, intent=intent, user=operator,
+                        audit_metadata=self.audit_metadata(device, operator_session),
+                    )
+                except QuickCheckoutConflict:
+                    # The external approval remains authoritative; never retry the charge.
+                    apply_pending = True
+        except (LookupError, PaymentIntegrationConflict) as error:
+            if isinstance(error, PaymentIntegrationConflict):
+                _quick_checkout_conflict(QuickCheckoutConflict(error.code, error.message))
+            raise DomainValidationError(
+                code='payment_provider_unavailable', message='O provedor de pagamento não está disponível.',
+            ) from error
+        payload = _quick_checkout_payload(self._checkout(device, operator, checkout_id), permissions=permissions)
+        if apply_pending:
+            payload['provider_payment'] = {'code': 'provider_approved_apply_pending'}
+        return Response(payload)
+
+
+class POSQuickSaleProviderPaymentApplyView(POSQuickCheckoutView):
+    def post(self, request, checkout_id, intent_id):
+        device, operator, permissions, operator_session = self.context(request)
+        self._require(permissions, 'sales.create', 'Você não possui permissão para realizar vendas nesta filial.')
+        checkout = self._checkout(device, operator, checkout_id)
+        try:
+            apply_approved_quick_sale_payment_intent(
+                checkout=checkout, intent=_scoped_provider_intent(checkout, intent_id), user=operator,
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+        except QuickCheckoutConflict as error:
+            _quick_checkout_conflict(error)
+        return Response(_quick_checkout_payload(self._checkout(device, operator, checkout_id), permissions=permissions))
+
+
+class POSQuickSaleProviderPaymentRetryView(POSQuickCheckoutView):
+    def post(self, request, checkout_id, intent_id):
+        from apps.payment_integrations.models import PaymentIntentStatus
+        from apps.payment_integrations.providers.registry import get_adapter
+        from apps.payment_integrations.services import PaymentIntegrationConflict
+
+        device, operator, permissions, operator_session = self.context(request)
+        self._require(permissions, 'sales.create', 'Você não possui permissão para realizar vendas nesta filial.')
+        checkout = self._checkout(device, operator, checkout_id)
+        intent = _scoped_provider_intent(checkout, intent_id)
+        if intent.status not in {PaymentIntentStatus.ERROR, PaymentIntentStatus.DECLINED}:
+            _quick_checkout_conflict(QuickCheckoutConflict(
+                'payment_intent_not_ready', 'O intent não aceita nova tentativa.',
+            ))
+        try:
+            connection, terminal = resolve_provider_resources(
+                checkout=checkout, provider_code=intent.provider_connection.provider.code,
+            )
+            attempt = start_quick_sale_payment_attempt(
+                checkout=checkout, intent=intent, user=operator, provider_connection=connection,
+                terminal=terminal, audit_metadata=self.audit_metadata(device, operator_session),
+            )
+            try:
+                command = get_adapter(connection.provider.code).build_payment_command(
+                    attempt=attempt, callback_url=CIELO_CALLBACK_URL,
+                    items=cielo_items_from_quick_checkout(checkout), installments=1,
+                )
+            except (LookupError, PaymentIntegrationConflict) as error:
+                resolve_quick_sale_payment_attempt(
+                    checkout=checkout, attempt=attempt, status='error', user=operator,
+                    response_metadata={
+                        'provider': connection.provider.code, 'provider_status': 'launch_error',
+                    },
+                    result_data={
+                        'provider_status': 'launch_error',
+                        'provider_message': 'Não foi possível iniciar a cobrança.',
+                    },
+                    audit_metadata=self.audit_metadata(device, operator_session),
+                )
+                if isinstance(error, PaymentIntegrationConflict):
+                    raise QuickCheckoutConflict(error.code, error.message) from error
+                raise QuickCheckoutConflict(
+                    'payment_provider_unavailable', 'O provedor de pagamento não está disponível.',
+                ) from error
+        except (QuickCheckoutConflict, PaymentIntegrationConflict, LookupError) as error:
+            if isinstance(error, QuickCheckoutConflict):
+                _quick_checkout_conflict(error)
+            if isinstance(error, PaymentIntegrationConflict):
+                _quick_checkout_conflict(QuickCheckoutConflict(error.code, error.message))
+            raise DomainValidationError(
+                code='payment_provider_unavailable', message='O provedor de pagamento não está disponível.',
+            ) from error
+        response = Response({
+            'provider': connection.provider.code, 'intent_id': str(intent.pk),
+            'attempt_id': str(attempt.pk), 'status': attempt.status,
+            'operation': command.operation, 'launch_uri': command.uri,
+            'safe_metadata': command.safe_metadata,
+        })
+        response['Cache-Control'] = 'no-store'
+        return response
+
+
+class POSQuickSaleProviderPaymentCancelView(POSQuickCheckoutView):
+    def post(self, request, checkout_id, intent_id):
+        device, operator, permissions, operator_session = self.context(request)
+        self._require(permissions, 'sales.create', 'Você não possui permissão para realizar vendas nesta filial.')
+        checkout = self._checkout(device, operator, checkout_id)
+        try:
+            cancel_quick_sale_payment_intent(
+                checkout=checkout, intent=_scoped_provider_intent(checkout, intent_id), user=operator,
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+        except QuickCheckoutConflict as error:
+            _quick_checkout_conflict(error)
+        return Response(_quick_checkout_payload(self._checkout(device, operator, checkout_id), permissions=permissions))
+
+
+class POSQuickSaleProviderPaymentLaunchFailedView(POSQuickCheckoutView):
+    def post(self, request, checkout_id, attempt_id):
+        from apps.payment_integrations.models import PaymentAttemptStatus
+
+        device, operator, permissions, operator_session = self.context(request)
+        self._require(permissions, 'sales.create', 'Você não possui permissão para realizar vendas nesta filial.')
+        serializer = POSQuickSaleProviderLaunchFailedSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        checkout = self._checkout(device, operator, checkout_id)
+        try:
+            resolve_quick_sale_payment_attempt(
+                checkout=checkout, attempt=_scoped_provider_attempt(checkout, attempt_id),
+                status=PaymentAttemptStatus.ERROR, user=operator,
+                response_metadata={'provider_status': 'launch_error'},
+                result_data={
+                    'provider_status': 'launch_error',
+                    'provider_message': 'O aplicativo de pagamento não pôde ser aberto.',
+                },
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+        except QuickCheckoutConflict as error:
+            _quick_checkout_conflict(error)
+        return Response(_quick_checkout_payload(self._checkout(device, operator, checkout_id), permissions=permissions))
 
 
 class POSQuickCheckoutPaymentPreviewView(POSQuickCheckoutView):

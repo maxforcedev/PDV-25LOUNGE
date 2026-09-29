@@ -22,6 +22,10 @@ class MainActivity : FlutterActivity() {
                     result.notImplemented()
                 }
             }
+        CieloPaymentBridge.attach(
+            this,
+            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "core_pos/cielo_payment"),
+        )
     }
 
     override fun onDestroy() {

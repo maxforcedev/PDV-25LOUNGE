@@ -179,14 +179,60 @@ void main() {
             {'job_id': 10, 'state': 'sent'}
           ]
         });
-        return http.Response(jsonEncode({'job_ids': [10]}), 200);
+        return http.Response(
+            jsonEncode({
+              'job_ids': [10]
+            }),
+            200);
       }),
     );
 
     await api.startPrintDispatch(10);
-    expect(await api.reconcilePrintJobs([
-      {'job_id': 10, 'state': 'sent'}
-    ]), [10]);
+    expect(
+        await api.reconcilePrintJobs([
+          {'job_id': 10, 'state': 'sent'}
+        ]),
+        [10]);
+  });
+
+  test('uses provider-neutral Quick Sale payment endpoints', () async {
+    final api = HttpPosApi(
+      baseUrl: 'https://core.example',
+      secrets: _MemorySecretStore(),
+      client: MockClient((request) async {
+        expect(
+          request.url.path,
+          '/api/v1/pos/sales/checkouts/checkout-1/provider-payments/start/',
+        );
+        expect(jsonDecode(request.body), {
+          'payment_method': 3,
+          'provider': 'cielo',
+          'mode': 'remaining',
+          'idempotency_key': 'intent-1',
+        });
+        return http.Response(
+            jsonEncode({
+              'provider': 'cielo',
+              'intent_id': 'intent-1',
+              'attempt_id': 'attempt-1',
+              'status': 'processing',
+              'operation': 'payment',
+              'launch_uri': 'lio://payment?request=secret',
+            }),
+            200);
+      }),
+    );
+
+    final launch = await api.startQuickSaleProviderPayment(
+      checkoutId: 'checkout-1',
+      paymentMethodId: 3,
+      provider: 'cielo',
+      mode: 'remaining',
+      idempotencyKey: 'intent-1',
+    );
+
+    expect(launch.attemptId, 'attempt-1');
+    expect(launch.launchUri, 'lio://payment?request=secret');
   });
 }
 

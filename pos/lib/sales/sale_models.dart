@@ -436,6 +436,7 @@ class QuickSalePaymentMethod {
     this.visualGroup = 'other',
     this.kind = 'other',
     this.source = 'manual',
+    this.capture,
   });
 
   factory QuickSalePaymentMethod.fromJson(Map<String, dynamic> json) =>
@@ -446,6 +447,10 @@ class QuickSalePaymentMethod {
         visualGroup: json['visual_group'] as String? ?? 'other',
         kind: json['kind'] as String? ?? 'other',
         source: json['source'] as String? ?? 'manual',
+        capture: json['capture'] is Map
+            ? QuickSalePaymentCapture.fromJson(
+                Map<String, dynamic>.from(json['capture'] as Map))
+            : null,
       );
 
   final int id;
@@ -454,8 +459,96 @@ class QuickSalePaymentMethod {
   final String visualGroup;
   final String kind;
   final String source;
+  final QuickSalePaymentCapture? capture;
 
   bool get isCash => kind == 'cash';
+  bool get usesProviderCapture => capture?.mode == 'provider';
+}
+
+class QuickSalePaymentCapture {
+  const QuickSalePaymentCapture({
+    required this.mode,
+    this.provider,
+    this.integrationType,
+  });
+
+  factory QuickSalePaymentCapture.fromJson(Map<String, dynamic> json) =>
+      QuickSalePaymentCapture(
+        mode: json['mode'] as String? ?? 'manual',
+        provider: json['provider'] as String?,
+        integrationType: json['integration_type'] as String?,
+      );
+
+  final String mode;
+  final String? provider;
+  final String? integrationType;
+}
+
+class QuickSaleProviderPaymentLaunch {
+  const QuickSaleProviderPaymentLaunch({
+    required this.provider,
+    required this.intentId,
+    required this.attemptId,
+    required this.status,
+    required this.operation,
+    required this.launchUri,
+  });
+
+  factory QuickSaleProviderPaymentLaunch.fromJson(Map<String, dynamic> json) =>
+      QuickSaleProviderPaymentLaunch(
+        provider: json['provider'] as String,
+        intentId: json['intent_id'] as String,
+        attemptId: json['attempt_id'] as String,
+        status: json['status'] as String,
+        operation: json['operation'] as String,
+        launchUri: json['launch_uri'] as String,
+      );
+
+  final String provider;
+  final String intentId;
+  final String attemptId;
+  final String status;
+  final String operation;
+  // This value must stay in memory only and is never serialized into POS state.
+  final String launchUri;
+}
+
+class QuickSalePaymentIntegration {
+  const QuickSalePaymentIntegration({
+    required this.intentId,
+    required this.intentStatus,
+    this.attemptId,
+    this.attemptStatus,
+    this.provider,
+    this.canRetry = false,
+    this.canCancel = false,
+    this.canApply = false,
+    this.requiresRecovery = false,
+  });
+
+  factory QuickSalePaymentIntegration.fromJson(Map<String, dynamic> json) =>
+      QuickSalePaymentIntegration(
+        intentId: json['intent_id'] as String,
+        intentStatus:
+            json['intent_status'] as String? ?? json['status'] as String? ?? '',
+        attemptId: json['attempt_id'] as String?,
+        attemptStatus: json['attempt_status'] as String?,
+        provider: json['provider'] as String?,
+        canRetry: json['can_retry'] == true,
+        canCancel: json['can_cancel'] == true,
+        canApply: json['can_apply'] == true,
+        requiresRecovery: json['requires_recovery'] == true,
+      );
+
+  final String intentId;
+  final String intentStatus;
+  final String? attemptId;
+  final String? attemptStatus;
+  final String? provider;
+  final bool canRetry;
+  final bool canCancel;
+  final bool canApply;
+  final bool requiresRecovery;
 }
 
 class QuickSaleCheckout {
@@ -475,6 +568,7 @@ class QuickSaleCheckout {
     required this.canPayByItems,
     required this.canFinalize,
     required this.canReversePayment,
+    this.paymentIntegration,
     this.customer,
     this.saleId,
   });
@@ -506,6 +600,10 @@ class QuickSaleCheckout {
         canPayByItems: json['capabilities']?['can_pay_by_items'] == true,
         canFinalize: json['capabilities']?['can_finalize'] == true,
         canReversePayment: json['capabilities']?['can_reverse_payment'] == true,
+        paymentIntegration: json['payment_integration'] is Map
+            ? QuickSalePaymentIntegration.fromJson(
+                Map<String, dynamic>.from(json['payment_integration'] as Map))
+            : null,
         saleId: (json['sale_id'] as num?)?.toInt(),
         customer: json['customer'] is Map<String, dynamic>
             ? QuickSaleCustomer.fromJson(
@@ -528,6 +626,7 @@ class QuickSaleCheckout {
   final bool canPayByItems;
   final bool canFinalize;
   final bool canReversePayment;
+  final QuickSalePaymentIntegration? paymentIntegration;
   final QuickSaleCustomer? customer;
   final int? saleId;
 
@@ -623,10 +722,10 @@ class QuickSaleCheckoutPayment {
       required this.status,
       this.receivedAmount,
       this.changeAmount,
-       this.idempotencyKey,
-       this.reversalOf,
-       this.reversalReason,
-       this.printDocument});
+      this.idempotencyKey,
+      this.reversalOf,
+      this.reversalReason,
+      this.printDocument});
   factory QuickSaleCheckoutPayment.fromJson(Map<String, dynamic> json) =>
       QuickSaleCheckoutPayment(
           id: json['id'] as String,
@@ -635,10 +734,11 @@ class QuickSaleCheckoutPayment {
           status: json['status'] as String? ?? '',
           receivedAmount: json['received_amount'] as String?,
           changeAmount: json['change_amount'] as String?,
-           idempotencyKey: json['idempotency_key'] as String?,
-           reversalOf: json['reversal_of'] as String?,
-           reversalReason: json['reversal_reason'] as String?,
-           printDocument: PrintDocumentResult.maybeFromJson(json['print_document']));
+          idempotencyKey: json['idempotency_key'] as String?,
+          reversalOf: json['reversal_of'] as String?,
+          reversalReason: json['reversal_reason'] as String?,
+          printDocument:
+              PrintDocumentResult.maybeFromJson(json['print_document']));
   final String id;
   final String methodName;
   final String amount;
@@ -754,7 +854,8 @@ class QuickSaleResult {
     final ticketDocuments = <String, PrintDocumentResult>{
       for (final ticket in tickets.whereType<Map>())
         if (ticket['id'] != null)
-          if (PrintDocumentResult.maybeFromJson(ticket['print_document']) case final document?)
+          if (PrintDocumentResult.maybeFromJson(ticket['print_document'])
+              case final document?)
             ticket['id'].toString(): document,
     };
     final receiptDocument = PrintDocumentResult.maybeFromJson(

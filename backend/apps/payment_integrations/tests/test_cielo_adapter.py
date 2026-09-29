@@ -36,7 +36,8 @@ from apps.payment_integrations.services import (
     transition_payment_intent,
 )
 from apps.pos.models import POSDevice, QuickSalePayment
-from apps.sales.models import PaymentMethod, PaymentMethodCode
+from apps.sales.models import PaymentMethodCode
+from apps.sales.services import ensure_default_payment_methods
 
 
 class CieloSmartAdapterTests(SimpleTestCase):
@@ -372,9 +373,9 @@ class CieloAdapterBridgeTests(TestCase):
         self.device = POSDevice.objects.create(
             branch=self.branch, name='Cielo Caixa', status=POSDevice.Status.ACTIVE,
         )
-        self.method = PaymentMethod.objects.create(
-            company=self.company, code=PaymentMethodCode.CREDIT_CARD,
-            name='Crédito Cielo', status=Status.ACTIVE,
+        self.method = next(
+            method for method in ensure_default_payment_methods(self.company)
+            if method.code == PaymentMethodCode.CREDIT_CARD
         )
         self.provider = PaymentProvider.objects.get(code='cielo')
         self.assertEqual(self.provider.name, 'Cielo Smart')

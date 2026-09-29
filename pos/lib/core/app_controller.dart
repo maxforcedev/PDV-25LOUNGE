@@ -207,7 +207,8 @@ class AppController extends ChangeNotifier {
       final creationKey = state['creation_idempotency_key'] as String?;
       if (creationKey == null) return null;
       final checkout = await _api.recoverQuickSaleCheckout(creationKey);
-      final resolved = await _resolveRecoveredQuickSaleCheckout(checkout, state);
+      final resolved =
+          await _resolveRecoveredQuickSaleCheckout(checkout, state);
       if (resolved == null) return null;
       await _writeQuickCheckoutState({'checkout_id': checkout.id});
       return resolved;
@@ -232,9 +233,8 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
-  bool _hasAppliedQuickSalePayment(QuickSaleCheckout checkout) => checkout
-      .payments
-      .any((payment) =>
+  bool _hasAppliedQuickSalePayment(QuickSaleCheckout checkout) =>
+      checkout.payments.any((payment) =>
           !payment.isReversal && !checkout.hasReversalFor(payment.id));
 
   Future<bool> _resolvePriorQuickSaleForNewIntent(
@@ -453,6 +453,122 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
+  Future<QuickSaleProviderPaymentLaunch?> startQuickSaleProviderPayment({
+    required String checkoutId,
+    required int paymentMethodId,
+    required String provider,
+    required String mode,
+    required String idempotencyKey,
+    String? amount,
+    List<Map<String, dynamic>> allocations = const [],
+  }) async {
+    try {
+      return await _api.startQuickSaleProviderPayment(
+        checkoutId: checkoutId,
+        paymentMethodId: paymentMethodId,
+        provider: provider,
+        mode: mode,
+        idempotencyKey: idempotencyKey,
+        amount: amount,
+        allocations: allocations,
+      );
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<QuickSaleCheckout?> resolveQuickSaleProviderPayment({
+    required String checkoutId,
+    required String attemptId,
+    required String response,
+    String? responseCode,
+  }) async {
+    try {
+      return await _api.resolveQuickSaleProviderPayment(
+        checkoutId: checkoutId,
+        attemptId: attemptId,
+        response: response,
+        responseCode: responseCode,
+      );
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<QuickSaleProviderPaymentLaunch?> retryQuickSaleProviderPayment({
+    required String checkoutId,
+    required String intentId,
+  }) async {
+    try {
+      return await _api.retryQuickSaleProviderPayment(
+        checkoutId: checkoutId,
+        intentId: intentId,
+      );
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<QuickSaleCheckout?> cancelQuickSaleProviderPayment({
+    required String checkoutId,
+    required String intentId,
+  }) async {
+    try {
+      return await _api.cancelQuickSaleProviderPayment(
+        checkoutId: checkoutId,
+        intentId: intentId,
+      );
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<QuickSaleCheckout?> applyQuickSaleProviderPayment({
+    required String checkoutId,
+    required String intentId,
+  }) async {
+    try {
+      return await _api.applyQuickSaleProviderPayment(
+        checkoutId: checkoutId,
+        intentId: intentId,
+      );
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<QuickSaleCheckout?> reportProviderLaunchFailed({
+    required String checkoutId,
+    required String attemptId,
+  }) async {
+    try {
+      return await _api.reportProviderLaunchFailed(
+        checkoutId: checkoutId,
+        attemptId: attemptId,
+      );
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
   Future<void> _clearQuickSalePaymentAttempt(
       Map<String, dynamic> state, String intentId) async {
     final attempts = Map<String, dynamic>.from(
@@ -601,8 +717,7 @@ class AppController extends ChangeNotifier {
         try {
           final current = await _api.getQuickSaleCheckout(checkoutId);
           if (current.status == 'finalized' && current.saleId != null) {
-            final result =
-                await _recoverFinalizedQuickSale(checkoutId, state);
+            final result = await _recoverFinalizedQuickSale(checkoutId, state);
             if (result != null) {
               _recoveredQuickSaleResults[checkoutId] = result;
             }
@@ -1117,7 +1232,7 @@ class AppController extends ChangeNotifier {
             attendanceId: attendanceId,
             requested: requested,
             idempotencyKey: idempotencyKey,
-       ));
+          ));
 
   Future<PrintDocumentResult?> requestPrintDocument(
           PrintDocumentRequest request) =>

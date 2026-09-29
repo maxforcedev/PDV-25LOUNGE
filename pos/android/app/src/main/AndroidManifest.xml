@@ -1,11 +1,17 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <queries>
+        <package android:name="com.ads.lio.uriappclient" />
+    </queries>
     <application
         android:label="CORE PDV"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:name="${applicationName}">
+        <meta-data android:name="cs_integration_type" android:value="uri" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -20,6 +26,24 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".CieloResponseActivity"
+            android:exported="true"
+            android:theme="@style/LaunchTheme">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="corepdv" android:host="cielo-payment-response" />
+            </intent-filter>
+        </activity>
+        <service
+            android:name=".CieloPaymentForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Cielo Smart payment handoff" />
+        </service>
         <meta-data android:name="flutterEmbedding" android:value="2" />
     </application>
 </manifest>
