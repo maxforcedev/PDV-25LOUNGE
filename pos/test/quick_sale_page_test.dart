@@ -233,7 +233,7 @@ void main() {
     expect(find.text('Qtd. 2'), findsOneWidget);
   });
 
-  testWidgets('recovers the cart without opening payment automatically',
+  testWidgets('starts clean instead of restoring a prior checkout',
       (tester) async {
     final storage = _MemorySecretStore()
       ..quickSaleCheckoutState = jsonEncode({
@@ -247,7 +247,6 @@ void main() {
         enforced: true,
         shortages: [],
       ),
-      recoveredCheckout: _recoveredCheckout,
     );
     final restored = controller(api, storage)
       ..selectedOperator = const PosOperator(
@@ -255,38 +254,8 @@ void main() {
 
     await open(tester, api, existingController: restored);
 
-    expect(find.text('Venda em andamento recuperada.'), findsOneWidget);
-    expect(find.text('Pagamento'), findsNothing);
-    expect(find.text('Qtd. 1'), findsOneWidget);
-  });
-
-  testWidgets('recovers an official item absent from the normal catalog',
-      (tester) async {
-    final storage = _MemorySecretStore()
-      ..quickSaleCheckoutState = jsonEncode({
-        'operators': {
-          'operator-1': {'checkout_id': 'checkout-a'},
-        },
-      });
-    final api = _QuickSaleApi(
-      (_) async => const QuickSaleStockAvailability(
-        available: true,
-        enforced: true,
-        shortages: [],
-      ),
-      catalog: const [],
-      recoveredCheckout: _recoveredCheckoutWithoutCatalogProduct,
-    );
-    final restored = controller(api, storage)
-      ..selectedOperator = const PosOperator(
-          id: 'operator-1', displayName: 'Operador', initials: 'OP');
-
-    await open(tester, api, existingController: restored);
-
-    expect(find.text('Coca'), findsOneWidget);
-    expect(find.text('Qtd. 1'), findsOneWidget);
-    expect(find.text('R\$ 10,00'), findsWidgets);
-    expect(find.text('IR PARA PAGAMENTO'), findsOneWidget);
+    expect(find.text('Qtd. 1'), findsNothing);
+    expect(jsonDecode(storage.quickSaleCheckoutState!), isEmpty);
   });
 
   testWidgets('shows the official completed-sale confirmation', (tester) async {
@@ -310,103 +279,8 @@ void main() {
   });
 }
 
-final _recoveredCheckout = QuickSaleCheckout(
-  id: 'checkout-a',
-  status: 'editing',
-  preview: const QuickSalePreview(
-    items: [],
-    subtotal: '10.00',
-    promotionDiscountTotal: '0.00',
-    itemDiscountTotal: '0.00',
-    discount: '0.00',
-    serviceFeeRate: '0.00',
-    serviceFeeAmount: '0.00',
-    total: '10.00',
-  ),
-  paidAmount: '0.00',
-  remainingAmount: '10.00',
-  hasPaymentHistory: false,
-  discountIntent: const QuickSaleDiscountIntent(),
-  serviceFeeWaived: false,
-  items: const [
-    QuickSaleCheckoutItem(
-      id: 1,
-      name: 'Coca',
-      quantity: '1',
-      availableQuantity: '1',
-      unit: 'un',
-      input: {
-        'client_item_id': 'item-a',
-        'product': 1,
-        'quantity': '1',
-        'modifiers': [],
-        'notes': '',
-      },
-    ),
-  ],
-  payments: const [],
-  canEditFinancials: true,
-  canRecordPayment: true,
-  canPayByItems: true,
-  canFinalize: false,
-  canReversePayment: true,
-);
-
-final _recoveredCheckoutWithoutCatalogProduct = QuickSaleCheckout(
-  id: 'checkout-a',
-  status: 'editing',
-  preview: const QuickSalePreview(
-    items: [],
-    subtotal: '10.00',
-    promotionDiscountTotal: '0.00',
-    itemDiscountTotal: '0.00',
-    discount: '0.00',
-    serviceFeeRate: '0.00',
-    serviceFeeAmount: '0.00',
-    total: '10.00',
-  ),
-  paidAmount: '0.00',
-  remainingAmount: '10.00',
-  hasPaymentHistory: false,
-  discountIntent: const QuickSaleDiscountIntent(),
-  serviceFeeWaived: false,
-  items: const [
-    QuickSaleCheckoutItem(
-      id: 1,
-      name: 'Coca',
-      quantity: '1.000',
-      availableQuantity: '0.000',
-      unit: 'un',
-      input: {
-        'client_item_id': 'item-a',
-        'product': 1,
-        'quantity': '1.000',
-        'modifiers': [],
-        'notes': '',
-      },
-      recoveryProduct: QuickSaleProduct(
-        id: 1,
-        name: 'Coca',
-        internalCode: 'COCA',
-        price: '10.00',
-        favorite: false,
-        emitsTicket: false,
-        modifierGroups: [],
-        recoveryOnly: true,
-      ),
-    ),
-  ],
-  payments: const [],
-  canEditFinancials: true,
-  canRecordPayment: true,
-  canPayByItems: true,
-  canFinalize: false,
-  canReversePayment: true,
-);
-
 class _QuickSaleApi implements PosApi {
-  _QuickSaleApi(this.availability,
-      {List<QuickSaleProduct>? catalog, this.recoveredCheckout})
+  _QuickSaleApi(this.availability, {List<QuickSaleProduct>? catalog})
       : catalog = catalog ??
             const [
               QuickSaleProduct(
@@ -422,7 +296,6 @@ class _QuickSaleApi implements PosApi {
   final Future<QuickSaleStockAvailability> Function(List<Map<String, dynamic>>)
       availability;
   final List<QuickSaleProduct> catalog;
-  final QuickSaleCheckout? recoveredCheckout;
   var previewCalls = 0;
 
   @override
@@ -441,10 +314,6 @@ class _QuickSaleApi implements PosApi {
         cashReady: true,
         fixedCashAvailable: true,
       );
-
-  @override
-  Future<QuickSaleCheckout> getQuickSaleCheckout(String checkoutId) async =>
-      recoveredCheckout!;
 
   @override
   Future<QuickSaleStockAvailability> quickSaleStockAvailability(

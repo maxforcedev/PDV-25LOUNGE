@@ -1,462 +1,313 @@
-# CORREÇÃO — ESTADO INICIAL DA VENDA RÁPIDA
+## MISSÃO PAY-2.1.3 — CORRIGIR PACKAGE DO CIELO SMART
 
-Foi identificado um problema no POS durante a validação do ambiente Cielo.
+### Contexto
 
-Ao abrir uma **Venda Rápida nova, sem nenhum produto/venda existente**, a interface está exibindo informação equivalente a:
+O CORE POS está retornando:
 
-> venda anterior com pagamento aplicado
+> "O aplicativo Cielo não está disponível."
 
-Isso é incorreto.
+Investigamos diretamente no aparelho Android que possui o Cielo Smart Emulator instalado.
 
-Neste momento do projeto, **NÃO existe recuperação de vendas anteriores na Venda Rápida**.
-
-Portanto uma nova Venda Rápida nunca pode iniciar carregando ou exibindo estado financeiro de uma venda anterior.
-
----
-
-# REGRA OFICIAL
-
-Uma Venda Rápida nova deve começar completamente limpa:
+O Android confirmou que o Deep Link `lio://payment` é resolvido corretamente para:
 
 ```text
-checkout = novo / inexistente
-itens = 0
-subtotal = 0
-total = 0
-
-PaymentIntent = inexistente
-PaymentAttempt = inexistente
-QuickSalePayment = inexistente
-pagamento aplicado = false
-
-provider payment state = none
+br.com.cielosmart.orderservice/com.cielo.lio.uriappclient.activities.CheckoutActivity
 ```
 
-Não existe:
+Comando executado:
+
+```powershell
+adb shell cmd package resolve-activity --brief -a android.intent.action.VIEW -d "lio://payment"
+```
+
+Resultado:
 
 ```text
-APPROVED
-APPLIED
-PROCESSING
-CANCELLED
-ERROR
+priority=0 preferredOrder=0 match=0x308000 specificIndex=-1 isDefault=true
+br.com.cielosmart.orderservice/com.cielo.lio.uriappclient.activities.CheckoutActivity
 ```
 
-sem que exista um checkout correspondente criado pelo fluxo atual.
-
----
-
-# 1. INVESTIGAR A ORIGEM DO ESTADO
-
-Descobrir exatamente de onde a UI está obtendo o estado de:
+Também confirmamos que o package instalado no usuário principal é:
 
 ```text
-pagamento aplicado
-venda anterior
-payment status
-provider payment
+br.com.cielosmart.orderservice
 ```
 
-Verificar especialmente:
-
-* estado persistido do `QuickSaleCheckout`;
-* `SharedPaymentPage`;
-* `SaleModels`;
-* `AppController`;
-* cache local;
-* estado restaurado pelo Flutter;
-* provider payment state;
-* checkout carregado no startup;
-* dados mantidos após finalizar uma venda anterior;
-* `SharedPreferences`;
-* qualquer singleton/controller global;
-* qualquer objeto `_checkout` reutilizado indevidamente.
-
-Não assumir a origem.
-
-Encontrar a fonte real.
-
----
-
-# 2. NÃO IMPLEMENTAR RECUPERAÇÃO DE VENDA
-
-IMPORTANTE:
-
-NÃO criar:
-
-* recuperação de venda;
-* consulta de venda anterior;
-* histórico automático;
-* restauração de checkout anterior;
-* sincronização retroativa de venda.
-
-Esse problema NÃO deve ser resolvido adicionando recuperação.
-
-A regra atual é:
-
-> Venda Rápida aberta pelo operador é uma nova operação.
-
----
-
-# 3. NOVA VENDA RÁPIDA DEVE LIMPAR O ESTADO
-
-Ao iniciar uma nova Venda Rápida:
+Portanto, o package atualmente hardcoded no CORE está incorreto:
 
 ```text
-checkout = null
-paymentIntegration = null
-providerPaymentState = none
-```
-
-ou o equivalente arquitetural correto.
-
-Qualquer estado financeiro anterior deve ser descartado quando a operação anterior tiver sido encerrada.
-
----
-
-# 4. NÃO USAR ESTADO FINANCEIRO SEM CHECKOUT
-
-Qualquer código equivalente a:
-
-```dart
-paymentIntegration.intentStatus
-paymentIntegration.attemptStatus
-paymentIntegration.canApply
-paymentIntegration.canRetry
-paymentIntegration.provider
-```
-
-deve primeiro exigir:
-
-```text
-checkout != null
-```
-
-e, principalmente, que o checkout seja o checkout atualmente ativo.
-
-Se não existe checkout:
-
-```text
-paymentIntegration = null
+com.ads.lio.uriappclient
 ```
 
 ---
 
-# 5. PAGAMENTO APLICADO
+## Objetivo
 
-A UI só pode mostrar:
+Corrigir exclusivamente a identificação do aplicativo Cielo Smart no Android para que o CORE POS consiga abrir o Deep Link:
 
 ```text
-PAGAMENTO APLICADO
+lio://payment
 ```
 
-quando existir um pagamento pertencente ao checkout atual.
-
-Não utilizar:
+usando o package correto:
 
 ```text
-último pagamento conhecido
-último QuickSalePayment
-último PaymentIntent
-último estado da sessão
-```
-
-como fallback.
-
----
-
-# 6. PAYMENT INTENT
-
-Um `PaymentIntent` anterior não pode aparecer automaticamente em uma Venda Rápida nova.
-
-Só carregar Intent quando ele estiver associado ao:
-
-```text
-QuickSaleCheckout
-```
-
-que está atualmente aberto no POS.
-
-Se não há checkout:
-
-```text
-não carregar PaymentIntent
+br.com.cielosmart.orderservice
 ```
 
 ---
 
-# 7. QUICK SALE PAYMENT
+## 1. CieloPaymentBridge.kt
 
-Da mesma forma, `QuickSalePayment` histórico não deve ser usado para preencher o estado da nova Venda Rápida.
-
-Não consultar:
+Arquivo:
 
 ```text
-último QuickSalePayment
+pos/android/app/src/main/kotlin/com/corepdv/pos/CieloPaymentBridge.kt
 ```
 
-para determinar:
+Alterar o package alvo de:
 
-```text
-payment applied
+```kotlin
+private const val cieloPackage = "com.ads.lio.uriappclient"
 ```
+
+para:
+
+```kotlin
+private const val cieloPackage = "br.com.cielosmart.orderservice"
+```
+
+Manter:
+
+```kotlin
+Intent.ACTION_VIEW
+```
+
+e:
+
+```kotlin
+Uri.parse(launchUri)
+```
+
+Não alterar a arquitetura financeira.
 
 ---
 
-# 8. FINALIZAÇÃO DA VENDA ANTERIOR
+## 2. AndroidManifest.xml
 
-Verificar o que acontece quando uma Venda Rápida anterior é finalizada.
-
-Depois de:
+Arquivo:
 
 ```text
-APPROVED
-→ APPLIED
-→ finalize checkout
+pos/android/app/src/main/AndroidManifest.xml
 ```
 
-o estado da operação anterior deve deixar de ser o checkout ativo.
+Atualizar a declaração de package visibility.
 
-A próxima:
+Substituir:
 
-```text
-Nova Venda Rápida
+```xml
+<queries>
+    <package android:name="com.ads.lio.uriappclient" />
+</queries>
 ```
 
-deve começar limpa.
+por:
+
+```xml
+<queries>
+    <package android:name="br.com.cielosmart.orderservice" />
+</queries>
+```
+
+Não remover a configuração existente necessária para o Deep Link.
+
+Não alterar o callback `corepdv://cielo-payment-response` nesta missão.
 
 ---
 
-# 9. CANCELAMENTO / ABANDONO
-
-Também verificar:
-
-```text
-Venda Rápida aberta
-↓
-operador abandona/cancela
-↓
-nova Venda Rápida
-```
-
-A nova operação não pode herdar:
-
-```text
-PROCESSING
-APPROVED
-APPLIED
-ERROR
-CANCELLED
-```
-
-da anterior.
-
----
-
-# 10. NÃO APAGAR HISTÓRICO DO BANCO
-
-IMPORTANTE:
-
-Não deletar:
-
-```text
-QuickSalePayment
-PaymentIntent
-PaymentAttempt
-Sale
-```
-
-históricos.
-
-O problema é somente **estado ativo do POS**.
-
-Histórico continua no banco.
-
----
-
-# 11. NÃO ALTERAR MODELOS FINANCEIROS
-
-Não modificar:
-
-```text
-PaymentIntent
-PaymentAttempt
-QuickSalePayment
-sales.Payment
-```
-
-sem necessidade.
-
-A princípio isso parece ser um problema de estado/UI/checkout ativo, não de modelo financeiro.
-
----
-
-# 12. TESTE MANUAL PRINCIPAL
-
-Sem executar suíte grande.
-
-Validar manualmente:
-
-### Cenário A
-
-Abrir POS.
-
-```text
-Venda Rápida
-```
-
-Esperado:
-
-```text
-0 itens
-nenhum pagamento
-nenhum status financeiro
-nenhuma venda anterior
-```
-
----
-
-### Cenário B
-
-Adicionar produto.
-
-Esperado:
-
-```text
-produto aparece
-total correto
-nenhum pagamento aplicado
-```
-
----
-
-### Cenário C
-
-Fechar uma venda normalmente.
-
-Depois abrir:
-
-```text
-Nova Venda Rápida
-```
-
-Esperado:
-
-```text
-0 itens
-0 pagamento
-nenhum status da venda anterior
-```
-
----
-
-### Cenário D
-
-Se existir uma venda anterior no banco:
-
-```text
-Venda A
-```
-
-abrir uma nova:
-
-```text
-Venda B
-```
-
-Venda B NÃO pode mostrar qualquer estado financeiro da Venda A.
-
----
-
-# 13. CIELO
-
-Essa correção não deve quebrar PAY-2.1.
-
-Em uma Venda Rápida nova:
-
-```text
-nenhum checkout
-↓
-nenhuma cobrança
-```
-
-Depois que o operador criar a venda e chegar ao pagamento:
-
-```text
-checkout criado
-↓
-backend determina disponibilidade Cielo
-↓
-PAGAR NA CIELO
-```
-
-Somente então o estado Cielo pode existir.
-
----
-
-# 14. NÃO CRIAR WORKAROUND
-
-Não resolver simplesmente escondendo o texto:
-
-```text
-Pagamento aplicado
-```
-
-A origem do estado deve ser corrigida.
-
-Queremos:
-
-```text
-estado inexistente
-```
-
-e não:
-
-```text
-estado existente mas invisível
-```
-
----
-
-# 15. TESTES
-
-NÃO executar suíte completa.
-
-NÃO executar:
-
-* backend completo;
-* Flutter completo;
-* testes Cielo completos;
+## 3. NÃO alterar o fluxo financeiro
+
+Esta missão é exclusivamente de integração Android/Deep Link.
+
+NÃO modificar:
+
+* PaymentIntent;
+* PaymentAttempt;
+* QuickSaleCheckout;
+* QuickSalePayment;
+* ledger;
+* finalização de pagamento;
+* `resolveQuickSaleProviderPayment`;
+* callback financeiro;
+* idempotência;
+* retry financeiro;
+* backend Cielo adapter;
+* migrations;
 * Mesa;
-* Comandas.
+* Comanda;
+* PAY-1.
 
-Se for necessário adicionar teste, criar apenas um teste cirúrgico que garanta:
-
-```text
-novo Quick Sale
-→ sem checkout anterior
-→ sem payment integration anterior
-→ sem pagamento aplicado
-```
-
-Pode fazer apenas revisão estática + teste manual direcionado.
+O fato de conseguir abrir o aplicativo Cielo NÃO significa que o pagamento foi aprovado.
 
 ---
 
-# CHECKPOINT
+## 4. Manter o diagnóstico de erro no POS
 
-Informar:
+Não voltar ao comportamento silencioso anterior.
 
-1. origem exata do estado financeiro indevido;
-2. arquivo responsável;
-3. por que uma nova Venda Rápida estava recebendo esse estado;
-4. correção aplicada;
-5. como o estado do checkout anterior é encerrado;
-6. confirmação de que histórico do banco NÃO foi apagado;
-7. confirmação de que recuperação de vendas NÃO foi implementada;
-8. confirmação de que PAY-1 não foi alterado;
-9. confirmação de que PAY-2.1 não foi quebrado;
-10. teste direcionado executado, se houver;
-11. resultado.
+Se o Android não conseguir abrir o aplicativo, o CORE deve continuar conseguindo distinguir pelo menos:
 
-Depois PARE.
+```text
+cielo_app_unavailable
+cielo_launch_invalid
+cielo_launch_failed
+```
+
+e o POS deve receber uma mensagem sanitizada útil para diagnóstico.
+
+Não exibir:
+
+* Client ID;
+* Access Token;
+* launch URI completo;
+* credentials;
+* dados sensíveis.
+
+---
+
+## 5. Atenção ao Foreground Service
+
+Ao revisar o método `launch()`, verificar também a ordem atual:
+
+```kotlin
+activeAttemptId = attemptId
+CieloPaymentForegroundService.start(context)
+try {
+    ...
+    context.startActivity(intent)
+}
+```
+
+Se `CieloPaymentForegroundService.start(context)` estiver fora do `try`, avaliar se ele também deve ficar protegido para que uma eventual exceção não escape sem um `PlatformException` estruturado.
+
+Não faça uma refatoração ampla. Apenas garanta que uma falha nessa etapa também seja diagnosticável pelo POS.
+
+---
+
+## 6. Validação obrigatória
+
+Depois da alteração, fazer somente verificações direcionadas.
+
+Não executar suíte completa do projeto.
+
+Executar pelo menos:
+
+```bash
+flutter analyze
+```
+
+apenas se o custo/tempo for aceitável.
+
+E principalmente:
+
+```bash
+flutter build apk --debug
+```
+
+ou o build Android equivalente já utilizado pelo projeto.
+
+Não executar testes completos do backend nem suítes grandes.
+
+---
+
+## 7. Verificação do Intent
+
+O comportamento esperado no Android é equivalente a:
+
+```text
+ACTION_VIEW
+lio://payment...
+```
+
+resolvendo para:
+
+```text
+br.com.cielosmart.orderservice/com.cielo.lio.uriappclient.activities.CheckoutActivity
+```
+
+Não adicionar uma Activity própria para substituir a Cielo.
+
+Não criar fallback fake.
+
+Não remover `setPackage()` sem justificativa técnica.
+
+---
+
+## Critérios de aceite
+
+A missão só está concluída se:
+
+1. O package utilizado pelo CORE for:
+
+```text
+br.com.cielosmart.orderservice
+```
+
+2. O Manifest declarar esse mesmo package em `<queries>`.
+
+3. O CORE conseguir resolver o aplicativo Cielo Smart instalado no aparelho.
+
+4. O `lio://payment` for enviado para:
+
+```text
+com.cielo.lio.uriappclient.activities.CheckoutActivity
+```
+
+através do aplicativo:
+
+```text
+br.com.cielosmart.orderservice
+```
+
+5. O POS não exibir mais falsamente:
+
+> "O aplicativo Cielo não está disponível"
+
+quando o aplicativo está instalado.
+
+6. O erro continuar sendo apresentado ao POS caso a abertura realmente falhe.
+
+7. Nenhuma regra financeira seja alterada.
+
+8. Nenhuma alteração seja feita em Mesa/Comanda.
+
+9. Não sejam adicionadas dependências desnecessárias.
+
+10. O APK debug seja compilável para podermos instalar no aparelho e testar o fluxo real.
+
+### Resultado esperado do teste manual
+
+No aparelho:
+
+```text
+CORE POS
+→ iniciar pagamento Cielo
+→ Android abre Cielo Smart Emulator
+→ tela de pagamento Cielo aparece
+```
+
+Neste ponto, parar a missão de integração de abertura.
+
+Não considerar o pagamento aprovado apenas porque o aplicativo abriu.
+
+### Entrega
+
+Ao finalizar, informar:
+
+* arquivos alterados;
+* commit criado;
+* resultado do build;
+* eventual erro encontrado;
+* confirmação do package final utilizado.
+
+Não fazer nenhuma alteração fora deste escopo.

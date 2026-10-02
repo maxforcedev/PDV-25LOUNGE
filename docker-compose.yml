@@ -26,6 +26,7 @@ services:
         BUILD_DATE: ${BUILD_DATE:-unknown}
         ENVIRONMENT: ${ENVIRONMENT:-development}
     command: python manage.py runserver 0.0.0.0:8000
+
     environment:
       DEBUG: 'True'
       SECRET_KEY: ${SECRET_KEY:-local-compose-key-change-before-production}
@@ -52,6 +53,11 @@ services:
       GIT_SHA: ${GIT_SHA:-unknown}
       BUILD_DATE: ${BUILD_DATE:-unknown}
       ENVIRONMENT: ${ENVIRONMENT:-development}
+      CIELO_SMART_CLIENT_ID_FILE: /run/secrets/cielo_smart_client_id
+      CIELO_SMART_ACCESS_TOKEN_FILE: /run/secrets/cielo_smart_access_token
+    secrets:
+      - cielo_smart_client_id
+      - cielo_smart_access_token
     depends_on:
       db:
         condition: service_healthy
@@ -149,3 +155,10 @@ volumes:
   frontend_next_cache:
   platform_admin_node_modules:
   platform_admin_next_cache:
+
+
+secrets:
+  cielo_smart_client_id:
+    file: ./secrets/cielo_smart_client_id.txt
+  cielo_smart_access_token:
+    file: ./secrets/cielo_smart_access_token.txt

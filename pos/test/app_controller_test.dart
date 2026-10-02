@@ -70,19 +70,6 @@ void main() {
     expect(controller.phase, AppPhase.updateRequired);
   });
 
-  test('starting a new Quick Sale clears prior local checkout state', () async {
-    final storage = MemorySecretStore()
-      ..quickSaleCheckoutState =
-          '{"operators":{"${api.operator.id}":{"checkout_id":"previous-checkout","payment_attempts":{"old":"attempt"}}}}';
-    final api = FakePosApi();
-    final controller = AppController(api: api, secrets: storage, device: device)
-      ..selectedOperator = api.operator;
-
-    await controller.startNewQuickSale();
-
-    expect(await storage.readQuickSaleCheckoutState(), '{}');
-  });
-
   test('shows the device unavailable state for a blocked device', () async {
     final storage = MemorySecretStore(deviceCredential: 'device-secret');
     final controller = AppController(

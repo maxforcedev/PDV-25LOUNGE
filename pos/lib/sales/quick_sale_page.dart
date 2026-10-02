@@ -807,6 +807,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
           shortages: _cartShortages,
           preview: _preview,
           loadingPreview: _loadingPreview,
+          openingCheckout: _openingCheckout,
           cashReady: _checkoutReady,
           editable: !_catalogLocked,
           onEdit: _editCartItem,
@@ -888,6 +889,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
                         shortages: _cartShortages,
                         preview: _preview,
                         loadingPreview: _loadingPreview,
+                        openingCheckout: _openingCheckout,
                         cashReady: _checkoutReady,
                         editable: !_catalogLocked,
                         onEdit: _editCartItem,
@@ -1533,6 +1535,7 @@ class _CartPanel extends StatelessWidget {
     required this.shortages,
     required this.preview,
     required this.loadingPreview,
+    required this.openingCheckout,
     required this.cashReady,
     required this.editable,
     required this.onEdit,
@@ -1543,6 +1546,7 @@ class _CartPanel extends StatelessWidget {
   final Map<String, Map<String, dynamic>> shortages;
   final QuickSalePreview? preview;
   final bool loadingPreview;
+  final bool openingCheckout;
   final bool cashReady;
   final bool editable;
   final ValueChanged<int> onEdit;
@@ -1680,7 +1684,7 @@ class _CartPanel extends StatelessWidget {
                       onPressed: cart.isEmpty ||
                               preview == null ||
                               loadingPreview ||
-                              _openingCheckout ||
+                              openingCheckout ||
                               !cashReady
                           ? null
                           : onCheckout,
