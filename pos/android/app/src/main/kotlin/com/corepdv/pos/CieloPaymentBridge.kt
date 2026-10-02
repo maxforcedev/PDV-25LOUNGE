@@ -3,10 +3,12 @@ package com.corepdv.pos
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
 import io.flutter.plugin.common.MethodChannel
 
 object CieloPaymentBridge {
-    private const val cieloPackage = "com.ads.lio.uriappclient"
+    private const val cieloPackage = "br.com.cielosmart.orderservice"
+    private const val logTag = "CieloPaymentBridge"
     private var channel: MethodChannel? = null
     private var appContext: Context? = null
     private var activeAttemptId: String? = null
@@ -47,23 +49,59 @@ object CieloPaymentBridge {
             result.error("cielo_launch_unavailable", "A ponte Cielo não está disponível.", null)
             return
         }
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(launchUri))
-            .setPackage(cieloPackage)
-            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        if (intent.resolveActivity(context.packageManager) == null) {
-            result.error("cielo_app_unavailable", "O aplicativo Cielo não está disponível.", null)
+        val uri = try {
+            Uri.parse(launchUri)
+        } catch (_: Exception) {
+            result.error("cielo_launch_invalid", "O pedido de pagamento Cielo é inválido.", null)
             return
         }
-        activeAttemptId = attemptId
-        CieloPaymentForegroundService.start(context)
+        if (uri.scheme != "lio" || uri.host != "payment") {
+            Log.w(logTag, "CIELO_LAUNCH_FAILED attempt_id=$attemptId code=cielo_launch_invalid")
+            result.error("cielo_launch_invalid", "O pedido de pagamento Cielo é inválido.", null)
+            return
+        }
+        val packageInstalled = try {
+            context.packageManager.getApplicationInfo(cieloPackage, 0)
+            true
+        } catch (_: Exception) {
+            false
+        }
+        if (!packageInstalled) {
+            Log.i(logTag, "CIELO_LAUNCH attempt_id=$attemptId package=$cieloPackage scheme=${uri.scheme} host=${uri.host} activity_resolvable=false")
+            Log.w(logTag, "CIELO_LAUNCH_FAILED attempt_id=$attemptId code=cielo_app_unavailable")
+            result.error("cielo_app_unavailable", "O aplicativo Cielo não está instalado neste dispositivo.", null)
+            return
+        }
+        val intent = Intent(Intent.ACTION_VIEW, uri)
+            .setPackage(cieloPackage)
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val resolvable = intent.resolveActivity(context.packageManager) != null
+        Log.i(logTag, "CIELO_LAUNCH attempt_id=$attemptId package=$cieloPackage scheme=${uri.scheme} host=${uri.host} activity_resolvable=$resolvable")
+        if (!resolvable) {
+            Log.w(logTag, "CIELO_LAUNCH_FAILED attempt_id=$attemptId code=cielo_launch_unresolved")
+            result.error("cielo_launch_unresolved", "O aplicativo Cielo instalado não aceita este pagamento.", null)
+            return
+        }
         try {
+            activeAttemptId = attemptId
+            CieloPaymentForegroundService.start(context)
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
             result.success(null)
-        } catch (_: Exception) {
+        } catch (error: Exception) {
             activeAttemptId = null
-            CieloPaymentForegroundService.stop(context)
-            result.error("cielo_launch_failed", "Não foi possível abrir o aplicativo Cielo.", null)
+            runCatching { CieloPaymentForegroundService.stop(context) }
+            Log.w(logTag, "CIELO_LAUNCH_FAILED attempt_id=$attemptId code=cielo_launch_failed exception=${error.javaClass.simpleName}")
+            result.error(
+                "cielo_launch_failed",
+                "O Android não conseguiu iniciar o aplicativo Cielo.",
+                mapOf(
+                    "package" to cieloPackage,
+                    "scheme" to uri.scheme,
+                    "host" to uri.host,
+                    "exception" to error.javaClass.simpleName,
+                ),
+            )
         }
     }
 

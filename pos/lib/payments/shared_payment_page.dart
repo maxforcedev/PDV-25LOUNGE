@@ -476,12 +476,8 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         attemptId: launch.attemptId,
         launchUri: launch.launchUri!,
       );
-    } on PlatformException {
-      final updated = await widget.controller.reportProviderLaunchFailed(
-        checkoutId: _checkout.id,
-        attemptId: launch.attemptId,
-      );
-      if (updated != null && mounted) _replaceCheckout(updated);
+    } on PlatformException catch (error) {
+      await _handleCieloLaunchFailure(launch.attemptId, error);
       _finishedWorking();
       return false;
     }
@@ -508,12 +504,8 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         try {
           await _cieloBridge.launch(
               attemptId: launch.attemptId, launchUri: launch.launchUri!);
-        } on PlatformException {
-          final updated = await widget.controller.reportProviderLaunchFailed(
-            checkoutId: _checkout.id,
-            attemptId: launch.attemptId,
-          );
-          if (updated != null && mounted) _replaceCheckout(updated);
+        } on PlatformException catch (error) {
+          await _handleCieloLaunchFailure(launch.attemptId, error);
         }
       }
     }
@@ -523,6 +515,47 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       if (current != null) _replaceCheckout(current);
       _finishedWorking();
     }
+  }
+
+  String _cieloLaunchDetail(PlatformException error) {
+    final bridgeMessage = error.message?.trim();
+    switch (error.code) {
+      case 'cielo_app_unavailable':
+        return bridgeMessage?.isNotEmpty == true
+            ? bridgeMessage!
+            : 'O aplicativo Cielo não está instalado neste dispositivo.';
+      case 'cielo_launch_unresolved':
+        return bridgeMessage?.isNotEmpty == true
+            ? bridgeMessage!
+            : 'A Cielo instalada não aceita este tipo de pagamento. Verifique a versão e a configuração.';
+      case 'cielo_launch_invalid':
+        return bridgeMessage?.isNotEmpty == true
+            ? bridgeMessage!
+            : 'O pedido de pagamento recebido é inválido.';
+      case 'cielo_launch_failed':
+        return bridgeMessage?.isNotEmpty == true
+            ? bridgeMessage!
+            : 'O Android não conseguiu iniciar a Cielo. Tente novamente ou acione o suporte.';
+      default:
+        return 'Não foi possível iniciar o aplicativo Cielo.';
+    }
+  }
+
+  Future<void> _handleCieloLaunchFailure(
+      String attemptId, PlatformException error) async {
+    widget.controller.showTransientMessage(
+      'Não foi possível abrir a Cielo.\n'
+      'Código: ${error.code}\n'
+      'Detalhe: ${_cieloLaunchDetail(error)}',
+    );
+    final updated = await widget.controller.reportProviderLaunchFailed(
+      checkoutId: _checkout.id,
+      attemptId: attemptId,
+    );
+    if (updated != null && mounted) _replaceCheckout(updated);
+    final current =
+        await widget.controller.quickSaleCheckoutDetail(_checkout.id);
+    if (current != null && mounted) _replaceCheckout(current);
   }
 
   Future<void> _applyProviderPayment() async {

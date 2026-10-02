@@ -4,7 +4,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <queries>
-        <package android:name="com.ads.lio.uriappclient" />
+        <package android:name="br.com.cielosmart.orderservice" />
     </queries>
     <application
         android:label="CORE PDV"
