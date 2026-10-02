@@ -11,8 +11,7 @@ import 'package:core_pos/network/pos_api.dart';
 import 'package:core_pos/network/pos_api_error.dart';
 import 'package:core_pos/pairing/pairing_models.dart';
 import 'package:core_pos/storage/secret_store.dart';
-   
-   
+
 void main() {
   const device = DeviceDescriptor(
     name: 'Terminal 01',
@@ -69,6 +68,19 @@ void main() {
     await controller.initialize();
 
     expect(controller.phase, AppPhase.updateRequired);
+  });
+
+  test('starting a new Quick Sale clears prior local checkout state', () async {
+    final storage = MemorySecretStore()
+      ..quickSaleCheckoutState =
+          '{"operators":{"${api.operator.id}":{"checkout_id":"previous-checkout","payment_attempts":{"old":"attempt"}}}}';
+    final api = FakePosApi();
+    final controller = AppController(api: api, secrets: storage, device: device)
+      ..selectedOperator = api.operator;
+
+    await controller.startNewQuickSale();
+
+    expect(await storage.readQuickSaleCheckoutState(), '{}');
   });
 
   test('shows the device unavailable state for a blocked device', () async {

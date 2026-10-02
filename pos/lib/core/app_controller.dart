@@ -105,6 +105,10 @@ class AppController extends ChangeNotifier {
     await _secrets.writeQuickSaleCheckoutState(jsonEncode(storage));
   }
 
+  /// A Quick Sale always starts as a new operation. Historical checkout state
+  /// remains on the backend but must never be reused as its active state.
+  Future<void> startNewQuickSale() => _writeQuickCheckoutState({});
+
   bool _isTerminalQuickSaleCheckout(QuickSaleCheckout checkout) =>
       checkout.status == 'finalized' || checkout.status == 'cancelled';
 

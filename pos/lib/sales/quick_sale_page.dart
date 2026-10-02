@@ -97,6 +97,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
   final List<_CartMutation> _pendingCartMutations = [];
   final Map<String, Map<String, dynamic>> _cartShortages = {};
   bool _catalogLocked = false;
+  bool _openingCheckout = false;
 
   List<QuickSaleCartItem> get _cart => _draft.cart;
 
@@ -161,6 +162,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
   }
 
   Future<void> _loadInitial() async {
+    await widget.controller.startNewQuickSale();
     await Future.wait([_loadCatalog(), _loadCheckoutOptions()]);
   }
 
@@ -186,8 +188,8 @@ class _QuickSalePageState extends State<QuickSalePage> {
       unawaited(_loadCheckoutOptions());
       unawaited(_loadCatalog());
       await Navigator.of(context).push<void>(MaterialPageRoute(
-        builder: (_) =>
-            QuickSaleCompletedPage(controller: widget.controller, result: result),
+        builder: (_) => QuickSaleCompletedPage(
+            controller: widget.controller, result: result),
       ));
       return;
     }
@@ -740,20 +742,30 @@ class _QuickSalePageState extends State<QuickSalePage> {
   }
 
   Future<void> _checkout() async {
-    if (!_checkoutReady || _cart.isEmpty || _preview == null) return;
-    widget.controller.logPosAction('checkout_open');
-    final options = _checkoutOptions!;
-    final checkout = await widget.controller.createQuickSaleCheckout(
-      items: _cart.map((item) => item.toJson()).toList(growable: false),
-      discount: _discount.toJson(),
-      serviceFeeWaived: _serviceFeeWaived,
-      customer: _draft.customer,
-      discountAuthorization: _draft.discountAuthorization,
-      itemDiscountAuthorization: _draft.itemDiscountAuthorization,
-      serviceFeeAuthorization: _draft.serviceFeeAuthorization,
-    );
-    if (!mounted || checkout == null) return;
-    await _openPayment(checkout, options);
+    if (!_checkoutReady ||
+        _cart.isEmpty ||
+        _preview == null ||
+        _openingCheckout) {
+      return;
+    }
+    setState(() => _openingCheckout = true);
+    try {
+      widget.controller.logPosAction('checkout_open');
+      final options = _checkoutOptions!;
+      final checkout = await widget.controller.createQuickSaleCheckout(
+        items: _cart.map((item) => item.toJson()).toList(growable: false),
+        discount: _discount.toJson(),
+        serviceFeeWaived: _serviceFeeWaived,
+        customer: _draft.customer,
+        discountAuthorization: _draft.discountAuthorization,
+        itemDiscountAuthorization: _draft.itemDiscountAuthorization,
+        serviceFeeAuthorization: _draft.serviceFeeAuthorization,
+      );
+      if (!mounted || checkout == null) return;
+      await _openPayment(checkout, options);
+    } finally {
+      if (mounted) setState(() => _openingCheckout = false);
+    }
   }
 
   Future<bool> _clearCart() async {
@@ -929,7 +941,8 @@ class _CartPage extends StatelessWidget {
 }
 
 class QuickSaleCompletedPage extends StatefulWidget {
-  const QuickSaleCompletedPage({this.controller, required this.result, super.key});
+  const QuickSaleCompletedPage(
+      {this.controller, required this.result, super.key});
 
   final AppController? controller;
   final QuickSaleResult result;
@@ -1052,48 +1065,51 @@ class _QuickSaleCompletedPageState extends State<QuickSaleCompletedPage> {
                               .headlineSmall
                               ?.copyWith(fontWeight: FontWeight.w900)),
                       const SizedBox(height: 12),
-                       Text('Venda #${widget.result.saleNumber}',
+                      Text('Venda #${widget.result.saleNumber}',
                           textAlign: TextAlign.center,
                           style: const TextStyle(fontWeight: FontWeight.w700)),
                       const SizedBox(height: 6),
-                       Text(formatMoney(widget.result.total),
+                      Text(formatMoney(widget.result.total),
                           textAlign: TextAlign.center,
                           style: Theme.of(context)
                               .textTheme
                               .displaySmall
                               ?.copyWith(fontWeight: FontWeight.w900)),
-                       if (widget.result.productionJobCount > 0) ...[
+                      if (widget.result.productionJobCount > 0) ...[
                         const SizedBox(height: 16),
                         const Text('Pedido enviado para produção.',
                             textAlign: TextAlign.center),
                       ],
-                       if (widget.result.ticketNumbers.isNotEmpty) ...[
+                      if (widget.result.ticketNumbers.isNotEmpty) ...[
                         const SizedBox(height: 8),
-                         Text('Tickets: ${widget.result.ticketNumbers.join(', ')}',
-                             textAlign: TextAlign.center),
-                       ],
-                       const SizedBox(height: 28),
-                       if (widget.controller != null &&
-                           widget.result.saleId != null) ...[
-                         OutlinedButton.icon(
-                           onPressed: _printingReceipt ? null : _printReceipt,
-                           icon: const Icon(Icons.print_outlined),
-                            label: Text('${_receiptDocument?.printActionLabel ?? 'IMPRIMIR'} COMPROVANTE'),
-                         ),
-                         const SizedBox(height: 8),
-                       ],
-                       if (widget.controller != null &&
-                           widget.result.ticketIds.isNotEmpty) ...[
-                         OutlinedButton.icon(
-                           onPressed: _printingTickets ? null : _printTickets,
-                           icon: const Icon(Icons.confirmation_number_outlined),
-                            label: Text(_ticketDocuments.values.any((document) => document.canReprint)
-                                ? 'REIMPRIMIR TICKETS'
-                                : 'IMPRIMIR TICKETS'),
-                         ),
-                         const SizedBox(height: 8),
-                       ],
-                       FilledButton(
+                        Text(
+                            'Tickets: ${widget.result.ticketNumbers.join(', ')}',
+                            textAlign: TextAlign.center),
+                      ],
+                      const SizedBox(height: 28),
+                      if (widget.controller != null &&
+                          widget.result.saleId != null) ...[
+                        OutlinedButton.icon(
+                          onPressed: _printingReceipt ? null : _printReceipt,
+                          icon: const Icon(Icons.print_outlined),
+                          label: Text(
+                              '${_receiptDocument?.printActionLabel ?? 'IMPRIMIR'} COMPROVANTE'),
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+                      if (widget.controller != null &&
+                          widget.result.ticketIds.isNotEmpty) ...[
+                        OutlinedButton.icon(
+                          onPressed: _printingTickets ? null : _printTickets,
+                          icon: const Icon(Icons.confirmation_number_outlined),
+                          label: Text(_ticketDocuments.values
+                                  .any((document) => document.canReprint)
+                              ? 'REIMPRIMIR TICKETS'
+                              : 'IMPRIMIR TICKETS'),
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+                      FilledButton(
                         onPressed: () => Navigator.of(context).pop(),
                         child: const Padding(
                           padding: EdgeInsets.symmetric(vertical: 12),
@@ -1664,6 +1680,7 @@ class _CartPanel extends StatelessWidget {
                       onPressed: cart.isEmpty ||
                               preview == null ||
                               loadingPreview ||
+                              _openingCheckout ||
                               !cashReady
                           ? null
                           : onCheckout,
