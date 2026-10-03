@@ -21,7 +21,10 @@ from apps.payment_integrations.models import (
 from apps.payment_integrations.services import PaymentIntegrationConflict
 from apps.sales.models import PaymentMethodCode
 
-from .base import PaymentProviderAdapter, ProviderLaunchCommand, ProviderPaymentResult
+from .base import (
+    PaymentProviderAdapter, ProviderLaunchCommand, ProviderPaymentResult,
+    ProviderReversalResult,
+)
 from .registry import register_adapter
 
 
@@ -357,5 +360,103 @@ class CieloSmartAdapter(PaymentProviderAdapter):
                 'status_code': status_code,
                 'product': product,
                 'terminal': terminal,
+            },
+        )
+
+    def build_reversal_command(self, *, reversal, callback_url):
+        attempt = reversal.source_attempt
+        self._assert_cielo_attempt(attempt)
+        if not attempt.provider_order_id or not attempt.authorization_code or not attempt.nsu:
+            raise PaymentIntegrationConflict(
+                'cielo_reversal_data_missing',
+                'O pagamento original não possui os identificadores necessários para estorno na Cielo.',
+            )
+        credentials = get_cielo_credentials()
+        request = {
+            'clientID': credentials.client_id,
+            'accessToken': credentials.access_token,
+            'orderId': attempt.provider_order_id,
+            'cieloCode': attempt.nsu,
+            'authCode': attempt.authorization_code,
+            'value': str(amount_to_cents(reversal.amount)),
+        }
+        encoded_request = base64.b64encode(json.dumps(
+            request, ensure_ascii=True, separators=(',', ':'), sort_keys=True,
+        ).encode('utf-8')).decode('ascii')
+        uri = urlunsplit(('lio', 'payment-reversal', '', urlencode({
+            'request': encoded_request, 'urlCallback': callback_url,
+        }), ''))
+        return ProviderLaunchCommand(
+            operation='reversal', uri=uri,
+            safe_metadata={
+                'provider': self.provider_code,
+                'source_attempt_id': str(attempt.pk),
+                'order_id_present': True,
+                'amount_cents': amount_to_cents(reversal.amount),
+            },
+        )
+
+    def parse_reversal_callback(self, *, reversal, response, responsecode=None):
+        attempt = reversal.source_attempt
+        self._assert_cielo_attempt(attempt)
+        error_code = str(responsecode).strip() if responsecode not in (None, '') else ''
+        try:
+            normalized_response = _BASE64_TRANSPORT_WHITESPACE.sub('', str(response or ''))
+            payload = json.loads(base64.b64decode(normalized_response, validate=True).decode('utf-8'))
+        except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            logger.info(
+                'cielo_reversal_callback_decode_failed operation_id=%s response_present=%s response_length=%s',
+                reversal.pk, bool(response), len(str(response or '')),
+            )
+            if error_code in _ERROR_STATUS:
+                status, fallback = _ERROR_STATUS[error_code]
+                return ProviderReversalResult(
+                    status=status,
+                    result_data={
+                        'provider_status': 'cancelled' if status == PaymentAttemptStatus.CANCELLED else 'error',
+                        'provider_status_code': error_code, 'provider_message': fallback,
+                    },
+                    safe_metadata={'provider': self.provider_code, 'status_code': error_code},
+                )
+            return ProviderReversalResult(
+                status=PaymentAttemptStatus.UNKNOWN,
+                result_data={'provider_status': 'unknown', 'provider_message': 'Resposta de estorno Cielo não comprovável.'},
+                safe_metadata={'provider': self.provider_code, 'result': 'unknown'},
+            )
+        if not isinstance(payload, dict):
+            return ProviderReversalResult(
+                status=PaymentAttemptStatus.UNKNOWN,
+                result_data={'provider_status': 'unknown', 'provider_message': 'Estrutura do estorno Cielo é inválida.'},
+                safe_metadata={'provider': self.provider_code, 'result': 'unknown'},
+            )
+        code = str(payload.get('code')).strip() if payload.get('code') is not None else ''
+        if code in _ERROR_STATUS:
+            status, fallback = _ERROR_STATUS[code]
+            message = _safe_text(payload.get('reason')) or fallback
+            return ProviderReversalResult(
+                status=status,
+                result_data={
+                    'provider_status': 'cancelled' if status == PaymentAttemptStatus.CANCELLED else 'error',
+                    'provider_status_code': code, 'provider_message': message,
+                },
+                safe_metadata={'provider': self.provider_code, 'status_code': code},
+            )
+        status_code = str(payload.get('statusCode', payload.get('status'))).strip()
+        order_id = _safe_text(payload.get('orderId') or payload.get('id'), limit=150)
+        if status_code not in {'0', '1'} or order_id != attempt.provider_order_id:
+            return ProviderReversalResult(
+                status=PaymentAttemptStatus.UNKNOWN,
+                result_data={'provider_status': 'unknown', 'provider_message': 'Estorno Cielo não pôde ser confirmado.'},
+                safe_metadata={'provider': self.provider_code, 'result': 'unknown'},
+            )
+        return ProviderReversalResult(
+            status=PaymentAttemptStatus.APPROVED,
+            result_data={
+                'provider_status': 'approved', 'provider_status_code': status_code,
+                'provider_message': _safe_text(payload.get('reason')),
+            },
+            safe_metadata={
+                'provider': self.provider_code, 'status': 'approved', 'status_code': status_code,
+                'order_id': order_id,
             },
         )

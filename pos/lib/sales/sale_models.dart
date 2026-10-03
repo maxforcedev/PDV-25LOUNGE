@@ -519,6 +519,38 @@ class QuickSaleProviderPaymentLaunch {
   final bool launchAvailable;
 }
 
+class QuickSaleProviderReversalLaunch {
+  const QuickSaleProviderReversalLaunch({
+    required this.provider,
+    required this.operationId,
+    required this.status,
+    this.operation,
+    this.launchUri,
+    this.replayed = false,
+    this.launchAvailable = false,
+  });
+
+  factory QuickSaleProviderReversalLaunch.fromJson(Map<String, dynamic> json) =>
+      QuickSaleProviderReversalLaunch(
+        provider: json['provider'] as String,
+        operationId: json['operation_id'] as String,
+        status: json['status'] as String,
+        operation: json['operation'] as String?,
+        launchUri: json['launch_uri'] as String?,
+        replayed: json['replayed'] == true,
+        launchAvailable: json['launch_available'] == true,
+      );
+
+  final String provider;
+  final String operationId;
+  final String status;
+  final String? operation;
+  // This value must stay in memory only and is never serialized into POS state.
+  final String? launchUri;
+  final bool replayed;
+  final bool launchAvailable;
+}
+
 class QuickSalePaymentIntegration {
   const QuickSalePaymentIntegration({
     required this.intentId,
@@ -558,6 +590,31 @@ class QuickSalePaymentIntegration {
   final bool canCancel;
   final bool canApply;
   final bool requiresRecovery;
+}
+
+class QuickSaleProviderReversal {
+  const QuickSaleProviderReversal({
+    required this.id,
+    required this.status,
+    this.providerMessage,
+  });
+
+  factory QuickSaleProviderReversal.fromJson(Map<String, dynamic> json) =>
+      QuickSaleProviderReversal(
+        id: json['id'] as String,
+        status: json['status'] as String? ?? '',
+        providerMessage: json['provider_message'] as String?,
+      );
+
+  final String id;
+  final String status;
+  final String? providerMessage;
+
+  bool get isBlocking =>
+      status == 'created' ||
+      status == 'processing' ||
+      status == 'unknown' ||
+      status == 'approved';
 }
 
 class QuickSaleCheckout {
@@ -732,6 +789,9 @@ class QuickSaleCheckoutPayment {
       this.receivedAmount,
       this.changeAmount,
       this.idempotencyKey,
+      this.sourceType = 'manual',
+      this.paymentAttemptId,
+      this.providerReversal,
       this.reversalOf,
       this.reversalReason,
       this.printDocument});
@@ -744,6 +804,14 @@ class QuickSaleCheckoutPayment {
           receivedAmount: json['received_amount'] as String?,
           changeAmount: json['change_amount'] as String?,
           idempotencyKey: json['idempotency_key'] as String?,
+          sourceType: json['source_type'] as String? ??
+              json['source'] as String? ??
+              'manual',
+          paymentAttemptId: json['payment_attempt_id'] as String?,
+          providerReversal: json['provider_reversal'] is Map
+              ? QuickSaleProviderReversal.fromJson(
+                  Map<String, dynamic>.from(json['provider_reversal'] as Map))
+              : null,
           reversalOf: json['reversal_of'] as String?,
           reversalReason: json['reversal_reason'] as String?,
           printDocument:
@@ -755,10 +823,15 @@ class QuickSaleCheckoutPayment {
   final String? receivedAmount;
   final String? changeAmount;
   final String? idempotencyKey;
+  final String sourceType;
+  final String? paymentAttemptId;
+  final QuickSaleProviderReversal? providerReversal;
   final String? reversalOf;
   final String? reversalReason;
   final PrintDocumentResult? printDocument;
   bool get isReversal => reversalOf != null || status == 'reversed';
+  bool get requiresProviderReversal =>
+      sourceType == 'provider' && paymentAttemptId != null;
 }
 
 class QuickSalePaymentPreview {

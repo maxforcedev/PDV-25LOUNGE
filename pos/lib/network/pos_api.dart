@@ -319,6 +319,21 @@ abstract class PosApi {
     String? responseCode,
   }) =>
       throw UnimplementedError();
+  Future<QuickSaleProviderReversalLaunch> startQuickSaleProviderReversal({
+    required String checkoutId,
+    required String paymentId,
+    required String idempotencyKey,
+    String reason = '',
+    Map<String, dynamic>? authorization,
+  }) =>
+      throw UnimplementedError();
+  Future<QuickSaleCheckout> resolveQuickSaleProviderReversal({
+    required String checkoutId,
+    required String operationId,
+    required String response,
+    String? responseCode,
+  }) =>
+      throw UnimplementedError();
   Future<QuickSaleProviderPaymentLaunch> retryQuickSaleProviderPayment({
     required String checkoutId,
     required String intentId,
@@ -1552,6 +1567,41 @@ class HttpPosApi implements PosApi, PosCredentialCache {
       QuickSaleCheckout.fromJson(await _request(
         'POST',
         'sales/checkouts/$checkoutId/provider-payments/attempts/$attemptId/result/',
+        body: {
+          'response': response,
+          if (responseCode != null) 'responsecode': responseCode,
+        },
+      ));
+
+  @override
+  Future<QuickSaleProviderReversalLaunch> startQuickSaleProviderReversal({
+    required String checkoutId,
+    required String paymentId,
+    required String idempotencyKey,
+    String reason = '',
+    Map<String, dynamic>? authorization,
+  }) async =>
+      QuickSaleProviderReversalLaunch.fromJson(await _request(
+        'POST',
+        'sales/checkouts/$checkoutId/payments/$paymentId/provider-reversal/start/',
+        sensitiveResponse: true,
+        body: {
+          'idempotency_key': idempotencyKey,
+          'reason': reason,
+          if (authorization != null) 'authorization': authorization,
+        },
+      ));
+
+  @override
+  Future<QuickSaleCheckout> resolveQuickSaleProviderReversal({
+    required String checkoutId,
+    required String operationId,
+    required String response,
+    String? responseCode,
+  }) async =>
+      QuickSaleCheckout.fromJson(await _request(
+        'POST',
+        'sales/checkouts/$checkoutId/provider-reversals/$operationId/result/',
         body: {
           'response': response,
           if (responseCode != null) 'responsecode': responseCode,

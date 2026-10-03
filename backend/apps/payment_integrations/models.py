@@ -482,3 +482,129 @@ class PaymentAttempt(BaseModel):
 
     def delete(self, *args, **kwargs):
         raise ValidationError('PaymentAttempt é histórico operacional e não pode ser excluído.')
+
+
+class ProviderReversalStatus(models.TextChoices):
+    CREATED = 'created', 'Criada'
+    PROCESSING = 'processing', 'Processando'
+    APPROVED = 'approved', 'Aprovada'
+    CANCELLED = 'cancelled', 'Cancelada'
+    ERROR = 'error', 'Erro'
+    UNKNOWN = 'unknown', 'Desconhecida'
+    APPLIED = 'applied', 'Aplicada'
+
+
+class ProviderReversalOperationQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValidationError('Use os serviços de reversal do provedor para alterar o estado.')
+
+    def bulk_create(self, objs, *args, **kwargs):
+        raise ValidationError('Criações em massa de reversal do provedor não são permitidas.')
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        raise ValidationError('Alterações em massa de reversal do provedor não são permitidas.')
+
+    def delete(self):
+        raise ValidationError('Reversals do provedor são históricos e não podem ser excluídos.')
+
+
+class ProviderReversalOperation(BaseModel):
+    """Immutable provider-neutral reversal correlated to an approved capture attempt."""
+
+    objects = ProviderReversalOperationQuerySet.as_manager()
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    company = models.ForeignKey('companies.Company', on_delete=models.PROTECT, related_name='provider_reversals')
+    branch = models.ForeignKey('companies.Branch', on_delete=models.PROTECT, related_name='provider_reversals')
+    pos_device = models.ForeignKey('pos.POSDevice', on_delete=models.PROTECT, related_name='provider_reversals')
+    operator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='provider_reversals')
+    authorized_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='authorized_provider_reversals',
+        null=True, blank=True,
+    )
+    origin_type = models.CharField(max_length=20, choices=PaymentIntentOriginType.choices)
+    origin_id = models.CharField(max_length=80)
+    source_attempt = models.ForeignKey(PaymentAttempt, on_delete=models.PROTECT, related_name='reversal_operations')
+    provider_connection = models.ForeignKey(PaymentProviderConnection, on_delete=models.PROTECT, related_name='reversal_operations')
+    terminal = models.ForeignKey(PaymentTerminal, on_delete=models.PROTECT, related_name='reversal_operations', null=True, blank=True)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    reason = models.TextField(blank=True, default='')
+    idempotency_key = models.UUIDField(editable=False)
+    request_fingerprint = models.CharField(max_length=64, editable=False)
+    status = models.CharField(max_length=10, choices=ProviderReversalStatus.choices, default=ProviderReversalStatus.CREATED, db_index=True)
+    provider_status = models.CharField(max_length=100, blank=True, default='')
+    provider_status_code = models.CharField(max_length=100, blank=True, default='')
+    provider_message = models.CharField(max_length=500, blank=True, default='')
+    response_metadata = models.JSONField(default=dict, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ('-created_at',)
+        constraints = [
+            models.CheckConstraint(condition=Q(amount__gt=0), name='provider_reversal_amount_positive'),
+            models.UniqueConstraint(fields=('company', 'idempotency_key'), name='provider_reversal_company_idempotency_unique'),
+            models.UniqueConstraint(
+                fields=('source_attempt',),
+                condition=Q(status__in=(
+                    ProviderReversalStatus.CREATED, ProviderReversalStatus.PROCESSING,
+                    ProviderReversalStatus.UNKNOWN, ProviderReversalStatus.APPROVED,
+                )),
+                name='provider_reversal_source_blocking_unique',
+            ),
+        ]
+        indexes = [models.Index(fields=('branch', 'status', 'created_at'), name='prov_rev_branch_stat_idx')]
+
+    def clean(self):
+        super().clean()
+        self.origin_id = str(self.origin_id or '').strip()
+        errors = {}
+        if not self.origin_id:
+            errors['origin_id'] = 'Informe a origem da reversal.'
+        if self.amount is None or self.amount <= 0:
+            errors['amount'] = 'O valor deve ser maior que zero.'
+        if self.branch_id and self.branch.company_id != self.company_id:
+            errors['branch'] = 'A filial deve pertencer à empresa.'
+        if self.pos_device_id and self.pos_device.branch_id != self.branch_id:
+            errors['pos_device'] = 'O POS deve pertencer à filial.'
+        if self.source_attempt_id:
+            attempt = self.source_attempt
+            if attempt.status != PaymentAttemptStatus.APPROVED:
+                errors['source_attempt'] = 'A tentativa original deve estar aprovada.'
+            if attempt.provider_connection_id != self.provider_connection_id:
+                errors['provider_connection'] = 'A conexão deve corresponder à tentativa original.'
+            if attempt.terminal_id != self.terminal_id:
+                errors['terminal'] = 'O terminal deve corresponder à tentativa original.'
+            if attempt.amount != self.amount:
+                errors['amount'] = 'O valor deve corresponder à tentativa original.'
+        if self.provider_connection_id and self.provider_connection.company_id != self.company_id:
+            errors['provider_connection'] = 'A conexão deve pertencer à empresa.'
+        if self.terminal_id and self.terminal.branch_id != self.branch_id:
+            errors['terminal'] = 'O terminal deve pertencer à filial.'
+        validate_non_sensitive_metadata(self.response_metadata, 'response_metadata')
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        if self._state.adding:
+            if self.status != ProviderReversalStatus.CREATED:
+                raise ValidationError({'status': 'ProviderReversalOperation deve ser criada no estado CREATED.'})
+        else:
+            original = type(self).objects.get(pk=self.pk)
+            immutable_fields = (
+                'company_id', 'branch_id', 'pos_device_id', 'operator_id', 'authorized_by_id',
+                'origin_type', 'origin_id', 'source_attempt_id', 'provider_connection_id', 'terminal_id',
+                'amount', 'reason', 'idempotency_key', 'request_fingerprint',
+            )
+            if any(getattr(original, field) != getattr(self, field) for field in immutable_fields):
+                raise ValidationError({'reversal': 'Os campos estruturais de reversal são imutáveis.'})
+            if original.status != self.status and not getattr(self, '_allow_status_transition', False):
+                raise ValidationError({'status': 'Use os serviços de reversal do provedor para alterar o estado.'})
+            result_fields = ('provider_status', 'provider_status_code', 'provider_message', 'response_metadata', 'started_at', 'completed_at')
+            if any(getattr(original, field) != getattr(self, field) for field in result_fields) and not getattr(self, '_allow_result_update', False):
+                raise ValidationError({'reversal': 'Use os serviços de reversal do provedor para registrar resultados.'})
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError('Reversals do provedor são históricas e não podem ser excluídas.')

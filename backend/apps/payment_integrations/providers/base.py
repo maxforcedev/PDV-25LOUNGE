@@ -25,6 +25,15 @@ class ProviderPaymentResult:
     safe_metadata: dict
 
 
+@dataclass(frozen=True)
+class ProviderReversalResult:
+    """Normalized external reversal result; local ledger application is separate."""
+
+    status: str
+    result_data: dict
+    safe_metadata: dict
+
+
 class PaymentProviderAdapter:
     provider_code = None
 
@@ -32,4 +41,10 @@ class PaymentProviderAdapter:
         raise NotImplementedError
 
     def parse_payment_callback(self, *, attempt, response, responsecode=None):
+        raise NotImplementedError
+
+    def build_reversal_command(self, *, reversal, callback_url):
+        raise NotImplementedError
+
+    def parse_reversal_callback(self, *, reversal, response, responsecode=None):
         raise NotImplementedError

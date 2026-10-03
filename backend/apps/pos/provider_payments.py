@@ -11,6 +11,7 @@ from apps.payment_integrations.services import PaymentIntegrationConflict
 
 
 CIELO_CALLBACK_URL = 'corepdv://cielo-payment-response'
+CIELO_REVERSAL_CALLBACK_URL = 'corepdv://cielo-payment-reversal-response'
 _CIELO_PAYMENT_METHODS = {
     'credit_card', 'debit_card', 'pix', 'food_voucher', 'meal_voucher',
 }

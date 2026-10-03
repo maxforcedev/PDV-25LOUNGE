@@ -700,13 +700,26 @@ def close_session(
         quick_checkouts = list(QuickSaleCheckout.objects.select_for_update().filter(
             cash_session=session, status=QuickSaleCheckoutStatus.OPEN,
         ).order_by('pk'))
-        from apps.payment_integrations.models import PaymentIntent, PaymentIntentOriginType
+        from apps.payment_integrations.models import (
+            PaymentIntent, PaymentIntentOriginType, ProviderReversalOperation,
+            ProviderReversalStatus,
+        )
 
         blocking_quick_sale_intent_ids = list(
             PaymentIntent.objects.select_for_update().filter(
                 origin_type=PaymentIntentOriginType.QUICK_SALE,
                 origin_id__in=[str(checkout.pk) for checkout in quick_checkouts],
                 status__in=('created', 'ready', 'processing', 'declined', 'error', 'unknown', 'approved'),
+            ).values_list('pk', flat=True)
+        )
+        blocking_quick_sale_reversal_ids = list(
+            ProviderReversalOperation.objects.select_for_update().filter(
+                origin_type=PaymentIntentOriginType.QUICK_SALE,
+                origin_id__in=[str(checkout.pk) for checkout in quick_checkouts],
+                status__in=(
+                    ProviderReversalStatus.CREATED, ProviderReversalStatus.PROCESSING,
+                    ProviderReversalStatus.UNKNOWN, ProviderReversalStatus.APPROVED,
+                ),
             ).values_list('pk', flat=True)
         )
         list(QuickSalePayment.objects.select_for_update(of=('self',)).filter(
@@ -720,7 +733,7 @@ def close_session(
         if not (
             blocked_payment_ids or blocked_attendance_payment_ids
             or blocked_table_payment_ids or blocked_quick_checkout_ids
-            or blocking_quick_sale_intent_ids
+            or blocking_quick_sale_intent_ids or blocking_quick_sale_reversal_ids
         ):
             expected = calculate_expected_amount(session)
             session.status = CashSessionStatus.CLOSED
@@ -764,11 +777,12 @@ def close_session(
                     'quick_checkout_ids': blocked_quick_checkout_ids,
                     'quick_sale_payment_intent_count': len(blocking_quick_sale_intent_ids),
                     'quick_sale_payment_intent_ids': [str(intent_id) for intent_id in blocking_quick_sale_intent_ids],
+                    'quick_sale_provider_reversal_ids': [str(operation_id) for operation_id in blocking_quick_sale_reversal_ids],
                 })
     raise ValidationError({
         'cash_session': (
             'Não é possível fechar a sessão: há pagamentos parciais em aberto '
-            f'({len(blocked_payment_ids) + len(blocked_attendance_payment_ids) + len(blocked_table_payment_ids) + len(blocked_quick_checkout_ids) + len(blocking_quick_sale_intent_ids)} pendência(s), incluindo comandas, Mesas ou Venda Rápida).'
+            f'({len(blocked_payment_ids) + len(blocked_attendance_payment_ids) + len(blocked_table_payment_ids) + len(blocked_quick_checkout_ids) + len(blocking_quick_sale_intent_ids) + len(blocking_quick_sale_reversal_ids)} pendência(s), incluindo comandas, Mesas ou Venda Rápida).'
         )
     })
 
@@ -787,7 +801,10 @@ def cancel_session(cash_session, reason, user, current_branch):
         if session.status != CashSessionStatus.OPEN:
             raise ValidationError({'cash_session': 'Somente sessões abertas podem ser anuladas.'})
         from apps.pos.models import QuickSaleCheckout, QuickSaleCheckoutStatus, QuickSalePayment
-        from apps.payment_integrations.models import PaymentIntent, PaymentIntentOriginType
+        from apps.payment_integrations.models import (
+            PaymentIntent, PaymentIntentOriginType, ProviderReversalOperation,
+            ProviderReversalStatus,
+        )
         from apps.sales.quick_checkout import checkout_balance
 
         quick_checkouts = list(QuickSaleCheckout.objects.select_for_update().filter(
@@ -798,6 +815,14 @@ def cancel_session(cash_session, reason, user, current_branch):
             origin_id__in=[str(checkout.pk) for checkout in quick_checkouts],
             status__in=('created', 'ready', 'processing', 'declined', 'error', 'unknown', 'approved'),
         ).values_list('pk', flat=True))
+        blocking_reversal_ids = list(ProviderReversalOperation.objects.select_for_update().filter(
+            origin_type=PaymentIntentOriginType.QUICK_SALE,
+            origin_id__in=[str(checkout.pk) for checkout in quick_checkouts],
+            status__in=(
+                ProviderReversalStatus.CREATED, ProviderReversalStatus.PROCESSING,
+                ProviderReversalStatus.UNKNOWN, ProviderReversalStatus.APPROVED,
+            ),
+        ).values_list('pk', flat=True))
         list(QuickSalePayment.objects.select_for_update(of=('self',)).filter(
             checkout__in=quick_checkouts,
         ).values_list('pk', flat=True))
@@ -806,9 +831,10 @@ def cancel_session(cash_session, reason, user, current_branch):
             paid, _remaining = checkout_balance(checkout, lock=True)
             if paid > Decimal('0.00'):
                 paid_checkout_ids.append(str(checkout.pk))
-        if blocking_intent_ids or paid_checkout_ids:
+        if blocking_intent_ids or blocking_reversal_ids or paid_checkout_ids:
             blocked = {
                 'quick_sale_payment_intent_ids': [str(intent_id) for intent_id in blocking_intent_ids],
+                'quick_sale_provider_reversal_ids': [str(operation_id) for operation_id in blocking_reversal_ids],
                 'quick_checkout_ids': paid_checkout_ids,
             }
         else:

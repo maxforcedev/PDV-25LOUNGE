@@ -9,7 +9,8 @@ from apps.base.audit import audit_log
 
 from .models import (
     PAYMENT_ATTEMPT_RESULT_FIELDS, PaymentAttempt, PaymentAttemptStatus, PaymentIntent,
-    PaymentIntentOriginType, PaymentIntentStatus,
+    PaymentIntentOriginType, PaymentIntentStatus, ProviderReversalOperation,
+    ProviderReversalStatus,
 )
 
 
@@ -419,3 +420,151 @@ def resolve_payment_attempt(*, attempt, status, actor=None, response_metadata=No
               company=intent.company, branch=intent.branch,
               before={'status': previous_intent}, after={'status': intent.status})
     return attempt, intent
+
+
+_REVERSAL_RESULT_STATUSES = {
+    ProviderReversalStatus.APPROVED,
+    ProviderReversalStatus.CANCELLED,
+    ProviderReversalStatus.ERROR,
+    ProviderReversalStatus.UNKNOWN,
+}
+
+
+def create_provider_reversal(*, company, branch, pos_device, operator, authorized_by,
+                             origin_type, origin_id, source_attempt, reason, idempotency_key):
+    """Create the external reversal operation before any local ledger mutation."""
+    fingerprint = _fingerprint({
+        'branch': branch.pk, 'pos_device': str(pos_device.pk), 'operator': operator.pk,
+        'authorized_by': authorized_by.pk if authorized_by else None,
+        'origin_type': origin_type, 'origin_id': str(origin_id),
+        'source_attempt': str(source_attempt.pk), 'reason': (reason or '').strip(),
+    })
+    with transaction.atomic():
+        existing = ProviderReversalOperation.objects.select_for_update().filter(
+            company=company, idempotency_key=idempotency_key,
+        ).first()
+        if existing:
+            if existing.request_fingerprint != fingerprint:
+                raise PaymentIntegrationConflict(
+                    'idempotency_key_conflict',
+                    'A chave de idempotência já foi usada com outros dados.',
+                )
+            return existing, True
+        source_attempt = PaymentAttempt.objects.select_for_update().select_related(
+            'intent', 'provider_connection__provider',
+        ).get(pk=source_attempt.pk)
+        if source_attempt.status != PaymentAttemptStatus.APPROVED:
+            raise PaymentIntegrationConflict(
+                'provider_reversal_source_unapproved',
+                'O pagamento original não possui aprovação comprovada no provedor.',
+            )
+        blocking = ProviderReversalOperation.objects.select_for_update().filter(
+            source_attempt=source_attempt,
+            status__in=(
+                ProviderReversalStatus.CREATED, ProviderReversalStatus.PROCESSING,
+                ProviderReversalStatus.UNKNOWN, ProviderReversalStatus.APPROVED,
+            ),
+        ).first()
+        if blocking:
+            raise PaymentIntegrationConflict(
+                'provider_reversal_in_progress',
+                'Já existe uma reversão externa pendente para este pagamento.',
+            )
+        operation = ProviderReversalOperation(
+            company=company, branch=branch, pos_device=pos_device, operator=operator,
+            authorized_by=authorized_by, origin_type=origin_type, origin_id=str(origin_id),
+            source_attempt=source_attempt, provider_connection=source_attempt.provider_connection,
+            terminal=source_attempt.terminal, amount=source_attempt.amount,
+            reason=(reason or '').strip(), idempotency_key=idempotency_key,
+            request_fingerprint=fingerprint,
+        )
+        operation.save()
+        operation.status = ProviderReversalStatus.PROCESSING
+        operation.started_at = timezone.now()
+        operation._allow_status_transition = True
+        operation._allow_result_update = True
+        try:
+            operation.save(update_fields=('status', 'started_at', 'updated_at'))
+        finally:
+            delattr(operation, '_allow_status_transition')
+            delattr(operation, '_allow_result_update')
+    audit_log(
+        actor=operator, action='provider_reversal.started', obj=operation,
+        company=company, branch=branch,
+        after={
+            'operation_id': str(operation.pk), 'source_attempt_id': str(source_attempt.pk),
+            'status': operation.status,
+        },
+        metadata={'idempotency_key': str(idempotency_key)},
+    )
+    return operation, False
+
+
+def resolve_provider_reversal(*, operation, status, actor=None, response_metadata=None,
+                              result_data=None):
+    if status not in _REVERSAL_RESULT_STATUSES:
+        raise PaymentIntegrationConflict('invalid_reversal_result', 'Informe um resultado final válido da reversão.')
+    result_data = result_data or {}
+    allowed_fields = {'provider_status', 'provider_status_code', 'provider_message'}
+    if set(result_data) - allowed_fields:
+        raise PaymentIntegrationConflict('invalid_reversal_result_data', 'Resultado da reversão possui campos inválidos.')
+    with transaction.atomic():
+        operation = ProviderReversalOperation.objects.select_for_update().get(pk=operation.pk)
+        if operation.status in _REVERSAL_RESULT_STATUSES | {ProviderReversalStatus.APPLIED}:
+            if status != operation.status and not (
+                operation.status == ProviderReversalStatus.APPLIED and status == ProviderReversalStatus.APPROVED
+            ):
+                raise PaymentIntegrationConflict(
+                    'reversal_result_conflict',
+                    'A reversão já possui um resultado final diferente.',
+                )
+            return operation, True
+        if operation.status not in {ProviderReversalStatus.PROCESSING, ProviderReversalStatus.UNKNOWN}:
+            raise PaymentIntegrationConflict('reversal_not_processing', 'A reversão não está pronta para receber resultado.')
+        previous = operation.status
+        operation.status = status
+        operation.provider_status = str(result_data.get('provider_status') or '')[:100]
+        operation.provider_status_code = str(result_data.get('provider_status_code') or '')[:100]
+        operation.provider_message = str(result_data.get('provider_message') or '')[:500]
+        operation.response_metadata = response_metadata or {}
+        operation.completed_at = timezone.now()
+        operation._allow_status_transition = True
+        operation._allow_result_update = True
+        try:
+            operation.save(update_fields=(
+                'status', 'provider_status', 'provider_status_code', 'provider_message',
+                'response_metadata', 'completed_at', 'updated_at',
+            ))
+        finally:
+            delattr(operation, '_allow_status_transition')
+            delattr(operation, '_allow_result_update')
+    audit_log(
+        actor=actor or operation.operator, action='provider_reversal.resolved', obj=operation,
+        company=operation.company, branch=operation.branch,
+        before={'status': previous}, after={'status': status},
+    )
+    return operation, False
+
+
+def mark_provider_reversal_applied(*, operation, actor=None):
+    with transaction.atomic():
+        operation = ProviderReversalOperation.objects.select_for_update().get(pk=operation.pk)
+        if operation.status == ProviderReversalStatus.APPLIED:
+            return operation, True
+        if operation.status != ProviderReversalStatus.APPROVED:
+            raise PaymentIntegrationConflict(
+                'reversal_not_approved',
+                'A reversão externa deve estar aprovada antes de aplicação local.',
+            )
+        operation.status = ProviderReversalStatus.APPLIED
+        operation._allow_status_transition = True
+        try:
+            operation.save(update_fields=('status', 'updated_at'))
+        finally:
+            delattr(operation, '_allow_status_transition')
+    audit_log(
+        actor=actor or operation.operator, action='provider_reversal.applied', obj=operation,
+        company=operation.company, branch=operation.branch,
+        before={'status': ProviderReversalStatus.APPROVED}, after={'status': operation.status},
+    )
+    return operation, False

@@ -100,6 +100,7 @@ from apps.sales.quick_checkout import (
     preview_quick_checkout_payment, resolve_quick_sale_payment_attempt,
     reverse_quick_checkout_payment, start_quick_sale_payment_attempt,
     apply_approved_quick_sale_payment_intent, cancel_quick_sale_payment_intent,
+    create_provider_quick_checkout_reversal, apply_approved_provider_quick_checkout_reversal,
     update_quick_checkout,
 )
 
@@ -122,7 +123,7 @@ from .serializers import (
     POSTicketLookupSerializer, POSTicketValidateSerializer,
 )
 from .provider_payments import (
-    CIELO_CALLBACK_URL, cielo_capture_available, cielo_items_from_quick_checkout,
+    CIELO_CALLBACK_URL, CIELO_REVERSAL_CALLBACK_URL, cielo_capture_available, cielo_items_from_quick_checkout,
     cielo_supports_payment_method, resolve_provider_resources,
 )
 from .services import (
@@ -1962,6 +1963,7 @@ class POSSaleCheckoutOptionsView(POSQuickSaleView):
 def _quick_checkout_payload(checkout, *, permissions=()):
     from apps.payment_integrations.models import (
         PaymentAttempt, PaymentIntent, PaymentIntentOriginType, PaymentIntentStatus,
+        ProviderReversalOperation, ProviderReversalStatus,
     )
 
     blocking_intent = PaymentIntent.objects.filter(
@@ -1974,24 +1976,31 @@ def _quick_checkout_payload(checkout, *, permissions=()):
         origin_id=str(checkout.pk),
         status=PaymentIntentStatus.CANCELLED,
     ).order_by('-created_at').first()
+    blocking_reversal = ProviderReversalOperation.objects.filter(
+        origin_type=PaymentIntentOriginType.QUICK_SALE,
+        origin_id=str(checkout.pk),
+        status__in=(
+            ProviderReversalStatus.CREATED, ProviderReversalStatus.PROCESSING,
+            ProviderReversalStatus.UNKNOWN, ProviderReversalStatus.APPROVED,
+        ),
+    ).order_by('created_at').first()
     paid, remaining = checkout_balance(checkout)
     session_status = checkout.cash_session.status if checkout.cash_session_id else None
     session_open = session_status == CashSessionStatus.OPEN
     editable = (
         checkout.status == QuickSaleCheckoutStatus.OPEN and paid == Decimal('0.00')
-        and session_open and not blocking_intent
+        and session_open and not blocking_intent and not blocking_reversal
     )
     can_finalize = (
         checkout.status == QuickSaleCheckoutStatus.OPEN
         and remaining == Decimal('0.00')
         and session_status in (CashSessionStatus.OPEN, CashSessionStatus.CLOSED)
-        and not blocking_intent
+        and not blocking_intent and not blocking_reversal
     )
     can_reverse = (
         checkout.status == QuickSaleCheckoutStatus.OPEN
         and session_open
-        and 'sales.payments.reverse' in permissions
-        and not blocking_intent
+        and not blocking_intent and not blocking_reversal
     )
     available_quantities = checkout_available_quantities(checkout)
     has_payment_history = QuickSalePayment.objects.filter(checkout=checkout).exists()
@@ -2015,6 +2024,12 @@ def _quick_checkout_payload(checkout, *, permissions=()):
         PaymentAttempt.objects.filter(intent=display_intent).order_by('-attempt_number').first()
         if display_intent else None
     )
+    reversal_operations = ProviderReversalOperation.objects.filter(
+        origin_type=PaymentIntentOriginType.QUICK_SALE, origin_id=str(checkout.pk),
+    ).order_by('-created_at')
+    reversal_by_attempt = {}
+    for operation in reversal_operations:
+        reversal_by_attempt.setdefault(operation.source_attempt_id, operation)
     return {
         'id': str(checkout.pk),
         'status': checkout.status,
@@ -2118,6 +2133,14 @@ def _quick_checkout_payload(checkout, *, permissions=()):
                 'idempotency_key': str(payment.idempotency_key),
                 'status': payment.status, 'source_type': payment.source_type,
                 'payment_attempt_id': str(payment.source_payment_attempt_id) if payment.source_payment_attempt_id else None,
+                'provider_reversal': (
+                    {
+                        'id': str(reversal_by_attempt[payment.source_payment_attempt_id].pk),
+                        'status': reversal_by_attempt[payment.source_payment_attempt_id].status,
+                        'provider_message': reversal_by_attempt[payment.source_payment_attempt_id].provider_message,
+                    }
+                    if payment.source_payment_attempt_id in reversal_by_attempt else None
+                ),
                 'reversal_of': payment.reversal_of_id,
                 'reversal_reason': payment.reversal_reason,
                 'allocations': [
@@ -2184,6 +2207,19 @@ def _scoped_provider_intent(checkout, intent_id):
     )
 
 
+def _scoped_provider_reversal(checkout, operation_id):
+    from apps.payment_integrations.models import ProviderReversalOperation
+
+    return get_object_or_404(
+        ProviderReversalOperation.objects.select_related(
+            'source_attempt__provider_connection__provider',
+        ),
+        pk=operation_id, origin_type='quick_sale', origin_id=str(checkout.pk),
+        company=checkout.company, branch=checkout.branch, pos_device=checkout.pos_device,
+        operator=checkout.operator,
+    )
+
+
 def _start_provider_payment(*, checkout, operator, data, audit_metadata):
     from apps.payment_integrations.models import PaymentAttempt, PaymentAttemptStatus
     from apps.payment_integrations.providers.registry import get_adapter
@@ -2242,6 +2278,34 @@ def _start_provider_payment(*, checkout, operator, data, audit_metadata):
             raise QuickCheckoutConflict(error.code, error.message) from error
         raise QuickCheckoutConflict('payment_provider_unavailable', 'O provedor de pagamento não está disponível.') from error
     return intent, attempt, command, False
+
+
+def _start_provider_reversal(*, checkout, payment, operator, data, authorized_by, audit_metadata):
+    from apps.payment_integrations.models import ProviderReversalStatus
+    from apps.payment_integrations.providers.registry import get_adapter
+    from apps.payment_integrations.services import PaymentIntegrationConflict, resolve_provider_reversal
+
+    operation, replayed = create_provider_quick_checkout_reversal(
+        checkout=checkout, payment=payment, user=operator, reason=data['reason'],
+        idempotency_key=data['idempotency_key'], authorized_by=authorized_by,
+        audit_metadata=audit_metadata,
+    )
+    if replayed:
+        return operation, None, True
+    try:
+        command = get_adapter(operation.provider_connection.provider.code).build_reversal_command(
+            reversal=operation, callback_url=CIELO_REVERSAL_CALLBACK_URL,
+        )
+    except (LookupError, PaymentIntegrationConflict) as error:
+        resolve_provider_reversal(
+            operation=operation, status=ProviderReversalStatus.ERROR, actor=operator,
+            response_metadata={'provider': operation.provider_connection.provider.code, 'provider_status': 'launch_error'},
+            result_data={'provider_status': 'launch_error', 'provider_message': 'Não foi possível iniciar o estorno.'},
+        )
+        if isinstance(error, PaymentIntegrationConflict):
+            raise QuickCheckoutConflict(error.code, error.message) from error
+        raise QuickCheckoutConflict('payment_provider_unavailable', 'O provedor de pagamento não está disponível.') from error
+    return operation, command, False
 
 
 class POSQuickCheckoutView(POSQuickSaleView):
@@ -2399,6 +2463,7 @@ class POSQuickSaleProviderPaymentResultView(POSQuickCheckoutView):
             checkout.pk, attempt.pk, attempt.provider_connection.provider.code,
             bool(response), len(response), str(responsecode or '')[:100],
         )
+        apply_pending = False
         try:
             result = get_adapter(attempt.provider_connection.provider.code).parse_payment_callback(
                 attempt=attempt, response=response, responsecode=responsecode,
@@ -2412,7 +2477,6 @@ class POSQuickSaleProviderPaymentResultView(POSQuickCheckoutView):
                 response_metadata=result.safe_metadata, result_data=result.result_data,
                 audit_metadata=self.audit_metadata(device, operator_session),
             )
-            apply_pending = False
             if result.status == PaymentAttemptStatus.APPROVED:
                 logger.info('provider_result_apply_started attempt_id=%s intent_id=%s', attempt.pk, intent.pk)
                 try:
@@ -2436,6 +2500,114 @@ class POSQuickSaleProviderPaymentResultView(POSQuickCheckoutView):
         payload = _quick_checkout_payload(self._checkout(device, operator, checkout_id), permissions=permissions)
         if apply_pending:
             payload['provider_payment'] = {'code': 'provider_approved_apply_pending'}
+        return Response(payload)
+
+
+class POSQuickSaleProviderReversalStartView(POSQuickCheckoutView):
+    def post(self, request, checkout_id, payment_id):
+        device, operator, permissions, operator_session = self.context(request)
+        self._require(permissions, 'sales.create', 'Você não possui permissão para realizar vendas nesta filial.')
+        serializer = POSQuickCheckoutReverseSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        authorizer = operator
+        delegated = 'sales.payments.reverse' not in permissions
+        if delegated:
+            try:
+                authorizer = validate_discount_authorization(
+                    device.branch, data.get('authorization'), permission_code='sales.payments.reverse',
+                    authorization_field='authorization', allow_pos_only=True, pos_device=device,
+                    requester=operator, device_validated=True,
+                )
+            except DjangoValidationError as error:
+                messages = error.message_dict.get('authorization', error.messages)
+                raise DomainValidationError(
+                    code='payment_reverse_authorization_invalid', message=messages[0],
+                )
+        checkout = self._checkout(device, operator, checkout_id)
+        payment = get_object_or_404(QuickSalePayment.objects.filter(checkout=checkout), pk=payment_id)
+        try:
+            operation, command, replayed = _start_provider_reversal(
+                checkout=checkout, payment=payment, operator=operator, data=data,
+                authorized_by=authorizer,
+                audit_metadata={
+                    **self.audit_metadata(device, operator_session),
+                    'authorization_mode': 'delegated' if delegated else 'direct',
+                    'authorizer_user_id': authorizer.pk,
+                },
+            )
+        except QuickCheckoutConflict as error:
+            _quick_checkout_conflict(error)
+        payload = {
+            'provider': operation.provider_connection.provider.code,
+            'operation_id': str(operation.pk), 'status': operation.status,
+            'replayed': replayed, 'launch_available': command is not None,
+        }
+        if command is not None:
+            payload.update({
+                'operation': command.operation, 'launch_uri': command.uri,
+                'safe_metadata': command.safe_metadata,
+            })
+        response = Response(payload)
+        if command is not None:
+            response['Cache-Control'] = 'no-store'
+        if replayed:
+            response['Idempotency-Replayed'] = 'true'
+        return response
+
+
+class POSQuickSaleProviderReversalResultView(POSQuickCheckoutView):
+    def post(self, request, checkout_id, operation_id):
+        from apps.payment_integrations.models import ProviderReversalStatus
+        from apps.payment_integrations.providers.registry import get_adapter
+        from apps.payment_integrations.services import PaymentIntegrationConflict, resolve_provider_reversal
+
+        device, operator, permissions, operator_session = self.context(request)
+        self._require(permissions, 'sales.create', 'Você não possui permissão para realizar vendas nesta filial.')
+        serializer = POSQuickSaleProviderPaymentResultSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        checkout = self._checkout(device, operator, checkout_id)
+        operation = _scoped_provider_reversal(checkout, operation_id)
+        response = serializer.validated_data['response']
+        responsecode = serializer.validated_data['responsecode']
+        logger = logging.getLogger('pos.provider_reversal')
+        logger.info(
+            'provider_reversal_result_received checkout_id=%s operation_id=%s provider=%s response_present=%s response_length=%s responsecode=%s',
+            checkout.pk, operation.pk, operation.provider_connection.provider.code,
+            bool(response), len(response), str(responsecode or '')[:100],
+        )
+        apply_pending = False
+        try:
+            result = get_adapter(operation.provider_connection.provider.code).parse_reversal_callback(
+                reversal=operation, response=response, responsecode=responsecode,
+            )
+            logger.info(
+                'provider_reversal_result_parsed operation_id=%s provider=%s status=%s',
+                operation.pk, operation.provider_connection.provider.code, result.status,
+            )
+            operation, _replayed = resolve_provider_reversal(
+                operation=operation, status=result.status, actor=operator,
+                response_metadata=result.safe_metadata, result_data=result.result_data,
+            )
+            if operation.status == ProviderReversalStatus.APPROVED:
+                logger.info('provider_reversal_apply_started operation_id=%s', operation.pk)
+                try:
+                    apply_approved_provider_quick_checkout_reversal(
+                        checkout=checkout, operation=operation, user=operator,
+                        audit_metadata=self.audit_metadata(device, operator_session),
+                    )
+                except QuickCheckoutConflict:
+                    apply_pending = True
+                logger.info('provider_reversal_apply_finished operation_id=%s', operation.pk)
+        except (LookupError, PaymentIntegrationConflict) as error:
+            if isinstance(error, PaymentIntegrationConflict):
+                _quick_checkout_conflict(QuickCheckoutConflict(error.code, error.message))
+            raise DomainValidationError(
+                code='payment_provider_unavailable', message='O provedor de pagamento não está disponível.',
+            ) from error
+        payload = _quick_checkout_payload(self._checkout(device, operator, checkout_id), permissions=permissions)
+        if apply_pending:
+            payload['provider_reversal'] = {'code': 'provider_reversal_approved_apply_pending'}
         return Response(payload)
 
 

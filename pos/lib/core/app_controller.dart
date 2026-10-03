@@ -505,6 +505,50 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
+  Future<QuickSaleProviderReversalLaunch?> startQuickSaleProviderReversal({
+    required String checkoutId,
+    required String paymentId,
+    required String idempotencyKey,
+    String reason = '',
+    QuickSaleAuthorization? authorization,
+  }) async {
+    try {
+      return await _api.startQuickSaleProviderReversal(
+        checkoutId: checkoutId,
+        paymentId: paymentId,
+        idempotencyKey: idempotencyKey,
+        reason: reason,
+        authorization: authorization?.toJson(),
+      );
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
+  Future<QuickSaleCheckout?> resolveQuickSaleProviderReversal({
+    required String checkoutId,
+    required String operationId,
+    required String response,
+    String? responseCode,
+  }) async {
+    try {
+      return await _api.resolveQuickSaleProviderReversal(
+        checkoutId: checkoutId,
+        operationId: operationId,
+        response: response,
+        responseCode: responseCode,
+      );
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
   Future<QuickSaleProviderPaymentLaunch?> retryQuickSaleProviderPayment({
     required String checkoutId,
     required String intentId,

@@ -82,11 +82,27 @@ def _blocking_payment_intent(checkout, *, lock=False, exclude_id=None):
     return intents.first()
 
 
-def _ensure_checkout_without_blocking_intent(checkout, *, exclude_id=None):
+def _ensure_checkout_without_blocking_intent(checkout, *, exclude_id=None, exclude_reversal_id=None):
     if _blocking_payment_intent(checkout, lock=True, exclude_id=exclude_id):
         raise QuickCheckoutConflict(
             'payment_intent_in_progress',
             'O checkout possui uma cobrança externa pendente ou reutilizável.',
+        )
+    from apps.payment_integrations.models import ProviderReversalOperation, ProviderReversalStatus
+
+    reversals = ProviderReversalOperation.objects.select_for_update().filter(
+        origin_type='quick_sale', origin_id=str(checkout.pk),
+        status__in=(
+            ProviderReversalStatus.CREATED, ProviderReversalStatus.PROCESSING,
+            ProviderReversalStatus.UNKNOWN, ProviderReversalStatus.APPROVED,
+        ),
+    )
+    if exclude_reversal_id:
+        reversals = reversals.exclude(pk=exclude_reversal_id)
+    if reversals.exists():
+        raise QuickCheckoutConflict(
+            'provider_reversal_in_progress',
+            'O checkout possui um estorno externo pendente de confirmação.',
         )
 
 
@@ -872,6 +888,113 @@ def reverse_quick_checkout_payment(*, payment, user, reason, idempotency_key, au
                     **({'authorizer_user_id': authorized_by.pk}
                        if authorized_by is not None and authorized_by.pk != user.pk else {}),
                 })
+    paid, _remaining = checkout_balance(checkout)
+    if paid == Decimal('0.00'):
+        restore_checkout_reservation_expiry(checkout)
+    return reversal, False
+
+
+@transaction.atomic
+def create_provider_quick_checkout_reversal(*, checkout, payment, user, reason,
+                                            idempotency_key, authorized_by=None,
+                                            audit_metadata=None):
+    from apps.payment_integrations.models import (
+        PaymentAttempt, PaymentAttemptStatus, PaymentIntentOriginType,
+    )
+    from apps.payment_integrations.services import (
+        PaymentIntegrationConflict, create_provider_reversal,
+    )
+
+    session, checkout, _sessions = _lock_checkout_session(checkout.pk, user=user)
+    _ensure_checkout_without_blocking_intent(checkout)
+    payment = QuickSalePayment.objects.select_for_update().get(pk=payment.pk, checkout=checkout)
+    if checkout.status != QuickSaleCheckoutStatus.OPEN:
+        raise QuickCheckoutConflict('checkout_closed', 'O checkout já foi finalizado.')
+    if session.status != CashSessionStatus.OPEN:
+        raise QuickCheckoutConflict('cash_session_closed', 'Não é possível estornar após o fechamento do caixa.')
+    if payment.status != QuickSalePaymentStatus.APPLIED or hasattr(payment, 'reversal'):
+        raise QuickCheckoutConflict('payment_already_reversed', 'O pagamento já foi estornado.')
+    if payment.source_type != QuickSalePaymentSourceType.PROVIDER or not payment.source_payment_attempt_id:
+        raise QuickCheckoutConflict('provider_reversal_required', 'O pagamento não pertence a um provedor externo.')
+    attempt = PaymentAttempt.objects.select_for_update().get(pk=payment.source_payment_attempt_id)
+    if attempt.status != PaymentAttemptStatus.APPROVED:
+        raise QuickCheckoutConflict('provider_reversal_source_unapproved', 'O pagamento de provedor não está aprovado.')
+    try:
+        operation, replayed = create_provider_reversal(
+            company=checkout.company, branch=checkout.branch, pos_device=checkout.pos_device,
+            operator=user, authorized_by=authorized_by,
+            origin_type=PaymentIntentOriginType.QUICK_SALE, origin_id=checkout.pk,
+            source_attempt=attempt, reason=reason, idempotency_key=idempotency_key,
+        )
+    except PaymentIntegrationConflict as error:
+        raise QuickCheckoutConflict(error.code, error.message) from error
+    audit_log(
+        actor=user, action='quick_sale_provider_reversal.created', obj=operation,
+        company=checkout.company, branch=checkout.branch,
+        after={'checkout_id': str(checkout.pk), 'payment_id': str(payment.pk), 'operation_id': str(operation.pk)},
+        metadata={
+            **(audit_metadata or {}), 'idempotency_key': str(idempotency_key),
+            **({'authorizer_user_id': authorized_by.pk}
+               if authorized_by is not None and authorized_by.pk != user.pk else {}),
+        },
+    )
+    return operation, replayed
+
+
+@transaction.atomic
+def apply_approved_provider_quick_checkout_reversal(*, checkout, operation, user,
+                                                     audit_metadata=None):
+    from apps.payment_integrations.models import ProviderReversalOperation, ProviderReversalStatus
+    from apps.payment_integrations.services import PaymentIntegrationConflict, mark_provider_reversal_applied
+
+    session, checkout, _sessions = _lock_checkout_session(checkout.pk, user=user)
+    operation = ProviderReversalOperation.objects.select_for_update().select_related(
+        'source_attempt',
+    ).get(pk=operation.pk)
+    if (
+        operation.origin_type != 'quick_sale' or operation.origin_id != str(checkout.pk)
+        or operation.company_id != checkout.company_id or operation.branch_id != checkout.branch_id
+        or operation.pos_device_id != checkout.pos_device_id
+    ):
+        raise QuickCheckoutConflict('provider_reversal_context_invalid', 'A reversão não pertence a este checkout.')
+    _ensure_checkout_without_blocking_intent(checkout, exclude_reversal_id=operation.pk)
+    payment = QuickSalePayment.objects.select_for_update(of=('self',)).select_related(
+        'checkout', 'payment_method', 'cash_session',
+    ).filter(checkout=checkout, source_payment_attempt_id=operation.source_attempt_id).first()
+    if not payment:
+        raise QuickCheckoutConflict('provider_reversal_payment_missing', 'O pagamento original não foi encontrado.')
+    existing = QuickSalePayment.objects.select_for_update().filter(reversal_of=payment).first()
+    if existing:
+        if operation.status != ProviderReversalStatus.APPLIED:
+            try:
+                mark_provider_reversal_applied(operation=operation, actor=user)
+            except PaymentIntegrationConflict as error:
+                raise QuickCheckoutConflict(error.code, error.message) from error
+        return existing, True
+    if operation.status != ProviderReversalStatus.APPROVED:
+        raise QuickCheckoutConflict('provider_reversal_not_approved', 'A Cielo ainda não confirmou o estorno.')
+    if checkout.status != QuickSaleCheckoutStatus.OPEN or session.status != CashSessionStatus.OPEN:
+        raise QuickCheckoutConflict('checkout_not_reversible', 'O checkout ou a sessão de caixa não permite estorno.')
+    if payment.status != QuickSalePaymentStatus.APPLIED:
+        raise QuickCheckoutConflict('payment_already_reversed', 'O pagamento já foi estornado.')
+    reversal = QuickSalePayment.objects.create(
+        checkout=payment.checkout, payment_method=payment.payment_method, amount=payment.amount,
+        received_amount=payment.received_amount, change_amount=payment.change_amount, operator=user,
+        cash_session=payment.cash_session, status=QuickSalePaymentStatus.REVERSED,
+        idempotency_key=operation.pk,
+        request_fingerprint=_fingerprint({'provider_reversal': str(operation.pk), 'payment': str(payment.pk)}),
+        reversal_of=payment, reversal_reason=operation.reason,
+    )
+    try:
+        mark_provider_reversal_applied(operation=operation, actor=user)
+    except PaymentIntegrationConflict as error:
+        raise QuickCheckoutConflict(error.code, error.message) from error
+    audit_log(
+        actor=user, action='quick_sale_provider_reversal.applied', obj=reversal,
+        company=checkout.company, branch=checkout.branch,
+        after={'checkout_id': str(checkout.pk), 'payment_id': str(payment.pk), 'operation_id': str(operation.pk)},
+        metadata=audit_metadata or {},
+    )
     paid, _remaining = checkout_balance(checkout)
     if paid == Decimal('0.00'):
         restore_checkout_reservation_expiry(checkout)

@@ -20,7 +20,7 @@ class CieloResponseActivity : Activity() {
             val responseCode = CieloPaymentBridge.callbackParameter(uri, "responsecode")
             Log.i(
                 logTag,
-                "CIELO_CALLBACK_ACTIVITY action=${intent.action} scheme=${uri.scheme} host=${uri.host} query_names=$queryNames response_present=${!response.isNullOrEmpty()} response_length=${response?.length ?: 0} responsecode_present=${!responseCode.isNullOrEmpty()} active_attempt_present=${CieloPaymentBridge.hasActiveAttempt(this)}",
+                "CIELO_CALLBACK_ACTIVITY action=${intent.action} scheme=${uri.scheme} host=${uri.host} query_names=$queryNames response_present=${!response.isNullOrEmpty()} response_length=${response?.length ?: 0} responsecode_present=${!responseCode.isNullOrEmpty()} active_operation_present=${CieloPaymentBridge.hasActiveAttempt(this)}",
             )
             CieloPaymentBridge.deliverCallback(this, uri)
         }

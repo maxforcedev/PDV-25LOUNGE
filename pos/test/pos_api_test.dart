@@ -265,7 +265,95 @@ void main() {
     expect(launch.replayed, isTrue);
     expect(launch.launchAvailable, isFalse);
   });
+
+  test('uses provider reversal endpoints and parses its launch operation',
+      () async {
+    var requestCount = 0;
+    final api = HttpPosApi(
+      baseUrl: 'https://core.example',
+      secrets: _MemorySecretStore(),
+      client: MockClient((request) async {
+        requestCount += 1;
+        if (requestCount == 1) {
+          expect(
+            request.url.path,
+            '/api/v1/pos/sales/checkouts/checkout-1/payments/payment-1/provider-reversal/start/',
+          );
+          expect(jsonDecode(request.body), {
+            'idempotency_key': 'reversal-key',
+            'reason': 'Cobrança duplicada',
+          });
+          return http.Response(
+              jsonEncode({
+                'provider': 'cielo',
+                'operation_id': 'reversal-1',
+                'status': 'processing',
+                'operation': 'reversal',
+                'launch_uri': 'lio://payment-reversal?request=secret',
+              }),
+              200);
+        }
+        expect(
+          request.url.path,
+          '/api/v1/pos/sales/checkouts/checkout-1/provider-reversals/reversal-1/result/',
+        );
+        expect(jsonDecode(request.body), {
+          'response': 'callback',
+          'responsecode': '0',
+        });
+        return http.Response(jsonEncode(_checkoutPayload()), 200);
+      }),
+    );
+
+    final launch = await api.startQuickSaleProviderReversal(
+      checkoutId: 'checkout-1',
+      paymentId: 'payment-1',
+      idempotencyKey: 'reversal-key',
+      reason: 'Cobrança duplicada',
+    );
+    expect(launch.operationId, 'reversal-1');
+    expect(launch.launchUri, 'lio://payment-reversal?request=secret');
+
+    final checkout = await api.resolveQuickSaleProviderReversal(
+      checkoutId: 'checkout-1',
+      operationId: 'reversal-1',
+      response: 'callback',
+      responseCode: '0',
+    );
+    final payment = checkout.payments.single;
+    expect(payment.sourceType, 'provider');
+    expect(payment.paymentAttemptId, 'attempt-1');
+    expect(payment.providerReversal?.status, 'cancelled');
+  });
 }
+
+Map<String, dynamic> _checkoutPayload() => {
+      'id': 'checkout-1',
+      'status': 'open',
+      'preview': const {},
+      'paid_amount': '10.00',
+      'remaining_amount': '0.00',
+      'has_payment_history': true,
+      'discount_intent': const {},
+      'service_fee_waived': false,
+      'items': const [],
+      'payments': [
+        {
+          'id': 'payment-1',
+          'payment_method_name': 'Cartão',
+          'amount': '10.00',
+          'status': 'applied',
+          'source_type': 'provider',
+          'payment_attempt_id': 'attempt-1',
+          'provider_reversal': {
+            'id': 'reversal-1',
+            'status': 'cancelled',
+            'provider_message': 'Cancelado',
+          },
+        },
+      ],
+      'capabilities': const {},
+    };
 
 class _MemorySecretStore implements SecretStore {
   _MemorySecretStore({this.deviceCredential, this.operatorSession});

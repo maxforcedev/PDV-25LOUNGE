@@ -4,21 +4,32 @@ import 'package:flutter/services.dart';
 
 class CieloPaymentCallback {
   const CieloPaymentCallback({
-    required this.attemptId,
+    required this.operation,
+    required this.operationId,
     required this.response,
     this.responseCode,
   });
 
   factory CieloPaymentCallback.fromMap(Map<Object?, Object?> value) =>
       CieloPaymentCallback(
-        attemptId: value['attempt_id'] as String,
+        // Native clients before reversal support only sent attempt_id.
+        operation: value['operation'] as String? ?? 'payment',
+        operationId:
+            value['operation_id'] as String? ?? value['attempt_id'] as String,
         response: value['response'] as String? ?? '',
         responseCode: value['responsecode'] as String?,
       );
 
-  final String attemptId;
+  final String operation;
+  final String operationId;
   final String response;
   final String? responseCode;
+
+  bool get isPayment => operation == 'payment';
+  bool get isReversal => operation == 'reversal';
+
+  // Retains the established payment-only bridge API for existing callers.
+  String get attemptId => operationId;
 }
 
 /// Native Cielo transport only. Financial status remains exclusively in CORE.
@@ -33,11 +44,13 @@ class CieloPaymentBridge {
   Stream<CieloPaymentCallback> get callbacks => _callbacks.stream;
 
   Future<void> launch({
-    required String attemptId,
+    required String operation,
+    required String operationId,
     required String launchUri,
   }) =>
       _channel.invokeMethod<void>('launchPayment', {
-        'attempt_id': attemptId,
+        'operation': operation,
+        'operation_id': operationId,
         'launch_uri': launchUri,
       });
 
@@ -47,10 +60,13 @@ class CieloPaymentBridge {
     return value == null ? null : CieloPaymentCallback.fromMap(value);
   }
 
-  Future<bool> acknowledgeCallback(String attemptId) async =>
+  Future<bool> acknowledgeCallback(CieloPaymentCallback callback) async =>
       await _channel.invokeMethod<bool>(
         'acknowledgeCallback',
-        {'attempt_id': attemptId},
+        {
+          'operation': callback.operation,
+          'operation_id': callback.operationId,
+        },
       ) ??
       false;
 
