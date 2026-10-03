@@ -334,6 +334,11 @@ abstract class PosApi {
     String? responseCode,
   }) =>
       throw UnimplementedError();
+  Future<QuickSaleCheckout> reportProviderReversalLaunchFailed({
+    required String checkoutId,
+    required String operationId,
+  }) =>
+      throw UnimplementedError();
   Future<QuickSaleProviderPaymentLaunch> retryQuickSaleProviderPayment({
     required String checkoutId,
     required String intentId,
@@ -1606,6 +1611,17 @@ class HttpPosApi implements PosApi, PosCredentialCache {
           'response': response,
           if (responseCode != null) 'responsecode': responseCode,
         },
+      ));
+
+  @override
+  Future<QuickSaleCheckout> reportProviderReversalLaunchFailed({
+    required String checkoutId,
+    required String operationId,
+  }) async =>
+      QuickSaleCheckout.fromJson(await _request(
+        'POST',
+        'sales/checkouts/$checkoutId/provider-reversals/$operationId/launch-failed/',
+        body: const {},
       ));
 
   @override

@@ -158,8 +158,14 @@ object CieloPaymentBridge {
             return
         }
         if (pendingCallback != null) {
-            Log.w(logTag, "CIELO_CALLBACK_DUPLICATE operation=${operation.type} operation_id=${operation.id}")
-            return
+            if (pendingCallback?.get("operation") == operation.type &&
+                pendingCallback?.get("operation_id") == operation.id
+            ) {
+                Log.w(logTag, "CIELO_CALLBACK_DUPLICATE operation=${operation.type} operation_id=${operation.id}")
+                return
+            }
+            Log.w(logTag, "CIELO_CALLBACK_STALE_REPLACED operation=${operation.type} operation_id=${operation.id}")
+            pendingCallback = null
         }
         pendingCallback = mapOf(
             "operation" to operation.type,

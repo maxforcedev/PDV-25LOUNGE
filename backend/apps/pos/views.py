@@ -594,7 +594,7 @@ class POSCashView(POSDeviceView):
 
 class POSCashOverviewView(POSCashView):
     def get(self, request):
-        device, operator, permissions, operator_session = self.context(request)
+        device, operator, permissions, _ = self.context(request)
         self.require_operational_permission(permissions)
         return Response(cash_state_for_device(device, permissions, operator))
 
@@ -2008,7 +2008,7 @@ def _quick_checkout_payload(checkout, *, permissions=()):
         checkout.status == QuickSaleCheckoutStatus.OPEN
         and remaining > Decimal('0.00')
         and session_open
-        and not blocking_intent
+        and not blocking_intent and not blocking_reversal
     )
     payments = list(checkout.payments.select_related(
         'payment_method', 'source_payment_attempt',
@@ -2725,6 +2725,31 @@ class POSQuickSaleProviderPaymentLaunchFailedView(POSQuickCheckoutView):
             )
         except QuickCheckoutConflict as error:
             _quick_checkout_conflict(error)
+        return Response(_quick_checkout_payload(self._checkout(device, operator, checkout_id), permissions=permissions))
+
+
+class POSQuickSaleProviderReversalLaunchFailedView(POSQuickCheckoutView):
+    def post(self, request, checkout_id, operation_id):
+        from apps.payment_integrations.models import ProviderReversalStatus
+        from apps.payment_integrations.services import PaymentIntegrationConflict, resolve_provider_reversal
+
+        device, operator, permissions, _ = self.context(request)
+        self._require(permissions, 'sales.create', 'Você não possui permissão para realizar vendas nesta filial.')
+        serializer = POSQuickSaleProviderLaunchFailedSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        checkout = self._checkout(device, operator, checkout_id)
+        try:
+            resolve_provider_reversal(
+                operation=_scoped_provider_reversal(checkout, operation_id),
+                status=ProviderReversalStatus.ERROR, actor=operator,
+                response_metadata={'provider_status': 'launch_error'},
+                result_data={
+                    'provider_status': 'launch_error',
+                    'provider_message': 'Não foi possível iniciar o estorno na Cielo.',
+                },
+            )
+        except PaymentIntegrationConflict as error:
+            _quick_checkout_conflict(QuickCheckoutConflict(error.code, error.message))
         return Response(_quick_checkout_payload(self._checkout(device, operator, checkout_id), permissions=permissions))
 
 

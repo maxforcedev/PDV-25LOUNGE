@@ -373,12 +373,12 @@ class CieloSmartAdapter(PaymentProviderAdapter):
             )
         credentials = get_cielo_credentials()
         request = {
+            'id': attempt.provider_order_id,
             'clientID': credentials.client_id,
             'accessToken': credentials.access_token,
-            'orderId': attempt.provider_order_id,
             'cieloCode': attempt.nsu,
             'authCode': attempt.authorization_code,
-            'value': str(amount_to_cents(reversal.amount)),
+            'value': amount_to_cents(reversal.amount),
         }
         encoded_request = base64.b64encode(json.dumps(
             request, ensure_ascii=True, separators=(',', ':'), sort_keys=True,
@@ -441,22 +441,73 @@ class CieloSmartAdapter(PaymentProviderAdapter):
                 },
                 safe_metadata={'provider': self.provider_code, 'status_code': code},
             )
-        status_code = str(payload.get('statusCode', payload.get('status'))).strip()
-        order_id = _safe_text(payload.get('orderId') or payload.get('id'), limit=150)
-        if status_code not in {'0', '1'} or order_id != attempt.provider_order_id:
+        order_id = _safe_text(payload.get('id'), limit=150)
+        if order_id != attempt.provider_order_id:
             return ProviderReversalResult(
                 status=PaymentAttemptStatus.UNKNOWN,
                 result_data={'provider_status': 'unknown', 'provider_message': 'Estorno Cielo não pôde ser confirmado.'},
                 safe_metadata={'provider': self.provider_code, 'result': 'unknown'},
             )
+        payments = payload.get('payments')
+        if not isinstance(payments, list):
+            return ProviderReversalResult(
+                status=PaymentAttemptStatus.UNKNOWN,
+                result_data={'provider_status': 'unknown', 'provider_message': 'O estorno Cielo não possui pagamentos.'},
+                safe_metadata={'provider': self.provider_code, 'result': 'unknown'},
+            )
+        expected_cents = amount_to_cents(reversal.amount)
+        candidates = []
+        for payment in payments:
+            if not isinstance(payment, dict):
+                continue
+            fields = payment.get('paymentFields')
+            if not isinstance(fields, dict):
+                continue
+            try:
+                raw_amount = payment.get('amount')
+                if isinstance(raw_amount, (bool, float)):
+                    continue
+                amount = int(raw_amount)
+                if str(amount) != str(raw_amount):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            if amount != expected_cents or str(fields.get('statusCode')) != '2':
+                continue
+            original_identifiers = (
+                ('provider_transaction_id', ('originalTransactionId', 'originalPaymentTransactionId')),
+                ('nsu', ('originalCieloCode', 'originalNsu')),
+                ('authorization_code', ('originalAuthCode',)),
+            )
+            matched = True
+            for attribute, names in original_identifiers:
+                expected = getattr(attempt, attribute)
+                for name in names:
+                    value = payment.get(name)
+                    if value in (None, ''):
+                        value = fields.get(name)
+                    if value not in (None, '') and _safe_text(value, limit=150) != expected:
+                        matched = False
+                        break
+                if not matched:
+                    break
+            if matched:
+                candidates.append((payment, fields))
+        if len(candidates) != 1:
+            return ProviderReversalResult(
+                status=PaymentAttemptStatus.UNKNOWN,
+                result_data={'provider_status': 'unknown', 'provider_message': 'Não foi possível identificar unicamente o estorno Cielo.'},
+                safe_metadata={'provider': self.provider_code, 'result': 'unknown'},
+            )
+        _payment, fields = candidates[0]
         return ProviderReversalResult(
             status=PaymentAttemptStatus.APPROVED,
             result_data={
-                'provider_status': 'approved', 'provider_status_code': status_code,
-                'provider_message': _safe_text(payload.get('reason')),
+                'provider_status': 'approved', 'provider_status_code': '2',
+                'provider_message': _safe_text(fields.get('reason') or payload.get('reason')),
             },
             safe_metadata={
-                'provider': self.provider_code, 'status': 'approved', 'status_code': status_code,
+                'provider': self.provider_code, 'status': 'approved', 'status_code': '2',
                 'order_id': order_id,
             },
         )

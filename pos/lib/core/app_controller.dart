@@ -549,6 +549,23 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
+  Future<QuickSaleCheckout?> reportProviderReversalLaunchFailed({
+    required String checkoutId,
+    required String operationId,
+  }) async {
+    try {
+      return await _api.reportProviderReversalLaunchFailed(
+        checkoutId: checkoutId,
+        operationId: operationId,
+      );
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return null;
+  }
+
   Future<QuickSaleProviderPaymentLaunch?> retryQuickSaleProviderPayment({
     required String checkoutId,
     required String intentId,

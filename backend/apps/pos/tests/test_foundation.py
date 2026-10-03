@@ -3,6 +3,7 @@ import json
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from django.contrib.auth.hashers import make_password
@@ -33,6 +34,7 @@ from apps.payment_integrations.models import (
     PaymentAttempt, PaymentAttemptStatus, PaymentIntent, PaymentProvider, PaymentProviderConnection,
     PaymentProviderConnectionEnvironment, PaymentTerminal, ProviderReversalOperation,
 )
+from apps.payment_integrations.providers.cielo import CieloSmartAdapter
 from apps.payment_integrations.services import PaymentIntegrationConflict
 from apps.pos.provider_payments import resolve_provider_resources
 from apps.pos.services import (
@@ -92,6 +94,110 @@ class POSFoundationContractTests(SimpleTestCase):
             'update_available': True,
             'update_required': False,
         })
+
+
+class CieloAdapterContractTests(SimpleTestCase):
+    def setUp(self):
+        self.adapter = CieloSmartAdapter()
+        self.attempt = SimpleNamespace(
+            pk=uuid4(),
+            provider_connection=SimpleNamespace(
+                provider=SimpleNamespace(code='cielo'), configuration={},
+            ),
+            provider_connection_id=None,
+            provider_order_id='cielo-order-1',
+            provider_transaction_id='transaction-1',
+            nsu='nsu-1',
+            authorization_code='auth-1',
+        )
+        self.reversal = SimpleNamespace(
+            pk=uuid4(), source_attempt=self.attempt, amount=Decimal('20.00'),
+        )
+
+    @staticmethod
+    def _encoded(payload):
+        return base64.b64encode(json.dumps(payload).encode()).decode()
+
+    def _payment(self, *, amount=2000, status='2', transaction='transaction-1'):
+        return {
+            'amount': amount,
+            'originalTransactionId': transaction,
+            'originalCieloCode': 'nsu-1',
+            'originalAuthCode': 'auth-1',
+            'paymentFields': {'statusCode': status},
+        }
+
+    @override_settings(
+        CIELO_SMART_CLIENT_ID='cielo-client-id-for-test',
+        CIELO_SMART_ACCESS_TOKEN='cielo-access-token-for-test',
+    )
+    def test_reversal_command_uses_the_cielo_contract(self):
+        command = self.adapter.build_reversal_command(
+            reversal=self.reversal,
+            callback_url='corepdv://cielo-payment-reversal-response',
+        )
+        request = json.loads(base64.b64decode(parse_qs(urlparse(command.uri).query)['request'][0]))
+
+        self.assertEqual(command.operation, 'reversal')
+        self.assertEqual(request['id'], 'cielo-order-1')
+        self.assertEqual(request['value'], 2000)
+        self.assertNotIn('orderId', request)
+
+    def test_reversal_callback_requires_a_single_real_cancellation_transaction(self):
+        result = self.adapter.parse_reversal_callback(
+            reversal=self.reversal,
+            response=self._encoded({
+                'id': 'cielo-order-1',
+                'payments': [self._payment(status='1'), self._payment(status='2')],
+            }),
+        )
+
+        self.assertEqual(result.status, PaymentAttemptStatus.APPROVED)
+
+    def test_reversal_callback_rejects_unproven_cancellation(self):
+        cases = {
+            'payment_transaction': {
+                'id': 'cielo-order-1', 'payments': [self._payment(status='1')],
+            },
+            'different_order': {
+                'id': 'other-order', 'payments': [self._payment()],
+            },
+            'different_amount': {
+                'id': 'cielo-order-1', 'payments': [self._payment(amount=1000)],
+            },
+            'ambiguous': {
+                'id': 'cielo-order-1', 'payments': [self._payment(), self._payment()],
+            },
+            'different_original_transaction': {
+                'id': 'cielo-order-1', 'payments': [self._payment(transaction='other-transaction')],
+            },
+        }
+
+        for name, payload in cases.items():
+            with self.subTest(name=name):
+                result = self.adapter.parse_reversal_callback(
+                    reversal=self.reversal, response=self._encoded(payload),
+                )
+                self.assertEqual(result.status, PaymentAttemptStatus.UNKNOWN)
+
+    def test_reversal_payload_error_overrides_responsecode_zero(self):
+        for code, expected in (('1', PaymentAttemptStatus.CANCELLED), ('3', PaymentAttemptStatus.ERROR)):
+            with self.subTest(code=code):
+                result = self.adapter.parse_reversal_callback(
+                    reversal=self.reversal,
+                    response=self._encoded({'code': code, 'reason': 'Resposta Cielo'}),
+                    responsecode='0',
+                )
+                self.assertEqual(result.status, expected)
+
+    def test_payment_payload_error_overrides_responsecode_zero(self):
+        result = self.adapter.parse_payment_callback(
+            attempt=self.attempt,
+            response=self._encoded({'code': '3', 'reason': 'Resposta Cielo'}),
+            responsecode='0',
+        )
+
+        self.assertEqual(result.status, PaymentAttemptStatus.ERROR)
 
 
 class POSQuickCustomerContractTests(SimpleTestCase):
@@ -1966,10 +2072,31 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(started_reversal.status_code, 200, started_reversal.data)
         self.assertEqual(started_reversal.data['operation'], 'reversal')
         self.assertIn('lio://payment-reversal', started_reversal.data['launch_uri'])
+        reversal_request = json.loads(base64.b64decode(parse_qs(
+            urlparse(started_reversal.data['launch_uri']).query,
+        )['request'][0]))
+        self.assertEqual(reversal_request['id'], 'cielo-order-reversal-1')
+        self.assertEqual(reversal_request['value'], 2000)
+        self.assertNotIn('orderId', reversal_request)
         self.assertEqual(QuickSalePayment.objects.filter(checkout=checkout).count(), 1)
+        self.assertFalse(started_reversal.data['capabilities']['can_record_payment'])
 
         reversal_response = base64.b64encode(json.dumps({
-            'statusCode': '0', 'orderId': 'cielo-order-reversal-1',
+            'id': 'cielo-order-reversal-1',
+            'payments': [{
+                'amount': 2000,
+                'authCode': 'auth-reversal-1',
+                'cieloCode': 'nsu-reversal-1',
+                'paymentFields': {
+                    'statusCode': '1', 'paymentTransactionId': 'transaction-reversal-1',
+                },
+            }, {
+                'amount': 2000,
+                'originalTransactionId': 'transaction-reversal-1',
+                'originalCieloCode': 'nsu-reversal-1',
+                'originalAuthCode': 'auth-reversal-1',
+                'paymentFields': {'statusCode': '2'},
+            }],
         }).encode()).decode()
         reversal_url = reverse(
             'pos:quick-sale-provider-reversal-result',
@@ -1985,6 +2112,7 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(PaymentAttempt.objects.get(pk=attempt.pk).status, PaymentAttemptStatus.APPROVED)
         self.assertEqual(resolved.data['paid_amount'], '0.00')
         self.assertEqual(resolved.data['remaining_amount'], '20.00')
+        self.assertTrue(resolved.data['capabilities']['can_record_payment'])
 
     @override_settings(
         CIELO_SMART_CLIENT_ID='cielo-client-id-for-test',
@@ -2032,6 +2160,16 @@ class POSFoundationIntegrationTests(TestCase):
                 self.assertEqual(QuickSalePayment.objects.filter(checkout=checkout).count(), 1)
                 self.assertFalse(QuickSalePayment.objects.filter(reversal_of=payment).exists())
                 self.assertEqual(ProviderReversalOperation.objects.get(pk=operation_id).status, expected_status)
+
+        operation_id = start_reversal()
+        launch_failed = self.client.post(
+            reverse('pos:quick-sale-provider-reversal-launch-failed', args=[checkout.pk, operation_id]),
+            {}, format='json',
+        )
+        self.assertEqual(launch_failed.status_code, 200, launch_failed.data)
+        self.assertEqual(QuickSalePayment.objects.filter(checkout=checkout).count(), 1)
+        self.assertEqual(ProviderReversalOperation.objects.get(pk=operation_id).status, 'error')
+        self.assertTrue(launch_failed.data['capabilities']['can_record_payment'])
 
     @override_settings(
         CIELO_SMART_CLIENT_ID='cielo-client-id-for-test',

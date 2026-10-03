@@ -105,7 +105,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
 
   void _receiveCieloCallback(CieloPaymentCallback callback) {
     debugPrint(
-        'CIELO_CALLBACK received operation=${callback.operation} operation_id=${callback.operationId} expected_match=${_isExpectedCieloCallback(callback)}');
+        'CIELO_CALLBACK received operation=${callback.operation} operation_id=${callback.operationId} response_present=${callback.response.isNotEmpty} response_length=${callback.response.length} expected_match=${_isExpectedCieloCallback(callback)}');
     if (!_isExpectedCieloCallback(callback)) return;
     _pendingCieloCallback = callback;
     debugPrint(
@@ -167,7 +167,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       }
       if (updated != null) {
         debugPrint(
-            'CIELO_CALLBACK resolve_returned operation=${callback.operation} operation_id=${callback.operationId}');
+            'CIELO_CALLBACK resolve_returned operation=${callback.operation} operation_id=${callback.operationId} resolved_status=${callback.isPayment ? updated.paymentIntegration?.intentStatus ?? "applied" : "reversal"}');
         final acknowledged = await _cieloBridge.acknowledgeCallback(callback);
         if (!acknowledged) {
           debugPrint(
@@ -208,6 +208,8 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     final status = integration!.attemptStatus ?? integration.intentStatus;
     if (status != 'cancelled' && status != 'error') return;
     if (!_shownProviderResultDialogs.add('$attemptId:$status')) return;
+    debugPrint(
+        'CIELO_CALLBACK modal_opened operation=payment attempt_id=$attemptId status=$status');
 
     // A retry from the dialog must not be blocked by the callback resolution.
     setState(() => _working = false);
@@ -254,6 +256,8 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     if (!_shownProviderResultDialogs.add('reversal:$operationId:$status')) {
       return;
     }
+    debugPrint(
+        'CIELO_CALLBACK modal_opened operation=reversal operation_id=$operationId status=$status');
     final message = reversal?.providerMessage?.trim();
     await showDialog<void>(
       context: context,
@@ -859,6 +863,12 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         'Código: ${error.code}\n'
         'Detalhe: ${_cieloLaunchDetail(error)}',
       );
+      final updated =
+          await widget.controller.reportProviderReversalLaunchFailed(
+        checkoutId: _checkout.id,
+        operationId: launch.operationId,
+      );
+      if (updated != null && mounted) _replaceCheckout(updated);
     }
     final current =
         await widget.controller.quickSaleCheckoutDetail(_checkout.id);
