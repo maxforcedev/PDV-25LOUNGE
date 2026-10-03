@@ -47,8 +47,12 @@ class CieloPaymentBridge {
     return value == null ? null : CieloPaymentCallback.fromMap(value);
   }
 
-  Future<void> acknowledgeCallback(String attemptId) => _channel
-      .invokeMethod<void>('acknowledgeCallback', {'attempt_id': attemptId});
+  Future<bool> acknowledgeCallback(String attemptId) async =>
+      await _channel.invokeMethod<bool>(
+        'acknowledgeCallback',
+        {'attempt_id': attemptId},
+      ) ??
+      false;
 
   Future<void> _onMethodCall(MethodCall call) async {
     if (call.method != 'paymentCallback' || call.arguments is! Map) return;

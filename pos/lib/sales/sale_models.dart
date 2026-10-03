@@ -526,6 +526,7 @@ class QuickSalePaymentIntegration {
     this.attemptId,
     this.attemptStatus,
     this.provider,
+    this.providerMessage,
     this.canRetry = false,
     this.canCancel = false,
     this.canApply = false,
@@ -540,6 +541,7 @@ class QuickSalePaymentIntegration {
         attemptId: json['attempt_id'] as String?,
         attemptStatus: json['attempt_status'] as String?,
         provider: json['provider'] as String?,
+        providerMessage: json['provider_message'] as String?,
         canRetry: json['can_retry'] == true,
         canCancel: json['can_cancel'] == true,
         canApply: json['can_apply'] == true,
@@ -551,6 +553,7 @@ class QuickSalePaymentIntegration {
   final String? attemptId;
   final String? attemptStatus;
   final String? provider;
+  final String? providerMessage;
   final bool canRetry;
   final bool canCancel;
   final bool canApply;

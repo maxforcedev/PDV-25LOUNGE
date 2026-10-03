@@ -9,6 +9,8 @@ import io.flutter.plugin.common.MethodChannel
 object CieloPaymentBridge {
     private const val cieloPackage = "br.com.cielosmart.orderservice"
     private const val logTag = "CieloPaymentBridge"
+    private const val preferencesName = "cielo_payment_bridge"
+    private const val activeAttemptPreference = "active_attempt_id"
     private var channel: MethodChannel? = null
     private var appContext: Context? = null
     private var activeAttemptId: String? = null
@@ -20,17 +22,25 @@ object CieloPaymentBridge {
         channel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "launchPayment" -> launch(call.arguments as? Map<*, *>, result)
-                "getPendingCallback" -> result.success(pendingCallback)
+                "getPendingCallback" -> {
+                    Log.i(logTag, "CIELO_CALLBACK_PENDING present=${pendingCallback != null}")
+                    result.success(pendingCallback)
+                }
                 "acknowledgeCallback" -> {
                     val attemptId = (call.arguments as? Map<*, *>)?.get("attempt_id") as? String
+                    var cleared = false
                     if (attemptId != null && pendingCallback?.get("attempt_id") == attemptId) {
                         pendingCallback = null
-                        activeAttemptId = null
+                        clearActiveAttempt(appContext)
                         appContext?.let { context ->
                             CieloPaymentForegroundService.stop(context)
                         }
+                        cleared = true
+                        Log.i(logTag, "CIELO_CALLBACK_ACK attempt_id=$attemptId cleared=true")
+                    } else {
+                        Log.w(logTag, "CIELO_CALLBACK_ACK attempt_id=${attemptId ?: "missing"} cleared=false")
                     }
-                    result.success(null)
+                    result.success(cleared)
                 }
                 else -> result.notImplemented()
             }
@@ -83,13 +93,13 @@ object CieloPaymentBridge {
             return
         }
         try {
-            activeAttemptId = attemptId
+            setActiveAttempt(context, attemptId)
             CieloPaymentForegroundService.start(context)
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
             result.success(null)
         } catch (error: Exception) {
-            activeAttemptId = null
+            clearActiveAttempt(context)
             runCatching { CieloPaymentForegroundService.stop(context) }
             Log.w(logTag, "CIELO_LAUNCH_FAILED attempt_id=$attemptId code=cielo_launch_failed exception=${error.javaClass.simpleName}")
             result.error(
@@ -106,12 +116,67 @@ object CieloPaymentBridge {
     }
 
     fun deliverCallback(context: Context, uri: Uri) {
-        val attemptId = activeAttemptId ?: return
+        val attemptId = activeAttempt(context)
+        val response = uri.getQueryParameter("response").orEmpty()
+        val responseCode = uri.getQueryParameter("responsecode")
+        Log.i(
+            logTag,
+            "CIELO_CALLBACK_RECEIVED attempt_present=${attemptId != null} response_present=${response.isNotEmpty()} response_length=${response.length} responsecode_present=${!responseCode.isNullOrEmpty()}",
+        )
+        if (attemptId == null) {
+            Log.w(logTag, "CIELO_CALLBACK_UNASSOCIATED")
+            return
+        }
+        if (pendingCallback != null) {
+            Log.w(logTag, "CIELO_CALLBACK_DUPLICATE attempt_id=$attemptId")
+            return
+        }
         pendingCallback = mapOf(
             "attempt_id" to attemptId,
-            "response" to uri.getQueryParameter("response").orEmpty(),
-            "responsecode" to uri.getQueryParameter("responsecode"),
+            "response" to response,
+            "responsecode" to responseCode,
         )
-        channel?.invokeMethod("paymentCallback", pendingCallback)
+        Log.i(logTag, "CIELO_CALLBACK_PENDING_CREATED attempt_id=$attemptId")
+        val callbackChannel = channel
+        if (callbackChannel == null) {
+            Log.w(logTag, "CIELO_CALLBACK_CHANNEL unavailable=true")
+            return
+        }
+        runCatching {
+            callbackChannel.invokeMethod("paymentCallback", pendingCallback)
+        }.onSuccess {
+            Log.i(logTag, "CIELO_CALLBACK_CHANNEL dispatched=true attempt_id=$attemptId")
+        }.onFailure { error ->
+            Log.w(logTag, "CIELO_CALLBACK_CHANNEL dispatched=false exception=${error.javaClass.simpleName}")
+        }
+    }
+
+    fun hasActiveAttempt(context: Context): Boolean = activeAttempt(context) != null
+
+    private fun activeAttempt(context: Context?): String? {
+        val inMemory = activeAttemptId
+        if (inMemory != null) return inMemory
+        val persisted = context?.applicationContext
+            ?.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
+            ?.getString(activeAttemptPreference, null)
+        activeAttemptId = persisted
+        return persisted
+    }
+
+    private fun setActiveAttempt(context: Context, attemptId: String) {
+        activeAttemptId = attemptId
+        context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
+            .edit()
+            .putString(activeAttemptPreference, attemptId)
+            .apply()
+    }
+
+    private fun clearActiveAttempt(context: Context?) {
+        activeAttemptId = null
+        context?.applicationContext
+            ?.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
+            ?.edit()
+            ?.remove(activeAttemptPreference)
+            ?.apply()
     }
 }

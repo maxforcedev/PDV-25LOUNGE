@@ -1897,7 +1897,9 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(intent.status, PaymentAttemptStatus.CANCELLED)
         self.assertEqual(intent.attempts.get().status, PaymentAttemptStatus.CANCELLED)
         self.assertEqual(QuickSalePayment.objects.filter(checkout=checkout).count(), 0)
-        self.assertIsNone(resolved.data['payment_integration'])
+        self.assertEqual(resolved.data['payment_integration']['intent_status'], 'cancelled')
+        self.assertEqual(resolved.data['payment_integration']['attempt_status'], 'cancelled')
+        self.assertFalse(resolved.data['payment_integration']['can_retry'])
         self.assertTrue(resolved.data['capabilities']['can_record_payment'])
 
     @override_settings(
@@ -1922,3 +1924,4 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(QuickSalePayment.objects.filter(checkout=checkout).count(), 0)
         self.assertTrue(resolved.data['payment_integration']['can_retry'])
         self.assertTrue(resolved.data['payment_integration']['can_cancel'])
+        self.assertEqual(resolved.data['payment_integration']['provider_message'], 'Falha no terminal')

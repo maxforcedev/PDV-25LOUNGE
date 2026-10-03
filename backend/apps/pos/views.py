@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal, InvalidOperation
 from time import perf_counter
 from types import SimpleNamespace
@@ -1968,6 +1969,11 @@ def _quick_checkout_payload(checkout, *, permissions=()):
         origin_id=str(checkout.pk),
         status__in=('created', 'ready', 'processing', 'declined', 'error', 'unknown', 'approved'),
     ).order_by('created_at').first()
+    display_intent = blocking_intent or PaymentIntent.objects.filter(
+        origin_type=PaymentIntentOriginType.QUICK_SALE,
+        origin_id=str(checkout.pk),
+        status=PaymentIntentStatus.CANCELLED,
+    ).order_by('-created_at').first()
     paid, remaining = checkout_balance(checkout)
     session_status = checkout.cash_session.status if checkout.cash_session_id else None
     session_open = session_status == CashSessionStatus.OPEN
@@ -2006,8 +2012,8 @@ def _quick_checkout_payload(checkout, *, permissions=()):
         )
     }
     latest_attempt = (
-        PaymentAttempt.objects.filter(intent=blocking_intent).order_by('-attempt_number').first()
-        if blocking_intent else None
+        PaymentAttempt.objects.filter(intent=display_intent).order_by('-attempt_number').first()
+        if display_intent else None
     )
     return {
         'id': str(checkout.pk),
@@ -2026,24 +2032,25 @@ def _quick_checkout_payload(checkout, *, permissions=()):
         'remaining_amount': str(remaining),
         'payment_integration': (
             {
-                'intent_id': str(blocking_intent.pk),
-                'intent_status': blocking_intent.status,
+                'intent_id': str(display_intent.pk),
+                'intent_status': display_intent.status,
                 'attempt_id': str(latest_attempt.pk) if latest_attempt else None,
                 'attempt_status': latest_attempt.status if latest_attempt else None,
-                'provider': blocking_intent.provider_connection.provider.code,
-                'can_retry': blocking_intent.status in {
+                'provider': display_intent.provider_connection.provider.code,
+                'provider_message': latest_attempt.provider_message if latest_attempt else '',
+                'can_retry': display_intent.status in {
                     PaymentIntentStatus.DECLINED, PaymentIntentStatus.ERROR,
                 },
-                'can_cancel': blocking_intent.status in {
+                'can_cancel': display_intent.status in {
                     PaymentIntentStatus.CREATED, PaymentIntentStatus.READY,
                     PaymentIntentStatus.DECLINED, PaymentIntentStatus.ERROR,
                 },
-                'can_apply': blocking_intent.status == PaymentIntentStatus.APPROVED,
-                'requires_recovery': blocking_intent.status in {
+                'can_apply': display_intent.status == PaymentIntentStatus.APPROVED,
+                'requires_recovery': display_intent.status in {
                     PaymentIntentStatus.PROCESSING, PaymentIntentStatus.UNKNOWN,
                 },
             }
-            if blocking_intent else None
+            if display_intent else None
         ),
         'has_payment_history': has_payment_history,
         'operational_status': (
@@ -2384,10 +2391,21 @@ class POSQuickSaleProviderPaymentResultView(POSQuickCheckoutView):
         serializer.is_valid(raise_exception=True)
         checkout = self._checkout(device, operator, checkout_id)
         attempt = _scoped_provider_attempt(checkout, attempt_id)
+        logger = logging.getLogger('pos.provider_payment')
+        response = serializer.validated_data['response']
+        responsecode = serializer.validated_data['responsecode']
+        logger.info(
+            'provider_result_received checkout_id=%s attempt_id=%s provider=%s response_present=%s response_length=%s responsecode=%s',
+            checkout.pk, attempt.pk, attempt.provider_connection.provider.code,
+            bool(response), len(response), str(responsecode or '')[:100],
+        )
         try:
             result = get_adapter(attempt.provider_connection.provider.code).parse_payment_callback(
-                attempt=attempt, response=serializer.validated_data['response'],
-                responsecode=serializer.validated_data['responsecode'],
+                attempt=attempt, response=response, responsecode=responsecode,
+            )
+            logger.info(
+                'provider_result_parsed attempt_id=%s provider=%s status=%s',
+                attempt.pk, attempt.provider_connection.provider.code, result.status,
             )
             _attempt, intent = resolve_quick_sale_payment_attempt(
                 checkout=checkout, attempt=attempt, status=result.status, user=operator,
@@ -2396,6 +2414,7 @@ class POSQuickSaleProviderPaymentResultView(POSQuickCheckoutView):
             )
             apply_pending = False
             if result.status == PaymentAttemptStatus.APPROVED:
+                logger.info('provider_result_apply_started attempt_id=%s intent_id=%s', attempt.pk, intent.pk)
                 try:
                     apply_approved_quick_sale_payment_intent(
                         checkout=checkout, intent=intent, user=operator,
@@ -2404,6 +2423,10 @@ class POSQuickSaleProviderPaymentResultView(POSQuickCheckoutView):
                 except QuickCheckoutConflict:
                     # The external approval remains authoritative; never retry the charge.
                     apply_pending = True
+                logger.info(
+                    'provider_result_apply_finished attempt_id=%s apply_pending=%s',
+                    attempt.pk, apply_pending,
+                )
         except (LookupError, PaymentIntegrationConflict) as error:
             if isinstance(error, PaymentIntegrationConflict):
                 _quick_checkout_conflict(QuickCheckoutConflict(error.code, error.message))

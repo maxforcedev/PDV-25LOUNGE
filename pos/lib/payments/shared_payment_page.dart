@@ -92,13 +92,19 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
 
   QuickSalePaymentIntegration? get _providerPayment =>
       _checkout.paymentIntegration;
+  bool get _hasBlockingProviderPayment =>
+      _providerPayment?.intentStatus != 'cancelled';
 
   String? get _expectedProviderAttemptId =>
       _providerPayment?.attemptId ?? _activeProviderAttemptId;
 
   void _receiveCieloCallback(CieloPaymentCallback callback) {
-    if (callback.attemptId != _expectedProviderAttemptId) return;
+    final expectedAttemptId = _expectedProviderAttemptId;
+    debugPrint(
+        'CIELO_CALLBACK received attempt_id=${callback.attemptId} expected_match=${callback.attemptId == expectedAttemptId}');
+    if (callback.attemptId != expectedAttemptId) return;
     _pendingCieloCallback = callback;
+    debugPrint('CIELO_CALLBACK stored attempt_id=${callback.attemptId}');
     if (mounted) setState(() {});
     _schedulePendingProviderCallback();
   }
@@ -119,9 +125,12 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         if (callback != null &&
             callback.attemptId == _expectedProviderAttemptId) {
           _pendingCieloCallback = callback;
+          debugPrint(
+              'CIELO_CALLBACK pending_native attempt_id=${callback.attemptId}');
           if (mounted) setState(() {});
         }
-      } on PlatformException {
+      } on PlatformException catch (error) {
+        debugPrint('CIELO_CALLBACK pending_native_failed code=${error.code}');
         // The bridge is unavailable outside Android Cielo devices.
       } finally {
         _checkingNativeCallback = false;
@@ -136,6 +145,8 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     _resolvingProviderCallback = true;
     if (mounted) setState(() => _working = true);
     try {
+      debugPrint(
+          'CIELO_CALLBACK resolve_started attempt_id=${callback.attemptId}');
       final updated = await widget.controller.resolveQuickSaleProviderPayment(
         checkoutId: _checkout.id,
         attemptId: callback.attemptId,
@@ -143,12 +154,22 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         responseCode: callback.responseCode,
       );
       if (updated != null) {
-        await _cieloBridge.acknowledgeCallback(callback.attemptId);
+        debugPrint(
+            'CIELO_CALLBACK resolve_returned attempt_id=${callback.attemptId}');
+        final acknowledged =
+            await _cieloBridge.acknowledgeCallback(callback.attemptId);
+        if (!acknowledged) {
+          debugPrint(
+              'CIELO_CALLBACK ack_failed attempt_id=${callback.attemptId}');
+          return;
+        }
+        debugPrint('CIELO_CALLBACK ack_sent attempt_id=${callback.attemptId}');
         _pendingCieloCallback = null;
         _activeProviderAttemptId = null;
         if (mounted) _replaceCheckout(updated);
       }
-    } catch (_) {
+    } catch (error) {
+      debugPrint('CIELO_CALLBACK resolve_failed type=${error.runtimeType}');
       // Keep the callback for the explicit confirmation retry after a network failure.
     } finally {
       _resolvingProviderCallback = false;
@@ -784,7 +805,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
 
   Future<void> _cancel() async {
     if (_working) return;
-    if (_providerPayment != null) {
+    if (_hasBlockingProviderPayment) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('Resolva a cobrança Cielo antes de cancelar a venda.'),
       ));
@@ -829,7 +850,9 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
   }
 
   Future<void> _cancelAbandonedCheckout() async {
-    if (_checkoutCancelled || _hasAppliedPayment || _providerPayment != null) {
+    if (_checkoutCancelled ||
+        _hasAppliedPayment ||
+        _hasBlockingProviderPayment) {
       return;
     }
     setState(() => _working = true);
@@ -1009,8 +1032,17 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         ),
       );
     }
+    if (integration.intentStatus == 'cancelled' ||
+        integration.attemptStatus == 'cancelled') {
+      return _providerStatusPanel(
+        title: 'PAGAMENTO CANCELADO',
+        message: integration.providerMessage?.isNotEmpty == true
+            ? integration.providerMessage!
+            : 'Pagamento cancelado pelo usuário.',
+      );
+    }
     if (integration.canRetry || integration.canCancel) {
-      return Row(children: [
+      final controls = Row(children: [
         if (integration.canRetry)
           Expanded(
               child: OutlinedButton.icon(
@@ -1027,6 +1059,17 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
             child: const Text('CANCELAR COBRANÇA'),
           )),
       ]);
+      if (integration.intentStatus == 'error' ||
+          integration.attemptStatus == 'error') {
+        return _providerStatusPanel(
+          title: 'ERRO NO PAGAMENTO',
+          message: integration.providerMessage?.isNotEmpty == true
+              ? integration.providerMessage!
+              : 'Não foi possível concluir o pagamento na Cielo.',
+          action: controls,
+        );
+      }
+      return controls;
     }
     return Container(
       padding: const EdgeInsets.all(12),
@@ -1036,6 +1079,27 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
           : 'PAGAMENTO AGUARDANDO CONFIRMAÇÃO.'),
     );
   }
+
+  Widget _providerStatusPanel({
+    required String title,
+    required String message,
+    Widget? action,
+  }) =>
+      Container(
+        padding: const EdgeInsets.all(12),
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title),
+            Text(message),
+            if (action != null) ...[
+              const SizedBox(height: 8),
+              action,
+            ],
+          ],
+        ),
+      );
 
   Future<void> _selectEqualPart() async {
     final selection =
