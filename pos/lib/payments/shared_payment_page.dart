@@ -58,6 +58,7 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
   CieloPaymentCallback? _pendingCieloCallback;
   bool _resolvingProviderCallback = false;
   bool _checkingNativeCallback = false;
+  final Set<String> _shownProviderResultDialogs = {};
   bool get _canDiscount =>
       widget.controller.bootstrapSnapshot?.permissions
           .contains('sales.apply_discount') ??
@@ -166,7 +167,11 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
         debugPrint('CIELO_CALLBACK ack_sent attempt_id=${callback.attemptId}');
         _pendingCieloCallback = null;
         _activeProviderAttemptId = null;
-        if (mounted) _replaceCheckout(updated);
+        if (mounted) {
+          _replaceCheckout(updated);
+          await _showProviderResultDialog(
+              callback.attemptId, updated.paymentIntegration);
+        }
       }
     } catch (error) {
       debugPrint('CIELO_CALLBACK resolve_failed type=${error.runtimeType}');
@@ -175,6 +180,43 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       _resolvingProviderCallback = false;
       if (mounted) setState(() => _working = false);
     }
+  }
+
+  Future<void> _showProviderResultDialog(
+      String attemptId, QuickSalePaymentIntegration? integration) async {
+    if (!mounted || integration?.attemptId != attemptId) return;
+    final status = integration!.attemptStatus ?? integration.intentStatus;
+    if (status != 'cancelled' && status != 'error') return;
+    if (!_shownProviderResultDialogs.add('$attemptId:$status')) return;
+
+    // A retry from the dialog must not be blocked by the callback resolution.
+    setState(() => _working = false);
+    final message = integration.providerMessage?.trim();
+    final retry = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(status == 'cancelled'
+            ? 'Pagamento cancelado'
+            : 'Erro no pagamento'),
+        content: Text(message?.isNotEmpty == true
+            ? message!
+            : status == 'cancelled'
+                ? 'Pagamento cancelado pelo usuário.'
+                : 'Não foi possível concluir o pagamento na Cielo.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(status == 'cancelled' ? 'OK' : 'FECHAR'),
+          ),
+          if (status == 'error' && integration.canRetry)
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('TENTAR NOVAMENTE'),
+            ),
+        ],
+      ),
+    );
+    if (retry == true && mounted) await _retryProviderPayment();
   }
 
   void _finishedWorking() {
@@ -1071,12 +1113,16 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
       }
       return controls;
     }
+    final isUnknown = integration.intentStatus == 'unknown' ||
+        integration.attemptStatus == 'unknown';
     return Container(
       padding: const EdgeInsets.all(12),
       color: Theme.of(context).colorScheme.surfaceContainerHighest,
-      child: Text(integration.requiresRecovery
-          ? 'PAGAMENTO EM PROCESSAMENTO NA CIELO'
-          : 'PAGAMENTO AGUARDANDO CONFIRMAÇÃO.'),
+      child: Text(isUnknown
+          ? 'PAGAMENTO AGUARDANDO CONFIRMAÇÃO.'
+          : integration.requiresRecovery
+              ? 'PAGAMENTO EM PROCESSAMENTO NA CIELO'
+              : 'PAGAMENTO AGUARDANDO CONFIRMAÇÃO.'),
     );
   }
 

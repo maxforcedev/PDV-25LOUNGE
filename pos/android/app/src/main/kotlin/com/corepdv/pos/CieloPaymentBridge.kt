@@ -117,8 +117,8 @@ object CieloPaymentBridge {
 
     fun deliverCallback(context: Context, uri: Uri) {
         val attemptId = activeAttempt(context)
-        val response = uri.getQueryParameter("response").orEmpty()
-        val responseCode = uri.getQueryParameter("responsecode")
+        val response = callbackParameter(uri, "response").orEmpty()
+        val responseCode = callbackParameter(uri, "responsecode")
         Log.i(
             logTag,
             "CIELO_CALLBACK_RECEIVED attempt_present=${attemptId != null} response_present=${response.isNotEmpty()} response_length=${response.length} responsecode_present=${!responseCode.isNullOrEmpty()}",
@@ -152,6 +152,19 @@ object CieloPaymentBridge {
     }
 
     fun hasActiveAttempt(context: Context): Boolean = activeAttempt(context) != null
+
+    fun callbackParameter(uri: Uri, name: String): String? {
+        val query = uri.encodedQuery ?: return null
+        for (entry in query.split("&")) {
+            val separator = entry.indexOf('=')
+            val encodedName = if (separator < 0) entry else entry.substring(0, separator)
+            if (Uri.decode(encodedName) != name) continue
+            val encodedValue = if (separator < 0) "" else entry.substring(separator + 1)
+            // Uri.decode preserves literal '+', unlike form-style query decoding.
+            return Uri.decode(encodedValue)
+        }
+        return null
+    }
 
     private fun activeAttempt(context: Context?): String? {
         val inMemory = activeAttemptId

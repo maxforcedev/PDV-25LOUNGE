@@ -1877,6 +1877,67 @@ class POSFoundationIntegrationTests(TestCase):
         CIELO_SMART_CLIENT_ID='cielo-client-id-for-test',
         CIELO_SMART_ACCESS_TOKEN='cielo-access-token-for-test',
     )
+    def test_cielo_multiline_success_callback_is_applied_once(self):
+        checkout, started = self.start_configured_cielo_payment()
+        response = base64.encodebytes(json.dumps({
+            'reference': f"CORE-{started.data['attempt_id']}",
+            'id': 'cielo-order-1',
+            'terminal': 'terminal-1',
+            # U+03FF yields Base64 containing literal '+' and '/' after UTF-8 encoding.
+            'extra': '\u03ff' + ' Resposta longa da Cielo para reproduzir o transporte em múltiplas linhas. ' * 8,
+            'payments': [{
+                'amount': '2000', 'installments': 1,
+                'paymentFields': {
+                    'statusCode': '1', 'paymentTransactionId': 'transaction-multiline-1',
+                    'productName': 'Crédito à vista',
+                },
+            }],
+        }, ensure_ascii=False).encode()).decode()
+        self.assertIn('\n', response)
+        self.assertIn('+', response)
+        self.assertIn('/', response)
+        self.assertIn('=', response)
+        callback_url = reverse(
+            'pos:quick-sale-provider-payment-result',
+            args=[checkout.pk, started.data['attempt_id']],
+        )
+
+        resolved = self.client.post(callback_url, {'response': response}, format='json')
+        replayed = self.client.post(callback_url, {'response': response}, format='json')
+
+        self.assertEqual(resolved.status_code, 200, resolved.data)
+        self.assertEqual(replayed.status_code, 200, replayed.data)
+        self.assertEqual(PaymentIntent.objects.get(pk=started.data['intent_id']).status, 'applied')
+        self.assertEqual(QuickSalePayment.objects.filter(checkout=checkout).count(), 1)
+        self.assertEqual(len(resolved.data['payments']), 1)
+
+    @override_settings(
+        CIELO_SMART_CLIENT_ID='cielo-client-id-for-test',
+        CIELO_SMART_ACCESS_TOKEN='cielo-access-token-for-test',
+    )
+    def test_cielo_malformed_callback_stays_unknown_without_payment(self):
+        checkout, started = self.start_configured_cielo_payment()
+        resolved = self.client.post(
+            reverse(
+                'pos:quick-sale-provider-payment-result',
+                args=[checkout.pk, started.data['attempt_id']],
+            ),
+            {'response': 'not-valid-base64!'},
+            format='json',
+        )
+
+        self.assertEqual(resolved.status_code, 200, resolved.data)
+        intent = PaymentIntent.objects.get(pk=started.data['intent_id'])
+        self.assertEqual(intent.status, PaymentAttemptStatus.UNKNOWN)
+        self.assertEqual(intent.attempts.get().status, PaymentAttemptStatus.UNKNOWN)
+        self.assertEqual(QuickSalePayment.objects.filter(checkout=checkout).count(), 0)
+        self.assertEqual(resolved.data['payment_integration']['intent_status'], 'unknown')
+        self.assertTrue(resolved.data['payment_integration']['requires_recovery'])
+
+    @override_settings(
+        CIELO_SMART_CLIENT_ID='cielo-client-id-for-test',
+        CIELO_SMART_ACCESS_TOKEN='cielo-access-token-for-test',
+    )
     def test_cielo_cancelled_callback_releases_the_quick_sale_checkout(self):
         checkout, started = self.start_configured_cielo_payment()
         response = base64.b64encode(json.dumps({

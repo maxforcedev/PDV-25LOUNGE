@@ -7,6 +7,7 @@ to a future client launcher and must never be logged, audited, or persisted.
 import base64
 import binascii
 import json
+import logging
 import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -41,6 +42,8 @@ _SENSITIVE_TEXT = re.compile(
     re.IGNORECASE,
 )
 _MERCHANT_CODE = re.compile(r'\d{16}\Z')
+_BASE64_TRANSPORT_WHITESPACE = re.compile(r'[\t\n\r\f\v ]+')
+logger = logging.getLogger('payment_integrations.cielo')
 
 
 @dataclass(frozen=True)
@@ -262,9 +265,14 @@ class CieloSmartAdapter(PaymentProviderAdapter):
         self._assert_cielo_attempt(attempt)
         error_code = str(responsecode).strip() if responsecode not in (None, '') else ''
         try:
-            raw = base64.b64decode(str(response or ''), validate=True)
+            normalized_response = _BASE64_TRANSPORT_WHITESPACE.sub('', str(response or ''))
+            raw = base64.b64decode(normalized_response, validate=True)
             payload = json.loads(raw.decode('utf-8'))
         except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            logger.info(
+                'cielo_callback_decode_failed attempt_id=%s response_present=%s response_length=%s',
+                attempt.pk, bool(response), len(str(response or '')),
+            )
             if error_code in _ERROR_STATUS:
                 return _error_result(error_code, '')
             return _unknown('Resposta Cielo não comprovável.')

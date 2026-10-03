@@ -16,8 +16,8 @@ class CieloResponseActivity : Activity() {
         if (intent?.action == Intent.ACTION_VIEW && intent.data != null) {
             val uri: Uri = intent.data!!
             val queryNames = uri.queryParameterNames.sorted().joinToString(",")
-            val response = uri.getQueryParameter("response")
-            val responseCode = uri.getQueryParameter("responsecode")
+            val response = CieloPaymentBridge.callbackParameter(uri, "response")
+            val responseCode = CieloPaymentBridge.callbackParameter(uri, "responsecode")
             Log.i(
                 logTag,
                 "CIELO_CALLBACK_ACTIVITY action=${intent.action} scheme=${uri.scheme} host=${uri.host} query_names=$queryNames response_present=${!response.isNullOrEmpty()} response_length=${response?.length ?: 0} responsecode_present=${!responseCode.isNullOrEmpty()} active_attempt_present=${CieloPaymentBridge.hasActiveAttempt(this)}",
