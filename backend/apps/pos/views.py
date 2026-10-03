@@ -2477,7 +2477,14 @@ class POSQuickSaleProviderPaymentResultView(POSQuickCheckoutView):
                 response_metadata=result.safe_metadata, result_data=result.result_data,
                 audit_metadata=self.audit_metadata(device, operator_session),
             )
-            if result.status == PaymentAttemptStatus.APPROVED:
+            if _attempt.response_metadata.get('provider_callback_identity_conflict'):
+                _quick_checkout_conflict(QuickCheckoutConflict(
+                    'provider_transaction_conflict',
+                    'Pagamento aguardando verificação. A Cielo retornou a transação, mas o CORE '
+                    'encontrou um conflito com um registro anterior. Não realize uma nova cobrança '
+                    'até a verificação ser concluída.',
+                ))
+            if _attempt.status == PaymentAttemptStatus.APPROVED:
                 logger.info('provider_result_apply_started attempt_id=%s intent_id=%s', attempt.pk, intent.pk)
                 try:
                     apply_approved_quick_sale_payment_intent(
@@ -2491,6 +2498,8 @@ class POSQuickSaleProviderPaymentResultView(POSQuickCheckoutView):
                     'provider_result_apply_finished attempt_id=%s apply_pending=%s',
                     attempt.pk, apply_pending,
                 )
+        except QuickCheckoutConflict as error:
+            _quick_checkout_conflict(error)
         except (LookupError, PaymentIntegrationConflict) as error:
             if isinstance(error, PaymentIntegrationConflict):
                 _quick_checkout_conflict(QuickCheckoutConflict(error.code, error.message))

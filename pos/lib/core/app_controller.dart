@@ -498,6 +498,7 @@ class AppController extends ChangeNotifier {
         responseCode: responseCode,
       );
     } on PosApiException catch (error) {
+      if (error.code == 'provider_transaction_conflict') rethrow;
       _handleApiError(error);
     } on PosNetworkException catch (error) {
       _showTransientMessage(error.message);

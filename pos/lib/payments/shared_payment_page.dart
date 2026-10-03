@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../cash/cash_models.dart' show createIdempotencyKey;
 import '../core/app_controller.dart';
+import '../network/pos_api_error.dart';
 import '../sales/sale_models.dart';
 import '../sales/sale_presentation.dart';
 import '../sales/shared_authorization_dialog.dart';
@@ -192,6 +193,24 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
                 callback.operationId, updated);
           }
         }
+      }
+    } on PosApiException catch (error) {
+      if (error.code == 'provider_transaction_conflict') {
+        debugPrint(
+            'CIELO_CALLBACK deterministic_conflict operation=${callback.operation} operation_id=${callback.operationId}');
+        await _cieloBridge.acknowledgeCallback(callback);
+        _pendingCieloCallback = null;
+        if (callback.isPayment) {
+          _activeProviderAttemptId = null;
+        } else {
+          _activeProviderReversalOperationId = null;
+        }
+        final checkout =
+            await widget.controller.quickSaleCheckoutDetail(_checkout.id);
+        if (checkout != null && mounted) _replaceCheckout(checkout);
+        widget.controller.showTransientMessage(error.message);
+      } else {
+        debugPrint('CIELO_CALLBACK resolve_failed type=${error.runtimeType}');
       }
     } catch (error) {
       debugPrint('CIELO_CALLBACK resolve_failed type=${error.runtimeType}');
@@ -1149,9 +1168,19 @@ class _SharedPaymentPageState extends State<SharedPaymentPage> {
     return Container(
       padding: const EdgeInsets.all(12),
       color: Theme.of(context).colorScheme.surfaceContainerHighest,
-      child: Text(isUnknown
-          ? 'PAGAMENTO AGUARDANDO CONFIRMAÇÃO.'
-          : integration.requiresRecovery
+      child: isUnknown
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('PAGAMENTO AGUARDANDO VERIFICAÇÃO'),
+                const SizedBox(height: 4),
+                Text(
+                  integration.providerMessage ??
+                      'A transação exige verificação antes de uma nova cobrança.',
+                ),
+              ],
+            )
+          : Text(integration.requiresRecovery
               ? 'PAGAMENTO EM PROCESSAMENTO NA CIELO'
               : 'PAGAMENTO AGUARDANDO CONFIRMAÇÃO.'),
     );

@@ -29,8 +29,9 @@ class PaymentIntegrationsTests(TestCase):
             creator=self.operator, trade_name='Pay 0', legal_name='Pay 0 Ltda',
         )
         self.branch = self.company.branches.get(is_matrix=True)
-        self.method = PaymentMethod.objects.create(
-            company=self.company, code='credit_card', name='Crédito', status=Status.ACTIVE,
+        self.method, _ = PaymentMethod.objects.get_or_create(
+            company=self.company, code='credit_card',
+            defaults={'name': 'Crédito', 'status': Status.ACTIVE},
         )
         self.device = POSDevice.objects.create(
             branch=self.branch, name='Caixa 1', status=POSDevice.Status.ACTIVE,
@@ -584,7 +585,7 @@ class PaymentIntegrationsTests(TestCase):
         self.assertEqual(resolved_attempt.authorization_code, '123456')
         self.assertEqual(resolved_attempt.nsu, '789')
 
-    def test_provider_transaction_id_conflict_is_domain_error_and_rolls_back(self):
+    def test_provider_transaction_id_conflict_marks_current_attempt_unknown(self):
         first_intent, _ = self.create_intent()
         transition_payment_intent(intent=first_intent, status=PaymentIntentStatus.READY)
         first_attempt = self.start_attempt(first_intent)
@@ -596,17 +597,31 @@ class PaymentIntegrationsTests(TestCase):
         second_intent, _ = self.create_intent()
         transition_payment_intent(intent=second_intent, status=PaymentIntentStatus.READY)
         second_attempt = self.start_attempt(second_intent)
-        with self.assertRaises(PaymentIntegrationConflict) as context:
-            resolve_payment_attempt(
+        with self.assertLogs('payment_integrations', level='WARNING') as logs:
+            resolved_attempt, resolved_intent = resolve_payment_attempt(
                 attempt=second_attempt, status=PaymentAttemptStatus.APPROVED,
-                result_data={'provider_transaction_id': 'provider-transaction-unique'},
+                result_data={
+                    'provider_transaction_id': 'provider-transaction-unique',
+                    'provider_order_id': 'callback-order',
+                    'provider_reference': 'callback-reference',
+                },
             )
-        self.assertEqual(context.exception.code, 'provider_transaction_conflict')
         second_attempt.refresh_from_db()
         second_intent.refresh_from_db()
-        self.assertEqual(second_attempt.status, PaymentAttemptStatus.PROCESSING)
+        self.assertEqual(resolved_attempt.status, PaymentAttemptStatus.UNKNOWN)
+        self.assertEqual(resolved_intent.status, PaymentIntentStatus.UNKNOWN)
+        self.assertEqual(second_attempt.status, PaymentAttemptStatus.UNKNOWN)
         self.assertEqual(second_attempt.provider_transaction_id, '')
-        self.assertEqual(second_intent.status, PaymentIntentStatus.PROCESSING)
+        self.assertEqual(second_intent.status, PaymentIntentStatus.UNKNOWN)
+        self.assertTrue(second_attempt.response_metadata['provider_callback_identity_conflict'])
+        self.assertEqual(
+            second_attempt.provider_message,
+            'A Cielo retornou a transação, mas o CORE encontrou um conflito com um registro anterior. '
+            'Não realize uma nova cobrança até a verificação ser concluída.',
+        )
+        self.assertIn('CIELO_TRANSACTION_CONFLICT', logs.output[0])
+        self.assertIn('transaction_fingerprint=', logs.output[0])
+        self.assertNotIn('provider-transaction-unique', logs.output[0])
 
         other_connection = PaymentProviderConnection.objects.create(
             company=self.company, provider=self.provider, name='Outro contrato',

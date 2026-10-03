@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
@@ -22,6 +23,7 @@ class PaymentIntegrationConflict(Exception):
 
 
 _UNSET = object()
+logger = logging.getLogger('payment_integrations')
 
 _BLOCKING_QUICK_SALE_INTENT_STATUSES = (
     PaymentIntentStatus.CREATED,
@@ -340,6 +342,7 @@ def resolve_payment_attempt(*, attempt, status, actor=None, response_metadata=No
     if status not in _RESULT_INTENT_STATUS:
         raise PaymentIntegrationConflict('invalid_attempt_result', 'Informe um resultado final válido da tentativa.')
     transaction_id = (result_data or {}).get('provider_transaction_id')
+    identity_conflict = None
     try:
         with transaction.atomic():
             attempt = PaymentAttempt.objects.select_for_update().select_related('intent').get(pk=attempt.pk)
@@ -386,25 +389,82 @@ def resolve_payment_attempt(*, attempt, status, actor=None, response_metadata=No
             previous_attempt = attempt.status
             previous_intent = intent.status
             result_fields = _apply_attempt_result_data(attempt, result_data)
-            if transaction_id and PaymentAttempt.objects.select_for_update().filter(
-                provider_connection=attempt.provider_connection,
-                provider_transaction_id=transaction_id,
-            ).exclude(pk=attempt.pk).exists():
-                raise PaymentIntegrationConflict(
-                    'provider_transaction_conflict',
-                    'O identificador da transação já pertence a outra tentativa desta conexão.',
-                )
-            if response_metadata is not None:
-                attempt.response_metadata = response_metadata
+            conflicting_attempt = None
+            if transaction_id:
+                conflicting_attempt = PaymentAttempt.objects.select_for_update().select_related('intent').filter(
+                    provider_connection=attempt.provider_connection,
+                    provider_transaction_id=transaction_id,
+                ).exclude(pk=attempt.pk).first()
+            if conflicting_attempt:
+                from apps.pos.models import QuickSalePayment
+
+                callback_order_id = str((result_data or {}).get('provider_order_id') or '')
+                callback_reference = str((result_data or {}).get('provider_reference') or '')
+                expected_reference = f'CORE-{attempt.pk}'
+                identity_conflict = {
+                    'current_attempt_id': str(attempt.pk),
+                    'current_intent_id': str(intent.pk),
+                    'current_origin_id': intent.origin_id,
+                    'current_attempt_number': attempt.attempt_number,
+                    'current_status': attempt.status,
+                    'current_amount': str(attempt.amount),
+                    'current_reference_present': bool(callback_reference),
+                    'current_reference_matches': callback_reference == expected_reference,
+                    'conflicting_attempt_id': str(conflicting_attempt.pk),
+                    'conflicting_intent_id': str(conflicting_attempt.intent_id),
+                    'conflicting_origin_id': conflicting_attempt.intent.origin_id,
+                    'conflicting_attempt_number': conflicting_attempt.attempt_number,
+                    'same_intent': attempt.intent_id == conflicting_attempt.intent_id,
+                    'same_origin': (
+                        intent.origin_type == conflicting_attempt.intent.origin_type
+                        and intent.origin_id == conflicting_attempt.intent.origin_id
+                    ),
+                    'same_order': bool(callback_order_id) and callback_order_id == conflicting_attempt.provider_order_id,
+                    'same_reference': bool(callback_reference) and callback_reference == conflicting_attempt.provider_reference,
+                    'same_amount': attempt.amount == conflicting_attempt.amount,
+                    'conflicting_attempt_status': conflicting_attempt.status,
+                    'conflicting_intent_status': conflicting_attempt.intent.status,
+                    'conflicting_payment_exists': QuickSalePayment.objects.filter(
+                        source_payment_attempt=conflicting_attempt,
+                    ).exists(),
+                    'conflicting_intent_applied': (
+                        conflicting_attempt.intent.status == PaymentIntentStatus.APPLIED
+                    ),
+                    'transaction_fingerprint': _fingerprint({'transaction_id': transaction_id})[:12],
+                }
+                # The external evidence belongs to another attempt. Do not persist its
+                # identifiers on this attempt or let the operator charge blindly again.
+                attempt.provider_transaction_id = ''
+                conflict_result = {
+                    'provider_status': 'unknown',
+                    'provider_message': (
+                        'A Cielo retornou a transação, mas o CORE encontrou um conflito com um '
+                        'registro anterior. Não realize uma nova cobrança até a verificação ser concluída.'
+                    ),
+                }
+                result_fields = _apply_attempt_result_data(attempt, conflict_result)
+                attempt.response_metadata = {
+                    **(response_metadata or {}),
+                    'provider_callback_identity_conflict': True,
+                }
                 result_fields = (*result_fields, 'response_metadata')
-            attempt.completed_at = timezone.now()
-            _save_attempt_status(attempt, status, result_fields)
-            intent_status = _RESULT_INTENT_STATUS[status]
-            if intent_status == PaymentIntentStatus.APPROVED:
-                intent.approved_at = timezone.now()
-            elif intent_status == PaymentIntentStatus.CANCELLED:
-                intent.cancelled_at = timezone.now()
-            _save_intent_status(intent, intent_status, validate_terminal_pos_binding=False)
+                attempt.completed_at = timezone.now()
+                _save_attempt_status(attempt, PaymentAttemptStatus.UNKNOWN, result_fields)
+                _save_intent_status(
+                    intent, PaymentIntentStatus.UNKNOWN, validate_terminal_pos_binding=False,
+                )
+            else:
+                if response_metadata is not None:
+                    attempt.response_metadata = response_metadata
+                    result_fields = (*result_fields, 'response_metadata')
+                attempt.completed_at = timezone.now()
+                _save_attempt_status(attempt, status, result_fields)
+                intent_status = _RESULT_INTENT_STATUS[status]
+                if intent_status == PaymentIntentStatus.APPROVED:
+                    intent.approved_at = timezone.now()
+                elif intent_status == PaymentIntentStatus.CANCELLED:
+                    intent.cancelled_at = timezone.now()
+                _save_intent_status(intent, intent_status, validate_terminal_pos_binding=False)
     except IntegrityError as error:
         if transaction_id:
             raise PaymentIntegrationConflict(
@@ -414,11 +474,35 @@ def resolve_payment_attempt(*, attempt, status, actor=None, response_metadata=No
         raise
     audit_log(actor=actor or intent.operator, action='payment_attempt.status_changed', obj=attempt,
               company=intent.company, branch=intent.branch,
-              before={'status': previous_attempt}, after={'status': status},
+              before={'status': previous_attempt}, after={'status': attempt.status},
               metadata={'intent_id': str(intent.pk)})
     audit_log(actor=actor or intent.operator, action='payment_intent.status_changed', obj=intent,
               company=intent.company, branch=intent.branch,
               before={'status': previous_intent}, after={'status': intent.status})
+    if identity_conflict:
+        logger.warning(
+            'CIELO_TRANSACTION_CONFLICT current_attempt_id=%s current_intent_id=%s '
+            'current_origin_id=%s current_attempt_number=%s current_status=%s current_amount=%s '
+            'current_reference_present=%s current_reference_matches=%s '
+            'conflicting_attempt_id=%s conflicting_intent_id=%s conflicting_origin_id=%s '
+            'conflicting_attempt_number=%s '
+            'same_intent=%s same_origin=%s same_order=%s same_reference=%s same_amount=%s '
+            'conflicting_attempt_status=%s conflicting_intent_status=%s conflicting_amount=%s '
+            'conflicting_payment_exists=%s conflicting_intent_applied=%s '
+            'transaction_fingerprint=%s',
+            identity_conflict['current_attempt_id'], identity_conflict['current_intent_id'],
+            identity_conflict['current_origin_id'], identity_conflict['current_attempt_number'],
+            identity_conflict['current_status'], identity_conflict['current_amount'],
+            identity_conflict['current_reference_present'], identity_conflict['current_reference_matches'],
+            identity_conflict['conflicting_attempt_id'], identity_conflict['conflicting_intent_id'],
+            identity_conflict['conflicting_origin_id'], identity_conflict['conflicting_attempt_number'],
+            identity_conflict['same_intent'], identity_conflict['same_origin'],
+            identity_conflict['same_order'], identity_conflict['same_reference'],
+            identity_conflict['same_amount'], identity_conflict['conflicting_attempt_status'],
+            identity_conflict['conflicting_intent_status'], str(conflicting_attempt.amount),
+            identity_conflict['conflicting_payment_exists'], identity_conflict['conflicting_intent_applied'],
+            identity_conflict['transaction_fingerprint'],
+        )
     return attempt, intent
 
 

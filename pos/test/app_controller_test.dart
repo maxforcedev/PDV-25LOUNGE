@@ -10,6 +10,7 @@ import 'package:core_pos/core/transient_feedback.dart';
 import 'package:core_pos/network/pos_api.dart';
 import 'package:core_pos/network/pos_api_error.dart';
 import 'package:core_pos/pairing/pairing_models.dart';
+import 'package:core_pos/sales/sale_models.dart';
 import 'package:core_pos/storage/secret_store.dart';
 
 void main() {
@@ -134,6 +135,30 @@ void main() {
 
     expect(await controller.cashSessionSummary(allowed), isNotNull);
     expect(api.cashSummaryCalls, 1);
+  });
+
+  test('propagates a deterministic provider identity conflict', () async {
+    final controller = AppController(
+      api: FakePosApi(
+        providerPaymentError: const PosApiException(
+          statusCode: 409,
+          code: 'provider_transaction_conflict',
+          message:
+              'Não foi possível confirmar unicamente esta transação na Cielo.',
+        ),
+      ),
+      secrets: MemorySecretStore(),
+      device: device,
+    );
+
+    expect(
+      controller.resolveQuickSaleProviderPayment(
+        checkoutId: 'checkout',
+        attemptId: 'attempt',
+        response: 'response',
+      ),
+      throwsA(isA<PosApiException>()),
+    );
   });
 
   test('uses the cash state returned by a successful cash action', () async {
@@ -261,13 +286,15 @@ class FakePosApi implements PosApi {
       this.heartbeatError,
       this.cashEntryError,
       this.cashOverviewError,
-      this.cashOverviewResponse});
+      this.cashOverviewResponse,
+      this.providerPaymentError});
 
   final ReleaseInfo release;
   final PosApiException? heartbeatError;
   final PosApiException? cashEntryError;
   final PosNetworkException? cashOverviewError;
   final CashOverview? cashOverviewResponse;
+  final PosApiException? providerPaymentError;
   final operator =
       const PosOperator(id: '1', displayName: 'Joao', initials: 'J');
   String? pinResetOperatorId;
@@ -373,6 +400,17 @@ class FakePosApi implements PosApi {
       required String idempotencyKey}) async {
     if (cashEntryError != null) throw cashEntryError!;
     return _cashMutationResponse;
+  }
+
+  @override
+  Future<QuickSaleCheckout> resolveQuickSaleProviderPayment({
+    required String checkoutId,
+    required String attemptId,
+    required String response,
+    String? responseCode,
+  }) async {
+    if (providerPaymentError != null) throw providerPaymentError!;
+    throw UnimplementedError();
   }
 
   @override

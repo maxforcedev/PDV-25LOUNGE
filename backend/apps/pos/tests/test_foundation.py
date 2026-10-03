@@ -35,6 +35,7 @@ from apps.payment_integrations.models import (
     PaymentProviderConnectionEnvironment, PaymentTerminal, ProviderReversalOperation,
 )
 from apps.payment_integrations.providers.cielo import CieloSmartAdapter
+from apps.payment_integrations.providers.base import ProviderPaymentResult
 from apps.payment_integrations.services import PaymentIntegrationConflict
 from apps.pos.provider_payments import resolve_provider_resources
 from apps.pos.services import (
@@ -1978,6 +1979,33 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(QuickSalePayment.objects.filter(checkout=checkout).count(), 1)
         intent = PaymentIntent.objects.get(pk=started.data['intent_id'])
         self.assertEqual(intent.status, 'applied')
+
+    @override_settings(
+        CIELO_SMART_CLIENT_ID='cielo-client-id-for-test',
+        CIELO_SMART_ACCESS_TOKEN='cielo-access-token-for-test',
+    )
+    def test_provider_transaction_conflict_returns_409_not_500(self):
+        checkout, started = self.start_configured_cielo_payment()
+        adapter = SimpleNamespace(parse_payment_callback=lambda **_kwargs: ProviderPaymentResult(
+            status=PaymentAttemptStatus.APPROVED,
+            result_data={'provider_transaction_id': 'conflicting-transaction'},
+            safe_metadata={'provider': 'cielo'},
+        ))
+
+        with patch('apps.payment_integrations.providers.registry.get_adapter', return_value=adapter), patch(
+            'apps.pos.views.resolve_quick_sale_payment_attempt',
+            side_effect=QuickCheckoutConflict(
+                'provider_transaction_conflict',
+                'Não foi possível confirmar unicamente esta transação na Cielo.',
+            ),
+        ):
+            response = self.client.post(
+                reverse('pos:quick-sale-provider-payment-result', args=[checkout.pk, started.data['attempt_id']]),
+                {'response': ''}, format='json',
+            )
+
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(response.data['code'], 'provider_transaction_conflict')
 
     @override_settings(
         CIELO_SMART_CLIENT_ID='cielo-client-id-for-test',

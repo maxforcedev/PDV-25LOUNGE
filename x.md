@@ -1,940 +1,302 @@
-MISSÃO PAY-2.1.7 — CORRIGIR ESTORNO CIELO REAL + RETORNO DE ERRO/CANCELAMENTO
+O SUCCESS REAL DA CIELO ESTÁ CHEGANDO.
 
-Trabalhar sobre o HEAD:
-
-`2b1f545b212c5a5748c7b3468f0755092737b316`
-`Add Cielo provider reversals`
-
-IMPORTANTE:
-
-O PAGAMENTO CIELO NORMAL JÁ ESTÁ FUNCIONANDO.
-
-NÃO REGREDIR:
-
-Cielo pagamento
-→ callback
-→ APPROVED
-→ APPLIED
-→ QuickSalePayment
-→ Pagamentos realizados.
-
-O commit anterior também já:
-
-- removeu a mensagem/painel antigo de CANCELLED/ERROR;
-- colocou modal;
-- removeu reimpressão individual;
-- devolveu opção de estorno;
-- criou `ProviderReversalOperation`.
-
-MANTER tudo isso.
-
-Agora corrigir especificamente o contrato REAL do estorno Cielo e o retorno de erro da Cielo.
-
-==================================================
-1. BUG NO REQUEST DE PAYMENT-REVERSAL
-==================================================
-
-Revisar:
-
-`backend/apps/payment_integrations/providers/cielo.py`
-
-Hoje `build_reversal_command()` está montando algo equivalente a:
-
-```python
-{
-    "clientID": ...,
-    "accessToken": ...,
-    "orderId": ...,
-    "cieloCode": ...,
-    "authCode": ...,
-    "value": "2000"
-}
-```
-
-Isso NÃO corresponde ao contrato oficial do Cielo Smart.
-
-O request correto do `lio://payment-reversal` usa:
+Agora temos este comportamento:
 
 ```text
-{
-    "id": "ID DA ORDEM",
-    "clientID": "...",
-    "accessToken": "...",
-    "cieloCode": "...",
-    "authCode": "...",
-    "value": 2000
-}
+POST /provider-payments/attempts/83440027-29d0-449f-aefa-9008783190db/result/
+→ HTTP 409
 ```
 
-CORRIGIR:
+Na tela aparece algo como:
 
-`orderId`
+`Não foi possível verificar a unicidade com a Cielo`
 
-para:
+Isso significa que o callback SUCCESS foi recebido e parseado, mas o `provider_transaction_id` retornado já pertence a outra `PaymentAttempt`.
 
-`id`
+NÃO mexer novamente no callback Cielo.
 
-E enviar:
+NÃO remover a UniqueConstraint.
 
-`value`
+NÃO considerar aprovado automaticamente.
 
-como número inteiro em centavos, não string.
-
-Portanto:
-
-ERRADO:
-
-```text
-"orderId": "..."
-"value": "2000"
-```
-
-CORRETO:
-
-```text
-"id": "..."
-"value": 2000
-```
-
-Manter:
-
-`lio://payment-reversal`
-
-e:
-
-`urlCallback=corepdv://cielo-payment-reversal-response`
+Precisamos corrigir a CAUSA do conflito.
 
 ==================================================
-2. PARSER DE SUCESSO DO ESTORNO ESTÁ ERRADO
+1. IDENTIFICAR O REGISTRO CONFLITANTE
 ==================================================
 
-Hoje `parse_reversal_callback()` espera um payload artificial semelhante a:
+No momento em que:
+
+`resolve_payment_attempt()`
+
+detectar:
+
+`provider_transaction_conflict`
+
+localizar a `PaymentAttempt` que já possui:
 
 ```text
-{
-    "statusCode": "0",
-    "orderId": "..."
-}
+provider_connection = current.provider_connection
+provider_transaction_id = transaction_id recebido
 ```
 
-Isso NÃO representa o retorno real documentado pela Cielo Smart.
+Comparar:
 
-O retorno de sucesso do cancelamento é novamente o OBJETO DA ORDEM.
+TENTATIVA ATUAL:
+- attempt id;
+- intent id;
+- origin_id / checkout;
+- attempt_number;
+- amount;
+- status;
+- provider_order_id;
+- provider_reference.
 
-Estrutura conceitual:
+TENTATIVA CONFLITANTE:
+- attempt id;
+- intent id;
+- origin_id;
+- attempt_number;
+- amount;
+- status;
+- intent status;
+- provider_order_id;
+- provider_reference;
+- se existe QuickSalePayment ligada;
+- se o intent já está APPLIED.
+
+Não expor `provider_transaction_id` completo em log.
+
+Usar apenas fingerprint/hash curto.
+
+==================================================
+2. PRECISAMOS SABER QUAL DESTES CASOS É
+==================================================
+
+CASO A — MESMA OPERAÇÃO / REPLAY
+
+Se o registro conflitante representa na verdade a mesma operação financeira já processada:
+
+→ tratar como replay idempotente;
+→ retornar o estado atual;
+→ não criar pagamento novo;
+→ não retornar 409 ao operador.
+
+CASO B — OUTRA TENTATIVA DO MESMO INTENT
+
+Analisar se ocorreu retry e a Cielo devolveu a mesma transação externa.
+
+Se for comprovadamente a mesma cobrança:
+
+→ não duplicar;
+→ reconciliar de forma idempotente com a operação já existente.
+
+CASO C — OUTRO CHECKOUT / OUTRO INTENT
+
+Se o transaction ID pertence de verdade a outra venda:
+
+→ NÃO aplicar na venda atual;
+→ NÃO retornar SUCCESS;
+→ NÃO permitir nova cobrança às cegas.
+
+A tentativa atual deve ficar em estado financeiro seguro, preferencialmente UNKNOWN se não houver prova suficiente.
+
+CASO D — EMULADOR REUTILIZANDO IDENTIFICADOR
+
+Confirmar pelos dados antes de criar qualquer exceção.
+
+Se duas operações realmente diferentes do Emulador Cielo estiverem retornando o mesmo `paymentTransactionId`, isso precisa ser tratado como particularidade de SANDBOX/EMULADOR.
+
+NÃO afrouxar a regra de produção.
+
+==================================================
+3. A REFERÊNCIA CORE É FUNDAMENTAL
+==================================================
+
+Nós enviamos para a Cielo:
 
 ```text
-{
-    "id": "ID DA ORDEM",
-    ...
-    "payments": [
-        {
-            ...
-            "paymentFields": {
-                "statusCode": "1",
-                ...
-            }
-        },
-        {
-            ...
-            "paymentFields": {
-                "statusCode": "2",
-                ...
-            }
-        }
-    ]
-}
+reference = CORE-{attempt.id}
 ```
 
-REGRA OFICIAL:
+No SUCCESS, quando o retorno possuir `reference`, ela precisa corresponder exatamente à tentativa atual.
 
-`paymentFields.statusCode = 1`
-→ transação de pagamento.
-
-`paymentFields.statusCode = 2`
-→ transação de CANCELAMENTO.
-
-Portanto o parser de reversal deve:
-
-1. decodificar o Base64;
-2. obter o objeto da ordem;
-3. validar:
-
-`payload.id == source_attempt.provider_order_id`
-
-4. garantir que `payments` é uma lista válida;
-5. localizar a transação de CANCELAMENTO:
-   `paymentFields.statusCode == 2`;
-6. garantir que exista exatamente uma transação comprovável correspondente;
-7. validar o valor do cancelamento contra `reversal.amount`;
-8. validar vínculo com a transação original usando os identificadores disponíveis;
-9. somente então retornar:
-
-`ProviderReversalStatus.APPROVED`.
-
-NÃO usar:
-
-`statusCode 0/1 top-level`
-
-como prova de estorno.
-
-==================================================
-3. CORRELACIONAR O ESTORNO COM O PAGAMENTO ORIGINAL
-==================================================
-
-O pagamento original já possui:
-
-- `provider_order_id`;
-- `authorization_code`;
-- `nsu` / cieloCode;
-- `provider_transaction_id`;
-- amount.
-
-Usar essas informações para comprovar que o cancelamento retornado pertence à transação correta.
-
-Obrigatório validar:
-
-- mesma order;
-- mesmo valor;
-- transação de cancelamento real (`statusCode=2`).
-
-Quando o callback trouxer campos como:
-
-`originalTransactionId`
-
-ou outros identificadores da transação original, utilizá-los para reforçar a correlação com a operação aprovada original.
-
-NÃO aprovar uma reversal apenas porque existe qualquer `payment` com statusCode 2.
-
-Ambiguidade:
-
-→ UNKNOWN.
-
-Inconsistência:
-
-→ UNKNOWN.
-
-Nunca:
-
-→ APPROVED por aproximação.
-
-==================================================
-4. RETORNO DE ERRO DA CIELO NÃO ESTÁ CHEGANDO/REFLETINDO NO CORE
-==================================================
-
-Existe outro problema real durante o teste:
-
-Quando selecionamos ERRO na Cielo, o CORE não está recebendo/apresentando corretamente a resposta.
-
-Investigar o fluxo COMPLETO de ERRO, tanto em:
-
-PAGAMENTO
-
-quanto em:
-
-ESTORNO.
-
-A Cielo retorna erro/cancelamento pelo callback configurado.
-
-O parâmetro:
-
-`response`
-
-contém Base64.
-
-Depois de decodificado:
+Se:
 
 ```text
-{
-    "code": 1,
-    "reason": "CANCELADO PELO USUÁRIO"
-}
+reference != CORE-{attempt.id}
 ```
 
-ou:
+→ callback não pertence a essa tentativa;
+→ UNKNOWN/conflito controlado.
+
+Se a resposta não trouxer `reference`, registrar isso de forma sanitizada:
 
 ```text
-{
-    "code": 2,
-    "reason": "..."
-}
+reference_present=false
 ```
 
-etc.
-
-Mapeamento:
-
-`code = 1`
-→ CANCELLED
-
-`code = 2`
-→ ERROR genérico
-
-`code = 3`
-→ ERROR no pagamento
-
-`code = 4`
-→ ERROR de autenticação.
-
-ATENÇÃO:
-
-O `responsecode` externo pode continuar sendo `0`.
-
-Portanto:
-
-NÃO interpretar:
-
-`responsecode == 0`
-
-como sucesso automaticamente.
-
-O conteúdo Base64 de `response` precisa ter prioridade.
+Isso é importante para descobrir se o emulador está devolvendo um objeto antigo ou uma transação nova com identificador repetido.
 
 ==================================================
-5. TRAÇAR ONDE O ERRO ESTÁ SENDO PERDIDO
+4. NÃO DEIXAR 409 EM LOOP
 ==================================================
 
-Verificar:
+Hoje ocorreu:
 
-Cielo
-→ callback URI
-→ `CieloResponseActivity`
-→ `CieloPaymentBridge.deliverCallback`
-→ `pendingCallback`
-→ MethodChannel
-→ Flutter `CieloPaymentCallback`
-→ `_receiveCieloCallback`
-→ `_drainPendingProviderCallback`
-→ endpoint backend
-→ parser
-→ status ERROR/CANCELLED
-→ modal.
+SUCCESS Cielo
+→ 409
+→ GET checkout
+→ callback continua pendente.
 
-Precisamos descobrir exatamente onde o retorno de ERRO está parando.
+Se o usuário tocar `TENTAR CONFIRMAR PAGAMENTO`:
 
-Adicionar/manter logs SANITIZADOS para:
+→ mesmo callback;
+→ mesmo conflito;
+→ mesmo 409.
 
-Android:
+Isso não resolve nada.
 
-```text
-CIELO_CALLBACK_ACTIVITY
-operation=payment|reversal
-scheme
-host
-query_names
-response_present
-response_length
-responsecode_present
-active_operation_present
-```
+Depois de classificar um conflito determinístico:
 
-Bridge:
+NÃO continuar oferecendo simplesmente `TENTAR CONFIRMAR PAGAMENTO`.
 
-```text
-CIELO_CALLBACK_RECEIVED
-CIELO_CALLBACK_PENDING_CREATED
-CIELO_CALLBACK_CHANNEL
-CIELO_CALLBACK_ACK
-```
+Retry de confirmação deve existir apenas para:
 
-Flutter:
+- falha de internet;
+- timeout;
+- backend temporariamente indisponível.
 
-```text
-callback_received
-operation
-operation_id
-response_present
-response_length
-resolve_started
-resolve_returned
-resolved_status
-ack_sent
-modal_opened
-```
-
-Backend:
-
-Pagamento:
-
-```text
-provider_result_received
-provider_result_parsed
-```
-
-Reversal:
-
-```text
-provider_reversal_result_received
-provider_reversal_result_parsed
-```
-
-Se parser retornar error:
-
-registrar apenas:
-
-```text
-provider_status=error
-provider_status_code
-```
-
-NUNCA logar:
-
-- Base64 completo;
-- accessToken;
-- clientID;
-- PAN;
-- URI completa;
-- payload bruto;
-- dados sensíveis do cartão.
+Um conflito de identidade não é erro transitório.
 
 ==================================================
-6. ANDROID DEVE PRESERVAR O CALLBACK DE ERRO
+5. MELHORAR A MENSAGEM
 ==================================================
 
-A correção existente de:
+Não mostrar ao operador:
 
-`callbackParameter(uri, "response")`
+`Não foi possível verificar a unicidade com a Cielo`
 
-deve permanecer.
+porque a Cielo já respondeu.
 
-NÃO voltar para:
+Para conflito ainda não reconciliado, usar algo operacional como:
 
-`uri.getQueryParameter("response")`
+`Pagamento aguardando verificação`
 
-porque já corrigimos a preservação do Base64 contendo:
+`A Cielo retornou a transação, mas o CORE encontrou um conflito com um registro anterior. Não realize uma nova cobrança até a verificação ser concluída.`
 
-`+`
-`/`
-`=`
-CR/LF.
-
-Garantir que essa mesma leitura seja utilizada tanto para:
-
-`payment`
-
-quanto para:
-
-`reversal`.
+Isso deve ser estado financeiro persistente, não apenas SnackBar.
 
 ==================================================
-7. NÃO DESCARTAR CALLBACK DE ERROR
+6. NÃO TRANSFORMAR CONFLITO EM ERROR
 ==================================================
 
-Revisar este comportamento:
+Esse ponto é importante.
 
-```text
-if pendingCallback != null
-    CIELO_CALLBACK_DUPLICATE
-    return
-```
+A Cielo acabou de informar SUCCESS.
 
-Garantir que um callback antigo/stale não consiga fazer o callback novo de ERROR ser descartado incorretamente.
+Então se existe conflito de identidade:
 
-A correlação deve ser:
-
-`operation + operation_id`.
-
-ACK de PAYMENT limpa somente PAYMENT correspondente.
-
-ACK de REVERSAL limpa somente REVERSAL correspondente.
-
-Não deixar callback anterior impedir o resultado da operação atual.
-
-==================================================
-8. MODAL DE ERRO DE PAGAMENTO
-==================================================
-
-Quando a Cielo retornar:
-
-```text
-{
-    "code": 3,
-    "reason": "..."
-}
-```
-
-o pagamento deve resultar em:
+NÃO marcar simplesmente:
 
 `ERROR`
 
-e o POS deve abrir:
+porque isso poderia liberar o operador para cobrar novamente quando talvez já exista uma cobrança real.
 
-Título:
+Quando não conseguirmos reconciliar com segurança:
 
-`Erro no pagamento`
-
-Mensagem:
-
-`reason` sanitizado retornado pela Cielo.
-
-Ações:
-
-`FECHAR`
-
-e:
-
-`TENTAR NOVAMENTE`
-
-quando `canRetry == true`.
-
-Depois de fechar:
-
-NÃO deixar painel antigo de erro.
+→ UNKNOWN.
 
 ==================================================
-9. MODAL DE CANCELAMENTO DE PAGAMENTO
+7. LOG QUE EU QUERO VER
 ==================================================
 
-Quando:
-
-`code = 1`
-
-abrir:
-
-`Pagamento cancelado`
-
-Mensagem:
-
-`Cancelado pelo usuário.`
-
-ou `reason` sanitizado da Cielo.
-
-Após OK:
-
-- modal fecha;
-- nenhum pagamento é criado;
-- checkout continua aberto;
-- operador pode escolher uma nova forma de pagamento;
-- nenhum painel antigo fica na tela.
-
-==================================================
-10. MODAL DE ERRO DO ESTORNO
-==================================================
-
-Quando ERRO ocorrer no `payment-reversal`:
-
-→ ProviderReversalOperation = ERROR
-
-→ NÃO criar QuickSalePayment de reversal;
-
-→ pagamento original continua APPLIED;
-
-→ paid_amount continua inalterado;
-
-→ abrir modal:
-
-`Erro no estorno`
-
-com o `reason` retornado pela Cielo.
-
-Botão:
-
-`OK`
-
-Se decidirmos permitir nova tentativa de reversal depois do ERROR, ela deve criar/reutilizar operação de forma idempotente e segura.
-
-==================================================
-11. CANCELAMENTO DO ESTORNO
-==================================================
-
-Se o usuário cancelar o fluxo na própria Cielo:
-
-`code = 1`
-
-→ ProviderReversalOperation = CANCELLED
-
-→ pagamento original continua ativo;
-
-→ nenhum reversal local;
-
-→ modal:
-
-`Estorno cancelado`
-
-`Estorno cancelado pelo usuário.`
-
-==================================================
-12. SUCCESS DO ESTORNO
-==================================================
-
-Fluxo correto:
-
-operador toca ESTORNAR
-→ autorização quando necessária
-→ cria ProviderReversalOperation
-→ PROCESSING
-→ abre:
-
-`lio://payment-reversal`
-
-→ Cielo confirma
-→ callback contém objeto completo da ordem
-→ parser encontra transação:
-`paymentFields.statusCode = 2`
-→ valida ordem + valor + correlação
-→ ProviderReversalOperation APPROVED
-→ `apply_approved_provider_quick_checkout_reversal`
-→ cria QuickSalePayment de reversal
-→ ProviderReversalOperation APPLIED
-→ original aparece ESTORNADO
-→ paid_amount diminui
-→ remaining_amount aumenta.
-
-O PaymentAttempt original CONTINUA:
-
-`APPROVED`.
-
-Não alterar histórico da captura original.
-
-==================================================
-13. FALHA AO ABRIR A CIELO NO ESTORNO
-==================================================
-
-Existe outro problema no código atual.
-
-Hoje:
-
-`startQuickSaleProviderReversal`
-
-cria:
-
-ProviderReversalOperation
-→ PROCESSING
-
-Depois Flutter tenta abrir a Cielo.
-
-Se `_cieloBridge.launch()` gerar `PlatformException`, atualmente só aparece uma mensagem.
-
-A operação pode ficar eternamente:
-
-`PROCESSING`.
-
-CORRIGIR.
-
-Criar tratamento equivalente ao:
-
-`provider payment launch-failed`
-
-mas para REVERSAL.
-
-Exemplo de endpoint conceitual:
+Quando acontecer novamente, registrar algo assim:
 
 ```text
-provider-reversals/{operation_id}/launch-failed/
+CIELO_TRANSACTION_CONFLICT
+
+current_attempt_id=
+current_intent_id=
+current_origin_id=
+current_attempt_number=
+current_status=
+current_amount=
+current_reference_present=
+current_reference_matches=
+
+conflicting_attempt_id=
+conflicting_intent_id=
+conflicting_origin_id=
+conflicting_attempt_number=
+conflicting_attempt_status=
+conflicting_intent_status=
+conflicting_amount=
+conflicting_payment_exists=
+conflicting_intent_applied=
+
+same_intent=
+same_origin=
+same_amount=
+same_order=
+same_reference=
+
+transaction_fingerprint=
 ```
 
-Só usar quando for comprovado que a Cielo NÃO foi aberta.
-
-Nesse caso:
-
-PROCESSING
-→ ERROR
-
-provider_status:
-
-`launch_error`
-
-provider_message:
-
-`Não foi possível iniciar o estorno na Cielo.`
-
-Liberar o checkout de maneira segura para tentar novamente.
-
-NÃO marcar launch-failed se existe possibilidade de a Cielo ter sido aberta.
+Sem dados sensíveis.
 
 ==================================================
-14. CIELO ABRIU MAS NÃO RETORNOU CALLBACK
+8. MUITO IMPORTANTE
 ==================================================
 
-Situação diferente:
+Não mexer em:
 
-Android conseguiu abrir a Cielo.
+- callbackParameter;
+- Base64;
+- CieloResponseActivity;
+- SUCCESS parser;
+- ERROR parser;
+- reversal;
+- regra provider-first;
+- UniqueConstraint.
 
-Depois não recebemos callback.
+O callback já está chegando.
 
-NÃO fazer:
+O problema atual é exclusivamente:
 
-PROCESSING → ERROR automaticamente.
-
-Ausência de callback NÃO prova falha.
-
-Nesse caso manter:
-
-`PROCESSING`
-
-ou:
-
-`UNKNOWN`
-
-conforme a política atual de recuperação.
-
-Mostrar ao operador algo como:
-
-`ESTORNO AGUARDANDO CONFIRMAÇÃO DA CIELO`
-
-e bloquear novo estorno conflitante.
-
-Nunca criar reversal local sem confirmação externa.
+`identidade da transação externa x PaymentAttempt já existente`.
 
 ==================================================
-15. BLOQUEAR NOVO PAGAMENTO DURANTE REVERSAL
+9. RESULTADO ESPERADO
 ==================================================
 
-Hoje `_quick_checkout_payload()` considera `blocking_reversal` para:
+Depois da correção:
 
-- editar;
-- finalizar;
-- estornar.
+Se for transaction ID novo:
 
-Porém revisar:
+Cielo SUCCESS
+→ APPROVED
+→ APPLIED
+→ QuickSalePayment
+→ aparece normalmente em Pagamentos realizados.
 
-`can_record_payment`.
+Se for replay da mesma operação:
 
-Durante:
+→ reconhece replay;
+→ não duplica pagamento;
+→ retorna estado atual.
 
-ProviderReversalOperation:
+Se pertencer a outra operação:
 
-`CREATED`
-`PROCESSING`
-`UNKNOWN`
-`APPROVED`
+→ UNKNOWN/controlado;
+→ não 500;
+→ não duplica;
+→ não permite nova cobrança irresponsavelmente.
 
-NÃO deve ser possível iniciar um novo pagamento conflitante.
+E principalmente:
 
-Portanto:
+descobrir e informar na própria execução QUAL PaymentAttempt está causando o conflito e por quê.
 
-`can_record_payment`
-
-também deve considerar:
-
-`not blocking_reversal`.
-
-A interface não deve oferecer uma ação que o backend posteriormente rejeitará.
-
-==================================================
-16. TESTE DE SUCCESS ATUAL ESTÁ ARTIFICIAL
-==================================================
-
-Hoje o teste do reversal simula:
-
-```text
-{
-    "statusCode": "0",
-    "orderId": "..."
-}
-```
-
-REMOVER essa suposição.
-
-Criar fixture realista baseada na estrutura oficial.
-
-Exemplo conceitual:
-
-```text
-{
-    "id": "cielo-order-reversal-1",
-    "payments": [
-        {
-            "amount": 2000,
-            "authCode": "...",
-            "cieloCode": "...",
-            "paymentFields": {
-                "statusCode": "1",
-                ...
-            }
-        },
-        {
-            "amount": 2000,
-            "authCode": "...",
-            "cieloCode": "...",
-            "paymentFields": {
-                "statusCode": "2",
-                ...
-            }
-        }
-    ]
-}
-```
-
-O parser deve escolher a transação de CANCELAMENTO:
-
-`statusCode = 2`.
-
-==================================================
-17. TESTES DE ERRO REAIS
-==================================================
-
-Adicionar testes para callback Cielo exatamente no formato:
-
-CANCELADO:
-
-```text
-Base64({
-    "code": 1,
-    "reason": "CANCELADO PELO USUÁRIO"
-})
-```
-
-ERROR:
-
-```text
-Base64({
-    "code": 3,
-    "reason": "ERRO NO PAGAMENTO"
-})
-```
-
-com:
-
-`responsecode = 0`.
-
-Provar que:
-
-responsecode 0 + payload code 3
-
-resulta em:
-
-ERROR
-
-e NÃO APPROVED.
-
-Mesma lógica para reversal.
-
-==================================================
-18. TESTES DIRECIONADOS
-==================================================
-
-NÃO rodar suíte completa.
-
-Executar somente testes cirúrgicos:
-
-1. request reversal utiliza `id`, não `orderId`;
-2. `value` é número inteiro;
-3. success realista com order + payments + statusCode 2;
-4. transação statusCode 1 NÃO é confundida com reversal;
-5. order diferente → UNKNOWN;
-6. valor diferente → UNKNOWN;
-7. mais de um candidato ambíguo → UNKNOWN;
-8. ERROR `{code:3, reason:...}` → ERROR;
-9. CANCEL `{code:1, reason:...}` → CANCELLED;
-10. `responsecode=0` não mascara `code=3`;
-11. ERROR não cria reversal local;
-12. CANCELLED não cria reversal local;
-13. SUCCESS cria exatamente UM reversal;
-14. replay de callback não duplica;
-15. launch-failed libera operação corretamente;
-16. blocking reversal desabilita novo pagamento;
-17. pagamento Cielo normal continua funcionando;
-18. modal de ERROR aparece uma vez;
-19. modal de CANCELLED aparece uma vez.
-
-==================================================
-19. TESTE MANUAL OBRIGATÓRIO NO EMULADOR
-==================================================
-
-ESTORNO — SUCCESS:
-
-→ tocar ESTORNAR
-→ Cielo abre tela de cancelamento
-→ escolher sucesso
-→ CORE recebe callback
-→ pagamento fica ESTORNADO
-→ saldo é restaurado.
-
-ESTORNO — CANCELADO:
-
-→ tocar ESTORNAR
-→ cancelar na Cielo
-→ CORE recebe callback
-→ modal `Estorno cancelado`
-→ pagamento continua ativo.
-
-ESTORNO — ERRO:
-
-→ tocar ESTORNAR
-→ selecionar ERRO na Cielo
-→ CORE PRECISA RECEBER O CALLBACK
-→ modal `Erro no estorno`
-→ mostrar reason
-→ pagamento continua ativo.
-
-PAGAMENTO — ERRO:
-
-→ iniciar novo pagamento
-→ selecionar ERRO
-→ CORE PRECISA RECEBER O CALLBACK
-→ modal `Erro no pagamento`
-→ reason retornado pela Cielo.
-
-Se ERROR continuar sem retornar:
-
-NÃO mascarar.
-
-Capturar logs sanitizados de:
-
-CieloResponseActivity
-CieloPaymentBridge
-Flutter
-backend
-
-e informar exatamente em qual camada o callback deixou de existir.
-
-==================================================
-20. NÃO FAZER
-==================================================
-
-NÃO:
-
-- mexer novamente no sucesso do pagamento normal;
-- aprovar pelo frontend;
-- considerar ausência de callback como ERROR;
-- estornar CORE antes da Cielo;
-- apagar PaymentAttempt original;
-- criar CieloReversal financeiro paralelo;
-- afrouxar idempotência;
-- executar suíte completa;
-- mexer em Mesa;
-- mexer em Comanda;
-- mexer em impressão;
-- mexer em estoque.
-
-==================================================
-CRITÉRIO FINAL
-==================================================
-
-Só fechar essa missão quando existirem quatro fluxos comprovados:
-
-1. PAGAMENTO SUCCESS
-   → continua funcionando.
-
-2. PAGAMENTO ERROR
-   → Cielo retorna ao CORE
-   → modal mostra erro.
-
-3. REVERSAL SUCCESS
-   → Cielo confirma cancelamento
-   → CORE aplica reversal.
-
-4. REVERSAL ERROR/CANCELLED
-   → Cielo retorna ao CORE
-   → modal correspondente
-   → pagamento original permanece ativo.
-
-Ao finalizar informar:
-
-1. causa exata do ERROR não retornar;
-2. URI de callback utilizada, sem secrets;
-3. formato sanitizado observado do callback ERROR;
-4. formato sanitizado observado do reversal SUCCESS;
-5. correção feita no request `payment-reversal`;
-6. correção feita no parser;
-7. correção do launch-failed;
-8. correção de `can_record_payment`;
-9. arquivos alterados;
-10. testes direcionados executados;
-11. resultado dos 4 testes manuais;
-12. hash do commit.
-
-Não considere concluído apenas porque os testes sintéticos passam.
-
-Quero confirmação real no emulador da Cielo.
+Não fazer commit.
+Não rodar testes.
