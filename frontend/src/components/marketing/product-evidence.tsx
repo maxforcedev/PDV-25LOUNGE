@@ -26,7 +26,7 @@ export function ProductEvidence({
     <figure className={`overflow-hidden border border-subtle bg-surface ${className}`}>
       <div className="relative aspect-[16/10] bg-[#dde5f4] dark:bg-[#202c3b]">
         {available ? (
-          <Image src={src} alt={alt} fill priority={priority} sizes="(min-width: 1024px) 50vw, 100vw" className="object-cover" />
+          <Image src={src} alt={alt} fill priority={priority} sizes="(min-width: 1024px) 50vw, 100vw" className="object-contain" />
         ) : (
           <div className="absolute inset-0 flex items-end bg-[linear-gradient(135deg,#3454d1_0%,#3454d1_38%,#dde5f4_38%,#dde5f4_100%)] p-6 dark:bg-[linear-gradient(135deg,#2945b6_0%,#2945b6_38%,#202c3b_38%,#202c3b_100%)]" aria-hidden="true"><span className="text-4xl font-black tracking-[-0.08em] text-white/90">CORE</span></div>
         )}
@@ -50,5 +50,5 @@ export function PaymentDevices() {
     { src: "/site/images/payment-device-03.webp", alt: "Terminal de pagamento" },
   ].filter((asset) => hasAsset(asset.src));
   if (!assets.length) return null;
-  return <div className="mt-10 flex snap-x gap-5 overflow-x-auto pb-2 [scrollbar-width:thin]">{assets.map((asset, index) => <div key={asset.src} className="relative h-52 min-w-56 snap-center overflow-hidden border border-subtle bg-surface sm:h-64 sm:min-w-72"><Image src={asset.src} alt={asset.alt} fill sizes="288px" priority={index === 0} className="object-cover" /></div>)}</div>;
+  return <div className="mt-10 flex snap-x gap-5 overflow-x-auto pb-2 [scrollbar-width:thin]">{assets.map((asset, index) => <div key={asset.src} className="relative h-52 w-[333px] shrink-0 snap-center overflow-hidden border border-subtle bg-surface sm:h-64 sm:w-[410px]"><Image src={asset.src} alt={asset.alt} fill sizes="(min-width: 640px) 410px, 333px" priority={index === 0} className="object-contain" /></div>)}</div>;
 }
