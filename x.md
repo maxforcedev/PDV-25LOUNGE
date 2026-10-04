@@ -1,302 +1,420 @@
-O SUCCESS REAL DA CIELO ESTÁ CHEGANDO.
+AGORA TEMOS A CAUSA COMPROVADA DO CONFLITO CIELO.
 
-Agora temos este comportamento:
-
-```text
-POST /provider-payments/attempts/83440027-29d0-449f-aefa-9008783190db/result/
-→ HTTP 409
-```
-
-Na tela aparece algo como:
-
-`Não foi possível verificar a unicidade com a Cielo`
-
-Isso significa que o callback SUCCESS foi recebido e parseado, mas o `provider_transaction_id` retornado já pertence a outra `PaymentAttempt`.
-
-NÃO mexer novamente no callback Cielo.
-
-NÃO remover a UniqueConstraint.
-
-NÃO considerar aprovado automaticamente.
-
-Precisamos corrigir a CAUSA do conflito.
-
-==================================================
-1. IDENTIFICAR O REGISTRO CONFLITANTE
-==================================================
-
-No momento em que:
-
-`resolve_payment_attempt()`
-
-detectar:
-
-`provider_transaction_conflict`
-
-localizar a `PaymentAttempt` que já possui:
+Log real:
 
 ```text
-provider_connection = current.provider_connection
-provider_transaction_id = transaction_id recebido
+current_amount=65.00
+current_reference_present=True
+current_reference_matches=True
+
+conflicting_amount=2.58
+
+same_intent=False
+same_origin=False
+same_order=False
+same_reference=False
+same_amount=False
+
+conflicting_attempt_status=approved
+conflicting_intent_status=applied
+conflicting_payment_exists=True
+conflicting_intent_applied=True
+
+transaction_fingerprint=939f2965eff4
 ```
+
+CONCLUSÃO:
+
+O Emulador/SANDBOX da Cielo está reutilizando o mesmo `paymentTransactionId` em operações completamente diferentes.
+
+A operação antiga:
+
+- outro checkout;
+- outro intent;
+- outra order;
+- outra reference;
+- outro valor;
+- já foi APPLIED.
+
+A operação atual:
+
+- R$ 65,00;
+- nova order;
+- nova reference;
+- `current_reference_matches=True`.
+
+Portanto o callback atual pertence corretamente à tentativa atual.
+
+O conflito atual é FALSO POSITIVO causado pela regra:
+
+```text
+(provider_connection, provider_transaction_id) UNIQUE
+```
+
+aplicada também ao ambiente SANDBOX/EMULADOR.
+
+==================================================
+1. NÃO IGNORAR O CONFLITO GLOBALMENTE
+==================================================
+
+NÃO simplesmente remover a proteção contra duplicidade.
+
+Em PRODUÇÃO ainda precisamos impedir que a mesma transação externa seja aplicada duas vezes.
+
+A correção deve diferenciar:
+
+PRODUCTION
+
+e
+
+SANDBOX.
+
+==================================================
+2. IDENTIDADE DA TRANSAÇÃO CIELO
+==================================================
+
+`paymentTransactionId` isoladamente não pode ser usado como identidade absoluta no Emulador Cielo, porque acabamos de comprovar reutilização entre orders diferentes.
+
+Para Cielo SANDBOX, considerar a identidade composta da operação.
+
+No mínimo:
+
+```text
+provider_connection
++
+provider_order_id
++
+provider_transaction_id
+```
+
+E utilizar também:
+
+```text
+provider_reference
+```
+
+como correlação entre callback e PaymentAttempt.
+
+A referência que enviamos é:
+
+```text
+CORE-{attempt.id}
+```
+
+Se o callback retornar reference:
+
+```text
+reference == CORE-{attempt.id}
+```
+
+isso comprova vínculo com a tentativa atual.
+
+==================================================
+3. REGRA PARA SANDBOX CIELO
+==================================================
+
+Quando:
+
+```text
+provider = cielo
+connection.environment = SANDBOX
+```
+
+e aparecer outro PaymentAttempt com o mesmo:
+
+```text
+provider_transaction_id
+```
+
+NÃO considerar conflito automaticamente.
 
 Comparar:
 
-TENTATIVA ATUAL:
-- attempt id;
-- intent id;
-- origin_id / checkout;
-- attempt_number;
-- amount;
-- status;
-- provider_order_id;
-- provider_reference.
-
-TENTATIVA CONFLITANTE:
-- attempt id;
-- intent id;
-- origin_id;
-- attempt_number;
-- amount;
-- status;
-- intent status;
-- provider_order_id;
-- provider_reference;
-- se existe QuickSalePayment ligada;
-- se o intent já está APPLIED.
-
-Não expor `provider_transaction_id` completo em log.
-
-Usar apenas fingerprint/hash curto.
-
-==================================================
-2. PRECISAMOS SABER QUAL DESTES CASOS É
-==================================================
-
-CASO A — MESMA OPERAÇÃO / REPLAY
-
-Se o registro conflitante representa na verdade a mesma operação financeira já processada:
-
-→ tratar como replay idempotente;
-→ retornar o estado atual;
-→ não criar pagamento novo;
-→ não retornar 409 ao operador.
-
-CASO B — OUTRA TENTATIVA DO MESMO INTENT
-
-Analisar se ocorreu retry e a Cielo devolveu a mesma transação externa.
-
-Se for comprovadamente a mesma cobrança:
-
-→ não duplicar;
-→ reconciliar de forma idempotente com a operação já existente.
-
-CASO C — OUTRO CHECKOUT / OUTRO INTENT
-
-Se o transaction ID pertence de verdade a outra venda:
-
-→ NÃO aplicar na venda atual;
-→ NÃO retornar SUCCESS;
-→ NÃO permitir nova cobrança às cegas.
-
-A tentativa atual deve ficar em estado financeiro seguro, preferencialmente UNKNOWN se não houver prova suficiente.
-
-CASO D — EMULADOR REUTILIZANDO IDENTIFICADOR
-
-Confirmar pelos dados antes de criar qualquer exceção.
-
-Se duas operações realmente diferentes do Emulador Cielo estiverem retornando o mesmo `paymentTransactionId`, isso precisa ser tratado como particularidade de SANDBOX/EMULADOR.
-
-NÃO afrouxar a regra de produção.
-
-==================================================
-3. A REFERÊNCIA CORE É FUNDAMENTAL
-==================================================
-
-Nós enviamos para a Cielo:
-
 ```text
-reference = CORE-{attempt.id}
+provider_order_id
+provider_reference
+origin
+amount
 ```
-
-No SUCCESS, quando o retorno possuir `reference`, ela precisa corresponder exatamente à tentativa atual.
 
 Se:
 
 ```text
-reference != CORE-{attempt.id}
+same_order = False
+same_reference = False
 ```
 
-→ callback não pertence a essa tentativa;
-→ UNKNOWN/conflito controlado.
-
-Se a resposta não trouxer `reference`, registrar isso de forma sanitizada:
+e o callback atual possui:
 
 ```text
-reference_present=false
+current_reference_matches = True
 ```
 
-Isso é importante para descobrir se o emulador está devolvendo um objeto antigo ou uma transação nova com identificador repetido.
+então são operações externas distintas do emulador.
+
+Nesse caso o transaction ID repetido NÃO deve impedir o processamento do pagamento atual.
+
+Fluxo esperado:
+
+Cielo SUCCESS
+→ reference corresponde ao attempt atual
+→ order atual é diferente da operação antiga
+→ valor corresponde ao intent atual
+→ callback é aceito
+→ attempt APPROVED
+→ intent APPROVED
+→ QuickSalePayment
+→ APPLIED.
 
 ==================================================
-4. NÃO DEIXAR 409 EM LOOP
+4. PRODUÇÃO CONTINUA FORTE
 ==================================================
 
-Hoje ocorreu:
+Quando:
 
-SUCCESS Cielo
-→ 409
-→ GET checkout
-→ callback continua pendente.
+```text
+environment = PRODUCTION
+```
 
-Se o usuário tocar `TENTAR CONFIRMAR PAGAMENTO`:
+não flexibilizar essa proteção sem evidência real de comportamento igual em produção.
 
-→ mesmo callback;
-→ mesmo conflito;
-→ mesmo 409.
+Em produção, transaction ID duplicado continua sendo evento crítico.
 
-Isso não resolve nada.
+Portanto:
 
-Depois de classificar um conflito determinístico:
+PRODUCTION:
+→ proteção forte.
 
-NÃO continuar oferecendo simplesmente `TENTAR CONFIRMAR PAGAMENTO`.
-
-Retry de confirmação deve existir apenas para:
-
-- falha de internet;
-- timeout;
-- backend temporariamente indisponível.
-
-Um conflito de identidade não é erro transitório.
+CIELO SANDBOX:
+→ permitir transaction ID repetido somente quando a operação estiver comprovadamente associada a outra order/reference.
 
 ==================================================
-5. MELHORAR A MENSAGEM
+5. REVER A CONSTRAINT DO BANCO
 ==================================================
 
-Não mostrar ao operador:
+A constraint atual:
 
-`Não foi possível verificar a unicidade com a Cielo`
+```text
+(provider_connection, provider_transaction_id)
+```
 
-porque a Cielo já respondeu.
+não é compatível com o comportamento comprovado do Cielo SANDBOX.
 
-Para conflito ainda não reconciliado, usar algo operacional como:
+Não resolver apenas na camada Python porque o banco continuará rejeitando o INSERT/UPDATE.
 
-`Pagamento aguardando verificação`
+Redesenhar a constraint para preservar deduplicação sem gerar falso conflito.
 
-`A Cielo retornou a transação, mas o CORE encontrou um conflito com um registro anterior. Não realize uma nova cobrança até a verificação ser concluída.`
+Uma possibilidade conceitual:
 
-Isso deve ser estado financeiro persistente, não apenas SnackBar.
+```text
+provider_connection
++
+provider_order_id
++
+provider_transaction_id
+```
+
+para identificação externa.
+
+Mas revisar a arquitetura antes de aplicar, porque precisamos preservar comportamento dos demais providers futuros.
+
+Não criar regra Cielo espalhada pelo domínio financeiro se puder modelar uma identidade externa composta de forma genérica.
 
 ==================================================
-6. NÃO TRANSFORMAR CONFLITO EM ERROR
+6. NÃO ALTERAR O IDENTIFICADOR RECEBIDO
 ==================================================
 
-Esse ponto é importante.
+NÃO fazer:
 
-A Cielo acabou de informar SUCCESS.
+```text
+transaction_id = transaction_id + UUID
+```
 
-Então se existe conflito de identidade:
+NÃO inventar identificador.
 
-NÃO marcar simplesmente:
+NÃO modificar o valor retornado pela Cielo.
 
-`ERROR`
+O `provider_transaction_id` deve continuar representando exatamente o valor retornado pelo provider.
 
-porque isso poderia liberar o operador para cobrar novamente quando talvez já exista uma cobrança real.
+Se for necessário um identificador interno de deduplicação, criar um conceito separado, por exemplo:
 
-Quando não conseguirmos reconciliar com segurança:
+```text
+provider_operation_key
+```
+
+ou equivalente genérico.
+
+Não corromper o dado original do provider.
+
+==================================================
+7. REFERÊNCIA É NOSSA PROVA FORTE
+==================================================
+
+Para o pagamento atual temos:
+
+```text
+current_reference_matches=True
+```
+
+Isso significa que a Cielo devolveu exatamente:
+
+```text
+CORE-{attempt atual}
+```
+
+Logo esse callback não pertence à operação antiga de R$ 2,58.
+
+Essa informação deve ser usada explicitamente para evitar o falso UNKNOWN.
+
+Se reference estiver presente e for diferente:
 
 → UNKNOWN.
 
+Se reference corresponder:
+
+→ continuar as demais validações.
+
 ==================================================
-7. LOG QUE EU QUERO VER
+8. VALIDAÇÕES QUE CONTINUAM OBRIGATÓRIAS
 ==================================================
 
-Quando acontecer novamente, registrar algo assim:
+Mesmo em SANDBOX, só aceitar SUCCESS quando:
+
+- reference corresponde ao attempt atual quando presente;
+- amount corresponde ao amount atual;
+- order existe;
+- payment válido existe;
+- statusCode representa aprovação;
+- provider é o esperado;
+- callback pertence à conexão correta.
+
+Transaction ID repetido sozinho NÃO pode invalidar a transação quando:
 
 ```text
-CIELO_TRANSACTION_CONFLICT
-
-current_attempt_id=
-current_intent_id=
-current_origin_id=
-current_attempt_number=
-current_status=
-current_amount=
-current_reference_present=
-current_reference_matches=
-
-conflicting_attempt_id=
-conflicting_intent_id=
-conflicting_origin_id=
-conflicting_attempt_number=
-conflicting_attempt_status=
-conflicting_intent_status=
-conflicting_amount=
-conflicting_payment_exists=
-conflicting_intent_applied=
-
-same_intent=
-same_origin=
-same_amount=
-same_order=
-same_reference=
-
-transaction_fingerprint=
+order diferente
+reference diferente da operação antiga
+reference atual correta
+amount atual correto
 ```
 
-Sem dados sensíveis.
-
 ==================================================
-8. MUITO IMPORTANTE
+9. REPROCESSAR O FLUXO ATUAL
 ==================================================
 
-Não mexer em:
+Depois dessa correção, um cenário como o log real:
 
-- callbackParameter;
+```text
+CURRENT
+R$ 65,00
+reference correta
+order nova
+
+OLD
+R$ 2,58
+reference diferente
+order diferente
+APPLIED
+
+transaction ID igual
+```
+
+deve resultar em:
+
+```text
+CURRENT → APPROVED → APPLIED
+```
+
+e NÃO:
+
+```text
+CURRENT → UNKNOWN
+```
+
+==================================================
+10. CORRIGIR AUDITORIA
+==================================================
+
+Existe ainda uma inconsistência encontrada no código.
+
+Em:
+
+`resolve_quick_sale_payment_attempt()`
+
+o audit log usa:
+
+```text
+'status': status
+```
+
+Esse `status` é o resultado original recebido do parser.
+
+Se internamente a resolução mudar o estado para outro valor, a auditoria pode registrar valor incorreto.
+
+Usar:
+
+```text
+resolved_attempt.status
+```
+
+como estado efetivamente persistido.
+
+A auditoria deve registrar o que realmente ficou no banco.
+
+==================================================
+11. NÃO MEXER
+==================================================
+
+Não mexer novamente em:
+
+- callback Android;
 - Base64;
+- callbackParameter;
 - CieloResponseActivity;
-- SUCCESS parser;
-- ERROR parser;
+- parser SUCCESS;
+- parser ERROR;
 - reversal;
-- regra provider-first;
-- UniqueConstraint.
+- modal;
+- impressão;
+- Mesa;
+- Comanda.
 
-O callback já está chegando.
+O callback e o parser estão funcionando.
 
-O problema atual é exclusivamente:
-
-`identidade da transação externa x PaymentAttempt já existente`.
+O problema agora é exclusivamente a estratégia de identidade/deduplicação do provider.
 
 ==================================================
-9. RESULTADO ESPERADO
+RESULTADO ESPERADO
 ==================================================
 
-Depois da correção:
+Para o cenário REAL comprovado:
 
-Se for transaction ID novo:
+```text
+transaction ID repetido
+same_order=False
+same_reference=False
+same_origin=False
+same_intent=False
+same_amount=False
+current_reference_matches=True
+provider=Cielo
+environment=SANDBOX
+```
 
-Cielo SUCCESS
-→ APPROVED
+o CORE deve reconhecer:
+
+`São duas operações diferentes do Emulador Cielo.`
+
+E processar a atual normalmente:
+
+```text
+APPROVED
 → APPLIED
 → QuickSalePayment
-→ aparece normalmente em Pagamentos realizados.
+```
 
-Se for replay da mesma operação:
+sem duplicar a operação antiga.
 
-→ reconhece replay;
-→ não duplica pagamento;
-→ retorna estado atual.
-
-Se pertencer a outra operação:
-
-→ UNKNOWN/controlado;
-→ não 500;
-→ não duplica;
-→ não permite nova cobrança irresponsavelmente.
-
-E principalmente:
-
-descobrir e informar na própria execução QUAL PaymentAttempt está causando o conflito e por quê.
+Em PRODUCTION, manter a proteção forte contra reaproveitamento indevido de transação externa.
 
 Não fazer commit.
 Não rodar testes.

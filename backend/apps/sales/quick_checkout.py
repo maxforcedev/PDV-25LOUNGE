@@ -660,7 +660,10 @@ def resolve_quick_sale_payment_attempt(*, checkout, attempt, status, user, respo
     audit_log(
         actor=user, action='quick_sale_payment_attempt.resolved', obj=resolved_attempt,
         company=checkout.company, branch=checkout.branch,
-        after={'checkout_id': str(checkout.pk), 'intent_id': str(resolved_intent.pk), 'status': status},
+        after={
+            'checkout_id': str(checkout.pk), 'intent_id': str(resolved_intent.pk),
+            'status': resolved_attempt.status,
+        },
         metadata=audit_metadata or {},
     )
     return resolved_attempt, resolved_intent

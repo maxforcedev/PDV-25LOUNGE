@@ -10,7 +10,8 @@ from apps.base.audit import audit_log
 
 from .models import (
     PAYMENT_ATTEMPT_RESULT_FIELDS, PaymentAttempt, PaymentAttemptStatus, PaymentIntent,
-    PaymentIntentOriginType, PaymentIntentStatus, ProviderReversalOperation,
+    PaymentIntentOriginType, PaymentIntentStatus, PaymentProviderConnectionEnvironment,
+    ProviderReversalOperation,
     ProviderReversalStatus,
 )
 
@@ -164,7 +165,7 @@ def _apply_attempt_result_data(attempt, result_data):
             f'Campos de resultado inválidos: {", ".join(sorted(invalid_fields))}.',
         )
     identity_fields = {
-        'provider_transaction_id', 'provider_order_id', 'provider_reference',
+        'provider_transaction_id', 'provider_operation_key', 'provider_order_id', 'provider_reference',
         'authorization_code', 'nsu',
     }
     for field in identity_fields & set(result_data):
@@ -181,6 +182,34 @@ def _apply_attempt_result_data(attempt, result_data):
             setattr(attempt, field, value)
             changed_fields.append(field)
     return tuple(changed_fields)
+
+
+def _is_cielo_sandbox(attempt):
+    connection = attempt.provider_connection
+    return (
+        connection.provider.code == 'cielo'
+        and connection.environment == PaymentProviderConnectionEnvironment.SANDBOX
+    )
+
+
+def _provider_operation_key(attempt, result_data):
+    """Keep provider values intact while deriving the database deduplication key."""
+    transaction_id = str((result_data or {}).get('provider_transaction_id') or '')
+    if not transaction_id:
+        return ''
+    if not _is_cielo_sandbox(attempt):
+        return transaction_id
+    order_id = str((result_data or {}).get('provider_order_id') or '')
+    reference = str((result_data or {}).get('provider_reference') or '')
+    if not order_id or not reference:
+        # Missing Cielo correlation remains protected by the strict transaction ID key.
+        return transaction_id
+    return _fingerprint({
+        'provider_connection_id': str(attempt.provider_connection_id),
+        'provider_order_id': order_id,
+        'provider_reference': reference,
+        'provider_transaction_id': transaction_id,
+    })
 
 
 def create_payment_attempt(*, intent, provider_connection=None, terminal=_UNSET,
@@ -341,7 +370,10 @@ _RESULT_INTENT_STATUS = {
 def resolve_payment_attempt(*, attempt, status, actor=None, response_metadata=None, result_data=None):
     if status not in _RESULT_INTENT_STATUS:
         raise PaymentIntegrationConflict('invalid_attempt_result', 'Informe um resultado final válido da tentativa.')
-    transaction_id = (result_data or {}).get('provider_transaction_id')
+    result_data = dict(result_data or {})
+    transaction_id = result_data.get('provider_transaction_id')
+    if transaction_id:
+        result_data['provider_operation_key'] = _provider_operation_key(attempt, result_data)
     identity_conflict = None
     try:
         with transaction.atomic():
@@ -395,6 +427,7 @@ def resolve_payment_attempt(*, attempt, status, actor=None, response_metadata=No
                     provider_connection=attempt.provider_connection,
                     provider_transaction_id=transaction_id,
                 ).exclude(pk=attempt.pk).first()
+            sandbox_transaction_reuse = False
             if conflicting_attempt:
                 from apps.pos.models import QuickSalePayment
 
@@ -432,6 +465,13 @@ def resolve_payment_attempt(*, attempt, status, actor=None, response_metadata=No
                     ),
                     'transaction_fingerprint': _fingerprint({'transaction_id': transaction_id})[:12],
                 }
+                sandbox_transaction_reuse = (
+                    _is_cielo_sandbox(attempt)
+                    and identity_conflict['current_reference_matches']
+                    and not identity_conflict['same_order']
+                    and not identity_conflict['same_reference']
+                )
+            if conflicting_attempt and not sandbox_transaction_reuse:
                 # The external evidence belongs to another attempt. Do not persist its
                 # identifiers on this attempt or let the operator charge blindly again.
                 attempt.provider_transaction_id = ''
@@ -480,8 +520,9 @@ def resolve_payment_attempt(*, attempt, status, actor=None, response_metadata=No
               company=intent.company, branch=intent.branch,
               before={'status': previous_intent}, after={'status': intent.status})
     if identity_conflict:
-        logger.warning(
-            'CIELO_TRANSACTION_CONFLICT current_attempt_id=%s current_intent_id=%s '
+        log = logger.info if sandbox_transaction_reuse else logger.warning
+        log(
+            '%s current_attempt_id=%s current_intent_id=%s '
             'current_origin_id=%s current_attempt_number=%s current_status=%s current_amount=%s '
             'current_reference_present=%s current_reference_matches=%s '
             'conflicting_attempt_id=%s conflicting_intent_id=%s conflicting_origin_id=%s '
@@ -490,6 +531,7 @@ def resolve_payment_attempt(*, attempt, status, actor=None, response_metadata=No
             'conflicting_attempt_status=%s conflicting_intent_status=%s conflicting_amount=%s '
             'conflicting_payment_exists=%s conflicting_intent_applied=%s '
             'transaction_fingerprint=%s',
+            'CIELO_SANDBOX_TRANSACTION_REUSED' if sandbox_transaction_reuse else 'CIELO_TRANSACTION_CONFLICT',
             identity_conflict['current_attempt_id'], identity_conflict['current_intent_id'],
             identity_conflict['current_origin_id'], identity_conflict['current_attempt_number'],
             identity_conflict['current_status'], identity_conflict['current_amount'],

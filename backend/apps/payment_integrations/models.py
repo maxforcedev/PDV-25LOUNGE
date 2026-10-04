@@ -348,7 +348,7 @@ PAYMENT_ATTEMPT_STRUCTURAL_FIELDS = (
 )
 
 PAYMENT_ATTEMPT_RESULT_FIELDS = (
-    'provider_transaction_id', 'provider_order_id', 'provider_reference', 'terminal_external_id',
+    'provider_transaction_id', 'provider_operation_key', 'provider_order_id', 'provider_reference', 'terminal_external_id',
     'authorization_code', 'nsu', 'card_brand', 'card_mask', 'installments', 'payment_product',
     'payment_product_detail', 'provider_status', 'provider_status_code', 'provider_message',
     'request_metadata', 'response_metadata', 'started_at', 'completed_at',
@@ -380,6 +380,7 @@ class PaymentAttempt(BaseModel):
     status = models.CharField(max_length=10, choices=PaymentAttemptStatus.choices, default=PaymentAttemptStatus.CREATED, db_index=True)
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     provider_transaction_id = models.CharField(max_length=150, blank=True, default='')
+    provider_operation_key = models.CharField(max_length=150, blank=True, default='')
     provider_order_id = models.CharField(max_length=150, blank=True, default='')
     provider_reference = models.CharField(max_length=150, blank=True, default='')
     terminal_external_id = models.CharField(max_length=150, blank=True, default='')
@@ -404,9 +405,9 @@ class PaymentAttempt(BaseModel):
             models.CheckConstraint(condition=Q(amount__gt=0), name='payment_attempt_amount_positive'),
             models.UniqueConstraint(fields=('intent', 'attempt_number'), name='payment_attempt_intent_number_unique'),
             models.UniqueConstraint(
-                fields=('provider_connection', 'provider_transaction_id'),
-                condition=~Q(provider_transaction_id=''),
-                name='payment_attempt_connection_transaction_unique',
+                fields=('provider_connection', 'provider_operation_key'),
+                condition=~Q(provider_operation_key=''),
+                name='payment_attempt_connection_operation_key_unique',
             ),
         ]
         indexes = [models.Index(fields=('intent', 'status', 'attempt_number'), name='pay_attempt_intent_status_idx')]
