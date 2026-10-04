@@ -1,420 +1,297 @@
-AGORA TEMOS A CAUSA COMPROVADA DO CONFLITO CIELO.
+CORRIGIR OS BLOQUEIOS DA EXECUÇÃO GITHUB ACTIONS #188 PARA LIBERAR A PUBLICAÇÃO DAS IMAGENS DE PRODUÇÃO.
 
-Log real:
+HEAD analisado:
 
-```text
-current_amount=65.00
-current_reference_present=True
-current_reference_matches=True
+`bb68f71717150531b28cb16f538226bc2a4b4105`
 
-conflicting_amount=2.58
+Workflow:
 
-same_intent=False
-same_origin=False
-same_order=False
-same_reference=False
-same_amount=False
+`Publish production images`
 
-conflicting_attempt_status=approved
-conflicting_intent_status=applied
-conflicting_payment_exists=True
-conflicting_intent_applied=True
+Run:
 
-transaction_fingerprint=939f2965eff4
-```
+`#188`
 
-CONCLUSÃO:
+Os três jobs de validação falharam SOMENTE no audit de dependências.
 
-O Emulador/SANDBOX da Cielo está reutilizando o mesmo `paymentTransactionId` em operações completamente diferentes.
+NÃO alterar regras do workflow para ignorar vulnerabilidades.
 
-A operação antiga:
+NÃO remover `pip-audit`.
 
-- outro checkout;
-- outro intent;
-- outra order;
-- outra reference;
-- outro valor;
-- já foi APPLIED.
+NÃO remover `npm audit`.
 
-A operação atual:
+NÃO usar `continue-on-error`.
 
-- R$ 65,00;
-- nova order;
-- nova reference;
-- `current_reference_matches=True`.
-
-Portanto o callback atual pertence corretamente à tentativa atual.
-
-O conflito atual é FALSO POSITIVO causado pela regra:
-
-```text
-(provider_connection, provider_transaction_id) UNIQUE
-```
-
-aplicada também ao ambiente SANDBOX/EMULADOR.
+Precisamos corrigir as dependências vulneráveis.
 
 ==================================================
-1. NÃO IGNORAR O CONFLITO GLOBALMENTE
+1. BACKEND — DJANGO
 ==================================================
 
-NÃO simplesmente remover a proteção contra duplicidade.
+Arquivo:
 
-Em PRODUÇÃO ainda precisamos impedir que a mesma transação externa seja aplicada duas vezes.
+`backend/requirements.txt`
 
-A correção deve diferenciar:
+Hoje:
 
-PRODUCTION
+```text
+Django==6.1
+```
 
-e
+O `pip-audit` reportou:
 
-SANDBOX.
+```text
+django 6.1
+CVE-2026-15830
+Fix: 6.1.1
+```
+
+Atualizar para:
+
+```text
+Django==6.1.1
+```
+
+Não alterar versão principal.
+
+Continuamos em Django 6.1.x.
 
 ==================================================
-2. IDENTIDADE DA TRANSAÇÃO CIELO
+2. BACKEND — PYPDF
 ==================================================
 
-`paymentTransactionId` isoladamente não pode ser usado como identidade absoluta no Emulador Cielo, porque acabamos de comprovar reutilização entre orders diferentes.
-
-Para Cielo SANDBOX, considerar a identidade composta da operação.
-
-No mínimo:
+Hoje:
 
 ```text
-provider_connection
-+
-provider_order_id
-+
-provider_transaction_id
+pypdf==6.16.2
 ```
 
-E utilizar também:
+O audit encontrou 8 advisories:
 
 ```text
-provider_reference
+PYSEC-2026-4153
+PYSEC-2026-4154
+PYSEC-2026-4160
+PYSEC-2026-4159
+PYSEC-2026-4156
+PYSEC-2026-4155
+PYSEC-2026-4158
+PYSEC-2026-4157
 ```
 
-como correlação entre callback e PaymentAttempt.
-
-A referência que enviamos é:
+As versões de correção chegam até:
 
 ```text
-CORE-{attempt.id}
+6.19.0
 ```
 
-Se o callback retornar reference:
+Portanto atualizar para:
 
 ```text
-reference == CORE-{attempt.id}
+pypdf==6.19.0
 ```
 
-isso comprova vínculo com a tentativa atual.
+Não alterar lógica de PDFs do CORE.
+
+Somente atualizar a dependência.
 
 ==================================================
-3. REGRA PARA SANDBOX CIELO
+3. FRONTEND — NEXT.JS
 ==================================================
 
-Quando:
+Arquivo:
 
-```text
-provider = cielo
-connection.environment = SANDBOX
+`frontend/package.json`
+
+Hoje:
+
+```json
+"next": "16.3.4"
 ```
 
-e aparecer outro PaymentAttempt com o mesmo:
+O GitHub Actions encontrou vulnerabilidade CRITICAL:
 
 ```text
-provider_transaction_id
+Next.js: Remote Code Execution in next/og ImageResponse
+GHSA-vcvr-r3jv-pc5j
 ```
 
-NÃO considerar conflito automaticamente.
-
-Comparar:
+Faixa vulnerável reportada:
 
 ```text
-provider_order_id
-provider_reference
-origin
-amount
+16.2.0 - 16.3.5
 ```
 
-Se:
+O próprio audit aponta:
 
 ```text
-same_order = False
-same_reference = False
+next@16.3.8
 ```
 
-e o callback atual possui:
+Atualizar:
+
+```json
+"next": "16.3.8"
+```
+
+Atualizar também:
+
+`frontend/package-lock.json`
+
+para refletir exatamente essa versão.
+
+Revisar se vale alinhar:
 
 ```text
-current_reference_matches = True
+eslint-config-next
 ```
 
-então são operações externas distintas do emulador.
+com a versão 16.3.8 para manter compatibilidade com o Next usado pelo projeto.
 
-Nesse caso o transaction ID repetido NÃO deve impedir o processamento do pagamento atual.
-
-Fluxo esperado:
-
-Cielo SUCCESS
-→ reference corresponde ao attempt atual
-→ order atual é diferente da operação antiga
-→ valor corresponde ao intent atual
-→ callback é aceito
-→ attempt APPROVED
-→ intent APPROVED
-→ QuickSalePayment
-→ APPLIED.
+Não fazer alterações funcionais no frontend.
 
 ==================================================
-4. PRODUÇÃO CONTINUA FORTE
+4. PLATFORM ADMIN — NEXT.JS
 ==================================================
 
-Quando:
+Arquivo:
 
-```text
-environment = PRODUCTION
+`platform-admin/package.json`
+
+Hoje:
+
+```json
+"next": "16.3.4"
 ```
 
-não flexibilizar essa proteção sem evidência real de comportamento igual em produção.
+É a mesma vulnerabilidade CRITICAL.
 
-Em produção, transaction ID duplicado continua sendo evento crítico.
+Atualizar para:
 
-Portanto:
-
-PRODUCTION:
-→ proteção forte.
-
-CIELO SANDBOX:
-→ permitir transaction ID repetido somente quando a operação estiver comprovadamente associada a outra order/reference.
-
-==================================================
-5. REVER A CONSTRAINT DO BANCO
-==================================================
-
-A constraint atual:
-
-```text
-(provider_connection, provider_transaction_id)
+```json
+"next": "16.3.8"
 ```
 
-não é compatível com o comportamento comprovado do Cielo SANDBOX.
+Atualizar também:
 
-Não resolver apenas na camada Python porque o banco continuará rejeitando o INSERT/UPDATE.
+`platform-admin/package-lock.json`.
 
-Redesenhar a constraint para preservar deduplicação sem gerar falso conflito.
+Alinhar `eslint-config-next` se necessário para manter o conjunto Next consistente.
 
-Uma possibilidade conceitual:
+Não alterar funcionalidades do Platform Admin.
+
+==================================================
+5. NÃO MASCARAR O CI
+==================================================
+
+Manter exatamente a intenção atual de:
 
 ```text
-provider_connection
-+
-provider_order_id
-+
-provider_transaction_id
+python -m pip_audit -r requirements.txt
 ```
 
-para identificação externa.
-
-Mas revisar a arquitetura antes de aplicar, porque precisamos preservar comportamento dos demais providers futuros.
-
-Não criar regra Cielo espalhada pelo domínio financeiro se puder modelar uma identidade externa composta de forma genérica.
-
-==================================================
-6. NÃO ALTERAR O IDENTIFICADOR RECEBIDO
-==================================================
-
-NÃO fazer:
+e:
 
 ```text
-transaction_id = transaction_id + UUID
+npm audit --omit=dev --audit-level=high
 ```
 
-NÃO inventar identificador.
+Eles estão fazendo o papel correto de impedir deploy com vulnerabilidade crítica.
 
-NÃO modificar o valor retornado pela Cielo.
+Não alterar:
 
-O `provider_transaction_id` deve continuar representando exatamente o valor retornado pelo provider.
+`.github/workflows/ci.yml`
 
-Se for necessário um identificador interno de deduplicação, criar um conceito separado, por exemplo:
+só para a pipeline ficar verde.
 
-```text
-provider_operation_key
-```
+Não diminuir `audit-level`.
 
-ou equivalente genérico.
-
-Não corromper o dado original do provider.
+Não adicionar exceção para esses advisories.
 
 ==================================================
-7. REFERÊNCIA É NOSSA PROVA FORTE
+6. NÃO MEXER NO RESTANTE
 ==================================================
 
-Para o pagamento atual temos:
+Não aproveitar esta correção para refatorar:
 
-```text
-current_reference_matches=True
-```
-
-Isso significa que a Cielo devolveu exatamente:
-
-```text
-CORE-{attempt atual}
-```
-
-Logo esse callback não pertence à operação antiga de R$ 2,58.
-
-Essa informação deve ser usada explicitamente para evitar o falso UNKNOWN.
-
-Se reference estiver presente e for diferente:
-
-→ UNKNOWN.
-
-Se reference corresponder:
-
-→ continuar as demais validações.
-
-==================================================
-8. VALIDAÇÕES QUE CONTINUAM OBRIGATÓRIAS
-==================================================
-
-Mesmo em SANDBOX, só aceitar SUCCESS quando:
-
-- reference corresponde ao attempt atual quando presente;
-- amount corresponde ao amount atual;
-- order existe;
-- payment válido existe;
-- statusCode representa aprovação;
-- provider é o esperado;
-- callback pertence à conexão correta.
-
-Transaction ID repetido sozinho NÃO pode invalidar a transação quando:
-
-```text
-order diferente
-reference diferente da operação antiga
-reference atual correta
-amount atual correto
-```
-
-==================================================
-9. REPROCESSAR O FLUXO ATUAL
-==================================================
-
-Depois dessa correção, um cenário como o log real:
-
-```text
-CURRENT
-R$ 65,00
-reference correta
-order nova
-
-OLD
-R$ 2,58
-reference diferente
-order diferente
-APPLIED
-
-transaction ID igual
-```
-
-deve resultar em:
-
-```text
-CURRENT → APPROVED → APPLIED
-```
-
-e NÃO:
-
-```text
-CURRENT → UNKNOWN
-```
-
-==================================================
-10. CORRIGIR AUDITORIA
-==================================================
-
-Existe ainda uma inconsistência encontrada no código.
-
-Em:
-
-`resolve_quick_sale_payment_attempt()`
-
-o audit log usa:
-
-```text
-'status': status
-```
-
-Esse `status` é o resultado original recebido do parser.
-
-Se internamente a resolução mudar o estado para outro valor, a auditoria pode registrar valor incorreto.
-
-Usar:
-
-```text
-resolved_attempt.status
-```
-
-como estado efetivamente persistido.
-
-A auditoria deve registrar o que realmente ficou no banco.
-
-==================================================
-11. NÃO MEXER
-==================================================
-
-Não mexer novamente em:
-
-- callback Android;
-- Base64;
-- callbackParameter;
-- CieloResponseActivity;
-- parser SUCCESS;
-- parser ERROR;
-- reversal;
-- modal;
-- impressão;
+- Cielo;
+- pagamentos;
+- PIX;
+- estorno;
+- cancelamento de venda;
 - Mesa;
-- Comanda.
+- Comanda;
+- impressão;
+- estoque;
+- autenticação;
+- Docker;
+- workflow de deploy.
 
-O callback e o parser estão funcionando.
+Essa missão é exclusivamente para corrigir as dependências que bloqueiam a publicação das imagens.
 
-O problema agora é exclusivamente a estratégia de identidade/deduplicação do provider.
+==================================================
+7. SOBRE OS WARNINGS
+==================================================
+
+O frontend apresentou:
+
+```text
+61 problems
+0 errors
+61 warnings
+```
+
+O lint passou.
+
+Não fazer limpeza geral desses warnings nesta missão.
+
+Também existe aviso do GitHub:
+
+```text
+Node.js 20 is deprecated
+```
+
+relacionado às próprias GitHub Actions.
+
+Isso NÃO foi o causador da falha #188.
+
+Não misturar essa atualização agora.
 
 ==================================================
 RESULTADO ESPERADO
 ==================================================
 
-Para o cenário REAL comprovado:
+Backend:
 
 ```text
-transaction ID repetido
-same_order=False
-same_reference=False
-same_origin=False
-same_intent=False
-same_amount=False
-current_reference_matches=True
-provider=Cielo
-environment=SANDBOX
+Django 6.1.1
+pypdf 6.19.0
 ```
 
-o CORE deve reconhecer:
-
-`São duas operações diferentes do Emulador Cielo.`
-
-E processar a atual normalmente:
+Frontend:
 
 ```text
-APPROVED
-→ APPLIED
-→ QuickSalePayment
+Next 16.3.8
 ```
 
-sem duplicar a operação antiga.
+Platform Admin:
 
-Em PRODUCTION, manter a proteção forte contra reaproveitamento indevido de transação externa.
+```text
+Next 16.3.8
+```
+
+Lockfiles atualizados corretamente.
+
+Depois do push, deixar o GitHub Actions validar novamente e seguir para os próximos estágios:
+
+```text
+Django checks
+migrations
+frontend build
+platform-admin build
+production container builds
+publish GHCR
+```
 
 Não fazer commit.
 Não rodar testes.
