@@ -1151,7 +1151,7 @@ class POSFoundationIntegrationTests(TestCase):
         self.client.credentials(HTTP_X_POS_DEVICE_CREDENTIAL=paired.data['device_credential'])
         without_operator = self.client.get(reverse('pos:cash-overview'))
         self.assertEqual(without_operator.status_code, 403, without_operator.data)
-        self.assertEqual(without_operator.data['code'], 'authentication_failed')
+        self.assertEqual(without_operator.data['detail'].code, 'authentication_failed')
 
         self.client.credentials(
             HTTP_X_POS_DEVICE_CREDENTIAL=paired.data['device_credential'],
