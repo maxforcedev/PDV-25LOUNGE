@@ -1,400 +1,845 @@
-Precisamos corrigir TODOS os bloqueios atuais do pipeline `Publish production images` para voltarmos a gerar as imagens Docker/GHCR e só depois atualizar a VPS.
+Analise o estado ATUAL do `main` antes de alterar qualquer coisa.
 
-Analise o estado ATUAL do projeto antes de alterar qualquer coisa.
+O HEAD analisado está no commit:
 
-NÃO faça correções artificiais apenas para deixar testes verdes.
-NÃO desative testes.
-NÃO coloque `continue-on-error`.
-NÃO remova `npm audit` ou `pip-audit`.
-NÃO reduza a segurança das validações.
-NÃO reverta versões apenas para esconder vulnerabilidades.
-NÃO reintroduza código legado de Mesas que já foi removido.
-NÃO altere regras de negócio atuais sem antes identificar se a falha é realmente regressão ou somente teste antigo.
+`f1efc6cf693ab880ca1fb6353e0594a3f966f03e`
 
-O último workflow `Publish production images` do `main` está falhando na validação de Backend, Frontend e Platform Admin.
+A limpeza principal do Mesas legado foi feita corretamente, porém ainda existem inconsistências importantes nas bordas do sistema.
 
-OBJETIVO FINAL:
+OBJETIVO DESTA MISSÃO:
 
-1. Frontend verde.
-2. Platform Admin verde.
-3. Backend verde.
-4. Production container builds verdes.
-5. Workflow `Publish production images` apto a publicar backend, frontend e platform-admin no GHCR.
-6. Imagens Docker de produção realmente completas e prontas para a VPS.
+Finalizar a separação entre MESAS e COMANDAS, remover referências operacionais restantes do modelo antigo e deixar Backend, Backoffice, POS, RBAC e testes coerentes com a arquitetura atual.
+
+NÃO faça deploy.
+NÃO mexa na VPS.
+NÃO redesenhe o módulo de Comandas.
+NÃO apague migrations históricas.
+NÃO remova dados históricos sem migration segura.
+NÃO reintroduza o Mesas antigo.
 
 ---
 
-## 1. FRONTEND E PLATFORM ADMIN — PACKAGE LOCK QUEBRADO
+# ARQUITETURA ATUAL CORRETA
 
-Atualmente `npm ci` falha nos dois projetos com:
+A operação de Mesa deve ser:
 
-`package.json and package-lock.json are not in sync`
+`commands.Table`
+→ `TableAttendance`
+→ `TableOrder`
+→ `TableOrderItem`
+→ `TablePayment`
+→ fechamento/venda
 
-e aponta principalmente:
+`commands.Table` continua sendo a entidade física da mesa.
 
-- Missing: `@emnapi/runtime@1.11.3`
-- Missing: `@emnapi/core@1.11.3`
+Ela NÃO é legado para remoção.
 
-O último ajuste atualizou:
+A ocupação/operação financeira da mesa pertence exclusivamente a:
 
-Next 16.3.4 -> 16.3.8
+`TableAttendance`
 
-Essa atualização foi necessária porque o `npm audit` anterior bloqueava Next 16.3.4 por vulnerabilidade crítica de RCE.
-
-PORTANTO:
-
-NÃO faça downgrade do Next para 16.3.4.
-
-Mantenha Next 16.3.8.
-
-Corrija corretamente:
-
-- `frontend/package.json`
-- `frontend/package-lock.json`
-- `platform-admin/package.json`
-- `platform-admin/package-lock.json`
-
-Regere/reconcilie os lockfiles em ambiente limpo compatível com o Node 22 utilizado pelo CI.
-
-Não edite package-lock manualmente.
-
-Depois valide obrigatoriamente em diretório limpo:
-
-`npm ci`
-`npm run lint`
-`npm audit --omit=dev --audit-level=high`
-`npm run build`
-
-nos dois projetos.
-
-Investigue também a utilização de `next/image`.
-
-No frontend institucional há uso real de `next/image`. Como usamos `output: "standalone"`, garanta que o runtime de produção tenha suporte correto ao image optimizer, incluindo `sharp` explicitamente se necessário para o Next 16.3.8/standalone.
-
-Não resolva isso com `unoptimized: true` global apenas para contornar o problema.
+Comandas devem funcionar de forma independente de Mesa.
 
 ---
 
-## 2. FRONTEND DOCKER — PUBLIC NÃO ESTÁ NA IMAGEM FINAL
+# 1. BACKOFFICE DE COMANDAS ESTÁ INCOMPATÍVEL COM O BACKEND
 
-Existe um problema adicional no:
+Este é o principal problema atual.
 
-`frontend/Dockerfile`
+O backend já deixou de aceitar Mesa nas operações de Comanda.
 
-O estágio de produção atualmente copia:
+Porém:
 
-`/app/.next/standalone`
-`/app/.next/static`
+`frontend/src/app/(private)/comandas/page.tsx`
 
-mas NÃO copia:
+ainda possui lógica semelhante a:
 
-`/app/public`
+```ts
+if (selectedTable) payload.table = Number(selectedTable);
+```
 
-Nosso site público depende diretamente de assets como:
+e envia isso para:
 
-`public/site/images/hero-operation.webp`
-`public/site/images/payment-device-01.webp`
-`public/site/images/payment-device-02.webp`
-`public/site/images/payment-device-03.webp`
-`public/site/images/segments-operation.webp`
+`commands/open/`
 
-e:
+O backend atual rejeita explicitamente `table`.
 
-`public/site/screenshots/core-pos-venda.webp`
-`public/site/screenshots/backoffice-dashboard.webp`
-`public/site/screenshots/auditoria.webp`
-etc.
+Portanto:
 
-Como usamos Next standalone, a pasta `public` precisa existir no runtime final.
+REMOVA do fluxo de abertura de Comanda:
 
-Corrija o Dockerfile para que a imagem final possua a pasta `public` no local esperado pelo `server.js` standalone.
+- seleção de Mesa;
+- `selectedTable`;
+- envio de `table`;
+- qualquer texto que sugira que uma Comanda precisa estar vinculada a uma Mesa.
 
-Depois adicione verificação no CI/container check para garantir que a regressão nunca volte.
-
-Por exemplo, a validação da imagem de frontend deve confirmar ao menos que existem dentro do container arquivos reais de:
-
-- `public/site/images/hero-operation.webp`
-- `public/site/screenshots/core-pos-venda.webp`
-
-E, caso `sharp` seja necessário/instalado explicitamente, validar também que ele consegue ser carregado no container de produção.
-
-Não adicionar workaround de CDN. Hoje esses assets pertencem ao próprio frontend.
+A criação de Comanda deve ser independente.
 
 ---
 
-## 3. BACKEND — ENTITLEMENTS DOS TESTES DESATUALIZADOS
-
-A suíte atualmente termina aproximadamente com:
-
-`FAILED (failures=15, errors=72)`
-
-Mas grande parte é consequência da mesma causa.
-
-Cerca de 49 erros têm:
-
-`Entitlements obrigatorios ausentes: pos.devices.max, pos.enabled`
-
-Hoje:
-
-`CAPABILITY_CATALOG`
-
-inclui corretamente:
-
-- `core.enabled`
-- `users.max`
-- `branches.max`
-- `pos.enabled`
-- `pos.devices.max`
-- features...
-
-e `REQUIRED_CAPABILITY_CODES` considera os capabilities não-feature obrigatórios.
-
-NÃO remova `pos.enabled` e `pos.devices.max` dos requirements somente para os testes passarem.
-
-Localize os helpers/factories/fixtures antigos dos testes SaaS que ainda criam PlanVersion somente com:
-
-- core.enabled
-- users.max
-- branches.max
-
-e atualize a fundação de testes para criar planos válidos de acordo com o catálogo atual.
-
-Evite corrigir 49 testes individualmente se todos dependem do mesmo helper central.
-
-Garanta também casos explícitos de teste para:
-
-- POS habilitado;
-- POS desabilitado;
-- limite de devices;
-- ausência intencional de entitlement quando o teste realmente precisa validar esse erro.
-
-Preserve a regra de produção.
-
----
-
-## 4. MESAS — TESTES AINDA IMPORTAM O SERVIÇO LEGADO
-
-Existem erros de import em:
-
-`backend/apps/commands/tests/test_v2_8_block6.py`
-
-e:
-
-`backend/apps/pos/tests/test_pos5_attendance.py`
-
-porque ainda fazem referência/import a:
-
-`open_table`
-
-de:
-
-`apps.attendance.services`
-
-O serviço atual não possui mais `open_table`.
-
-O domínio novo possui:
-
-`open_table_attendance`
-
-e demais serviços atuais de TableAttendance.
-
-IMPORTANTE:
-
-NÃO reintroduza `open_table`.
-NÃO recrie compatibilidade com o Mesas antigo.
-NÃO traga o domínio legado de volta só para satisfazer teste antigo.
-
-Nós removemos o fluxo antigo de Mesas intencionalmente.
-
-Atualize os testes para o contrato atual do novo Mesas/TableAttendance ou remova somente trechos de teste comprovadamente pertencentes ao legado que já não existe.
-
-Sobre COMANDAS:
-
-NÃO faça refatoração ampla em Comandas nesta missão.
-Só ajuste algo se for estritamente necessário para corrigir referência de teste quebrada causada pela remoção do Mesas legado.
-
----
-
-## 5. CIELO — CALLBACK INVÁLIDO NÃO PODE QUEBRAR NO LOG
+# 2. REMOVER TRANSFERÊNCIA DE COMANDA PARA MESA DO BACKOFFICE
 
 Em:
 
-`backend/apps/payment_integrations/providers/cielo.py`
+`frontend/src/app/(private)/comandas/[id]/page.tsx`
 
-`parse_payment_callback()`
+ainda existe operação:
 
-ao capturar callback Base64/JSON inválido, o logger usa diretamente:
+`transfer`
 
-`attempt.pk`
+que chama:
 
-Os testes de adapter utilizam `SimpleNamespace`, que não possui `.pk`.
+`commands/<id>/transfer/`
 
-Resultado:
+Essa rota foi removida do backend.
 
-`AttributeError: 'types.SimpleNamespace' object has no attribute 'pk'`
+Também ainda existe modal:
 
-Isso está mascarando o resultado correto do callback e gera 6 erros na suíte.
+“Transferir mesa”
 
-Corrija de forma defensiva.
+e seleção de mesa de destino.
 
-O logging não pode derrubar o parser.
+Isso precisa ser removido.
 
-Use identificação segura do attempt quando `pk` não existir.
+NÃO recrie a rota backend.
 
-Não altere por causa disso as regras da Cielo para:
+NÃO reintroduza:
 
-- aprovado;
-- recusado;
-- erro;
-- cancelado;
-- unknown;
-- callback não comprovável.
+`transfer_command_table`
 
-Principal regra de segurança:
+NÃO faça fallback.
 
-callback inválido/não comprovável NUNCA pode virar APPROVED.
+A operação Comanda → Mesa deixou de existir.
 
----
+Preserve somente operações atuais válidas de Comandas, como:
 
-## 6. PAYMENT INTENT — TESTE DE IDEMPOTÊNCIA
-
-Existe falha em:
-
-`test_idempotency_replays_only_matching_request`
-
-O helper do teste gera um novo `origin_id` automaticamente a cada chamada.
-
-O teste faz duas chamadas com a mesma `idempotency_key`, mas com `origin_id` diferente.
-
-O serviço atual inclui `origin_id` no request fingerprint.
-
-Portanto, duas requisições estruturalmente diferentes com a mesma chave DEVEM gerar conflito.
-
-Não remova `origin_id` do fingerprint para fazer o teste passar.
-
-Corrija o teste para:
-
-- usar a mesma idempotency key;
-- usar o mesmo origin_id;
-- confirmar replay quando toda a requisição é igual;
-- confirmar `idempotency_key_conflict` quando algum dado estrutural realmente muda.
+- transferência de itens entre comandas;
+- merge;
+- split;
+- pagamentos;
+- fechamento;
+- cliente;
+- demais funcionalidades que ainda pertencem ao domínio de Comandas.
 
 ---
 
-## 7. OUTRAS FALHAS DA SUÍTE
+# 3. SPLIT DE COMANDA NÃO DEVE MAIS RECEBER MESA
 
-Depois de eliminar as causas-raiz acima, rode novamente a suíte e trate SOMENTE os erros restantes.
+Hoje o Backoffice ainda envia no split:
 
-Já existem sinais de expectativas antigas em testes, como:
+```json
+{
+  "items": [...],
+  "table": ...,
+  "identifier": ...
+}
+```
 
-- 200 esperado e contrato atual retornando 201;
-- UUID objeto comparado com UUID serializado/string;
-- contrato antigo de beneficiário de movimento de caixa;
-- resposta antiga da listagem de beneficiaries;
-- regras antigas de POS device/admin;
-- fornecedor soft-deleted e reutilização de CPF/CNPJ;
-- produto/impressora em contexto incorreto;
-- regra de observação em perdas;
-- estados de PaymentAttempt;
-- comportamento de retry de impressão.
+O backend atual já removeu `table` dessa operação.
 
-Para CADA falha restante:
+Corrija o frontend.
 
-1. identifique qual é o contrato atual do sistema;
-2. verifique histórico e código consumidor atual;
-3. classifique como:
-   - regressão real do código; ou
-   - teste legado/desatualizado;
-4. corrija a camada certa.
+Ao dividir uma Comanda:
 
-NÃO altere comportamento correto de produção apenas para atender expectativa antiga do teste.
+- cria-se nova Comanda independente;
+- não escolher Mesa;
+- não enviar `table`;
+- não exibir “Mesa da nova comanda”.
 
-Especial atenção para pagamentos, estoque, POS e impressão: não enfraquecer invariantes financeiras, idempotência ou segurança.
+Preserve identificador e itens.
 
 ---
 
-## 8. DEPENDÊNCIAS DE SEGURANÇA
+# 4. TIPOS FRONTEND DE COMANDA
 
-As versões atuais atualizadas incluem:
+Hoje:
 
-- Django 6.1.1
-- pypdf 6.19.0
-- Next 16.3.8
+`frontend/src/types/index.ts`
 
-Essas atualizações vieram para corrigir bloqueios reais dos audits.
+ainda expõe em `Command`:
 
-NÃO reverta para:
+```ts
+table: number | null
+table_name?: string
+```
 
-- Django 6.1;
-- pypdf 6.16.2;
-- Next 16.3.4.
+Analise todos os consumidores.
 
-Faça as correções mantendo as versões seguras ou versão superior compatível somente se houver motivo técnico comprovado.
+Como novas Comandas não podem mais possuir Mesa, retire esses campos do contrato operacional atual caso não sejam necessários para histórico.
 
----
+IMPORTANTE:
 
-## 9. VALIDAÇÃO FINAL
+se algum endpoint histórico ainda precisar entregar esses valores por compatibilidade de leitura, NÃO quebre o backend sem necessidade.
 
-Ao final execute o equivalente ao pipeline real.
+A preferência é:
 
-BACKEND:
+- UI operacional atual não depende deles;
+- histórico pode continuar existindo internamente enquanto houver dados antigos.
 
-- instalação limpa das requirements;
-- `pip-audit`;
-- `python manage.py check`;
-- `python manage.py makemigrations --check --dry-run`;
-- suíte completa de testes;
-- `python manage.py check --deploy --fail-level WARNING`;
-- `collectstatic`.
-
-FRONTEND:
-
-- `npm ci`;
-- lint;
-- `npm audit --omit=dev --audit-level=high`;
-- build.
-
-PLATFORM ADMIN:
-
-- `npm ci`;
-- lint;
-- `npm audit --omit=dev --audit-level=high`;
-- build.
-
-CONTAINERS:
-
-- validar `docker compose config`;
-- validar `docker stack config`;
-- build da imagem backend;
-- build da imagem frontend;
-- build da imagem platform-admin;
-- confirmar usuário não-root;
-- confirmar comandos finais;
-- confirmar metadados de release;
-- confirmar assets `public` dentro da imagem frontend;
-- confirmar funcionamento do runtime necessário para `next/image`.
-
-Não considere a missão concluída enquanto o mesmo conjunto de validações do GitHub Actions continuar vermelho.
+Não manter campo morto apenas porque “sempre esteve ali”.
 
 ---
 
-## 10. ENTREGA
+# 5. POS FLUTTER — COMANDA AINDA CARREGA MESA
 
-Ao terminar, me informe:
+Em:
 
-1. causa-raiz de cada grupo de erros;
-2. arquivos alterados;
-3. quais testes estavam realmente quebrados;
-4. quais testes estavam apenas desatualizados;
-5. correções feitas em produção;
-6. correções feitas somente nos testes;
-7. resultado de cada suíte;
-8. resultado de lint/build/audits;
-9. resultado dos 3 Docker builds;
-10. confirmação de que `public` está presente no frontend standalone;
-11. se o projeto está efetivamente pronto para um push que gere as imagens GHCR;
-12. qualquer risco restante antes de atualizar a VPS.
+`pos/lib/attendance/attendance_models.dart`
 
-NÃO faça deploy na VPS nesta missão.
+`AttendanceCommand` ainda possui:
 
-Primeiro precisamos deixar a origem e as imagens de produção 100% validadas.
+- `tableId`
+- `tableName`
+- `isPrimary`
+
+A API atual de Comandas novas não utiliza mais isso operacionalmente.
+
+Em:
+
+`pos/lib/attendance/attendance_pages.dart`
+
+a lista ainda exibe:
+
+```dart
+command.tableName.isEmpty
+    ? 'Sem mesa'
+    : command.tableName
+```
+
+Isso não faz mais sentido para Comandas novas.
+
+Corrija o modelo e UI operacional.
+
+Uma Comanda não precisa exibir “Sem mesa”.
+
+Pode exibir, por exemplo:
+
+- identificador;
+- número;
+- cliente quando houver;
+- quantidade de pessoas, se aplicável;
+- status.
+
+NÃO transforme isso em redesign visual amplo.
+
+Apenas retire a semântica Mesa da Comanda.
+
+---
+
+# 6. `AttendanceCommand` — CAMPOS HISTÓRICOS
+
+No backend:
+
+`backend/apps/attendance/models.py`
+
+`AttendanceCommand` ainda possui:
+
+- `table`
+- `is_primary`
+- `table_name_snapshot`
+
+O próprio comentário atual já informa:
+
+“table fields are retained for historical records only.”
+
+Isso é aceitável TEMPORARIAMENTE.
+
+NÃO faça migration destrutiva nesta missão apenas para apagar esses campos.
+
+Porém:
+
+nenhum fluxo operacional novo deve:
+
+- preencher `table`;
+- preencher `is_primary`;
+- usar `table_name_snapshot`;
+- consultar Mesa através desses campos;
+- tomar decisão operacional por esses campos.
+
+Analise o código inteiro e confirme isso.
+
+O serializer operacional atual também ainda retorna:
+
+- `table`
+- `table_name`
+- `is_primary`
+
+Se não houver consumidor legítimo atual, remova esses campos da resposta operacional do POS.
+
+Preserve os dados no banco.
+
+---
+
+# 7. `commands.Command` — CAMPOS HISTÓRICOS
+
+O model:
+
+`backend/apps/commands/models.py`
+
+também ainda possui:
+
+- `table`
+- `table_name_snapshot`
+
+A camada de serviço nova já parou de preencher isso.
+
+Trate-os como histórico legado temporário.
+
+NÃO apague fisicamente nesta missão.
+
+Mas retire a dependência operacional atual de:
+
+- serializers;
+- views;
+- frontend;
+- filtros;
+- labels;
+- operações novas.
+
+Caso algum relatório histórico precise desses valores, pode continuar lendo snapshots históricos.
+
+O que não pode acontecer é Comanda NOVA voltar a depender de Mesa.
+
+---
+
+# 8. RBAC ÓRFÃO — `commands.transfer`
+
+Hoje ainda existe:
+
+`commands.transfer`
+
+com descrição semelhante a:
+
+“Transferir uma comanda aberta entre mesas.”
+
+Verifique:
+
+`backend/apps/companies/rbac.py`
+
+`backend/apps/commands/permissions.py`
+
+`frontend/src/lib/permissions.ts`
+
+e todos os outros consumidores.
+
+Essa permissão ficou órfã porque a operação Comanda → Mesa foi removida.
+
+REMOVA o uso operacional dessa permissão.
+
+Isso inclui:
+
+- catálogo funcional atual;
+- mapeamentos de actions;
+- frontend;
+- POS;
+- perfis/defaults futuros.
+
+CUIDADO:
+
+se `FunctionalPermission` já estiver persistida em produção, não precisa necessariamente deletar fisicamente o registro nesta missão.
+
+Pode:
+
+- deixar de criar/conceder;
+- arquivar/desativar via migration segura se o modelo permitir;
+- preservar auditoria/histórico.
+
+Não faça delete destrutivo sem analisar impacto.
+
+MANTER:
+
+`commands.transfer_items`
+
+porque transferência de ITENS entre comandas continua válida.
+
+---
+
+# 9. `CommandOperationType.TRANSFER`
+
+Em:
+
+`backend/apps/commands/models.py`
+
+ainda existe:
+
+`TRANSFER = 'transfer'`
+
+Isso foi usado historicamente para transferência entre mesas.
+
+Como pode haver `CommandOperation` persistida com esse tipo, NÃO remova cegamente o choice se isso quebrar leitura histórica.
+
+Mas:
+
+- não pode haver nova operação criada com esse tipo;
+- não deve existir endpoint atual gerando `TRANSFER`;
+- não deve existir botão atual usando isso.
+
+Se permanecer, documente claramente como HISTÓRICO.
+
+---
+
+# 10. RELATÓRIO “MESAS E COMANDAS”
+
+Hoje o relatório ainda mistura o modelo antigo.
+
+Em:
+
+`backend/apps/reports/views.py`
+
+`CommandsReportView`
+
+ainda usa:
+
+- `command.table_id`;
+- `_command_table_name`;
+- filtro por Mesa dentro de Command;
+- `opened_tables` derivado historicamente de command em alguns pontos;
+- operações `CommandOperationType.TRANSFER`;
+- labels “Transferência entre mesas”.
+
+No frontend:
+
+`frontend/src/components/commands-report.tsx`
+
+ainda existem:
+
+- filtro “Mesa” baseado em Comanda;
+- coluna “Mesa” em Comandas;
+- coluna Mesa nos itens;
+- Mesa nos pagamentos;
+- Mesa nos cancelamentos;
+- origem/destino com Mesa;
+- seção de “Transferências” com semântica antiga.
+
+Precisamos separar o que é:
+
+A) HISTÓRICO LEGADO
+
+de:
+
+B) OPERAÇÃO ATUAL.
+
+Não apague informação histórica legítima.
+
+Mas NÃO represente isso como comportamento atual.
+
+Minha direção:
+
+- Comandas atuais devem ser relatório de Comandas;
+- Mesas atuais devem vir de `TableAttendance`;
+- snapshots históricos de Comanda → Mesa podem aparecer somente quando realmente existem em registros antigos;
+- filtros novos de Mesa não devem depender de `Command.table_id`.
+
+Se for necessário um refactor maior para fazer um relatório completo unificado novo de Mesas + Comandas, NÃO faça nesta missão.
+
+Neste momento:
+
+1. retire dependências operacionais incorretas;
+2. mantenha histórico legível;
+3. não invente uma nova tela complexa.
+
+No mínimo, não permita que o relatório atual sugira que Comandas novas continuam vinculadas a Mesas.
+
+---
+
+# 11. DASHBOARD
+
+Já foi corrigido um ponto corretamente:
+
+Mesas abertas agora são contadas através de:
+
+`TableAttendance`
+
+e não de `Command.table`.
+
+Preserve isso.
+
+Audite outros KPIs e cards para confirmar que nenhuma métrica atual de Mesa ainda depende de:
+
+- `Command.table`;
+- `AttendanceCommand.table`;
+- `is_primary`.
+
+Mesa operacional = `TableAttendance`.
+
+---
+
+# 12. AGRUPAMENTO DE MESAS
+
+Em:
+
+`apps.attendance.services`
+
+ainda existem:
+
+- `group_tables`
+- `separate_table_from_group`
+- `AttendanceTableGroup`
+- `AttendanceTableGroupMembership`
+
+Isso NÃO é automaticamente legado.
+
+O agrupamento de mesas continua sendo funcionalidade válida do domínio novo, desde que opere em:
+
+`TableAttendance`
+
+e/ou mesas físicas atuais.
+
+Analise o comportamento.
+
+Garanta que agrupamento NÃO dependa de:
+
+- AttendanceCommand;
+- comanda primária;
+- `is_primary`.
+
+Se estiver independente, MANTER.
+
+---
+
+# 13. RECUPERAR COBERTURA DE TESTES DO MESAS NOVO
+
+A limpeza removeu muitos testes do antigo:
+
+`backend/apps/pos/tests/test_pos5_attendance.py`
+
+Isso foi correto para testes que validavam o motor Mesa → Comanda antigo.
+
+Porém NÃO queremos perder cobertura de funcionalidades que continuam existindo.
+
+Hoje:
+
+`test_pos5_attendance.py`
+
+ficou basicamente focado em Comandas independentes.
+
+Já existe:
+
+`test_table_attendance_regression.py`
+
+com cobertura de fechamento/pagamentos.
+
+Analise a cobertura do novo `TableAttendance` e crie/ajuste testes para funcionalidades atuais que ficaram sem cobertura.
+
+No mínimo verificar:
+
+- abrir mesa via `open_table_attendance`;
+- não permitir duas ocupações abertas para a mesma mesa;
+- salvar pedido;
+- confirmação/estoque;
+- solicitar conta;
+- liberar solicitação de conta;
+- pagamento parcial;
+- reversão;
+- transferência de itens entre mesas;
+- agrupamento de mesas;
+- separação de mesa de grupo;
+- fechamento de mesa;
+- fechamento vazio sem criar venda;
+- fechamento pago criando venda corretamente;
+- idempotência;
+- histórico/auditoria;
+- impedir exclusão da mesa física quando existe TableAttendance aberta.
+
+NÃO copie testes antigos trocando apenas o nome das classes.
+
+Teste o contrato novo.
+
+---
+
+# 14. `OPEN_TABLE` E OUTROS OPERATION TYPES HISTÓRICOS
+
+Em:
+
+`AttendanceOperationType`
+
+ainda existem:
+
+- `OPEN_TABLE`
+- `TRANSFER_COMMAND`
+
+e possivelmente outros tipos usados somente pelo motor antigo.
+
+Faça levantamento completo.
+
+Se houver registros históricos persistidos que dependem deles:
+
+MANTER como valor histórico.
+
+Mas coloque comentário claro de:
+
+“historical only / no new writes”.
+
+Garanta por busca de código que nenhuma operação atual escreve esses tipos.
+
+---
+
+# 15. MIGRATIONS ANTIGAS
+
+NÃO delete migrations como:
+
+`attendance/0001...`
+`0004_pos55_table_groups...`
+etc.
+
+Migrations representam histórico do schema.
+
+O mesmo vale para migrations de `commands`.
+
+Não “limpe” migrations aplicadas.
+
+---
+
+# 16. MIGRATION `0011_preserve_existing_pos_entitlements.py`
+
+Existe atualmente:
+
+`backend/apps/saas/migrations/0011_preserve_existing_pos_entitlements.py`
+
+Ela adiciona aos PlanVersions existentes:
+
+`pos.enabled = true`
+
+e:
+
+`pos.devices.max = unlimited`
+
+quando ainda não existem.
+
+ANALISE COM MUITO CUIDADO.
+
+Isso pode ter impacto comercial importante.
+
+O objetivo original era impedir que planos existentes passassem a ser inválidos após POS virar capability obrigatória.
+
+Porém não queremos conceder acidentalmente licença ilimitada de CORE POS para todo plano histórico se isso não for necessário.
+
+Antes de mudar:
+
+- analise como os planos existentes eram tratados;
+- analise tenants atuais;
+- analise enforcement;
+- analise defaults de planos novos.
+
+Se a migration for necessária apenas para preservar operação de clientes existentes durante o cutover, documente.
+
+Se existir solução melhor que preserve validade sem transformar todo plano histórico em POS ilimitado, implemente de forma segura.
+
+NÃO quebre tenants já existentes.
+
+NÃO faça migration destrutiva.
+
+No relatório final explique exatamente a decisão.
+
+---
+
+# 17. NÃO MEXER NA ARQUITETURA DE COMANDAS AGORA
+
+Temos atualmente:
+
+`apps.commands.Command`
+
+e:
+
+`apps.attendance.AttendanceCommand`
+
+Isso ainda é uma duplicidade arquitetural a resolver.
+
+NÃO tente unificar esses dois motores nesta missão.
+
+Isso será uma missão separada de COMANDAS.
+
+Agora só queremos:
+
+- Comanda independente de Mesa;
+- Mesas usando TableAttendance;
+- ausência de endpoints/UI mortos;
+- ausência de permissões órfãs;
+- testes coerentes.
+
+---
+
+# 18. BUSCAS OBRIGATÓRIAS AO FINAL
+
+Pesquise no projeto inteiro por:
+
+`open_table`
+
+`OPEN_TABLE`
+
+`TRANSFER_COMMAND`
+
+`transfer_command`
+
+`transfer_command_table`
+
+`commands.transfer`
+
+`is_primary`
+
+`table_name_snapshot`
+
+`command.table`
+
+`AttendanceCommand.table`
+
+`tableId`
+
+`tableName`
+
+`"Sem mesa"`
+
+`"Transferir mesa"`
+
+`"Mesa da nova comanda"`
+
+`Legacy`
+
+`legacy`
+
+Para CADA ocorrência restante, informe:
+
+- arquivo;
+- linha/função;
+- motivo pelo qual permanece;
+- se é histórico ou operacional.
+
+Nenhuma ocorrência operacional Mesa → Comanda deve permanecer.
+
+---
+
+# 19. VALIDAÇÃO FRONTEND
+
+Depois das alterações:
+
+Frontend:
+
+```bash
+npm ci
+npm run lint
+npm audit --omit=dev --audit-level=high
+npm run build
+```
+
+Platform Admin, caso tocado:
+
+```bash
+npm ci
+npm run lint
+npm audit --omit=dev --audit-level=high
+npm run build
+```
+
+Não ignore erros de TypeScript que mostrem contrato antigo.
+
+---
+
+# 20. VALIDAÇÃO BACKEND
+
+Execute:
+
+```bash
+python manage.py check
+python manage.py makemigrations --check --dry-run
+python manage.py test
+python manage.py check --deploy --fail-level WARNING
+```
+
+Preserve:
+
+- Django 6.1.1;
+- pypdf 6.19.0;
+- regras atuais de segurança;
+- entitlements atuais;
+- idempotência;
+- invariantes financeiras.
+
+---
+
+# 21. VALIDAÇÃO POS
+
+Execute análise/testes disponíveis do Flutter.
+
+Confirme especialmente que:
+
+- Mesas não usam AttendanceCommand;
+- Comandas não mostram mais semântica de Mesa;
+- não existe chamada ao endpoint removido `commands/<id>/transfer/`;
+- não existe parâmetro `tableId` na abertura da Comanda;
+- Checkout de Comanda continua funcionando;
+- transferência de itens entre Comandas continua funcionando.
+
+---
+
+# 22. CI / DOCKER
+
+Não desfaça as correções recentes já feitas.
+
+Preserve:
+
+- Next 16.3.8;
+- `sharp`;
+- lockfiles atuais corrigidos;
+- `frontend/public` copiado no standalone;
+- checks de assets dentro do container;
+- npm audit;
+- pip-audit.
+
+Se o backend ficar verde, deixe o pipeline seguir normalmente.
+
+NÃO faça deploy.
+
+Precisamos primeiro ver:
+
+Backend ✅
+Frontend ✅
+Platform Admin ✅
+Production container builds ✅
+Publish GHCR ✅
+
+---
+
+# ENTREGA FINAL
+
+Ao concluir, me entregue um relatório objetivo contendo:
+
+1. referências de Mesa removidas do Backoffice de Comandas;
+2. endpoints mortos removidos da UI;
+3. campos operacionais de Mesa retirados dos contratos de Comanda;
+4. campos históricos mantidos e motivo;
+5. permissões órfãs removidas/desativadas;
+6. situação de `commands.transfer`;
+7. situação de `CommandOperationType.TRANSFER`;
+8. situação de `AttendanceOperationType.OPEN_TABLE`;
+9. situação de `TRANSFER_COMMAND`;
+10. ajustes nos relatórios;
+11. testes novos/reescritos do TableAttendance;
+12. resultado completo do backend;
+13. resultado frontend;
+14. resultado POS;
+15. resultado dos containers;
+16. decisão tomada sobre a migration `0011_preserve_existing_pos_entitlements.py`;
+17. lista de todas as ocorrências restantes de legado e justificativa;
+18. confirmação se existe QUALQUER caminho operacional atual Comanda → Mesa;
+19. confirmação se existe QUALQUER caminho operacional atual Mesa → Command;
+20. riscos restantes antes da VPS.
+
+REGRA FINAL:
+
+Após esta missão, a resposta para:
+
+“Qual entidade controla a operação de uma Mesa?”
+
+deve ser somente:
+
+`TableAttendance`.
+
+E a resposta para:
+
+“Uma Comanda nova pertence a uma Mesa?”
+
+deve ser:
+
+NÃO.
+
+Não conclua a missão enquanto Backend, Backoffice e POS ainda discordarem sobre isso.

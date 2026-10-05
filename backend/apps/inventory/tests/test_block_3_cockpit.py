@@ -176,17 +176,17 @@ class Block3InventoryTests(TestCase):
         all_products = client.get(f'{url}?all=true', HTTP_X_BRANCH_ID=str(self.branch.pk))
         self.assertGreaterEqual(len(all_products.data['products']), 2)
 
-    def test_loss_observation_is_optional_except_other(self):
+    def test_loss_observation_is_optional_for_every_reason(self):
         loss = record_loss(
             branch=self.branch, product=self.product, idempotency_key=uuid.uuid4(),
             quantity='1', reason='BREAKAGE', observation='', user=self.user,
         )
         self.assertEqual(loss.observation, '')
-        with self.assertRaises(ValidationError):
-            record_loss(
-                branch=self.branch, product=self.product, idempotency_key=uuid.uuid4(),
-                quantity='1', reason='OTHER', observation='', user=self.user,
-            )
+        other = record_loss(
+            branch=self.branch, product=self.product, idempotency_key=uuid.uuid4(),
+            quantity='1', reason='OTHER', observation='', user=self.user,
+        )
+        self.assertEqual(other.observation, '')
 
     def test_loss_rejects_cross_tenant_product_and_branch(self):
         other_company = Company.objects.create(trade_name='Outro B3', legal_name='Outro B3 Ltda')

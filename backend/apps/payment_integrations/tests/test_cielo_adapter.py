@@ -377,7 +377,24 @@ class CieloAdapterBridgeTests(TestCase):
             method for method in ensure_default_payment_methods(self.company)
             if method.code == PaymentMethodCode.CREDIT_CARD
         )
-        self.provider = PaymentProvider.objects.get(code='cielo')
+        self.provider, _ = PaymentProvider.objects.get_or_create(
+            code='cielo',
+            defaults={
+                'name': 'Cielo Smart',
+                'status': Status.ACTIVE,
+                'integration_type': 'local_deep_link',
+                'capabilities': {
+                    'payment': True,
+                    'reversal': True,
+                    'recovery': True,
+                    'enabled_products': True,
+                    'terminal_info': True,
+                    'payment_methods': [
+                        'credit_card', 'debit_card', 'pix', 'food_voucher', 'meal_voucher',
+                    ],
+                },
+            },
+        )
         self.assertEqual(self.provider.name, 'Cielo Smart')
         self.assertEqual(self.provider.integration_type, 'local_deep_link')
         self.assertTrue(self.provider.capabilities['payment'])
