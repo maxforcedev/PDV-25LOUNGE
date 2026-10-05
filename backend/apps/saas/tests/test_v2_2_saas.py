@@ -1,6 +1,7 @@
 from datetime import timedelta
 from decimal import Decimal
 from io import StringIO
+from types import SimpleNamespace
 
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
@@ -9,6 +10,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient
+from rest_framework.exceptions import PermissionDenied
 
 from apps.accounts.models import User
 from apps.base.exceptions import DomainValidationError
@@ -37,6 +39,7 @@ from apps.saas.services import (
     apply_user_limit_states,
     create_support_session,
     ensure_capability_catalog,
+    get_entitled_features,
     map_existing_company,
     process_subscription_lifecycle,
     provision_saas_tenant,
@@ -45,6 +48,7 @@ from apps.saas.services import (
     set_admin_suspension,
     validate_plan_version_complete,
 )
+from apps.saas.permissions import enforce_saas_request
 
 
 PASSWORD = 'Strong-owner-password-123!'
@@ -214,7 +218,7 @@ class PlanHistoryTests(TestCase):
 
 
 class ProvisioningTests(TestCase):
-    def test_public_and_manual_use_equivalent_provisioning_and_are_idempotent(self):
+    def test_manual_provisioning_defaults_to_active_and_is_idempotent(self):
         version = create_plan(trial_days=7)
         manual_owner = create_user('manual-owner@example.com')
         manual, created = provision_saas_tenant(
@@ -222,7 +226,7 @@ class ProvisioningTests(TestCase):
             idempotency_key='manual-1',
             plan_version=version,
             company_data={'trade_name': 'Manual', 'legal_name': 'Manual Legal'},
-            owner_user=manual_owner,
+            owner_email=manual_owner.email,
             billing_mode=Subscription.BillingMode.PAID,
         )
         self.assertTrue(created)
@@ -231,7 +235,7 @@ class ProvisioningTests(TestCase):
             idempotency_key='manual-1',
             plan_version=version,
             company_data={'trade_name': 'Manual', 'legal_name': 'Manual Legal'},
-            owner_user=manual_owner,
+            owner_email=manual_owner.email,
             billing_mode=Subscription.BillingMode.PAID,
         )
         self.assertFalse(created)
@@ -248,8 +252,11 @@ class ProvisioningTests(TestCase):
         for operation in (manual, public):
             self.assertEqual(operation.company.branches.count(), 1)
             self.assertTrue(operation.company.user_accesses.get(user=operation.user).is_owner)
-            self.assertEqual(operation.subscription.status, Subscription.Status.TRIALING)
             self.assertTrue(CycleUsage.objects.filter(subscription=operation.subscription).exists())
+        self.assertEqual(manual.user_id, manual_owner.pk)
+        self.assertEqual(manual.subscription.status, Subscription.Status.ACTIVE)
+        self.assertIsNone(manual.subscription.trial_started_at)
+        self.assertEqual(public.subscription.status, Subscription.Status.TRIALING)
 
     def test_global_manual_approval_policy_does_not_deactivate_company(self):
         settings = GlobalSaaSSettings.objects.create(auto_approve_signups=False)
@@ -283,7 +290,7 @@ class LifecycleTests(TestCase):
 
         effective = resolve_effective_status(company, at=now)
         self.assertEqual(effective['status'], Subscription.Status.PAST_DUE)
-        self.assertTrue(effective['can_operate'])
+        self.assertFalse(effective['can_operate'])
         subscription, changed = process_subscription_lifecycle(subscription, at=now)
         self.assertTrue(changed)
         self.assertEqual(subscription.status, Subscription.Status.PAST_DUE)
@@ -319,6 +326,21 @@ class LifecycleTests(TestCase):
         result = resolve_effective_status(company, at=expired_at)
         self.assertEqual(result['status'], Subscription.Status.TRIAL_EXPIRED)
         self.assertFalse(result['can_operate'])
+
+    def test_period_end_immediately_blocks_every_billing_mode(self):
+        now = timezone.now()
+        for billing_mode in Subscription.BillingMode.values:
+            _, company, subscription = create_tenant(
+                f'Expired {billing_mode}', plan_version=self.version, billing_mode=billing_mode,
+            )
+            subscription.current_period_start = now - timedelta(days=31)
+            subscription.current_period_end = now
+            subscription.save()
+
+            effective = resolve_effective_status(company, at=now)
+
+            self.assertFalse(effective['can_operate'])
+            self.assertEqual(effective['status'], Subscription.Status.PAST_DUE)
 
 
 class BillingAndSuspensionTests(TestCase):
@@ -513,3 +535,99 @@ class EntitlementAndLimitTests(TestCase):
         owner, company, _ = create_tenant('Unlimited', plan_version=version)
         branch = create_branch_with_access(creator=owner, company=company, name='Second')
         self.assertEqual(branch.company, company)
+
+
+class FailClosedSaaSContextTests(TestCase):
+    def test_unmapped_tenant_has_no_features_and_cannot_login(self):
+        owner, company, _ = create_tenant('Unmapped Tenant')
+
+        self.assertFalse(resolve_effective_status(company)['can_operate'])
+        self.assertEqual(get_entitled_features(company), set())
+        response = APIClient().post(
+            reverse('accounts:login'),
+            {'email': owner.email, 'password': PASSWORD},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 403, response.data)
+
+    def test_features_require_an_explicit_enabled_entitlement(self):
+        version = create_plan(code='explicit-features')
+        capabilities = ensure_capability_catalog()
+        PlanEntitlement.objects.create(
+            plan_version=version,
+            capability=capabilities['feature.tables'],
+            enabled=True,
+            unlimited=True,
+        )
+        _, company, _ = create_tenant('Explicit Features', plan_version=version)
+
+        self.assertEqual(get_entitled_features(company), {'feature.tables'})
+
+    def test_login_and_me_keep_only_operational_company_and_branches(self):
+        version = create_plan(code='multi-company-context')
+        owner, active_company, _ = create_tenant('Operational Company', plan_version=version)
+        expired_company = create_company_with_matrix(
+            creator=owner,
+            enforce_saas_limits=False,
+            trade_name='Expired Company',
+            legal_name='Expired Company Legal',
+        )
+        expired_subscription, _ = map_existing_company(
+            company=expired_company,
+            plan_version=version,
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+        expired_subscription.current_period_start = timezone.now() - timedelta(days=31)
+        expired_subscription.current_period_end = timezone.now() - timedelta(seconds=1)
+        expired_subscription.save()
+
+        client = APIClient()
+        response = client.post(
+            reverse('accounts:login'),
+            {'email': owner.email, 'password': PASSWORD},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual([item['id'] for item in response.data['companies']], [active_company.pk])
+        self.assertEqual(
+            {item['company_id'] for item in response.data['branches']},
+            {active_company.pk},
+        )
+
+        response = client.get(reverse('accounts:me'))
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual([item['id'] for item in response.data['companies']], [active_company.pk])
+        self.assertEqual(
+            {item['company_id'] for item in response.data['branches']},
+            {active_company.pk},
+        )
+
+    def test_unscoped_request_uses_an_operational_membership_or_denies(self):
+        version = create_plan(code='unscoped-context')
+        owner, active_company, _ = create_tenant('Unscoped Active', plan_version=version)
+        expired_company = create_company_with_matrix(
+            creator=owner,
+            enforce_saas_limits=False,
+            trade_name='Unscoped Expired',
+            legal_name='Unscoped Expired Legal',
+        )
+        expired_subscription, _ = map_existing_company(
+            company=expired_company,
+            plan_version=version,
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+        expired_subscription.current_period_end = timezone.now() - timedelta(seconds=1)
+        expired_subscription.save()
+        request = SimpleNamespace(
+            path='/api/v1/products/', headers={}, query_params={}, data={},
+            parser_context={'kwargs': {}},
+        )
+        view = SimpleNamespace(queryset=Company.objects.none(), serializer_class=None)
+
+        enforce_saas_request(request, owner, view)
+
+        active_subscription = active_company.subscriptions.get(is_current=True)
+        active_subscription.current_period_end = timezone.now() - timedelta(seconds=1)
+        active_subscription.save()
+        with self.assertRaises(PermissionDenied):
+            enforce_saas_request(request, owner, view)

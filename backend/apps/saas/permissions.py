@@ -14,6 +14,34 @@ TENANT_EXEMPT_PREFIXES = (
     '/api/v1/saas/owner/',
 )
 
+COMMERCIAL_FEATURES_BY_BASENAME = {
+    'category': 'products',
+    'product': 'products',
+    'branchprice': 'products',
+    'modifiergroup': 'products',
+    'modifieroption': 'products',
+    'productmodifiergroup': 'products',
+    'productiondestination': 'products',
+    'stock': 'inventory',
+    'stock-movement': 'inventory',
+    'stock-transfer': 'inventory',
+    'transfer-divergence': 'inventory',
+    'loss-record': 'inventory',
+    'inventory-count': 'inventory',
+    'advanced-inventory-report': 'inventory',
+    'purchase-order': 'purchases',
+    'purchase-receipt': 'purchases',
+    'payable-installment': 'financial',
+    'supplier': 'suppliers',
+    'product-supplier': 'suppliers',
+    'product-purchase-presentation': 'suppliers',
+    'product-supplier-unit': 'suppliers',
+    'presentation-preset': 'suppliers',
+    'customer': 'customers',
+    'promotion': 'promotions',
+    'audit-log': 'audit',
+}
+
 
 def _company_ids_from_object(obj):
     if obj is None:
@@ -190,10 +218,15 @@ def _request_company_ids(request, view, user):
     support_session = getattr(request, 'support_session', None)
     if support_session:
         return {support_session.company_id}
-    return set(user.company_accesses.filter(
+    candidate_ids = set(user.company_accesses.filter(
         is_active=True,
         saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
     ).values_list('company_id', flat=True))
+    return {
+        company.pk
+        for company in Company.objects.filter(pk__in=candidate_ids)
+        if resolve_effective_status(company)['can_operate']
+    }
 
 
 def enforce_saas_request(request, user, view=None):
@@ -219,11 +252,7 @@ def enforce_saas_request(request, user, view=None):
         if authorized_ids != company_ids:
             raise PermissionDenied('Tenant fora do contexto autorizado.')
     if not company_ids:
-        from .services import get_global_settings
-
-        if get_global_settings().enforcement_enabled:
-            raise PermissionDenied('O tenant alvo deve ser resolvido pelo objeto ou payload.')
-        return
+        raise PermissionDenied('O tenant alvo deve ser resolvido e estar operacional.')
     for company in Company.objects.filter(pk__in=company_ids):
         effective = resolve_effective_status(company)
         if effective['can_operate']:
@@ -235,6 +264,30 @@ def enforce_saas_request(request, user, view=None):
         ):
             continue
         raise PermissionDenied(f'O tenant esta em estado {effective["status"]}.')
+    _enforce_commercial_feature(request, view, company_ids)
+
+
+def _enforce_commercial_feature(request, view, company_ids):
+    feature = COMMERCIAL_FEATURES_BY_BASENAME.get(getattr(view, 'basename', None))
+    if feature is None and '/reports/' in request.path:
+        feature = 'reports'
+    if feature is None:
+        return
+    if len(company_ids) != 1:
+        raise PermissionDenied('O modulo comercial exige uma empresa de contexto.')
+
+    from apps.companies.features import require_branch_feature
+
+    branch_id = request.headers.get('X-Branch-ID')
+    if branch_id:
+        branch = Branch.objects.filter(pk=branch_id, company_id=next(iter(company_ids))).first()
+    else:
+        branch = Branch.objects.filter(
+            company_id=next(iter(company_ids)), is_matrix=True,
+        ).first()
+    if branch is None:
+        raise PermissionDenied('A filial de contexto nao pertence a empresa informada.')
+    require_branch_feature(branch, feature)
 
 
 def support_permission_decision(request, *, company_id=None, branch_id=None, obj=None):

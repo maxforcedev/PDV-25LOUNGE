@@ -35,6 +35,7 @@ from apps.saas.models import (
     PlatformPermission,
     PlatformRole,
     PlatformUserAccess,
+    ProvisioningOperation,
     Subscription,
     SubscriptionRequest,
     SupportSession,
@@ -159,7 +160,7 @@ class BoundRuntimeContextTests(TestCase):
 
 
 class AuthSaaSIntegrationTests(TestCase):
-    def test_restricted_and_pending_owners_can_login_and_discover_subscription(self):
+    def test_restricted_and_pending_owners_cannot_login_to_the_backoffice(self):
         global_settings = get_global_settings()
         global_settings.past_due_days = 1
         global_settings.restricted_after_days = 3
@@ -182,27 +183,14 @@ class AuthSaaSIntegrationTests(TestCase):
         pending_state.approval_status = TenantSaaSState.ApprovalStatus.PENDING
         pending_state.save(update_fields=('approval_status', 'updated_at'))
 
-        for owner, company, expected_status in (
-            (restricted_owner, restricted_company, Subscription.Status.RESTRICTED),
-            (pending_owner, pending_company, 'PENDING_APPROVAL'),
-        ):
+        for owner in (restricted_owner, pending_owner):
             client = APIClient()
             response = client.post(
                 reverse('accounts:login'),
                 {'email': owner.email, 'password': PASSWORD},
                 format='json',
             )
-            self.assertEqual(response.status_code, 200, response.data)
-            context = next(item for item in response.data['companies'] if item['id'] == company.pk)
-            self.assertEqual(context['effective_status'], expected_status)
-            self.assertFalse(context['can_operate'])
-            self.assertTrue(context['is_owner'])
-            response = client.get(
-                reverse('saas-owner-subscription'), {'company': company.pk}
-            )
-            self.assertEqual(response.status_code, 200, response.data)
-            response = client.get(reverse('company-detail', args=[company.pk]))
-            self.assertEqual(response.status_code, 403)
+            self.assertEqual(response.status_code, 403, response.data)
 
     def test_me_exposes_valid_support_context_with_true_actor_and_logout_ends_it(self):
         version = create_plan(code='auth-support-context')
@@ -408,6 +396,13 @@ class ImmutabilityAndLimitBypassTests(TestCase):
             PlanEntitlement.objects.bulk_update([entitlement], ['limit_value'])
         with self.assertRaises(ValidationError):
             version.entitlements.all().delete()
+        version.plan.code = 'renamed-plan'
+        with self.assertRaises(ValidationError):
+            version.plan.save()
+
+    def test_plan_code_is_normalized_from_its_name(self):
+        plan = Plan.objects.create(code='', name='Profissional Avancado')
+        self.assertEqual(plan.code, 'profissional-avancado')
 
     def test_direct_branch_membership_bulk_and_user_activation_bypasses_are_blocked(self):
         version = create_plan(code='limit-bypass', users=1, branches=1)
@@ -801,6 +796,7 @@ class Tenant360PermissionTests(TestCase):
             'platform-subscription-financial-suspend',
             'platform-subscription-financial-resume',
             'platform-subscription-extend-trial',
+            'platform-subscription-end-trial',
             'platform-subscription-process-lifecycle',
         )
         for action_name in subscription_actions:
@@ -922,6 +918,120 @@ class PlatformSubscriptionAdministrationTests(TestCase):
             }, format='json',
         )
         self.assertEqual(public.status_code, 400)
+
+    def test_manual_provisioning_reuses_owner_email_without_password_mutation(self):
+        existing = create_user('second-company-owner@example.com')
+        original_password = existing.password
+        lookup = self.client.get(
+            reverse('platform-owner-lookup'), {'email': existing.email}
+        )
+        self.assertEqual(lookup.status_code, 200, lookup.data)
+        self.assertEqual(lookup.data, {
+            'email': existing.email, 'exists': True, 'eligible': True,
+        })
+        response = self.client.post(
+            reverse('platform-tenant-list'),
+            {
+                'idempotency_key': 'existing-owner', 'plan_version': self.version.pk,
+                'trade_name': 'Second Company', 'legal_name': 'Second Company Legal',
+                'owner_email': existing.email, 'billing_mode': Subscription.BillingMode.PAID,
+                'reason': 'Second business', 'current_password': PASSWORD,
+            }, format='json',
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        operation = ProvisioningOperation.objects.get(pk=response.data['id'])
+        existing.refresh_from_db()
+        self.assertEqual(operation.user_id, existing.pk)
+        self.assertTrue(operation.company.user_accesses.filter(
+            user=existing, is_owner=True,
+        ).exists())
+        self.assertEqual(existing.password, original_password)
+        self.assertTrue(existing.check_password(PASSWORD))
+        self.assertEqual(operation.subscription.status, Subscription.Status.ACTIVE)
+        self.assertIsNone(operation.subscription.trial_started_at)
+
+    def test_manual_provisioning_requires_password_only_for_new_owner_and_can_start_trial(self):
+        base = {
+            'plan_version': self.version.pk,
+            'trade_name': 'Trial Choice', 'legal_name': 'Trial Choice Legal',
+            'owner_email': 'new-trial-owner@example.com',
+            'billing_mode': Subscription.BillingMode.PAID,
+            'reason': 'Commercial trial', 'current_password': PASSWORD,
+        }
+        missing_password = self.client.post(
+            reverse('platform-tenant-list'), {**base, 'idempotency_key': 'new-owner-missing'}, format='json'
+        )
+        self.assertEqual(missing_password.status_code, 400)
+        response = self.client.post(
+            reverse('platform-tenant-list'), {
+                **base, 'idempotency_key': 'new-owner-trial', 'owner_password': PASSWORD,
+                'initial_subscription_mode': Subscription.Status.TRIALING,
+            }, format='json',
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        operation = ProvisioningOperation.objects.get(pk=response.data['id'])
+        self.assertEqual(operation.subscription.status, Subscription.Status.TRIALING)
+        self.assertIsNotNone(operation.subscription.trial_started_at)
+        new_owner = User.objects.get(email=base['owner_email'])
+        self.assertEqual(operation.user_id, new_owner.pk)
+        self.assertTrue(new_owner.check_password(PASSWORD))
+
+        no_trial = create_plan(code='manual-no-trial')
+        response = self.client.post(
+            reverse('platform-tenant-list'), {
+                **base, 'idempotency_key': 'trial-without-days',
+                'trade_name': 'No Trial Days', 'legal_name': 'No Trial Days Legal',
+                'owner_email': 'no-trial-owner@example.com', 'owner_password': PASSWORD,
+                'plan_version': no_trial.pk,
+                'initial_subscription_mode': Subscription.Status.TRIALING,
+            }, format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('initial_subscription_mode', response.data)
+
+    def test_manual_provisioning_rejects_technical_owner_selection(self):
+        existing = create_user('technical-owner@example.com')
+        response = self.client.post(
+            reverse('platform-tenant-list'),
+            {
+                'idempotency_key': 'technical-owner', 'plan_version': self.version.pk,
+                'trade_name': 'No Technical Owner', 'legal_name': 'No Technical Owner Legal',
+                'owner_email': existing.email, 'owner_user': existing.pk,
+                'billing_mode': Subscription.BillingMode.PAID,
+                'reason': 'Must use email', 'current_password': PASSWORD,
+            }, format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('owner_user', response.data)
+
+    def test_end_trial_activates_subscription_with_a_new_commercial_period(self):
+        before_trial_end = self.subscription.trial_ends_at
+        denied = self.client.post(
+            reverse('platform-subscription-end-trial', args=[self.subscription.pk]),
+            {'reason': 'Contract signed', 'current_password': 'wrong'}, format='json',
+        )
+        self.assertEqual(denied.status_code, 400)
+        response = self.client.post(
+            reverse('platform-subscription-end-trial', args=[self.subscription.pk]),
+            {'reason': 'Contract signed', 'current_password': PASSWORD}, format='json',
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.subscription.refresh_from_db()
+        self.assertEqual(self.subscription.status, Subscription.Status.ACTIVE)
+        self.assertGreater(self.subscription.current_period_end, self.subscription.current_period_start)
+        self.assertEqual(self.subscription.trial_ends_at, before_trial_end)
+        self.assertTrue(AuditLog.objects.filter(action='saas.subscription.trial.end').exists())
+
+        _, _, expired = create_tenant('Expired Trial Activation', plan_version=self.version)
+        expired.status = Subscription.Status.TRIAL_EXPIRED
+        expired.save(update_fields=('status', 'updated_at'))
+        response = self.client.post(
+            reverse('platform-subscription-end-trial', args=[expired.pk]),
+            {'reason': 'Contract signed after expiry', 'current_password': PASSWORD}, format='json',
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        expired.refresh_from_db()
+        self.assertEqual(expired.status, Subscription.Status.ACTIVE)
 
     def test_reject_and_archive_are_separate_audited_saas_states(self):
         global_settings = get_global_settings()

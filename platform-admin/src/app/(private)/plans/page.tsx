@@ -143,7 +143,7 @@ function CapabilitySummary({ capability, entitlement }: { capability: Capability
 
 function EditorFields({ editor, values, setValues, capabilities, entitlements, setEntitlements }: { editor: Editor; values: Values; setValues: (values: Values) => void; capabilities: Capability[]; entitlements: EntitlementDraft[]; setEntitlements: (items: EntitlementDraft[]) => void }) {
   const set = (key: string, value: string | boolean) => setValues({ ...values, [key]: value });
-  if (editor.startsWith("plan-")) return <div className="grid gap-4 p-5 sm:grid-cols-2"><Field label="Codigo"><input className="input" value={String(values.code)} onChange={(event) => set("code", event.target.value)} required /></Field><Field label="Nome"><input className="input" value={String(values.name)} onChange={(event) => set("name", event.target.value)} required /></Field><div className="field sm:col-span-2"><label>Descricao</label><textarea className="textarea" value={String(values.description)} onChange={(event) => set("description", event.target.value)} /></div><CheckField label="Plano ativo" checked={Boolean(values.is_active)} onChange={(value) => set("is_active", value)} /></div>;
+  if (editor.startsWith("plan-")) return <div className="grid gap-4 p-5 sm:grid-cols-2"><Field label="Nome"><input className="input" value={String(values.name)} onChange={(event) => { const name = event.target.value; setValues({ ...values, name, ...(editor === "plan-create" ? { code: planCode(name) } : {}) }); }} required /></Field><Field label="Codigo tecnico (avancado)"><input className="input" value={String(values.code)} onChange={(event) => set("code", event.target.value)} required /><p className="mt-1 text-xs text-steel/55">Gerado pelo nome ao criar. Depois de usado, o backend protege este identificador.</p></Field><div className="field sm:col-span-2"><label>Descricao</label><textarea className="textarea" value={String(values.description)} onChange={(event) => set("description", event.target.value)} /></div><CheckField label="Plano ativo" checked={Boolean(values.is_active)} onChange={(value) => set("is_active", value)} /></div>;
   return <><div className="grid gap-4 p-5 sm:grid-cols-2 lg:grid-cols-3"><Field label="Numero da versao"><input className="input" type="number" min="1" value={String(values.version)} onChange={(event) => set("version", event.target.value)} required /></Field><Field label="Preco"><input className="input" type="number" min="0" step="0.01" value={String(values.price)} onChange={(event) => set("price", event.target.value)} required /></Field><Field label="Moeda"><input className="input" maxLength={3} value={String(values.currency)} onChange={(event) => set("currency", event.target.value.toUpperCase())} required /></Field><Field label="Periodo em meses"><input className="input" type="number" min="1" value={String(values.billing_period_months)} onChange={(event) => set("billing_period_months", event.target.value)} required /></Field><Field label="Dias de trial"><input className="input" type="number" min="0" value={String(values.trial_days)} onChange={(event) => set("trial_days", event.target.value)} required /></Field><div className="grid gap-2"><CheckField label="Versao ativa" checked={Boolean(values.is_active)} onChange={(value) => set("is_active", value)} /><CheckField label="Visivel publicamente" checked={Boolean(values.is_public)} onChange={(value) => set("is_public", value)} /></div></div><CapabilityMatrix capabilities={capabilities} values={entitlements} onChange={setEntitlements} /></>;
 }
 
@@ -184,6 +184,11 @@ function versionPayload(values: Values, entitlements: EntitlementDraft[]) {
       limit_value: item.enabled && !item.unlimited && item.limit_value !== "" ? Number(item.limit_value) : null,
     })),
   };
+}
+
+function planCode(name: string) {
+  return name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
 function editorTitle(editor: Editor) { return ({ "plan-create": "Criar plano", "plan-edit": "Editar plano", "version-create": "Criar versao", "version-edit": "Editar versao" })[editor]; }

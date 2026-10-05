@@ -139,19 +139,25 @@ def accessible_branches(user, permission_code=None):
 def active_operational_companies(user):
     if not user.is_authenticated or not user.can_login or not user.is_active:
         return Company.objects.none()
-    return Company.objects.filter(
+    companies = Company.objects.filter(
         status='active',
         user_accesses__user=user,
         user_accesses__is_active=True,
         user_accesses__can_login=True,
         user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
     ).distinct()
+    from apps.saas.services import resolve_effective_status
+
+    return companies.filter(pk__in=[
+        company.pk for company in companies
+        if resolve_effective_status(company)['can_operate']
+    ])
 
 
 def active_operational_branches(user):
     if not user.is_authenticated or not user.can_login or not user.is_active:
         return Branch.objects.none()
-    return Branch.objects.filter(
+    branches = Branch.objects.filter(
         status='active',
         company__status='active',
         user_accesses__user=user,
@@ -162,6 +168,7 @@ def active_operational_branches(user):
         company__user_accesses__can_login=True,
         company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
     ).distinct()
+    return branches.filter(company__in=active_operational_companies(user))
 
 
 def customer_search_queryset(*, company=None, companies=None, term='', active_only=None):

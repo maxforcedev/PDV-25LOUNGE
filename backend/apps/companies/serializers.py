@@ -320,7 +320,12 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
         )
 
     def get_feature_flags(self, settings):
-        return settings.feature_flags()
+        from .features import branch_feature_states
+
+        return {
+            feature: state['enabled']
+            for feature, state in branch_feature_states(settings.branch).items()
+        }
 
     def get_negative_stock_count(self, settings):
         from apps.inventory.models import Stock

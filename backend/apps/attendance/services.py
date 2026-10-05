@@ -413,6 +413,7 @@ def group_tables(*, branch, table_ids, user, idempotency_key, audit_metadata=Non
     from apps.commands.models import Table, TableStatus
 
     branch = _active_branch(branch)
+    require_branch_feature(branch, 'tables')
     normalized_ids = sorted(set(table_ids))
     operation, replayed = _operation(
         branch=branch, operation_type=AttendanceOperationType.GROUP_TABLES,
@@ -458,6 +459,7 @@ def group_tables(*, branch, table_ids, user, idempotency_key, audit_metadata=Non
 @transaction.atomic
 def separate_table_from_group(*, branch, table_id, user, idempotency_key, audit_metadata=None):
     branch = _active_branch(branch)
+    require_branch_feature(branch, 'tables')
     operation, replayed = _operation(
         branch=branch, operation_type=AttendanceOperationType.SEPARATE_TABLE,
         idempotency_key=idempotency_key, payload={'table': table_id},
@@ -807,6 +809,7 @@ def preview_table_order(*, attendance, items):
     """Calculate a read-only table preview including the unsaved POS draft."""
     from .models import TableOrderItem
 
+    require_branch_feature(attendance.branch, 'tables')
     if attendance.bill_requested_at:
         raise AttendanceConflict('table_bill_requested', 'A conta desta mesa já foi solicitada. Libere a conta antes de adicionar novos produtos.')
 
@@ -868,6 +871,7 @@ def set_table_item_discount(*, item, user, discount, authorization, idempotency_
         'order__attendance__branch__company', 'product__category',
     ).get(pk=item.pk)
     attendance = TableAttendance.objects.select_for_update().get(pk=item.order.attendance_id)
+    require_branch_feature(attendance.branch, 'tables')
     if attendance.status != TableAttendanceStatus.OPEN or item.status != AttendanceOrderItemStatus.CONFIRMED:
         raise AttendanceConflict('table_item_not_editable', 'O desconto exige item confirmado em mesa aberta.')
     if _locked_active_table_payments(attendance):
@@ -962,6 +966,7 @@ def table_equal_split_state(attendance, remaining=None):
 def preview_table_payment_allocations(*, attendance, allocations):
     from .models import TableAttendance, TableOrderItem, TablePaymentAllocation
     attendance = TableAttendance.objects.select_for_update().get(pk=attendance.pk)
+    require_branch_feature(attendance.branch, 'tables')
     if attendance.status != TableAttendanceStatus.OPEN:
         raise AttendanceConflict('table_closed', 'Pagamentos exigem mesa aberta.')
     preview, _paid, remaining, _base = table_financial_state(attendance, lock=True)
@@ -1027,6 +1032,7 @@ def save_table_order(*, attendance, user, items, idempotency_key, pos_device=Non
     from .models import TableAttendance, TableAttendanceStatus, TableOrder, TableOrderItem
 
     attendance = TableAttendance.objects.select_for_update().select_related('branch__company').get(pk=attendance.pk)
+    require_branch_feature(attendance.branch, 'tables')
     if attendance.status != TableAttendanceStatus.OPEN:
         raise AttendanceConflict('table_closed', 'A mesa deve estar aberta.')
     if attendance.bill_requested_at:
@@ -1131,6 +1137,7 @@ def cancel_table_item(*, item, user, reason, idempotency_key, audit_metadata=Non
     from .models import TableAttendance, TableAttendanceStatus
     item = item.__class__.objects.select_for_update().select_related('order__attendance', 'product').get(pk=item.pk)
     attendance = TableAttendance.objects.select_for_update().get(pk=item.order.attendance_id)
+    require_branch_feature(attendance.branch, 'tables')
     reason = (reason or '').strip()
     if not reason:
         raise ValidationError({'reason': 'Informe o motivo do cancelamento.'})
@@ -1191,6 +1198,7 @@ def cancel_table_order(*, order, user, reason, idempotency_key, audit_metadata=N
 
     order = TableOrder.objects.select_for_update().select_related('attendance').get(pk=order.pk)
     attendance = TableAttendance.objects.select_for_update().get(pk=order.attendance_id)
+    require_branch_feature(attendance.branch, 'tables')
     reason = (reason or '').strip()
     if not reason:
         raise ValidationError({'reason': 'Informe o motivo do cancelamento.'})
@@ -1247,6 +1255,7 @@ def cancel_table_order(*, order, user, reason, idempotency_key, audit_metadata=N
 @transaction.atomic
 def set_table_customer(*, attendance, user, customer_id, idempotency_key, audit_metadata=None):
     attendance = TableAttendance.objects.select_for_update().get(pk=attendance.pk)
+    require_branch_feature(attendance.branch, 'tables')
     if attendance.status != TableAttendanceStatus.OPEN:
         raise AttendanceConflict('table_closed', 'A mesa deve estar aberta.')
     operation, replayed = _operation(
@@ -1275,6 +1284,7 @@ def set_table_checkout_context(*, attendance, user, discount, service_fee_waived
     from .models import TableAttendance, TableAttendanceStatus
 
     attendance = TableAttendance.objects.select_for_update().select_related('branch__company').get(pk=attendance.pk)
+    require_branch_feature(attendance.branch, 'tables')
     if attendance.status != TableAttendanceStatus.OPEN:
         raise AttendanceConflict('table_closed', 'O contexto financeiro exige mesa aberta.')
     if _locked_active_table_payments(attendance):
@@ -1335,6 +1345,7 @@ def record_table_payment(*, attendance, user, payment_method_id, pos_device, amo
     from .models import TableAttendance, TableAttendanceStatus, TablePayment, TablePaymentAllocation
     received_amount = strict_decimal(received_amount, field='received_amount', decimal_places=2, max_digits=14, allow_none=True)
     attendance = TableAttendance.objects.select_for_update().select_related('branch__company').get(pk=attendance.pk)
+    require_branch_feature(attendance.branch, 'tables')
     if attendance.status != TableAttendanceStatus.OPEN:
         raise AttendanceConflict('table_closed', 'Pagamentos exigem mesa aberta.')
     request_payload = {'attendance': attendance.pk, 'mode': mode, 'payment_method': payment_method_id,
@@ -1534,6 +1545,7 @@ def reverse_table_payment(*, payment, user, reason, idempotency_key, audit_metad
     attendance = TableAttendance.objects.select_for_update().select_related(
         'branch__company',
     ).get(pk=payment_attendance_id)
+    require_branch_feature(attendance.branch, 'tables')
     locked_payments = _locked_table_payments(attendance)
     payment = next((row for row in locked_payments if row.pk == payment.pk), None)
     if payment is None:
@@ -1579,6 +1591,7 @@ def reverse_table_payment(*, payment, user, reason, idempotency_key, audit_metad
 def set_table_bill_requested(*, attendance, user, requested, idempotency_key, pos_device=None, audit_metadata=None):
     from .models import TableAttendance, TableAttendanceStatus, TableOrderItem
     attendance = TableAttendance.objects.select_for_update().get(pk=attendance.pk)
+    require_branch_feature(attendance.branch, 'tables')
     if attendance.status != TableAttendanceStatus.OPEN:
         raise AttendanceConflict('table_closed', 'A mesa deve estar aberta.')
     operation, replayed = _operation(branch=attendance.branch, operation_type=AttendanceOperationType.TABLE_BILL,
@@ -1627,6 +1640,7 @@ def set_table_bill_requested(*, attendance, user, requested, idempotency_key, po
 def close_table_attendance(*, attendance, user, idempotency_key, pos_device, audit_metadata=None):
     from .models import TableAttendance, TableAttendanceStatus, TableOrderItem
     attendance = TableAttendance.objects.select_for_update().get(pk=attendance.pk)
+    require_branch_feature(attendance.branch, 'tables')
     operation, replayed = _operation(branch=attendance.branch, operation_type=AttendanceOperationType.TABLE_CLOSE,
         idempotency_key=idempotency_key, payload={'attendance': attendance.pk})
     if replayed:
@@ -1711,6 +1725,7 @@ def transfer_table_items(*, attendance, destination_id, items, user, idempotency
     source, destination = locked.get(attendance.pk), locked.get(destination_id)
     if not source or not destination or source.branch_id != destination.branch_id:
         raise AttendanceConflict('table_scope_mismatch', 'Os atendimentos devem pertencer à mesma filial.')
+    require_branch_feature(source.branch, 'tables')
     if source.pk == destination.pk:
         raise AttendanceConflict('table_transfer_same_attendance', 'Selecione outra mesa como destino.')
     if source.status != TableAttendanceStatus.OPEN or destination.status != TableAttendanceStatus.OPEN:

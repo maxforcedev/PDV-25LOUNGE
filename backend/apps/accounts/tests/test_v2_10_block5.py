@@ -46,14 +46,13 @@ class SessionsRemovalTests(TestCase):
         joined = ' '.join(auth_patterns)
         self.assertNotIn('sessions/', joined)
 
-    def test_login_still_works(self):
+    def test_login_without_a_subscription_is_denied(self):
         client = APIClient()
         resp = client.post('/api/v1/auth/login/', {
             'email': 'owner@b5reg.com',
             'password': PASSWORD,
         }, format='json')
-        self.assertEqual(resp.status_code, 200)
-        self.assertIn('X-CSRFToken', resp)
+        self.assertEqual(resp.status_code, 403)
 
     def test_logout_works(self):
         client = APIClient()

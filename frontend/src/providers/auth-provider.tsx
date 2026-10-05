@@ -118,7 +118,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     useState<SupportSessionContext | null>(null);
   const pathname = usePathname();
   const router = useRouter();
-  const permanentCompanies = user?.companies ?? [];
+  const permanentCompanies = (user?.companies ?? []).filter((company) => company.can_operate);
   const supportTargetCompany = supportSession
     ? (permanentCompanies.find(
         (company) => company.id === supportSession.company,
@@ -168,13 +168,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (supportSessionData?.id) setSupportSessionId(supportSessionData.id);
       else clearSupportSessionId();
     }
+    const operationalCompanies = current.companies.filter((company) => company.can_operate);
     const stored = Number(sessionStorage.getItem(COMPANY_KEY));
     const selected =
-      current.companies.find(
+      operationalCompanies.find(
         (company) => company.id === supportSessionData?.company,
       ) ??
-      current.companies.find((company) => company.id === stored) ??
-      current.companies[0];
+      operationalCompanies.find((company) => company.id === stored) ??
+      operationalCompanies[0];
     const selectedCompanyId =
       supportSessionData?.company ?? selected?.id ?? null;
     setCompanyId(selectedCompanyId);

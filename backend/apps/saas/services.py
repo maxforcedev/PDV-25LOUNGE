@@ -41,6 +41,15 @@ CAPABILITY_CATALOG = (
     ('feature.consumption', 'Consumacao interna', Capability.ValueType.BOOLEAN),
     ('feature.cash_register', 'Caixa', Capability.ValueType.BOOLEAN),
     ('feature.production', 'Producao e impressao', Capability.ValueType.BOOLEAN),
+    ('feature.products', 'Produtos e catalogo', Capability.ValueType.BOOLEAN),
+    ('feature.inventory', 'Estoque', Capability.ValueType.BOOLEAN),
+    ('feature.purchases', 'Compras', Capability.ValueType.BOOLEAN),
+    ('feature.suppliers', 'Fornecedores', Capability.ValueType.BOOLEAN),
+    ('feature.customers', 'Clientes', Capability.ValueType.BOOLEAN),
+    ('feature.promotions', 'Promocoes', Capability.ValueType.BOOLEAN),
+    ('feature.reports', 'Relatorios', Capability.ValueType.BOOLEAN),
+    ('feature.audit', 'Auditoria', Capability.ValueType.BOOLEAN),
+    ('feature.financial', 'Financeiro', Capability.ValueType.BOOLEAN),
     ('pos.enabled', 'CORE POS', Capability.ValueType.BOOLEAN),
     ('pos.devices.max', 'Dispositivos CORE POS', Capability.ValueType.INTEGER),
 )
@@ -192,9 +201,11 @@ def effective_entitlement(company, code):
 
 def get_entitled_features(company):
     subscription = current_subscription(company)
-    if not subscription:
-        return set(FEATURE_CAPABILITY_CODES)
-    enabled = set(
+    if not _is_valid_current_subscription(subscription):
+        return set()
+    if not resolve_effective_status(company)['can_operate']:
+        return set()
+    return set(
         PlanEntitlement.objects.filter(
             plan_version=subscription.plan_version,
             capability__code__in=FEATURE_CAPABILITY_CODES,
@@ -202,14 +213,6 @@ def get_entitled_features(company):
             enabled=True,
         ).values_list('capability__code', flat=True)
     )
-    known = set(enabled)
-    for code in FEATURE_CAPABILITY_CODES:
-        if code not in enabled and not PlanEntitlement.objects.filter(
-            plan_version=subscription.plan_version,
-            capability__code=code,
-        ).exists():
-            known.add(code)
-    return known
 
 
 def resource_usage(company, code):
@@ -432,11 +435,22 @@ def resolve_effective_status(company, at=None):
             return {'status': Subscription.Status.CANCELLED, 'can_operate': False, 'subscription': latest}
         if latest:
             return {'status': 'INVALID_SUBSCRIPTION', 'can_operate': False, 'subscription': latest}
-        enforcement_enabled = get_global_settings().enforcement_enabled
         return {
-            'status': 'UNMAPPED' if enforcement_enabled else 'LEGACY_UNMAPPED',
-            'can_operate': not enforcement_enabled,
+            'status': 'UNMAPPED',
+            'can_operate': False,
             'subscription': None,
+        }
+    if subscription.status == Subscription.Status.CANCELLED:
+        return {
+            'status': Subscription.Status.CANCELLED,
+            'can_operate': False,
+            'subscription': subscription,
+        }
+    if not _is_valid_current_subscription(subscription):
+        return {
+            'status': 'INVALID_SUBSCRIPTION',
+            'can_operate': False,
+            'subscription': subscription,
         }
     required = {
         item.capability.code: item
@@ -461,35 +475,44 @@ def resolve_effective_status(company, at=None):
         or not limits_valid
     ):
         return {'status': 'INVALID_ENTITLEMENTS', 'can_operate': False, 'subscription': subscription}
-    if subscription.status == Subscription.Status.CANCELLED:
-        return {'status': Subscription.Status.CANCELLED, 'can_operate': False, 'subscription': subscription}
     if subscription.cancel_at_period_end and at >= subscription.current_period_end:
         return {'status': Subscription.Status.CANCELLED, 'can_operate': False, 'subscription': subscription}
+    if subscription.status == Subscription.Status.SUSPENDED_FINANCIAL:
+        return {'status': Subscription.Status.SUSPENDED_FINANCIAL, 'can_operate': False, 'subscription': subscription}
+    if subscription.status == Subscription.Status.PAST_DUE and at < subscription.current_period_end:
+        return {'status': Subscription.Status.PAST_DUE, 'can_operate': False, 'subscription': subscription}
+    if at >= subscription.current_period_end:
+        if subscription.status == Subscription.Status.TRIALING:
+            return {'status': Subscription.Status.TRIAL_EXPIRED, 'can_operate': False, 'subscription': subscription}
+        if subscription.billing_mode in (
+            Subscription.BillingMode.FREE,
+            Subscription.BillingMode.INTERNAL,
+        ):
+            return {'status': Subscription.Status.PAST_DUE, 'can_operate': False, 'subscription': subscription}
+        overdue_days = (at - subscription.current_period_end).days
+        global_settings = get_global_settings()
+        if overdue_days < global_settings.past_due_days:
+            status = Subscription.Status.PAST_DUE
+        elif overdue_days < global_settings.restricted_after_days:
+            status = Subscription.Status.RESTRICTED
+        else:
+            status = Subscription.Status.SUSPENDED_FINANCIAL
+        if subscription.status == Subscription.Status.RESTRICTED:
+            status = Subscription.Status.RESTRICTED
+        return {'status': status, 'can_operate': False, 'subscription': subscription}
     if subscription.status == Subscription.Status.TRIALING:
         if at >= subscription.trial_ends_at:
             return {'status': Subscription.Status.TRIAL_EXPIRED, 'can_operate': False, 'subscription': subscription}
         return {'status': Subscription.Status.TRIALING, 'can_operate': True, 'subscription': subscription}
     if subscription.status == Subscription.Status.TRIAL_EXPIRED:
         return {'status': Subscription.Status.TRIAL_EXPIRED, 'can_operate': False, 'subscription': subscription}
-    if subscription.status == Subscription.Status.SUSPENDED_FINANCIAL:
-        return {'status': Subscription.Status.SUSPENDED_FINANCIAL, 'can_operate': False, 'subscription': subscription}
+    if subscription.status == Subscription.Status.RESTRICTED:
+        return {'status': Subscription.Status.RESTRICTED, 'can_operate': False, 'subscription': subscription}
     if subscription.billing_mode in (Subscription.BillingMode.FREE, Subscription.BillingMode.INTERNAL):
         return {'status': Subscription.Status.ACTIVE, 'can_operate': True, 'subscription': subscription}
     if at < subscription.current_period_end:
         return {'status': Subscription.Status.ACTIVE, 'can_operate': True, 'subscription': subscription}
-
-    overdue_days = (at - subscription.current_period_end).days
-    global_settings = get_global_settings()
-    if overdue_days < global_settings.past_due_days:
-        status = Subscription.Status.PAST_DUE
-        can_operate = True
-    elif overdue_days < global_settings.restricted_after_days:
-        status = Subscription.Status.RESTRICTED
-        can_operate = False
-    else:
-        status = Subscription.Status.SUSPENDED_FINANCIAL
-        can_operate = False
-    return {'status': status, 'can_operate': can_operate, 'subscription': subscription}
+    return {'status': Subscription.Status.PAST_DUE, 'can_operate': False, 'subscription': subscription}
 
 
 @transaction.atomic
@@ -548,8 +571,12 @@ def process_subscription_lifecycle(subscription, at=None):
     return subscription, changed
 
 
-def _subscription_dates(plan_version, now):
-    if plan_version.trial_days:
+def _subscription_dates(plan_version, now, *, start_trial=None):
+    if start_trial is None:
+        start_trial = bool(plan_version.trial_days)
+    if start_trial:
+        if not plan_version.trial_days:
+            raise ValidationError({'initial_subscription_mode': 'O plano selecionado nao possui dias de trial.'})
         end = now + timedelta(days=plan_version.trial_days)
         return Subscription.Status.TRIALING, end, now, end
     end = add_months(now, plan_version.billing_period_months)
@@ -560,6 +587,7 @@ def _subscription_dates(plan_version, now):
 def provision_saas_tenant(
     *, source, idempotency_key, plan_version, company_data, owner_email=None,
     owner_password=None, owner_user=None, actor=None, billing_mode=None,
+    initial_subscription_mode=None,
 ):
     idempotency_key = (idempotency_key or '').strip()
     if not idempotency_key:
@@ -569,6 +597,14 @@ def provision_saas_tenant(
         billing_mode = global_settings.public_signup_billing_mode
     elif billing_mode not in Subscription.BillingMode.values:
         raise ValidationError({'billing_mode': 'Informe explicitamente PAID, FREE ou INTERNAL.'})
+    if source == ProvisioningOperation.Source.PLATFORM_MANUAL:
+        initial_subscription_mode = initial_subscription_mode or Subscription.Status.ACTIVE
+        if initial_subscription_mode not in (Subscription.Status.ACTIVE, Subscription.Status.TRIALING):
+            raise ValidationError({'initial_subscription_mode': 'Selecione ACTIVE ou TRIALING.'})
+        if owner_user is not None:
+            raise ValidationError({'owner_user': 'Informe o e-mail do Owner; a selecao tecnica de usuario nao e permitida.'})
+    elif initial_subscription_mode is not None:
+        raise ValidationError({'initial_subscription_mode': 'O modo inicial e definido pela politica de cadastro publico.'})
     payload = {
         'source': source,
         'plan_version_id': plan_version.pk,
@@ -576,6 +612,7 @@ def provision_saas_tenant(
         'owner_email': owner_email.lower() if owner_email else None,
         'owner_user_id': owner_user.pk if owner_user else None,
         'billing_mode': billing_mode,
+        'initial_subscription_mode': initial_subscription_mode,
     }
     fingerprint = _fingerprint(payload)
     _advisory_transaction_lock('provisioning', f'{source}:{idempotency_key}')
@@ -593,15 +630,21 @@ def provision_saas_tenant(
 
     if owner_user is None:
         normalized_email = User.objects.normalize_email(owner_email or '').lower()
+        if not normalized_email:
+            raise ValidationError({'owner_email': 'Informe o e-mail do Owner.'})
         _advisory_transaction_lock('provisioning-owner-email', normalized_email)
-        if User.objects.filter(email__iexact=normalized_email).exists():
-            User(email=normalized_email).set_password(owner_password or '')
-            raise OwnerEmailAlreadyExists(
-                {'owner_email': 'Este e-mail ja possui uma conta.'}
-            )
-        candidate = User(email=normalized_email)
-        validate_password(owner_password or '', user=candidate)
-        owner_user = User.objects.create_user(email=normalized_email, password=owner_password)
+        owner_user = User.objects.select_for_update().filter(email__iexact=normalized_email).first()
+        if owner_user is not None:
+            if source != ProvisioningOperation.Source.PLATFORM_MANUAL:
+                raise OwnerEmailAlreadyExists(
+                    {'owner_email': 'Este e-mail ja possui uma conta.'}
+                )
+            if not owner_user.is_active or not owner_user.can_login:
+                raise ValidationError({'owner_email': 'A conta existente precisa estar ativa e habilitada para login.'})
+        else:
+            candidate = User(email=normalized_email)
+            validate_password(owner_password or '', user=candidate)
+            owner_user = User.objects.create_user(email=normalized_email, password=owner_password)
     elif not owner_user.is_active or not owner_user.can_login:
         raise ValidationError({'owner_user': 'O Owner deve estar ativo e habilitado para login.'})
 
@@ -621,7 +664,12 @@ def provision_saas_tenant(
         approved_at=now if approval == TenantSaaSState.ApprovalStatus.APPROVED else None,
         approved_by=actor if approval == TenantSaaSState.ApprovalStatus.APPROVED and actor else None,
     )
-    subscription_status, period_end, trial_start, trial_end = _subscription_dates(plan_version, now)
+    subscription_status, period_end, trial_start, trial_end = _subscription_dates(
+        plan_version,
+        now,
+        start_trial=(initial_subscription_mode == Subscription.Status.TRIALING)
+        if source == ProvisioningOperation.Source.PLATFORM_MANUAL else None,
+    )
     subscription = Subscription.objects.create(
         company=company,
         plan_version=plan_version,
@@ -832,6 +880,41 @@ def extend_subscription_trial(subscription, actor, days, reason):
         company=subscription.company, before={'trial_ends_at': str(previous_end)},
         after={'trial_ends_at': str(subscription.trial_ends_at)},
         metadata={'reason': reason, 'days': days},
+    )
+    return subscription
+
+
+@transaction.atomic
+def end_subscription_trial(subscription, actor, reason):
+    reason = (reason or '').strip()
+    if not reason:
+        raise ValidationError({'reason': 'Informe o motivo do encerramento do trial.'})
+    subscription = Subscription.objects.select_for_update().select_related('plan_version').get(pk=subscription.pk)
+    if not subscription.is_current or subscription.status not in (
+        Subscription.Status.TRIALING, Subscription.Status.TRIAL_EXPIRED,
+    ):
+        raise ValidationError({'subscription': 'Somente um trial corrente pode ser ativado.'})
+    now = timezone.now()
+    before = {
+        'status': subscription.status,
+        'current_period_start': subscription.current_period_start.isoformat(),
+        'current_period_end': subscription.current_period_end.isoformat(),
+    }
+    subscription.status = Subscription.Status.ACTIVE
+    subscription.current_period_start = now
+    subscription.current_period_end = add_months(now, subscription.plan_version.billing_period_months)
+    subscription.save(update_fields=(
+        'status', 'current_period_start', 'current_period_end', 'updated_at',
+    ))
+    audit_log(
+        actor=actor, action='saas.subscription.trial.end', obj=subscription,
+        company=subscription.company, before=before,
+        after={
+            'status': subscription.status,
+            'current_period_start': subscription.current_period_start.isoformat(),
+            'current_period_end': subscription.current_period_end.isoformat(),
+        },
+        metadata={'reason': reason},
     )
     return subscription
 

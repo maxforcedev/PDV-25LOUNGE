@@ -145,10 +145,6 @@ def pos_enabled(company):
         _error('tenant_not_operational', 'O tenant nao esta operacional.', status_code=403)
     entitlement = effective_entitlement(company, 'pos.enabled')
     if entitlement is None:
-        # Legacy tenants retain the pre-enforcement behavior used by the SaaS domain.
-        from apps.saas.services import get_global_settings
-        if not get_global_settings().enforcement_enabled:
-            return True
         _error('pos_not_entitled', 'O plano nao habilita o POS.', status_code=403)
     if not entitlement.enabled:
         _error('pos_not_entitled', 'O plano nao habilita o POS.', status_code=403)
@@ -158,9 +154,6 @@ def pos_enabled(company):
 def assert_branch_device_limit(branch):
     entitlement = effective_entitlement(branch.company, 'pos.devices.max')
     if entitlement is None:
-        from apps.saas.services import get_global_settings
-        if not get_global_settings().enforcement_enabled:
-            return
         _error('pos_device_limit_unavailable', 'O plano nao define o limite de dispositivos POS.', status_code=403)
     if not entitlement.enabled:
         _error('pos_device_limit_unavailable', 'O plano nao habilita dispositivos POS.', status_code=403)
@@ -883,7 +876,7 @@ def modules_for(operator, device, *, permission_codes=None):
     operational = enabled and device.branch.status == Status.ACTIVE
     return permissions, {
         'quick_sale': {'enabled': bool(operational and settings_obj and settings_obj.uses_counter and 'sales.create' in permissions)},
-        'tables': {'enabled': bool(operational and settings_obj and settings_obj.uses_tables and permissions.intersection({'tables.view', 'tables.open'}))},
+        'tables': {'enabled': bool(operational and branch_feature_enabled(device.branch, 'tables') and permissions.intersection({'tables.view', 'tables.open'}))},
         'commands': {'enabled': bool(operational and settings_obj and settings_obj.uses_commands and permissions.intersection({'commands.view', 'commands.open', 'commands.add_items'}))},
         'ticket_validator': {'enabled': bool(operational and 'tickets.validate' in permissions)},
         'inventory': {'enabled': False, 'reason': 'not_implemented'},

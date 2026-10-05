@@ -10,6 +10,15 @@ FEATURE_CAPABILITIES = {
     'consumption': 'feature.consumption',
     'cash_register': 'feature.cash_register',
     'production': 'feature.production',
+    'products': 'feature.products',
+    'inventory': 'feature.inventory',
+    'purchases': 'feature.purchases',
+    'suppliers': 'feature.suppliers',
+    'customers': 'feature.customers',
+    'promotions': 'feature.promotions',
+    'reports': 'feature.reports',
+    'audit': 'feature.audit',
+    'financial': 'feature.financial',
 }
 
 FEATURE_LABELS = {
@@ -19,6 +28,15 @@ FEATURE_LABELS = {
     'consumption': 'Consumação',
     'cash_register': 'Caixa',
     'production': 'Produção e impressão',
+    'products': 'Produtos e catálogo',
+    'inventory': 'Estoque',
+    'purchases': 'Compras',
+    'suppliers': 'Fornecedores',
+    'customers': 'Clientes',
+    'promotions': 'Promoções',
+    'reports': 'Relatórios',
+    'audit': 'Auditoria',
+    'financial': 'Financeiro',
 }
 
 
@@ -31,6 +49,9 @@ def branch_feature_states(branch):
     flags = settings.feature_flags()
     # Production serves direct sales as well as commands, so it is not coupled to commands.
     flags['production'] = True
+    # These modules have no branch-specific switch; their plan entitlement is decisive.
+    for feature in FEATURE_CAPABILITIES:
+        flags.setdefault(feature, True)
 
     from apps.saas.services import get_entitled_features
 

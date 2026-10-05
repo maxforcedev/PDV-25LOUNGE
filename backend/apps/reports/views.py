@@ -948,16 +948,16 @@ class DashboardView(APIView):
             )
 
         if user_has_code(request, 'commands.view'):
-            response['commands'] = Command.objects.filter(
-                branch=branch,
-                status=CommandStatus.OPEN,
-            ).aggregate(
-                open_count=Count('id'),
-                open_table_count=TableAttendance.objects.filter(
+            response['commands'] = {
+                'open_count': Command.objects.filter(
+                    branch=branch,
+                    status=CommandStatus.OPEN,
+                ).count(),
+                'open_table_count': TableAttendance.objects.filter(
                     branch=branch,
                     status=TableAttendanceStatus.OPEN,
                 ).count(),
-            )
+            }
 
         if user_has_code(request, 'cash_registers.view'):
             sessions = current_cash_sessions(branch)

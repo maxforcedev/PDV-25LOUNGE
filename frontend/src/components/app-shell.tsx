@@ -66,26 +66,26 @@ const operationNavigation: NavItem[] = [
 ];
 
 const productionNavigation: NavItem[] = [
-  { href: "/producao/rotas-impressao", label: "Rotas de impressao", icon: Printer, requiredPermissions: [permissions.managePrintRoutes] },
-  { href: "/producao/impressoras", label: "Impressoras", icon: Printer, requiredPermissions: [permissions.viewProduction, permissions.managePrinters] },
-  { href: "/producao/fila", label: "Fila de impressao", icon: Printer, requiredPermissions: [permissions.viewPrintJobs] },
-  { href: "/producao/falhas", label: "Falhas de impressao", icon: Printer, requiredPermissions: [permissions.viewPrintJobs] },
+  { href: "/producao/rotas-impressao", label: "Rotas de impressao", icon: Printer, requiredPermissions: [permissions.managePrintRoutes], requiredFeatures: ["production"] },
+  { href: "/producao/impressoras", label: "Impressoras", icon: Printer, requiredPermissions: [permissions.viewProduction, permissions.managePrinters], requiredFeatures: ["production"] },
+  { href: "/producao/fila", label: "Fila de impressao", icon: Printer, requiredPermissions: [permissions.viewPrintJobs], requiredFeatures: ["production"] },
+  { href: "/producao/falhas", label: "Falhas de impressao", icon: Printer, requiredPermissions: [permissions.viewPrintJobs], requiredFeatures: ["production"] },
 ];
 
 const cadastrosNavigation: NavItem[] = [
-  { href: "/produtos", label: "Produtos", icon: Package, requiredPermissions: [permissions.viewProduct] },
-  { href: "/categorias", label: "Categorias", icon: Tags, requiredPermissions: [permissions.viewCategory] },
-  { href: "/modificadores", label: "Modificadores", icon: Layers, requiredPermissions: [permissions.viewModifiers] },
-  { href: "/fornecedores", label: "Fornecedores", icon: Truck, requiredPermissions: [permissions.viewSupplier] },
-  { href: "/clientes", label: "Clientes", icon: ContactRound, requiredPermissions: [permissions.viewCustomer] },
-  { href: "/formas-de-pagamento", label: "Formas de pagamento", icon: CreditCard, requiredPermissions: [permissions.viewPaymentMethod] },
-  { href: "/promocoes", label: "Promoções", icon: BadgePercent, requiredPermissions: [permissions.viewPromotion, permissions.changePromotion] },
+  { href: "/produtos", label: "Produtos", icon: Package, requiredPermissions: [permissions.viewProduct], requiredFeatures: ["products"] },
+  { href: "/categorias", label: "Categorias", icon: Tags, requiredPermissions: [permissions.viewCategory], requiredFeatures: ["products"] },
+  { href: "/modificadores", label: "Modificadores", icon: Layers, requiredPermissions: [permissions.viewModifiers], requiredFeatures: ["products"] },
+  { href: "/fornecedores", label: "Fornecedores", icon: Truck, requiredPermissions: [permissions.viewSupplier], requiredFeatures: ["suppliers"] },
+  { href: "/clientes", label: "Clientes", icon: ContactRound, requiredPermissions: [permissions.viewCustomer], requiredFeatures: ["customers"] },
+  { href: "/formas-de-pagamento", label: "Formas de pagamento", icon: CreditCard, requiredPermissions: [permissions.viewPaymentMethod], requiredFeatures: ["financial"] },
+  { href: "/promocoes", label: "Promoções", icon: BadgePercent, requiredPermissions: [permissions.viewPromotion, permissions.changePromotion], requiredFeatures: ["promotions"] },
 ];
 
 const suprimentosNavigation: NavItem[] = [
-  { href: "/compras", label: "Compras", icon: ClipboardList, requiredPermissions: [permissions.viewPurchase] },
-  { href: "/contas-a-pagar", label: "Contas a pagar", icon: WalletCards, requiredPermissions: [permissions.managePurchasePayables] },
-  { href: "/estoque", label: "Estoque", icon: Boxes, requiredPermissions: [permissions.viewInventory] },
+  { href: "/compras", label: "Compras", icon: ClipboardList, requiredPermissions: [permissions.viewPurchase], requiredFeatures: ["purchases"] },
+  { href: "/contas-a-pagar", label: "Contas a pagar", icon: WalletCards, requiredPermissions: [permissions.managePurchasePayables], requiredFeatures: ["financial"] },
+  { href: "/estoque", label: "Estoque", icon: Boxes, requiredPermissions: [permissions.viewInventory], requiredFeatures: ["inventory"] },
 ];
 
 const gestaoNavigation: NavItem[] = [
@@ -96,7 +96,7 @@ const gestaoNavigation: NavItem[] = [
 ];
 
 const relatoriosNavigation: NavItem[] = [
-  { href: "/relatorios", label: "Relatórios", icon: BarChart3, requiredPermissions: reportMenuPermissions },
+  { href: "/relatorios", label: "Relatórios", icon: BarChart3, requiredPermissions: reportMenuPermissions, requiredFeatures: ["reports"] },
 ];
 
 type NavSection = { title: string; items: NavItem[] };

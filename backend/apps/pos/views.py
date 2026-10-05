@@ -874,6 +874,12 @@ class POSCustomerActivateView(POSQuickSaleView):
 
 
 class POSAttendanceView(POSCashView):
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        # Every POS table endpoint, including read-only helpers, shares the feature gate.
+        if type(self).__name__.startswith('POSTable'):
+            require_branch_feature(require_device(request).branch, 'tables')
+
     @staticmethod
     def _require(permissions, code, message):
         if code not in permissions:

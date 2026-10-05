@@ -4,6 +4,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import F, Q
+from django.utils.text import slugify
 
 from apps.base.models import BaseModel
 from apps.companies.models import Company, UserCompanyAccess
@@ -54,7 +55,23 @@ class PlatformUserAccess(BaseModel):
         return f'{self.user} - {self.role}'
 
 
+class PlanQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        if 'code' in kwargs and self.filter(versions__subscriptions__isnull=False).exists():
+            raise ValidationError('O codigo de um plano utilizado nao pode ser alterado.')
+        return super().update(**kwargs)
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        if 'code' in fields:
+            ids = [item.pk for item in objs if item.pk]
+            if self.filter(pk__in=ids, versions__subscriptions__isnull=False).exists():
+                raise ValidationError('O codigo de um plano utilizado nao pode ser alterado.')
+        return super().bulk_update(objs, fields, batch_size=batch_size)
+
+
 class Plan(BaseModel):
+    objects = PlanQuerySet.as_manager()
+
     code = models.SlugField(max_length=50, unique=True)
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
@@ -62,6 +79,20 @@ class Plan(BaseModel):
 
     class Meta:
         ordering = ('name',)
+
+    def clean(self):
+        self.code = slugify(self.code or self.name)
+        if not self.code:
+            raise ValidationError({'code': 'Informe um nome que gere um codigo tecnico valido.'})
+        if self.pk:
+            previous = type(self).objects.only('code').get(pk=self.pk)
+            if previous.code != self.code and Subscription.objects.filter(plan_version__plan=self).exists():
+                raise ValidationError({'code': 'O codigo de um plano utilizado nao pode ser alterado.'})
+
+    def save(self, *args, **kwargs):
+        self.code = slugify(self.code or self.name)
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
         if Subscription.objects.filter(plan_version__plan=self).exists():

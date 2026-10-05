@@ -70,6 +70,7 @@ from .services import (
     approve_tenant,
     archive_tenant,
     current_subscription,
+    end_subscription_trial,
     enable_saas_enforcement,
     end_support_session,
     extend_subscription_trial,
@@ -240,6 +241,24 @@ class PlatformMeView(APIView):
 
     def get(self, request):
         return Response(PlatformUserSerializer(request.user).data)
+
+
+class PlatformOwnerLookupView(APIView):
+    permission_classes = [HasPlatformPermission]
+    required_platform_permission = 'platform.tenants.manage'
+
+    def get(self, request):
+        email = (request.query_params.get('email') or '').strip().lower()
+        if not email:
+            raise ValidationError({'email': 'Informe o e-mail do Owner.'})
+        user = User.objects.filter(email__iexact=email).only(
+            'id', 'email', 'is_active', 'can_login'
+        ).first()
+        return Response({
+            'email': email,
+            'exists': user is not None,
+            'eligible': bool(user and user.is_active and user.can_login),
+        })
 
 
 class PlatformLogoutView(APIView):
@@ -642,6 +661,12 @@ class PlatformSubscriptionViewSet(viewsets.ReadOnlyModelViewSet):
         subscription = extend_subscription_trial(
             self.get_object(), request.user, days, reason
         )
+        return Response(self.get_serializer(subscription).data)
+
+    @action(detail=True, methods=['post'], url_path='end-trial')
+    def end_trial(self, request, pk=None):
+        reason = _critical_action(request)
+        subscription = end_subscription_trial(self.get_object(), request.user, reason)
         return Response(self.get_serializer(subscription).data)
 
     @action(detail=True, methods=['post'], url_path='process-lifecycle')

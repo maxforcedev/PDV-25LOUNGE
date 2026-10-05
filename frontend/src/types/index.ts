@@ -16,7 +16,17 @@ export type BranchFeature =
   | "commands"
   | "counter"
   | "consumption"
-  | "cash_register";
+  | "cash_register"
+  | "production"
+  | "products"
+  | "inventory"
+  | "purchases"
+  | "suppliers"
+  | "customers"
+  | "promotions"
+  | "reports"
+  | "audit"
+  | "financial";
 
 export interface BranchFeatureState {
   enabled: boolean;

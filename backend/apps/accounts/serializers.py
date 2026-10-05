@@ -16,6 +16,7 @@ from apps.companies.rbac import (
 from apps.companies.selectors import (
     accessible_branches,
     accessible_companies,
+    active_operational_companies,
     branch_permission_codes,
     company_permission_codes,
     user_has_company_permission,
@@ -148,6 +149,7 @@ class UserSerializer(serializers.ModelSerializer):
         accesses = user.company_accesses.filter(
             is_active=True,
             saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
+            company__in=active_operational_companies(user),
         ).select_related('company')
         company_ids = self._visible_company_ids(user)
         request = self.context.get('request')
@@ -262,9 +264,11 @@ class UserSerializer(serializers.ModelSerializer):
                 for branch in Branch.objects.select_related('company', 'settings').all()
             ]
         company_ids = self._visible_company_ids(user)
+        operational_company_ids = active_operational_companies(user).values_list('id', flat=True)
         accesses = user.branch_accesses.filter(
             is_active=True,
             access_profile__status=Status.ACTIVE,
+            branch__company_id__in=operational_company_ids,
             branch__company__user_accesses__user=user,
             branch__company__user_accesses__is_active=True,
             branch__company__user_accesses__saas_status=UserCompanyAccess.SaaSStatus.ACTIVE,
@@ -306,6 +310,8 @@ class UserSerializer(serializers.ModelSerializer):
         blocks = UserPermissionBlock.objects.filter(user=user, is_active=True).select_related(
             'company', 'branch', 'permission'
         )
+        if not user.is_superuser:
+            blocks = blocks.filter(company__in=active_operational_companies(user))
         if company_ids is not None:
             blocks = blocks.filter(company_id__in=company_ids)
         return [

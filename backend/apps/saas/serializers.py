@@ -2,6 +2,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from decimal import Decimal
+from django.utils.text import slugify
 from rest_framework import serializers
 
 from apps.accounts.models import User
@@ -206,11 +207,26 @@ class PublicPlanVersionSerializer(serializers.ModelSerializer):
 
 class PlanSerializer(serializers.ModelSerializer):
     versions = PlanVersionSerializer(many=True, read_only=True)
+    code = serializers.SlugField(required=False)
 
     class Meta:
         model = Plan
         fields = ('id', 'code', 'name', 'description', 'is_active', 'versions', 'created_at', 'updated_at')
         read_only_fields = ('id', 'versions', 'created_at', 'updated_at')
+
+    def validate(self, attrs):
+        name = attrs.get('name', getattr(self.instance, 'name', ''))
+        if not self.instance:
+            attrs['code'] = slugify(attrs.get('code') or name)
+            if not attrs['code']:
+                raise serializers.ValidationError({'name': 'Informe um nome que gere um codigo tecnico valido.'})
+        elif 'code' in attrs:
+            attrs['code'] = slugify(attrs['code'])
+            if not attrs['code']:
+                raise serializers.ValidationError({'code': 'Informe um codigo tecnico valido.'})
+            if attrs['code'] != self.instance.code and self.instance.versions.filter(subscriptions__isnull=False).exists():
+                raise serializers.ValidationError({'code': 'O codigo de um plano utilizado nao pode ser alterado.'})
+        return attrs
 
 
 class SubscriptionSerializer(serializers.ModelSerializer):
@@ -297,25 +313,41 @@ class ProvisioningSerializer(serializers.Serializer):
     phone = serializers.CharField(max_length=20, required=False, allow_blank=True)
     owner_email = serializers.EmailField(required=False)
     owner_password = serializers.CharField(required=False, write_only=True, trim_whitespace=False)
-    owner_user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False)
     billing_mode = serializers.ChoiceField(choices=Subscription.BillingMode.choices, required=False)
+    initial_subscription_mode = serializers.ChoiceField(
+        choices=(
+            (Subscription.Status.ACTIVE, 'Ativa'),
+            (Subscription.Status.TRIALING, 'Trial'),
+        ),
+        required=False,
+        default=Subscription.Status.ACTIVE,
+    )
 
     def validate(self, attrs):
         source = self.context['source']
+        if 'owner_user' in self.initial_data:
+            raise serializers.ValidationError({
+                'owner_user': 'Informe o e-mail do Owner; a selecao tecnica de usuario nao e permitida.'
+            })
         if source == ProvisioningOperation.Source.PUBLIC_SIGNUP:
-            if attrs.get('owner_user'):
-                raise serializers.ValidationError({'owner_user': 'O autoatendimento nao aceita usuario existente.'})
             if not attrs.get('owner_email') or not attrs.get('owner_password'):
                 raise serializers.ValidationError({'owner_email': 'Informe e-mail e senha do Owner.'})
             if 'billing_mode' in attrs:
                 raise serializers.ValidationError({'billing_mode': 'O billing mode publico e definido pela plataforma.'})
-        elif 'billing_mode' not in attrs:
-            raise serializers.ValidationError({'billing_mode': 'Informe PAID, FREE ou INTERNAL.'})
-        if not attrs.get('owner_user'):
-            if not attrs.get('owner_email') or not attrs.get('owner_password'):
-                raise serializers.ValidationError({
-                    'owner_user': 'Informe um usuario existente ou as credenciais da nova conta.'
-                })
+            attrs.pop('initial_subscription_mode', None)
+        else:
+            if 'billing_mode' not in attrs:
+                raise serializers.ValidationError({'billing_mode': 'Informe PAID, FREE ou INTERNAL.'})
+            if not attrs.get('owner_email'):
+                raise serializers.ValidationError({'owner_email': 'Informe o e-mail do Owner.'})
+            existing = User.objects.filter(email__iexact=attrs['owner_email']).exists()
+            if not existing and not attrs.get('owner_password'):
+                raise serializers.ValidationError({'owner_password': 'Informe a senha inicial da nova conta.'})
+            if attrs['initial_subscription_mode'] == Subscription.Status.TRIALING and not attrs['plan_version'].trial_days:
+                raise serializers.ValidationError({'initial_subscription_mode': 'O plano selecionado nao possui dias de trial.'})
+        if source == ProvisioningOperation.Source.PUBLIC_SIGNUP or not User.objects.filter(
+            email__iexact=attrs.get('owner_email', '')
+        ).exists():
             try:
                 validate_password(attrs['owner_password'], user=User(email=attrs['owner_email']))
             except DjangoValidationError as error:
