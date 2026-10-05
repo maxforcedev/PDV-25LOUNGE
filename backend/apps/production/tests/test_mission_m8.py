@@ -8,7 +8,9 @@ from apps.accounts.models import User
 from apps.base.models import AuditLog
 from apps.companies.models import UserBranchAccess, UserCompanyAccess
 from apps.companies.services import create_company_with_matrix
-from apps.products.models import Category, Product, ProductProductionDestination
+from apps.products.models import (
+    Category, Product, ProductBranchConfig, ProductProductionDestination,
+)
 from apps.production.models import (
     PrintJob,
     PrintDocument,
@@ -163,6 +165,7 @@ class MissionM8PrinterTests(TestCase):
             company=self.company, category=category, name='Suco',
             internal_code='SUCO-M8', sale_price='10.00',
         )
+        ProductBranchConfig.objects.create(product=product, branch=self.branch)
 
         available = self.client.get(
             f'/api/v1/products/{product.pk}/production-printers/?available=true',

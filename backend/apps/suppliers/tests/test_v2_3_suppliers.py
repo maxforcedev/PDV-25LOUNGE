@@ -484,7 +484,7 @@ class SupplierApiTests(TestCase):
             201,
         )
 
-    def test_suppliers_are_branch_owned_and_soft_deleted_tax_id_can_be_reused(self):
+    def test_suppliers_are_branch_owned_and_archived_tax_id_requires_restore(self):
         created = self.client.post(
             reverse('supplier-list'), self.supplier_payload(), format='json'
         )
@@ -510,13 +510,22 @@ class SupplierApiTests(TestCase):
         self.client.defaults['HTTP_X_BRANCH_ID'] = str(self.branch.pk)
         deleted = self.client.delete(reverse('supplier-detail', args=[supplier_id]))
         self.assertEqual(deleted.status_code, 204, deleted.data)
-        recreated = self.client.post(
+        conflict = self.client.post(
             reverse('supplier-list'),
             self.supplier_payload(trade_name='Fornecedor Recriado'),
             format='json',
         )
-        self.assertEqual(recreated.status_code, 201, recreated.data)
-        self.assertNotEqual(recreated.data['id'], supplier_id)
+        self.assertEqual(conflict.status_code, 400, conflict.data)
+        self.assertEqual(conflict.data['code'], 'archived_supplier_exists')
+        self.assertEqual(conflict.data['details']['supplier_id'], supplier_id)
+        self.assertEqual(Supplier.objects.filter(branch=self.branch).count(), 1)
+
+        archived = Supplier.objects.get(pk=supplier_id)
+        self.assertIsNotNone(archived.deleted_at)
+        self.assertEqual(archived.status, 'inactive')
+        self.assertTrue(AuditLog.objects.filter(
+            action='supplier.delete', object_id=str(supplier_id), company=self.company,
+        ).exists())
 
     def test_legal_name_is_optional_and_trade_name_is_required(self):
         payload = self.supplier_payload(tax_id='')

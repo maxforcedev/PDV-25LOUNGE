@@ -526,7 +526,9 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertTrue(device.credential_fingerprint)
 
     def test_operator_session_fingerprint_authenticates_and_upgrades_legacy_session(self):
-        operator, paired = self.login_pos_operator()
+        paired, challenge_id = self.pair_device()
+        operator = self.create_pos_operator()
+        self.client.credentials(HTTP_X_POS_DEVICE_CREDENTIAL=paired.data['device_credential'])
         device = POSDevice.objects.get(pk=paired.data['device']['id'])
         token = self.client.post(
             reverse('pos:operator-login'),
@@ -708,7 +710,7 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(audit.company, self.branch.company)
         self.assertEqual(audit.branch, self.branch)
         self.assertEqual(audit.metadata['source'], 'pos')
-        self.assertEqual(audit.metadata['device_id'], paired.data['device']['id'])
+        self.assertEqual(str(audit.metadata['device_id']), str(paired.data['device']['id']))
         self.assertEqual(audit.metadata['target_user_id'], operator.pk)
 
         rate_limited = self.client.post(
@@ -965,7 +967,7 @@ class POSFoundationIntegrationTests(TestCase):
             self.assertEqual(rejected.status_code, 400, rejected.data)
 
     def test_pos_authorization_rate_limit_and_audit_never_store_pin(self):
-        _, paired = self.login_pos_operator()
+        requester, paired = self.login_pos_operator()
         authorizer = self.create_pos_authorizer({'sales.apply_discount'})
         for _ in range(5):
             response = self.validate_pos_authorization(authorizer, pin='000000')
@@ -976,17 +978,18 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(limited.data['code'], 'authorization_pin_rate_limited')
         self.assertTrue(POSRequestRateLimit.objects.filter(locked_until__isnull=False).exists())
         failed = AuditLog.objects.filter(
-            action='pos.authorization.failed', actor=authorizer,
+            action='pos.authorization.failed', actor=requester,
         ).latest('id')
         rate_limited = AuditLog.objects.filter(
-            action='pos.authorization.rate_limited', actor=authorizer,
+            action='pos.authorization.rate_limited', actor=requester,
         ).latest('id')
         for audit in (failed, rate_limited):
             self.assertEqual(audit.company_id, self.company.pk)
             self.assertEqual(audit.branch_id, self.branch.pk)
+            self.assertEqual(audit.metadata['requester_user_id'], requester.pk)
             self.assertEqual(audit.metadata['permission_code'], 'sales.apply_discount')
             self.assertEqual(audit.metadata['authorizer_user_id'], authorizer.pk)
-            self.assertEqual(audit.metadata['device_id'], paired.data['device']['id'])
+            self.assertEqual(str(audit.metadata['device_id']), str(paired.data['device']['id']))
             self.assertNotIn('000000', str(audit.metadata))
             self.assertNotIn('654321', str(audit.metadata))
             self.assertNotIn('000000', str(audit.before))
@@ -1018,31 +1021,44 @@ class POSFoundationIntegrationTests(TestCase):
         device.active_cash_session = cash_session
         device.save(update_fields=('active_cash_session', 'updated_at'))
 
+        checkout_payload = {
+            key: value for key, value in self.pos_sale_payload(cash_session).items()
+            if key not in {'cash_session', 'payments'}
+        }
         missing = self.client.post(
-            reverse('pos:sale-finalize'), self.pos_sale_payload(cash_session), format='json',
+            reverse('pos:quick-checkout-create'), checkout_payload, format='json',
         )
         discount_only = self.create_pos_authorizer({'sales.apply_discount'})
-        wrong_permission_payload = self.pos_sale_payload(cash_session)
+        wrong_permission_payload = {
+            key: value for key, value in self.pos_sale_payload(cash_session).items()
+            if key not in {'cash_session', 'payments'}
+        }
         wrong_permission_payload['service_fee_authorization'] = {
             'user': discount_only.pk, 'method': 'pin', 'credential': '654321',
         }
         wrong_permission = self.client.post(
-            reverse('pos:sale-finalize'), wrong_permission_payload, format='json',
+            reverse('pos:quick-checkout-create'), wrong_permission_payload, format='json',
         )
         fee_authorizer = self.create_pos_authorizer({'sales.waive_service_fee'})
-        wrong_pin_payload = self.pos_sale_payload(cash_session)
+        wrong_pin_payload = {
+            key: value for key, value in self.pos_sale_payload(cash_session).items()
+            if key not in {'cash_session', 'payments'}
+        }
         wrong_pin_payload['service_fee_authorization'] = {
             'user': fee_authorizer.pk, 'method': 'pin', 'credential': '000000',
         }
         wrong_pin = self.client.post(
-            reverse('pos:sale-finalize'), wrong_pin_payload, format='json',
+            reverse('pos:quick-checkout-create'), wrong_pin_payload, format='json',
         )
-        accepted_payload = self.pos_sale_payload(cash_session)
+        accepted_payload = {
+            key: value for key, value in self.pos_sale_payload(cash_session).items()
+            if key not in {'cash_session', 'payments'}
+        }
         accepted_payload['service_fee_authorization'] = {
             'user': fee_authorizer.pk, 'method': 'pin', 'credential': '654321',
         }
         accepted = self.client.post(
-            reverse('pos:sale-finalize'), accepted_payload, format='json',
+            reverse('pos:quick-checkout-create'), accepted_payload, format='json',
         )
 
         self.assertEqual(missing.status_code, 400, missing.data)
@@ -1113,7 +1129,8 @@ class POSFoundationIntegrationTests(TestCase):
 
         self.client.credentials(HTTP_X_POS_DEVICE_CREDENTIAL=paired.data['device_credential'])
         without_operator = self.client.get(reverse('pos:cash-overview'))
-        self.assertEqual(without_operator.status_code, 401, without_operator.data)
+        self.assertEqual(without_operator.status_code, 403, without_operator.data)
+        self.assertEqual(without_operator.data['code'], 'authentication_failed')
 
         self.client.credentials(
             HTTP_X_POS_DEVICE_CREDENTIAL=paired.data['device_credential'],
@@ -1373,7 +1390,7 @@ class POSFoundationIntegrationTests(TestCase):
             with self.assertRaises(ValidationError):
                 close_session(session, '0.00', operator, self.branch, allow_pos_only=True)
             with self.assertRaises(ValidationError):
-                cancel_session(session, 'PAY-1.2 test', operator, self.branch)
+                cancel_session(session, 'PAY-1.2 test', self.owner, self.branch)
             session.refresh_from_db()
             self.assertEqual(session.status, CashSessionStatus.OPEN)
 
@@ -1450,7 +1467,7 @@ class POSFoundationIntegrationTests(TestCase):
         with self.assertRaises(ValidationError):
             close_session(session, '0.00', operator, self.branch, allow_pos_only=True)
         with self.assertRaises(ValidationError):
-            cancel_session(session, 'Unknown provider result', operator, self.branch)
+            cancel_session(session, 'Unknown provider result', self.owner, self.branch)
 
         _attempt, approved_intent = resolve_quick_sale_payment_attempt(
             checkout=checkout, attempt=attempt, user=operator, status=PaymentAttemptStatus.APPROVED,
@@ -1544,7 +1561,7 @@ class POSFoundationIntegrationTests(TestCase):
             reverse('pos:quick-checkout-finalize', args=[checkout.pk]),
             {'idempotency_key': str(uuid4())}, format='json',
         )
-        self.assertEqual(finalized.status_code, 200, finalized.data)
+        self.assertEqual(finalized.status_code, 201, finalized.data)
         manual_payment.refresh_from_db()
         sale = manual_payment.final_payment.sale
 
@@ -1693,7 +1710,7 @@ class POSFoundationIntegrationTests(TestCase):
             reverse('pos:quick-checkout-finalize', args=[checkout.pk]),
             {'idempotency_key': str(uuid4())}, format='json',
         )
-        self.assertEqual(finalized.status_code, 200, finalized.data)
+        self.assertEqual(finalized.status_code, 201, finalized.data)
         sale_payment = payment.final_payment
         self.assertEqual(sale_payment.source_quick_sale_payment_id, payment.pk)
         self.assertEqual(sale_payment.payment_method_code, method.code)
@@ -1716,8 +1733,26 @@ class POSFoundationIntegrationTests(TestCase):
         product.emits_ticket = True
         product.save(update_fields=('emits_ticket', 'updated_at'))
 
+        checkout = self.client.post(
+            reverse('pos:quick-checkout-create'),
+            {key: value for key, value in payload.items() if key not in {'cash_session', 'payments'}},
+            format='json',
+        )
+        self.assertEqual(checkout.status_code, 201, checkout.data)
+        payment = self.client.post(
+            reverse('pos:quick-checkout-payment', args=[checkout.data['id']]),
+            {
+                'payment_method': payload['payments'][0]['payment_method'],
+                'mode': 'remaining',
+                'received_amount': payload['payments'][0]['received_amount'],
+                'idempotency_key': str(uuid4()),
+            },
+            format='json',
+        )
+        self.assertEqual(payment.status_code, 200, payment.data)
         finalized = self.client.post(
-            reverse('pos:sale-finalize'), payload, format='json',
+            reverse('pos:quick-checkout-finalize', args=[checkout.data['id']]),
+            {'idempotency_key': str(uuid4())}, format='json',
         )
 
         self.assertEqual(finalized.status_code, 201, finalized.data)
@@ -1740,17 +1775,20 @@ class POSFoundationIntegrationTests(TestCase):
             created_by=self.owner,
         )
 
-        response = self.client.post(reverse('pos:sale-finalize'), {}, format='json')
+        response = self.client.post(reverse('pos:quick-checkout-create'), {}, format='json')
 
         self.assertEqual(response.status_code, 403, response.data)
 
     def test_pos_cash_overview_allows_operational_permissions_but_redacts_opening_amount(self):
-        operator, _ = self.login_pos_operator()
+        operator, paired = self.login_pos_operator()
         register = CashRegister.objects.create(branch=self.branch, name='Bar')
         BranchPOSSettings.objects.create(
             branch=self.branch, cash_binding_mode='FIXED', default_cash_register=register,
         )
-        open_session(register, '30.00', operator, self.branch, allow_pos_only=True)
+        session = open_session(register, '30.00', operator, self.branch, allow_pos_only=True)
+        device = POSDevice.objects.get(pk=paired.data['device']['id'])
+        device.active_cash_session = session
+        device.save(update_fields=('active_cash_session', 'updated_at'))
         view_permission = FunctionalPermission.objects.get(code='cash_registers.view')
         UserPermissionBlock.objects.create(
             company=self.company, branch=self.branch, user=operator,
@@ -1764,6 +1802,9 @@ class POSFoundationIntegrationTests(TestCase):
         summary = self.client.get(reverse('pos:cash-session-summary', args=[overview.data['session']['id']]))
         self.assertEqual(summary.status_code, 200, summary.data)
         self.assertTrue(overview.data['session']['capabilities']['can_view'])
+        self.assertTrue(overview.data['session']['capabilities']['can_entry'])
+        self.assertTrue(overview.data['session']['capabilities']['can_withdraw'])
+        self.assertTrue(overview.data['session']['capabilities']['can_close'])
         for code in (
             'cash_registers.open', 'cash_registers.manual_entry',
             'cash_registers.withdraw', 'cash_registers.close',
@@ -1799,7 +1840,11 @@ class POSFoundationIntegrationTests(TestCase):
 
         self.assertEqual(djs.status_code, 200, djs.data)
         self.assertEqual(djs.data['beneficiaries'], [{
-            'id': dj.pk, 'name': dj.email, 'user_type': User.UserType.DJ,
+            'id': dj.pk,
+            'kind': 'user',
+            'name': dj.email,
+            'user_type': User.UserType.DJ,
+            'can_login': False,
         }])
         self.assertEqual(advance.status_code, 200, advance.data)
         self.assertIn(dj.pk, {item['id'] for item in advance.data['beneficiaries']})
@@ -1831,7 +1876,8 @@ class POSFoundationIntegrationTests(TestCase):
             reverse('pos:cash-session-withdrawal', args=[opened.data['id']]),
             {
                 'idempotency_key': str(uuid4()), 'amount': '25.00', 'reason': 'Cache DJ',
-                'category': 'dj', 'result_effect': 'operating_expense', 'beneficiary_user': dj.pk,
+                'category': 'dj', 'result_effect': 'operating_expense',
+                'beneficiary_type': 'user', 'beneficiary_id': dj.pk,
             },
             format='json',
         )
@@ -1868,11 +1914,13 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(audit.metadata['source'], 'pos')
         self.assertEqual(audit.metadata['device_name'], 'Stone Bar 01')
         self.assertEqual(audit.metadata['operation_reference'], key)
-        audit_count = AuditLog.objects.count()
         self.client.post(
             reverse('pos:cash-session-entry', args=[opened.data['id']]), payload, format='json',
         )
-        self.assertEqual(AuditLog.objects.count(), audit_count)
+        self.assertEqual(CashMovement.objects.filter(cash_session_id=opened.data['id']).count(), 1)
+        self.assertEqual(
+            AuditLog.objects.filter(action='cash_movement.manual_entry').count(), 1,
+        )
 
     @override_settings(
         CIELO_SMART_CLIENT_ID='cielo-client-id-for-test',
@@ -2107,7 +2155,9 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(reversal_request['value'], 2000)
         self.assertNotIn('orderId', reversal_request)
         self.assertEqual(QuickSalePayment.objects.filter(checkout=checkout).count(), 1)
-        self.assertFalse(started_reversal.data['capabilities']['can_record_payment'])
+        blocked = self.client.get(reverse('pos:quick-checkout-detail', args=[checkout.pk]))
+        self.assertEqual(blocked.status_code, 200, blocked.data)
+        self.assertFalse(blocked.data['capabilities']['can_record_payment'])
 
         reversal_response = base64.b64encode(json.dumps({
             'id': 'cielo-order-reversal-1',
@@ -2188,6 +2238,9 @@ class POSFoundationIntegrationTests(TestCase):
                 self.assertEqual(QuickSalePayment.objects.filter(checkout=checkout).count(), 1)
                 self.assertFalse(QuickSalePayment.objects.filter(reversal_of=payment).exists())
                 self.assertEqual(ProviderReversalOperation.objects.get(pk=operation_id).status, expected_status)
+                self.assertEqual(resolved.data['paid_amount'], '20.00')
+                self.assertEqual(resolved.data['remaining_amount'], '0.00')
+                self.assertFalse(resolved.data['capabilities']['can_record_payment'])
 
         operation_id = start_reversal()
         launch_failed = self.client.post(
@@ -2197,7 +2250,7 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(launch_failed.status_code, 200, launch_failed.data)
         self.assertEqual(QuickSalePayment.objects.filter(checkout=checkout).count(), 1)
         self.assertEqual(ProviderReversalOperation.objects.get(pk=operation_id).status, 'error')
-        self.assertTrue(launch_failed.data['capabilities']['can_record_payment'])
+        self.assertFalse(launch_failed.data['capabilities']['can_record_payment'])
 
     @override_settings(
         CIELO_SMART_CLIENT_ID='cielo-client-id-for-test',

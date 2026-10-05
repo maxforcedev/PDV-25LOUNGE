@@ -1141,6 +1141,7 @@ class PurchaseSupportSessionTests(TestCase):
             company=self.company,
             mode=SupportSession.Mode.READ_ONLY,
             reason='Inspecionar contexto da empresa',
+            current_password=PASSWORD,
         )
         response = self.client.get(
             reverse('accounts:me'), HTTP_X_SUPPORT_SESSION_ID=str(session.pk)

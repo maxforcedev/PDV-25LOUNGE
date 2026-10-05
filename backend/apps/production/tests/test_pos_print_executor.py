@@ -95,7 +95,16 @@ class POSPrintExecutorTests(TestCase):
         failed = self._job()
         claim_print_job(job_id=failed.pk, device=self.first)
         start_print_dispatch(job_id=failed.pk, device=self.first)
-        complete_print_job(job_id=failed.pk, device=self.first, outcome='failed', error='refused')
+        complete_print_job(
+            job_id=failed.pk,
+            device=self.first,
+            outcome='failed',
+            error='refused before send',
+            metadata={'failed_before_send': True},
+        )
+        failed.refresh_from_db()
+        self.assertEqual(failed.status, PrintJobStatus.FAILED)
+        self.assertIsNone(failed.physical_dispatch_started_at)
         retry_print_job(job=failed, user=self.owner)
         failed.refresh_from_db()
         self.assertEqual(failed.status, PrintJobStatus.PENDING)
@@ -107,6 +116,15 @@ class POSPrintExecutorTests(TestCase):
         complete_print_job(job_id=uncertain.pk, device=self.first, outcome='uncertain', error='connection dropped')
         with self.assertRaises(ValueError):
             retry_print_job(job=uncertain, user=self.owner)
+        uncertain.refresh_from_db()
+        self.assertEqual(uncertain.status, PrintJobStatus.UNCERTAIN)
+        self.assertIsNotNone(uncertain.physical_dispatch_started_at)
+
+        reprint = reprint_print_job(
+            job=uncertain, user=self.owner, reason='Resultado físico incerto',
+        )
+        self.assertEqual(reprint.status, PrintJobStatus.PENDING)
+        self.assertEqual(reprint.reprint_of_id, uncertain.pk)
 
     def test_completion_requires_dispatch_and_batch_reprint_keeps_the_ticket_whole(self):
         job = self._job()
