@@ -235,7 +235,7 @@ estaveis do proxy, restringir `GUNICORN_FORWARDED_ALLOW_IPS` por environment.
 - criar e controlar a rede overlay externa `traefik_public`;
 - instalar/configurar o Traefik central, DNS Cloudflare e certificados TLS;
 - apontar `admin.corepdv.com` para o proxy central existente;
-- criar os dois Docker Secrets externos e o acesso de pull ao GHCR;
+- criar os Docker Secrets externos obrigatorios e o acesso de pull ao GHCR;
 - configurar backups e restauracao do volume PostgreSQL;
 - executar o primeiro deploy, smoke remoto, teste de rollback e observacao de
   logs/healthchecks.
@@ -289,3 +289,102 @@ scripts/smoke-test.sh
 O fato de `platform-admin/` ainda estar nao rastreado no worktree atual nao e
 falha de codigo nem bloqueio tecnico da imagem; o diretorio deve integrar o
 mesmo commit da infraestrutura antes da publicacao.
+
+## Atualizacao de producao - outubro de 2026
+
+Esta secao substitui o estado operacional anterior para a release aprovada
+`31497e31e7630e1d644c209740180f6b6d92fe26`. A CI desta release foi aprovada,
+incluindo backend, 437 testes, migrations, `check --deploy`, Frontend, Platform
+Admin, imagens de container e publicacao no GHCR. Isso nao valida a VPS: nenhum
+deploy ou acesso ao servidor foi executado como parte desta preparacao.
+
+As tres imagens devem usar a mesma tag SHA completa:
+
+```text
+ghcr.io/maxforcedev/core-pdv-backend:<RELEASE_TAG>
+ghcr.io/maxforcedev/core-pdv-frontend:<RELEASE_TAG>
+ghcr.io/maxforcedev/core-pdv-platform-admin:<RELEASE_TAG>
+```
+
+O stack Swarm e `corepdv`, com atualizacao in-place e volumes persistentes.
+Nunca usar `docker stack rm corepdv`, `docker volume rm` ou `docker system prune
+--volumes` como parte de uma atualizacao normal.
+
+### Contrato de secrets e SMTP
+
+Todos os secrets abaixo sao externos ao stack e precisam existir antes de
+`docker stack deploy`; o stack referencia nomes, mas nao cria nenhum secret.
+
+- `corepdv_django_secret_key` (configuravel por `DJANGO_SECRET_NAME`)
+- `corepdv_postgres_password` (configuravel por `POSTGRES_PASSWORD_SECRET_NAME`)
+- `corepdv_cielo_smart_client_id` (configuravel por `CIELO_SMART_CLIENT_ID_SECRET_NAME`)
+- `corepdv_cielo_smart_access_token` (configuravel por `CIELO_SMART_ACCESS_TOKEN_SECRET_NAME`)
+- `corepdv_smtp_password` (configuravel por `SMTP_PASSWORD_SECRET_NAME`)
+
+O backend le Cielo pelos arquivos de secret `/run/secrets/cielo_smart_client_id`
+e `/run/secrets/cielo_smart_access_token`, compativeis com `env_or_file()`.
+Nenhum valor de Cielo deve ser colocado em `.env.production` ou Git.
+
+Quando SMTP estiver habilitado pelo `EMAIL_BACKEND` SMTP, o ambiente tambem deve
+definir `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `DEFAULT_FROM_EMAIL` e
+`SALES_LEAD_EMAIL`, alem do secret SMTP. `EMAIL_USE_TLS` e `EMAIL_USE_SSL` devem
+ser coerentes e nunca ambos verdadeiros. A ausencia de um secret externo deve
+bloquear o deploy, nao ser substituida por uma senha dummy.
+
+### Preflight e migrations
+
+No servidor, exporte as variaveis publicas de `.env.production` para o ambiente
+do shell antes de executar scripts. O preflight nao cria, altera ou revela
+secrets, banco, stack ou servidor:
+
+```bash
+scripts/production-preflight.sh
+```
+
+Ele exige Docker e Swarm ativos, `RELEASE_TAG` SHA de 40 caracteres, rede
+`TRAEFIK_NETWORK` (padrao `traefik_public`), dominios e variaveis essenciais,
+secrets externos, imagens GHCR na mesma tag e configuracao valida do stack.
+
+O backend permanece com `MIGRATE_ON_START=True` enquanto existir apenas uma
+replica. Antes de cada deploy, confira migrations no contexto seguro da release:
+
+```bash
+docker exec <container-backend-da-release> python manage.py showmigrations
+docker exec <container-backend-da-release> python manage.py migrate --plan
+```
+
+Execute esses comandos somente em um container backend da release, que ja recebe
+seus secrets e rede do stack. Rollback Swarm reverte aplicacao/container, nunca
+o schema PostgreSQL; por isso backup e obrigatorio.
+
+### Backup e release controlado
+
+Antes de atualizar, execute o backup no manager Swarm:
+
+```bash
+BACKUP_DIR=/var/backups/corepdv scripts/backup-postgres.sh
+```
+
+O script encontra a task PostgreSQL ativa de `corepdv`, gera um `pg_dump` em
+formato custom com timestamp, falha se o dump falhar ou ficar vazio, usa permissoes
+`0600` e nunca imprime senha nem remove backups existentes. Para restauracao de
+emergencia, com o servico PostgreSQL parado ou em banco de recuperacao separado,
+use `pg_restore --clean --if-exists --no-owner --dbname=<database> <arquivo.dump`.
+Restauracao automatica nao faz parte do fluxo de release.
+
+Para atualizar a release existente:
+
+```bash
+RELEASE_TAG=<sha-completo> scripts/release-production.sh
+```
+
+O script executa preflight, mostra imagens atuais e alvo, valida o stack, cria
+backup (ou aceita `BACKUP_FILE` existente e nao vazio), executa `docker stack
+deploy --with-registry-auth`, acompanha tasks e roda `scripts/smoke-test.sh`.
+Ele nao inicializa servidor, nao recria secrets/volumes e nao faz rollback
+destrutivo de banco. Falha de smoke test requer investigacao; reimplantar imagem
+anterior tambem nao desfaz migrations.
+
+`SECURE_HSTS_SECONDS` continua inicialmente em `0`. Apos DNS, HTTPS e todos os
+subdominios serem validados publicamente, habilitar HSTS gradualmente, considerar
+include-subdomains/preload somente quando apropriado e repetir `check --deploy`.
