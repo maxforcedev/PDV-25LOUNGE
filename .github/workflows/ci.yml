@@ -168,6 +168,10 @@ jobs:
           sh -n scripts/backup-postgres.sh
           sh -n scripts/release-production.sh
           sh -n scripts/smoke-test.sh
+          test -x scripts/production-preflight.sh
+          test -x scripts/backup-postgres.sh
+          test -x scripts/release-production.sh
+          test -x scripts/smoke-test.sh
           docker compose config --quiet
           docker stack config --compose-file docker-stack.yml >/dev/null
           docker stack config --compose-file docker-stack.yml --compose-file docker-stack.smtp.yml >/dev/null
