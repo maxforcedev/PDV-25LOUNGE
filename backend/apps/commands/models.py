@@ -148,6 +148,8 @@ class Command(BaseModel):
     def clean(self):
         super().clean()
         self.identifier = ' '.join((self.identifier or '').split())
+        if self._state.adding and self.table_id:
+            raise ValidationError({'table': 'Novas comandas não podem ser vinculadas a mesas.'})
         if self.table_id and self.table.branch_id != self.branch_id:
             raise ValidationError({'table': 'A mesa deve pertencer à filial da comanda.'})
         if self.branch_id and self.branch.company_id != self.company_id:

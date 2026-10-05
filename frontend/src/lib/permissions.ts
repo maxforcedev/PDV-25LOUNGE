@@ -33,7 +33,7 @@ export const permissions = {
   createConsumption: "sales.create_consumption", viewConsumption: "sales.view_consumption", cancelConsumption: "sales.cancel_consumption",
   viewTables: "tables.view", manageTables: "tables.manage", openTables: "tables.open",
   viewCommands: "commands.view", openCommand: "commands.open", addCommandItems: "commands.add_items", cancelCommandItems: "commands.cancel_items", finalizeCommand: "commands.finalize",
-  transferCommand: "commands.transfer", transferCommandItems: "commands.transfer_items", mergeCommands: "commands.merge", splitCommand: "commands.split",
+  transferCommandItems: "commands.transfer_items", mergeCommands: "commands.merge", splitCommand: "commands.split",
   viewCommandPayments: "commands.payments.view", recordCommandPayment: "commands.payments.record", reverseCommandPayment: "commands.payments.reverse",
   viewPaymentMethod: "payment_methods.view", changePaymentMethod: "payment_methods.change",
   viewSalesReport: "reports.view_sales", viewConsumptionsReport: "reports.view_consumptions", viewCashReport: "reports.view_cash", viewWithdrawalsReport: "reports.view_withdrawals", viewInventoryReport: "reports.view_inventory", viewOperationalResult: "reports.view_operational_result", viewStockConsumptionReport: "reports.view_stock_consumption", exportReports: "reports.export",

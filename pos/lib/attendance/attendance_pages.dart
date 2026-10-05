@@ -208,9 +208,7 @@ class _CommandsPageState extends State<CommandsPage> {
                         return ListTile(
                           leading: const Icon(Icons.receipt_long_outlined),
                           title: Text(command.label),
-                          subtitle: Text(command.tableName.isEmpty
-                              ? 'Sem mesa'
-                              : command.tableName),
+                          subtitle: Text(command.number),
                           trailing: Text(
                               command.status == 'open' ? 'ABERTA' : 'FECHADA'),
                           onTap: () => Navigator.of(context).push(
@@ -769,7 +767,7 @@ class _CommandPicker extends StatelessWidget {
               children: commands
                   .map((command) => ListTile(
                       title: Text(command.label),
-                      subtitle: Text(command.tableName),
+                      subtitle: Text(command.number),
                       onTap: () => Navigator.pop(context, command)))
                   .toList())));
 }

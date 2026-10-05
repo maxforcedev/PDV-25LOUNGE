@@ -36,18 +36,17 @@ class BatchTableSerializer(serializers.Serializer):
 
 
 class CommandSerializer(serializers.ModelSerializer):
-    table_name = serializers.CharField(source='table.name', read_only=True, default='')
     open_items_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Command
         fields = (
-            'id', 'company', 'branch', 'table', 'table_name', 'customer', 'command_number', 'identifier',
+            'id', 'company', 'branch', 'customer', 'command_number', 'identifier',
             'status', 'opened_by', 'closed_at', 'closed_by', 'sale',
             'open_items_count', 'created_at', 'updated_at',
         )
         read_only_fields = (
-            'id', 'company', 'branch', 'table', 'customer', 'command_number', 'identifier', 'status', 'opened_by',
+            'id', 'company', 'branch', 'customer', 'command_number', 'identifier', 'status', 'opened_by',
             'closed_at', 'closed_by', 'sale', 'open_items_count',
             'created_at', 'updated_at',
         )

@@ -2208,8 +2208,6 @@ export interface Command {
   id: number;
   company: number;
   branch: number;
-  table: number | null;
-  table_name?: string;
   customer: number | null;
   command_number: string;
   identifier: string;

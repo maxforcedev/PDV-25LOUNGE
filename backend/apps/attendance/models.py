@@ -100,10 +100,6 @@ class AttendanceCommand(BaseModel):
                 fields=('branch', 'number'), condition=Q(status='open'),
                 name='attendance_open_command_number_unique',
             ),
-            models.UniqueConstraint(
-                fields=('table',), condition=Q(table__isnull=False, is_primary=True, status='open'),
-                name='attendance_one_open_primary_per_table',
-            ),
             models.CheckConstraint(
                 condition=Q(status='open') | Q(closed_at__isnull=False),
                 name='attendance_closed_command_requires_timestamp',
@@ -117,14 +113,14 @@ class AttendanceCommand(BaseModel):
         errors = {}
         if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
             errors['branch'] = 'A filial deve pertencer à empresa da comanda.'
+        if self._state.adding and (self.table_id or self.is_primary):
+            errors['table'] = 'Novas comandas não podem ser vinculadas a mesas.'
         if self.table_id and self.table.branch_id != self.branch_id:
             errors['table'] = 'A mesa deve pertencer à filial da comanda.'
         if self.customer_id and (
             self.customer.company_id != self.company_id or self.customer.status != Status.ACTIVE
         ):
             errors['customer'] = 'O cliente deve estar ativo e pertencer à empresa da comanda.'
-        if self.is_primary and not self.table_id:
-            errors['is_primary'] = 'Somente uma comanda vinculada a mesa pode ser principal.'
         if errors:
             raise ValidationError(errors)
 

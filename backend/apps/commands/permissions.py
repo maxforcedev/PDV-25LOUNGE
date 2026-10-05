@@ -20,7 +20,6 @@ class CommandFunctionalPermission(BasePermission):
         'confirm': 'commands.add_items',
         'cancel': 'commands.cancel_items',
         'finalize': 'commands.finalize',
-        'transfer': 'commands.transfer',
         'transfer_items': 'commands.transfer_items',
         'merge': 'commands.merge',
         'split': 'commands.split',
@@ -41,7 +40,7 @@ class CommandFunctionalPermission(BasePermission):
             return 'tables'
         if view.action in (
             'open', 'add_item', 'add_items', 'calculate', 'checkout_options', 'sellers',
-            'discount_authorizers', 'service_fee_authorizers', 'transfer', 'transfer_items',
+            'discount_authorizers', 'service_fee_authorizers', 'transfer_items',
             'merge', 'split', 'payments', 'payment_summary', 'record_payment', 'reverse_payment',
         ):
             return 'commands'

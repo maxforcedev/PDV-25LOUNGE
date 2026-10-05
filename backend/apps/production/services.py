@@ -27,7 +27,7 @@ def _payload(item, destination, event, reason='', command=None, table_attendance
     command_data = {}
     if command:
         command_data = {
-            'table': {'id': command.table_id, 'name': command.table.name if command.table_id else ''},
+            'table': {'id': command.table_id, 'name': command.table_name_snapshot},
             'command': {
                 'id': command.pk,
                 'number': getattr(command, 'command_number', None) or command.number,

@@ -3265,7 +3265,7 @@ def _command_name(command):
 
 
 def _command_table_name(command):
-    return command.table_name_snapshot or (command.table.name if command.table_id else '')
+    return command.table_name_snapshot
 
 
 def _command_customer_name(command):
@@ -3315,7 +3315,7 @@ def _command_financials(command):
 
 def _command_queryset(*, branch, filters):
     queryset = Command.objects.select_related(
-        'table', 'customer', 'opened_by', 'closed_by', 'sale', 'sale__seller_user',
+        'customer', 'opened_by', 'closed_by', 'sale', 'sale__seller_user',
     ).prefetch_related('orders__items', 'sale__items').filter(branch=branch)
     if filters.get('status'):
         queryset = queryset.filter(status=filters['status'])

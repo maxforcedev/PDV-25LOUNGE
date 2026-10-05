@@ -9,12 +9,10 @@ from .models import (
 
 
 class AttendanceCommandSerializer(serializers.ModelSerializer):
-    table_name = serializers.CharField(source='table_name_snapshot', read_only=True)
-
     class Meta:
         model = AttendanceCommand
         fields = (
-            'id', 'number', 'identifier', 'table', 'table_name', 'customer', 'is_primary',
+            'id', 'number', 'identifier', 'customer',
             'people_count', 'notes', 'status', 'opened_by', 'opened_by_name_snapshot',
             'customer_name_snapshot', 'bill_requested_at', 'bill_requested_by', 'closed_at',
             'closed_by', 'sale', 'created_at', 'updated_at',

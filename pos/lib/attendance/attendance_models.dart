@@ -97,9 +97,9 @@ class TableAttendance {
       checkoutDiscountType:
           json['checkout_discount_type'] as String? ?? 'amount',
       checkoutServiceFeeWaived: json['checkout_service_fee_waived'] == true,
-       finalSaleId: json['sale_id']?.toString() ??
-           (json['sale'] as Map?)?['id']?.toString(),
-       printDocuments: documents,
+      finalSaleId: json['sale_id']?.toString() ??
+          (json['sale'] as Map?)?['id']?.toString(),
+      printDocuments: documents,
     );
   }
 
@@ -150,9 +150,9 @@ class TableAttendance {
         checkoutDiscount: checkoutDiscount,
         checkoutDiscountType: checkoutDiscountType,
         checkoutServiceFeeWaived: checkoutServiceFeeWaived,
-         finalSaleId: finalSaleId,
-         printDocuments: printDocuments,
-       );
+        finalSaleId: finalSaleId,
+        printDocuments: printDocuments,
+      );
 
   bool get billRequested => billRequestedAt != null;
 
@@ -164,7 +164,10 @@ class TableAttendance {
       json['print_document'],
       json['print_document_id'],
     ];
-    for (final source in [effects['print_documents'], json['print_documents']]) {
+    for (final source in [
+      effects['print_documents'],
+      json['print_documents']
+    ]) {
       if (source is List) values.addAll(source);
     }
     final documents = <PrintDocumentResult>[];
@@ -305,7 +308,8 @@ class TablePayment {
         allocations: (json['allocations'] as List<dynamic>? ?? const [])
             .cast<Map<String, dynamic>>(),
         createdAt: json['created_at'] as String?,
-        printDocument: PrintDocumentResult.maybeFromJson(json['print_document']),
+        printDocument:
+            PrintDocumentResult.maybeFromJson(json['print_document']),
       );
 
   final int id;
@@ -389,10 +393,7 @@ class AttendanceCommand {
     required this.number,
     required this.status,
     this.identifier = '',
-    this.tableId,
-    this.tableName = '',
     this.customerId,
-    this.isPrimary = false,
     this.peopleCount,
     this.notes = '',
     this.summary = const {},
@@ -405,10 +406,7 @@ class AttendanceCommand {
         number: json['number'] as String? ?? '',
         status: json['status'] as String? ?? 'open',
         identifier: json['identifier'] as String? ?? '',
-        tableId: json['table'] as int?,
-        tableName: json['table_name'] as String? ?? '',
         customerId: json['customer'] as int?,
-        isPrimary: json['is_primary'] == true,
         peopleCount: json['people_count'] as int?,
         notes: json['notes'] as String? ?? '',
         summary: json['summary'] as Map<String, dynamic>? ?? const {},
@@ -419,10 +417,7 @@ class AttendanceCommand {
   final String number;
   final String status;
   final String identifier;
-  final int? tableId;
-  final String tableName;
   final int? customerId;
-  final bool isPrimary;
   final int? peopleCount;
   final String notes;
   final Map<String, dynamic> summary;
