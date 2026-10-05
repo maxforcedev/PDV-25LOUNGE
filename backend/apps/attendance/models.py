@@ -59,7 +59,7 @@ class AttendanceOperationType(models.TextChoices):
 
 
 class AttendanceCommand(BaseModel):
-    """POS-5 persistent account. The legacy Table is only physical-layout input."""
+    """Standalone comanda; table fields are retained for historical records only."""
 
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='attendance_commands')
     branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='attendance_commands')
@@ -134,7 +134,7 @@ class AttendanceCommand(BaseModel):
 
 
 class AttendanceTableGroup(BaseModel):
-    """Temporary physical-table grouping; commands remain attached to each table."""
+    """Temporary physical-table grouping for active TableAttendance records."""
 
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='attendance_table_groups')
     branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='attendance_table_groups')

@@ -10,7 +10,7 @@ from apps.companies.models import Status
 from apps.companies.services import create_company_with_matrix
 from apps.pos.models import POSDevice
 from apps.payment_integrations.models import (
-    PaymentAttempt, PaymentAttemptStatus, PaymentIntentOriginType, PaymentIntentStatus, PaymentProvider,
+    PaymentAttempt, PaymentAttemptStatus, PaymentIntent, PaymentIntentOriginType, PaymentIntentStatus, PaymentProvider,
     PaymentProviderConnection, PaymentProviderConnectionEnvironment, PaymentTerminal,
 )
 from apps.payment_integrations.services import (
@@ -125,14 +125,18 @@ class PaymentIntegrationsTests(TestCase):
 
     def test_idempotency_replays_only_matching_request(self):
         key = uuid4()
-        first, replayed = self.create_intent(key=key)
-        second, replayed_again = self.create_intent(key=key)
+        origin_id = uuid4()
+        first, replayed = self.create_intent(key=key, origin_id=origin_id)
+        second, replayed_again = self.create_intent(key=key, origin_id=origin_id)
 
         self.assertFalse(replayed)
         self.assertTrue(replayed_again)
         self.assertEqual(first.pk, second.pk)
         with self.assertRaises(PaymentIntegrationConflict) as context:
-            self.create_intent(key=key, amount=Decimal('101.00'))
+            self.create_intent(key=key, origin_id=origin_id, amount=Decimal('101.00'))
+        self.assertEqual(context.exception.code, 'idempotency_key_conflict')
+        with self.assertRaises(PaymentIntegrationConflict) as context:
+            self.create_intent(key=key, origin_id=uuid4())
         self.assertEqual(context.exception.code, 'idempotency_key_conflict')
 
     def test_application_context_is_sensitive_safe_immutable_and_idempotent(self):
@@ -197,6 +201,7 @@ class PaymentIntegrationsTests(TestCase):
             attempt=second, status=PaymentAttemptStatus.APPROVED,
         )
 
+        first.refresh_from_db()
         self.assertEqual(first.status, PaymentAttemptStatus.DECLINED)
         self.assertEqual(approved_attempt.status, PaymentAttemptStatus.APPROVED)
         self.assertEqual(approved_intent.status, PaymentIntentStatus.APPROVED)
@@ -274,7 +279,7 @@ class PaymentIntegrationsTests(TestCase):
     def test_intent_structural_fields_are_immutable_after_creation(self):
         intent, _ = self.create_intent()
         other_method = PaymentMethod.objects.create(
-            company=self.company, code='debit_card', name='Débito', status=Status.ACTIVE,
+            company=self.company, code='test_debit_card', name='Débito', status=Status.ACTIVE,
         )
         other_connection = PaymentProviderConnection.objects.create(
             company=self.company, provider=self.provider, name='Contrato alternativo',

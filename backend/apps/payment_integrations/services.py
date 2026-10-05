@@ -475,6 +475,9 @@ def resolve_payment_attempt(*, attempt, status, actor=None, response_metadata=No
                 # The external evidence belongs to another attempt. Do not persist its
                 # identifiers on this attempt or let the operator charge blindly again.
                 attempt.provider_transaction_id = ''
+                attempt.provider_operation_key = ''
+                attempt.provider_order_id = ''
+                attempt.provider_reference = ''
                 conflict_result = {
                     'provider_status': 'unknown',
                     'provider_message': (
@@ -487,7 +490,8 @@ def resolve_payment_attempt(*, attempt, status, actor=None, response_metadata=No
                     **(response_metadata or {}),
                     'provider_callback_identity_conflict': True,
                 }
-                result_fields = (*result_fields, 'response_metadata')
+                result_fields = (*result_fields, 'response_metadata', 'provider_transaction_id',
+                                 'provider_operation_key', 'provider_order_id', 'provider_reference')
                 attempt.completed_at = timezone.now()
                 _save_attempt_status(attempt, PaymentAttemptStatus.UNKNOWN, result_fields)
                 _save_intent_status(

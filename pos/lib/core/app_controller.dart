@@ -1490,13 +1490,12 @@ class AppController extends ChangeNotifier {
   Future<List<QuickSaleProduct>?> attendanceCatalog({String? search}) =>
       _attendance(() => _api.attendanceCatalog(search: search));
 
-  Future<LegacyCheckoutOptions?> attendanceCheckoutOptions() =>
-      _attendance(_api.attendanceCheckoutOptions);
+  Future<CommandCheckoutOptions?> commandCheckoutOptions() =>
+      _attendance(_api.commandCheckoutOptions);
 
   Future<AttendanceCommand?> openAttendanceCommand({
     required String idempotencyKey,
     String identifier = '',
-    int? tableId,
     int? customerId,
     int? peopleCount,
     String notes = '',
@@ -1505,7 +1504,6 @@ class AppController extends ChangeNotifier {
       return await _api.openAttendanceCommand(
         idempotencyKey: idempotencyKey,
         identifier: identifier,
-        tableId: tableId,
         customerId: customerId,
         peopleCount: peopleCount,
         notes: notes,
@@ -1596,16 +1594,6 @@ class AppController extends ChangeNotifier {
       _attendance(() => _api.finalizeAttendanceCommand(
           commandId: commandId,
           cashSessionId: cashSessionId,
-          idempotencyKey: idempotencyKey));
-
-  Future<AttendanceCommand?> transferAttendanceCommand({
-    required int commandId,
-    required int? tableId,
-    required String idempotencyKey,
-  }) =>
-      _attendance(() => _api.transferAttendanceCommand(
-          commandId: commandId,
-          tableId: tableId,
           idempotencyKey: idempotencyKey));
 
   Future<AttendanceCommand?> transferAttendanceItems({

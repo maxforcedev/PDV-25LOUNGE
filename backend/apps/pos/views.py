@@ -50,7 +50,7 @@ from apps.attendance.serializers import (
     AttendanceFinalizeSerializer, AttendanceItemsSerializer,
     AttendanceOpenCommandSerializer,
     AttendanceOrderItemSerializer, AttendancePaymentInputSerializer,
-    AttendancePaymentSerializer, AttendanceReversePaymentSerializer, AttendanceTransferCommandSerializer,
+    AttendancePaymentSerializer, AttendanceReversePaymentSerializer,
     AttendanceTransferItemsSerializer, AttendanceBillRequestSerializer, AttendanceTableGroupSerializer,
     TableAttendanceOpenSerializer, TableAttendanceSerializer, TableOrderSerializer, TableOrderItemSerializer,
     TablePaymentInputSerializer, TablePaymentPreviewSerializer, TablePaymentSerializer,
@@ -64,7 +64,6 @@ from apps.attendance.services import (
     reverse_payment as reverse_attendance_payment,
     group_tables as group_attendance_tables, separate_table_from_group,
     set_bill_requested,
-    transfer_command as transfer_attendance_command,
     transfer_items as transfer_attendance_items,
     open_table_attendance, save_table_order, table_summary, cancel_table_item,
     record_table_payment, preview_table_payment_allocations, reverse_table_payment, set_table_bill_requested, close_table_attendance,
@@ -1028,7 +1027,7 @@ class POSAttendanceCommandsView(POSAttendanceView):
         try:
             command, replayed = open_attendance_command(
                 branch=device.branch, user=operator,
-                table_id=data.get('table'), idempotency_key=data['idempotency_key'],
+                idempotency_key=data['idempotency_key'],
                 identifier=data['identifier'], customer_id=data.get('customer'),
                 people_count=data.get('people_count'), notes=data['notes'],
                 audit_metadata=self.audit_metadata(device, operator_session),
@@ -1435,22 +1434,6 @@ class POSAttendanceCommandFinalizeView(POSAttendanceView):
         except AttendanceConflict as error:
             self._domain(error)
         return Response(AttendanceCommandSerializer(command).data)
-
-
-class POSAttendanceCommandTransferView(POSAttendanceView):
-    def post(self, request, command_id):
-        device, operator, permissions, operator_session = self.context(request)
-        self._require(permissions, 'commands.transfer', 'Você não possui permissão para transferir comandas.')
-        serializer = AttendanceTransferCommandSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        try:
-            command, replayed = transfer_attendance_command(
-                command=self._command(device, command_id), user=operator,
-                audit_metadata=self.audit_metadata(device, operator_session), **serializer.validated_data,
-            )
-        except AttendanceConflict as error:
-            self._domain(error)
-        return Response({**AttendanceCommandSerializer(command).data, 'idempotency_replayed': replayed})
 
 
 class POSAttendanceCommandItemsTransferView(POSAttendanceView):

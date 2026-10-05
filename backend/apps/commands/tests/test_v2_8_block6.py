@@ -40,8 +40,8 @@ from apps.commands.services import (
     transfer_command_items, split_command, merge_commands, batch_create_tables, delete_table,
     CommandConflict,
 )
-from apps.attendance.models import AttendanceCommand, AttendanceCommandStatus
-from apps.attendance.services import open_table as open_attendance_table
+from apps.attendance.models import TableAttendance, TableAttendanceStatus
+from apps.attendance.services import open_table_attendance
 from apps.inventory.models import (
     MovementType, MovementDomainOrigin, Stock, StockMovement,
 )
@@ -146,39 +146,6 @@ class Block6Fixture:
         )
 
 
-class MultipleCommandsPerTableTests(Block6Fixture, TestCase):
-    def test_two_open_commands_same_table_both_remain_open(self):
-        table = create_table(branch=self.branch, name='Mesa 3', user=self.owner)
-        cmd_j = open_command(branch=self.branch, user=self.owner, table=table, identifier='Junior')
-        cmd_v = open_command(branch=self.branch, user=self.owner, table=table, identifier='Vanessa')
-        self.assertEqual(cmd_j.status, CommandStatus.OPEN)
-        self.assertEqual(cmd_v.status, CommandStatus.OPEN)
-        self.assertEqual(table.commands.filter(status=CommandStatus.OPEN).count(), 2)
-
-    def test_table_with_zero_open_commands_is_free(self):
-        table = create_table(branch=self.branch, name='Mesa 4', user=self.owner)
-        self.assertEqual(table.commands.filter(status=CommandStatus.OPEN).count(), 0)
-
-    def test_operational_map_includes_partial_payment_without_per_table_queries(self):
-        table = create_table(branch=self.branch, name='Mesa parcial', user=self.owner)
-        command = open_command(branch=self.branch, user=self.owner, table=table, identifier='João')
-        item = add_order_item(command=command, user=self.owner, product_id=self.product.pk, quantity=Decimal('2'))
-        confirm_order_item(item=item, user=self.owner, idempotency_key=uuid.uuid4())
-        record_command_payment(
-            command=command, user=self.owner, payment_method=self.cash_method.pk,
-            amount='5.00', received_amount='5.00', cash_session=self.open_cash_session().pk,
-            idempotency_key=uuid.uuid4(),
-        )
-        client = APIClient()
-        client.force_authenticate(self.owner)
-        response = client.get('/api/v1/tables/operational/', HTTP_X_BRANCH_ID=str(self.branch.pk))
-        self.assertEqual(response.status_code, 200, response.data)
-        row = next(row for row in response.data if row['id'] == table.pk)
-        self.assertEqual(row['operational_status'], 'occupied')
-        self.assertEqual(row['open_commands'][0]['paid_total'], '5.00')
-        self.assertEqual(row['open_commands'][0]['confirmed_total'], '20.00')
-
-
 class TableDeletionTests(Block6Fixture, TestCase):
     def client_for(self, email, profile_name, codes):
         user = create_user(email)
@@ -198,20 +165,14 @@ class TableDeletionTests(Block6Fixture, TestCase):
         self.assertIsNotNone(Table.all_objects.get(pk=table.pk).deleted_at)
         self.assertTrue(AuditLog.objects.filter(action='table.delete', object_id=str(table.pk)).exists())
 
-    def test_legacy_open_command_blocks_archive(self):
-        table = create_table(branch=self.branch, name='Mesa legacy', user=self.owner)
-        open_command(branch=self.branch, user=self.owner, table=table)
-        with self.assertRaisesRegex(ValidationError, 'Não é possível excluir esta mesa'):
-            delete_table(table=table, user=self.owner)
-
-    def test_open_attendance_command_blocks_archive(self):
+    def test_open_table_attendance_blocks_archive(self):
         table = create_table(branch=self.branch, name='Mesa attendance', user=self.owner)
-        command, _ = open_attendance_table(
+        attendance, _ = open_table_attendance(
             branch=self.branch, table_id=table.pk, user=self.owner,
             idempotency_key=uuid.uuid4(),
         )
-        self.assertEqual(command.status, AttendanceCommandStatus.OPEN)
-        self.assertTrue(AttendanceCommand.objects.filter(table=table, status='open').exists())
+        self.assertEqual(attendance.status, TableAttendanceStatus.OPEN)
+        self.assertTrue(TableAttendance.objects.filter(table=table, status='open').exists())
         with self.assertRaisesRegex(ValidationError, 'Não é possível excluir esta mesa'):
             delete_table(table=table, user=self.owner)
 
@@ -224,11 +185,6 @@ class TableDeletionTests(Block6Fixture, TestCase):
 
     def test_interval_creates_replacement_for_deleted_table_without_reusing_history(self):
         deleted = create_table(branch=self.branch, name='Mesa 5', user=self.owner)
-        command = open_command(branch=self.branch, user=self.owner, table=deleted, identifier='Histórico')
-        command.status = CommandStatus.CLOSED
-        command.closed_at = timezone.now()
-        command.closed_by = self.owner
-        command.save(update_fields=('status', 'closed_at', 'closed_by', 'updated_at'))
         delete_table(table=deleted, user=self.owner)
         created = batch_create_tables(
             branch=self.branch, prefix='Mesa ', start=1, end=20, seats=4, user=self.owner,
@@ -236,17 +192,6 @@ class TableDeletionTests(Block6Fixture, TestCase):
         replacement = Table.objects.get(branch=self.branch, name='Mesa 5')
         self.assertIn(replacement, created)
         self.assertNotEqual(replacement.pk, deleted.pk)
-        self.assertEqual(Command.objects.get(pk=command.pk).table_id, deleted.pk)
-
-    def test_operational_endpoint_hides_deleted_table(self):
-        active = create_table(branch=self.branch, name='Mesa ativa', user=self.owner)
-        deleted = create_table(branch=self.branch, name='Mesa excluída', user=self.owner)
-        delete_table(table=deleted, user=self.owner)
-        client = APIClient()
-        client.force_authenticate(self.owner)
-        default_response = client.get('/api/v1/tables/operational/', HTTP_X_BRANCH_ID=str(self.branch.pk))
-        self.assertEqual(default_response.status_code, 200, default_response.data)
-        self.assertEqual([row['id'] for row in default_response.data], [active.pk])
 
     def test_tables_open_without_tables_manage_cannot_change_structure(self):
         table = create_table(branch=self.branch, name='Mesa existente', user=self.owner)
@@ -320,13 +265,6 @@ class TableDeletionTests(Block6Fixture, TestCase):
         )
         self.assertEqual(response.status_code, 200, response.data)
 
-    def test_tables_operational_does_not_require_commands_view(self):
-        table = create_table(branch=self.branch, name='Mesa consulta', user=self.owner)
-        client = self.client_for('tables-view@block6.com', 'Mesa Consulta', ['tables.view'])
-        response = client.get('/api/v1/tables/operational/', HTTP_X_BRANCH_ID=str(self.branch.pk))
-        self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(response.data[0]['id'], table.pk)
-
     def test_table_from_another_branch_cannot_be_deleted(self):
         other_branch = Branch.objects.create(company=self.company, name='Filial isolada')
         table = Table.objects.create(branch=other_branch, name='Mesa isolada')
@@ -354,20 +292,6 @@ class CommandConsumptionLimitTests(Block6Fixture, TestCase):
             confirm_order_item(item=second, user=self.owner, idempotency_key=uuid.uuid4())
         second.refresh_from_db()
         self.assertEqual(second.status, OrderItemStatus.PENDING)
-
-    def test_table_limit_aggregates_open_commands(self):
-        settings = self.branch.settings
-        settings.consumption_limit_enabled = True
-        settings.table_consumption_limit = Decimal('15.00')
-        settings.save()
-        table = create_table(branch=self.branch, name='Mesa limite', user=self.owner)
-        first_command = open_command(branch=self.branch, user=self.owner, table=table, identifier='A')
-        second_command = open_command(branch=self.branch, user=self.owner, table=table, identifier='B')
-        first = add_order_item(command=first_command, user=self.owner, product_id=self.product.pk, quantity=Decimal('1'))
-        confirm_order_item(item=first, user=self.owner, idempotency_key=uuid.uuid4())
-        second = add_order_item(command=second_command, user=self.owner, product_id=self.product.pk, quantity=Decimal('1'))
-        with self.assertRaisesRegex(Exception, 'Limite de consumo da mesa'):
-            confirm_order_item(item=second, user=self.owner, idempotency_key=uuid.uuid4())
 
     def test_batch_table_api_uses_branch_defaults_when_values_are_omitted(self):
         settings = self.branch.settings
@@ -401,7 +325,6 @@ class CommandConsumptionLimitTests(Block6Fixture, TestCase):
 
     def test_reducing_range_never_removes_historical_table(self):
         historical = create_table(branch=self.branch, name='Mesa 50', user=self.owner)
-        command = open_command(branch=self.branch, user=self.owner, table=historical, identifier='Histórico')
         client = APIClient()
         client.force_authenticate(self.owner)
         response = client.post(
@@ -411,7 +334,6 @@ class CommandConsumptionLimitTests(Block6Fixture, TestCase):
         )
         self.assertEqual(response.status_code, 201, response.data)
         self.assertTrue(Table.objects.filter(pk=historical.pk).exists())
-        self.assertEqual(Command.objects.get(pk=command.pk).table_id, historical.pk)
 
     def test_reducing_range_from_twenty_to_ten_keeps_tables_eleven_to_twenty(self):
         batch_create_tables(
@@ -468,23 +390,6 @@ class CommandStabilizationTests(Block6Fixture, TestCase):
         self.assertEqual(response.status_code, 400, response.data)
         self.branch.settings.refresh_from_db()
         self.assertTrue(self.branch.settings.uses_commands)
-
-    def test_table_remains_occupied_when_one_of_two_finalizes(self):
-        table = create_table(branch=self.branch, name='Mesa 5', user=self.owner)
-        cmd1 = open_command(branch=self.branch, user=self.owner, table=table, identifier='A')
-        cmd2 = open_command(branch=self.branch, user=self.owner, table=table, identifier='B')
-        item = add_order_item(command=cmd1, user=self.owner, product_id=self.product.pk, quantity=Decimal('1'))
-        confirm_order_item(item=item, user=self.owner, idempotency_key=uuid.uuid4())
-        self.finalize_cmd(cmd1)
-        self.assertEqual(table.commands.filter(status=CommandStatus.OPEN).count(), 1)
-
-    def test_table_frees_when_last_command_finalizes(self):
-        table = create_table(branch=self.branch, name='Mesa 6', user=self.owner)
-        cmd = open_command(branch=self.branch, user=self.owner, table=table, identifier='Solo')
-        item = add_order_item(command=cmd, user=self.owner, product_id=self.product.pk, quantity=Decimal('1'))
-        confirm_order_item(item=item, user=self.owner, idempotency_key=uuid.uuid4())
-        self.finalize_cmd(cmd)
-        self.assertEqual(table.commands.filter(status=CommandStatus.OPEN).count(), 0)
 
     def test_command_identifier_preserved(self):
         cmd = open_command(branch=self.branch, user=self.owner, identifier='Comanda 42')
@@ -639,7 +544,7 @@ class CommandPaidOperationGuardTests(Block6Fixture, TestCase):
         self.assertEqual(item.quantity, Decimal('2'))
         with self.assertRaises(CommandConflict):
             split_command(
-                command=source, items=[{'item': item.pk, 'quantity': '1'}], table_id=None,
+                command=source, items=[{'item': item.pk, 'quantity': '1'}],
                 identifier='Split', user=self.owner, idempotency_key=uuid.uuid4(),
             )
         with self.assertRaises(CommandConflict):

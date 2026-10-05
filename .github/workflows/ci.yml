@@ -230,6 +230,9 @@ jobs:
              test "$GIT_SHA" = "${{ github.sha }}" && test "$ENVIRONMENT" = "ci"'
           docker run --rm --entrypoint /bin/sh core-pdv-frontend:ci -c \
             'test ! -e /app/.env && test ! -d /app/src && test -f /app/server.js &&
+             test -f /app/public/site/images/hero-operation.webp &&
+             test -f /app/public/site/screenshots/core-pos-venda.webp &&
+             node -e "require(\"sharp\")" &&
              grep -R -F -q "${{ steps.release_metadata.outputs.version }}" /app/.next &&
              grep -R -F -q "${{ github.sha }}" /app/.next'
           docker run --rm --entrypoint /bin/sh core-pdv-platform-admin:ci -c \

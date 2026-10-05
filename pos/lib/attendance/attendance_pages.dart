@@ -52,7 +52,8 @@ class _TablesPageState extends State<TablesPage> {
       );
       if (attendance == null || !mounted) return;
     }
-    final result = await Navigator.of(context).push<TableAttendance>(MaterialPageRoute(
+    final result =
+        await Navigator.of(context).push<TableAttendance>(MaterialPageRoute(
       builder: (_) => TableOrderPage(
         controller: widget.controller,
         attendance: attendance!,
@@ -294,7 +295,7 @@ class _CommandDetailPageState extends State<CommandDetailPage> {
   }
 
   Future<void> _payment() async {
-    final options = await widget.controller.attendanceCheckoutOptions();
+    final options = await widget.controller.commandCheckoutOptions();
     if (!mounted || options == null) return;
     final payment = await showDialog<_PaymentInput>(
         context: context,
@@ -323,7 +324,7 @@ class _CommandDetailPageState extends State<CommandDetailPage> {
   }
 
   Future<void> _finalize() async {
-    final options = await widget.controller.attendanceCheckoutOptions();
+    final options = await widget.controller.commandCheckoutOptions();
     if (!mounted || options == null) return;
     final session = await _pickSession(context, options);
     if (session == null) return;
@@ -341,19 +342,6 @@ class _CommandDetailPageState extends State<CommandDetailPage> {
       requested: requested,
       idempotencyKey: createIdempotencyKey(),
     );
-    if (mounted) await _load();
-  }
-
-  Future<void> _transfer() async {
-    final tables = await widget.controller.attendanceTables();
-    if (!mounted || tables == null) return;
-    final target = await showDialog<_TableTarget>(
-        context: context, builder: (_) => _TablePicker(tables: tables));
-    if (target == null) return;
-    await widget.controller.transferAttendanceCommand(
-        commandId: widget.command.id,
-        tableId: target.table?.id,
-        idempotencyKey: createIdempotencyKey());
     if (mounted) await _load();
   }
 
@@ -466,11 +454,6 @@ class _CommandDetailPageState extends State<CommandDetailPage> {
                         onPressed: _finalize,
                         icon: const Icon(Icons.task_alt),
                         label: const Text('FINALIZAR COMANDA')),
-                  if (_allowed('commands.transfer'))
-                    OutlinedButton.icon(
-                        onPressed: _transfer,
-                        icon: const Icon(Icons.swap_horiz),
-                        label: const Text('TRANSFERIR COMANDA')),
                 ]),
     );
   }
@@ -694,7 +677,7 @@ class _PaymentInput {
 
 class _PaymentDialog extends StatefulWidget {
   const _PaymentDialog({required this.options, required this.balance});
-  final LegacyCheckoutOptions options;
+  final CommandCheckoutOptions options;
   final String balance;
   @override
   State<_PaymentDialog> createState() => _PaymentDialogState();
@@ -773,36 +756,6 @@ class _PaymentDialogState extends State<_PaymentDialog> {
           ]);
 }
 
-class _TableTarget {
-  const _TableTarget(this.table);
-  final AttendanceTable? table;
-}
-
-class _TablePicker extends StatelessWidget {
-  const _TablePicker({required this.tables});
-  final List<AttendanceTable> tables;
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: const Text('Transferir comanda'),
-        content: SizedBox(
-            width: 360,
-            child: ListView(shrinkWrap: true, children: [
-              ListTile(
-                  leading: const Icon(Icons.person_outline),
-                  title: const Text('Sem mesa'),
-                  onTap: () =>
-                      Navigator.pop(context, const _TableTarget(null))),
-              ...tables
-                  .where((table) => table.isOpen)
-                  .map((table) => ListTile(
-                      title: Text(table.name),
-                      subtitle: Text(table.isOpen ? 'Ocupada' : 'Livre'),
-                      onTap: () =>
-                          Navigator.pop(context, _TableTarget(table)))),
-            ])),
-      );
-}
-
 class _CommandPicker extends StatelessWidget {
   const _CommandPicker({required this.commands});
   final List<AttendanceCommand> commands;
@@ -844,7 +797,7 @@ Future<String?> _reasonDialog(BuildContext context, String title) async {
 }
 
 Future<QuickSaleCashSession?> _pickSession(
-    BuildContext context, LegacyCheckoutOptions options) async {
+    BuildContext context, CommandCheckoutOptions options) async {
   if (options.cashSessions.length == 1) return options.cashSessions.single;
   return showDialog<QuickSaleCashSession>(
       context: context,

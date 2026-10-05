@@ -893,15 +893,15 @@ class QuickSaleCheckoutOptions {
   final String? fixedRegisterName;
 }
 
-/// Legacy command checkout still selects a cash session explicitly.
-class LegacyCheckoutOptions {
-  const LegacyCheckoutOptions({
+/// Command checkout selects a cash session explicitly.
+class CommandCheckoutOptions {
+  const CommandCheckoutOptions({
     required this.paymentMethods,
     this.cashSessions = const [],
   });
 
-  factory LegacyCheckoutOptions.fromJson(Map<String, dynamic> json) =>
-      LegacyCheckoutOptions(
+  factory CommandCheckoutOptions.fromJson(Map<String, dynamic> json) =>
+      CommandCheckoutOptions(
         paymentMethods: (json['payment_methods'] as List<dynamic>? ?? const [])
             .cast<Map<String, dynamic>>()
             .map(QuickSalePaymentMethod.fromJson)

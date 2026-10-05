@@ -140,9 +140,13 @@ class FinalizeCommandSerializer(serializers.Serializer):
 
 
 class OpenCommandSerializer(serializers.Serializer):
-    table = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     identifier = serializers.CharField(max_length=100, required=False, allow_blank=True, default='')
     customer = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+
+    def validate(self, attrs):
+        if 'table' in self.initial_data:
+            raise serializers.ValidationError({'table': 'Mesa é operada exclusivamente por atendimento de mesa.'})
+        return attrs
 
     def validate_identifier(self, value):
         return ' '.join(value.split())
@@ -201,11 +205,6 @@ class CommandCalculationSerializer(serializers.Serializer):
     service_fee_waived = serializers.BooleanField(required=False, default=False)
 
 
-class TransferTableSerializer(serializers.Serializer):
-    table = serializers.IntegerField(min_value=1, allow_null=True, required=False)
-    idempotency_key = serializers.UUIDField()
-
-
 class TransferItemsSerializer(serializers.Serializer):
     command = serializers.IntegerField(min_value=1)
     items = serializers.ListField(child=serializers.DictField(), allow_empty=False)
@@ -238,8 +237,13 @@ class MergeCommandSerializer(serializers.Serializer):
 
 class SplitCommandSerializer(TransferItemsSerializer):
     command = None
-    table = serializers.IntegerField(min_value=1, allow_null=True, required=False)
     identifier = serializers.CharField(max_length=100, required=False, allow_blank=True, default='')
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if 'table' in self.initial_data:
+            raise serializers.ValidationError({'table': 'Mesa é operada exclusivamente por atendimento de mesa.'})
+        return attrs
 
     def validate_identifier(self, value):
         return ' '.join(value.split())

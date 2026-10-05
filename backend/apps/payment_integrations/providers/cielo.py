@@ -274,7 +274,8 @@ class CieloSmartAdapter(PaymentProviderAdapter):
         except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
             logger.info(
                 'cielo_callback_decode_failed attempt_id=%s response_present=%s response_length=%s',
-                attempt.pk, bool(response), len(str(response or '')),
+                getattr(attempt, 'pk', None) or getattr(attempt, 'id', None) or 'unknown',
+                bool(response), len(str(response or '')),
             )
             if error_code in _ERROR_STATUS:
                 return _error_result(error_code, '')

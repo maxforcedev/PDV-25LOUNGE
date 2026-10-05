@@ -371,7 +371,7 @@ function DashboardPage() {
     operationalAlerts.push({
       key: "open-tables",
       title: `${data.commands.open_table_count} mesa(s) aberta(s)`,
-      detail: "Mesas com comandas em andamento.",
+      detail: "Mesas com atendimento em andamento.",
       href: canViewCommands ? "/mesas" : undefined,
       tone: "info",
     });

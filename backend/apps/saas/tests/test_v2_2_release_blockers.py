@@ -337,10 +337,11 @@ class SupportHardeningTests(TestCase):
                 actor=self.agent, company=self.company,
                 mode=SupportSession.Mode.READ_ONLY, reason='Too long',
                 expires_at=timezone.now() + timedelta(hours=3),
+                current_password=PASSWORD,
             )
         session = create_support_session(
             actor=self.agent, company=self.company,
-            mode=SupportSession.Mode.READ_ONLY, reason='Inspect',
+            mode=SupportSession.Mode.READ_ONLY, reason='Inspect', current_password=PASSWORD,
         )
         permission = PlatformPermission.objects.get(code='platform.support.manage')
         self.agent.platform_access.role.permissions.remove(permission)
@@ -359,7 +360,7 @@ class SupportHardeningTests(TestCase):
     def test_read_only_blocks_writes_and_get_does_not_create_branch_settings(self):
         session = create_support_session(
             actor=self.agent, company=self.company,
-            mode=SupportSession.Mode.READ_ONLY, reason='Inspect settings',
+            mode=SupportSession.Mode.READ_ONLY, reason='Inspect settings', current_password=PASSWORD,
         )
         BranchSettings.objects.filter(branch=self.branch).delete()
         client = self._client()
@@ -597,6 +598,9 @@ THROTTLED_REST_FRAMEWORK = {
 class ProvisioningAbuseTests(TestCase):
     def test_public_signup_has_dedicated_abuse_throttle(self):
         cache.clear()
+        settings_row = get_global_settings()
+        settings_row.public_signup_enabled = True
+        settings_row.save(update_fields=('public_signup_enabled', 'updated_at'))
         client = APIClient()
         for _ in range(5):
             response = client.post(reverse('saas-public-signup'), {}, format='json')
@@ -610,6 +614,10 @@ class PublicPlanCatalogTests(TestCase):
         eligible = create_plan(
             code='public-eligible', price='149.00', trial_days=7, users=8, branches=3
         )
+        legacy = create_plan(code='public-legacy-entitlements')
+        PlanEntitlement.objects.filter(
+            plan_version=legacy, capability__code__in=('pos.enabled', 'pos.devices.max'),
+        ).delete()
         create_plan(code='public-private', public=False)
         inactive = create_plan(code='public-inactive')
         inactive.is_active = False
@@ -704,6 +712,7 @@ class PublicSignupCsrfTests(TestCase):
         self.assertEqual(response.data['id'], operation_id)
 
     def test_public_signup_is_disabled_by_default_without_provisioning(self):
+        cache.clear()
         client = APIClient()
         response = client.post(reverse('saas-public-signup'), {}, format='json')
         self.assertEqual(response.status_code, 403)
@@ -763,7 +772,7 @@ class Tenant360PermissionTests(TestCase):
         )
         create_support_session(
             actor=support_actor, company=self.company,
-            mode=SupportSession.Mode.READ_ONLY, reason='Permission test',
+            mode=SupportSession.Mode.READ_ONLY, reason='Permission test', current_password=PASSWORD,
         )
         response = self._retrieve(support_actor)
         self.assertEqual(response.status_code, 200, response.data)
@@ -890,6 +899,9 @@ class PlatformSubscriptionAdministrationTests(TestCase):
 
     def test_manual_new_identity_password_is_validated(self):
         cache.clear()
+        settings_row = get_global_settings()
+        settings_row.public_signup_enabled = True
+        settings_row.save(update_fields=('public_signup_enabled', 'updated_at'))
         response = self.client.post(
             reverse('platform-tenant-list'),
             {
@@ -986,8 +998,6 @@ class PlatformSubscriptionAdministrationTests(TestCase):
 
 
 class ConcurrencyHardeningTests(TransactionTestCase):
-    reset_sequences = True
-
     def test_concurrent_payment_replay_creates_one_append_only_record(self):
         version = create_plan(code='concurrent-payment', price='80.00')
         actor = create_user('concurrent-billing@example.com')

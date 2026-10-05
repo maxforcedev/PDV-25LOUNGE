@@ -189,7 +189,7 @@ abstract class PosApi {
       throw UnimplementedError();
   Future<List<AttendanceCommand>> attendanceCommands({String? query});
   Future<List<QuickSaleProduct>> attendanceCatalog({String? search});
-  Future<LegacyCheckoutOptions> attendanceCheckoutOptions();
+  Future<CommandCheckoutOptions> commandCheckoutOptions();
   Future<AttendanceCommandDetail> attendanceCommandDetail(int commandId);
   Future<AttendanceCommand> setAttendanceBillRequested({
     required int commandId,
@@ -199,7 +199,6 @@ abstract class PosApi {
   Future<AttendanceCommand> openAttendanceCommand({
     required String idempotencyKey,
     String identifier,
-    int? tableId,
     int? customerId,
     int? peopleCount,
     String notes,
@@ -235,11 +234,6 @@ abstract class PosApi {
   Future<AttendanceCommand> finalizeAttendanceCommand({
     required int commandId,
     required int cashSessionId,
-    required String idempotencyKey,
-  });
-  Future<AttendanceCommand> transferAttendanceCommand({
-    required int commandId,
-    required int? tableId,
     required String idempotencyKey,
   });
   Future<AttendanceCommand> transferAttendanceItems({
@@ -1217,8 +1211,8 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   }
 
   @override
-  Future<LegacyCheckoutOptions> attendanceCheckoutOptions() async =>
-      LegacyCheckoutOptions.fromJson(
+  Future<CommandCheckoutOptions> commandCheckoutOptions() async =>
+      CommandCheckoutOptions.fromJson(
           await _request('GET', 'commands/checkout-options/'));
 
   @override
@@ -1243,7 +1237,6 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   Future<AttendanceCommand> openAttendanceCommand({
     required String idempotencyKey,
     String identifier = '',
-    int? tableId,
     int? customerId,
     int? peopleCount,
     String notes = '',
@@ -1251,7 +1244,6 @@ class HttpPosApi implements PosApi, PosCredentialCache {
       AttendanceCommand.fromJson(await _request('POST', 'commands/', body: {
         'idempotency_key': idempotencyKey,
         'identifier': identifier,
-        if (tableId != null) 'table': tableId,
         if (customerId != null) 'customer': customerId,
         if (peopleCount != null) 'people_count': peopleCount,
         'notes': notes,
@@ -1331,15 +1323,6 @@ class HttpPosApi implements PosApi, PosCredentialCache {
         'service_fee_waived': false,
         'idempotency_key': idempotencyKey
       }));
-
-  @override
-  Future<AttendanceCommand> transferAttendanceCommand(
-          {required int commandId,
-          required int? tableId,
-          required String idempotencyKey}) async =>
-      AttendanceCommand.fromJson(await _request(
-          'POST', 'commands/$commandId/transfer/',
-          body: {'table': tableId, 'idempotency_key': idempotencyKey}));
 
   @override
   Future<AttendanceCommand> transferAttendanceItems(

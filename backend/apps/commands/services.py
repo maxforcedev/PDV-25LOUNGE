@@ -338,8 +338,6 @@ def _command_reference(command):
     return {
         'id': command.pk,
         'number': command.command_number,
-        'table_id': command.table_id,
-        'table_name': command.table_name_snapshot or (command.table.name if command.table_id else ''),
     }
 
 
@@ -406,46 +404,6 @@ def _move_items(*, source, destination, item_requests, user, operation, support_
             metadata={**_operation_metadata(operation, support_session), 'destination_command_id': destination.pk},
         )
     return moved_ids
-
-
-@transaction.atomic
-def transfer_command_table(*, command, table_id, user, idempotency_key, support_session=None):
-    branch = Branch.objects.select_for_update().select_related('company').get(pk=command.branch_id)
-    _validate_branch_active(branch)
-    require_branch_feature(branch, 'commands')
-    source, _ = _lock_open_commands(command.pk)
-    operation, replayed = _start_command_operation(
-        branch=branch, operation_type=CommandOperationType.TRANSFER, idempotency_key=idempotency_key,
-        payload={'command': source.pk, 'table': table_id},
-    )
-    if replayed:
-        return source, True
-    table = None
-    if table_id is not None:
-        require_branch_feature(branch, 'tables')
-        table = Table.objects.select_for_update().filter(pk=table_id).first()
-        if not table:
-            raise ValidationError({'table': 'Mesa não encontrada.'})
-        if table.branch_id != branch.pk or table.status != TableStatus.ACTIVE:
-            raise CommandConflict('table_invalid', 'A mesa de destino deve estar ativa na filial atual.')
-    before = model_snapshot(source, ('table_id', 'status'))
-    source_reference = _command_reference(source)
-    source.table = table
-    source.table_name_snapshot = table.name if table else ''
-    source.save(update_fields=('table', 'table_name_snapshot', 'updated_at'))
-    operation.result = {
-        'command_id': source.pk,
-        'source': source_reference,
-        'destination': _command_reference(source),
-        'responsible_name': _user_name_snapshot(user),
-    }
-    operation.save(update_fields=('result', 'updated_at'))
-    audit_log(
-        actor=user, action='command.transfer', obj=source, company=source.company, branch=branch,
-        before=before, after=model_snapshot(source, ('table_id', 'status')),
-        metadata=_operation_metadata(operation, support_session),
-    )
-    return source, False
 
 
 @transaction.atomic
@@ -542,7 +500,7 @@ def merge_commands(*, command, source_command_id, user, idempotency_key, support
 
 
 @transaction.atomic
-def split_command(*, command, items, table_id, identifier, user, idempotency_key, support_session=None):
+def split_command(*, command, items, identifier, user, idempotency_key, support_session=None):
     branch = Branch.objects.select_for_update().select_related('company').get(pk=command.branch_id)
     _validate_branch_active(branch)
     require_branch_feature(branch, 'commands')
@@ -550,23 +508,14 @@ def split_command(*, command, items, table_id, identifier, user, idempotency_key
     _assert_no_applied_payments(source)
     operation, replayed = _start_command_operation(
         branch=branch, operation_type=CommandOperationType.SPLIT, idempotency_key=idempotency_key,
-        payload={'command': source.pk, 'items': items, 'table': table_id, 'identifier': identifier},
+        payload={'command': source.pk, 'items': items, 'identifier': identifier},
     )
     if replayed:
         return Command.objects.get(pk=operation.result['command_id']), True
-    table = None
-    if table_id is not None:
-        require_branch_feature(branch, 'tables')
-        table = Table.objects.select_for_update().filter(pk=table_id).first()
-        if not table:
-            raise ValidationError({'table': 'Mesa não encontrada.'})
-        if table.branch_id != branch.pk or table.status != TableStatus.ACTIVE:
-            raise CommandConflict('table_invalid', 'A mesa de destino deve estar ativa na filial atual.')
     destination = Command.objects.create(
-        company=branch.company, branch=branch, table=table,
+        company=branch.company, branch=branch,
         command_number=f'C{Command.objects.filter(branch=branch).count() + 1:06d}',
         identifier=identifier, customer=source.customer, opened_by=user,
-        table_name_snapshot=table.name if table else '',
         customer_name_snapshot=source.customer_name_snapshot or (
             source.customer.name if source.customer_id else ''
         ),
@@ -586,7 +535,7 @@ def split_command(*, command, items, table_id, identifier, user, idempotency_key
     audit_log(
         actor=user, action='command.split', obj=destination, company=destination.company, branch=branch,
         before={'source_command_id': source.pk, 'item_ids': [entry['item'] for entry in items]},
-        after=model_snapshot(destination, ('table_id', 'command_number', 'identifier', 'status')),
+        after=model_snapshot(destination, ('command_number', 'identifier', 'status')),
         metadata=_operation_metadata(operation, support_session),
     )
     return destination, False
@@ -686,14 +635,6 @@ def create_table(*, branch, name, seats=0, user):
     return table
 
 
-def _open_command_attendance_exists(table):
-    from apps.attendance.models import AttendanceCommand, AttendanceCommandStatus
-
-    return AttendanceCommand.objects.filter(
-        table=table, status=AttendanceCommandStatus.OPEN,
-    ).exists()
-
-
 def _has_open_table_attendance(table):
     from apps.attendance.models import TableAttendance, TableAttendanceStatus
 
@@ -703,16 +644,9 @@ def _has_open_table_attendance(table):
 
 
 def _assert_table_without_open_attendance(table):
-    if (
-        Command.objects.filter(table=table, status=CommandStatus.OPEN).exists()
-        or _open_command_attendance_exists(table)
-        or _has_open_table_attendance(table)
-    ):
+    if _has_open_table_attendance(table):
         raise ValidationError({
-            'status': (
-                'Não é possível excluir esta mesa enquanto houver atendimento ou comanda aberta vinculada a ela. '
-                'Encerre ou transfira o atendimento antes de excluir.'
-            )
+            'status': 'Não é possível excluir esta mesa enquanto houver atendimento de mesa aberto vinculado a ela.'
         })
 
 
@@ -757,27 +691,10 @@ def batch_create_tables(*, branch, prefix, start, end, seats=0, user):
 
 
 @transaction.atomic
-def open_command(*, branch, user, table=None, identifier='', customer_id=None, support_session=None):
+def open_command(*, branch, user, identifier='', customer_id=None, support_session=None):
     branch_obj = Branch.objects.select_for_update().select_related('company').get(pk=branch.pk)
     _validate_branch_active(branch_obj)
     require_branch_feature(branch_obj, 'commands')
-    table_obj = None
-    if table is not None:
-        require_branch_feature(branch_obj, 'tables')
-        table_obj = Table.objects.select_for_update().get(pk=table.pk)
-        if table_obj.branch_id != branch_obj.pk:
-            raise ValidationError({'table': 'A mesa deve pertencer à filial.'})
-        if table_obj.status != TableStatus.ACTIVE:
-            raise ValidationError({'table': 'A mesa deve estar ativa.'})
-        # POS-5 attendance owns the table while any of its commands remain open.
-        from apps.attendance.models import AttendanceCommand, AttendanceCommandStatus
-
-        if AttendanceCommand.objects.filter(
-            table=table_obj, status=AttendanceCommandStatus.OPEN,
-        ).exists():
-            raise ValidationError({
-                'table': 'A mesa possui atendimento aberto no POS e não pode receber comanda legada.'
-            })
     customer = None
     if customer_id is not None:
         customer = Customer.objects.select_for_update().filter(pk=customer_id).first()
@@ -788,12 +705,10 @@ def open_command(*, branch, user, table=None, identifier='', customer_id=None, s
     command = Command.objects.create(
         company=branch_obj.company,
         branch=branch_obj,
-        table=table_obj,
         customer=customer,
         command_number=command_number,
         identifier=identifier,
         opened_by=user,
-        table_name_snapshot=table_obj.name if table_obj else '',
         customer_name_snapshot=customer.name if customer else '',
         opened_by_name_snapshot=_user_name_snapshot(user),
     )
@@ -801,7 +716,7 @@ def open_command(*, branch, user, table=None, identifier='', customer_id=None, s
         actor=user, action='command.open', obj=command,
         company=branch_obj.company, branch=branch_obj,
         after=model_snapshot(command, (
-            'company_id', 'branch_id', 'table_id', 'customer_id', 'command_number', 'identifier', 'status', 'opened_by_id'
+            'company_id', 'branch_id', 'customer_id', 'command_number', 'identifier', 'status', 'opened_by_id'
         )),
         metadata={'support_session': str(support_session.pk) if support_session else None},
     )
@@ -1001,12 +916,9 @@ def _branch_allows_negative(branch):
     return bool(settings and settings.allow_negative_stock)
 
 
-def _confirmed_consumption(command, *, table=None):
+def _confirmed_consumption(command):
     money_field = DecimalField(max_digits=14, decimal_places=2)
-    filters = Q(order__command=command)
-    if table is not None:
-        filters = Q(order__command__table=table, order__command__status=CommandStatus.OPEN)
-    return OrderItem.objects.filter(filters, status=OrderItemStatus.CONFIRMED).aggregate(
+    return OrderItem.objects.filter(order__command=command, status=OrderItemStatus.CONFIRMED).aggregate(
         total=Coalesce(
             Sum(F('unit_price') * F('quantity'), output_field=money_field),
             Value(Decimal('0.00'), output_field=money_field),
@@ -1021,14 +933,10 @@ def _assert_consumption_limit(command, item):
     if not settings or not settings.consumption_limit_enabled:
         return
     attempt = (item.unit_price * item.quantity).quantize(CENT, rounding=ROUND_HALF_UP)
-    checks = [('comanda', settings.command_consumption_limit, None)]
-    if command.table_id:
-        table = Table.objects.select_for_update().get(pk=command.table_id)
-        checks.append(('mesa', settings.table_consumption_limit, table))
-    for label, limit, table in checks:
+    for label, limit in [('comanda', settings.command_consumption_limit)]:
         if limit is None:
             continue
-        current = _confirmed_consumption(command, table=table)
+        current = _confirmed_consumption(command)
         total = current + attempt
         if total > limit:
             raise ValidationError({'consumption_limit': (

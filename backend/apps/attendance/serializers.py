@@ -61,9 +61,13 @@ class AttendanceOpenCommandSerializer(serializers.Serializer):
     idempotency_key = serializers.UUIDField()
     identifier = serializers.CharField(max_length=100, required=False, allow_blank=True, default='')
     customer = serializers.IntegerField(min_value=1, required=False, allow_null=True)
-    table = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     people_count = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     notes = serializers.CharField(max_length=1000, required=False, allow_blank=True, default='')
+
+    def validate(self, attrs):
+        if 'table' in self.initial_data:
+            raise serializers.ValidationError({'table': 'Mesa é operada exclusivamente por atendimento de mesa.'})
+        return attrs
 
 
 class AttendanceTableGroupSerializer(serializers.Serializer):
@@ -110,11 +114,6 @@ class AttendanceConfirmItemSerializer(serializers.Serializer):
 class AttendanceCancelItemSerializer(serializers.Serializer):
     idempotency_key = serializers.UUIDField()
     reason = serializers.CharField(max_length=1000, required=False, allow_blank=True, default='')
-
-
-class AttendanceTransferCommandSerializer(serializers.Serializer):
-    table = serializers.IntegerField(min_value=1, allow_null=True, required=False)
-    idempotency_key = serializers.UUIDField()
 
 
 class AttendanceTransferItemsSerializer(serializers.Serializer):

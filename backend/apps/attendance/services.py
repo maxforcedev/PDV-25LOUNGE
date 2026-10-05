@@ -90,59 +90,30 @@ def _customer(branch, customer_id):
     return customer
 
 
-def _command_reference(command):
-    return {
-        'id': command.pk,
-        'number': command.number,
-        'table_id': command.table_id,
-        'status': command.status,
-    }
-
-
 def _audit_metadata(metadata=None, **values):
     return {**(metadata or {}), **values}
 
 
 @transaction.atomic
-def open_command(*, branch, user, idempotency_key, identifier='', customer_id=None, table_id=None,
-                 people_count=None, notes='', audit_metadata=None):
-    from apps.commands.models import Table, TableStatus
-
+def open_command(*, branch, user, idempotency_key, identifier='', customer_id=None,
+                  people_count=None, notes='', audit_metadata=None):
     branch = _active_branch(branch)
     require_branch_feature(branch, 'commands')
     operation, replayed = _operation(
         branch=branch, operation_type=AttendanceOperationType.OPEN_COMMAND,
         idempotency_key=idempotency_key,
         payload={
-            'table': table_id, 'people_count': people_count, 'identifier': identifier,
+            'people_count': people_count, 'identifier': identifier,
             'notes': notes, 'customer': customer_id,
         },
     )
     if replayed:
         return AttendanceCommand.objects.get(pk=operation.result['command_id']), True
-    table = None
-    if table_id is not None:
-        require_branch_feature(branch, 'tables')
-        table = Table.objects.select_for_update().filter(
-            pk=table_id, branch=branch, status=TableStatus.ACTIVE,
-        ).first()
-        if table is None:
-            raise AttendanceConflict('table_not_found', 'Mesa não encontrada na filial atual.')
-        if TableAttendance.objects.filter(table=table, status=TableAttendanceStatus.OPEN).exists():
-            raise AttendanceConflict('table_in_table_attendance_use', 'A mesa possui atendimento aberto no novo fluxo de Mesa.')
-        if not AttendanceCommand.objects.filter(
-            table=table, is_primary=True, status=AttendanceCommandStatus.OPEN,
-        ).exists():
-            raise AttendanceConflict(
-                'table_not_open',
-                'Abra a mesa antes de criar uma comanda adicional.',
-            )
     customer = _customer(branch, customer_id)
     command = AttendanceCommand.objects.create(
-        company=branch.company, branch=branch, table=table, number=_next_number(branch),
+        company=branch.company, branch=branch, number=_next_number(branch),
         identifier=identifier, people_count=people_count, notes=notes, customer=customer,
         opened_by=user, opened_by_name_snapshot=_operator_name(user),
-        table_name_snapshot=table.name if table else '',
         customer_name_snapshot=customer.name if customer else '',
     )
     operation.result = {'command_id': command.pk}
@@ -150,7 +121,7 @@ def open_command(*, branch, user, idempotency_key, identifier='', customer_id=No
     audit_log(
         actor=user, action='attendance.command.open', obj=command,
         company=branch.company, branch=branch,
-        after=model_snapshot(command, ('table_id', 'number', 'identifier', 'is_primary', 'status')),
+        after=model_snapshot(command, ('number', 'identifier', 'status')),
         metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)),
     )
     return command, False
@@ -372,50 +343,6 @@ def cancel_order_item(*, item, user, reason, idempotency_key, audit_metadata=Non
               after=model_snapshot(item, ('status', 'cancelled_at', 'cancelled_by_id', 'cancellation_reason')),
               metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
     return item, False
-
-
-@transaction.atomic
-def transfer_command(*, command, table_id, user, idempotency_key, audit_metadata=None):
-    from apps.commands.models import Table, TableStatus
-
-    command = AttendanceCommand.objects.select_for_update().select_related('branch__company').get(pk=command.pk)
-    if command.status != AttendanceCommandStatus.OPEN:
-        raise AttendanceConflict('command_closed', 'A comanda deve estar aberta.')
-    operation, replayed = _operation(
-        branch=command.branch, operation_type=AttendanceOperationType.TRANSFER_COMMAND,
-        idempotency_key=idempotency_key, payload={'command': command.pk, 'table': table_id},
-    )
-    if replayed:
-        return command, True
-    table = None
-    if table_id is not None:
-        table = Table.objects.select_for_update().filter(
-            pk=table_id, branch=command.branch, status=TableStatus.ACTIVE,
-        ).first()
-        if table is None:
-            raise AttendanceConflict('table_not_found', 'Mesa de destino não encontrada.')
-        if not AttendanceCommand.objects.filter(table=table, is_primary=True, status=AttendanceCommandStatus.OPEN).exists():
-            raise AttendanceConflict('destination_table_not_open', 'Abra a mesa de destino antes da transferência.')
-    if command.is_primary and AttendanceCommand.objects.filter(
-        table_id=command.table_id, status=AttendanceCommandStatus.OPEN,
-    ).exclude(pk=command.pk).exists():
-        raise AttendanceConflict(
-            'primary_command_required',
-            'A mesa de origem possui outras comandas abertas e deve manter sua comanda principal.',
-        )
-    before = model_snapshot(command, ('table_id', 'table_name_snapshot', 'is_primary'))
-    command.table = table
-    command.table_name_snapshot = table.name if table else ''
-    if command.is_primary:
-        # Its former table becomes free; the destination already has its own primary command.
-        command.is_primary = False
-    command.save(update_fields=('table', 'table_name_snapshot', 'is_primary', 'updated_at'))
-    operation.result = {'command_id': command.pk, 'table_id': command.table_id}
-    operation.save(update_fields=('result', 'updated_at'))
-    audit_log(actor=user, action='attendance.command.transfer', obj=command, company=command.company,
-              branch=command.branch, before=before, after=model_snapshot(command, ('table_id', 'table_name_snapshot', 'is_primary')),
-              metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)))
-    return command, False
 
 
 @transaction.atomic

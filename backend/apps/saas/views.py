@@ -129,6 +129,12 @@ class PublicPlanVersionListView(APIView):
             & Q(entitlements__capability__is_active=True)
             & Q(entitlements__enabled=True)
             & (Q(entitlements__unlimited=True) | Q(entitlements__limit_value__gte=1))
+        ).filter(
+            entitlements__capability__code='pos.enabled',
+            entitlements__capability__is_active=True,
+        ).filter(
+            entitlements__capability__code='pos.devices.max',
+            entitlements__capability__is_active=True,
         ).select_related('plan').prefetch_related(
             'entitlements__capability'
         ).distinct().order_by('plan__name', '-version')

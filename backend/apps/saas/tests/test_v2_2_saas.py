@@ -11,10 +11,13 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
+from apps.base.exceptions import DomainValidationError
 from apps.base.models import AuditLog
 from apps.companies.models import AccessProfile, Company, UserCompanyAccess
 from apps.companies.selectors import accessible_companies
 from apps.companies.services import create_branch_with_access, create_company_with_matrix
+from apps.pos.models import POSDevice
+from apps.pos.services import assert_branch_device_limit, pos_enabled
 from apps.saas.models import (
     BillingRecord,
     Capability,
@@ -40,6 +43,7 @@ from apps.saas.services import (
     record_manual_payment,
     resolve_effective_status,
     set_admin_suspension,
+    validate_plan_version_complete,
 )
 
 
@@ -50,7 +54,8 @@ def create_user(email):
     return User.objects.create_user(email=email, password=PASSWORD)
 
 
-def create_plan(code='basic', *, trial_days=0, price='99.00', public=True, users=3, branches=2):
+def create_plan(code='basic', *, trial_days=0, price='99.00', public=True, users=3, branches=2,
+                pos_enabled=True, pos_devices=1):
     capabilities = ensure_capability_catalog()
     plan = Plan.objects.create(code=code, name=code.title())
     version = PlanVersion.objects.create(
@@ -75,6 +80,18 @@ def create_plan(code='basic', *, trial_days=0, price='99.00', public=True, users
         plan_version=version,
         capability=capabilities['branches.max'],
         limit_value=branches,
+    )
+    PlanEntitlement.objects.create(
+        plan_version=version,
+        capability=capabilities['pos.enabled'],
+        enabled=pos_enabled,
+        unlimited=pos_enabled,
+    )
+    PlanEntitlement.objects.create(
+        plan_version=version,
+        capability=capabilities['pos.devices.max'],
+        enabled=pos_enabled,
+        limit_value=pos_devices if pos_enabled else None,
     )
     return version
 
@@ -141,6 +158,43 @@ class PlatformAuthorizationTests(TestCase):
 
 
 class PlanHistoryTests(TestCase):
+    def test_plan_can_explicitly_disable_pos_and_still_be_complete(self):
+        version = create_plan(code='pos-disabled', pos_enabled=False)
+
+        validated = validate_plan_version_complete(version)
+
+        self.assertEqual(validated.pk, version.pk)
+        self.assertFalse(version.entitlements.get(capability__code='pos.enabled').enabled)
+        self.assertFalse(version.entitlements.get(capability__code='pos.devices.max').enabled)
+
+    def test_plan_missing_required_pos_entitlement_is_rejected(self):
+        version = create_plan(code='missing-pos-entitlement')
+        PlanEntitlement.objects.filter(
+            plan_version=version, capability__code='pos.devices.max',
+        ).delete()
+
+        with self.assertRaises(ValidationError) as context:
+            validate_plan_version_complete(version)
+
+        self.assertIn('pos.devices.max', str(context.exception))
+
+    def test_pos_entitlement_and_device_limit_are_enforced(self):
+        enabled = create_plan(code='pos-enabled', pos_devices=1)
+        _, company, _ = create_tenant('POS enabled', plan_version=enabled)
+        branch = company.branches.get(is_matrix=True)
+        self.assertTrue(pos_enabled(company))
+        assert_branch_device_limit(branch)
+        POSDevice.objects.create(branch=branch, name='First POS', status=POSDevice.Status.ACTIVE)
+        with self.assertRaises(DomainValidationError) as context:
+            assert_branch_device_limit(branch)
+        self.assertEqual(context.exception.payload['code'], 'pos_device_limit_reached')
+
+        disabled = create_plan(code='pos-disabled-entitlement', pos_enabled=False)
+        _, disabled_company, _ = create_tenant('POS disabled', plan_version=disabled)
+        with self.assertRaises(DomainValidationError) as context:
+            pos_enabled(disabled_company)
+        self.assertEqual(context.exception.payload['code'], 'pos_not_entitled')
+
     def test_used_plan_version_and_entitlements_are_immutable(self):
         version = create_plan()
         _, _, subscription = create_tenant('Immutable', plan_version=version)
@@ -399,6 +453,7 @@ class SupportSessionTests(TestCase):
             impersonated_user=self.owner,
             mode=SupportSession.Mode.READ_ONLY,
             reason='Inspect issue',
+            current_password=PASSWORD,
         )
         client = APIClient()
         self.assertTrue(client.login(email=self.agent.email, password=PASSWORD))

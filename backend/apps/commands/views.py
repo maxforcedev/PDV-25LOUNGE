@@ -20,7 +20,7 @@ from .serializers import (
     BatchTableSerializer, CancelOrderItemSerializer, CommandCalculationSerializer,
     CommandSerializer, ConfirmOrderItemSerializer, CreateOrderItemSerializer,
     FinalizeCommandSerializer, OpenCommandSerializer,
-    OrderItemSerializer, TableSerializer, TransferItemsSerializer, TransferTableSerializer,
+    OrderItemSerializer, TableSerializer, TransferItemsSerializer,
     MergeCommandSerializer, SplitCommandSerializer, CommandPaymentSerializer,
     RecordCommandPaymentSerializer, ReverseCommandPaymentSerializer, SetCommandCustomerSerializer,
 )
@@ -28,7 +28,7 @@ from .services import (
     add_order_item, batch_create_tables, cancel_order_item, confirm_order_item, delete_table,
     create_table, finalize_command, open_command,
     set_command_customer,
-    merge_commands, split_command, transfer_command_items, transfer_command_table,
+    merge_commands, split_command, transfer_command_items,
     record_command_payment, reverse_command_payment, command_payment_summary,
     _has_open_table_attendance,
 )
@@ -60,12 +60,8 @@ class TableViewSet(viewsets.ModelViewSet):
         branch = getattr(self.request, 'branch_context', None)
         if branch and serializer.validated_data.get('branch') and serializer.validated_data['branch'].pk != branch.pk:
             raise PermissionDenied({'branch': 'A mesa deve pertencer à filial atual.'})
-        if serializer.validated_data and (
-            serializer.instance.commands.filter(status=CommandStatus.OPEN).exists()
-            or serializer.instance.attendance_commands.filter(status='open').exists()
-            or _has_open_table_attendance(serializer.instance)
-        ):
-            raise ValidationError({'table': 'Não é possível alterar a estrutura de uma mesa com atendimento ou comanda aberta vinculada.'})
+        if serializer.validated_data and _has_open_table_attendance(serializer.instance):
+            raise ValidationError({'table': 'Não é possível alterar a estrutura de uma mesa com atendimento de mesa aberto.'})
         fields = ('branch_id', 'name', 'seats', 'status')
         before = model_snapshot(serializer.instance, fields)
         table = serializer.save()
@@ -151,14 +147,8 @@ class CommandViewSet(viewsets.ReadOnlyModelViewSet):
             raise PermissionDenied('Selecione uma filial.')
         serializer = OpenCommandSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        table_id = serializer.validated_data.get('table')
-        table = None
-        if table_id:
-            table = Table.objects.filter(pk=table_id, branch=branch).first()
-            if not table:
-                raise ValidationError({'table': 'Mesa não encontrada nesta filial.'})
         command = open_command(
-            branch=branch, user=request.user, table=table,
+            branch=branch, user=request.user,
             identifier=serializer.validated_data['identifier'],
             customer_id=serializer.validated_data.get('customer'),
             support_session=getattr(request, 'support_session', None),
@@ -267,19 +257,6 @@ class CommandViewSet(viewsets.ReadOnlyModelViewSet):
                                           **serializer.validated_data)
         return Response(CommandPaymentSerializer(payment).data, status=status.HTTP_201_CREATED)
 
-    @action(detail=True, methods=('post',))
-    def transfer(self, request, pk=None):
-        command = self.get_object()
-        serializer = TransferTableSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        result, replayed = transfer_command_table(
-            command=command, user=request.user,
-            support_session=getattr(request, 'support_session', None),
-            **serializer.validated_data,
-        )
-        request.audit_fallback_suppressed = replayed
-        return Response({**self.get_serializer(result).data, 'idempotency_replayed': replayed})
-
     @action(detail=True, methods=('post',), url_path='transfer-items')
     def transfer_items(self, request, pk=None):
         command = self.get_object()
@@ -318,7 +295,6 @@ class CommandViewSet(viewsets.ReadOnlyModelViewSet):
         serializer.is_valid(raise_exception=True)
         result, replayed = split_command(
             command=command, items=serializer.validated_data['items'],
-            table_id=serializer.validated_data.get('table'),
             identifier=serializer.validated_data['identifier'], user=request.user,
             idempotency_key=serializer.validated_data['idempotency_key'],
             support_session=getattr(request, 'support_session', None),
