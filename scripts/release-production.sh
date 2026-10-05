@@ -78,7 +78,7 @@ EOF
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 "$script_dir/production-preflight.sh"
 
-[ "${#RELEASE_TAG:-}" -eq 40 ] && printf '%s' "$RELEASE_TAG" | grep -Eq '^[0-9a-f]{40}$' || \
+[ "${#RELEASE_TAG}" -eq 40 ] && printf '%s' "$RELEASE_TAG" | grep -Eq '^[0-9a-f]{40}$' || \
     fail 'RELEASE_TAG must be a full 40-character lowercase commit SHA.'
 
 printf 'Current images for %s:\n' "$STACK_NAME"

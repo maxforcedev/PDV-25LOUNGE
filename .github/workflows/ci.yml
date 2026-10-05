@@ -168,6 +168,14 @@ jobs:
           sh -n scripts/backup-postgres.sh
           sh -n scripts/release-production.sh
           sh -n scripts/smoke-test.sh
+          dash -n scripts/production-preflight.sh
+          dash -n scripts/backup-postgres.sh
+          dash -n scripts/release-production.sh
+          dash -n scripts/smoke-test.sh
+          if grep -En '\$\{#[^}]*:-' scripts/*.sh; then
+            echo 'POSIX shells do not support a default-value operator inside a length expansion.' >&2
+            exit 1
+          fi
           test -x scripts/production-preflight.sh
           test -x scripts/backup-postgres.sh
           test -x scripts/release-production.sh
