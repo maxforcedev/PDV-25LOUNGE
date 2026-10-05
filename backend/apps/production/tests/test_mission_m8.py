@@ -171,8 +171,9 @@ class MissionM8PrinterTests(TestCase):
             f'/api/v1/products/{product.pk}/production-printers/?available=true',
         )
         self.assertEqual(available.status_code, 200, available.data)
+        self.assertEqual(available.data['count'], 2)
         self.assertEqual(
-            {item['id'] for item in available.data}, {printer.pk, other.pk},
+            {item['id'] for item in available.data['results']}, {printer.pk, other.pk},
         )
         response = self.client.put(
             f'/api/v1/products/{product.pk}/production-printers/',
