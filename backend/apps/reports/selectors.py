@@ -891,7 +891,7 @@ def receipt_event_rows(*, branch, start, end, filters):
                 'id': payment.command_id,
                 'number': payment.command.command_number,
                 'table': ({
-                    'id': payment.command.table_id, 'name': payment.command.table.name,
+                    'id': payment.command.table_id, 'name': payment.command.table_name_snapshot,
                 } if payment.command.table_id else None),
             },
             'cash_session': cash_session,

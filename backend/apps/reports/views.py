@@ -34,7 +34,7 @@ from apps.companies.selectors import branch_permission_codes, eligible_branch_us
 from apps.attendance.models import TableAttendance, TableAttendanceStatus
 from apps.commands.models import (
     Command, CommandOperation, CommandOperationType, CommandPayment,
-    CommandPaymentStatus, CommandStatus, OrderItem, OrderItemStatus, Table,
+    CommandPaymentStatus, CommandStatus, OrderItem, OrderItemStatus,
 )
 from apps.inventory.content import exact_sum
 from apps.inventory.models import (
@@ -3319,8 +3319,6 @@ def _command_queryset(*, branch, filters):
     ).prefetch_related('orders__items', 'sale__items').filter(branch=branch)
     if filters.get('status'):
         queryset = queryset.filter(status=filters['status'])
-    if filters.get('table') is not None:
-        queryset = queryset.filter(table_id=filters['table'])
     if filters.get('customer') is not None:
         queryset = queryset.filter(customer_id=filters['customer'])
     if filters.get('operator') is not None:
@@ -3377,16 +3375,8 @@ def _operation_command_ids(operation):
     }
 
 
-def _operation_matches_command_scope(operation, command_ids, table_id=None):
-    if not (_operation_command_ids(operation) & command_ids):
-        return False
-    if table_id is None:
-        return True
-    result = operation.result or {}
-    return table_id in {
-        reference.get('table_id')
-        for reference in (result.get('source') or {}, result.get('destination') or {})
-    }
+def _operation_matches_command_scope(operation, command_ids):
+    return bool(_operation_command_ids(operation) & command_ids)
 
 
 class CommandsReportOptionsView(APIView):
@@ -3399,18 +3389,11 @@ class CommandsReportOptionsView(APIView):
         commands = _command_period_queryset(
             Command.objects.filter(branch=branch), start, end,
         )
-        table_ids = commands.exclude(table_id=None).values_list('table_id', flat=True)
         customer_ids = commands.exclude(customer_id=None).values_list('customer_id', flat=True)
         operator_ids = set(commands.values_list('opened_by_id', flat=True))
         operator_ids.update(commands.exclude(closed_by_id=None).values_list('closed_by_id', flat=True))
         operator_ids.update(commands.exclude(sale__seller_user_id=None).values_list('sale__seller_user_id', flat=True))
         return Response({
-            'tables': [
-                {'id': table.pk, 'name': table.name, 'historical': table.status != 'active'}
-                for table in Table.all_objects.filter(branch=branch).filter(
-                    Q(deleted_at__isnull=True) | Q(pk__in=table_ids)
-                ).order_by('name', 'id')
-            ],
             'customers': [
                 {'id': customer.pk, 'name': customer.name, 'historical': customer.status != 'active'}
                 for customer in Customer.objects.filter(company=branch.company).filter(
@@ -3673,9 +3656,9 @@ class TicketReportDetailView(TicketsReportView):
 class CommandsReportView(BaseReportView):
     required_permission = 'commands.view'
     query_serializer_class = CommandsReportQuerySerializer
-    csv_filename = 'relatorio-mesas-comandas.csv'
+    csv_filename = 'relatorio-comandas.csv'
     csv_headers = (
-        'command_number', 'table_name', 'created_at', 'closed_at', 'opened_by_name',
+        'command_number', 'historical_table_name', 'created_at', 'closed_at', 'opened_by_name',
         'closed_by_name', 'customer_name', 'items_count', 'subtotal', 'discount',
         'service_fee', 'total', 'status',
     )
@@ -3687,22 +3670,22 @@ class CommandsReportView(BaseReportView):
         headers = {
             'commands': self.csv_headers,
             'items': (
-                'command_number', 'table_name', 'product_name', 'internal_code',
+                'command_number', 'historical_table_name', 'product_name', 'internal_code',
                 'category_name', 'quantity', 'modifiers', 'promotion', 'discount',
                 'subtotal', 'status', 'cancelled_at', 'cancellation_reason',
             ),
             'payments': (
-                'command_number', 'table_name', 'payment_method', 'amount',
+                'command_number', 'historical_table_name', 'payment_method', 'amount',
                 'received_amount', 'change_amount', 'command_total', 'is_partial',
                 'status', 'reversal_reason', 'operator_name', 'sale_number', 'created_at',
             ),
             'cancellations': (
-                'command_number', 'table_name', 'product_name', 'quantity', 'amount',
+                'command_number', 'historical_table_name', 'product_name', 'quantity', 'amount',
                 'responsible_name', 'authorized_by_name', 'reason', 'cancelled_at',
             ),
             'operations': (
-                'operation_label', 'source_command', 'source_table', 'destination_command',
-                'destination_table', 'item_ids', 'responsible_name', 'created_at',
+                'operation_label', 'source_command', 'source_historical_table', 'destination_command',
+                'destination_historical_table', 'item_ids', 'responsible_name', 'created_at',
             ),
         }
         return headers[request.query_params.get('section', 'commands')]
@@ -3720,11 +3703,8 @@ class CommandsReportView(BaseReportView):
         operation_command_ids = set(scope.values_list('pk', flat=True))
         operations = [operation for operation in CommandOperation.objects.filter(
             branch=branch, created_at__gte=start, created_at__lt=end_exclusive,
-        ) if _operation_matches_command_scope(
-            operation, operation_command_ids, filters.get('table'),
-        )]
+        ) if _operation_matches_command_scope(operation, operation_command_ids)]
         return {
-            'opened_tables': len({command.table_id for command in opened if command.table_id}),
             'opened_commands': len(opened),
             'closed_commands': len(closed),
             'associated_revenue': decimal_string(sum((command.sale.total for command in finalized), Decimal('0.00'))),
@@ -3752,7 +3732,7 @@ class CommandsReportView(BaseReportView):
                 'id': command.pk,
                 'command_number': _command_name(command),
                 'identifier': command.identifier,
-                'table_name': _command_table_name(command),
+                'historical_table_name': _command_table_name(command),
                 'created_at': command.created_at,
                 'closed_at': command.closed_at,
                 'opened_by_name': _command_operator_name(command, 'opened_by'),
@@ -3779,7 +3759,7 @@ class CommandsReportView(BaseReportView):
                 'id': item.pk,
                 'command_id': command.pk,
                 'command_number': _command_name(command),
-                'table_name': _command_table_name(command),
+                'historical_table_name': _command_table_name(command),
                 'product_name': item.product_name,
                 'internal_code': item.internal_code,
                 'category_name': item.category_name_snapshot or item.product.category.name,
@@ -3805,7 +3785,7 @@ class CommandsReportView(BaseReportView):
                 'id': payment.pk,
                 'command_id': payment.command_id,
                 'command_number': _command_name(payment.command),
-                'table_name': _command_table_name(payment.command),
+                'historical_table_name': _command_table_name(payment.command),
                 'payment_method': payment.payment_method.name,
                 'amount': decimal_string(payment.amount),
                 'received_amount': decimal_string(payment.received_amount) if payment.received_amount is not None else None,
@@ -3826,7 +3806,7 @@ class CommandsReportView(BaseReportView):
             'id': item.pk,
             'command_id': item.order.command_id,
             'command_number': _command_name(item.order.command),
-            'table_name': _command_table_name(item.order.command),
+            'historical_table_name': _command_table_name(item.order.command),
             'product_name': item.product_name,
             'quantity': decimal_string(item.quantity, places=3),
             'amount': decimal_string(item.quantity * item.unit_price),
@@ -3843,7 +3823,7 @@ class CommandsReportView(BaseReportView):
         ).select_related('actor')
         actors = {str(audit.metadata.get('operation_reference')): audit.actor for audit in audits}
         labels = {
-            CommandOperationType.TRANSFER: 'Transferência entre mesas',
+            CommandOperationType.TRANSFER: 'Transferência entre mesas (histórico)',
             CommandOperationType.TRANSFER_ITEMS: 'Transferência de itens',
             CommandOperationType.MERGE: 'Merge de comandas',
             CommandOperationType.SPLIT: 'Split de comanda',
@@ -3858,9 +3838,9 @@ class CommandsReportView(BaseReportView):
                 'operation_type': operation.operation_type,
                 'operation_label': labels[operation.operation_type],
                 'source_command': source.get('number') or result.get('source_command_id') or '',
-                'source_table': source.get('table_name', ''),
+                'source_historical_table': source.get('table_name', ''),
                 'destination_command': destination.get('number') or result.get('command_id') or '',
-                'destination_table': destination.get('table_name', ''),
+                'destination_historical_table': destination.get('table_name', ''),
                 'item_ids': result.get('item_ids', []),
                 'responsible_name': result.get('responsible_name') or (
                     readable_user_name(actors[str(operation.pk)])
@@ -3890,14 +3870,14 @@ class CommandsReportView(BaseReportView):
             ).order_by('-created_at', '-id'))
         elif section == 'payments':
             rows = self._payment_rows(CommandPayment.objects.select_related(
-                'command__table', 'command__customer', 'command__opened_by', 'command__closed_by',
+                'command__customer', 'command__opened_by', 'command__closed_by',
                 'command__sale', 'payment_method', 'operator', 'reversal',
             ).prefetch_related('command__orders__items').filter(
                 command__in=command_scope, created_at__gte=start, created_at__lt=end_exclusive,
             ).order_by('-created_at', '-id'))
         elif section == 'cancellations':
             rows = self._cancellation_rows(OrderItem.objects.select_related(
-                'order__command__table', 'order__command__customer', 'order__command__opened_by',
+                'order__command__customer', 'order__command__opened_by',
                 'order__command__closed_by', 'cancelled_by',
             ).filter(
                 order__command__in=command_scope, status=OrderItemStatus.CANCELLED,
@@ -3907,9 +3887,7 @@ class CommandsReportView(BaseReportView):
             command_ids = set(command_scope.values_list('pk', flat=True))
             operations = [operation for operation in CommandOperation.objects.filter(
                 branch=branch, created_at__gte=start, created_at__lt=end_exclusive,
-            ).order_by('-created_at', '-id') if _operation_matches_command_scope(
-                operation, command_ids, filters.get('table'),
-            )]
+            ).order_by('-created_at', '-id') if _operation_matches_command_scope(operation, command_ids)]
             rows = self._operation_rows(operations, branch)
         return self.respond(
             request, rows=rows, period=canonical_datetime_range(start, end), summary=summary,
@@ -4389,7 +4367,7 @@ class CustomersReportView(BaseReportView):
         command_rows = []
         if section == 'commands':
             sale_ids = [sale_id for sale_id, sign in sale_signs.items() if sign]
-            for command in Command.objects.select_related('sale', 'table', 'customer').filter(
+            for command in Command.objects.select_related('sale', 'customer').filter(
                 branch=request.branch_context, sale_id__in=sale_ids,
             ).order_by('-closed_at', '-id'):
                 command_rows.append({

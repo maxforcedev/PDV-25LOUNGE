@@ -80,6 +80,7 @@ class CommandStatus(models.TextChoices):
 
 
 class CommandOperationType(models.TextChoices):
+    # Historical only; no new writes for the legacy table-transfer operation.
     TRANSFER = 'transfer'
     TRANSFER_ITEMS = 'transfer_items'
     MERGE = 'merge'

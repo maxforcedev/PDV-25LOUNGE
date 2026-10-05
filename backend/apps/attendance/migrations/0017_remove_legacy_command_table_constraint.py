@@ -2,7 +2,7 @@ from django.db import migrations
 
 
 class Migration(migrations.Migration):
-    dependencies = [('attendance', '0015_table_checkout_approvals')]
+    dependencies = [('attendance', '0016_table_attendance_checkout_discount_type')]
 
     operations = [
         migrations.RemoveConstraint(

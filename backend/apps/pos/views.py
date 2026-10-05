@@ -889,7 +889,7 @@ class POSAttendanceView(POSCashView):
     @staticmethod
     def _command(device, command_id):
         return get_object_or_404(
-            AttendanceCommand.objects.select_related('table', 'customer', 'sale'),
+            AttendanceCommand.objects.select_related('customer', 'sale'),
             pk=command_id, branch=device.branch,
         )
 
@@ -1007,7 +1007,7 @@ class POSAttendanceCommandsView(POSAttendanceView):
         device, _, permissions, _ = self.context(request)
         self._require(permissions, 'commands.view', 'Você não possui permissão para consultar comandas nesta filial.')
         require_branch_feature(device.branch, 'commands')
-        queryset = AttendanceCommand.objects.filter(branch=device.branch).select_related('table', 'customer', 'sale')
+        queryset = AttendanceCommand.objects.filter(branch=device.branch).select_related('customer', 'sale')
         if request.query_params.get('open_only') != 'false':
             queryset = queryset.filter(status=AttendanceCommandStatus.OPEN)
         query = request.query_params.get('q', '').strip()

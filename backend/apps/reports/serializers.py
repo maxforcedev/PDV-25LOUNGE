@@ -276,7 +276,6 @@ class CommandsReportQuerySerializer(BaseReportQuerySerializer):
         required=False, default='commands',
     )
     status = serializers.ChoiceField(choices=CommandStatus.values, required=False)
-    table = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
     customer = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
     operator = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
     payment_method = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
@@ -284,7 +283,7 @@ class CommandsReportQuerySerializer(BaseReportQuerySerializer):
 
     def validate(self, attrs):
         return self.validate_scoped_ids(
-            attrs, ('table', 'customer', 'operator', 'payment_method')
+            attrs, ('customer', 'operator', 'payment_method')
         )
 
 
@@ -800,7 +799,7 @@ class CancellationReportSerializer(serializers.Serializer):
                 'command': {
                     'id': command.pk,
                     'number': command.command_number,
-                    'table': ({'id': command.table_id, 'name': command.table.name}
+                    'table': ({'id': command.table_id, 'name': command.table_name_snapshot}
                               if command.table_id else None),
                 },
                 'product': {
@@ -837,7 +836,7 @@ class CancellationReportSerializer(serializers.Serializer):
             'command': {
                 'id': command.pk,
                 'number': command.command_number,
-                'table': ({'id': command.table_id, 'name': command.table.name}
+                'table': ({'id': command.table_id, 'name': command.table_name_snapshot}
                           if command.table_id else None),
             },
             'payment_method': {

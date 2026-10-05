@@ -33,10 +33,11 @@ class AttendancePaymentStatus(models.TextChoices):
 
 
 class AttendanceOperationType(models.TextChoices):
-    # Historical legacy-table operation retained only to read existing records.
+    # Historical only; no new writes for the legacy open-table operation.
     OPEN_TABLE = 'open_table', 'Abrir mesa'
     OPEN_COMMAND = 'open_command', 'Abrir comanda'
     ADD_ITEMS = 'add_items', 'Adicionar itens'
+    # Historical only; no new writes for the legacy command-to-table transfer.
     TRANSFER_COMMAND = 'transfer_command', 'Transferir comanda'
     TRANSFER_ITEMS = 'transfer_items', 'Transferir itens'
     CANCEL_ITEM = 'cancel_item', 'Cancelar item'
