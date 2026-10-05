@@ -150,9 +150,27 @@ jobs:
       - name: Validate Docker definitions
         env:
           RELEASE_TAG: ${{ github.sha }}
+          SMTP_ENABLED: 'True'
+          API_DOMAIN: api.example.invalid
+          FRONTEND_DOMAIN: app.example.invalid
+          PLATFORM_ADMIN_DOMAIN: admin.example.invalid
+          ALLOWED_HOSTS: api.example.invalid,app.example.invalid,admin.example.invalid
+          CSRF_TRUSTED_ORIGINS: https://app.example.invalid,https://admin.example.invalid
+          CORS_ALLOWED_ORIGINS: https://app.example.invalid,https://admin.example.invalid
+          EMAIL_HOST: smtp.example.invalid
+          EMAIL_PORT: '587'
+          EMAIL_HOST_USER: test
+          DEFAULT_FROM_EMAIL: test@example.invalid
+          SALES_LEAD_EMAIL: sales@example.invalid
+          SMTP_PASSWORD_SECRET_NAME: placeholder-secret
         run: |
+          sh -n scripts/production-preflight.sh
+          sh -n scripts/backup-postgres.sh
+          sh -n scripts/release-production.sh
+          sh -n scripts/smoke-test.sh
           docker compose config --quiet
           docker stack config --compose-file docker-stack.yml >/dev/null
+          docker stack config --compose-file docker-stack.yml --compose-file docker-stack.smtp.yml >/dev/null
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Build backend image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
