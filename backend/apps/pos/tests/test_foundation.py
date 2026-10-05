@@ -1396,7 +1396,7 @@ class POSFoundationIntegrationTests(TestCase):
             idempotency_key=uuid4(), pos_device=device,
         )
         with self.assertRaises(ValidationError):
-            cancel_session(partial_session, 'Partial payment', operator, self.branch)
+            cancel_session(partial_session, 'Partial payment', self.owner, self.branch)
 
         operator, device, manual_session, manual_checkout, _method, _connection, _terminal = self.create_provider_checkout()
         record_quick_checkout_payment(
@@ -1405,7 +1405,7 @@ class POSFoundationIntegrationTests(TestCase):
             idempotency_key=uuid4(), pos_device=device,
         )
         with self.assertRaises(ValidationError):
-            cancel_session(manual_session, 'Full manual payment', operator, self.branch)
+            cancel_session(manual_session, 'Full manual payment', self.owner, self.branch)
 
         operator, _device, provider_session, provider_checkout, method, connection, terminal = self.create_provider_checkout()
         intent = self.create_provider_intent(provider_checkout, operator, method, connection, terminal)
@@ -1417,10 +1417,10 @@ class POSFoundationIntegrationTests(TestCase):
             checkout=provider_checkout, intent=approved_intent, user=operator,
         )
         with self.assertRaises(ValidationError):
-            cancel_session(provider_session, 'Provider payment', operator, self.branch)
+            cancel_session(provider_session, 'Provider payment', self.owner, self.branch)
 
         operator, _device, unpaid_session, _checkout, _method, _connection, _terminal = self.create_provider_checkout()
-        cancelled = cancel_session(unpaid_session, 'No payments', operator, self.branch)
+        cancelled = cancel_session(unpaid_session, 'No payments', self.owner, self.branch)
         self.assertEqual(cancelled.status, CashSessionStatus.CANCELLED)
 
     def test_unknown_intent_blocks_checkout_until_reconciled_and_applies_once(self):
