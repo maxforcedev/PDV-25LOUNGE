@@ -742,8 +742,8 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertNotIn(paired.data['device_credential'], str(response.data))
 
         blocked = self.client.post(
-            reverse('pos:pos-admin-device-block', args=[device_id]),
-            {'company': self.company.pk}, format='json',
+            f"{reverse('pos:pos-admin-device-block', args=[device_id])}?company={self.company.pk}",
+            {}, format='json',
         )
         self.assertEqual(blocked.status_code, 200, blocked.data)
         self.assertEqual(blocked.data['status'], POSDevice.Status.BLOCKED)
