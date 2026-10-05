@@ -1,0 +1,20 @@
+services:
+  backend:
+    environment:
+      EMAIL_BACKEND: django.core.mail.backends.smtp.EmailBackend
+      DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL:?Set DEFAULT_FROM_EMAIL when SMTP is enabled}
+      SALES_LEAD_EMAIL: ${SALES_LEAD_EMAIL:?Set SALES_LEAD_EMAIL when SMTP is enabled}
+      EMAIL_HOST: ${EMAIL_HOST:?Set EMAIL_HOST when SMTP is enabled}
+      EMAIL_PORT: ${EMAIL_PORT:-587}
+      EMAIL_HOST_USER: ${EMAIL_HOST_USER:?Set EMAIL_HOST_USER when SMTP is enabled}
+      EMAIL_HOST_PASSWORD_FILE: /run/secrets/smtp_password
+      EMAIL_USE_TLS: ${EMAIL_USE_TLS:-True}
+      EMAIL_USE_SSL: ${EMAIL_USE_SSL:-False}
+      EMAIL_TIMEOUT: ${EMAIL_TIMEOUT:-10}
+    secrets:
+      - smtp_password
+
+secrets:
+  smtp_password:
+    external: true
+    name: ${SMTP_PASSWORD_SECRET_NAME:-corepdv_smtp_password}

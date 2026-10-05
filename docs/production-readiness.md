@@ -319,17 +319,26 @@ Todos os secrets abaixo sao externos ao stack e precisam existir antes de
 - `corepdv_postgres_password` (configuravel por `POSTGRES_PASSWORD_SECRET_NAME`)
 - `corepdv_cielo_smart_client_id` (configuravel por `CIELO_SMART_CLIENT_ID_SECRET_NAME`)
 - `corepdv_cielo_smart_access_token` (configuravel por `CIELO_SMART_ACCESS_TOKEN_SECRET_NAME`)
-- `corepdv_smtp_password` (configuravel por `SMTP_PASSWORD_SECRET_NAME`)
+- `corepdv_smtp_password` (configuravel por `SMTP_PASSWORD_SECRET_NAME`, somente com SMTP habilitado)
 
 O backend le Cielo pelos arquivos de secret `/run/secrets/cielo_smart_client_id`
 e `/run/secrets/cielo_smart_access_token`, compativeis com `env_or_file()`.
 Nenhum valor de Cielo deve ser colocado em `.env.production` ou Git.
 
-Quando SMTP estiver habilitado pelo `EMAIL_BACKEND` SMTP, o ambiente tambem deve
-definir `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `DEFAULT_FROM_EMAIL` e
-`SALES_LEAD_EMAIL`, alem do secret SMTP. `EMAIL_USE_TLS` e `EMAIL_USE_SSL` devem
-ser coerentes e nunca ambos verdadeiros. A ausencia de um secret externo deve
-bloquear o deploy, nao ser substituida por uma senha dummy.
+SMTP e opcional nesta fase. O stack base nao monta `smtp_password`, nao aponta
+para `/run/secrets/smtp_password` e usa o backend console padrao do Django. Para
+habilitar SMTP, definir `SMTP_ENABLED=True` e implantar os dois arquivos:
+
+```bash
+docker stack deploy --with-registry-auth \
+  --compose-file docker-stack.yml \
+  --compose-file docker-stack.smtp.yml corepdv
+```
+
+O overlay SMTP exige `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`,
+`DEFAULT_FROM_EMAIL`, `SALES_LEAD_EMAIL` e o secret SMTP. `EMAIL_USE_TLS` e
+`EMAIL_USE_SSL` devem ser coerentes e nunca ambos verdadeiros. A ausencia do
+secret deve bloquear SMTP, nao ser substituida por uma senha dummy.
 
 ### Preflight e migrations
 
@@ -346,16 +355,17 @@ Ele exige Docker e Swarm ativos, `RELEASE_TAG` SHA de 40 caracteres, rede
 secrets externos, imagens GHCR na mesma tag e configuracao valida do stack.
 
 O backend permanece com `MIGRATE_ON_START=True` enquanto existir apenas uma
-replica. Antes de cada deploy, confira migrations no contexto seguro da release:
+replica. Nesta topologia, nao ha um job pre-deploy seguro e simples para executar
+`showmigrations` ou `migrate --plan` contra a imagem alvo: um `docker run` comum
+nao recebe Docker Secrets Swarm, e executar contra o backend atual inspeciona a
+imagem anterior, nao a release alvo. Nao usar esse ultimo atalho como validacao
+da release.
 
-```bash
-docker exec <container-backend-da-release> python manage.py showmigrations
-docker exec <container-backend-da-release> python manage.py migrate --plan
-```
-
-Execute esses comandos somente em um container backend da release, que ja recebe
-seus secrets e rede do stack. Rollback Swarm reverte aplicacao/container, nunca
-o schema PostgreSQL; por isso backup e obrigatorio.
+O preflight valida a imagem alvo e o stack; o backup obrigatorio protege a
+atualizacao cujo backend unico executara migrations no startup. Apos o deploy,
+inspecione o backend da release com `python manage.py showmigrations` e
+`python manage.py migrate --plan` se for necessaria confirmacao operacional.
+Rollback Swarm reverte aplicacao/container, nunca o schema PostgreSQL.
 
 ### Backup e release controlado
 
@@ -365,12 +375,14 @@ Antes de atualizar, execute o backup no manager Swarm:
 BACKUP_DIR=/var/backups/corepdv scripts/backup-postgres.sh
 ```
 
-O script encontra a task PostgreSQL ativa de `corepdv`, gera um `pg_dump` em
-formato custom com timestamp, falha se o dump falhar ou ficar vazio, usa permissoes
-`0600` e nunca imprime senha nem remove backups existentes. Para restauracao de
-emergencia, com o servico PostgreSQL parado ou em banco de recuperacao separado,
-use `pg_restore --clean --if-exists --no-owner --dbname=<database> <arquivo.dump`.
-Restauracao automatica nao faz parte do fluxo de release.
+O script encontra a task PostgreSQL ativa de `corepdv`, gera `pg_dump` em formato
+custom com timestamp para um arquivo `.partial`, valida tamanho e `pg_restore
+--list`, aplica permissao `0600` e so entao renomeia atomicamente para `.dump`.
+Em falha, remove apenas o `.partial` criado por essa execucao; nunca remove um
+backup completo existente nem imprime senha. Para restauracao de emergencia, com
+o servico PostgreSQL parado ou em banco de recuperacao separado, use `pg_restore
+--clean --if-exists --no-owner --dbname=<database> <arquivo.dump`. Restauracao
+automatica nao faz parte do fluxo de release.
 
 Para atualizar a release existente:
 
@@ -380,8 +392,13 @@ RELEASE_TAG=<sha-completo> scripts/release-production.sh
 
 O script executa preflight, mostra imagens atuais e alvo, valida o stack, cria
 backup (ou aceita `BACKUP_FILE` existente e nao vazio), executa `docker stack
-deploy --with-registry-auth`, acompanha tasks e roda `scripts/smoke-test.sh`.
-Ele nao inicializa servidor, nao recria secrets/volumes e nao faz rollback
+deploy --with-registry-auth` e so continua quando backend, Frontend e Platform
+Admin possuem a imagem alvo e update Swarm concluido. Rollback iniciado/concluido,
+update pausado, task antiga ou imagem divergente falham o release. O smoke test
+ocorre depois disso e exige que `/health/` reporte `release.commit` igual ao
+`RELEASE_TAG`; HTTP 200 da release anterior nao e aceito.
+
+O script nao inicializa servidor, nao recria secrets/volumes e nao faz rollback
 destrutivo de banco. Falha de smoke test requer investigacao; reimplantar imagem
 anterior tambem nao desfaz migrations.
 

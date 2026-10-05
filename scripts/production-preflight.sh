@@ -4,6 +4,8 @@ set -eu
 STACK_FILE=${STACK_FILE:-docker-stack.yml}
 STACK_NAME=${STACK_NAME:-corepdv}
 TRAEFIK_NETWORK=${TRAEFIK_NETWORK:-traefik_public}
+SMTP_STACK_FILE=${SMTP_STACK_FILE:-docker-stack.smtp.yml}
+SMTP_ENABLED=${SMTP_ENABLED:-False}
 
 fail() {
     printf 'Preflight failed: %s\n' "$*" >&2
@@ -28,6 +30,15 @@ require_image() {
     docker manifest inspect "$image" >/dev/null 2>&1 || \
         fail "Image '$image' is not available to this Docker client."
     printf 'Image available: %s\n' "$image"
+}
+
+stack_config() {
+    if [ "$SMTP_ENABLED" = 'True' ]; then
+        [ -f "$SMTP_STACK_FILE" ] || fail "SMTP stack file '$SMTP_STACK_FILE' was not found."
+        docker stack config --compose-file "$STACK_FILE" --compose-file "$SMTP_STACK_FILE"
+    else
+        docker stack config --compose-file "$STACK_FILE"
+    fi
 }
 
 command -v docker >/dev/null 2>&1 || fail 'Docker CLI is required.'
@@ -65,7 +76,13 @@ require_secret "$POSTGRES_PASSWORD_SECRET_NAME"
 require_secret "$CIELO_SMART_CLIENT_ID_SECRET_NAME"
 require_secret "$CIELO_SMART_ACCESS_TOKEN_SECRET_NAME"
 
-if [ "${EMAIL_BACKEND:-django.core.mail.backends.smtp.EmailBackend}" = 'django.core.mail.backends.smtp.EmailBackend' ]; then
+case "$SMTP_ENABLED" in
+    True) ;;
+    False) ;;
+    *) fail 'SMTP_ENABLED must be True or False.' ;;
+esac
+
+if [ "$SMTP_ENABLED" = 'True' ]; then
     for variable in EMAIL_HOST EMAIL_PORT EMAIL_HOST_USER DEFAULT_FROM_EMAIL SALES_LEAD_EMAIL; do
         require_value "$variable"
     done
@@ -81,5 +98,5 @@ for image in "$BACKEND_IMAGE:$RELEASE_TAG" "$FRONTEND_IMAGE:$RELEASE_TAG" "$PLAT
     require_image "$image"
 done
 
-docker stack config --compose-file "$STACK_FILE" >/dev/null || fail 'Docker stack configuration is invalid.'
+stack_config >/dev/null || fail 'Docker stack configuration is invalid.'
 printf 'Production preflight passed for stack %s and release %s.\n' "$STACK_NAME" "$RELEASE_TAG"
