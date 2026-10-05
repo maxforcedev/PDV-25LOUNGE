@@ -230,6 +230,27 @@ class POSFoundationIntegrationTests(TestCase):
         self.branch.email = 'pareamento@example.com'
         self.branch.save()
         self.client = APIClient()
+        self.ensure_test_cielo_provider()
+
+    def ensure_test_cielo_provider(self):
+        return PaymentProvider.objects.update_or_create(
+            code='cielo',
+            defaults={
+                'name': 'Cielo Smart',
+                'status': Status.ACTIVE,
+                'integration_type': 'local_deep_link',
+                'capabilities': {
+                    'payment': True,
+                    'reversal': True,
+                    'recovery': True,
+                    'enabled_products': True,
+                    'terminal_info': True,
+                    'payment_methods': [
+                        'credit_card', 'debit_card', 'pix', 'food_voucher', 'meal_voucher',
+                    ],
+                },
+            },
+        )[0]
 
     def pair_device(self, *, name='Stone Bar 01'):
         identify = self.client.post(
@@ -420,7 +441,7 @@ class POSFoundationIntegrationTests(TestCase):
 
     def start_configured_cielo_payment(self):
         _operator, device, _session, checkout, _method, _connection, _terminal = self.create_provider_checkout()
-        cielo = PaymentProvider.objects.get(code='cielo')
+        cielo = self.ensure_test_cielo_provider()
         connection = PaymentProviderConnection.objects.create(
             company=self.company, provider=cielo, name='Cielo local',
             environment=PaymentProviderConnectionEnvironment.SANDBOX,
@@ -453,7 +474,7 @@ class POSFoundationIntegrationTests(TestCase):
 
     def test_provider_resource_resolution_prefers_branch_and_rejects_ambiguity(self):
         _operator, device, _session, checkout, _method, _connection, _terminal = self.create_provider_checkout()
-        cielo = PaymentProvider.objects.get(code='cielo')
+        cielo = self.ensure_test_cielo_provider()
         company_connection = PaymentProviderConnection.objects.create(
             company=self.company, provider=cielo, name='Cielo company',
             environment=PaymentProviderConnectionEnvironment.SANDBOX,
@@ -482,7 +503,7 @@ class POSFoundationIntegrationTests(TestCase):
 
     def test_provider_resource_resolution_rejects_a_terminal_from_another_pos(self):
         _operator, device, _session, checkout, _method, _connection, _terminal = self.create_provider_checkout()
-        cielo = PaymentProvider.objects.get(code='cielo')
+        cielo = self.ensure_test_cielo_provider()
         connection = PaymentProviderConnection.objects.create(
             company=self.company, branch=self.branch, provider=cielo, name='Cielo branch',
             environment=PaymentProviderConnectionEnvironment.SANDBOX,
@@ -1928,7 +1949,7 @@ class POSFoundationIntegrationTests(TestCase):
     )
     def test_provider_start_is_idempotent_and_does_not_persist_launch_uri(self):
         _operator, device, _session, checkout, _method, _connection, _terminal = self.create_provider_checkout()
-        cielo = PaymentProvider.objects.get(code='cielo')
+        cielo = self.ensure_test_cielo_provider()
         connection = PaymentProviderConnection.objects.create(
             company=self.company, provider=cielo, name='Cielo local',
             environment=PaymentProviderConnectionEnvironment.SANDBOX,
@@ -1985,7 +2006,7 @@ class POSFoundationIntegrationTests(TestCase):
     )
     def test_cielo_callback_is_parsed_by_backend_and_applied_once(self):
         _operator, device, _session, checkout, _method, _connection, _terminal = self.create_provider_checkout()
-        cielo = PaymentProvider.objects.get(code='cielo')
+        cielo = self.ensure_test_cielo_provider()
         connection = PaymentProviderConnection.objects.create(
             company=self.company, provider=cielo, name='Cielo local',
             environment=PaymentProviderConnectionEnvironment.SANDBOX,
