@@ -52,6 +52,12 @@ class AuditLogPermission(BasePermission):
         user = request.user
         if not user.is_authenticated or not user.can_login or not user.is_active:
             return False
+        from apps.saas.permissions import (
+            enforce_saas_request, request_requires_commercial_feature,
+        )
+
+        if request_requires_commercial_feature(request, view):
+            enforce_saas_request(request, user, view)
         support_session = getattr(request, 'support_session', None)
         if support_session and not support_session.impersonated_user_id:
             return True

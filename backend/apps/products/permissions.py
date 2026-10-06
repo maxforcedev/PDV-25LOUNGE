@@ -2,7 +2,9 @@ from rest_framework.permissions import BasePermission
 
 from apps.companies.models import Branch
 from apps.companies.selectors import user_has_branch_permission, user_has_company_permission
-from apps.saas.permissions import support_permission_decision
+from apps.saas.permissions import (
+    enforce_saas_request, request_requires_commercial_feature, support_permission_decision,
+)
 
 
 class ProductFunctionalPermission(BasePermission):
@@ -26,6 +28,8 @@ class ProductFunctionalPermission(BasePermission):
         user = request.user
         if not user.is_authenticated or not user.can_login or not user.is_active:
             return False
+        if request_requires_commercial_feature(request, view):
+            enforce_saas_request(request, user, view)
         branch_id = request.headers.get('X-Branch-ID')
         support = support_permission_decision(request, branch_id=branch_id)
         if support is not None:

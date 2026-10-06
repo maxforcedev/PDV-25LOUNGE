@@ -13,6 +13,11 @@ class Command(BaseCommand):
         parser.add_argument('--company-id', type=int)
         parser.add_argument('--plan-version-id', type=int)
         parser.add_argument('--billing-mode', choices=Subscription.BillingMode.values)
+        parser.add_argument(
+            '--initial-subscription-mode',
+            choices=(Subscription.Status.ACTIVE, Subscription.Status.TRIALING),
+            default=Subscription.Status.ACTIVE,
+        )
 
     def handle(self, *args, **options):
         values = (
@@ -35,6 +40,7 @@ class Command(BaseCommand):
                 company=company,
                 plan_version=plan_version,
                 billing_mode=options['billing_mode'],
+                initial_subscription_mode=options['initial_subscription_mode'],
             )
         except (Company.DoesNotExist, PlanVersion.DoesNotExist) as error:
             raise CommandError('Company ou PlanVersion nao encontrada.') from error

@@ -5,7 +5,9 @@ from rest_framework.permissions import BasePermission
 from apps.companies.features import require_branch_feature
 from apps.companies.models import Branch, Status
 from apps.companies.selectors import user_has_branch_permission
-from apps.saas.permissions import support_permission_decision
+from apps.saas.permissions import (
+    enforce_saas_request, request_requires_commercial_feature, support_permission_decision,
+)
 
 
 class SalesFunctionalPermission(BasePermission):
@@ -83,6 +85,8 @@ class SalesFunctionalPermission(BasePermission):
             or not request.user.is_active
         ):
             return False
+        if request_requires_commercial_feature(request, view):
+            enforce_saas_request(request, request.user, view)
         if not view.action or not hasattr(view, view.action):
             return True
         if request.method.lower() not in view.http_method_names:

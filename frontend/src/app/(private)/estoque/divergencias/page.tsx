@@ -172,5 +172,5 @@ function Divergences() {
 }
 
 export default function DivergencesPage() {
-  return <AdminGuard requiredPermissions={[permissions.viewTransfers, permissions.resolveTransfer]}><Divergences /></AdminGuard>;
+  return <AdminGuard requiredPermissions={[permissions.viewTransfers, permissions.resolveTransfer]} requiredFeatures={["inventory"]}><Divergences /></AdminGuard>;
 }

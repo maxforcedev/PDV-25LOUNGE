@@ -214,5 +214,5 @@ function TransferDetail() {
 }
 
 export default function TransferDetailPage() {
-  return <AdminGuard requiredPermissions={detailPermissions}><TransferDetail /></AdminGuard>;
+  return <AdminGuard requiredPermissions={detailPermissions} requiredFeatures={["inventory"]}><TransferDetail /></AdminGuard>;
 }

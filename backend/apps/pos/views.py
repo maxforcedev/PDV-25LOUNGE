@@ -40,7 +40,7 @@ from apps.companies.services import (
     CustomerIdentityConflict, customer_identity_payload, set_customer_status,
 )
 from apps.companies.features import require_branch_feature
-from apps.companies.models import Customer, Status
+from apps.companies.models import Company, Customer, Status
 from apps.attendance.models import (
     AttendanceCommand, AttendanceCommandStatus, AttendanceOrderItem, AttendancePayment,
     AttendanceTableGroupMembership, TableAttendance, TableAttendanceStatus, TableOrder, TableOrderItem, TablePayment,
@@ -128,7 +128,7 @@ from .provider_payments import (
 from .services import (
     assert_branch_device_limit, authenticate_operator, cash_state_for_device, confirm_pairing,
     effective_cash_settings, effective_settings, identify_branch, logout_operator, modules_for,
-    pos_operator_queryset, request_otp, set_device_status,
+    pos_enabled, pos_operator_queryset, request_otp, set_device_status,
     eligible_pos_authorizers,
     request_pos_pin_reset, set_pos_pin, version_gate,
 )
@@ -3141,6 +3141,8 @@ class POSAdminDeviceViewSet(viewsets.ModelViewSet):
         company_id = self.request.query_params.get('company')
         if not company_id:
             raise ValidationError({'company': 'Selecione uma empresa para consultar dispositivos POS.'})
+        company = get_object_or_404(Company, pk=company_id)
+        pos_enabled(company)
         permission_code = self.permission_codes.get(self.action, 'pos_devices.view')
         queryset = POSDevice.objects.filter(
             branch__in=accessible_branches(self.request.user, permission_code),

@@ -77,4 +77,4 @@ function Transfers() {
     </div>
   </>;
 }
-export default function TransfersPage() { return <AdminGuard requiredPermissions={[permissions.viewTransfers, permissions.createTransfer, permissions.dispatchTransfer, permissions.receiveTransfer]}><Transfers /></AdminGuard>; }
+export default function TransfersPage() { return <AdminGuard requiredPermissions={[permissions.viewTransfers, permissions.createTransfer, permissions.dispatchTransfer, permissions.receiveTransfer]} requiredFeatures={["inventory"]}><Transfers /></AdminGuard>; }

@@ -1063,7 +1063,7 @@ function Inventory() {
 }
 export default function InventoryPage() {
   return (
-    <AdminGuard requiredPermissions={[permissions.viewInventory]}>
+    <AdminGuard requiredPermissions={[permissions.viewInventory]} requiredFeatures={["inventory"]}>
       <Inventory />
     </AdminGuard>
   );

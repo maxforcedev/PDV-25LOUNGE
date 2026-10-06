@@ -303,7 +303,7 @@ function PaymentMethods() {
 
 export default function PaymentMethodsPage() {
   return (
-    <AdminGuard requiredPermissions={[permissions.viewPaymentMethod]}>
+    <AdminGuard requiredPermissions={[permissions.viewPaymentMethod]} requiredFeatures={["financial"]}>
       <PaymentMethods />
     </AdminGuard>
   );

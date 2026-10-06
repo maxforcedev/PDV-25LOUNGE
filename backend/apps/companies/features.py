@@ -19,6 +19,7 @@ FEATURE_CAPABILITIES = {
     'reports': 'feature.reports',
     'audit': 'feature.audit',
     'financial': 'feature.financial',
+    'pos': 'pos.enabled',
 }
 
 FEATURE_LABELS = {
@@ -37,6 +38,7 @@ FEATURE_LABELS = {
     'reports': 'Relatórios',
     'audit': 'Auditoria',
     'financial': 'Financeiro',
+    'pos': 'CORE POS',
 }
 
 
@@ -53,15 +55,30 @@ def branch_feature_states(branch):
     for feature in FEATURE_CAPABILITIES:
         flags.setdefault(feature, True)
 
-    from apps.saas.services import get_entitled_features
+    from apps.saas.services import (
+        effective_entitlement, get_entitled_features, resolve_effective_status,
+    )
 
     entitled = get_entitled_features(branch.company)
+    operational = resolve_effective_status(branch.company)['can_operate']
     states = {
         feature: {
             'enabled': enabled and (
-                capability is None or capability in entitled
+                capability is None
+                or capability in entitled
+                or bool(
+                    operational
+                    and not capability.startswith('feature.')
+                    and (entitlement := effective_entitlement(branch.company, capability))
+                    and entitlement.enabled
+                )
             ),
-            'plan_allowed': capability is None or capability in entitled,
+            'plan_allowed': capability is None or capability in entitled or bool(
+                operational
+                and not capability.startswith('feature.')
+                and (entitlement := effective_entitlement(branch.company, capability))
+                and entitlement.enabled
+            ),
         }
         for feature, enabled in flags.items()
         for capability in (FEATURE_CAPABILITIES.get(feature),)

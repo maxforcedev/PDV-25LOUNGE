@@ -92,7 +92,7 @@ const gestaoNavigation: NavItem[] = [
   { href: "/usuarios", label: "Usuários", icon: Users, requiredPermissions: [permissions.viewUser] },
   { href: "/perfis", label: "Perfis de acesso", icon: ShieldCheck, requiredPermissions: [permissions.viewAccessProfile] },
   { href: "/filiais", label: "Meu negócio", icon: GitBranch, requiredPermissions: [permissions.viewBranch, permissions.addBranch, permissions.changeBranch] },
-  { href: "/pos-dispositivos", label: "Dispositivos POS", icon: MonitorSmartphone, requiredPermissions: [permissions.viewPosDevices, permissions.managePosDevices] },
+  { href: "/pos-dispositivos", label: "Dispositivos POS", icon: MonitorSmartphone, requiredPermissions: [permissions.viewPosDevices, permissions.managePosDevices], requiredFeatures: ["pos"] },
 ];
 
 const relatoriosNavigation: NavItem[] = [

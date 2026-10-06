@@ -871,13 +871,12 @@ def modules_for(operator, device, *, permission_codes=None):
     permissions = permission_codes if permission_codes is not None else operator_permission_codes(
         operator, device.branch,
     )
-    settings_obj = getattr(device.branch, 'settings', None)
     enabled = pos_enabled(device.branch.company)
     operational = enabled and device.branch.status == Status.ACTIVE
     return permissions, {
-        'quick_sale': {'enabled': bool(operational and settings_obj and settings_obj.uses_counter and 'sales.create' in permissions)},
+        'quick_sale': {'enabled': bool(operational and branch_feature_enabled(device.branch, 'counter') and 'sales.create' in permissions)},
         'tables': {'enabled': bool(operational and branch_feature_enabled(device.branch, 'tables') and permissions.intersection({'tables.view', 'tables.open'}))},
-        'commands': {'enabled': bool(operational and settings_obj and settings_obj.uses_commands and permissions.intersection({'commands.view', 'commands.open', 'commands.add_items'}))},
+        'commands': {'enabled': bool(operational and branch_feature_enabled(device.branch, 'commands') and permissions.intersection({'commands.view', 'commands.open', 'commands.add_items'}))},
         'ticket_validator': {'enabled': bool(operational and 'tickets.validate' in permissions)},
         'inventory': {'enabled': False, 'reason': 'not_implemented'},
         'reports': {'enabled': False, 'reason': 'not_implemented'},

@@ -26,7 +26,8 @@ export type BranchFeature =
   | "promotions"
   | "reports"
   | "audit"
-  | "financial";
+  | "financial"
+  | "pos";
 
 export interface BranchFeatureState {
   enabled: boolean;

@@ -838,7 +838,7 @@ function ModifiersPage() {
 
 export default function ModifiersPageWrapper() {
   return (
-    <AdminGuard requiredPermissions={[permissions.viewModifiers]}>
+    <AdminGuard requiredPermissions={[permissions.viewModifiers]} requiredFeatures={["products"]}>
       <ModifiersPage />
     </AdminGuard>
   );

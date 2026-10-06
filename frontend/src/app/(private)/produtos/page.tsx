@@ -1863,7 +1863,7 @@ function Products() {
 
 export default function ProductsPage() {
   return (
-    <AdminGuard requiredPermissions={[permissions.viewProduct]}>
+    <AdminGuard requiredPermissions={[permissions.viewProduct]} requiredFeatures={["products"]}>
       <Products />
     </AdminGuard>
   );

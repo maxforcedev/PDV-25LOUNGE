@@ -29,6 +29,7 @@ from apps.cash.models import (
 )
 from apps.cash.services import build_session_operational_summary
 from apps.companies.models import Customer
+from apps.companies.features import branch_feature_enabled
 from apps.companies.rbac import OPERATING_PERMISSION_CODES
 from apps.companies.selectors import branch_permission_codes, eligible_branch_users, user_has_company_permission
 from apps.attendance.models import TableAttendance, TableAttendanceStatus
@@ -947,17 +948,18 @@ class DashboardView(APIView):
                 include_groups=False,
             )
 
-        if user_has_code(request, 'commands.view'):
+        if user_has_code(request, 'commands.view') and branch_feature_enabled(branch, 'commands'):
             response['commands'] = {
                 'open_count': Command.objects.filter(
                     branch=branch,
                     status=CommandStatus.OPEN,
                 ).count(),
-                'open_table_count': TableAttendance.objects.filter(
+            }
+            if branch_feature_enabled(branch, 'tables'):
+                response['commands']['open_table_count'] = TableAttendance.objects.filter(
                     branch=branch,
                     status=TableAttendanceStatus.OPEN,
-                ).count(),
-            }
+                ).count()
 
         if user_has_code(request, 'cash_registers.view'):
             sessions = current_cash_sessions(branch)

@@ -495,7 +495,7 @@ function Movements() {
 
 export default function MovementsPage() {
   return (
-    <AdminGuard requiredPermissions={[permissions.viewInventoryHistory]}>
+    <AdminGuard requiredPermissions={[permissions.viewInventoryHistory]} requiredFeatures={["inventory"]}>
       <Movements />
     </AdminGuard>
   );

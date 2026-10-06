@@ -1066,7 +1066,9 @@ class ConcurrentReceiptTests(TransactionTestCase):
 
 class PurchaseSupportSessionTests(TestCase):
     def setUp(self):
-        version = create_plan(code='purchase-support')
+        version = create_plan(
+            code='purchase-support', features=('purchases', 'suppliers'),
+        )
         _owner, self.company, _subscription = create_tenant(
             'Purchase Support', plan_version=version
         )

@@ -19,5 +19,5 @@ export default async function ReportsPage({ searchParams }: { searchParams: Prom
     });
     redirect(`/relatorios/${legacy[report]}${query.size ? `?${query}` : ""}`);
   }
-  return <AdminGuard requiredPermissions={reportMenuPermissions}><ReportsCenter /></AdminGuard>;
+  return <AdminGuard requiredPermissions={reportMenuPermissions} requiredFeatures={["reports"]}><ReportsCenter /></AdminGuard>;
 }

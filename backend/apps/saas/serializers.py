@@ -370,6 +370,29 @@ class ProvisioningSerializer(serializers.Serializer):
         return operation
 
 
+class MapSubscriptionSerializer(serializers.Serializer):
+    plan_version = serializers.PrimaryKeyRelatedField(queryset=PlanVersion.objects.select_related('plan'))
+    billing_mode = serializers.ChoiceField(choices=Subscription.BillingMode.choices)
+    initial_subscription_mode = serializers.ChoiceField(
+        choices=(
+            (Subscription.Status.ACTIVE, 'Ativa'),
+            (Subscription.Status.TRIALING, 'Trial'),
+        ),
+        required=False,
+        default=Subscription.Status.ACTIVE,
+    )
+
+    def validate(self, attrs):
+        if (
+            attrs['initial_subscription_mode'] == Subscription.Status.TRIALING
+            and not attrs['plan_version'].trial_days
+        ):
+            raise serializers.ValidationError({
+                'initial_subscription_mode': 'O plano selecionado nao possui dias de trial.'
+            })
+        return attrs
+
+
 class ProvisioningResultSerializer(serializers.ModelSerializer):
     owner_user_id = serializers.IntegerField(source='user_id', read_only=True)
     approval_status = serializers.CharField(source='company.saas_state.approval_status', read_only=True)

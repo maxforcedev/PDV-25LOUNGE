@@ -1032,7 +1032,7 @@ function Suppliers() {
 
 export default function SuppliersPage() {
   return (
-    <AdminGuard requiredPermissions={[permissions.viewSupplier]}>
+    <AdminGuard requiredPermissions={[permissions.viewSupplier]} requiredFeatures={["suppliers"]}>
       <Suppliers />
     </AdminGuard>
   );

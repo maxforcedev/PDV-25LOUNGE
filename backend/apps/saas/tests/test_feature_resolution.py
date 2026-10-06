@@ -6,6 +6,7 @@ from uuid import uuid4
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.test import APIClient
 
 from apps.accounts.models import User
 from apps.attendance.services import open_table_attendance
@@ -40,7 +41,7 @@ class CapabilityResolutionTests(TestCase):
         self.branch.settings.uses_tables = True
         self.branch.settings.save(update_fields=('uses_tables', 'updated_at'))
 
-    def _plan(self, code, *, tables, pos=True, devices=1, products=False):
+    def _plan(self, code, *, tables, pos=True, devices=1, products=False, features=()):
         capabilities = ensure_capability_catalog()
         version = PlanVersion.objects.create(
             plan=Plan.objects.create(code=code, name=code),
@@ -76,7 +77,22 @@ class CapabilityResolutionTests(TestCase):
             enabled=products,
             unlimited=products,
         )
+        for feature in set(features) - {'tables', 'products'}:
+            PlanEntitlement.objects.create(
+                plan_version=version,
+                capability=capabilities[f'feature.{feature}'],
+                unlimited=True,
+            )
         return version
+
+    def _superuser_client(self):
+        superuser = User.objects.create_superuser(
+            email='capability-superuser@example.com', password='password-123',
+        )
+        client = APIClient()
+        client.force_authenticate(superuser)
+        client.credentials(HTTP_X_BRANCH_ID=str(self.branch.pk))
+        return client
 
     def test_company_without_subscription_has_no_features_and_cannot_operate(self):
         self.assertEqual(get_entitled_features(self.company), set())
@@ -208,6 +224,98 @@ class CapabilityResolutionTests(TestCase):
         )
         request.headers['X-Branch-ID'] = str(second_branch.pk)
         enforce_saas_request(request, self.user, view)
+
+    def test_disabled_commercial_capabilities_block_direct_api_for_superuser(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan('commercial-api-disabled', tables=True),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+        client = self._superuser_client()
+
+        for path in ('/api/v1/products/', '/api/v1/payment-methods/', '/api/v1/audit-logs/'):
+            response = client.get(path)
+            self.assertEqual(response.status_code, 403, (path, response.data))
+
+    def test_report_source_capabilities_block_direct_api(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan(
+                'report-source-disabled',
+                tables=False,
+                features=('reports', 'commands'),
+            ),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+        client = self._superuser_client()
+
+        for path in (
+            '/api/v1/reports/purchases/',
+            '/api/v1/reports/inventory-movements/',
+            '/api/v1/reports/commands/',
+        ):
+            response = client.get(path)
+            self.assertEqual(response.status_code, 403, (path, response.data))
+
+    def test_pos_modules_and_device_administration_respect_capabilities(self):
+        self.branch.settings.uses_counter = True
+        self.branch.settings.uses_commands = True
+        self.branch.settings.uses_cash_register = True
+        self.branch.settings.save(update_fields=(
+            'uses_counter', 'uses_commands', 'uses_cash_register', 'updated_at',
+        ))
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan(
+                'pos-modules-disabled',
+                tables=True,
+                pos=False,
+                features=('cash_register',),
+            ),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+        device = POSDevice.objects.create(
+            branch=self.branch, name='POS module gate', status=POSDevice.Status.ACTIVE,
+        )
+
+        with self.assertRaises(DomainValidationError):
+            modules_for(
+                self.user,
+                device,
+                permission_codes={'sales.create', 'commands.view'},
+            )
+        response = self._superuser_client().get(
+            f'/api/v1/pos/admin/devices/?company={self.company.pk}',
+        )
+        self.assertEqual(response.status_code, 403, response.data)
+
+    def test_counter_and_commands_are_hidden_when_their_features_are_disabled(self):
+        self.branch.settings.uses_counter = True
+        self.branch.settings.uses_commands = True
+        self.branch.settings.uses_cash_register = True
+        self.branch.settings.save(update_fields=(
+            'uses_counter', 'uses_commands', 'uses_cash_register', 'updated_at',
+        ))
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan(
+                'pos-feature-modules-disabled',
+                tables=True,
+                features=('cash_register',),
+            ),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+        device = POSDevice.objects.create(
+            branch=self.branch, name='POS feature modules', status=POSDevice.Status.ACTIVE,
+        )
+
+        modules = modules_for(
+            self.user,
+            device,
+            permission_codes={'sales.create', 'commands.view'},
+        )[1]
+        self.assertFalse(modules['quick_sale']['enabled'])
+        self.assertFalse(modules['commands']['enabled'])
 
 
 class CapabilityCatalogTests(TestCase):

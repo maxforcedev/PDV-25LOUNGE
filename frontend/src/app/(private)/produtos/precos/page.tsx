@@ -471,6 +471,7 @@ export default function BranchPricesPage() {
         permissions.changeBranchPrice,
         permissions.changeCompanyBranchPrice,
       ]}
+      requiredFeatures={["products"]}
     >
       <BranchPrices />
     </AdminGuard>

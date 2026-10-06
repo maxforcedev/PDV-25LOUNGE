@@ -513,8 +513,10 @@ class BranchViewSet(viewsets.ModelViewSet):
     def pos_settings(self, request, pk=None):
         from apps.pos.models import BranchPOSSettings
         from apps.pos.serializers import BranchPOSSettingsSerializer
+        from apps.pos.services import pos_enabled
 
         branch = self.get_object()
+        pos_enabled(branch.company)
         instance = BranchPOSSettings.objects.filter(branch=branch).first()
         if request.method == 'GET':
             return Response(BranchPOSSettingsSerializer(
@@ -539,13 +541,18 @@ class BranchViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'], url_path='licensing-code')
     def licensing_code(self, request, pk=None):
         branch = self.get_object()
+        from apps.pos.services import pos_enabled
+
+        pos_enabled(branch.company)
         return Response({'licensing_code': branch.licensing_code})
 
     @action(detail=True, methods=['post'], url_path='rotate-licensing-code')
     def rotate_licensing_code(self, request, pk=None):
-        from apps.pos.services import rotate_licensing_code
+        from apps.pos.services import pos_enabled, rotate_licensing_code
 
-        branch = rotate_licensing_code(self.get_object(), actor=request.user)
+        branch = self.get_object()
+        pos_enabled(branch.company)
+        branch = rotate_licensing_code(branch, actor=request.user)
         return Response({'licensing_code': branch.licensing_code})
 
     @action(detail=True, methods=['get'], url_path='features')

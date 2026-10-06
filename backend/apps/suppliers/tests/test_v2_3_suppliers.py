@@ -677,7 +677,7 @@ class SupplierApiTests(TestCase):
 
 class SupplierSupportSessionTests(TestCase):
     def setUp(self):
-        version = create_plan(code='supplier-support')
+        version = create_plan(code='supplier-support', features=('suppliers',))
         self.owner, self.company, _ = create_tenant(
             'Supplier Support', plan_version=version
         )

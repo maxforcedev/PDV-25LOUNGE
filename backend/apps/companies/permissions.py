@@ -2,7 +2,9 @@ from rest_framework.permissions import BasePermission
 
 from .selectors import accessible_companies, user_has_company_permission
 from .models import Branch
-from apps.saas.permissions import support_permission_decision
+from apps.saas.permissions import (
+    enforce_saas_request, request_requires_commercial_feature, support_permission_decision,
+)
 
 
 class IsPlatformAdmin(BasePermission):
@@ -38,6 +40,8 @@ class FunctionalCompanyPermission(BasePermission):
         user = request.user
         if not user.is_authenticated or not user.can_login or not user.is_active:
             return False
+        if request_requires_commercial_feature(request, view):
+            enforce_saas_request(request, user, view)
         support_session = getattr(request, 'support_session', None)
         if (
             view.action == 'transfer_owner'

@@ -250,6 +250,7 @@ export default function RegularizeStockPage() {
         permissions.viewInventory,
         permissions.regularizeInventory,
       ]}
+      requiredFeatures={["inventory"]}
       requireAll
     >
       <RegularizeStock />

@@ -698,6 +698,7 @@ export default function PromotionsPage() {
         permissions.viewPromotion,
         permissions.changePromotion,
       ]}
+      requiredFeatures={["promotions"]}
     >
       <Promotions />
     </AdminGuard>

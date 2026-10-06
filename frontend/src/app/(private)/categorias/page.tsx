@@ -742,7 +742,7 @@ function Categories() {
 
 export default function CategoriesPage() {
   return (
-    <AdminGuard requiredPermissions={[permissions.viewCategory]}>
+    <AdminGuard requiredPermissions={[permissions.viewCategory]} requiredFeatures={["products"]}>
       <Categories />
     </AdminGuard>
   );

@@ -405,6 +405,7 @@ export default function CountDetailPage() {
         permissions.viewAdvancedInventory,
         permissions.performInventoryCount,
       ]}
+      requiredFeatures={["inventory"]}
     >
       <CountDetail />
     </AdminGuard>

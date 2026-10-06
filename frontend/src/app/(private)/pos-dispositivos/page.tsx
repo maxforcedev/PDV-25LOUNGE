@@ -197,5 +197,5 @@ function PosDevicesAdministration() {
 }
 
 export default function PosDevicesPage() {
-  return <AdminGuard requiredPermissions={[permissions.viewPosDevices, permissions.managePosDevices]}><PosDevicesAdministration /></AdminGuard>;
+  return <AdminGuard requiredPermissions={[permissions.viewPosDevices, permissions.managePosDevices]} requiredFeatures={["pos"]}><PosDevicesAdministration /></AdminGuard>;
 }

@@ -47,6 +47,7 @@ from .serializers import (
     CycleUsageSerializer,
     GlobalSaaSSettingsSerializer,
     ManualPaymentSerializer,
+    MapSubscriptionSerializer,
     PlanChangeRequestSerializer,
     PlanEntitlementSerializer,
     PlanSerializer,
@@ -452,15 +453,14 @@ class PlatformTenantViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=['post'], url_path='map-subscription')
     def map_subscription(self, request, pk=None):
         reason = _critical_action(request)
-        try:
-            plan_version = PlanVersion.objects.get(pk=request.data.get('plan_version'))
-        except (PlanVersion.DoesNotExist, TypeError, ValueError) as error:
-            raise ValidationError({'plan_version': 'PlanVersion invalida.'}) from error
+        serializer = MapSubscriptionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
         subscription, _ = map_existing_company(
             company=self.get_object(),
-            plan_version=plan_version,
-            billing_mode=request.data.get('billing_mode'),
+            plan_version=serializer.validated_data['plan_version'],
+            billing_mode=serializer.validated_data['billing_mode'],
             actor=request.user,
+            initial_subscription_mode=serializer.validated_data['initial_subscription_mode'],
         )
         audit_log(
             actor=request.user, action='saas.company.map.authorize', obj=subscription,

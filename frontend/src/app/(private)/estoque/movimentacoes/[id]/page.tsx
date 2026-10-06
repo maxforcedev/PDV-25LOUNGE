@@ -81,5 +81,5 @@ function MovementDetail() {
 }
 
 export default function MovementDetailPage() {
-  return <AdminGuard requiredPermissions={[permissions.viewInventoryHistory]}><MovementDetail /></AdminGuard>;
+  return <AdminGuard requiredPermissions={[permissions.viewInventoryHistory]} requiredFeatures={["inventory"]}><MovementDetail /></AdminGuard>;
 }

@@ -199,4 +199,4 @@ function AdvancedReport() {
   </>;
 }
 
-export default function AdvancedInventoryReportPage() { return <AdminGuard requiredPermissions={[permissions.viewAdvancedInventory]}><AdvancedReport /></AdminGuard>; }
+export default function AdvancedInventoryReportPage() { return <AdminGuard requiredPermissions={[permissions.viewAdvancedInventory]} requiredFeatures={["reports", "inventory"]}><AdvancedReport /></AdminGuard>; }

@@ -75,6 +75,7 @@ export default function TenantDetailPage() {
     setAction(next); setRequestId(selectedRequest ?? null); setReason(""); setPassword(""); setActionError(null);
     setValues({
       billing_mode: subscription?.billing_mode || "PAID",
+      initial_subscription_mode: "ACTIVE",
       days: "7",
       target_user_id: "",
       plan_version: "",
@@ -102,7 +103,7 @@ export default function TenantDetailPage() {
       } else if (action === "transfer-owner") {
         await api.post(`platform/tenants/${tenant.id}/transfer-owner/`, { ...critical, target_user_id: Number(values.target_user_id) });
       } else if (action === "map-subscription") {
-        await api.post(`platform/tenants/${tenant.id}/map-subscription/`, { ...critical, plan_version: Number(values.plan_version), billing_mode: values.billing_mode });
+        await api.post(`platform/tenants/${tenant.id}/map-subscription/`, { ...critical, plan_version: Number(values.plan_version), billing_mode: values.billing_mode, initial_subscription_mode: values.initial_subscription_mode });
       } else if (["billing-mode", "financial-suspend", "financial-resume", "extend-trial", "end-trial", "process-lifecycle"].includes(action)) {
         const payload: Record<string, unknown> = { ...critical };
         if (action === "billing-mode") payload.billing_mode = values.billing_mode;
@@ -179,7 +180,10 @@ function SupportPanel({ tenant, activeSessions, open, endSupport }: { tenant: Te
 function ActionInputs({ action, values, setValues, tenant, versions }: { action: Action; values: Record<string, string>; setValues: (values: Record<string, string>) => void; tenant: TenantDetail; versions: PlanVersion[] }) {
   const field = (key: string, value: string) => setValues({ ...values, [key]: value });
   if (action === "transfer-owner") return <div className="p-5"><div className="field"><label>Novo Owner</label><select className="input" value={values.target_user_id} onChange={(e) => field("target_user_id", e.target.value)} required><option value="">Selecione um usuario vinculado</option>{tenant.users.filter((user) => user.is_active && !user.is_owner).map((user) => <option value={user.user_id} key={user.user_id}>{user.user__email} (#{user.user_id})</option>)}</select></div></div>;
-  if (action === "map-subscription") return <div className="grid gap-4 p-5 sm:grid-cols-2"><Field label="Plano / versao"><select className="input" value={values.plan_version} onChange={(e) => field("plan_version", e.target.value)} required><option value="">Selecione</option>{versions.map((version) => <option value={version.id} key={version.id}>{version.plan_name} v{version.version}</option>)}</select></Field><BillingMode value={values.billing_mode} onChange={(value) => field("billing_mode", value)} /></div>;
+  if (action === "map-subscription") {
+    const selectedVersion = versions.find((version) => String(version.id) === values.plan_version);
+    return <div className="grid gap-4 p-5 sm:grid-cols-2"><Field label="Plano / versao"><select className="input" value={values.plan_version} onChange={(e) => { const version = versions.find((item) => String(item.id) === e.target.value); setValues({ ...values, plan_version: e.target.value, initial_subscription_mode: !version?.trial_days ? "ACTIVE" : values.initial_subscription_mode }); }} required><option value="">Selecione</option>{versions.map((version) => <option value={version.id} key={version.id}>{version.plan_name} v{version.version}</option>)}</select></Field><BillingMode value={values.billing_mode} onChange={(value) => field("billing_mode", value)} /><Field label="Iniciar assinatura como"><select className="input" value={values.initial_subscription_mode} onChange={(e) => field("initial_subscription_mode", e.target.value)}><option value="ACTIVE">Ativa</option><option value="TRIALING" disabled={!selectedVersion?.trial_days}>Trial{selectedVersion?.trial_days ? ` (${selectedVersion.trial_days} dias)` : " (indisponivel para este plano)"}</option></select></Field></div>;
+  }
   if (action === "billing-mode") return <div className="p-5"><BillingMode value={values.billing_mode} onChange={(value) => field("billing_mode", value)} /></div>;
   if (action === "extend-trial") return <div className="p-5"><Field label="Dias adicionais"><input className="input" type="number" min="1" value={values.days} onChange={(e) => field("days", e.target.value)} required /></Field></div>;
   if (action === "payment") return <div className="grid gap-4 p-5 sm:grid-cols-2"><Field label="Valor confirmado"><input className="input" type="number" min="0.01" step="0.01" value={values.amount} onChange={(e) => field("amount", e.target.value)} required /></Field><Field label="Data do pagamento"><input className="input" type="datetime-local" value={values.paid_at} onChange={(e) => field("paid_at", e.target.value)} required /></Field><Field label="Metodo"><input className="input" value={values.payment_method} onChange={(e) => field("payment_method", e.target.value)} required /></Field><Field label="Referencia do comprovante"><input className="input" value={values.proof_reference} onChange={(e) => field("proof_reference", e.target.value)} placeholder="receipts/arquivo.pdf ou https://..." /></Field><div className="field sm:col-span-2"><label>Nota</label><textarea className="textarea" value={values.note} onChange={(e) => field("note", e.target.value)} /></div><p className="sm:col-span-2 text-xs text-steel/60">A competencia sera derivada pelo backend a partir do periodo corrente autoritativo da assinatura.</p><p className="sm:col-span-2 font-mono text-[10px] uppercase text-steel/50">Idempotencia preservada nesta tentativa: {values.idempotency_key}</p></div>;

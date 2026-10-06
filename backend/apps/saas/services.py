@@ -705,12 +705,19 @@ def provision_saas_tenant(
 
 
 @transaction.atomic
-def map_existing_company(*, company, plan_version, billing_mode, actor=None):
+def map_existing_company(
+    *, company, plan_version, billing_mode, actor=None,
+    initial_subscription_mode=Subscription.Status.ACTIVE,
+):
     company = Company.objects.select_for_update().get(pk=company.pk)
     if not _has_valid_owner(company):
         raise ValidationError({'company': 'A empresa precisa de Owner ativo antes do mapeamento.'})
     if billing_mode not in Subscription.BillingMode.values:
         raise ValidationError({'billing_mode': 'Informe explicitamente PAID, FREE ou INTERNAL.'})
+    if initial_subscription_mode not in (
+        Subscription.Status.ACTIVE, Subscription.Status.TRIALING,
+    ):
+        raise ValidationError({'initial_subscription_mode': 'Selecione ACTIVE ou TRIALING.'})
     plan_version = validate_plan_version_complete(plan_version, lock=True)
     existing = Subscription.objects.select_for_update().filter(
         company=company, is_current=True
@@ -721,7 +728,11 @@ def map_existing_company(*, company, plan_version, billing_mode, actor=None):
         raise ValidationError({'company': 'A empresa ja possui uma assinatura corrente.'})
     validate_branch_limit_for_plan(company, plan_version)
     now = timezone.now()
-    status, period_end, trial_start, trial_end = _subscription_dates(plan_version, now)
+    status, period_end, trial_start, trial_end = _subscription_dates(
+        plan_version,
+        now,
+        start_trial=initial_subscription_mode == Subscription.Status.TRIALING,
+    )
     subscription = Subscription.objects.create(
         company=company,
         plan_version=plan_version,
@@ -744,7 +755,11 @@ def map_existing_company(*, company, plan_version, billing_mode, actor=None):
     apply_user_limit_states(company, actor=actor)
     audit_log(
         actor=actor, action='saas.company.map', obj=subscription, company=company,
-        after={'plan_version_id': plan_version.pk, 'billing_mode': billing_mode},
+        after={
+            'plan_version_id': plan_version.pk,
+            'billing_mode': billing_mode,
+            'initial_subscription_mode': initial_subscription_mode,
+        },
         metadata={'source': 'explicit_mapping'},
     )
     return subscription, True

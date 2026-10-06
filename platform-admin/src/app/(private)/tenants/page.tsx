@@ -57,7 +57,7 @@ export default function TenantsPage() {
 
   useEffect(() => {
     const email = form.owner_email.trim();
-    if (!creating || !email.includes("@")) { setOwnerLookup(null); return; }
+    if (!creating || !email.includes("@")) return;
     let active = true;
     const timeout = window.setTimeout(() => {
       api.get<OwnerLookup>(`platform/owners/lookup/?email=${encodeURIComponent(email)}`)
@@ -69,7 +69,10 @@ export default function TenantsPage() {
 
   const versions = (plans || []).flatMap((plan) => plan.versions).filter((version) => version.is_active);
   const selectedVersion = versions.find((version) => String(version.id) === form.plan_version);
-  const existingOwner = ownerLookup?.exists === true;
+  const applicableOwnerLookup = ownerLookup?.email.toLowerCase() === form.owner_email.trim().toLowerCase()
+    ? ownerLookup
+    : null;
+  const existingOwner = applicableOwnerLookup?.exists === true;
 
   async function create(event: FormEvent) {
     event.preventDefault();
@@ -96,12 +99,12 @@ export default function TenantsPage() {
     </section>
     {creating && <Modal title="Provisionar tenant" description="Cria empresa, matriz, Owner e assinatura em uma unica operacao." onClose={() => setCreating(false)} wide><form onSubmit={create}><div className="grid gap-4 p-5 sm:grid-cols-2">
       <Field label="Nome fantasia"><input className="input" value={form.trade_name} onChange={(e) => setForm({ ...form, trade_name: e.target.value })} required /></Field><Field label="Razao social"><input className="input" value={form.legal_name} onChange={(e) => setForm({ ...form, legal_name: e.target.value })} required /></Field><Field label="CNPJ"><input className="input" value={form.cnpj} onChange={(e) => setForm({ ...form, cnpj: e.target.value })} /></Field><Field label="E-mail da empresa"><input className="input" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></Field><Field label="Telefone"><input className="input" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field><Field label="Plano / versao"><select className="input" value={form.plan_version} onChange={(e) => setForm({ ...form, plan_version: e.target.value })} required><option value="">Selecione</option>{versions.map((version) => <option value={version.id} key={version.id}>{version.plan_name} v{version.version}</option>)}</select></Field>
-      <div className="sm:col-span-2"><Field label="E-mail do Owner"><input className="input" type="email" value={form.owner_email} onChange={(e) => { setOwnerLookup(null); setForm({ ...form, owner_email: e.target.value }); }} required autoComplete="email" /></Field>{existingOwner ? <p className={`mt-2 text-xs font-semibold ${ownerLookup?.eligible ? "text-cyan-800" : "text-alert"}`}>{ownerLookup?.eligible ? "Conta existente encontrada. Ela sera vinculada como Owner desta empresa." : "Conta existente encontrada, mas nao esta habilitada para ser Owner."}</p> : form.owner_email.includes("@") ? <p className="mt-2 text-xs text-steel/60">Nova conta: informe a senha inicial abaixo.</p> : null}</div>
+      <div className="sm:col-span-2"><Field label="E-mail do Owner"><input className="input" type="email" value={form.owner_email} onChange={(e) => { setOwnerLookup(null); setForm({ ...form, owner_email: e.target.value }); }} required autoComplete="email" /></Field>{existingOwner ? <p className={`mt-2 text-xs font-semibold ${applicableOwnerLookup?.eligible ? "text-cyan-800" : "text-alert"}`}>{applicableOwnerLookup?.eligible ? "Conta existente encontrada. Ela sera vinculada como Owner desta empresa." : "Conta existente encontrada, mas nao esta habilitada para ser Owner."}</p> : form.owner_email.includes("@") ? <p className="mt-2 text-xs text-steel/60">Nova conta: informe a senha inicial abaixo.</p> : null}</div>
       {!existingOwner && <Field label="Senha inicial do Owner"><input className="input" type="password" value={form.owner_password} onChange={(e) => setForm({ ...form, owner_password: e.target.value })} required autoComplete="new-password" /></Field>}
       <Field label="Modalidade"><select className="input" value={form.billing_mode} onChange={(e) => setForm({ ...form, billing_mode: e.target.value })}><option value="PAID">Pago</option><option value="FREE">Gratuito</option><option value="INTERNAL">Interno</option></select></Field>
       <Field label="Iniciar assinatura como"><select className="input" value={form.initial_subscription_mode} onChange={(e) => setForm({ ...form, initial_subscription_mode: e.target.value as CreateForm["initial_subscription_mode"] })}><option value="ACTIVE">Ativa</option><option value="TRIALING" disabled={!selectedVersion?.trial_days}>Trial{selectedVersion?.trial_days ? ` (${selectedVersion.trial_days} dias)` : " (indisponivel para este plano)"}</option></select></Field>
       {form.initial_subscription_mode === "TRIALING" && <p className="sm:col-span-2 text-xs text-steel/60">O trial usa os {selectedVersion?.trial_days || 0} dias configurados na versao selecionada.</p>}
-    </div>{actionError ? <div className="px-5"><ErrorBlock error={actionError} /></div> : null}<CriticalFields reason={reason} password={password} onReason={setReason} onPassword={setPassword} error={actionError} /><div className="flex justify-end gap-2 p-5"><button type="button" className="btn btn-quiet" onClick={() => setCreating(false)}>Cancelar</button><button className="btn btn-signal" disabled={saving || !reason || !password || (!!ownerLookup?.exists && !ownerLookup.eligible)}>{saving ? "Provisionando..." : "Provisionar"}</button></div></form></Modal>}
+    </div>{actionError ? <div className="px-5"><ErrorBlock error={actionError} /></div> : null}<CriticalFields reason={reason} password={password} onReason={setReason} onPassword={setPassword} error={actionError} /><div className="flex justify-end gap-2 p-5"><button type="button" className="btn btn-quiet" onClick={() => setCreating(false)}>Cancelar</button><button className="btn btn-signal" disabled={saving || !reason || !password || (!!applicableOwnerLookup?.exists && !applicableOwnerLookup.eligible)}>{saving ? "Provisionando..." : "Provisionar"}</button></div></form></Modal>}
   </div>;
 }
 

@@ -740,7 +740,7 @@ function AuditPageInner() {
 
 export default function AuditPage() {
   return (
-    <AdminGuard requiredPermissions={[permissions.viewAuditLog]}>
+    <AdminGuard requiredPermissions={[permissions.viewAuditLog]} requiredFeatures={["audit"]}>
       <AuditPageInner />
     </AdminGuard>
   );

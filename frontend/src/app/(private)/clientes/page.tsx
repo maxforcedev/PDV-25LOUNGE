@@ -322,7 +322,7 @@ function CustomersPage() {
 }
 export default function CustomersPageWrapper() {
   return (
-    <AdminGuard requiredPermissions={[permissions.viewCustomer]}>
+    <AdminGuard requiredPermissions={[permissions.viewCustomer]} requiredFeatures={["customers"]}>
       <CustomersPage />
     </AdminGuard>
   );

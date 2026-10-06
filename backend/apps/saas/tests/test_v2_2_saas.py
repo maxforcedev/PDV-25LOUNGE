@@ -59,7 +59,7 @@ def create_user(email):
 
 
 def create_plan(code='basic', *, trial_days=0, price='99.00', public=True, users=3, branches=2,
-                pos_enabled=True, pos_devices=1):
+                pos_enabled=True, pos_devices=1, features=()):
     capabilities = ensure_capability_catalog()
     plan = Plan.objects.create(code=code, name=code.title())
     version = PlanVersion.objects.create(
@@ -97,6 +97,12 @@ def create_plan(code='basic', *, trial_days=0, price='99.00', public=True, users
         enabled=pos_enabled,
         limit_value=pos_devices if pos_enabled else None,
     )
+    for feature in features:
+        PlanEntitlement.objects.create(
+            plan_version=version,
+            capability=capabilities[f'feature.{feature}'],
+            unlimited=True,
+        )
     return version
 
 
@@ -404,6 +410,39 @@ class ExistingCompanyMappingTests(TestCase):
         subscription = company.subscriptions.get(is_current=True)
         self.assertEqual(subscription.plan_version, version)
         self.assertEqual(subscription.billing_mode, Subscription.BillingMode.FREE)
+        self.assertEqual(subscription.status, Subscription.Status.ACTIVE)
+        self.assertIsNone(subscription.trial_started_at)
+
+    def test_mapping_trial_requires_explicit_mode_and_trial_capable_plan(self):
+        version = create_plan(code='mapping-trial', trial_days=7)
+        _, active_company, _ = create_tenant('Mapping Active')
+        active, _ = map_existing_company(
+            company=active_company,
+            plan_version=version,
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+        self.assertEqual(active.status, Subscription.Status.ACTIVE)
+        self.assertIsNone(active.trial_started_at)
+
+        _, trial_company, _ = create_tenant('Mapping Trial')
+        trial, _ = map_existing_company(
+            company=trial_company,
+            plan_version=version,
+            billing_mode=Subscription.BillingMode.PAID,
+            initial_subscription_mode=Subscription.Status.TRIALING,
+        )
+        self.assertEqual(trial.status, Subscription.Status.TRIALING)
+        self.assertIsNotNone(trial.trial_started_at)
+
+        no_trial_version = create_plan(code='mapping-no-trial')
+        _, no_trial_company, _ = create_tenant('Mapping No Trial')
+        with self.assertRaises(ValidationError):
+            map_existing_company(
+                company=no_trial_company,
+                plan_version=no_trial_version,
+                billing_mode=Subscription.BillingMode.PAID,
+                initial_subscription_mode=Subscription.Status.TRIALING,
+            )
 
 
 class OwnerAreaTests(TestCase):

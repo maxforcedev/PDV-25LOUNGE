@@ -141,5 +141,5 @@ function NewTransfer() {
 }
 
 export default function NewTransferPage() {
-  return <AdminGuard requiredPermissions={[permissions.createTransfer]}><NewTransfer /></AdminGuard>;
+  return <AdminGuard requiredPermissions={[permissions.createTransfer]} requiredFeatures={["inventory"]}><NewTransfer /></AdminGuard>;
 }

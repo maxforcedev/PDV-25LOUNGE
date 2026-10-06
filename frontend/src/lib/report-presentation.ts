@@ -1,8 +1,11 @@
+import type { BranchFeature } from "@/types";
+
 export type ReportCenterItem = {
   href: string;
   label: string;
   permission: string;
   requiredPermissions?: readonly string[];
+  requiredFeatures?: readonly BranchFeature[];
 };
 
 export type ReportCenterGroup = {
@@ -23,7 +26,7 @@ export const reportGroups: readonly ReportCenterGroup[] = [
       { href: "/relatorios/atendentes", label: "Atendentes", permission: "reports.view_team" },
       { href: "/relatorios/operadores", label: "Operadores", permission: "reports.view_team" },
       { href: "/relatorios/cancelamentos", label: "Cancelamentos e estornos", permission: "reports.view_cancellations" },
-      { href: "/relatorios/consumacoes", label: "Consumação / Cortesias", permission: "reports.view_consumptions" },
+      { href: "/relatorios/consumacoes", label: "Consumação / Cortesias", permission: "reports.view_consumptions", requiredFeatures: ["consumption"] },
     ],
   },
   {
@@ -33,47 +36,47 @@ export const reportGroups: readonly ReportCenterGroup[] = [
       { href: "/relatorios/resultado", label: "Resultado estimado", permission: "reports.view_operational_result" },
       { href: "/relatorios/comissoes", label: "Comissões", permission: "commissions.view" },
       { href: "/relatorios/descontos", label: "Descontos e autorizações", permission: "reports.view_discounts" },
-      { href: "/relatorios/caixa", label: "Caixa", permission: "reports.view_cash" },
-      { href: "/relatorios/sangrias", label: "Sangrias", permission: "reports.view_withdrawals" },
+      { href: "/relatorios/caixa", label: "Caixa", permission: "reports.view_cash", requiredFeatures: ["cash_register"] },
+      { href: "/relatorios/sangrias", label: "Sangrias", permission: "reports.view_withdrawals", requiredFeatures: ["cash_register"] },
     ],
   },
   {
     title: "Estoque",
     description: "Movimentações, consumo, custos e preços por filial.",
     reports: [
-      { href: "/relatorios/posicao-estoque", label: "Posição de estoque", permission: "inventory.report.view" },
-      { href: "/relatorios/movimentacoes", label: "Movimentações de estoque", permission: "reports.view_inventory" },
-      { href: "/relatorios/precos", label: "Preços por filial", permission: "reports.view_prices" },
-      { href: "/relatorios/transferencias", label: "Transferências de estoque", permission: "inventory.report.view" },
+      { href: "/relatorios/posicao-estoque", label: "Posição de estoque", permission: "inventory.report.view", requiredFeatures: ["inventory"] },
+      { href: "/relatorios/movimentacoes", label: "Movimentações de estoque", permission: "reports.view_inventory", requiredFeatures: ["inventory"] },
+      { href: "/relatorios/precos", label: "Preços por filial", permission: "reports.view_prices", requiredFeatures: ["products"] },
+      { href: "/relatorios/transferencias", label: "Transferências de estoque", permission: "inventory.report.view", requiredFeatures: ["inventory"] },
     ],
   },
   {
     title: "Inventários",
     description: "Contagens físicas, divergências e impacto histórico.",
     reports: [
-      { href: "/relatorios/inventarios", label: "Inventários realizados", permission: "inventory.report.view" },
+      { href: "/relatorios/inventarios", label: "Inventários realizados", permission: "inventory.report.view", requiredFeatures: ["inventory"] },
     ],
   },
   {
     title: "Compras",
     description: "Compras, fornecedores e compromissos financeiros da filial.",
     reports: [
-      { href: "/relatorios/compras", label: "Compras", permission: "purchases.view" },
-      { href: "/relatorios/fornecedores", label: "Fornecedores", permission: "suppliers.view" },
-      { href: "/relatorios/contas-a-pagar", label: "Contas a pagar", permission: "purchases.manage_payables" },
+      { href: "/relatorios/compras", label: "Compras", permission: "purchases.view", requiredFeatures: ["purchases"] },
+      { href: "/relatorios/fornecedores", label: "Fornecedores", permission: "suppliers.view", requiredFeatures: ["suppliers"] },
+      { href: "/relatorios/contas-a-pagar", label: "Contas a pagar", permission: "purchases.manage_payables", requiredFeatures: ["purchases", "financial"] },
     ],
   },
   {
     title: "Operação",
     description: "Mesas, comandas, pagamentos e movimentações operacionais.",
     reports: [
-      { href: "/relatorios/mesas-comandas", label: "Mesas e comandas", permission: "commands.view" },
-      { href: "/relatorios/promocoes", label: "Promoções", permission: "reports.view_products" },
-      { href: "/relatorios/modificadores", label: "Modificadores", permission: "reports.view_products" },
-      { href: "/relatorios/tickets", label: "Tickets", permission: "tickets.view" },
+      { href: "/relatorios/mesas-comandas", label: "Mesas e comandas", permission: "commands.view", requiredFeatures: ["tables", "commands"] },
+      { href: "/relatorios/promocoes", label: "Promoções", permission: "reports.view_products", requiredFeatures: ["promotions"] },
+      { href: "/relatorios/modificadores", label: "Modificadores", permission: "reports.view_products", requiredFeatures: ["products"] },
+      { href: "/relatorios/tickets", label: "Tickets", permission: "tickets.view", requiredFeatures: ["production"] },
       {
         href: "/relatorios/clientes", label: "Clientes", permission: "customers.view",
-        requiredPermissions: ["reports.view_sales"],
+        requiredPermissions: ["reports.view_sales"], requiredFeatures: ["customers"],
       },
     ],
   },

@@ -381,7 +381,7 @@ function Purchases() {
 
 export default function PurchasesPage() {
   return (
-    <AdminGuard requiredPermissions={[permissions.viewPurchase]}>
+    <AdminGuard requiredPermissions={[permissions.viewPurchase]} requiredFeatures={["purchases"]}>
       <Purchases />
     </AdminGuard>
   );

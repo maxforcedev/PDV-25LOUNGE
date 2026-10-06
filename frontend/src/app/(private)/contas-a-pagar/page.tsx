@@ -106,4 +106,4 @@ function PurchasePayables() {
   </>;
 }
 
-export default function PurchasePayablesPage() { return <AdminGuard requiredPermissions={[permissions.managePurchasePayables]}><PurchasePayables /></AdminGuard>; }
+export default function PurchasePayablesPage() { return <AdminGuard requiredPermissions={[permissions.managePurchasePayables]} requiredFeatures={["financial"]}><PurchasePayables /></AdminGuard>; }

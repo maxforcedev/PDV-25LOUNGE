@@ -448,7 +448,7 @@ function NewCount() {
 
 export default function NewCountPage() {
   return (
-    <AdminGuard requiredPermissions={[permissions.performInventoryCount]}>
+    <AdminGuard requiredPermissions={[permissions.performInventoryCount]} requiredFeatures={["inventory"]}>
       <NewCount />
     </AdminGuard>
   );

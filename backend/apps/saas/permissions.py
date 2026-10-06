@@ -15,31 +15,59 @@ TENANT_EXEMPT_PREFIXES = (
 )
 
 COMMERCIAL_FEATURES_BY_BASENAME = {
-    'category': 'products',
-    'product': 'products',
-    'branchprice': 'products',
-    'modifiergroup': 'products',
-    'modifieroption': 'products',
-    'productmodifiergroup': 'products',
-    'productiondestination': 'products',
-    'stock': 'inventory',
-    'stock-movement': 'inventory',
-    'stock-transfer': 'inventory',
-    'transfer-divergence': 'inventory',
-    'loss-record': 'inventory',
-    'inventory-count': 'inventory',
-    'advanced-inventory-report': 'inventory',
-    'purchase-order': 'purchases',
-    'purchase-receipt': 'purchases',
-    'payable-installment': 'financial',
-    'supplier': 'suppliers',
-    'product-supplier': 'suppliers',
-    'product-purchase-presentation': 'suppliers',
-    'product-supplier-unit': 'suppliers',
-    'presentation-preset': 'suppliers',
-    'customer': 'customers',
-    'promotion': 'promotions',
-    'audit-log': 'audit',
+    'category': ('products',),
+    'product': ('products',),
+    'branchprice': ('products',),
+    'modifiergroup': ('products',),
+    'modifieroption': ('products',),
+    'productmodifiergroup': ('products',),
+    'productiondestination': ('products',),
+    'stock': ('inventory',),
+    'stock-movement': ('inventory',),
+    'stock-transfer': ('inventory',),
+    'transfer-divergence': ('inventory',),
+    'loss-record': ('inventory',),
+    'inventory-count': ('inventory',),
+    'advanced-inventory-report': ('inventory',),
+    'purchase-order': ('purchases',),
+    'purchase-receipt': ('purchases',),
+    'payable-installment': ('financial',),
+    'payment-method': ('financial',),
+    'supplier': ('suppliers',),
+    'product-supplier': ('suppliers',),
+    'product-purchase-presentation': ('suppliers',),
+    'product-supplier-unit': ('suppliers',),
+    'presentation-preset': ('suppliers',),
+    'customer': ('customers',),
+    'promotion': ('promotions',),
+    'audit-log': ('audit',),
+}
+
+REPORT_FEATURES_BY_ROUTE_NAME = {
+    'report-command-options': ('reports', 'commands', 'tables'),
+    'report-commands': ('reports', 'commands', 'tables'),
+    'report-tickets': ('reports', 'production'),
+    'report-ticket-detail': ('reports', 'production'),
+    'report-ticket-options': ('reports', 'production'),
+    'report-promotions': ('reports', 'promotions'),
+    'report-modifiers': ('reports', 'products'),
+    'report-customers': ('reports', 'customers'),
+    'report-purchases': ('reports', 'purchases'),
+    'report-suppliers': ('reports', 'suppliers'),
+    'report-payables': ('reports', 'purchases', 'financial'),
+    'report-consumptions': ('reports', 'consumption'),
+    'report-cash': ('reports', 'cash_register'),
+    'report-withdrawals': ('reports', 'cash_register'),
+    'report-inventory-movements': ('reports', 'inventory'),
+    'report-stock-consumption': ('reports', 'inventory'),
+    'report-stock-position': ('reports', 'inventory'),
+    'report-inventory-counts': ('reports', 'inventory'),
+    'report-stock-transfers': ('reports', 'inventory'),
+}
+
+REPORT_FEATURES_BY_SCOPE = {
+    ('report-sales', 'products'): ('products',),
+    ('report-customers', 'commands'): ('commands',),
 }
 
 
@@ -268,10 +296,16 @@ def enforce_saas_request(request, user, view=None):
 
 
 def _enforce_commercial_feature(request, view, company_ids):
-    feature = COMMERCIAL_FEATURES_BY_BASENAME.get(getattr(view, 'basename', None))
-    if feature is None and '/reports/' in request.path:
-        feature = 'reports'
-    if feature is None:
+    features = COMMERCIAL_FEATURES_BY_BASENAME.get(getattr(view, 'basename', None))
+    if features is None and '/reports/' in request.path:
+        route_name = getattr(getattr(request, 'resolver_match', None), 'url_name', None)
+        features = REPORT_FEATURES_BY_ROUTE_NAME.get(route_name, ('reports',))
+        scoped_features = REPORT_FEATURES_BY_SCOPE.get((
+            route_name,
+            request.query_params.get('scope') or request.query_params.get('section'),
+        ), ())
+        features = (*features, *scoped_features)
+    if features is None:
         return
     if len(company_ids) != 1:
         raise PermissionDenied('O modulo comercial exige uma empresa de contexto.')
@@ -287,7 +321,15 @@ def _enforce_commercial_feature(request, view, company_ids):
         ).first()
     if branch is None:
         raise PermissionDenied('A filial de contexto nao pertence a empresa informada.')
-    require_branch_feature(branch, feature)
+    for feature in features:
+        require_branch_feature(branch, feature)
+
+
+def request_requires_commercial_feature(request, view):
+    return (
+        getattr(view, 'basename', None) in COMMERCIAL_FEATURES_BY_BASENAME
+        or '/reports/' in request.path
+    )
 
 
 def support_permission_decision(request, *, company_id=None, branch_id=None, obj=None):

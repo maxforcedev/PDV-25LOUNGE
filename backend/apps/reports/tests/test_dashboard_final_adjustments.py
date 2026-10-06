@@ -19,6 +19,9 @@ class DashboardFinalAdjustmentTests(TestCase):
             trade_name='Dashboard Final', legal_name='Dashboard Final Ltda',
         )
         self.branch = self.company.branches.get(is_matrix=True)
+        self.branch.settings.uses_commands = True
+        self.branch.settings.uses_tables = True
+        self.branch.settings.save(update_fields=('uses_commands', 'uses_tables', 'updated_at'))
         capabilities = ensure_capability_catalog()
         plan = Plan.objects.create(code='dashboard-test', name='Dashboard Test')
         version = PlanVersion.objects.create(
@@ -42,6 +45,16 @@ class DashboardFinalAdjustmentTests(TestCase):
         PlanEntitlement.objects.create(
             plan_version=version,
             capability=capabilities['feature.reports'],
+            unlimited=True,
+        )
+        PlanEntitlement.objects.create(
+            plan_version=version,
+            capability=capabilities['feature.commands'],
+            unlimited=True,
+        )
+        PlanEntitlement.objects.create(
+            plan_version=version,
+            capability=capabilities['feature.tables'],
             unlimited=True,
         )
         map_existing_company(

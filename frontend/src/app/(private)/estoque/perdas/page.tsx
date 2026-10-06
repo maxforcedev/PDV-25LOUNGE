@@ -93,5 +93,5 @@ function Losses() {
 }
 
 export default function LossesPage() {
-  return <AdminGuard requiredPermissions={[permissions.viewAdvancedInventory, permissions.recordLoss]}><Losses /></AdminGuard>;
+  return <AdminGuard requiredPermissions={[permissions.viewAdvancedInventory, permissions.recordLoss]} requiredFeatures={["inventory"]}><Losses /></AdminGuard>;
 }
