@@ -16,7 +16,7 @@ function FooterLink({ label, href }: { label: string; href: string }) {
 export function PublicFooter() {
   const branding = useBranding();
   const links = branding.institutional_links;
-  const legal = branding.legal_settings;
+  const legal = branding.legal_settings || {};
   const companyLinks: FooterLinkItem[] = [
     ["Contato", "/contato"],
     ["Segurança", "/#seguranca"],
