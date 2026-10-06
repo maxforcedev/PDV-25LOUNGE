@@ -23,8 +23,9 @@ from apps.companies.models import (
 )
 from apps.companies.services import create_company_with_matrix
 from apps.products.models import Category, Product
-from apps.saas.models import PlatformPermission, SupportSession
-from apps.saas.services import create_support_session
+from apps.saas.models import PlatformPermission, Subscription, SupportSession
+from apps.saas.services import create_support_session, map_existing_company
+from apps.saas.tests.helpers import create_complete_test_plan
 from apps.saas.tests.test_v2_2_saas import (
     PASSWORD,
     create_plan,
@@ -313,6 +314,13 @@ class SupplierApiTests(TestCase):
         self.other_company = create_company_with_matrix(
             creator=User.objects.create_user(email='other-admin@example.com', password='password-123'),
             trade_name='Outro API Tenant', legal_name='Outro API Tenant Legal',
+        )
+        map_existing_company(
+            company=self.company,
+            plan_version=create_complete_test_plan(
+                'supplier-api', enabled_features=('suppliers',),
+            ),
+            billing_mode=Subscription.BillingMode.PAID,
         )
         admin_profile = AccessProfile.objects.get(
             company=self.company, name='Administrador', is_system=True

@@ -13,6 +13,17 @@ BACK OFFICE:
 - OS CAMPOS: Disponibilidade na filial E Canais globais de venda, NÃO SAO AS MESMAS COISAS ?
 - BOTÃO COPIAR EM OUTRA FILIAL, NÃO DEVE APARECER SE USUARIO TIVER PERMISSAO SOMENTE UMA FILIAL OU EMPRESA TIVER SOMENTE UMA FILIAL CADASTRADA.
 
+
+
+
+
+
+
+
+
+
+
+
 -- DISPOSITIVOS POS:
 - O seletor de filial nao deveria existir ali, quem deve mandar é o seletor global superior do menu superior.
 - Alterar o nome em ingles para portugues. 

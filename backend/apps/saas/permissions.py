@@ -68,6 +68,12 @@ REPORT_FEATURES_BY_ROUTE_NAME = {
 REPORT_FEATURES_BY_SCOPE = {
     ('report-sales', 'products'): ('products',),
     ('report-customers', 'commands'): ('commands',),
+    ('report-purchase-options', 'purchases'): ('purchases',),
+    ('report-purchase-options', 'suppliers'): ('suppliers',),
+    ('report-purchase-options', 'payables'): ('purchases', 'financial'),
+    ('report-commercial-options', 'promotions'): ('promotions',),
+    ('report-commercial-options', 'modifiers'): ('products',),
+    ('report-commercial-options', 'customers'): ('customers',),
 }
 
 

@@ -70,9 +70,10 @@ function TableHeader({ kind, section }: { kind: Kind; section: string }) {
 
 export function CommercialComplementReport({ kind }: { kind: Kind }) {
   const config = configs[kind];
-  const { currentBranch, hasPermission } = useAuth();
-  const allowed = kind === "customers" ? hasPermission(permissions.viewSalesReport) && hasPermission(permissions.viewCustomer) : hasPermission(permissions.viewProductsReport);
-  const canViewCommands = hasPermission(permissions.viewCommands);
+  const { currentBranch, hasFeature, hasPermission } = useAuth();
+  const requiredFeature = kind === "promotions" ? "promotions" : kind === "modifiers" ? "products" : "customers";
+  const allowed = hasFeature("reports") && hasFeature(requiredFeature) && (kind === "customers" ? hasPermission(permissions.viewSalesReport) && hasPermission(permissions.viewCustomer) : hasPermission(permissions.viewProductsReport));
+  const canViewCommands = hasPermission(permissions.viewCommands) && hasFeature("commands");
   const canViewSales = hasPermission(permissions.viewSale);
   const context = useRef(0);
   const requestId = useRef(0);

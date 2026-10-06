@@ -26,6 +26,7 @@ from apps.companies.models import (
 from apps.companies.services import (
     create_branch_with_access, create_company_with_matrix, create_customer, set_customer_status,
 )
+from apps.saas.tests.helpers import create_operational_test_tenant
 from apps.pos.models import (
     AuthenticationChallenge, BranchPOSSettings, POSDevice, POSDeviceSettings,
     POSOperatorPinAttempt, POSOperatorSession, POSRequestRateLimit, QuickSaleCheckout, QuickSalePayment,
@@ -217,11 +218,10 @@ class POSQuickCustomerContractTests(SimpleTestCase):
 )
 class POSFoundationIntegrationTests(TestCase):
     def setUp(self):
-        self.owner = User.objects.create_user(
-            email='owner-pos@example.com', password='Strong-owner-password-123!'
-        )
-        self.company = create_company_with_matrix(
-            creator=self.owner,
+        self.owner, self.company, self.subscription = create_operational_test_tenant(
+            code='pos-foundation',
+            email='owner-pos@example.com',
+            password='Strong-owner-password-123!',
             trade_name='POS Test',
             legal_name='POS Test Legal',
         )

@@ -351,6 +351,7 @@ class ReportsOptionsView(APIView):
 
     def get(self, request):
         branch = request.branch_context
+        feature_enabled = lambda feature: branch_feature_enabled(branch, feature)
         start, end = parse_datetime_range(request.query_params)
         period_filter = {}
         cancellation_filter = {}
@@ -371,16 +372,16 @@ class ReportsOptionsView(APIView):
             request.query_params.get('scope') == 'commissions'
             and user_has_code(request, 'commissions.view')
         )
-        can_view_consumptions = any(user_has_code(request, code) for code in (
+        can_view_consumptions = feature_enabled('consumption') and any(user_has_code(request, code) for code in (
             'reports.view_consumptions', 'sales.view_consumption',
         ))
-        can_view_withdrawals = user_has_code(request, 'reports.view_withdrawals')
-        can_view_cash = user_has_code(request, 'reports.view_cash')
+        can_view_withdrawals = feature_enabled('cash_register') and user_has_code(request, 'reports.view_withdrawals')
+        can_view_cash = feature_enabled('cash_register') and user_has_code(request, 'reports.view_cash')
         can_view_result = user_has_code(request, 'reports.view_operational_result')
-        can_view_inventory = any(user_has_code(request, code) for code in (
+        can_view_inventory = feature_enabled('inventory') and any(user_has_code(request, code) for code in (
             'reports.view_inventory', 'reports.view_stock_consumption',
         ))
-        can_view_phase_two = user_has_code(request, 'inventory.report.view')
+        can_view_phase_two = feature_enabled('inventory') and user_has_code(request, 'inventory.report.view')
         can_view_sales_data = any(user_has_code(request, code) for code in (
             'reports.view_sales', 'reports.view_products', 'reports.view_receipts',
             'reports.view_discounts', 'reports.view_cancellations', 'dashboard.view',
@@ -391,7 +392,7 @@ class ReportsOptionsView(APIView):
             'reports.view_cancellations', 'dashboard.view', 'reports.view_team',
             'commissions.view',
         ))
-        can_view_products = (
+        can_view_products = feature_enabled('products') and (
             can_view_sales_data or can_view_consumptions or can_view_inventory
             or can_view_phase_two
         )
@@ -445,7 +446,7 @@ class ReportsOptionsView(APIView):
             company_id=branch.company_id,
         ).filter(
             Q(status='active') | Q(pk__in=historical_payment_method_ids)
-        ).order_by('name', 'id') if can_view_payment_data else PaymentMethod.objects.none()
+        ).order_by('name', 'id') if feature_enabled('financial') and can_view_payment_data else PaymentMethod.objects.none()
         historical_register_ids = CashSession.objects.filter(
             branch=branch, **period_filter,
         ).values_list('cash_register_id', flat=True) if period_filter else []
@@ -536,7 +537,7 @@ class ReportsOptionsView(APIView):
                 for customer in (
                     Customer.objects.filter(company_id=branch.company_id).filter(
                         Q(status='active') | Q(sales__in=historical_sales)
-                    ).distinct().order_by('name', 'id') if can_view_sales_data else []
+                    ).distinct().order_by('name', 'id') if feature_enabled('customers') and can_view_sales_data else []
                 )
             ],
             'products': [
@@ -683,6 +684,7 @@ class DashboardView(APIView):
             raise PermissionDenied('Você não possui permissão para exportar relatórios.')
         start, end = parse_datetime_range(request.query_params, default_today=True)
         branch = request.branch_context
+        has_feature = lambda feature: branch_feature_enabled(branch, feature)
         response = {'period': canonical_datetime_range(start, end)}
         try:
             latest_sales_page = int(request.query_params.get('latest_sales_page', 1))
@@ -691,6 +693,8 @@ class DashboardView(APIView):
         if latest_sales_page < 1:
             latest_sales_page = 1
         category = None
+        if request.query_params.get('category') and not has_feature('products'):
+            raise PermissionDenied('O plano nao permite filtros de categoria.')
         if request.query_params.get('category'):
             try:
                 category = int(request.query_params['category'])
@@ -704,10 +708,10 @@ class DashboardView(APIView):
             'category': category,
             'categories': list(Category.objects.filter(
                 branch=branch, status='active', deleted_at__isnull=True,
-            ).values('id', 'name').order_by('sort_order', 'name')),
+            ).values('id', 'name').order_by('sort_order', 'name')) if has_feature('products') else [],
         }
 
-        can_view_consumptions = user_has_code(request, 'sales.view_consumption')
+        can_view_consumptions = has_feature('consumption') and user_has_code(request, 'sales.view_consumption')
         item_filters = {'category': category} if category else {}
         sales = None
         dashboard_consumption_graph = None
@@ -889,6 +893,9 @@ class DashboardView(APIView):
             response['sales']['operational_reconciliation_delta'] = decimal_string(
                 dashboard_receipts['reconciliation_delta']
             )
+            if not has_feature('products'):
+                response['sales'].pop('top_products', None)
+                response['sales'].pop('top_categories', None)
             if not user_has_code(request, 'commissions.view'):
                 response['sales'].pop('commission', None)
                 for group in response['sales']['top_sellers'] + response['sales']['top_operators']:
@@ -940,7 +947,7 @@ class DashboardView(APIView):
                 },
             }
 
-        if user_has_code(request, 'cash_registers.withdraw'):
+        if has_feature('cash_register') and user_has_code(request, 'cash_registers.withdraw'):
             response['withdrawals'] = _withdrawal_summary_json(
                 withdrawal_summary(filtered_withdrawals(
                     branch=branch, start=start, end=end, filters={}
@@ -961,7 +968,7 @@ class DashboardView(APIView):
                     status=TableAttendanceStatus.OPEN,
                 ).count()
 
-        if user_has_code(request, 'cash_registers.view'):
+        if has_feature('cash_register') and user_has_code(request, 'cash_registers.view'):
             sessions = current_cash_sessions(branch)
             response['current_cash'] = CashSessionReportSerializer(
                 sessions, many=True, context={'request': request}
@@ -970,6 +977,7 @@ class DashboardView(APIView):
         if (
             user_has_code(request, 'inventory.view')
             and user_has_code(request, 'inventory.view_stock_kpis')
+            and has_feature('inventory')
         ):
             include_value = user_has_code(request, 'inventory.view_stock_costs')
             stock = inventory_kpis(

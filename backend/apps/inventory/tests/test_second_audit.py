@@ -18,6 +18,7 @@ from apps.companies.models import (
 from apps.companies.services import ensure_permission_catalog
 from apps.products.models import Category, Product, ProductBranchConfig
 from apps.reports.selectors import filtered_inventory_movements, inventory_kpis
+from apps.saas.tests.helpers import create_complete_test_plan, create_operational_test_tenant
 
 from ..models import InventoryCountMode, Stock
 from ..services import create_inventory_count, entry
@@ -26,18 +27,20 @@ from ..services import create_inventory_count, entry
 class SecondAuditInventoryTests(TestCase):
     def setUp(self):
         ensure_permission_catalog()
-        self.user = User.objects.create_user(
-            email='inventory-audit@example.com', password='password-123'
+        plan = create_complete_test_plan(
+            'inventory-second-audit', enabled_features=('inventory', 'products'),
+        )
+        self.user, self.company, self.subscription = create_operational_test_tenant(
+            code='inventory-second-audit',
+            email='inventory-audit@example.com',
+            trade_name='Inventory Audit',
+            legal_name='Inventory Audit Ltda',
+            plan_version=plan,
         )
         self.user.is_superuser = True
         self.user.is_staff = True
         self.user.save(update_fields=('is_superuser', 'is_staff'))
-        self.company = Company.objects.create(
-            trade_name='Inventory Audit', legal_name='Inventory Audit Ltda'
-        )
-        self.branch = Branch.objects.create(
-            company=self.company, name='Filial A', is_matrix=True
-        )
+        self.branch = self.company.branches.get(is_matrix=True)
         self.other_branch = Branch.objects.create(
             company=self.company, name='Filial B'
         )

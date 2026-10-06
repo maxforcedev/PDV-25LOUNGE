@@ -88,8 +88,9 @@ function Kpi({ label, value }: { label: string; value: string }) {
 
 export function PhaseThreeReport({ kind }: { kind: ReportKind }) {
   const config = configs[kind];
-  const { currentBranch, hasPermission } = useAuth();
-  const allowed = hasPermission(config.permission);
+  const { currentBranch, hasFeature, hasPermission } = useAuth();
+  const requiredFeatures = kind === "purchases" ? ["reports", "purchases"] : kind === "suppliers" ? ["reports", "suppliers"] : ["reports", "purchases", "financial"];
+  const allowed = hasPermission(config.permission) && requiredFeatures.every(hasFeature);
   const canViewCosts = hasPermission(permissions.viewPurchaseCosts);
   const context = useRef(0);
   const requestId = useRef(0);

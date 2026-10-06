@@ -106,7 +106,10 @@ def create_plan(code='basic', *, trial_days=0, price='99.00', public=True, users
     return version
 
 
-def create_tenant(name='Tenant', *, plan_version=None, billing_mode=Subscription.BillingMode.PAID):
+def create_tenant(
+    name='Tenant', *, plan_version=None, billing_mode=Subscription.BillingMode.PAID,
+    initial_subscription_mode=Subscription.Status.ACTIVE,
+):
     owner = create_user(f'{name.lower().replace(" ", "-")}@example.com')
     company = create_company_with_matrix(
         creator=owner,
@@ -119,6 +122,7 @@ def create_tenant(name='Tenant', *, plan_version=None, billing_mode=Subscription
             company=company,
             plan_version=plan_version,
             billing_mode=billing_mode,
+            initial_subscription_mode=initial_subscription_mode,
         )
     return owner, company, subscription
 
@@ -327,7 +331,11 @@ class LifecycleTests(TestCase):
 
     def test_trial_expiry_is_effective_before_cron(self):
         trial_version = create_plan(code='trial', trial_days=2)
-        _, company, subscription = create_tenant('Trial Runtime', plan_version=trial_version)
+        _, company, subscription = create_tenant(
+            'Trial Runtime',
+            plan_version=trial_version,
+            initial_subscription_mode=Subscription.Status.TRIALING,
+        )
         expired_at = subscription.trial_ends_at + timedelta(seconds=1)
         result = resolve_effective_status(company, at=expired_at)
         self.assertEqual(result['status'], Subscription.Status.TRIAL_EXPIRED)

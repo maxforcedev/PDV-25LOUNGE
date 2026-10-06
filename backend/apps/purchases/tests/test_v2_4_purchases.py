@@ -35,6 +35,7 @@ from apps.sales.services import _prepare_products
 from apps.reports.selectors import inventory_kpis, stock_consumption_report
 from apps.saas.models import SupportSession
 from apps.saas.services import create_support_session
+from apps.saas.tests.helpers import create_complete_test_plan, create_operational_test_tenant
 from apps.saas.tests.test_v2_2_saas import (
     PASSWORD,
     create_plan,
@@ -706,8 +707,20 @@ class BranchCostAndSaleSnapshotTests(TestCase):
 
 class PurchaseApiRbacTests(TestCase):
     def setUp(self):
-        self.company, self.branch, self.category = company_fixture('API V24')
-        self.user = user_fixture(self.company, self.branch, 'api-v24@example.com')
+        plan = create_complete_test_plan(
+            'purchases-api', enabled_features=('purchases', 'suppliers', 'audit'),
+        )
+        self.user, self.company, self.subscription = create_operational_test_tenant(
+            code='purchases-api',
+            email='api-v24@example.com',
+            trade_name='API V24',
+            legal_name='API V24 Ltda',
+            plan_version=plan,
+        )
+        self.branch = self.company.branches.get(is_matrix=True)
+        self.category = Category.objects.create(
+            company=self.company, branch=self.branch, name=f'Compras {uuid.uuid4()}',
+        )
         self.product = product_fixture(self.company, self.category)
         self.supplier, _link, self.unit = supplier_unit_fixture(
             self.company, self.product

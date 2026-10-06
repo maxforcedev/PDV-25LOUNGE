@@ -22,7 +22,7 @@ export const reportGroups: readonly ReportCenterGroup[] = [
       { href: "/relatorios/visao-geral", label: "Visão geral", permission: "reports.view_sales" },
       { href: "/relatorios/vendas", label: "Vendas", permission: "reports.view_sales" },
       { href: "/relatorios/recebimentos", label: "Recebimentos / Formas de pagamento", permission: "reports.view_receipts" },
-      { href: "/relatorios/produtos", label: "Produtos e desempenho", permission: "reports.view_products" },
+      { href: "/relatorios/produtos", label: "Produtos e desempenho", permission: "reports.view_products", requiredFeatures: ["products"] },
       { href: "/relatorios/atendentes", label: "Atendentes", permission: "reports.view_team" },
       { href: "/relatorios/operadores", label: "Operadores", permission: "reports.view_team" },
       { href: "/relatorios/cancelamentos", label: "Cancelamentos e estornos", permission: "reports.view_cancellations" },

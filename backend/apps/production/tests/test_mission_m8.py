@@ -7,7 +7,6 @@ from rest_framework.test import APIClient
 from apps.accounts.models import User
 from apps.base.models import AuditLog
 from apps.companies.models import UserBranchAccess, UserCompanyAccess
-from apps.companies.services import create_company_with_matrix
 from apps.products.models import (
     Category, Product, ProductBranchConfig, ProductProductionDestination,
 )
@@ -18,24 +17,22 @@ from apps.production.models import (
     PrinterDevice,
     PrinterOperationalStatus,
 )
+from apps.saas.tests.helpers import create_operational_test_tenant
 
 
 class MissionM8PrinterTests(TestCase):
     def setUp(self):
-        self.owner = User.objects.create_user(
-            email='owner.m8@example.com', password='Mission-M8-123!',
-        )
-        self.company = create_company_with_matrix(
-            creator=self.owner, trade_name='Empresa M8', legal_name='Empresa M8 Legal',
-            enforce_saas_limits=False,
+        self.owner, self.company, self.subscription = create_operational_test_tenant(
+            code='production-m8',
+            email='owner.m8@example.com',
+            password='Mission-M8-123!',
+            trade_name='Empresa M8',
+            legal_name='Empresa M8 Legal',
         )
         self.branch = self.company.branches.get(is_matrix=True)
         self.client = APIClient()
         self.client.force_authenticate(self.owner)
         self.client.defaults['HTTP_X_BRANCH_ID'] = str(self.branch.pk)
-        feature = patch('apps.production.permissions.require_branch_feature')
-        feature.start()
-        self.addCleanup(feature.stop)
 
     def create_printer(self, name='Cozinha', connection_type='network', configuration=None, destination_ids=None):
         configurations = {

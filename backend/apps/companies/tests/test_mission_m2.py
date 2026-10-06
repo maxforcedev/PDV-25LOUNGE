@@ -1,5 +1,3 @@
-from unittest.mock import patch
-
 from django.test import TestCase
 from rest_framework.test import APIClient
 
@@ -7,6 +5,9 @@ from apps.accounts.models import User
 from apps.companies.services import create_company_with_matrix, ensure_permission_catalog
 from apps.production.models import PrinterDevice
 from apps.products.models import ProductionDestination
+from apps.saas.models import Subscription
+from apps.saas.services import map_existing_company
+from apps.saas.tests.helpers import create_complete_test_plan
 
 
 PASSWORD = 'Mission-M2-Secure-123!'
@@ -22,6 +23,13 @@ class BranchCompanyContextTests(TestCase):
         self.company_b = create_company_with_matrix(
             creator=self.owner, trade_name='Empresa B M2', legal_name='Empresa B M2 Legal',
         )
+        plan = create_complete_test_plan('companies-m2', enabled_features=('production',))
+        for company in (self.company_a, self.company_b):
+            map_existing_company(
+                company=company,
+                plan_version=plan,
+                billing_mode=Subscription.BillingMode.PAID,
+            )
         self.branch_a = self.company_a.branches.get(is_matrix=True)
         self.branch_b = self.company_b.branches.get(is_matrix=True)
         self.client = APIClient()
@@ -84,8 +92,7 @@ class BranchCompanyContextTests(TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
-    @patch('apps.production.permissions.require_branch_feature')
-    def test_printer_configuration_remains_bound_to_active_branch(self, _feature):
+    def test_printer_configuration_remains_bound_to_active_branch(self):
         destination_a = ProductionDestination.objects.create(
             branch=self.branch_a, name='Cozinha A', code='cozinha-a',
         )

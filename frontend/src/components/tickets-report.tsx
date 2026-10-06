@@ -44,8 +44,8 @@ function Kpi({ label, value }: { label: string; value: unknown }) {
 }
 
 export function TicketsReport() {
-  const { currentBranch, hasPermission } = useAuth();
-  const allowed = hasPermission(permissions.viewTickets);
+  const { currentBranch, hasFeature, hasPermission } = useAuth();
+  const allowed = hasPermission(permissions.viewTickets) && hasFeature("reports") && hasFeature("production");
   const context = useRef(0);
   const requestId = useRef(0);
   context.current = currentBranch?.id || 0;

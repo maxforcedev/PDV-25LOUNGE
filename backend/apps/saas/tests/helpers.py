@@ -25,12 +25,14 @@ def create_complete_test_plan(
 ):
     """Create an operational plan for tests that are not exercising SaaS denial paths."""
     capabilities = ensure_capability_catalog()
-    version = PlanVersion.objects.create(
-        plan=Plan.objects.create(code=code, name=code),
+    plan, _ = Plan.objects.get_or_create(code=code, defaults={'name': code})
+    version, created = PlanVersion.objects.get_or_create(
+        plan=plan,
         version=1,
-        price=price,
-        trial_days=trial_days,
+        defaults={'price': price, 'trial_days': trial_days},
     )
+    if not created:
+        return version
     boolean_capabilities = ('core.enabled', 'pos.enabled')
     for capability_code in boolean_capabilities:
         enabled = pos_enabled if capability_code == 'pos.enabled' else True

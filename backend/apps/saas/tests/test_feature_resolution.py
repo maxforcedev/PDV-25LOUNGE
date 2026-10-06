@@ -253,9 +253,46 @@ class CapabilityResolutionTests(TestCase):
             '/api/v1/reports/purchases/',
             '/api/v1/reports/inventory-movements/',
             '/api/v1/reports/commands/',
+            '/api/v1/reports/purchase-options/?scope=purchases',
+            '/api/v1/reports/purchase-options/?scope=suppliers',
+            '/api/v1/reports/purchase-options/?scope=payables',
+            '/api/v1/reports/commercial-options/?scope=promotions',
+            '/api/v1/reports/commercial-options/?scope=modifiers',
+            '/api/v1/reports/commercial-options/?scope=customers',
         ):
             response = client.get(path)
             self.assertEqual(response.status_code, 403, (path, response.data))
+
+    def test_reports_options_hide_disabled_module_filters(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan('report-options-disabled', tables=False, features=('reports',)),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+
+        response = self._superuser_client().get('/api/v1/reports/options/')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        for key in (
+            'products', 'categories', 'payment_methods', 'cash_registers', 'cash_sessions',
+            'movement_types', 'withdrawal_categories', 'user_types',
+        ):
+            self.assertEqual(response.data[key], [], key)
+
+    def test_dashboard_omits_disabled_module_widgets(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan('dashboard-modules-disabled', tables=False, features=('reports',)),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+
+        response = self._superuser_client().get('/api/v1/dashboard/')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertNotIn('consumptions', response.data)
+        self.assertNotIn('withdrawals', response.data)
+        self.assertNotIn('current_cash', response.data)
+        self.assertNotIn('inventory', response.data)
 
     def test_pos_modules_and_device_administration_respect_capabilities(self):
         self.branch.settings.uses_counter = True

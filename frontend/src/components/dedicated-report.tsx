@@ -55,6 +55,7 @@ import { centsToDecimal } from "@/lib/sales";
 import { signedMoneyToCents } from "@/lib/cash";
 import { useAuth } from "@/providers/auth-provider";
 import type {
+  BranchFeature,
   ProductPriceComparison,
   ReportResponse,
   ReportsOptions,
@@ -83,7 +84,7 @@ export type ReportKind =
 
 const configs: Record<
   ReportKind,
-  { title: string; description: string; endpoint: string; permission: string }
+  { title: string; description: string; endpoint: string; permission: string; requiredFeatures?: readonly BranchFeature[] }
 > = {
   overview: {
     title: "Visão geral",
@@ -102,6 +103,7 @@ const configs: Record<
     description: "Desempenho comercial por produto e categoria.",
     endpoint: "sales",
     permission: permissions.viewProductsReport,
+    requiredFeatures: ["products"],
   },
   receipts: {
     title: "Recebimentos / Formas de pagamento",
@@ -138,48 +140,56 @@ const configs: Record<
     description: "Referência, valor cobrado e benefício operacional.",
     endpoint: "consumptions",
     permission: permissions.viewConsumptionsReport,
+    requiredFeatures: ["consumption"],
   },
   cash: {
     title: "Caixa",
     description: "Sessões por interseção temporal e reconciliação completa.",
     endpoint: "cash",
     permission: permissions.viewCashReport,
+    requiredFeatures: ["cash_register"],
   },
   withdrawals: {
     title: "Sangrias",
     description: "Saídas de gaveta, beneficiários e impacto no resultado.",
     endpoint: "withdrawals",
     permission: permissions.viewWithdrawalsReport,
+    requiredFeatures: ["cash_register"],
   },
   "stock-consumption": {
     title: "Consumo / Custos",
     description: "Resumo físico e movimentos reais de saída e reversão.",
     endpoint: "stock-consumption",
     permission: permissions.viewStockConsumptionReport,
+    requiredFeatures: ["inventory"],
   },
   "inventory-movements": {
     title: "Movimentações de estoque",
     description: "Entradas, saídas, ajustes, inventários e reversões da filial.",
     endpoint: "inventory-movements",
     permission: permissions.viewInventoryReport,
+    requiredFeatures: ["inventory"],
   },
   "stock-position": {
     title: "Posição de estoque",
     description: "Saldos, limites, custos e situação atual por produto.",
     endpoint: "stock-position",
     permission: permissions.viewAdvancedInventory,
+    requiredFeatures: ["inventory"],
   },
   "inventory-counts": {
     title: "Inventários realizados",
     description: "Contagens físicas, divergências e impacto financeiro histórico.",
     endpoint: "inventory-counts",
     permission: permissions.viewAdvancedInventory,
+    requiredFeatures: ["inventory"],
   },
   "stock-transfers": {
     title: "Transferências de estoque",
     description: "Envios, recebimentos e diferenças entre filiais.",
     endpoint: "stock-transfers",
     permission: permissions.viewAdvancedInventory,
+    requiredFeatures: ["inventory"],
   },
   cancellations: {
     title: "Cancelamentos e estornos",
@@ -193,6 +203,7 @@ const configs: Record<
       "Comparação entre o preço padrão e os preços específicos por filial.",
     endpoint: "prices",
     permission: permissions.viewPricesReport,
+    requiredFeatures: ["products"],
   },
   result: {
     title: "Resultado estimado",
@@ -3117,7 +3128,7 @@ function ReportBody({
 
 export function DedicatedReport({ kind }: { kind: ReportKind }) {
   const config = configs[kind];
-  const { currentBranch, hasPermission } = useAuth();
+  const { currentBranch, hasFeature, hasPermission } = useAuth();
   const context = useRef(currentBranch?.id || 0);
   const requestId = useRef(0);
   const optionsRequestId = useRef(0);
@@ -3137,7 +3148,7 @@ export function DedicatedReport({ kind }: { kind: ReportKind }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false);
-  const allowed = hasPermission(config.permission);
+  const allowed = hasPermission(config.permission) && hasFeature("reports") && (config.requiredFeatures || []).every(hasFeature);
 
   function params(nextPeriod = appliedPeriod, nextFilters = appliedFilters) {
     return new URLSearchParams({

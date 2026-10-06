@@ -28,6 +28,9 @@ from apps.companies.rbac import PERMISSION_CATALOG
 from apps.companies.services import (
     create_company_with_matrix, ensure_permission_catalog,
 )
+from apps.saas.models import Subscription
+from apps.saas.services import map_existing_company
+from apps.saas.tests.helpers import create_complete_test_plan
 from apps.cash.models import CashRegister, CashSession, CashSessionStatus
 from apps.cash.services import open_session
 from apps.commands.models import (
@@ -106,6 +109,17 @@ class Block6Fixture:
         self.owner = create_user('owner@block6.com')
         self.company = create_company_with_matrix(
             creator=self.owner, trade_name='Block6 Co', legal_name='Block6 Co Legal',
+        )
+        map_existing_company(
+            company=self.company,
+            plan_version=create_complete_test_plan(
+                'commands-block6',
+                enabled_features=(
+                    'tables', 'commands', 'cash_register', 'counter', 'consumption',
+                    'products', 'inventory', 'production', 'promotions',
+                ),
+            ),
+            billing_mode=Subscription.BillingMode.PAID,
         )
         self.branch = self.company.branches.get(is_matrix=True)
         settings = self.branch.settings

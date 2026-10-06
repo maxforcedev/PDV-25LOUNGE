@@ -96,8 +96,8 @@ function Kpi({ label, value }: { label: string; value: string }) {
 }
 
 export function CommandsReport() {
-  const { currentBranch, hasPermission } = useAuth();
-  const allowed = hasPermission(permissions.viewCommands);
+  const { currentBranch, hasFeature, hasPermission } = useAuth();
+  const allowed = hasPermission(permissions.viewCommands) && hasFeature('reports') && hasFeature('tables') && hasFeature('commands');
   const canViewPayments = hasPermission(permissions.viewCommandPayments);
   const context = useRef(0);
   const requestId = useRef(0);

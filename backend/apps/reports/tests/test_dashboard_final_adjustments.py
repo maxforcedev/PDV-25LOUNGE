@@ -57,6 +57,11 @@ class DashboardFinalAdjustmentTests(TestCase):
             capability=capabilities['feature.tables'],
             unlimited=True,
         )
+        PlanEntitlement.objects.create(
+            plan_version=version,
+            capability=capabilities['feature.cash_register'],
+            unlimited=True,
+        )
         map_existing_company(
             company=self.company,
             plan_version=version,

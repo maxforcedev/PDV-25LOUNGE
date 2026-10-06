@@ -21,6 +21,7 @@ from apps.companies.models import (
     UserCompanyAccess,
 )
 from apps.products.models import Category, Product, ProductBranchConfig
+from apps.saas.tests.helpers import create_complete_test_plan, create_operational_test_tenant
 
 from ..models import (
     InventoryCountStatus,
@@ -54,8 +55,17 @@ from ..services import (
 
 
 def fixture(name='V25'):
-    company = Company.objects.create(trade_name=name, legal_name=f'{name} Ltda')
-    origin = Branch.objects.create(company=company, name='Matriz', is_matrix=True)
+    plan = create_complete_test_plan(
+        f'inventory-{name.lower()}', enabled_features=('inventory', 'products'),
+    )
+    user, company, _subscription = create_operational_test_tenant(
+        code=f'inventory-{name.lower()}',
+        email=f'{name.lower()}@example.com',
+        trade_name=name,
+        legal_name=f'{name} Ltda',
+        plan_version=plan,
+    )
+    origin = company.branches.get(is_matrix=True)
     destination = Branch.objects.create(company=company, name='Destino')
     category = Category.objects.create(
         company=company, branch=origin, name='Estoque avancado'
@@ -78,7 +88,6 @@ def fixture(name='V25'):
     ProductBranchConfig.objects.create(
         product=product, branch=destination, category=destination_category
     )
-    user = User.objects.create_user(email=f'{name.lower()}@example.com', password='password-123')
     user.is_superuser = True
     user.is_staff = True
     user.save(update_fields=('is_superuser', 'is_staff'))
