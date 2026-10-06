@@ -6,17 +6,18 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.files.storage import FileSystemStorage
 from django.utils.deconstruct import deconstructible
+from PIL import Image, UnidentifiedImageError
 
 
 MAX_BRANDING_ASSET_SIZE = 2 * 1024 * 1024
 SAFE_FILENAME = re.compile(r'^[^\x00-\x1f\\/]{1,120}$')
 IMAGE_TYPES = {
-    '.png': ('image/png', b'\x89PNG\r\n\x1a\n'),
-    '.jpg': ('image/jpeg', b'\xff\xd8\xff'),
-    '.jpeg': ('image/jpeg', b'\xff\xd8\xff'),
-    '.webp': ('image/webp', b'RIFF'),
+    '.png': ('image/png', 'PNG'),
+    '.jpg': ('image/jpeg', 'JPEG'),
+    '.jpeg': ('image/jpeg', 'JPEG'),
+    '.webp': ('image/webp', 'WEBP'),
 }
-FAVICON_TYPES = {**IMAGE_TYPES, '.ico': ('image/x-icon', b'\x00\x00\x01\x00')}
+FAVICON_TYPES = {**IMAGE_TYPES, '.ico': ('image/x-icon', 'ICO')}
 
 
 @deconstructible
@@ -49,13 +50,18 @@ def _validate_branding_asset(upload, allowed_types, label):
     if content_type and content_type not in allowed_content_types:
         raise ValidationError(f'O tipo declarado do {label} nao e permitido.')
     position = upload.tell()
-    header = upload.read(12)
-    upload.seek(position)
-    valid = header.startswith(expected[1])
-    if suffix == '.webp':
-        valid = valid and header[8:12] == b'WEBP'
-    if not valid:
+    try:
+        with Image.open(upload) as image:
+            if image.format != expected[1]:
+                raise ValidationError(f'O conteudo do {label} nao corresponde ao tipo permitido.')
+            image.verify()
+        upload.seek(position)
+        with Image.open(upload) as image:
+            image.load()
+    except (OSError, SyntaxError, UnidentifiedImageError):
         raise ValidationError(f'O conteudo do {label} nao corresponde ao tipo permitido.')
+    finally:
+        upload.seek(position)
 
 
 def validate_branding_image(upload):

@@ -19,7 +19,7 @@ from apps.base.audit import audit_log
 from apps.base.exceptions import DomainValidationError
 from apps.cash.models import CashRegister, CashRegisterStatus, CashSession, CashSessionStatus
 from apps.companies.features import branch_feature_enabled
-from apps.companies.models import Branch, Status, UserBranchAccess, UserCompanyAccess
+from apps.companies.models import Branch, Company, Status, UserBranchAccess, UserCompanyAccess
 from apps.companies.rbac import OPERATING_PERMISSION_CODES
 from apps.companies.selectors import (
     branch_blocked_permission_codes, branch_permission_codes,
@@ -152,13 +152,16 @@ def pos_enabled(company):
 
 
 def assert_branch_device_limit(branch):
-    entitlement = effective_entitlement(branch.company, 'pos.devices.max')
+    company = Company.objects.select_for_update().get(pk=branch.company_id)
+    entitlement = effective_entitlement(company, 'pos.devices.max')
     if entitlement is None:
         _error('pos_device_limit_unavailable', 'O plano nao define o limite de dispositivos POS.', status_code=403)
     if not entitlement.enabled:
         _error('pos_device_limit_unavailable', 'O plano nao habilita dispositivos POS.', status_code=403)
-    if not entitlement.unlimited and POSDevice.objects.filter(branch=branch, status=POSDevice.Status.ACTIVE).count() >= entitlement.limit_value:
-        _error('pos_device_limit_reached', 'O limite de dispositivos POS desta filial foi atingido.', status_code=409)
+    if not entitlement.unlimited and POSDevice.objects.filter(
+        branch__company=company, status=POSDevice.Status.ACTIVE,
+    ).count() >= entitlement.limit_value:
+        _error('pos_device_limit_reached', 'O limite de dispositivos POS desta empresa foi atingido.', status_code=409)
 
 
 def validate_device_operational(device, *, check_version=True, refresh=True):
@@ -647,6 +650,8 @@ def set_device_status(device, status, actor=None, replacement=None):
     if status not in {POSDevice.Status.BLOCKED, POSDevice.Status.REVOKED, POSDevice.Status.ACTIVE, POSDevice.Status.REPLACED}:
         _error('device_status_invalid', 'Status de dispositivo invalido.')
     now = timezone.now()
+    if status == POSDevice.Status.ACTIVE and device.status != POSDevice.Status.ACTIVE:
+        assert_branch_device_limit(device.branch)
     device.status = status
     if status == POSDevice.Status.BLOCKED:
         device.blocked_at = now

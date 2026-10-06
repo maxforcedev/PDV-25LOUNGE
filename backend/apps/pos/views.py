@@ -126,7 +126,7 @@ from .provider_payments import (
     cielo_supports_payment_method, resolve_provider_resources,
 )
 from .services import (
-    assert_branch_device_limit, authenticate_operator, cash_state_for_device, confirm_pairing,
+    authenticate_operator, cash_state_for_device, confirm_pairing,
     effective_cash_settings, effective_settings, identify_branch, logout_operator, modules_for,
     pos_enabled, pos_operator_queryset, request_otp, set_device_status,
     eligible_pos_authorizers,
@@ -688,6 +688,13 @@ class POSTicketValidateView(POSTicketValidatorView):
 
 
 class POSQuickSaleView(POSCashView):
+    product_feature_required = True
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        if self.product_feature_required:
+            require_branch_feature(require_device(request).branch, 'products')
+
     @staticmethod
     def _require(permissions, code, message):
         if code not in permissions:
@@ -789,6 +796,8 @@ class POSBarcodeProductView(POSQuickSaleView):
 
 
 class POSCustomersView(POSQuickSaleView):
+    product_feature_required = False
+
     def get(self, request):
         device, _, permissions, _ = self.context(request)
         if ('sales.create' not in permissions and
@@ -851,6 +860,8 @@ class POSCustomersView(POSQuickSaleView):
 
 
 class POSCustomerActivateView(POSQuickSaleView):
+    product_feature_required = False
+
     def post(self, request, customer_id):
         device, operator, permissions, operator_session = self.context(request)
         if 'customers.change' not in permissions:
@@ -876,9 +887,11 @@ class POSCustomerActivateView(POSQuickSaleView):
 class POSAttendanceView(POSCashView):
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
-        # Every POS table endpoint, including read-only helpers, shares the feature gate.
+        # POS table and command endpoints, including read-only helpers, share their feature gates.
         if type(self).__name__.startswith('POSTable'):
             require_branch_feature(require_device(request).branch, 'tables')
+        else:
+            require_branch_feature(require_device(request).branch, 'commands')
 
     @staticmethod
     def _require(permissions, code, message):
@@ -3171,8 +3184,6 @@ class POSAdminDeviceViewSet(viewsets.ModelViewSet):
             )
             error.status_code = status.HTTP_409_CONFLICT
             raise error
-        if target_status == POSDevice.Status.ACTIVE:
-            assert_branch_device_limit(device.branch)
         return set_device_status(device, target_status, actor=request.user, replacement=replacement)
 
     @action(detail=True, methods=('post',))
