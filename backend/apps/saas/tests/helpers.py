@@ -24,6 +24,7 @@ def create_complete_test_plan(
     trial_days=0,
 ):
     """Create an operational plan for tests that are not exercising SaaS denial paths."""
+    code = str(code)[:50]
     capabilities = ensure_capability_catalog()
     plan, _ = Plan.objects.get_or_create(code=code, defaults={'name': code})
     version, created = PlanVersion.objects.get_or_create(

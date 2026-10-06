@@ -6,7 +6,7 @@ from django.db.models import Prefetch, Q
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import MethodNotAllowed, PermissionDenied, ValidationError
 from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
 
@@ -144,7 +144,7 @@ class CompanyViewSet(viewsets.ModelViewSet):
         'activate': 'companies.change',
         'deactivate': 'companies.change',
     }
-    http_method_names = ('get', 'patch', 'put', 'head', 'options')
+    http_method_names = ('get', 'post', 'patch', 'put', 'head', 'options')
 
     def get_queryset(self):
         support_session = getattr(self.request, 'support_session', None)
@@ -194,6 +194,9 @@ class CompanyViewSet(viewsets.ModelViewSet):
         ):
             return [FunctionalCompanyPermission()]
         return [IsPlatformAdmin()]
+
+    def create(self, request, *args, **kwargs):
+        raise MethodNotAllowed('POST')
 
     def perform_create(self, serializer):
         company = serializer.save()
