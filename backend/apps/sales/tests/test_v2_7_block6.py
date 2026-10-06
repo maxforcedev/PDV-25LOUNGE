@@ -29,9 +29,8 @@ from apps.companies.models import (
     AccessProfile, BranchSettings, FunctionalPermission, Status,
     UserBranchAccess, UserCompanyAccess,
 )
-from apps.companies.services import (
-    create_company_with_matrix, ensure_permission_catalog,
-)
+from apps.companies.services import ensure_permission_catalog
+from apps.saas.tests.helpers import create_operational_company_with_matrix as create_company_with_matrix
 from apps.inventory.models import Stock, MovementType
 from apps.production.models import (
     PrintJob, PrintJobStatus, PrinterDevice, ProductionJob, Ticket, TicketStatus,

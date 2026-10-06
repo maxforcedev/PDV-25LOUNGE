@@ -10,7 +10,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.accounts.models import User
 from apps.companies.models import Status
-from apps.companies.services import create_company_with_matrix
+from apps.saas.tests.helpers import create_operational_company_with_matrix as create_company_with_matrix
 from apps.payment_integrations.models import (
     PaymentAttemptStatus,
     PaymentIntentOriginType,

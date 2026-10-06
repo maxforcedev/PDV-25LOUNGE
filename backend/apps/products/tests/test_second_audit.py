@@ -5,7 +5,8 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
-from apps.companies.models import Branch, Company
+from apps.companies.models import Branch
+from apps.saas.tests.helpers import create_operational_company_with_matrix
 
 from ..models import (
     Category, FractionableProductConfig, InventoryBehavior, Product,
@@ -23,12 +24,11 @@ class SecondAuditProductTests(TestCase):
         self.user.is_superuser = True
         self.user.is_staff = True
         self.user.save(update_fields=('is_superuser', 'is_staff'))
-        self.company = Company.objects.create(
-            trade_name='Products Audit', legal_name='Products Audit Ltda'
+        self.company = create_operational_company_with_matrix(
+            creator=self.user,
+            trade_name='Products Audit', legal_name='Products Audit Ltda',
         )
-        self.branch = Branch.objects.create(
-            company=self.company, name='Filial A', is_matrix=True
-        )
+        self.branch = self.company.branches.get(is_matrix=True)
         self.other_branch = Branch.objects.create(
             company=self.company, name='Filial B'
         )

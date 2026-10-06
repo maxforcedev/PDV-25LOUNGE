@@ -10,7 +10,8 @@ from rest_framework.test import APIClient
 from apps.accounts.models import User
 from apps.base.models import AuditLog
 from apps.companies.models import AccessProfile, Branch, UserBranchAccess, UserCompanyAccess
-from apps.companies.services import create_company_with_matrix, ensure_permission_catalog
+from apps.companies.services import ensure_permission_catalog
+from apps.saas.tests.helpers import create_operational_company_with_matrix as create_company_with_matrix
 
 
 PASSWORD = 'Mission-M1-Secure-123!'

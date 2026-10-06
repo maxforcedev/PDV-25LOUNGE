@@ -2,7 +2,8 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
-from apps.companies.services import create_company_with_matrix, ensure_permission_catalog
+from apps.companies.services import ensure_permission_catalog
+from apps.saas.tests.helpers import create_operational_company_with_matrix as create_company_with_matrix
 
 
 PASSWORD = 'Mission-M4-1-Secure-123!'

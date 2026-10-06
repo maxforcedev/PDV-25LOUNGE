@@ -17,10 +17,10 @@ from apps.companies.models import (
 from apps.companies.selectors import accessible_branches, accessible_companies
 from apps.companies.serializers import CompanySerializer
 from apps.companies.services import (
-    create_company_with_matrix,
     replace_user_accesses,
     transfer_company_owner,
 )
+from apps.saas.tests.helpers import create_operational_company_with_matrix
 
 
 def create_user(email):
@@ -29,6 +29,12 @@ def create_user(email):
 
 def create_company(name):
     return Company.objects.create(trade_name=name, legal_name=f'{name} Legal')
+
+
+def create_legacy_company_access(**kwargs):
+    access = UserCompanyAccess(**kwargs)
+    access.save(enforce_saas_limit=False)
+    return access
 
 
 def administrator_profile(company):
@@ -83,24 +89,16 @@ class CompanyIdentityTests(TestCase):
 class OwnershipInvariantTests(TestCase):
     def setUp(self):
         self.owner = create_user('owner@example.com')
-        self.company = create_company('Empresa A')
+        self.company = create_operational_company_with_matrix(
+            creator=self.owner, trade_name='Empresa A', legal_name='Empresa A Legal',
+        )
         self.profile = administrator_profile(self.company)
-        self.matrix = Branch.objects.create(company=self.company, name='Matriz')
-        self.access = UserCompanyAccess.objects.create(
-            user=self.owner,
-            company=self.company,
-            access_profile=self.profile,
-            is_owner=True,
-        )
-        UserBranchAccess.objects.create(
-            user=self.owner,
-            branch=self.matrix,
-            access_profile=self.profile,
-        )
+        self.matrix = self.company.branches.get(is_matrix=True)
+        self.access = UserCompanyAccess.objects.get(user=self.owner, company=self.company)
 
     def test_company_creator_becomes_owner(self):
         creator = create_user('creator@example.com')
-        company = create_company_with_matrix(
+        company = create_operational_company_with_matrix(
             creator=creator,
             trade_name='Criada',
             legal_name='Criada Legal',
@@ -204,13 +202,13 @@ class OwnershipInvariantTests(TestCase):
 class TenantIsolationTests(TestCase):
     def test_company_and_branch_selectors_remain_isolated(self):
         user = create_user('tenant-a@example.com')
-        first = create_company_with_matrix(
+        first = create_operational_company_with_matrix(
             creator=user,
             trade_name='Tenant A',
             legal_name='Tenant A Legal',
         )
         outsider = create_user('tenant-b@example.com')
-        second = create_company_with_matrix(
+        second = create_operational_company_with_matrix(
             creator=outsider,
             trade_name='Tenant B',
             legal_name='Tenant B Legal',
@@ -242,19 +240,19 @@ class OwnerBackfillTests(TestCase):
         inactive_user = create_user('inactive@example.com')
         inactive_user.is_active = False
         inactive_user.save()
-        UserCompanyAccess.objects.create(
+        create_legacy_company_access(
             user=inactive_user,
             company=no_candidate,
             access_profile=administrator_profile(no_candidate),
         )
         one_user = create_user('one@example.com')
-        UserCompanyAccess.objects.create(
+        create_legacy_company_access(
             user=one_user,
             company=one_candidate,
             access_profile=administrator_profile(one_candidate),
         )
         for index in range(2):
-            UserCompanyAccess.objects.create(
+            create_legacy_company_access(
                 user=create_user(f'many{index}@example.com'),
                 company=many_candidates,
                 access_profile=administrator_profile(many_candidates),
@@ -279,7 +277,7 @@ class OwnerBackfillTests(TestCase):
     def test_backfill_does_not_ignore_disabled_candidate_when_counting_ambiguity(self):
         company = create_company('Candidatos Mistos')
         profile = administrator_profile(company)
-        UserCompanyAccess.objects.create(
+        create_legacy_company_access(
             user=create_user('enabled@example.com'),
             company=company,
             access_profile=profile,
@@ -287,7 +285,7 @@ class OwnerBackfillTests(TestCase):
         disabled = create_user('disabled@example.com')
         disabled.is_active = False
         disabled.save()
-        UserCompanyAccess.objects.create(
+        create_legacy_company_access(
             user=disabled,
             company=company,
             access_profile=profile,
@@ -307,9 +305,11 @@ class AssignCompanyOwnerCommandTests(TestCase):
     def setUp(self):
         self.company = create_company('Pendente')
         self.user = create_user('pending-owner@example.com')
-        self.matrix = Branch.objects.create(company=self.company, name='Matriz')
+        self.matrix = Branch.objects.create(
+            company=self.company, name='Matriz', enforce_saas_limit=False,
+        )
         self.profile = administrator_profile(self.company)
-        self.access = UserCompanyAccess.objects.create(
+        self.access = create_legacy_company_access(
             user=self.user,
             company=self.company,
             access_profile=self.profile,
@@ -353,7 +353,7 @@ class AssignCompanyOwnerCommandTests(TestCase):
             stdout=StringIO(),
         )
         other = create_user('replacement@example.com')
-        UserCompanyAccess.objects.create(
+        create_legacy_company_access(
             user=other,
             company=self.company,
             access_profile=self.profile,
@@ -375,20 +375,12 @@ class OwnerTransferTests(TestCase):
     def setUp(self):
         self.owner = create_user('current@example.com')
         self.target = create_user('target@example.com')
-        self.company = create_company('Transferivel')
+        self.company = create_operational_company_with_matrix(
+            creator=self.owner, trade_name='Transferivel', legal_name='Transferivel Legal',
+        )
         profile = administrator_profile(self.company)
-        self.matrix = Branch.objects.create(company=self.company, name='Matriz')
-        self.current_access = UserCompanyAccess.objects.create(
-            user=self.owner,
-            company=self.company,
-            access_profile=profile,
-            is_owner=True,
-        )
-        UserBranchAccess.objects.create(
-            user=self.owner,
-            branch=self.matrix,
-            access_profile=profile,
-        )
+        self.matrix = self.company.branches.get(is_matrix=True)
+        self.current_access = UserCompanyAccess.objects.get(user=self.owner, company=self.company)
         self.target_access = UserCompanyAccess.objects.create(
             user=self.target,
             company=self.company,
@@ -474,14 +466,12 @@ class OwnerTransferTests(TestCase):
     def test_transfer_api_is_tenant_isolated(self):
         other_owner = create_user('other-owner@example.com')
         other_target = create_user('other-target@example.com')
-        other_company = create_company('Outra Empresa')
-        profile = administrator_profile(other_company)
-        UserCompanyAccess.objects.create(
-            user=other_owner,
-            company=other_company,
-            access_profile=profile,
-            is_owner=True,
+        other_company = create_operational_company_with_matrix(
+            creator=other_owner,
+            trade_name='Outra Empresa',
+            legal_name='Outra Empresa Legal',
         )
+        profile = administrator_profile(other_company)
         UserCompanyAccess.objects.create(
             user=other_target,
             company=other_company,

@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.companies.models import Status
-from apps.companies.services import create_company_with_matrix
+from apps.saas.tests.helpers import create_operational_company_with_matrix as create_company_with_matrix
 from apps.pos.models import POSDevice
 from apps.products.models import ProductionDestination
 from apps.production.models import PrintDocument, PrintDocumentType, PrintJob, PrintJobStatus, PrinterDevice
@@ -23,7 +23,6 @@ class POSPrintExecutorTests(TestCase):
         self.owner = User.objects.create_user(email='print-owner@example.com', password='Print-123!')
         self.company = create_company_with_matrix(
             creator=self.owner, trade_name='Print Co', legal_name='Print Co Ltd',
-            enforce_saas_limits=False,
         )
         self.branch = self.company.branches.get(is_matrix=True)
         self.destination = ProductionDestination.objects.create(

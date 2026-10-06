@@ -7,8 +7,9 @@ from django.test import TestCase, TransactionTestCase
 from apps.accounts.models import User
 from apps.companies.selectors import customer_search_queryset, inactive_customer_identity_match
 from apps.companies.services import (
-    CustomerIdentityConflict, create_company_with_matrix, create_customer, set_customer_status,
+    CustomerIdentityConflict, create_customer, set_customer_status,
 )
+from apps.saas.tests.helpers import create_operational_company_with_matrix as create_company_with_matrix
 
 
 class CustomerDomainTests(TestCase):

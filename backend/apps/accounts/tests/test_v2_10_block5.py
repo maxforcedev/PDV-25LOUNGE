@@ -19,6 +19,7 @@ from apps.companies.models import Company, Branch
 from apps.companies.services import (
     create_company_with_matrix, ensure_permission_catalog,
 )
+from apps.saas.tests.helpers import create_operational_company_with_matrix
 from apps.products.models import (
     Category, ModifierGroup, ModifierOption, ProductionDestination,
     Product, ProductModifierGroup, Unit, InventoryBehavior,
@@ -37,6 +38,7 @@ class SessionsRemovalTests(TestCase):
         self.owner = create_user('owner@b5reg.com')
         self.company = create_company_with_matrix(
             creator=self.owner, trade_name='B5Reg', legal_name='B5Reg Legal',
+            enforce_saas_limits=False,
         )
         self.branch = self.company.branches.get(is_matrix=True)
 
@@ -81,7 +83,7 @@ class CompanyIntactTests(TestCase):
     def setUp(self):
         ensure_permission_catalog()
         self.owner = create_user('owner@ci.com')
-        self.company = create_company_with_matrix(
+        self.company = create_operational_company_with_matrix(
             creator=self.owner, trade_name='CI', legal_name='CI Legal',
         )
         self.branch = self.company.branches.get(is_matrix=True)
@@ -103,7 +105,7 @@ class LifecycleTests(TestCase):
     def setUp(self):
         ensure_permission_catalog()
         self.owner = create_user('owner@lc.com')
-        self.company = create_company_with_matrix(
+        self.company = create_operational_company_with_matrix(
             creator=self.owner, trade_name='LC', legal_name='LC Legal',
         )
         self.branch = self.company.branches.get(is_matrix=True)

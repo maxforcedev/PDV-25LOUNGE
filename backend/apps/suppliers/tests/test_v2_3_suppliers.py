@@ -15,7 +15,6 @@ from apps.base.models import AuditLog
 from apps.companies.models import (
     AccessProfile,
     Branch,
-    Company,
     FunctionalPermission,
     UserBranchAccess,
     UserCompanyAccess,
@@ -25,7 +24,7 @@ from apps.companies.services import create_company_with_matrix
 from apps.products.models import Category, Product
 from apps.saas.models import PlatformPermission, Subscription, SupportSession
 from apps.saas.services import create_support_session, map_existing_company
-from apps.saas.tests.helpers import create_complete_test_plan
+from apps.saas.tests.helpers import create_complete_test_plan, create_operational_company_with_matrix
 from apps.saas.tests.test_v2_2_saas import (
     PASSWORD,
     create_plan,
@@ -41,7 +40,13 @@ from ..views import SupplierViewSet
 
 
 def create_company(name):
-    return Company.objects.create(trade_name=name, legal_name=f'{name} Legal')
+    owner = User.objects.create_user(
+        email=f'{name.lower().replace(" ", "-")}@supplier-test.example.com',
+        password=PASSWORD,
+    )
+    return create_operational_company_with_matrix(
+        creator=owner, trade_name=name, legal_name=f'{name} Legal',
+    )
 
 
 def create_product(company, name, code):
@@ -310,8 +315,9 @@ class SupplierApiTests(TestCase):
         )
         self.company = create_company_with_matrix(
             creator=self.user, trade_name='API Tenant', legal_name='API Tenant Legal',
+            enforce_saas_limits=False,
         )
-        self.other_company = create_company_with_matrix(
+        self.other_company = create_operational_company_with_matrix(
             creator=User.objects.create_user(email='other-admin@example.com', password='password-123'),
             trade_name='Outro API Tenant', legal_name='Outro API Tenant Legal',
         )

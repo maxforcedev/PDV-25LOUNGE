@@ -115,6 +115,7 @@ def create_tenant(
         creator=owner,
         trade_name=name,
         legal_name=f'{name} Legal',
+        enforce_saas_limits=False,
     )
     subscription = None
     if plan_version:
@@ -550,12 +551,14 @@ class EntitlementAndLimitTests(TestCase):
         owner, company, _ = create_tenant('Limited')
         profile = AccessProfile.objects.get(company=company, name='Administrador')
         extra_users = [create_user(f'extra-{index}@example.com') for index in range(2)]
-        accesses = [
-            UserCompanyAccess.objects.create(
-                user=user, company=company, access_profile=profile
+        accesses = []
+        for user in extra_users:
+            access = UserCompanyAccess(
+                user=user, company=company, access_profile=profile,
             )
-            for user in extra_users
-        ]
+            # This limit test models a pre-mapping tenant already over its future seat limit.
+            access.save(enforce_saas_limit=False)
+            accesses.append(access)
         map_existing_company(
             company=company, plan_version=version,
             billing_mode=Subscription.BillingMode.PAID,

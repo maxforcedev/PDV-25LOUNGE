@@ -190,7 +190,12 @@ class Block3InventoryTests(TestCase):
 
     def test_loss_rejects_cross_tenant_product_and_branch(self):
         other_company = Company.objects.create(trade_name='Outro B3', legal_name='Outro B3 Ltda')
-        other_branch = Branch.objects.create(company=other_company, name='Outra matriz', is_matrix=True)
+        other_branch = Branch.objects.create(
+            company=other_company,
+            name='Outra matriz',
+            is_matrix=True,
+            enforce_saas_limit=False,
+        )
         other_category = Category.objects.create(company=other_company, name='Outra categoria')
         other_product = Product.objects.create(
             company=other_company, category=other_category, name='Produto externo',

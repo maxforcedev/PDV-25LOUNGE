@@ -3,7 +3,7 @@ from decimal import Decimal
 from apps.accounts.models import User
 from apps.companies.services import create_company_with_matrix
 from apps.saas.models import Plan, PlanEntitlement, PlanVersion, Subscription
-from apps.saas.services import ensure_capability_catalog, map_existing_company
+from apps.saas.services import current_subscription, ensure_capability_catalog, map_existing_company
 
 
 COMMERCIAL_FEATURES = (
@@ -66,6 +66,24 @@ def create_complete_test_plan(
     return version
 
 
+def create_operational_company_with_matrix(
+    *, creator, code='test-operational', plan_version=None, **company_data,
+):
+    """Create a mapped tenant for non-SaaS tests after the matrix bootstrap."""
+    plan_version = plan_version or create_complete_test_plan(code)
+    company = create_company_with_matrix(
+        creator=creator,
+        enforce_saas_limits=False,
+        **company_data,
+    )
+    map_existing_company(
+        company=company,
+        plan_version=plan_version,
+        billing_mode=Subscription.BillingMode.PAID,
+    )
+    return company
+
+
 def create_operational_test_tenant(
     *,
     code,
@@ -76,15 +94,12 @@ def create_operational_test_tenant(
     plan_version=None,
 ):
     owner = User.objects.create_user(email=email, password=password)
-    company = create_company_with_matrix(
+    company = create_operational_company_with_matrix(
         creator=owner,
+        code=code,
+        plan_version=plan_version,
         trade_name=trade_name,
         legal_name=legal_name,
     )
-    plan_version = plan_version or create_complete_test_plan(code)
-    subscription, _ = map_existing_company(
-        company=company,
-        plan_version=plan_version,
-        billing_mode=Subscription.BillingMode.PAID,
-    )
+    subscription = current_subscription(company)
     return owner, company, subscription

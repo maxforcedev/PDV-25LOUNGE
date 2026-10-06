@@ -127,6 +127,7 @@ class BoundRuntimeContextTests(TestCase):
         self.blocked_company = create_company_with_matrix(
             creator=self.owner,
             trade_name='Runtime Blocked', legal_name='Runtime Blocked Legal',
+            enforce_saas_limits=False,
         )
         self.blocked_subscription, _ = map_existing_company(
             company=self.blocked_company,

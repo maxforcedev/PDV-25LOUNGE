@@ -109,6 +109,7 @@ class Block6Fixture:
         self.owner = create_user('owner@block6.com')
         self.company = create_company_with_matrix(
             creator=self.owner, trade_name='Block6 Co', legal_name='Block6 Co Legal',
+            enforce_saas_limits=False,
         )
         map_existing_company(
             company=self.company,

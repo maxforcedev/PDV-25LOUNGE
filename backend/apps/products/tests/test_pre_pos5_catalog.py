@@ -3,7 +3,7 @@ from decimal import Decimal
 from django.test import TestCase
 
 from apps.accounts.models import User
-from apps.companies.services import create_company_with_matrix
+from apps.saas.tests.helpers import create_operational_company_with_matrix as create_company_with_matrix
 from apps.products.models import Category, Product, ProductBranchConfig, SalesChannel, Unit
 from apps.products.selectors import sellable_products_for_branch
 

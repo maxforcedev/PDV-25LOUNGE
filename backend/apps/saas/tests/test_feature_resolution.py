@@ -37,6 +37,7 @@ class CapabilityResolutionTests(TestCase):
             creator=self.user,
             trade_name='Capability Resolution',
             legal_name='Capability Resolution Ltda',
+            enforce_saas_limits=False,
         )
         self.branch = self.company.branches.get(is_matrix=True)
         self.branch.settings.uses_tables = True
@@ -179,6 +180,7 @@ class CapabilityResolutionTests(TestCase):
             creator=self.user,
             trade_name='Device Limit',
             legal_name='Device Limit Ltda',
+            enforce_saas_limits=False,
         )
         second_branch = second_company.branches.get(is_matrix=True)
         map_existing_company(
@@ -216,6 +218,7 @@ class CapabilityResolutionTests(TestCase):
             creator=self.user,
             trade_name='Products Enabled',
             legal_name='Products Enabled Ltda',
+            enforce_saas_limits=False,
         )
         second_branch = second_company.branches.get(is_matrix=True)
         map_existing_company(

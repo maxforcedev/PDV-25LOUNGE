@@ -223,7 +223,7 @@ class MissionM8PrinterTests(TestCase):
         company_access = UserCompanyAccess(
             user=operator, company=self.company, access_profile=profile,
         )
-        company_access.save(enforce_saas_limit=False)
+        company_access.save()
         UserBranchAccess.objects.create(
             user=operator, branch=self.branch, access_profile=profile,
         )

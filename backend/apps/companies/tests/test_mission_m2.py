@@ -19,9 +19,11 @@ class BranchCompanyContextTests(TestCase):
         self.owner = User.objects.create_user(email='owner.m2@example.com', password=PASSWORD)
         self.company_a = create_company_with_matrix(
             creator=self.owner, trade_name='Empresa A M2', legal_name='Empresa A M2 Legal',
+            enforce_saas_limits=False,
         )
         self.company_b = create_company_with_matrix(
             creator=self.owner, trade_name='Empresa B M2', legal_name='Empresa B M2 Legal',
+            enforce_saas_limits=False,
         )
         plan = create_complete_test_plan('companies-m2', enabled_features=('production',))
         for company in (self.company_a, self.company_b):

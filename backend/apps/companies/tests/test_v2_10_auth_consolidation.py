@@ -23,10 +23,10 @@ from apps.companies.selectors import (
     user_has_company_permission,
 )
 from apps.companies.services import (
-    create_company_with_matrix,
     ensure_permission_catalog,
     replace_user_accesses,
 )
+from apps.saas.tests.helpers import create_operational_company_with_matrix as create_company_with_matrix
 
 
 def _admin_profile(company):

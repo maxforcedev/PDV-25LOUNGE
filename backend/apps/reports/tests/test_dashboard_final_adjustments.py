@@ -17,6 +17,7 @@ class DashboardFinalAdjustmentTests(TestCase):
         self.company = create_company_with_matrix(
             creator=self.user,
             trade_name='Dashboard Final', legal_name='Dashboard Final Ltda',
+            enforce_saas_limits=False,
         )
         self.branch = self.company.branches.get(is_matrix=True)
         self.branch.settings.uses_commands = True

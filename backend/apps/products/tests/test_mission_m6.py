@@ -10,8 +10,9 @@ from apps.cash.services import open_session
 from apps.commands.services import (
     add_order_item, cancel_order_item, confirm_order_item, open_command,
 )
-from apps.companies.services import create_company_with_matrix, ensure_permission_catalog
+from apps.companies.services import ensure_permission_catalog
 from apps.companies.models import Branch
+from apps.saas.tests.helpers import create_operational_company_with_matrix as create_company_with_matrix
 from apps.inventory.models import Stock, StockMovement
 from apps.products.models import (
     Category, InventoryBehavior, ModifierGroup, ModifierOption,

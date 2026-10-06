@@ -20,7 +20,6 @@ from apps.base.models import AuditLog
 from apps.companies.models import (
     AccessProfile,
     Branch,
-    Company,
     FunctionalPermission,
     UserBranchAccess,
     UserCompanyAccess,
@@ -70,8 +69,17 @@ from ..services import (
 
 
 def company_fixture(name='V24'):
-    company = Company.objects.create(trade_name=name, legal_name=f'{name} Ltda')
-    branch = Branch.objects.create(company=company, name='Matriz', is_matrix=True)
+    owner = User.objects.create_user(
+        email=f'{name.lower()}-{uuid.uuid4().hex}@purchase-test.example.com',
+        password='password-123',
+    )
+    company = create_operational_company_with_matrix(
+        creator=owner,
+        code=f'purchases-{name.lower()}',
+        trade_name=name,
+        legal_name=f'{name} Ltda',
+    )
+    branch = company.branches.get(is_matrix=True)
     category = Category.objects.create(
         company=company, branch=branch, name=f'Compras {uuid.uuid4()}'
     )

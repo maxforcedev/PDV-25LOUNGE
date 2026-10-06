@@ -20,9 +20,8 @@ from apps.accounts.models import User
 from apps.base.models import AuditLog
 from apps.companies.models import BranchSettings, Status
 from apps.companies.features import branch_feature_states, branch_feature_enabled
-from apps.companies.services import (
-    create_company_with_matrix, ensure_permission_catalog,
-)
+from apps.companies.services import ensure_permission_catalog
+from apps.saas.tests.helpers import create_operational_company_with_matrix as create_company_with_matrix
 from apps.cash.models import (
     CashMovement, CashRegister, CashSession, CashSessionStatus, ResultEffect,
 )

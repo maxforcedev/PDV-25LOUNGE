@@ -7,7 +7,7 @@ from django.test import TestCase
 from apps.accounts.models import User
 from apps.base.models import AuditLog
 from apps.companies.models import Status
-from apps.companies.services import create_company_with_matrix
+from apps.saas.tests.helpers import create_operational_company_with_matrix as create_company_with_matrix
 from apps.pos.models import POSDevice
 from apps.payment_integrations.models import (
     PaymentAttempt, PaymentAttemptStatus, PaymentIntent, PaymentIntentOriginType, PaymentIntentStatus, PaymentProvider,

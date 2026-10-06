@@ -80,7 +80,9 @@ def ensure_capability_catalog():
     return result
 
 
+@transaction.atomic
 def get_global_settings():
+    _advisory_transaction_lock('global-saas-settings', 'singleton')
     settings, _ = GlobalSaaSSettings.objects.get_or_create(singleton=True)
     return settings
 
