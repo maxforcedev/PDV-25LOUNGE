@@ -11,6 +11,7 @@ from rest_framework.test import APIClient
 from apps.accounts.models import User
 from apps.attendance.services import open_table_attendance
 from apps.base.exceptions import DomainValidationError
+from apps.cash.models import CashRegister, CashSession
 from apps.commands.models import Table
 from apps.companies.features import branch_feature_states
 from apps.companies.serializers import BranchSettingsSerializer
@@ -264,6 +265,14 @@ class CapabilityResolutionTests(TestCase):
             self.assertEqual(response.status_code, 403, (path, response.data))
 
     def test_reports_options_hide_disabled_module_filters(self):
+        register = CashRegister.objects.create(branch=self.branch, name='Caixa bloqueado')
+        CashSession.objects.create(
+            cash_register=register,
+            branch=self.branch,
+            opened_by=self.user,
+            opened_at=timezone.now(),
+            opening_amount=Decimal('0.00'),
+        )
         map_existing_company(
             company=self.company,
             plan_version=self._plan('report-options-disabled', tables=False, features=('reports',)),
@@ -293,6 +302,100 @@ class CapabilityResolutionTests(TestCase):
         self.assertNotIn('withdrawals', response.data)
         self.assertNotIn('current_cash', response.data)
         self.assertNotIn('inventory', response.data)
+
+    def test_dashboard_keeps_enabled_module_widgets(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan(
+                'dashboard-modules-enabled',
+                tables=False,
+                features=('reports', 'cash_register', 'consumption', 'inventory'),
+            ),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+
+        response = self._superuser_client().get('/api/v1/dashboard/')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIn('consumptions', response.data)
+        self.assertIn('current_cash', response.data)
+        self.assertIn('inventory', response.data)
+
+    def test_payables_options_require_financial_capability(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan(
+                'payables-without-financial',
+                tables=False,
+                features=('reports', 'purchases'),
+            ),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+
+        response = self._superuser_client().get(
+            '/api/v1/reports/purchase-options/?scope=payables',
+        )
+
+        self.assertEqual(response.status_code, 403, response.data)
+
+    def test_payables_options_require_purchases_capability(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan(
+                'payables-without-purchases',
+                tables=False,
+                features=('reports', 'financial'),
+            ),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+
+        response = self._superuser_client().get(
+            '/api/v1/reports/purchase-options/?scope=payables',
+        )
+
+        self.assertEqual(response.status_code, 403, response.data)
+
+    def test_payables_options_allow_purchases_and_financial(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan(
+                'payables-enabled',
+                tables=False,
+                features=('reports', 'purchases', 'financial'),
+            ),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+
+        now = timezone.now()
+        response = self._superuser_client().get('/api/v1/reports/purchase-options/', {
+            'scope': 'payables',
+            'start_datetime': (now - timedelta(days=1)).isoformat(),
+            'end_datetime': now.isoformat(),
+        })
+
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_commercial_options_hide_catalog_without_products_capability(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan(
+                'promotions-without-products',
+                tables=False,
+                features=('reports', 'promotions'),
+            ),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+
+        now = timezone.now()
+        response = self._superuser_client().get('/api/v1/reports/commercial-options/', {
+            'scope': 'promotions',
+            'start_datetime': (now - timedelta(days=1)).isoformat(),
+            'end_datetime': now.isoformat(),
+        })
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['products'], [])
+        self.assertEqual(response.data['categories'], [])
 
     def test_pos_modules_and_device_administration_respect_capabilities(self):
         self.branch.settings.uses_counter = True

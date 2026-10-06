@@ -17,7 +17,7 @@ from apps.production.models import (
     PrinterDevice,
     PrinterOperationalStatus,
 )
-from apps.saas.tests.helpers import create_operational_test_tenant
+from apps.saas.tests.helpers import create_complete_test_plan, create_operational_test_tenant
 
 
 class MissionM8PrinterTests(TestCase):
@@ -28,6 +28,9 @@ class MissionM8PrinterTests(TestCase):
             password='Mission-M8-123!',
             trade_name='Empresa M8',
             legal_name='Empresa M8 Legal',
+            plan_version=create_complete_test_plan(
+                'production-m8', enabled_features=('production', 'products'),
+            ),
         )
         self.branch = self.company.branches.get(is_matrix=True)
         self.client = APIClient()

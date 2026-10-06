@@ -840,7 +840,9 @@ class PlatformSubscriptionAdministrationTests(TestCase):
     def setUp(self):
         self.version = create_plan(code='platform-subscription', trial_days=3)
         self.owner, self.company, self.subscription = create_tenant(
-            'Platform Subscription', plan_version=self.version
+            'Platform Subscription',
+            plan_version=self.version,
+            initial_subscription_mode=Subscription.Status.TRIALING,
         )
         self.actor = create_user('subscription-admin@example.com')
         call_command('bootstrap_platform_admin', email=self.actor.email, stdout=StringIO())
@@ -1022,7 +1024,11 @@ class PlatformSubscriptionAdministrationTests(TestCase):
         self.assertEqual(self.subscription.trial_ends_at, before_trial_end)
         self.assertTrue(AuditLog.objects.filter(action='saas.subscription.trial.end').exists())
 
-        _, _, expired = create_tenant('Expired Trial Activation', plan_version=self.version)
+        _, _, expired = create_tenant(
+            'Expired Trial Activation',
+            plan_version=self.version,
+            initial_subscription_mode=Subscription.Status.TRIALING,
+        )
         expired.status = Subscription.Status.TRIAL_EXPIRED
         expired.save(update_fields=('status', 'updated_at'))
         response = self.client.post(

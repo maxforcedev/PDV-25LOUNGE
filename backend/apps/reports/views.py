@@ -178,9 +178,12 @@ def overview_comparison_data(request, *, start, end, filters):
             'service_fee': commercial['service_fee'],
             'cancellations': cancellations['value'],
         }
-        if any(user_has_code(request, code) for code in (
-            'reports.view_consumptions', 'sales.view_consumption',
-        )):
+        if (
+            branch_feature_enabled(request.branch_context, 'consumption')
+            and any(user_has_code(request, code) for code in (
+                'reports.view_consumptions', 'sales.view_consumption',
+            ))
+        ):
             consumptions, consumption_reversals = period_event_sales(
                 branch=request.branch_context, start=period_start, end=period_end,
                 filters=filters, operation_types=(OperationType.CONSUMPTION,),
@@ -189,7 +192,7 @@ def overview_comparison_data(request, *, start, end, filters):
                 consumptions, filters=filters, reversals=consumption_reversals,
             )
             values['consumptions_courtesies'] = consumption['subsidy']
-        can_view_result = all((
+        can_view_result = branch_feature_enabled(request.branch_context, 'inventory') and all((
             user_has_code(request, 'reports.view_operational_result'),
             user_has_code(request, 'inventory.view_stock_costs'),
             user_has_code(request, 'commissions.view'),
@@ -202,6 +205,12 @@ def overview_comparison_data(request, *, start, end, filters):
             statement = operational_result(
                 branch=request.branch_context, start=period_start, end=period_end,
                 sales=result_sales, filters=filters,
+                include_consumptions=branch_feature_enabled(
+                    request.branch_context, 'consumption',
+                ),
+                include_cash_withdrawals=branch_feature_enabled(
+                    request.branch_context, 'cash_register',
+                ),
             )
             values['estimated_result'] = statement['estimated_result']
             values['estimated_margin'] = statement['margin']
@@ -280,7 +289,10 @@ def operational_result_data(request, summary, *, extra_keys=()):
         if key in summary:
             data[key] = summary[key]
     can_view_commission = user_has_code(request, 'commissions.view')
-    can_view_costs = user_has_code(request, 'inventory.view_stock_costs')
+    can_view_costs = (
+        branch_feature_enabled(request.branch_context, 'inventory')
+        and user_has_code(request, 'inventory.view_stock_costs')
+    )
     if can_view_commission and 'commission' in summary:
         for key in ('commission', 'commission_inflows', 'commission_reversals'):
             if key in summary:
@@ -377,7 +389,6 @@ class ReportsOptionsView(APIView):
         ))
         can_view_withdrawals = feature_enabled('cash_register') and user_has_code(request, 'reports.view_withdrawals')
         can_view_cash = feature_enabled('cash_register') and user_has_code(request, 'reports.view_cash')
-        can_view_result = user_has_code(request, 'reports.view_operational_result')
         can_view_inventory = feature_enabled('inventory') and any(user_has_code(request, code) for code in (
             'reports.view_inventory', 'reports.view_stock_consumption',
         ))
@@ -454,13 +465,15 @@ class ReportsOptionsView(APIView):
             Q(status='active') | Q(pk__in=historical_register_ids)
         ).order_by(
             'name', 'id'
-        ) if (
-            can_view_cash or can_view_withdrawals or can_view_result
+        ) if feature_enabled('cash_register') and (
+            can_view_cash or can_view_withdrawals
+            or user_has_code(request, 'reports.view_operational_result')
         ) else CashRegister.objects.none()
         sessions = CashSession.objects.filter(branch=branch).select_related(
             'cash_register'
-        ).order_by('-opened_at', '-id') if (
-            can_view_cash or can_view_result
+        ).order_by('-opened_at', '-id') if feature_enabled('cash_register') and (
+            can_view_cash or can_view_withdrawals
+            or user_has_code(request, 'reports.view_operational_result')
         ) else CashSession.objects.none()
         eligible_seller_ids = eligible_branch_users(
             branch, 'sales.create'
@@ -997,6 +1010,8 @@ class DashboardView(APIView):
             result = operational_result(
                 branch=branch, start=start, end=end, sales=result_sales,
                 filters=item_filters,
+                include_consumptions=has_feature('consumption'),
+                include_cash_withdrawals=has_feature('cash_register'),
             )
             response['operational_result'] = operational_result_data(request, result)
             if category is not None:
@@ -1811,7 +1826,11 @@ class OperationalResultReportView(BaseReportView):
     def get(self, request):
         filters, start, end = self.parse_query(request)
         session = None
+        has_cash_register = branch_feature_enabled(request.branch_context, 'cash_register')
+        has_consumption = branch_feature_enabled(request.branch_context, 'consumption')
         if filters.get('cash_session'):
+            if not has_cash_register:
+                raise PermissionDenied('O plano nao permite filtros por sessao de caixa.')
             session = CashSession.objects.get(
                 pk=filters['cash_session'], branch=request.branch_context
             )
@@ -1830,6 +1849,8 @@ class OperationalResultReportView(BaseReportView):
             end=end,
             sales=sales,
             cash_session=session,
+            include_consumptions=has_consumption,
+            include_cash_withdrawals=has_cash_register,
         )
         data = operational_result_data(
             request, summary,
@@ -1844,13 +1865,14 @@ class OperationalResultReportView(BaseReportView):
         )
         for key in (
             'sales_inflow_count', 'sales_reversal_count',
-            'consumption_inflow_count', 'consumption_reversal_count',
+            *(('consumption_inflow_count', 'consumption_reversal_count') if has_consumption else ()),
         ):
             data[key] = summary[key]
-        data['unclassified_withdrawals'] = {
-            'count': summary['unclassified_withdrawals']['count'],
-            'amount': decimal_string(summary['unclassified_withdrawals']['amount']),
-        }
+        if has_cash_register:
+            data['unclassified_withdrawals'] = {
+                'count': summary['unclassified_withdrawals']['count'],
+                'amount': decimal_string(summary['unclassified_withdrawals']['amount']),
+            }
         data['cash_session'] = session.pk if session else None
         data['event_accounting'] = summary['event_accounting']
         data['notice'] = (
@@ -4129,17 +4151,18 @@ class CommercialComplementsOptionsView(APIView):
         historical_category_ids = item_history.exclude(category_id_snapshot=None).values_list(
             'category_id_snapshot', flat=True,
         )
+        product_options = branch_feature_enabled(branch, 'products')
         response = {
             'products': list(Product.objects.filter(company=branch.company).filter(
                 Q(status='active', archived_at__isnull=True) | Q(pk__in=historical_product_ids)
             ).order_by('name', 'id').values(
                 'id', 'name', 'internal_code', 'status',
-            )),
+            )) if product_options else [],
             'categories': list(Category.objects.filter(branch=branch).filter(
                 Q(status='active', deleted_at__isnull=True) | Q(pk__in=historical_category_ids)
             ).order_by('name', 'id').values(
                 'id', 'name', 'status',
-            )),
+            )) if product_options else [],
         }
         if scope == 'promotions':
             promotion_ids = item_history.exclude(

@@ -1045,20 +1045,24 @@ def dashboard_time_analysis(
     )
 
 
-def operational_result(*, branch, start, end, sales, cash_session=None, filters=None):
+def operational_result(
+    *, branch, start, end, sales, cash_session=None, filters=None,
+    include_consumptions=True, include_cash_withdrawals=True,
+):
     consumptions = period_filter(
         Sale.objects.filter(
             branch=branch,
             operation_type=OperationType.CONSUMPTION,
         ),
         'created_at', start, end,
-    )
+    ) if include_consumptions else Sale.objects.none()
     if cash_session:
         consumptions = consumptions.filter(cash_session=cash_session)
     operations = list(_financial_sales(sales)) + list(_financial_sales(consumptions))
     reversals = filtered_reversals(
         branch=branch, start=start, end=end, filters={},
-        operation_types=(OperationType.SALE, OperationType.CONSUMPTION),
+        operation_types=(OperationType.SALE, OperationType.CONSUMPTION)
+        if include_consumptions else (OperationType.SALE,),
         cash_session_ids=(cash_session.pk,) if cash_session else None,
     )
     reversals = list(_financial_sales(reversals))
@@ -1068,7 +1072,7 @@ def operational_result(*, branch, start, end, sales, cash_session=None, filters=
             movement_type=CashMovementType.WITHDRAWAL,
         ),
         'created_at', start, end,
-    )
+    ) if include_cash_withdrawals else CashMovement.objects.none()
     if cash_session:
         withdrawals = withdrawals.filter(cash_session=cash_session)
     expense = withdrawals.filter(result_effect=ResultEffect.OPERATING_EXPENSE).aggregate(

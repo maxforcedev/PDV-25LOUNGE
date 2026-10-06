@@ -624,8 +624,8 @@ class FailClosedSaaSContextTests(TestCase):
             plan_version=version,
             billing_mode=Subscription.BillingMode.PAID,
         )
-        expired_subscription.current_period_start = timezone.now() - timedelta(days=31)
-        expired_subscription.current_period_end = timezone.now() - timedelta(seconds=1)
+        expired_subscription.current_period_start = timezone.now() - timedelta(days=2)
+        expired_subscription.current_period_end = timezone.now() - timedelta(days=1)
         expired_subscription.save()
 
         client = APIClient()
@@ -663,7 +663,8 @@ class FailClosedSaaSContextTests(TestCase):
             plan_version=version,
             billing_mode=Subscription.BillingMode.PAID,
         )
-        expired_subscription.current_period_end = timezone.now() - timedelta(seconds=1)
+        expired_subscription.current_period_start = timezone.now() - timedelta(days=2)
+        expired_subscription.current_period_end = timezone.now() - timedelta(days=1)
         expired_subscription.save()
         request = SimpleNamespace(
             path='/api/v1/products/', headers={}, query_params={}, data={},
@@ -674,7 +675,8 @@ class FailClosedSaaSContextTests(TestCase):
         enforce_saas_request(request, owner, view)
 
         active_subscription = active_company.subscriptions.get(is_current=True)
-        active_subscription.current_period_end = timezone.now() - timedelta(seconds=1)
+        active_subscription.current_period_start = timezone.now() - timedelta(days=2)
+        active_subscription.current_period_end = timezone.now() - timedelta(days=1)
         active_subscription.save()
         with self.assertRaises(PermissionDenied):
             enforce_saas_request(request, owner, view)
