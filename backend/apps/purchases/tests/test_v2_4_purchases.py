@@ -34,7 +34,11 @@ from apps.sales.services import _prepare_products
 from apps.reports.selectors import inventory_kpis, stock_consumption_report
 from apps.saas.models import SupportSession
 from apps.saas.services import create_support_session
-from apps.saas.tests.helpers import create_complete_test_plan, create_operational_test_tenant
+from apps.saas.tests.helpers import (
+    create_complete_test_plan,
+    create_operational_company_with_matrix,
+    create_operational_test_tenant,
+)
 from apps.saas.tests.test_v2_2_saas import (
     PASSWORD,
     create_plan,

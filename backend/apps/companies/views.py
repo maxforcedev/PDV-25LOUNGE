@@ -144,7 +144,7 @@ class CompanyViewSet(viewsets.ModelViewSet):
         'activate': 'companies.change',
         'deactivate': 'companies.change',
     }
-    http_method_names = ('get', 'post', 'patch', 'put', 'head', 'options')
+    http_method_names = ('get', 'patch', 'put', 'head', 'options')
 
     def get_queryset(self):
         support_session = getattr(self.request, 'support_session', None)

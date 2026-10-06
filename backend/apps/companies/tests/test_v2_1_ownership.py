@@ -305,9 +305,8 @@ class AssignCompanyOwnerCommandTests(TestCase):
     def setUp(self):
         self.company = create_company('Pendente')
         self.user = create_user('pending-owner@example.com')
-        self.matrix = Branch.objects.create(
-            company=self.company, name='Matriz', enforce_saas_limit=False,
-        )
+        self.matrix = Branch(company=self.company, name='Matriz')
+        self.matrix.save(enforce_saas_limit=False)
         self.profile = administrator_profile(self.company)
         self.access = create_legacy_company_access(
             user=self.user,

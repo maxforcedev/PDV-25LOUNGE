@@ -94,8 +94,7 @@ export default function PlansPage() {
     const critical = { reason, current_password: password };
     try {
       if (editor === "plan-create") {
-        const { code: _code, ...createValues } = values;
-        await api.post("platform/plans/", { ...createValues, ...critical });
+        await api.post("platform/plans/", { ...values, ...critical });
       }
       if (editor === "plan-edit") await api.patch(`platform/plans/${selectedPlan?.id}/`, { ...values, ...critical });
       if (editor === "version-create") await api.post("platform/plan-versions/", { ...versionPayload(values, entitlements), plan: selectedPlan?.id, ...critical });

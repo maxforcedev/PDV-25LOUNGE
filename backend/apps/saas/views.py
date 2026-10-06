@@ -7,6 +7,7 @@ from django.contrib.auth import authenticate, login, logout
 from django.conf import settings
 from django.http import FileResponse, Http404
 from django.core.mail import send_mail
+from django.db import transaction
 from django.db.models import Q
 from django.middleware.csrf import get_token
 from django.utils import timezone
@@ -777,6 +778,7 @@ class PlatformBrandingAssetView(APIView):
     permission_classes = [HasPlatformPermission]
     required_platform_permission = 'platform.settings.manage'
 
+    @transaction.atomic
     def post(self, request, slot):
         field = BRANDING_ASSET_FIELDS.get(slot)
         if not field:
@@ -788,10 +790,11 @@ class PlatformBrandingAssetView(APIView):
         instance = get_global_settings()
         previous = getattr(instance, field)
         previous_name = previous.name if previous else ''
+        previous_storage = previous.storage if previous_name else None
         setattr(instance, field, upload)
         instance.save(update_fields=(field, 'updated_at'))
         if previous_name and previous_name != getattr(instance, field).name:
-            previous.storage.delete(previous_name)
+            transaction.on_commit(lambda: previous_storage.delete(previous_name))
         audit_log(
             actor=request.user, action='saas.branding_asset.upload', obj=instance,
             before={slot: bool(previous_name)}, after={slot: True},
@@ -799,6 +802,7 @@ class PlatformBrandingAssetView(APIView):
         )
         return Response(GlobalSaaSSettingsSerializer(instance, context={'request': request}).data)
 
+    @transaction.atomic
     def delete(self, request, slot):
         field = BRANDING_ASSET_FIELDS.get(slot)
         if not field:
@@ -812,7 +816,7 @@ class PlatformBrandingAssetView(APIView):
         storage = asset.storage
         setattr(instance, field, None)
         instance.save(update_fields=(field, 'updated_at'))
-        storage.delete(name)
+        transaction.on_commit(lambda: storage.delete(name))
         audit_log(
             actor=request.user, action='saas.branding_asset.remove', obj=instance,
             before={slot: True}, after={slot: False}, metadata={'reason': reason},

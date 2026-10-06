@@ -272,12 +272,15 @@ class CompanyViewSetAccessTests(TestCase):
         response = client.get('/api/v1/companies/')
         self.assertEqual(response.status_code, 403)
 
-    def test_non_superuser_cannot_create_company(self):
+    def test_generic_company_creation_is_disabled(self):
         from rest_framework.test import APIClient
+        admin = User.objects.create_superuser(
+            email='company-create-admin@example.com', password='secret123'
+        )
         client = APIClient()
-        client.force_authenticate(user=self.owner)
+        client.force_authenticate(user=admin)
         response = client.post('/api/v1/companies/', {'trade_name': 'X', 'legal_name': 'X Legal'})
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 405)
 
     def test_superuser_can_list_companies(self):
         from rest_framework.test import APIClient

@@ -295,9 +295,8 @@ class TransferFlowTests(TestCase):
 
     def test_transfer_tenant_validation_cancellation_and_manual_bypass_protection(self):
         other = Company.objects.create(trade_name='Outro', legal_name='Outro Ltda')
-        other_branch = Branch.objects.create(
-            company=other, name='Matriz', is_matrix=True, enforce_saas_limit=False,
-        )
+        other_branch = Branch(company=other, name='Matriz', is_matrix=True)
+        other_branch.save(enforce_saas_limit=False)
         with self.assertRaises(ValidationError):
             transfer_fixture(self.origin, other_branch, self.product, self.user)
         with self.assertRaises(ValidationError):
@@ -683,9 +682,8 @@ class InventoryV25ApiTests(TestCase):
         )
 
         other = Company.objects.create(trade_name='Tenant API', legal_name='Tenant API Ltda')
-        other_branch = Branch.objects.create(
-            company=other, name='Matriz', is_matrix=True, enforce_saas_limit=False,
-        )
+        other_branch = Branch(company=other, name='Matriz', is_matrix=True)
+        other_branch.save(enforce_saas_limit=False)
         hidden = self.client.get(
             reverse('stock-transfer-detail', args=[transfer_id]),
             HTTP_X_BRANCH_ID=str(other_branch.pk),
