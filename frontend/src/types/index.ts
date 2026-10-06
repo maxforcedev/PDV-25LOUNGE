@@ -1,3 +1,20 @@
+export interface LegalSettings {
+  legal_name?: string;
+  trade_name?: string;
+  cnpj?: string;
+  address?: string;
+  jurisdiction?: string;
+  commercial_email?: string;
+  legal_email?: string;
+  privacy_email?: string;
+  security_email?: string;
+  dpo_name?: string;
+  dpo_email?: string;
+  website_url?: string;
+  subprocessors_url?: string;
+  effective_date?: string;
+}
+
 export type Status = "active" | "inactive";
 export interface UserCompany {
   id: number;
@@ -146,6 +163,7 @@ export interface PublicBranding {
   support_email: string;
   support_phone: string;
   institutional_links: Record<string, string>;
+  legal_settings?: LegalSettings;
 }
 
 export interface PublicPlan {
@@ -842,6 +860,7 @@ export interface Product {
   archived_at: string | null;
   archived_by: number | null;
   image: string | null;
+  image_url: string | null;
   components: ProductComponent[];
   fraction_components: ProductFractionComponent[];
   suggested_cost: string | null;

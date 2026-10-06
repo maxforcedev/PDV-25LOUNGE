@@ -14,6 +14,7 @@ const DEFAULT_BRANDING: PublicBranding = {
   support_email: "",
   support_phone: "",
   institutional_links: {},
+  legal_settings: {},
 };
 
 const BrandingContext = createContext<PublicBranding>(DEFAULT_BRANDING);
@@ -48,6 +49,9 @@ function normalizeBranding(value: Partial<PublicBranding>): PublicBranding {
     support_email: typeof value.support_email === "string" ? value.support_email.trim() : "",
     support_phone: typeof value.support_phone === "string" ? value.support_phone.trim() : "",
     institutional_links: links,
+    legal_settings: value.legal_settings && typeof value.legal_settings === "object"
+      ? Object.fromEntries(Object.entries(value.legal_settings).filter(([, item]) => typeof item === "string"))
+      : {},
   };
 }
 
@@ -79,15 +83,16 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
     else document.title = branding.platform_name;
 
     let favicon = document.querySelector<HTMLLinkElement>('link[data-runtime-branding="favicon"]');
-    if (branding.favicon_url) {
+      if (branding.favicon_url) {
       if (!favicon) {
         favicon = document.createElement("link");
         favicon.rel = "icon";
         favicon.dataset.runtimeBranding = "favicon";
         document.head.appendChild(favicon);
-      }
-      favicon.href = branding.favicon_url;
-    } else {
+        }
+        favicon.href = branding.favicon_url;
+        favicon.onerror = () => favicon?.remove();
+      } else {
       favicon?.remove();
     }
   }, [branding, pathname]);

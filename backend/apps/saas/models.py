@@ -8,6 +8,10 @@ from django.utils.text import slugify
 
 from apps.base.models import BaseModel
 from apps.companies.models import Company, UserCompanyAccess
+from .storage import (
+    PrivateBrandingStorage, branding_asset_path, validate_branding_favicon,
+    validate_branding_image,
+)
 
 
 class ProtectedQuerySet(models.QuerySet):
@@ -477,11 +481,41 @@ class GlobalSaaSSettings(BaseModel):
     logo_dark_url = models.URLField(blank=True)
     compact_logo_light_url = models.URLField(blank=True)
     compact_logo_dark_url = models.URLField(blank=True)
+    # Files are the active branding source; URL fields above remain legacy-only.
+    logo_file = models.FileField(
+        storage=PrivateBrandingStorage(), upload_to=branding_asset_path,
+        validators=[validate_branding_image], blank=True,
+    )
+    compact_logo_file = models.FileField(
+        storage=PrivateBrandingStorage(), upload_to=branding_asset_path,
+        validators=[validate_branding_image], blank=True,
+    )
+    favicon_file = models.FileField(
+        storage=PrivateBrandingStorage(), upload_to=branding_asset_path,
+        validators=[validate_branding_favicon], blank=True,
+    )
+    logo_light_file = models.FileField(
+        storage=PrivateBrandingStorage(), upload_to=branding_asset_path,
+        validators=[validate_branding_image], blank=True,
+    )
+    logo_dark_file = models.FileField(
+        storage=PrivateBrandingStorage(), upload_to=branding_asset_path,
+        validators=[validate_branding_image], blank=True,
+    )
+    compact_logo_light_file = models.FileField(
+        storage=PrivateBrandingStorage(), upload_to=branding_asset_path,
+        validators=[validate_branding_image], blank=True,
+    )
+    compact_logo_dark_file = models.FileField(
+        storage=PrivateBrandingStorage(), upload_to=branding_asset_path,
+        validators=[validate_branding_image], blank=True,
+    )
     primary_color = models.CharField(max_length=20, default='#111827')
     support_email = models.EmailField(blank=True)
     support_phone = models.CharField(max_length=30, blank=True)
     support_whatsapp = models.CharField(max_length=30, blank=True)
     institutional_links = models.JSONField(default=dict, blank=True)
+    legal_settings = models.JSONField(default=dict, blank=True)
 
     def clean(self):
         if self.past_due_days > self.restricted_after_days:

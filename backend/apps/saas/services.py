@@ -243,9 +243,7 @@ def assert_resource_limit(company, code, delta=1, *, company_locked=False):
         Company.objects.select_for_update().get(pk=company.pk)
     subscription = current_subscription(company)
     if not subscription:
-        if get_global_settings().enforcement_enabled:
-            raise ValidationError({'subscription': 'Tenant sem assinatura corrente apos o cutover.'})
-        return
+        raise ValidationError({'subscription': 'Tenant sem assinatura corrente.'})
     entitlement = effective_entitlement(company, code)
     if entitlement is None:
         raise ValidationError({'limit': f'O plano nao define o entitlement obrigatorio {code}.'})

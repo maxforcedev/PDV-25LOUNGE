@@ -1,9 +1,11 @@
 import hashlib
 import logging
+import mimetypes
 from decimal import Decimal
 
 from django.contrib.auth import authenticate, login, logout
 from django.conf import settings
+from django.http import FileResponse, Http404
 from django.core.mail import send_mail
 from django.db.models import Q
 from django.middleware.csrf import get_token
@@ -41,9 +43,11 @@ from .models import (
 from .permissions import HasPlatformPermission, IsCompanyOwner
 from .serializers import (
     BillingRecordSerializer,
+    BRANDING_ASSET_FIELDS,
     CancellationRequestSerializer,
     CapabilitySerializer,
     CommercialLeadSerializer,
+    CommercialLeadStatusSerializer,
     CycleUsageSerializer,
     GlobalSaaSSettingsSerializer,
     ManualPaymentSerializer,
@@ -53,6 +57,7 @@ from .serializers import (
     PlanSerializer,
     PlanVersionSerializer,
     PlatformLoginSerializer,
+    PlatformCommercialLeadSerializer,
     PlatformUserSerializer,
     PublicPlanVersionSerializer,
     ProvisioningResultSerializer,
@@ -149,7 +154,23 @@ class PublicSettingsView(APIView):
 
     def get(self, request):
         instance = GlobalSaaSSettings.objects.first() or GlobalSaaSSettings()
-        return Response(PublicBrandingSerializer(instance).data)
+        return Response(PublicBrandingSerializer(instance, context={'request': request}).data)
+
+
+class PublicBrandingAssetView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def get(self, request, slot):
+        field = BRANDING_ASSET_FIELDS.get(slot)
+        instance = GlobalSaaSSettings.objects.first()
+        if not field or not instance:
+            raise Http404
+        asset = getattr(instance, field)
+        if not asset or not asset.storage.exists(asset.name):
+            raise Http404
+        content_type = mimetypes.guess_type(asset.name)[0] or 'application/octet-stream'
+        return FileResponse(asset.open('rb'), content_type=content_type)
 
 
 def _notify_commercial_lead(lead):
@@ -503,6 +524,49 @@ class PlatformTenantViewSet(viewsets.ReadOnlyModelViewSet):
         }
 
 
+class PlatformCommercialLeadViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = CommercialLead.objects.all()
+    serializer_class = PlatformCommercialLeadSerializer
+    permission_classes = [HasPlatformPermission]
+    required_platform_permission = 'platform.leads.manage'
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        search = self.request.query_params.get('search', '').strip()
+        status_value = self.request.query_params.get('status', '').strip()
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search)
+                | Q(company_name__icontains=search)
+                | Q(email__icontains=search)
+                | Q(whatsapp__icontains=search)
+            )
+        if status_value:
+            if status_value not in CommercialLead.Status.values:
+                raise ValidationError({'status': 'Informe um status de lead valido.'})
+            queryset = queryset.filter(status=status_value)
+        return queryset
+
+    @action(detail=True, methods=['post'])
+    def status(self, request, pk=None):
+        lead = self.get_object()
+        serializer = CommercialLeadStatusSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        previous_status = lead.status
+        lead.status = serializer.validated_data['status']
+        if lead.status == previous_status:
+            return Response(self.get_serializer(lead).data)
+        lead.save(update_fields=('status', 'updated_at'))
+        audit_log(
+            actor=request.user,
+            action='saas.commercial_lead.status_change',
+            obj=lead,
+            before={'status': previous_status},
+            after={'status': lead.status},
+        )
+        return Response(self.get_serializer(lead).data)
+
+
 class PlanViewSet(viewsets.ModelViewSet):
     queryset = Plan.objects.prefetch_related('versions__entitlements__capability')
     serializer_class = PlanSerializer
@@ -681,7 +745,9 @@ class PlatformSettingsView(APIView):
     required_platform_permission = 'platform.settings.manage'
 
     def get(self, request):
-        return Response(GlobalSaaSSettingsSerializer(get_global_settings()).data)
+        return Response(GlobalSaaSSettingsSerializer(
+            get_global_settings(), context={'request': request}
+        ).data)
 
     def patch(self, request):
         reason = _critical_action(request)
@@ -695,12 +761,63 @@ class PlatformSettingsView(APIView):
             actor=request.user, action='saas.settings.update', obj=instance,
             metadata={'reason': reason},
         )
-        return Response(serializer.data)
+        return Response(GlobalSaaSSettingsSerializer(
+            instance, context={'request': request}
+        ).data)
 
     def post(self, request):
         reason = _critical_action(request)
         instance, _ = enable_saas_enforcement(request.user, reason=reason)
-        return Response(GlobalSaaSSettingsSerializer(instance).data)
+        return Response(GlobalSaaSSettingsSerializer(
+            instance, context={'request': request}
+        ).data)
+
+
+class PlatformBrandingAssetView(APIView):
+    permission_classes = [HasPlatformPermission]
+    required_platform_permission = 'platform.settings.manage'
+
+    def post(self, request, slot):
+        field = BRANDING_ASSET_FIELDS.get(slot)
+        if not field:
+            raise Http404
+        reason = _critical_action(request)
+        upload = request.FILES.get('asset')
+        if upload is None:
+            raise ValidationError({'asset': 'Selecione um arquivo para enviar.'})
+        instance = get_global_settings()
+        previous = getattr(instance, field)
+        previous_name = previous.name if previous else ''
+        setattr(instance, field, upload)
+        instance.save(update_fields=(field, 'updated_at'))
+        if previous_name and previous_name != getattr(instance, field).name:
+            previous.storage.delete(previous_name)
+        audit_log(
+            actor=request.user, action='saas.branding_asset.upload', obj=instance,
+            before={slot: bool(previous_name)}, after={slot: True},
+            metadata={'reason': reason},
+        )
+        return Response(GlobalSaaSSettingsSerializer(instance, context={'request': request}).data)
+
+    def delete(self, request, slot):
+        field = BRANDING_ASSET_FIELDS.get(slot)
+        if not field:
+            raise Http404
+        reason = _critical_action(request)
+        instance = get_global_settings()
+        asset = getattr(instance, field)
+        if not asset:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        name = asset.name
+        storage = asset.storage
+        setattr(instance, field, None)
+        instance.save(update_fields=(field, 'updated_at'))
+        storage.delete(name)
+        audit_log(
+            actor=request.user, action='saas.branding_asset.remove', obj=instance,
+            before={slot: True}, after={slot: False}, metadata={'reason': reason},
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class PlatformSupportSessionViewSet(viewsets.GenericViewSet):

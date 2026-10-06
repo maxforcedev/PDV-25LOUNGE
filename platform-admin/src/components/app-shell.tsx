@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, Building2, ChevronRight, CreditCard, Headphones, LogOut, Menu, Settings2, ShieldCheck, X } from "lucide-react";
+import { BarChart3, Building2, ChevronRight, Contact, CreditCard, Headphones, LogOut, Menu, Settings2, ShieldCheck, X } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "@/providers/auth-provider";
 import { release } from "@/lib/release";
@@ -10,6 +10,7 @@ import { release } from "@/lib/release";
 const navigation = [
   { href: "/dashboard", label: "Visao operacional", permission: "platform.dashboard.view", icon: BarChart3 },
   { href: "/tenants", label: "Tenants", permission: "platform.tenants.manage", icon: Building2 },
+  { href: "/leads", label: "Leads", permission: "platform.leads.manage", icon: Contact },
   { href: "/plans", label: "Planos e limites", permission: "platform.plans.manage", icon: ShieldCheck },
   { href: "/settings", label: "Politicas globais", permission: "platform.settings.manage", icon: Settings2 },
   { href: "/billing", label: "Cobranca", permission: "platform.billing.manage", icon: CreditCard },

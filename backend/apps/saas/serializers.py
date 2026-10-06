@@ -29,6 +29,24 @@ from .services import (
     record_manual_payment,
 )
 
+BRANDING_ASSET_FIELDS = {
+    'logo': 'logo_file',
+    'compact_logo': 'compact_logo_file',
+    'favicon': 'favicon_file',
+    'logo_light': 'logo_light_file',
+    'logo_dark': 'logo_dark_file',
+    'compact_logo_light': 'compact_logo_light_file',
+    'compact_logo_dark': 'compact_logo_dark_file',
+}
+
+
+def branding_asset_url(instance, slot, request=None):
+    asset = getattr(instance, BRANDING_ASSET_FIELDS[slot])
+    if not asset:
+        return ''
+    path = f'/api/v1/public/branding/{slot}/'
+    return request.build_absolute_uri(path) if request else path
+
 
 class PlatformLoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
@@ -402,13 +420,97 @@ class ProvisioningResultSerializer(serializers.ModelSerializer):
         fields = ('id', 'source', 'company', 'subscription', 'owner_user_id', 'approval_status', 'created_at')
 
 
+class LegalSettingsSerializer(serializers.Serializer):
+    legal_name = serializers.CharField(required=False, allow_blank=True, max_length=254)
+    trade_name = serializers.CharField(required=False, allow_blank=True, max_length=254)
+    cnpj = serializers.CharField(required=False, allow_blank=True, max_length=254)
+    address = serializers.CharField(required=False, allow_blank=True, max_length=2000)
+    jurisdiction = serializers.CharField(required=False, allow_blank=True, max_length=254)
+    commercial_email = serializers.EmailField(required=False, allow_blank=True, max_length=254)
+    legal_email = serializers.EmailField(required=False, allow_blank=True, max_length=254)
+    privacy_email = serializers.EmailField(required=False, allow_blank=True, max_length=254)
+    security_email = serializers.EmailField(required=False, allow_blank=True, max_length=254)
+    dpo_name = serializers.CharField(required=False, allow_blank=True, max_length=254)
+    dpo_email = serializers.EmailField(required=False, allow_blank=True, max_length=254)
+    website_url = serializers.URLField(required=False, allow_blank=True, max_length=254)
+    subprocessors_url = serializers.URLField(required=False, allow_blank=True, max_length=254)
+    effective_date = serializers.CharField(required=False, allow_blank=True, max_length=254)
+
+    def to_internal_value(self, data):
+        if not isinstance(data, dict):
+            raise serializers.ValidationError('Informe um objeto de configurações jurídicas.')
+        unknown = set(data) - set(self.fields)
+        if unknown:
+            raise serializers.ValidationError({key: 'Campo não permitido.' for key in sorted(unknown)})
+        return super().to_internal_value(data)
+
+    def validate_effective_date(self, value):
+        if value:
+            from datetime import date
+            try:
+                parsed = date.fromisoformat(value)
+                if parsed.isoformat() != value:
+                    raise ValueError
+            except ValueError:
+                raise serializers.ValidationError('Use uma data válida no formato AAAA-MM-DD.')
+        return value
+
+    def validate_cnpj(self, value):
+        if value:
+            from apps.companies.validators import validate_cnpj
+            try:
+                validate_cnpj(value)
+            except DjangoValidationError as error:
+                raise serializers.ValidationError(error.messages)
+        return value
+
+
+class InstitutionalLinksSerializer(serializers.Serializer):
+    terms = serializers.URLField(required=False, allow_blank=True, max_length=500)
+    privacy = serializers.URLField(required=False, allow_blank=True, max_length=500)
+    website = serializers.URLField(required=False, allow_blank=True, max_length=500)
+    help = serializers.URLField(required=False, allow_blank=True, max_length=500)
+    cookies = serializers.URLField(required=False, allow_blank=True, max_length=500)
+
+    def to_internal_value(self, data):
+        if not isinstance(data, dict):
+            raise serializers.ValidationError('Informe os links institucionais em campos separados.')
+        unknown = set(data) - set(self.fields)
+        if unknown:
+            raise serializers.ValidationError({key: 'Campo não permitido.' for key in sorted(unknown)})
+        return super().to_internal_value(data)
+
+
 class GlobalSaaSSettingsSerializer(serializers.ModelSerializer):
+    legal_settings = LegalSettingsSerializer(required=False)
+    institutional_links = InstitutionalLinksSerializer(required=False)
+    branding_assets = serializers.SerializerMethodField()
+
+    def update(self, instance, validated_data):
+        if 'legal_settings' in validated_data:
+            validated_data['legal_settings'] = {
+                **(instance.legal_settings or {}), **validated_data['legal_settings'],
+            }
+        if 'institutional_links' in validated_data:
+            validated_data['institutional_links'] = {
+                **(instance.institutional_links or {}), **validated_data['institutional_links'],
+            }
+        return super().update(instance, validated_data)
+
+    def get_branding_assets(self, instance):
+        return {
+            slot: branding_asset_url(instance, slot, self.context.get('request'))
+            for slot in BRANDING_ASSET_FIELDS
+        }
+
     class Meta:
         model = GlobalSaaSSettings
-        exclude = ('singleton',)
+        exclude = ('singleton', *BRANDING_ASSET_FIELDS.values())
         read_only_fields = (
             'id', 'enforcement_enabled', 'enforcement_enabled_at',
             'enforcement_enabled_by', 'created_at', 'updated_at',
+            'logo_url', 'compact_logo_url', 'favicon_url', 'logo_light_url',
+            'logo_dark_url', 'compact_logo_light_url', 'compact_logo_dark_url',
         )
 
 
@@ -447,14 +549,63 @@ class CommercialLeadSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class PlatformCommercialLeadSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CommercialLead
+        fields = (
+            'id', 'name', 'company_name', 'whatsapp', 'email', 'segment', 'message',
+            'source_path', 'plan_interest', 'utm_source', 'utm_medium', 'utm_campaign',
+            'status', 'created_at', 'updated_at',
+        )
+        read_only_fields = fields
+
+
+class CommercialLeadStatusSerializer(serializers.Serializer):
+    status = serializers.ChoiceField(choices=CommercialLead.Status.choices)
+
+
 class PublicBrandingSerializer(serializers.ModelSerializer):
+    legal_settings = LegalSettingsSerializer(read_only=True)
+    institutional_links = InstitutionalLinksSerializer(read_only=True)
+    logo_url = serializers.SerializerMethodField()
+    compact_logo_url = serializers.SerializerMethodField()
+    favicon_url = serializers.SerializerMethodField()
+    logo_light_url = serializers.SerializerMethodField()
+    logo_dark_url = serializers.SerializerMethodField()
+    compact_logo_light_url = serializers.SerializerMethodField()
+    compact_logo_dark_url = serializers.SerializerMethodField()
+
+    def _asset_url(self, instance, slot):
+        return branding_asset_url(instance, slot, self.context.get('request'))
+
+    def get_logo_url(self, instance):
+        return self._asset_url(instance, 'logo')
+
+    def get_compact_logo_url(self, instance):
+        return self._asset_url(instance, 'compact_logo')
+
+    def get_favicon_url(self, instance):
+        return self._asset_url(instance, 'favicon')
+
+    def get_logo_light_url(self, instance):
+        return self._asset_url(instance, 'logo_light')
+
+    def get_logo_dark_url(self, instance):
+        return self._asset_url(instance, 'logo_dark')
+
+    def get_compact_logo_light_url(self, instance):
+        return self._asset_url(instance, 'compact_logo_light')
+
+    def get_compact_logo_dark_url(self, instance):
+        return self._asset_url(instance, 'compact_logo_dark')
+
     class Meta:
         model = GlobalSaaSSettings
         fields = (
             'platform_name', 'logo_url', 'compact_logo_url', 'favicon_url',
             'logo_light_url', 'logo_dark_url', 'compact_logo_light_url',
             'compact_logo_dark_url',
-            'primary_color', 'support_email', 'support_phone', 'institutional_links',
+            'primary_color', 'support_email', 'support_phone', 'institutional_links', 'legal_settings',
         )
         read_only_fields = fields
 

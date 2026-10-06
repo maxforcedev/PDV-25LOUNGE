@@ -1,3 +1,20 @@
+export interface LegalSettings {
+  legal_name?: string;
+  trade_name?: string;
+  cnpj?: string;
+  address?: string;
+  jurisdiction?: string;
+  commercial_email?: string;
+  legal_email?: string;
+  privacy_email?: string;
+  security_email?: string;
+  dpo_name?: string;
+  dpo_email?: string;
+  website_url?: string;
+  subprocessors_url?: string;
+  effective_date?: string;
+}
+
 export interface PlatformUser {
   id: number;
   email: string;
@@ -5,6 +22,26 @@ export interface PlatformUser {
   last_name: string;
   role: string;
   permissions: string[];
+}
+
+export type CommercialLeadStatus = "NEW" | "CONTACTED" | "QUALIFIED" | "CONVERTED" | "LOST";
+
+export interface CommercialLead {
+  id: number;
+  name: string;
+  company_name: string;
+  whatsapp: string;
+  email: string;
+  segment: string;
+  message: string;
+  source_path: string;
+  plan_interest: string;
+  utm_source: string;
+  utm_medium: string;
+  utm_campaign: string;
+  status: CommercialLeadStatus;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface DashboardMetrics {
@@ -169,9 +206,11 @@ export interface GlobalSettings {
   logo_dark_url: string;
   compact_logo_light_url: string;
   compact_logo_dark_url: string;
+  branding_assets: Record<string, string>;
   primary_color: string;
   support_email: string;
   support_phone: string;
   support_whatsapp: string;
   institutional_links: Record<string, string>;
+  legal_settings?: LegalSettings;
 }

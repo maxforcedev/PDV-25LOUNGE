@@ -11,6 +11,12 @@ from django.utils import timezone
 from apps.base.models import BaseModel
 from apps.companies.models import Company, Status
 
+from .storage import (
+    PrivateProductImageStorage,
+    product_image_path,
+    validate_product_image,
+)
+
 
 def normalize_product_name(value):
     display_name = ' '.join((value or '').split())
@@ -175,7 +181,15 @@ class Product(BaseModel):
     sale_price = models.DecimalField(
         max_digits=12, decimal_places=2, default=Decimal('0.00')
     )
+    # Legacy external URL retained only as a fallback for existing products.
     image = models.URLField(max_length=500, blank=True, null=True)
+    image_file = models.FileField(
+        upload_to=product_image_path,
+        storage=PrivateProductImageStorage(),
+        validators=(validate_product_image,),
+        max_length=500,
+        blank=True,
+    )
     is_sellable = models.BooleanField(default=True)
     is_favorite = models.BooleanField(default=False)
     available_counter = models.BooleanField(default=True)

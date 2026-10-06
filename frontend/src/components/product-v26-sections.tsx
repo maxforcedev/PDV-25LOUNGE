@@ -77,6 +77,7 @@ type Props = {
   product: Product;
   companyId: number;
   currentBranchId: number;
+  branchPricingAvailable: boolean;
   branches: UserBranch[];
   permissions: Permissions;
   activeTab?: ProductV26Tab;
@@ -141,6 +142,7 @@ export function ProductV26Sections({
   product,
   companyId,
   currentBranchId,
+  branchPricingAvailable,
   branches,
   permissions,
   activeTab,
@@ -783,9 +785,11 @@ export function ProductV26Sections({
               . O preço por filial continua no fluxo dedicado.
             </p>
           </div>
-          <Link href="/produtos/precos" className="btn btn-secondary">
-            Preços
-          </Link>
+          {branchPricingAvailable && (
+            <Link href="/produtos/precos" className="btn btn-secondary">
+              Preços
+            </Link>
+          )}
         </div>
         {branchConfig && (
           <div className="space-y-3">

@@ -1,691 +1,706 @@
-Trabalhe em cima do commit atual:
+Use o **estado atual do GitHub como fonte da verdade**.
+
+HEAD funcional validado:
 
 ```text
-d07b619 fix: close SaaS capability enforcement gaps
+aed9f43c4809459a457ea49c2e9fc216247046d4
 ```
 
-OBJETIVO:
+A parte crítica de SaaS/capabilities já foi corrigida e o CI ficou verde.
 
-Fechar os últimos gaps de capabilities e corrigir a infraestrutura dos testes antigos para que o GitHub CI volte a ficar verde.
+NÃO refaça essa arquitetura.
 
-ESTA MISSÃO É CIRÚRGICA.
+Agora vamos fechar somente as pendências que ficaram da missão inicial.
 
-## REGRA DE CRÉDITOS / TESTES — OBRIGATÓRIA
+IMPORTANTE:
 
-NÃO rode localmente:
+**NÃO RODE TESTES.  
+NÃO RODE BUILD.  
+NÃO RODE LINT.  
+NÃO RODE npm ci/install/audit.  
+NÃO RODE suíte Django.  
+NÃO RODE Flutter.**
 
-- suíte completa do backend;
-- os ~461 testes;
-- E2E completo;
-- bateria ampla de POS;
-- bateria ampla de reports;
-- builds repetidos sem necessidade.
+Faça por análise estática e implementação.
 
-O GitHub Actions será a única validação completa.
+Pode criar migration necessária, mas **não execute migrations localmente**.
 
-Localmente rode apenas testes DIRETAMENTE relacionados ao que você alterar.
-
-Se um teste direcionado estiver demorando anormalmente, interrompa e investigue.
+Ao final:
+- commit;
+- push;
+- informe SHA;
+- liste alterações;
+- não faça deploy;
+- não mexa na VPS.
 
 ---
 
-# 1. INTEGRAR O HELPER SaaS AOS TESTES OPERACIONAIS ANTIGOS
+# 1. BRANDING DO CORE: PARAR DE USAR URL E PASSAR A USAR ANEXO
 
-Já foi criado:
+Hoje `GlobalSaaSSettings` ainda possui campos como:
 
 ```python
-backend/apps/saas/tests/helpers.py
+logo_url
+compact_logo_url
+favicon_url
+logo_light_url
+logo_dark_url
+compact_logo_light_url
+compact_logo_dark_url
 ```
 
-com helpers como:
+e a Platform Admin pede URLs.
 
-```python
-create_complete_test_plan()
-create_operational_test_tenant()
-```
+Isso NÃO é o comportamento desejado.
 
-A ideia está correta, mas eles ainda não foram integrados de verdade às suítes antigas.
+## Regra desejada
 
-Hoje vários testes continuam fazendo apenas:
+O sistema deve possuir os assets oficiais do CORE já dentro do frontend como fallback.
 
-```python
-create_company_with_matrix(...)
-```
+Devem existir versões padrão para:
 
-e esperam que o tenant opere.
+- logo em fundo claro;
+- logo em fundo escuro;
+- logo compacta;
+- logo compacta clara/escura se necessário;
+- favicon oficial.
 
-Isso não é mais válido.
-
-Resultado atual no CI:
+Fluxo:
 
 ```text
-tenant_not_operational
-UNMAPPED
+Nenhum asset customizado pela API
+→ frontend usa asset oficial embarcado no projeto
+
+Asset enviado pela Platform Admin
+→ backend armazena o arquivo
+→ API passa a devolver o asset atual
+→ frontend usa automaticamente o override
+
+Asset removido
+→ frontend volta para o asset oficial local
 ```
 
-NÃO relaxar o runtime SaaS.
+NÃO depender de URL externa.
 
-Corrigir os testes.
+## Platform Admin
+
+Trocar campos de URL por upload/anexo.
+
+Quero algo como:
+
+```text
+Logo para fundo claro
+[ selecionar arquivo ]
+
+Logo para fundo escuro
+[ selecionar arquivo ]
+
+Logo compacta
+[ selecionar arquivo ]
+
+Favicon
+[ selecionar arquivo ]
+```
+
+Mostrar preview do arquivo atual.
+
+Permitir substituir/remover.
+
+Aceitar formatos adequados, como:
+
+```text
+PNG
+WEBP
+SVG se nossa política de upload permitir de forma segura
+ICO para favicon se necessário
+```
+
+Definir tamanho máximo razoável.
+
+Não permitir upload arbitrário inseguro.
+
+## Backend
+
+Implementar armazenamento interno usando o padrão de media/private media já existente no projeto, sem inventar serviço externo.
+
+Pode manter campos URL antigos temporariamente como legado de compatibilidade se necessário para migration segura, mas:
+
+- eles não devem mais aparecer na UI;
+- novos uploads não devem depender deles;
+- novo comportamento deve priorizar arquivos internos.
+
+API pública de branding deve devolver URL interna segura/resolvida do arquivo quando existir.
+
+Preservar fallback local do frontend.
 
 ---
 
-# 2. POS TEST FOUNDATION
+# 2. FAVICON DINÂMICO COM FALLBACK LOCAL
 
-Principal problema atual:
+Mesmo conceito da logo.
 
-```text
-backend/apps/pos/tests/test_foundation.py
-```
+O frontend deve possuir o favicon oficial do CORE dentro do próprio projeto.
 
-O `setUp()` cria empresa, filial e usuário, mas NÃO cria assinatura operacional.
-
-Por isso dezenas de testes estão morrendo já no pareamento com:
+Sem customização:
 
 ```text
-403 tenant_not_operational
+favicon oficial local
 ```
 
-Ajustar o setup dessa suíte para utilizar plano/assinatura operacional completa.
-
-O plano usado pelos testes POS deve possuir as capabilities necessárias para o comportamento legado da suíte, incluindo pelo menos:
+Com favicon enviado pelo Platform Admin:
 
 ```text
-core.enabled
-pos.enabled
-pos.devices.max
-feature.counter
-feature.cash_register
-feature.tables
-feature.commands
-feature.consumption
-feature.production
-feature.products
-feature.customers
+favicon customizado da API
 ```
 
-e demais módulos realmente usados nessa suíte.
+Se removido ou indisponível:
 
-Não adicionar entitlement manualmente em dezenas de testes.
+```text
+fallback local novamente
+```
 
-Centralizar no helper.
+Não deixar o carregamento da aplicação dependente da API para possuir favicon básico.
 
 ---
 
-# 3. COMMANDS / TABLES TESTS
+# 3. LINKS INSTITUCIONAIS: REMOVER JSON DA INTERFACE
 
-Os testes antigos de Mesas estão retornando:
-
-```text
-O plano não permite a funcionalidade Mesas.
-```
-
-Exemplos:
+Hoje existe na Platform Admin:
 
 ```text
-CommandConsumptionLimitTests
-TableDeletionTests
+Links institucionais (JSON)
 ```
 
-Esses testes não estão testando ausência de plano.
+com textarea semelhante a:
 
-Portanto seus fixtures devem criar tenant operacional com:
-
-```text
-feature.tables=True
-feature.commands=True
-feature.cash_register=True
+```json
+{
+  "termos": "...",
+  "privacidade": "..."
+}
 ```
 
-Lembrar da regra existente:
+Isso NÃO deve aparecer dessa forma para usuário administrativo.
 
-```text
-commands depende de cash_register
-```
-
-Não modificar essa regra para fazer teste passar.
-
----
-
-# 4. SUPPLIERS / PURCHASES / INVENTORY / PRODUCTION
-
-O CI ainda mostra testes antigos com:
-
-```text
-UNMAPPED
-```
-
-em módulos como:
-
-- Suppliers
-- Purchases
-- Inventory
-- Production
-- Companies
-
-Revisar apenas os setups/factories que criam tenants operacionais nesses testes.
-
-Quando o teste NÃO estiver verificando bloqueio SaaS, criar assinatura operacional e capabilities adequadas.
-
-Exemplos:
-
-Supplier tests:
-
-```text
-feature.suppliers=True
-```
-
-Purchases:
-
-```text
-feature.purchases=True
-feature.suppliers=True
-```
-
-Inventory:
-
-```text
-feature.inventory=True
-feature.products=True
-```
-
-Production:
-
-```text
-feature.production=True
-feature.products=True
-```
-
-Não exagerar habilitando módulos arbitrariamente se o teste não precisa.
-
-Mas preferir helper reutilizável a repetição.
-
----
-
-# 5. NÃO ALTERAR TESTES DE NEGATIVA SaaS
-
-Testes criados especificamente para validar:
-
-```text
-tenant sem assinatura
-assinatura vencida
-feature desligada
-POS desligado
-limite atingido
-TRIAL_EXPIRED
-```
-
-devem CONTINUAR sem helper operacional quando isso fizer parte do cenário.
-
-Não transformar testes negativos em tenants operacionais.
-
----
-
-# 6. CORRIGIR TESTE DO DASHBOARD
-
-O CI mostra:
-
-```text
-KeyError: 'commands'
-```
-
-em:
-
-```text
-test_dashboard_empty_command_and_table_counts_do_not_error
-test_dashboard_counts_open_commands_and_table_attendances_separately
-```
-
-O fixture habilitou:
-
-```text
-feature.commands
-feature.tables
-```
-
-mas esqueceu:
-
-```text
-feature.cash_register
-```
-
-Como `commands` depende de Caixa, o estado efetivo fica desabilitado.
-
-Corrigir o plano de teste adicionando:
-
-```text
-feature.cash_register=True
-```
-
-Não remover a dependência de Commands -> Cash Register.
-
----
-
-# 7. CORRIGIR TESTES DE LIFECYCLE / TRIAL
-
-Existem falhas como:
-
-```text
-TypeError: unsupported operand type(s) for +: 'NoneType' and 'datetime.timedelta'
-```
-
-em:
-
-```text
-test_trial_expiry_is_effective_before_cron
-```
-
-Isso aconteceu porque a nova semântica de `map_existing_company()` agora inicia ACTIVE por padrão.
-
-Quando o teste precisa de TRIAL, deve informar explicitamente:
-
-```python
-initial_subscription_mode=Subscription.Status.TRIALING
-```
-
-Revisar testes antigos que assumiam Trial automático devido a `trial_days`.
-
-A nova regra correta é:
-
-```text
-manual mapping default = ACTIVE
-TRIAL somente explícito
-```
-
-Não voltar ao Trial automático.
-
-Também corrigir testes de:
-
-```text
-extend-trial
-end-trial
-```
-
-para garantir que criam uma assinatura TRIALING quando esse for o cenário esperado.
-
----
-
-# 8. CORRIGIR TESTE DE ASSINATURA EXPIRADA COM PERÍODO INVÁLIDO
-
-O CI mostrou:
-
-```text
-ValidationError:
-current_period_end:
-O fim do periodo deve ser posterior ao inicio.
-```
-
-em teste de contexto SaaS.
-
-O teste está alterando apenas o `current_period_end` para uma data anterior ao `current_period_start`.
-
-Isso viola corretamente a constraint do modelo.
-
-Corrigir o fixture:
-
-```text
-current_period_start = passado mais antigo
-current_period_end = passado mais recente
-```
-
-mantendo:
-
-```text
-start < end < agora
-```
-
-Não remover a validação do modelo.
-
----
-
-# 9. FECHAR ENDPOINTS AUXILIARES DE RELATÓRIOS
-
-O mapeamento principal:
-
-```python
-REPORT_FEATURES_BY_ROUTE_NAME
-```
-
-melhorou.
-
-Mas endpoints auxiliares ainda podem vazar dados de módulos desabilitados.
-
-Revisar especificamente:
-
-```text
-/reports/options/
-/reports/purchase-options/
-/reports/commercial-options/
-```
-
-## purchase-options
-
-Ele pode consultar dados ligados a:
-
-```text
-purchases
-suppliers
-financial
-```
-
-Como possui `scope`, aplicar capability de acordo com o scope.
+Trocar por campos normais da interface.
 
 Exemplo:
 
 ```text
-scope=purchases
-→ reports + purchases
+Termos de Uso
+[________________]
 
-scope=suppliers
-→ reports + suppliers
+Política de Privacidade
+[________________]
 
-scope=payables
-→ reports + purchases + financial
+Site institucional
+[________________]
+
+Central de Ajuda / Suporte
+[________________]
 ```
 
-## commercial-options
+Se outros links institucionais já forem realmente usados pelo sistema, criar campos próprios também.
 
-Aplicar por scope:
+O backend pode internamente continuar utilizando estrutura organizada/JSON se isso for útil e compatível.
+
+A exigência é:
 
 ```text
-scope=promotions
-→ reports + promotions
-
-scope=modifiers
-→ reports + products
-
-scope=customers
-→ reports + customers
+USUÁRIO NÃO EDITA JSON
 ```
 
-Se os dados retornados exigirem Products/Categories também, garantir que o endpoint não vaze catálogo de produto quando `feature.products=False`.
-
-Não retornar informações de módulo não contratado apenas porque `feature.reports=True`.
+Validar URL individualmente.
 
 ---
 
-# 10. `/reports/options/`
+# 4. PLANO: NÃO EXIGIR CÓDIGO TÉCNICO MANUAL
 
-Esse endpoint é compartilhado.
-
-Ele hoje monta várias listas conforme permissões.
-
-Também deve respeitar capabilities.
-
-Exemplos:
-
-Se:
+Hoje o código já é gerado automaticamente pelo nome, porém a tela ainda apresenta:
 
 ```text
-feature.inventory=False
+Código técnico (avançado)
 ```
 
-não retornar opções de inventário/estoque.
+como input obrigatório.
 
-Se:
+Melhorar a UX.
+
+Na criação:
 
 ```text
-feature.cash_register=False
+Nome: CORE Pro
+→ code automaticamente = core-pro
 ```
 
-não retornar caixas/sessões.
-
-Se:
-
-```text
-feature.products=False
-```
-
-não retornar produtos/categorias para relatórios que dependam do módulo Produtos.
-
-Se:
-
-```text
-feature.consumption=False
-```
-
-não retornar opções exclusivas de consumação.
-
-O endpoint pode continuar retornando dados compatíveis com outros relatórios permitidos.
-
-Não bloquear o endpoint inteiro se apenas parte das opções não for permitida.
-
-Filtrar o payload conforme features efetivas.
-
----
-
-# 11. DASHBOARD DEVE SER CAPABILITY-AWARE
-
-Hoje Commands/Mesas já foram corrigidos.
-
-Falta aplicar o mesmo princípio aos demais widgets/blocos.
-
-Revisar `DashboardView`.
-
-Todo bloco deve exigir:
-
-```text
-RBAC
-+
-capability correspondente
-```
-
-Exemplos obrigatórios:
-
-### Consumação
-
-Só incluir:
-
-```text
-response['consumptions']
-```
-
-se:
-
-```text
-feature.consumption=True
-```
-
-### Sangrias
-
-Só incluir withdrawals se:
-
-```text
-feature.cash_register=True
-```
-
-### Current Cash
-
-Só incluir:
-
-```text
-response['current_cash']
-```
-
-se:
-
-```text
-feature.cash_register=True
-```
-
-### Estoque
-
-Só incluir:
-
-```text
-response['inventory']
-```
-
-se:
-
-```text
-feature.inventory=True
-```
-
-### Operacional result
-
-Analisar quais módulos alimentam o card e garantir que ele não exponha informações de módulos fora do plano.
-
-Não criar regra excessivamente restritiva sem necessidade.
-
-### Produtos
-
-Se houver ranking/cards dependentes de produtos/catálogo e `feature.products=False`, eles não devem aparecer.
-
-Regra geral:
-
-**Capability OFF significa que o Dashboard também não exibe KPI daquele módulo.**
-
----
-
-# 12. RELATÓRIOS — PROTEGER URL DIRETA NO FRONTEND
-
-A Central de Relatórios já filtra cards por `requiredFeatures`.
-
-Mas páginas individuais como:
-
-```text
-/relatorios/compras
-/relatorios/mesas-comandas
-/relatorios/clientes
-/relatorios/caixa
-```
-
-podem montar diretamente e só descobrir a restrição quando a API responder 403.
-
-Adicionar proteção frontend equivalente.
-
-Não precisa duplicar lógica em cada página de forma desorganizada.
+O usuário não deve precisar digitar código.
 
 Pode:
 
-- colocar `AdminGuard` nas rotas;
-- ou centralizar no componente do relatório se fizer sentido.
+- ocultar completamente na criação; ou
+- mostrar como somente leitura/preview em área avançada.
 
-Mapeamento:
+O backend deve continuar sendo autoridade:
+
+```python
+slugify(code or name)
+```
+
+Depois que o plano já estiver sendo utilizado, preservar a proteção atual:
 
 ```text
-Compras → reports + purchases
-Fornecedores → reports + suppliers
-Contas a pagar → reports + purchases + financial
-Estoque → reports + inventory
-Caixa → reports + cash_register
-Sangrias → reports + cash_register
-Consumação → reports + consumption
-Mesas/Comandas → reports + tables + commands
-Promoções → reports + promotions
-Modificadores → reports + products
-Clientes → reports + customers
-Tickets → reports + production
+code imutável
 ```
 
-O backend continua sendo autoridade.
-
-O frontend é defesa de UX.
+Não remover essa proteção.
 
 ---
 
-# 13. TESTES DIRECIONADOS NOVOS
+# 5. PREÇOS POR FILIAL SOMENTE QUANDO EXISTIREM 2+ FILIAIS
 
-Adicionar/ajustar somente os testes necessários para:
-
-1. `purchase-options?scope=purchases` bloqueado sem purchases.
-2. `purchase-options?scope=suppliers` bloqueado sem suppliers.
-3. `purchase-options?scope=payables` exige purchases + financial.
-4. `commercial-options?scope=customers` bloqueia sem customers.
-5. `commercial-options?scope=promotions` bloqueia sem promotions.
-6. `/reports/options/` não retorna dados de módulo desligado.
-7. Dashboard não retorna inventory quando inventory OFF.
-8. Dashboard não retorna current_cash quando cash_register OFF.
-9. Dashboard não retorna consumptions quando consumption OFF.
-10. Dashboard continua retornando os widgets quando feature ON.
-11. Fixture POS operacional permite pareamento normalmente.
-12. Teste Trial explícito continua TRIALING.
-13. Mapping manual sem parâmetro continua ACTIVE.
-
----
-
-# 14. NÃO RODAR A SUÍTE COMPLETA LOCALMENTE
-
-Reforçando:
-
-NÃO execute:
-
-```bash
-python manage.py test
-```
-
-sozinho.
-
-NÃO rode:
-
-```bash
-python manage.py test apps
-```
-
-NÃO rode todos os testes POS.
-
-NÃO rode todos os 461 testes.
-
-Use somente classes/módulos diretamente tocados.
-
-Exemplos aceitáveis:
-
-```bash
-python manage.py test apps.saas.tests.test_feature_resolution
-```
-
-ou classes específicas.
-
-Para POS, rode apenas os testes de setup/pareamento afetados, não `test_foundation.py` inteiro se ele for muito grande.
-
-O GitHub CI fará a suíte completa uma única vez depois do push.
-
----
-
-# 15. VALIDAÇÃO RÁPIDA
-
-Pode executar localmente:
+Hoje, em Produtos, o botão:
 
 ```text
-python manage.py check
-python manage.py makemigrations --check
+Preços por filial
 ```
 
-Frontend/Platform Admin somente se houve alteração relevante:
+aparece mesmo com somente uma filial.
+
+Corrigir.
+
+## Regra
+
+Empresa com 1 filial ativa:
 
 ```text
-npm run lint
-npm run build
+não mostrar botão "Preços por filial"
+não mostrar ações de preço multi-filial
+rota /produtos/precos não deve operar como se houvesse cenário multi-filial
 ```
 
-Não repetir build que não seja necessário.
+Empresa com 2+ filiais ativas:
+
+```text
+mostrar normalmente
+```
+
+A página `/produtos/precos` também deve se proteger.
+
+Caso alguém acesse a URL diretamente com somente uma filial, apresentar estado adequado, por exemplo:
+
+```text
+Preços por filial ficam disponíveis quando a empresa possuir mais de uma filial ativa.
+```
+
+ou redirecionar de forma limpa para Produtos.
+
+Não retornar erro 500.
+
+Usar somente filiais ativas da empresa atual.
 
 ---
 
-# 16. NÃO MEXER
+# 6. FOTO DO PRODUTO POR ANEXO
 
-Não alterar:
+Hoje:
 
-- regra fail-closed;
-- vencimento imediato;
-- Plan -> Subscription -> Entitlements;
-- `pos.enabled`;
-- RBAC;
+```python
+Product.image = models.URLField(...)
+```
+
+e o frontend trabalha com:
+
+```ts
+image: string
+```
+
+Isso precisa mudar.
+
+Quero foto de produto por arquivo/anexo.
+
+## Fluxo
+
+No cadastro/edição do produto:
+
+```text
+Foto do produto
+[ selecionar imagem ]
+
+preview
+substituir
+remover
+```
+
+Nada de pedir URL.
+
+Backend deve armazenar internamente.
+
+Usar padrão seguro de media do CORE.
+
+Validar:
+
+- formato de imagem permitido;
+- limite de tamanho;
+- nome/path seguro.
+
+API deve devolver uma URL interna/resolvida para o frontend exibir.
+
+## Compatibilidade
+
+Não quebrar produtos existentes que eventualmente tenham valor antigo em `image`.
+
+Se necessário:
+
+- adicionar novo campo para arquivo;
+- manter `image` legado temporariamente;
+- preferir sempre o arquivo novo;
+- deixar estrutura pronta para remoção futura do legado.
+
+Não fazer migration destrutiva.
+
+---
+
+# 7. LEADS DO SITE DENTRO DA PLATFORM ADMIN
+
+Hoje o formulário público envia para:
+
+```text
+POST /api/v1/public/leads/
+```
+
+e cria:
+
+```python
+CommercialLead
+```
+
+com informações como:
+
+- nome;
+- empresa;
+- WhatsApp;
+- e-mail;
+- segmento;
+- mensagem;
+- plano de interesse;
+- source_path;
+- UTM source;
+- UTM medium;
+- UTM campaign;
+- status.
+
+Isso já deve continuar funcionando.
+
+O problema é que NÃO existe uma tela na Platform Admin para visualizar esses leads.
+
+Criar módulo/tela:
+
+```text
+Platform Admin
+→ Leads
+```
+
+## Lista
+
+Mostrar:
+
+```text
+Nome
+Empresa
+WhatsApp
+E-mail
+Segmento
+Plano de interesse
+Origem
+Data
+Status
+```
+
+Filtros:
+
+```text
+status
+busca por nome/empresa/e-mail/WhatsApp
+```
+
+Status existentes:
+
+```text
+NEW
+CONTACTED
+QUALIFIED
+CONVERTED
+LOST
+```
+
+Usar labels amigáveis:
+
+```text
+Novo
+Contatado
+Qualificado
+Convertido
+Perdido
+```
+
+## Detalhe
+
+Ao abrir lead:
+
+- dados completos;
+- mensagem;
+- UTMs;
+- página de origem;
+- data;
+- plano de interesse;
+- status.
+
+Permitir alterar status.
+
+Auditar alteração de status.
+
+## Permissão
+
+Criar permission de Platform Admin adequada, preferencialmente:
+
+```text
+platform.leads.manage
+```
+
+Adicionar ao papel `super-admin` no bootstrap.
+
+Não misturar isso com RBAC de tenant.
+
+---
+
+# 8. ENFORCEMENT SaaS: ALINHAR COM O COMPORTAMENTO REAL
+
+Hoje existe uma inconsistência conceitual.
+
+A Platform Admin diz algo equivalente a:
+
+```text
+Enforcement SaaS desabilitado
+→ runtime ainda não bloqueia tenants por estado SaaS
+```
+
+Porém o runtime atual já usa:
+
+```python
+resolve_effective_status()
+active_operational_companies()
+active_operational_branches()
+```
+
+inclusive no login.
+
+Ou seja:
+
+```text
+tenant sem assinatura
+tenant vencido
+trial expirado
+assinatura inválida
+```
+
+já pode ser bloqueado independentemente da descrição atual da tela.
+
+## Regra de produto definitiva
+
+O CORE deve ser **FAIL CLOSED SEMPRE**.
+
+Não quero:
+
+```text
+enforcement_enabled=False
+→ empresa sem plano consegue operar
+```
+
+A segurança SaaS NÃO deve depender desse toggle.
+
+Portanto:
+
+### Auditar usos de `enforcement_enabled`
+
+Qualquer código que atualmente permita operação sem plano somente porque:
+
+```python
+enforcement_enabled == False
+```
+
+deve ser revisto.
+
+Exemplo já identificado:
+
+```python
+assert_resource_limit()
+```
+
+não deve simplesmente liberar tenant sem assinatura porque o cutover está desligado.
+
+Regra:
+
+```text
+empresa sem assinatura corrente válida
+→ não opera
+```
+
+independentemente do flag.
+
+### Reinterpretar o botão
+
+`enforcement_enabled` pode continuar existindo como:
+
+```text
+marco de cutover da base legada / validação de migração / auditoria
+```
+
+mas NÃO como chave de segurança que liga/desliga o SaaS.
+
+Alterar o texto da Platform Admin para deixar isso claro.
+
+Não mostrar mais algo como:
+
+```text
+"O runtime ainda não bloqueia tenants por estado SaaS"
+```
+
+se isso não for verdade.
+
+Pode renomear visualmente para algo como:
+
+```text
+Cutover SaaS
+Validação da base legada
+```
+
+Mantendo o evento auditável e irreversível, se isso ainda tiver utilidade arquitetural.
+
+NÃO enfraquecer nenhum bloqueio atual.
+
+---
+
+# 9. CORS LOCAL DA PLATFORM ADMIN
+
+No ambiente local descobrimos que:
+
+```text
+Platform Admin = localhost:3001
+```
+
+estava presente em `CSRF_TRUSTED_ORIGINS`, mas ausente de:
+
+```text
+CORS_ALLOWED_ORIGINS
+```
+
+A alteração local que funcionou foi incluir:
+
+```text
+http://localhost:${PLATFORM_ADMIN_PORT:-3001}
+http://127.0.0.1:${PLATFORM_ADMIN_PORT:-3001}
+```
+
+em `CORS_ALLOWED_ORIGINS`.
+
+Verifique o estado atual do arquivo.
+
+Se essa correção ainda não estiver no GitHub, inclua-a no commit.
+
+Não duplicar caso já esteja presente.
+
+---
+
+# 10. NÃO REGREDIR O QUE JÁ FOI CORRIGIDO
+
+Preservar integralmente:
+
+- Plan → Subscription → Capabilities;
+- fail-closed;
+- login SaaS;
+- expiração imediata;
+- PAST_DUE;
 - multiempresa;
-- reuse de Owner por e-mail;
-- Trial manual ACTIVE por padrão;
-- cadastro público;
+- Owner existente;
+- ACTIVE por padrão em criação manual;
+- Trial explícito;
+- PlanVersion;
+- proteção do código de plano depois de utilizado;
+- limits;
+- POS capability;
+- reports capability;
+- dashboard capability;
+- products;
+- inventory;
+- purchases;
+- suppliers;
+- customers;
+- promotions;
+- financial;
+- audit;
+- Mesas;
+- Comandas;
+- Balcão;
+- Consumação;
+- Produção;
+- RBAC;
 - pagamentos;
 - Cielo;
 - Stone;
 - PagBank;
 - impressão;
-- vendas;
-- caixa;
-- arquitetura Mesas/Comandas;
-- migrations antigas.
+- motor financeiro;
+- motor de estoque;
+- arquitetura de vendas.
 
-Não criar migration sem necessidade.
+NÃO redesenhar Mesas/Comandas.
+
+---
+
+# 11. MIGRATIONS
+
+Essa missão provavelmente exigirá migration por causa de:
+
+- assets de branding;
+- favicon;
+- foto de produto.
+
+Faça migration segura e compatível.
+
+NÃO apagar dados existentes.
+
+NÃO depender de banco zerado para a migration funcionar.
+
+Se mantiver campos antigos como legado, documente claramente no código qual é o campo novo prioritário.
+
+Não execute a migration local.
+
+---
+
+# 12. SEM VALIDAÇÃO LOCAL PESADA
+
+Reforçando:
+
+NÃO executar:
+
+```text
+python manage.py test
+python manage.py check
+python manage.py migrate
+python manage.py makemigrations
+npm test
+npm run lint
+npm run build
+npm ci
+npm install
+npm audit
+flutter test
+flutter build
+```
+
+Se migration for necessária, escreva o arquivo de migration manualmente e de forma coerente com os models.
+
+Faça somente análise estática.
 
 ---
 
@@ -693,23 +708,25 @@ Não criar migration sem necessidade.
 
 Ao terminar:
 
-1. listar arquivos alterados;
-2. explicar quais fixtures antigas foram adaptadas;
-3. informar quais gaps de reports/dashboard foram fechados;
-4. listar testes DIRECIONADOS executados;
-5. NÃO executar suíte completa localmente;
-6. fazer commit e push;
-7. informar SHA do commit.
-
-Critério de aceite:
+1. faça commit;
+2. faça push;
+3. informe SHA;
+4. liste arquivos alterados;
+5. informe migrations criadas;
+6. explique objetivamente:
 
 ```text
-Tenant operacional continua funcionando.
-Tenant sem assinatura continua bloqueado.
-Capability OFF não vaza por menu, URL, API, relatório, options ou Dashboard.
-Testes antigos recebem assinatura válida quando não estão testando SaaS.
+- como funciona o fallback local de logo/favicon;
+- como funciona o upload de branding;
+- como os links institucionais deixaram de usar JSON na UI;
+- como o código do plano passou a ser automático;
+- como "Preços por filial" foi limitado a 2+ filiais;
+- como funciona upload da foto do produto;
+- onde os Leads aparecem na Platform Admin;
+- como ficou a semântica definitiva de Enforcement SaaS;
+- se o CORS da porta 3001 entrou no GitHub.
 ```
 
-Depois do push, deixe o GitHub Actions executar a suíte completa.
-
-Não faça deploy na VPS.
+NÃO faça deploy.
+NÃO mexa na VPS.
+NÃO execute testes/builds locais.

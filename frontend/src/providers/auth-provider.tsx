@@ -33,7 +33,7 @@ import type {
 const COMPANY_KEY = "pdv.current_company_id";
 const BRANCH_KEY = "pdv.current_branch_id";
 const BRANCH_MEMORY_KEY = "pdv.last_branch_by_company";
-const PUBLIC_PATHS = ["/", "/ajuda", "/planos", "/cadastro", "/contato", "/solucoes"];
+const PUBLIC_PATHS = ["/", "/ajuda", "/planos", "/cadastro", "/contato", "/solucoes", "/termos-de-uso", "/privacidade", "/licenca-e-assinatura", "/tratamento-de-dados"];
 const SUPPORT_FRAGMENT = /^#support-session=(\d+)$/;
 
 function isPublicPath(pathname: string) {

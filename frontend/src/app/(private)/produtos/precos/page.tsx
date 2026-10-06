@@ -37,6 +37,7 @@ interface BulkPriceResponse {
 
 type PriceItem = { product: number; sale_price: string };
 type LineErrors = Record<number, Record<string, string[]>>;
+type BranchPricingStatus = { available: boolean; active_branch_count: number };
 
 function BranchPrices() {
   const { currentCompany, currentBranch, hasPermission } = useAuth();
@@ -46,6 +47,9 @@ function BranchPrices() {
   const [comparison, setComparison] = useState<ProductPriceComparison | null>(
     null,
   );
+  const [branchPricingAvailable, setBranchPricingAvailable] = useState<
+    boolean | null
+  >(null);
   const [overrides, setOverrides] = useState<
     Record<number, BranchProductPrice>
   >({});
@@ -99,6 +103,7 @@ function BranchPrices() {
   async function load() {
     if (!currentCompany || !currentBranch) {
       setComparison(null);
+      setBranchPricingAvailable(false);
       setLoading(false);
       return;
     }
@@ -106,6 +111,18 @@ function BranchPrices() {
     setLoading(true);
     setError("");
     try {
+      const availability = await http.get<BranchPricingStatus>(
+        "products/branch-pricing/",
+      );
+      if (branchRef.current !== branchId) return;
+      setBranchPricingAvailable(availability.available);
+      if (!availability.available) {
+        setComparison(null);
+        setOverrides({});
+        setDrafts({});
+        setLineErrors({});
+        return;
+      }
       const matrix = await http.get<OperationalPriceTable>(
         "branch-prices/table/",
       );
@@ -158,11 +175,12 @@ function BranchPrices() {
   useEffect(() => {
     setSearch("");
     setSuccess("");
+    setBranchPricingAvailable(null);
     void load();
   }, [currentCompany?.id, currentBranch?.id]);
 
   async function save(productId: number) {
-    if (!currentBranch || !canChange) return;
+    if (!currentBranch || !canChange || !branchPricingAvailable) return;
     const branchId = currentBranch.id;
     const salePrice = drafts[productId];
     const items = [{ product: productId, sale_price: salePrice ?? "" }];
@@ -190,7 +208,8 @@ function BranchPrices() {
   }
 
   async function saveAll() {
-    if (!currentBranch || !canChange || !comparison) return;
+    if (!currentBranch || !canChange || !comparison || !branchPricingAvailable)
+      return;
     const branchId = currentBranch.id;
     const changed = comparison.products.filter(
       (product) =>
@@ -234,7 +253,7 @@ function BranchPrices() {
 
   async function useDefault(productId: number) {
     const existing = overrides[productId];
-    if (!existing || !canChange) return;
+    if (!existing || !canChange || !branchPricingAvailable) return;
     setSaving(productId);
     setError("");
     setSuccess("");
@@ -275,10 +294,17 @@ function BranchPrices() {
           </Link>
         }
       />
-      <div className="space-y-4 p-4 sm:p-6 lg:p-8">
-        {error && <Alert message={error} />}
-        {success && <Alert type="success" message={success} />}
-        {!!Object.keys(lineErrors).length && (
+        <div className="space-y-4 p-4 sm:p-6 lg:p-8">
+          {error && <Alert message={error} />}
+          {success && <Alert type="success" message={success} />}
+          {branchPricingAvailable === false ? (
+            <EmptyState
+              title="Preços por filial indisponíveis"
+              description="Preços por filial ficam disponíveis quando a empresa possuir mais de uma filial ativa."
+            />
+          ) : (
+            <>
+          {!!Object.keys(lineErrors).length && (
           <div role="alert" className="card border-danger/30 p-4">
             <strong className="text-xs text-danger-strong">
               Linhas que precisam de correção
@@ -456,8 +482,10 @@ function BranchPrices() {
               description="Ajuste a busca ou cadastre produtos."
             />
           )}
-        </section>
-      </div>
+          </section>
+            </>
+          )}
+        </div>
     </>
   );
 }

@@ -19,6 +19,7 @@ from .services import (
     create_product, replace_composition, replace_fraction_composition,
     soft_delete_modifier_option,
 )
+from .storage import MAX_PRODUCT_IMAGE_SIZE, validate_product_image
 
 
 class CompanyBoundSerializer(serializers.ModelSerializer):
@@ -338,6 +339,20 @@ class ProductionDestinationSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class ProductImageUploadSerializer(serializers.Serializer):
+    image = serializers.FileField(max_length=120, allow_empty_file=False)
+
+    def validate_image(self, value):
+        if value.size > MAX_PRODUCT_IMAGE_SIZE:
+            raise serializers.ValidationError('A foto deve ter no maximo 5 MB.')
+        try:
+            validate_product_image(value)
+        except Exception as error:
+            messages = getattr(error, 'messages', None)
+            raise serializers.ValidationError(messages or str(error)) from error
+        return value
+
+
 class ProductSerializer(CompanyBoundSerializer):
     company_name = serializers.CharField(source='company.trade_name', read_only=True)
     category_name = serializers.CharField(source='category.name', read_only=True, default='')
@@ -354,6 +369,8 @@ class ProductSerializer(CompanyBoundSerializer):
     production_destinations = serializers.SerializerMethodField()
     purchase_presentations = serializers.SerializerMethodField()
     suppliers = serializers.SerializerMethodField()
+    image = serializers.URLField(read_only=True, allow_null=True)
+    image_url = serializers.SerializerMethodField()
     cost = serializers.DecimalField(
         max_digits=12, decimal_places=2, min_value=Decimal('0.00')
     )
@@ -366,7 +383,7 @@ class ProductSerializer(CompanyBoundSerializer):
             'id', 'company', 'company_name', 'category', 'category_name', 'name',
             'description', 'internal_code', 'barcode', 'unit', 'cost', 'sale_price',
             'sku',
-            'image', 'is_sellable', 'is_favorite', 'inventory_behavior', 'status',
+            'image', 'image_url', 'is_sellable', 'is_favorite', 'inventory_behavior', 'status',
             'archived_at', 'archived_by',
             'available_counter', 'available_table', 'available_command',
             'participates_in_service_fee', 'participates_in_commission',
@@ -376,6 +393,11 @@ class ProductSerializer(CompanyBoundSerializer):
             'production_destinations', 'purchase_presentations', 'suppliers',
             'created_at', 'updated_at',
         )
+
+    def get_image_url(self, product):
+        if product.image_file:
+            return f'/api/v1/products/{product.pk}/image/'
+        return product.image
 
     def get_fields(self):
         fields = super().get_fields()
@@ -1109,7 +1131,7 @@ class BranchProductPriceSerializer(serializers.ModelSerializer):
                 company_id=branch.company_id
             )
             fields['branch'].queryset = fields['branch'].queryset.filter(
-                company_id=branch.company_id
+                company_id=branch.company_id, status=Status.ACTIVE
             )
         return fields
 
@@ -1121,6 +1143,8 @@ class BranchProductPriceSerializer(serializers.ModelSerializer):
         if context_branch and product and product.company_id != context_branch.company_id:
             raise serializers.ValidationError({'product': 'Produto fora do contexto autorizado.'})
         if context_branch and branch:
+            if branch.status != Status.ACTIVE:
+                raise serializers.ValidationError({'branch': 'Selecione uma filial ativa.'})
             if branch.company_id != context_branch.company_id:
                 raise serializers.ValidationError({'branch': 'Filial fora da empresa atual.'})
             if (

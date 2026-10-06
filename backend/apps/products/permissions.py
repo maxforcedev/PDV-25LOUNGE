@@ -11,6 +11,8 @@ class ProductFunctionalPermission(BasePermission):
     message = 'Você não possui permissão para esta operação.'
 
     def get_code(self, request, view):
+        if view.action == 'image' and request.method == 'GET':
+            return 'products.view'
         if view.action == 'components':
             return (
                 'products.configure_composition'
@@ -50,7 +52,7 @@ class ProductFunctionalPermission(BasePermission):
             request.branch_context = Branch.objects.get(pk=branch_id)
         except (Branch.DoesNotExist, TypeError, ValueError):
             return False
-        if view.basename == 'branchprice':
+        if view.basename == 'branchprice' or view.action == 'branch_pricing':
             company_id = request.branch_context.company_id
             if view.action in {'list', 'retrieve', 'table'}:
                 return (

@@ -1,13 +1,16 @@
+import mimetypes
 import uuid
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import BooleanField, Count, F, Max, OuterRef, Q, Subquery
 from django.db.models.functions import Coalesce
 from django.db import IntegrityError, transaction
+from django.http import FileResponse
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.decorators import action
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 
 from apps.base.audit import audit_log, model_snapshot
@@ -39,6 +42,7 @@ from .serializers import (
     ProductComponentSerializer,
     ProductDestinationsSerializer,
     ProductFractionComponentSerializer,
+    ProductImageUploadSerializer,
     ProductModifierGroupSerializer,
     ProductSerializer,
     ProductionDestinationSerializer,
@@ -52,7 +56,22 @@ from .services import (
 )
 
 
+BRANCH_PRICING_UNAVAILABLE_MESSAGE = (
+    'Preços por filial ficam disponíveis quando a empresa possuir mais de uma filial ativa.'
+)
+
+
+def active_branch_count(company_id):
+    return Branch.objects.filter(company_id=company_id, status=Status.ACTIVE).count()
+
+
+def assert_branch_pricing_available(company_id):
+    if active_branch_count(company_id) < 2:
+        raise ValidationError({'detail': BRANCH_PRICING_UNAVAILABLE_MESSAGE})
+
+
 def branch_price_comparison(company_id, *, product=None, category=None, status=None):
+    assert_branch_pricing_available(company_id)
     company = Company.objects.get(pk=company_id)
     products_queryset = priceable_products(company=company)
     if product is not None:
@@ -394,11 +413,14 @@ class ProductViewSet(CatalogViewSet):
         'archive': 'products.change_status',
         'restore': 'products.change_status',
         'minimum_stock': 'inventory.change_minimum',
+        'image': 'products.change',
+        'remove_image': 'products.change',
+        'branch_pricing': 'products.view',
     }
 
     audit_fields = (
         'category_id', 'name', 'description', 'internal_code', 'sku', 'barcode', 'unit',
-        'cost', 'sale_price', 'image', 'status', 'inventory_behavior',
+        'cost', 'sale_price', 'image', 'image_file', 'status', 'inventory_behavior',
         'archived_at', 'archived_by_id',
         'is_sellable', 'is_favorite', 'available_counter', 'available_table',
         'available_command', 'participates_in_service_fee',
@@ -510,6 +532,72 @@ class ProductViewSet(CatalogViewSet):
                 '-is_favorite', 'category__sort_order', 'name', 'id'
             )
         return queryset.order_by('-is_favorite', 'name', 'id')
+
+    @action(detail=False, methods=('get',), url_path='branch-pricing')
+    def branch_pricing(self, request):
+        branch = getattr(request, 'branch_context', None)
+        if branch is None:
+            raise ValidationError({'branch': 'Informe a filial ativa no cabecalho.'})
+        count = active_branch_count(branch.company_id)
+        return Response({
+            'available': count >= 2,
+            'active_branch_count': count,
+        })
+
+    @action(
+        detail=True,
+        methods=('get', 'post'),
+        parser_classes=(MultiPartParser, FormParser),
+    )
+    @transaction.atomic
+    def image(self, request, pk=None):
+        product = self.get_object()
+        if request.method == 'GET':
+            image = product.image_file
+            if not image or not image.storage.exists(image.name):
+                raise NotFound('Foto do produto nao encontrada.')
+            content_type = mimetypes.guess_type(image.name)[0] or 'application/octet-stream'
+            return FileResponse(image.open('rb'), content_type=content_type)
+
+        product = Product.objects.select_for_update().get(pk=product.pk)
+        if request.method == 'POST':
+            serializer = ProductImageUploadSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            previous_name = product.image_file.name if product.image_file else ''
+            product.image_file = serializer.validated_data['image']
+            product.save(update_fields=('image_file', 'updated_at'))
+            if previous_name and previous_name != product.image_file.name:
+                storage = product.image_file.storage
+                transaction.on_commit(lambda: storage.delete(previous_name))
+            audit_log(
+                actor=request.user, action='product.image.upload', obj=product,
+                company=product.company, branch=getattr(request, 'branch_context', None),
+                before={'image_file': bool(previous_name)}, after={'image_file': True},
+            )
+            return Response(self.get_serializer(product).data)
+
+    @action(detail=True, methods=('post',), url_path='image/remove')
+    @transaction.atomic
+    def remove_image(self, request, pk=None):
+        product = self.get_object()
+        product = Product.objects.select_for_update().get(pk=product.pk)
+        previous_name = product.image_file.name if product.image_file else ''
+        previous_storage = product.image_file.storage if previous_name else None
+        legacy_image = product.image
+        product.image_file = None
+        # Keep a legacy URL as a fallback when removing a newer attachment.
+        if not previous_name:
+            product.image = None
+        product.save(update_fields=('image_file', 'image', 'updated_at'))
+        if previous_name:
+            transaction.on_commit(lambda: previous_storage.delete(previous_name))
+        audit_log(
+            actor=request.user, action='product.image.remove', obj=product,
+            company=product.company, branch=getattr(request, 'branch_context', None),
+            before={'image_file': bool(previous_name), 'image': legacy_image},
+            after={'image_file': False, 'image': product.image},
+        )
+        return Response(self.get_serializer(product).data)
 
     @action(detail=True, methods=('post',))
     @transaction.atomic
@@ -1103,6 +1191,13 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
         'table': 'branch_prices.view', 'bulk': 'branch_prices.change',
     }
 
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        branch = getattr(request, 'branch_context', None)
+        if branch is None:
+            raise ValidationError({'branch': 'Informe a filial ativa no cabecalho.'})
+        assert_branch_pricing_available(branch.company_id)
+
     def _has_company_permission(self, code):
         branch = self.request.branch_context
         return self.request.user.is_superuser or user_has_company_permission(
@@ -1128,6 +1223,7 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
             product__company_id=branch.company_id,
             product__status=Status.ACTIVE,
             product__archived_at__isnull=True,
+            branch__status=Status.ACTIVE,
             product__branch_configs__branch=F('branch'),
             product__branch_configs__is_available=True,
         )

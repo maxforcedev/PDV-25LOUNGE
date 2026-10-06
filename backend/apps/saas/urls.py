@@ -7,6 +7,7 @@ from .views import (
     OwnerSubscriptionView,
     OwnerSupportHistoryView,
     PublicCommercialLeadView,
+    PublicBrandingAssetView,
     PublicPlanVersionListView,
     PublicSettingsView,
     PublicSignupView,
@@ -15,6 +16,7 @@ from .views import (
 urlpatterns = [
     path('public/plans/', PublicPlanVersionListView.as_view(), name='saas-public-plan-list'),
     path('public/settings/', PublicSettingsView.as_view(), name='saas-public-settings'),
+    path('public/branding/<str:slot>/', PublicBrandingAssetView.as_view(), name='saas-public-branding-asset'),
     path('public/leads/', PublicCommercialLeadView.as_view(), name='saas-public-leads'),
     path('public/signup/', PublicSignupView.as_view(), name='saas-public-signup'),
     path('saas/owner/subscription/', OwnerSubscriptionView.as_view(), name='saas-owner-subscription'),

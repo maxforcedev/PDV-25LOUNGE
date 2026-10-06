@@ -1,0 +1,22 @@
+[
+  {
+    "file": "USO",
+    "slug": "termos-de-uso",
+    "sha256": "7c7a1fb449a9e09f8d7454bbc63750b905d0677840adc0fdb73269c6359ddbf0"
+  },
+  {
+    "file": "PRIVACIDADE",
+    "slug": "privacidade",
+    "sha256": "f459d387d6580ae58a7011faf3a99399f2b1247b11bdde932e4e634a9f4bc42c"
+  },
+  {
+    "file": "LICENÇA E ASSINATURA",
+    "slug": "licenca-e-assinatura",
+    "sha256": "552b6dd4d83084ba8b2a745a0af154c51a762e252e60b4243dedd95a7d746d70"
+  },
+  {
+    "file": "TRATAMENTO",
+    "slug": "tratamento-de-dados",
+    "sha256": "701dd13e86596259157211b4acc4188e33bd778c50078958de55d98b337de58d"
+  }
+]

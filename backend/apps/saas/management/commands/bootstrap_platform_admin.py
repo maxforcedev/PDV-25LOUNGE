@@ -11,6 +11,7 @@ PERMISSIONS = (
     ('platform.access', 'Acessar Platform Admin'),
     ('platform.dashboard.view', 'Visualizar dashboard SaaS'),
     ('platform.tenants.manage', 'Administrar tenants'),
+    ('platform.leads.manage', 'Administrar leads comerciais'),
     ('platform.plans.manage', 'Administrar planos e entitlements'),
     ('platform.billing.manage', 'Administrar pagamentos'),
     ('platform.settings.manage', 'Administrar configuracoes globais'),

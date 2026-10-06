@@ -6,6 +6,7 @@ from .views import (
     PlanEntitlementViewSet,
     PlanVersionViewSet,
     PlanViewSet,
+    PlatformCommercialLeadViewSet,
     PlatformDashboardView,
     PlatformLoginView,
     PlatformLogoutView,
@@ -13,6 +14,7 @@ from .views import (
     PlatformOwnerLookupView,
     PlatformPaymentViewSet,
     PlatformSettingsView,
+    PlatformBrandingAssetView,
     PlatformSupportSessionViewSet,
     PlatformSubscriptionRequestViewSet,
     PlatformSubscriptionViewSet,
@@ -21,6 +23,7 @@ from .views import (
 
 router = SimpleRouter()
 router.register('tenants', PlatformTenantViewSet, basename='platform-tenant')
+router.register('leads', PlatformCommercialLeadViewSet, basename='platform-lead')
 router.register('plans', PlanViewSet, basename='platform-plan')
 router.register('plan-versions', PlanVersionViewSet, basename='platform-plan-version')
 router.register('capabilities', CapabilityViewSet, basename='platform-capability')
@@ -41,5 +44,6 @@ urlpatterns = [
     path('owners/lookup/', PlatformOwnerLookupView.as_view(), name='platform-owner-lookup'),
     path('dashboard/', PlatformDashboardView.as_view(), name='platform-dashboard'),
     path('settings/', PlatformSettingsView.as_view(), name='platform-settings'),
+    path('settings/branding/<str:slot>/', PlatformBrandingAssetView.as_view(), name='platform-branding-asset'),
     path('', include(router.urls)),
 ]

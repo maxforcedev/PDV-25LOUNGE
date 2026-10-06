@@ -91,7 +91,8 @@ async function request<T>(path: string, options: Options = {}, retried = false):
   const unsafe = !["GET", "HEAD", "OPTIONS"].includes(method);
   const headers = new Headers(options.headers);
   if (unsafe) headers.set("X-CSRFToken", await getCsrf());
-  if (options.body !== undefined) headers.set("Content-Type", "application/json");
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
+  if (options.body !== undefined && !isFormData) headers.set("Content-Type", "application/json");
   let response: Response;
   try {
     const url = /^https?:\/\//.test(path) ? path : `${API_URL}/${path.replace(/^\//, "")}`;
@@ -100,7 +101,7 @@ async function request<T>(path: string, options: Options = {}, retried = false):
       method,
       headers,
       credentials: "include",
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      body: options.body === undefined ? undefined : isFormData ? options.body as FormData : JSON.stringify(options.body),
     });
   } catch {
     throw new ApiError("Nao foi possivel conectar ao servidor.");
@@ -137,7 +138,9 @@ export const api = {
     return rows;
   },
   post: <T>(path: string, body?: unknown, silent401 = false) => request<T>(path, { method: "POST", body, silent401 }),
+  postForm: <T>(path: string, body: FormData) => request<T>(path, { method: "POST", body }),
   patch: <T>(path: string, body: unknown) => request<T>(path, { method: "PATCH", body }),
+  deleteForm: <T>(path: string, body: FormData) => request<T>(path, { method: "DELETE", body }),
 };
 
 export function clearCsrf() { csrfToken = null; }

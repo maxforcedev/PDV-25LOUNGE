@@ -19,6 +19,7 @@ function firstAllowedRoute(user: PlatformUser) {
   const routes = [
     ["platform.dashboard.view", "/dashboard"],
     ["platform.tenants.manage", "/tenants"],
+    ["platform.leads.manage", "/leads"],
     ["platform.plans.manage", "/plans"],
     ["platform.settings.manage", "/settings"],
     ["platform.billing.manage", "/billing"],

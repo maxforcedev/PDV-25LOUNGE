@@ -15,6 +15,7 @@ import {
   Power,
   Search,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import { AdminGuard } from "@/components/admin-guard";
@@ -72,7 +73,6 @@ type ProductForm = {
   is_sellable: boolean;
   is_favorite: boolean;
   inventory_behavior: InventoryBehavior;
-  image: string;
   available_counter: boolean;
   available_table: boolean;
   available_command: boolean;
@@ -108,7 +108,6 @@ const blank = (company = 0, includeCost = false): ProductForm => ({
   is_sellable: true,
   is_favorite: false,
   inventory_behavior: "direct",
-  image: "",
   available_counter: true,
   available_table: true,
   available_command: true,
@@ -254,6 +253,12 @@ function Products() {
   const [fractionComponents, setFractionComponents] = useState<
     ProductFractionComponent[]
   >([]);
+  const [productImage, setProductImage] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState("");
+  const [removingImage, setRemovingImage] = useState(false);
+  const imagePreviewRef = useRef("");
+  const imageSelectionRef = useRef(false);
+  const [branchPricingAvailable, setBranchPricingAvailable] = useState(false);
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState<Product | null>(null);
@@ -276,6 +281,12 @@ function Products() {
     candidates,
     "sale_price",
   );
+
+  function replaceImagePreview(value: string, objectUrl = false) {
+    if (imagePreviewRef.current) URL.revokeObjectURL(imagePreviewRef.current);
+    imagePreviewRef.current = objectUrl ? value : "";
+    setImagePreview(value);
+  }
 
   function query(
     filters: ProductFilters = {
@@ -344,6 +355,7 @@ function Products() {
     setData(null);
     setCategories([]);
     setCandidates([]);
+    setBranchPricingAvailable(false);
     if (!companyId) return;
     void load(`products/?company=${companyId}&lifecycle=active`, companyId);
     let active = true;
@@ -352,11 +364,13 @@ function Products() {
       http.getAll<Product>(
         `products/?company=${companyId}&status=active&lifecycle=active&inventory_behavior=direct`,
       ),
+      http.get<{ available: boolean }>("products/branch-pricing/"),
     ])
-      .then(([categoryData, productData]) => {
+      .then(([categoryData, productData, branchPricing]) => {
         if (active && companyIdRef.current === companyId) {
           setCategories(categoryData);
           setCandidates(productData);
+          setBranchPricingAvailable(branchPricing.available);
         }
       })
       .catch((caught) => {
@@ -371,6 +385,34 @@ function Products() {
       active = false;
     };
   }, [currentCompany?.id, currentBranch?.id]);
+
+  useEffect(() => {
+    const imageUrl = editing?.image_url;
+    imageSelectionRef.current = false;
+    setProductImage(null);
+    if (!imageUrl) {
+      replaceImagePreview("");
+      return;
+    }
+    if (!imageUrl.startsWith("/api/")) {
+      replaceImagePreview(imageUrl);
+      return;
+    }
+    let active = true;
+    http.download(imageUrl).then(({ blob }) => {
+      if (!active || imageSelectionRef.current) return;
+      replaceImagePreview(URL.createObjectURL(blob), true);
+    }).catch(() => {
+      if (active) replaceImagePreview("");
+    });
+    return () => {
+      active = false;
+    };
+  }, [editing?.id, editing?.image_url]);
+
+  useEffect(() => () => {
+    if (imagePreviewRef.current) URL.revokeObjectURL(imagePreviewRef.current);
+  }, []);
 
   useEffect(() => {
     if (!isDetail || !currentCompany) return;
@@ -462,7 +504,6 @@ function Products() {
               is_sellable: detail.is_sellable,
               is_favorite: detail.is_favorite,
               inventory_behavior: detail.inventory_behavior,
-              image: detail.image || "",
               available_counter: detail.available_counter,
               available_table: detail.available_table,
               available_command: detail.available_command,
@@ -593,6 +634,65 @@ function Products() {
     );
   }
 
+  function chooseProductImage(file?: File) {
+    if (!file) return;
+    const allowed = ["image/png", "image/jpeg", "image/webp"];
+    if (
+      !allowed.includes(file.type) ||
+      file.size <= 0 ||
+      file.size > 5 * 1024 * 1024
+    ) {
+      setFields((current) => ({
+        ...current,
+        image: ["Envie PNG, JPG, JPEG ou WEBP de até 5 MB."],
+      }));
+      return;
+    }
+    setFields((current) => ({ ...current, image: [] }));
+    imageSelectionRef.current = true;
+    setProductImage(file);
+    replaceImagePreview(URL.createObjectURL(file), true);
+  }
+
+  async function uploadProductImage(productId: number) {
+    if (!productImage) return;
+    const body = new FormData();
+    body.append("image", productImage);
+    const product = await http.post<Product>(`products/${productId}/image/`, body);
+    setEditing(product);
+    setProductImage(null);
+  }
+
+  async function removeProductImage() {
+    if (productImage && !editing) {
+      imageSelectionRef.current = false;
+      setProductImage(null);
+      replaceImagePreview("");
+      return;
+    }
+    if (!editing || !canChange) return;
+    imageSelectionRef.current = false;
+    setProductImage(null);
+    setRemovingImage(true);
+    setError("");
+    try {
+      const product = await http.post<Product>(
+        `products/${editing.id}/image/remove/`,
+      );
+      setEditing(product);
+      replaceImagePreview("");
+      setSuccess("Foto do produto removida com sucesso.");
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError
+          ? caught.message
+          : "Não foi possível remover a foto do produto.",
+      );
+    } finally {
+      setRemovingImage(false);
+    }
+  }
+
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (editing && !canChange) return;
@@ -620,19 +720,19 @@ function Products() {
         const commonFields = { ...form, inventory_behavior: undefined };
         await http.patch(`products/${editing.id}/`, {
           ...commonFields,
-          image: form.image || null,
           ...(editing.inventory_behavior === "components" && canCompose
             ? { components: composition, fraction_components: exactComposition }
             : {}),
         });
+        await uploadProductImage(editing.id);
       } else {
-        await http.post<Product>("products/", {
+        const product = await http.post<Product>("products/", {
           ...form,
-          image: form.image || null,
           ...(form.inventory_behavior === "components"
             ? { components: composition, fraction_components: exactComposition }
             : {}),
         });
+        await uploadProductImage(product.id);
         if (isDetail) {
           router.replace("/produtos?saved=1");
           return;
@@ -794,10 +894,12 @@ function Products() {
                   Cadastro em lote
                 </Link>
               )}
-              <Link href="/produtos/precos" className="btn btn-secondary">
-                <DollarSign className="size-4" />
-                Preços por filial
-              </Link>
+              {branchPricingAvailable && (
+                <Link href="/produtos/precos" className="btn btn-secondary">
+                  <DollarSign className="size-4" />
+                  Preços por filial
+                </Link>
+              )}
               {canAdd && (
                 <Link href="/produtos/novo" className="btn">
                   <Plus className="size-4" />
@@ -1355,11 +1457,56 @@ function Products() {
             )}
             {(!isDetail || !editing || detailTab === "data") && (
               <>
-                <Field label="Imagem (URL)" optional>
-                  <Input
-                    value={form.image}
-                    onChange={(event) => update("image", event.target.value)}
-                  />
+                <Field
+                  label="Foto do produto"
+                  optional
+                  error={fieldError(fields, "image")}
+                >
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex size-20 items-center justify-center overflow-hidden rounded-lg border border-subtle bg-surface-muted text-xs text-muted">
+                      {imagePreview ? (
+                        <img
+                          src={imagePreview}
+                          alt="Foto do produto"
+                          className="size-full object-cover"
+                        />
+                      ) : (
+                        "Sem foto"
+                      )}
+                    </div>
+                    <div>
+                      <label className="btn btn-secondary cursor-pointer">
+                        <Upload className="size-4" />
+                        {imagePreview ? "Substituir foto" : "Selecionar imagem"}
+                        <input
+                          className="sr-only"
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp"
+                          disabled={saving || removingImage || (!!editing && !canChange)}
+                          onChange={(event) =>
+                            chooseProductImage(event.target.files?.[0])
+                          }
+                        />
+                      </label>
+                      {imagePreview && (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          className="ml-2"
+                          loading={removingImage}
+                          disabled={saving || (!!editing && !canChange)}
+                          onClick={() => void removeProductImage()}
+                        >
+                          <Trash2 className="size-4" />
+                          Remover
+                        </Button>
+                      )}
+                      <span className="mt-2 block text-[10px] text-muted">
+                        PNG, JPG ou WEBP, até 5 MB. A foto fica privada e exige
+                        autorização para visualização.
+                      </span>
+                    </div>
+                  </div>
                 </Field>
                 <Field label="Descrição" optional>
                   <Textarea
@@ -1739,6 +1886,7 @@ function Products() {
             product={editing}
             companyId={currentCompany.id}
             currentBranchId={currentBranch.id}
+            branchPricingAvailable={branchPricingAvailable}
             activeTab={isDetail ? detailTab : undefined}
             actionRef={productActionsRef}
             branches={(user?.branches || []).filter(
