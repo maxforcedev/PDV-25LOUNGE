@@ -10,12 +10,11 @@ from decimal import Decimal
 
 from django.test import TestCase
 
-from apps.accounts.models import User
 from apps.companies.models import (
     AccessProfile, BranchSettings, FunctionalPermission, Status,
 )
 from apps.companies.services import (
-    create_company_with_matrix, ensure_permission_catalog,
+    ensure_permission_catalog,
 )
 from apps.inventory.models import (
     MovementType, MovementDomainOrigin, Stock, StockMovement,
@@ -31,12 +30,9 @@ from apps.sales.services import (
     finalize_sale, cancel_sale,
     ensure_default_payment_methods,
 )
+from apps.saas.tests.helpers import create_complete_test_plan, create_operational_test_tenant
 
 PASSWORD = 'Block6-inv-password-123!'
-
-
-def create_user(email):
-    return User.objects.create_user(email=email, password=PASSWORD)
 
 
 def set_stock(branch, product, quantity, average_cost):
@@ -61,9 +57,16 @@ def set_stock(branch, product, quantity, average_cost):
 class InventoryRegressionFixture:
     def setUp(self):
         ensure_permission_catalog()
-        self.owner = create_user('owner@inv6.com')
-        self.company = create_company_with_matrix(
-            creator=self.owner, trade_name='Inv6', legal_name='Inv6 Legal',
+        self.owner, self.company, self.subscription = create_operational_test_tenant(
+            code='inventory-block6',
+            email='owner@inv6.com',
+            password=PASSWORD,
+            trade_name='Inv6',
+            legal_name='Inv6 Legal',
+            plan_version=create_complete_test_plan(
+                'inventory-block6',
+                enabled_features=('counter', 'cash_register', 'inventory', 'products'),
+            ),
         )
         self.branch = self.company.branches.get(is_matrix=True)
         settings = self.branch.settings

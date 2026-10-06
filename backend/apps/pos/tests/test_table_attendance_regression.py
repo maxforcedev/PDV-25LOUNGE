@@ -4,7 +4,6 @@ from uuid import uuid4
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 
-from apps.accounts.models import User
 from apps.attendance.models import (
     AttendanceCommand, TableAttendance, TableAttendanceStatus, TableOrderItem,
     TablePayment,
@@ -16,17 +15,26 @@ from apps.attendance.services import (
 from apps.cash.models import CashRegister
 from apps.cash.services import close_session, open_session
 from apps.commands.services import create_table
-from apps.companies.services import create_company_with_matrix
 from apps.inventory.models import Stock
 from apps.pos.models import POSDevice
 from apps.products.models import Category, InventoryBehavior, Product, ProductBranchConfig, Unit
 from apps.sales.services import ensure_default_payment_methods
+from apps.saas.tests.helpers import create_complete_test_plan, create_operational_test_tenant
 
 
 class TableAttendanceRegressionTests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(email='table-regression@example.com', password='table-regression-password')
-        self.company = create_company_with_matrix(creator=self.user, trade_name='Tables', legal_name='Tables Legal')
+        self.user, self.company, self.subscription = create_operational_test_tenant(
+            code='table-attendance-regression',
+            email='table-regression@example.com',
+            password='table-regression-password',
+            trade_name='Tables',
+            legal_name='Tables Legal',
+            plan_version=create_complete_test_plan(
+                'table-attendance-regression',
+                enabled_features=('tables', 'cash_register', 'products', 'inventory'),
+            ),
+        )
         self.branch = self.company.branches.get(is_matrix=True)
         self.branch.settings.uses_tables = True
         self.branch.settings.uses_commands = False

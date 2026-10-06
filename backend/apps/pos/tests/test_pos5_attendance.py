@@ -3,7 +3,6 @@ from uuid import uuid4
 
 from django.test import TestCase
 
-from apps.accounts.models import User
 from apps.attendance.models import AttendanceOrderItem
 from apps.attendance.services import (
     AttendanceConflict, add_order_items, command_summary, confirm_order_item,
@@ -11,7 +10,6 @@ from apps.attendance.services import (
 )
 from apps.cash.models import CashRegister
 from apps.cash.services import open_session
-from apps.companies.services import create_company_with_matrix
 from apps.inventory.models import Stock, StockMovement
 from apps.products.models import (
     Category, InventoryBehavior, Product, ProductBranchConfig, Unit,
@@ -19,15 +17,23 @@ from apps.products.models import (
 from apps.production.models import Ticket
 from apps.sales.models import Sale
 from apps.sales.services import ensure_default_payment_methods
+from apps.saas.tests.helpers import create_complete_test_plan, create_operational_test_tenant
 
 
 class POS5AttendanceTests(TestCase):
     def setUp(self):
-        self.owner = User.objects.create_user(
-            email='pos5-owner@example.com', password='POS5-owner-password-123!',
-        )
-        self.company = create_company_with_matrix(
-            creator=self.owner, trade_name='POS5', legal_name='POS5 Legal',
+        self.owner, self.company, self.subscription = create_operational_test_tenant(
+            code='pos5-attendance',
+            email='pos5-owner@example.com',
+            password='POS5-owner-password-123!',
+            trade_name='POS5',
+            legal_name='POS5 Legal',
+            plan_version=create_complete_test_plan(
+                'pos5-attendance',
+                enabled_features=(
+                    'tables', 'commands', 'cash_register', 'production', 'products', 'inventory',
+                ),
+            ),
         )
         self.branch = self.company.branches.get(is_matrix=True)
         settings = self.branch.settings
