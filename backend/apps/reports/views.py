@@ -268,6 +268,14 @@ def overview_comparison_data(request, *, start, end, filters):
 
 
 def operational_result_data(request, summary, *, extra_keys=()):
+    consumption_keys = (
+        'consumption_charged', 'consumption_charged_inflows',
+        'consumption_charged_reversals', 'consumption_inflow_count',
+        'consumption_reversal_count', 'historical_consumption_cogs',
+        'historical_consumption_cogs_inflows',
+        'historical_consumption_cogs_reversals',
+    )
+    has_consumption = branch_feature_enabled(request.branch_context, 'consumption')
     keys = (
         'sales_revenue', 'consumption_charged', 'effective_revenue', 'service_fee',
         'total_received', 'payment_total', 'reconciliation_delta',
@@ -278,7 +286,8 @@ def operational_result_data(request, summary, *, extra_keys=()):
     ) + tuple(extra_keys)
     data = {
         key: decimal_string(summary[key]) if summary[key] is not None else None
-        for key in keys if key in summary
+        for key in keys
+        if key in summary and (has_consumption or key not in consumption_keys)
     }
     if 'event_accounting' in summary:
         data['event_accounting'] = summary['event_accounting']
@@ -286,7 +295,7 @@ def operational_result_data(request, summary, *, extra_keys=()):
         'sales_inflow_count', 'sales_reversal_count',
         'consumption_inflow_count', 'consumption_reversal_count',
     ):
-        if key in summary:
+        if key in summary and (has_consumption or key not in consumption_keys):
             data[key] = summary[key]
     can_view_commission = user_has_code(request, 'commissions.view')
     can_view_costs = (
@@ -300,9 +309,10 @@ def operational_result_data(request, summary, *, extra_keys=()):
     if can_view_costs:
         for key in (
             'historical_sales_cogs', 'historical_sales_cogs_inflows',
-            'historical_sales_cogs_reversals', 'historical_consumption_cogs',
-            'historical_consumption_cogs_inflows',
-            'historical_consumption_cogs_reversals',
+            'historical_sales_cogs_reversals',
+            *(('historical_consumption_cogs',
+               'historical_consumption_cogs_inflows',
+               'historical_consumption_cogs_reversals') if has_consumption else ()),
         ):
             if key in summary:
                 data[key] = decimal_string(summary[key])

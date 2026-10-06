@@ -13,7 +13,7 @@ import { businessMonthToDate } from "@/lib/period";
 import { permissions } from "@/lib/permissions";
 import { payableStatusLabels, purchaseStatusLabels, purchaseTypeLabels } from "@/lib/purchases";
 import { useAuth } from "@/providers/auth-provider";
-import type { ReportResponse } from "@/types";
+import type { BranchFeature, ReportResponse } from "@/types";
 
 type ReportKind = "purchases" | "suppliers" | "payables";
 type Row = Record<string, unknown>;
@@ -89,7 +89,7 @@ function Kpi({ label, value }: { label: string; value: string }) {
 export function PhaseThreeReport({ kind }: { kind: ReportKind }) {
   const config = configs[kind];
   const { currentBranch, hasFeature, hasPermission } = useAuth();
-  const requiredFeatures = kind === "purchases" ? ["reports", "purchases"] : kind === "suppliers" ? ["reports", "suppliers"] : ["reports", "purchases", "financial"];
+  const requiredFeatures: readonly BranchFeature[] = kind === "purchases" ? ["reports", "purchases"] : kind === "suppliers" ? ["reports", "suppliers"] : ["reports", "purchases", "financial"];
   const allowed = hasPermission(config.permission) && requiredFeatures.every(hasFeature);
   const canViewCosts = hasPermission(permissions.viewPurchaseCosts);
   const context = useRef(0);
