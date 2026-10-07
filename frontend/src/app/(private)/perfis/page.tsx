@@ -6,6 +6,7 @@ import { AdminGuard } from "@/components/admin-guard";
 import { PageHeader } from "@/components/page-header";
 import { Alert, Button, ConfirmDialog, EmptyState, Field, Input, Modal, Pagination, StatusBadge, TableLoading, Textarea } from "@/components/ui";
 import { fieldError, formatDate, formatEditableDecimal } from "@/lib/format";
+import { isFunctionalPermissionAvailable } from "@/lib/feature-guards";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
@@ -63,13 +64,14 @@ function PermissionMatrix({ catalog, selected, onChange }: { catalog: Functional
 }
 
 function Profiles() {
-  const { currentCompany, hasPermission } = useAuth();
+  const { currentCompany, hasFeature, hasPermission } = useAuth();
   const canAdd = hasPermission(permissions.addAccessProfile);
   const canChange = hasPermission(permissions.changeAccessProfile);
   const canStatus = hasPermission(permissions.changeAccessProfileStatus);
   const canChangeCommission = hasPermission(permissions.changeProfileCommission);
   const [data, setData] = useState<Paginated<AccessProfile> | null>(null);
   const [catalog, setCatalog] = useState<FunctionalPermission[]>([]);
+  const availableCatalog = catalog.filter((permission) => isFunctionalPermissionAvailable(permission.code, hasFeature));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");

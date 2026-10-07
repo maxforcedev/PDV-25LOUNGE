@@ -5,6 +5,7 @@ from django.db import transaction
 from rest_framework import serializers
 
 from apps.companies.models import Status
+from apps.companies.features import branch_feature_enabled
 from apps.companies.selectors import user_has_branch_permission, user_has_company_permission
 from apps.base.exceptions import DomainValidationError
 
@@ -416,10 +417,21 @@ class ProductSerializer(CompanyBoundSerializer):
         if not can_view_costs:
             fields.pop('cost', None)
             fields.pop('suggested_cost', None)
+        if branch and not branch_feature_enabled(branch, 'inventory'):
+            fields.pop('branch_stock', None)
+            fields.pop('fraction_config', None)
+        if branch and not branch_feature_enabled(branch, 'production'):
+            fields.pop('production_destinations', None)
+        if branch and (
+            not branch_feature_enabled(branch, 'suppliers')
+            or not branch_feature_enabled(branch, 'purchases')
+        ):
+            fields.pop('suppliers', None)
+            fields.pop('purchase_presentations', None)
         if getattr(self.context.get('view'), 'action', None) != 'retrieve':
             for field in (
                 'branch_configuration', 'fraction_config',
-                'production_destinations', 'suppliers',
+                'production_destinations', 'suppliers', 'purchase_presentations',
             ):
                 fields.pop(field, None)
         elif not (
@@ -945,7 +957,7 @@ class ProductSerializer(CompanyBoundSerializer):
 
     def get_production_destinations(self, product):
         branch = getattr(self.context.get('request'), 'branch_context', None)
-        if not branch:
+        if not branch or not branch_feature_enabled(branch, 'production'):
             return []
         destinations = ProductionDestination.objects.filter(
             branch=branch, product_links__product=product
@@ -953,6 +965,9 @@ class ProductSerializer(CompanyBoundSerializer):
         return ProductionDestinationSerializer(destinations, many=True).data
 
     def get_purchase_presentations(self, product):
+        branch = getattr(self.context.get('request'), 'branch_context', None)
+        if not branch or not branch_feature_enabled(branch, 'suppliers'):
+            return []
         return [
             {
                 'id': presentation.pk,
@@ -969,6 +984,9 @@ class ProductSerializer(CompanyBoundSerializer):
         ]
 
     def get_suppliers(self, product):
+        branch = getattr(self.context.get('request'), 'branch_context', None)
+        if not branch or not branch_feature_enabled(branch, 'suppliers'):
+            return []
         return [
             {
                 'id': relation.pk,

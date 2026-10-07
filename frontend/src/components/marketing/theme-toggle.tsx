@@ -14,6 +14,7 @@ export function MarketingThemeToggle() {
     const next = theme === "dark" ? "light" : "dark";
     document.documentElement.dataset.theme = next;
     localStorage.setItem("pdv.theme", next);
+    window.dispatchEvent(new Event("themechange"));
     setTheme(next);
   }
 

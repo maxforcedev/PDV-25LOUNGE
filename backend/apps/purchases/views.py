@@ -9,6 +9,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 
 from apps.companies.models import Branch, Status
+from apps.companies.features import branch_feature_enabled
 from apps.companies.selectors import accessible_branches
 from apps.products.selectors import purchasable_products
 from apps.suppliers.models import ProductPurchasePresentation, Supplier
@@ -126,6 +127,8 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
         branch = getattr(request, 'branch_context', None)
         if branch is None:
             raise PermissionDenied('Selecione a filial ativa.')
+        if not branch_feature_enabled(branch, 'suppliers'):
+            raise PermissionDenied('A funcionalidade Fornecedores está desativada nesta filial.')
         suppliers = Supplier.objects.filter(
             branch=branch,
             status=Status.ACTIVE,

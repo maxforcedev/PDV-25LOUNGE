@@ -9,9 +9,10 @@ import { useAuth } from "@/providers/auth-provider";
 import type { Customer } from "@/types";
 
 export function CustomerQuickPicker({ value, onChange, disabled = false }: { value: Customer | null; onChange: (customer: Customer | null) => void; disabled?: boolean }) {
-  const { currentCompany, hasPermission, supportSession } = useAuth();
-  const canView = hasPermission(permissions.viewCustomer);
-  const canAdd = hasPermission(permissions.addCustomer) && supportSession?.mode !== "READ_ONLY";
+  const { currentCompany, hasFeature, hasPermission, supportSession } = useAuth();
+  const customersEnabled = hasFeature("customers");
+  const canView = customersEnabled && hasPermission(permissions.viewCustomer);
+  const canAdd = customersEnabled && hasPermission(permissions.addCustomer) && supportSession?.mode !== "READ_ONLY";
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(false);
@@ -44,7 +45,7 @@ export function CustomerQuickPicker({ value, onChange, disabled = false }: { val
     finally { setSaving(false); }
   }
 
-  if (!canView) return null;
+  if (!customersEnabled || !canView) return null;
   return <div className="space-y-2">
     {value ? <div className="flex items-center justify-between gap-2 rounded-md border border-primary/20 bg-primary/5 p-2 text-xs"><span><strong>{value.name}</strong>{value.phone ? ` · ${value.phone}` : ""}</span>{!disabled && <button type="button" className="icon-button size-7" onClick={() => onChange(null)} aria-label="Remover cliente"><X className="size-3.5" /></button>}</div> : <>
       <div className="flex gap-2"><div className="relative flex-1"><Search className="absolute left-2.5 top-2.5 size-4 text-muted" /><Input className="h-9 pl-8" value={query} onChange={(event) => setQuery(event.target.value)} disabled={disabled} placeholder="Buscar cliente" /></div>{canAdd && <Button type="button" variant="secondary" className="h-9" disabled={disabled} onClick={() => { setError(""); setCreateOpen(true); }}><Plus className="size-4" />Novo</Button>}</div>

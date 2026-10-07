@@ -9,6 +9,7 @@ from .models import (
     UserBranchAccess, UserCommissionOverride, UserCompanyAccess, UserPermissionBlock,
 )
 from .rbac import PERMISSION_SCOPE_BRANCH, permission_scope
+from .features import branch_feature_enabled, capability_visible_permission_codes
 from .selectors import (
     accessible_branches,
     company_permission_codes,
@@ -326,6 +327,28 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
             feature: state['enabled']
             for feature, state in branch_feature_states(settings.branch).items()
         }
+
+    def get_fields(self):
+        fields = super().get_fields()
+        branch = getattr(self.instance, 'branch', None)
+        if branch is None:
+            return fields
+        feature_fields = {
+            'inventory': ('allow_negative_stock', 'negative_stock_count', 'negative_stock_state'),
+            'tables': ('uses_tables', 'default_table_quantity', 'default_table_seats',
+                       'default_table_prefix', 'table_range_start', 'table_range_end',
+                       'table_consumption_limit'),
+            'commands': ('uses_commands', 'command_consumption_limit'),
+            'counter': ('uses_counter',),
+            'consumption': ('uses_consumption', 'consumption_limit_enabled',
+                            'command_consumption_limit', 'table_consumption_limit'),
+            'cash_register': ('uses_cash_register',),
+        }
+        for feature, names in feature_fields.items():
+            if not branch_feature_enabled(branch, feature):
+                for name in names:
+                    fields.pop(name, None)
+        return fields
 
     def get_negative_stock_count(self, settings):
         from apps.inventory.models import Stock
@@ -664,6 +687,16 @@ class AccessProfileSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
         request = self.context.get('request')
+        if request:
+            branch = getattr(request, 'branch_context', None)
+            if branch is None:
+                branch = Branch.objects.filter(
+                    company_id=instance.company_id, is_matrix=True,
+                ).first()
+            if branch:
+                data['permission_codes'] = sorted(capability_visible_permission_codes(
+                    branch, data.get('permission_codes', ()),
+                ))
         if request and not (
             request.user.is_superuser
             or user_has_company_permission(
@@ -746,6 +779,20 @@ class UserPermissionBlockSerializer(serializers.ModelSerializer):
 
     def get_revoked_by_name(self, block):
         return str(block.revoked_by) if block.revoked_by_id else None
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        branch = branch or instance.branch or Branch.objects.filter(
+            company_id=instance.company_id, is_matrix=True,
+        ).first()
+        if branch and instance.permission.code not in capability_visible_permission_codes(
+            branch, (instance.permission.code,),
+        ):
+            data.pop('permission_code', None)
+            data.pop('permission_label', None)
+        return data
 
 
 class UserCommissionOverrideSerializer(serializers.ModelSerializer):

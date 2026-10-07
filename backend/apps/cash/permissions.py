@@ -23,9 +23,9 @@ class CashFunctionalPermission(BasePermission):
 
     @staticmethod
     def _requires_cash_feature(view):
-        if view.basename == 'cash-register':
-            return view.action not in ('list', 'retrieve')
-        return view.action in ('open', 'entry', 'withdrawal')
+        # Sessions, movements, and registers are all operational cash data.
+        # Historical cash is exposed only through feature-aware reports.
+        return True
 
     def has_permission(self, request, view):
         user = request.user

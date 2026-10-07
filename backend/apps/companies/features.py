@@ -41,6 +41,34 @@ FEATURE_LABELS = {
     'pos': 'CORE POS',
 }
 
+# RBAC definitions are durable records.  This map is only used when building
+# current operational catalogs, so a disabled capability never deletes history.
+PERMISSION_FEATURE_PREFIXES = {
+    'audit': 'audit',
+    'cash_registers': 'cash_register',
+    'categories': 'products',
+    'commands': 'commands',
+    'consumption': 'consumption',
+    'customers': 'customers',
+    'dashboard': 'reports',
+    'inventory': 'inventory',
+    'payment_methods': 'financial',
+    'pos_devices': 'pos',
+    'printers': 'production',
+    'print_documents': 'production',
+    'print_jobs': 'production',
+    'print_routes': 'production',
+    'products': 'products',
+    'promotions': 'promotions',
+    'purchases': 'purchases',
+    'reports': 'reports',
+    'sales': 'counter',
+    'suppliers': 'suppliers',
+    'tables': 'tables',
+    'tickets': 'production',
+    'production': 'production',
+}
+
 
 def branch_feature_states(branch):
     """Resolve plano e configuração da filial sem misturar essa decisão ao RBAC."""
@@ -49,8 +77,6 @@ def branch_feature_states(branch):
     except BranchSettings.DoesNotExist:
         settings = BranchSettings()
     flags = settings.feature_flags()
-    # Production serves direct sales as well as commands, so it is not coupled to commands.
-    flags['production'] = True
     # These modules have no branch-specific switch; their plan entitlement is decisive.
     for feature in FEATURE_CAPABILITIES:
         flags.setdefault(feature, True)
@@ -104,3 +130,16 @@ def require_branch_feature(branch, feature):
         raise PermissionDenied(f'O plano não permite a funcionalidade {label}.')
     if not state['enabled']:
         raise PermissionDenied(f'A funcionalidade {label} está desativada nesta filial.')
+
+
+def permission_feature(code):
+    """Return the capability governing an operational permission code."""
+    return PERMISSION_FEATURE_PREFIXES.get(str(code or '').split('.', 1)[0])
+
+
+def capability_visible_permission_codes(branch, codes):
+    return {
+        code for code in codes
+        if (feature := permission_feature(code)) is None
+        or branch_feature_enabled(branch, feature)
+    }

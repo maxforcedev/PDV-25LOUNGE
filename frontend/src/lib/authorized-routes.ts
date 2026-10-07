@@ -24,7 +24,7 @@ const routes: Array<{
   { href: "/formas-de-pagamento", permissions: [permissions.viewPaymentMethod], features: ["financial"] },
   { href: "/promocoes", permissions: [permissions.viewPromotion, permissions.changePromotion], features: ["promotions"] },
   { href: "/compras", permissions: [permissions.viewPurchase], features: ["purchases"] },
-  { href: "/contas-a-pagar", permissions: [permissions.managePurchasePayables], features: ["financial"] },
+  { href: "/contas-a-pagar", permissions: [permissions.managePurchasePayables], features: ["purchases", "financial"] },
   { href: "/estoque", permissions: [permissions.viewInventory], features: ["inventory"] },
   { href: "/usuarios", permissions: [permissions.viewUser] },
   { href: "/perfis", permissions: [permissions.viewAccessProfile] },

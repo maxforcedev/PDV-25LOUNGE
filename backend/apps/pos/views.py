@@ -39,7 +39,7 @@ from apps.companies.selectors import (
 from apps.companies.services import (
     CustomerIdentityConflict, customer_identity_payload, set_customer_status,
 )
-from apps.companies.features import require_branch_feature
+from apps.companies.features import branch_feature_enabled, require_branch_feature
 from apps.companies.models import Company, Customer, Status
 from apps.attendance.models import (
     AttendanceCommand, AttendanceCommandStatus, AttendanceOrderItem, AttendancePayment,
@@ -323,7 +323,7 @@ class BootstrapView(POSDeviceView):
         logging.getLogger('pos.performance').info(
             'POS permission_context_ms=%s', round((perf_counter() - started) * 1000),
         )
-        return Response({
+        response = {
             'server_time': timezone.now(),
             'release': version_gate(device.app_version),
             'company': {'id': device.branch.company_id, 'trade_name': device.branch.company.trade_name, 'operational': True},
@@ -335,9 +335,11 @@ class BootstrapView(POSDeviceView):
             'operator': _operator_data(session.operator),
             'permissions': sorted(permissions),
             'modules': modules,
-            'cash': cash_state_for_device(device, permissions, session.operator),
             'settings': {'receipt': effective_settings(device)},
-        })
+        }
+        if branch_feature_enabled(device.branch, 'cash_register'):
+            response['cash'] = cash_state_for_device(device, permissions, session.operator)
+        return Response(response)
 
 
 class HeartbeatView(POSDeviceView):
@@ -534,6 +536,10 @@ class PinConfirmView(POSPublicView):
 
 
 class POSCashView(POSDeviceView):
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        require_branch_feature(require_device(request).branch, 'cash_register')
+
     def context(self, request):
         started = perf_counter()
         device = self.device(request, check_version=True)
@@ -688,12 +694,12 @@ class POSTicketValidateView(POSTicketValidatorView):
 
 
 class POSQuickSaleView(POSCashView):
-    product_feature_required = True
+    required_feature = 'products'
 
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
-        if self.product_feature_required:
-            require_branch_feature(require_device(request).branch, 'products')
+        if self.required_feature:
+            require_branch_feature(require_device(request).branch, self.required_feature)
 
     @staticmethod
     def _require(permissions, code, message):
@@ -796,7 +802,7 @@ class POSBarcodeProductView(POSQuickSaleView):
 
 
 class POSCustomersView(POSQuickSaleView):
-    product_feature_required = False
+    required_feature = 'customers'
 
     def get(self, request):
         device, _, permissions, _ = self.context(request)
@@ -860,7 +866,7 @@ class POSCustomersView(POSQuickSaleView):
 
 
 class POSCustomerActivateView(POSQuickSaleView):
-    product_feature_required = False
+    required_feature = 'customers'
 
     def post(self, request, customer_id):
         device, operator, permissions, operator_session = self.context(request)

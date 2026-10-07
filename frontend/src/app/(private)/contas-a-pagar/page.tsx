@@ -23,10 +23,11 @@ function PayableBadge({ status }: { status: PayableInstallmentStatus }) {
 }
 
 function PurchasePayables() {
-  const { currentBranch, currentCompany, supportSession } = useAuth();
+  const { currentBranch, currentCompany, hasFeature, supportSession } = useAuth();
   const companyId = currentCompany?.id;
   const branchId = currentBranch?.id;
   const readOnly = supportSession?.mode === "READ_ONLY";
+  const suppliersEnabled = hasFeature("suppliers");
   const [items, setItems] = useState<PayableInstallment[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [draft, setDraft] = useState<Filters>(emptyFilters);
@@ -48,7 +49,7 @@ function PurchasePayables() {
     if (!currentBranch) { setItems([]); setLoading(false); return; }
     setLoading(true); setError("");
     const params = new URLSearchParams();
-    if (selectedFilters.supplier) params.set("supplier", selectedFilters.supplier);
+    if (suppliersEnabled && selectedFilters.supplier) params.set("supplier", selectedFilters.supplier);
     if (selectedFilters.status) params.set("status", selectedFilters.status);
     try {
       const result = await http.getAll<PayableInstallment>(`payable-installments/?${params}`);
@@ -66,9 +67,11 @@ function PurchasePayables() {
     if (!branchId || !companyId) { setLoading(false); return; }
     void loadRef.current(selectedFilters, key);
     let active = true;
-    http.getAll<Supplier>(`suppliers/?company=${companyId}&status=active`).then((result) => { if (active && context.current === key) setSuppliers(result); }).catch(() => { if (active) setSuppliers([]); });
+    if (suppliersEnabled) {
+      http.getAll<Supplier>(`suppliers/?company=${companyId}&status=active`).then((result) => { if (active && context.current === key) setSuppliers(result); }).catch(() => { if (active) setSuppliers([]); });
+    }
     return () => { active = false; };
-  }, [branchId, companyId]);
+  }, [branchId, companyId, suppliersEnabled]);
 
   function apply(event: React.FormEvent) { event.preventDefault(); const next = { ...draft, period: { ...draft.period } }; setApplied(next); void load(next); }
   function clear() { const next = emptyFilters(); setDraft(next); setApplied(next); void load(next); }
@@ -91,7 +94,7 @@ function PurchasePayables() {
       {readOnly && <div className="rounded-md border border-warning/30 bg-warning-surface p-3 text-xs text-warning-strong">Sessão de suporte somente leitura. Pagamentos e cancelamentos estão desabilitados.</div>}
       <section className="card flex flex-wrap items-center justify-between gap-4 p-5"><div><span className="text-xs text-muted">Pendente nos resultados</span><strong className="mt-1 block text-xl">{formatBRL(centsText(pendingTotal))}</strong></div><WalletCards className="size-8 text-primary" /></section>
       <form className="card grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-4" onSubmit={apply}>
-        <Select aria-label="Fornecedor" value={draft.supplier} onChange={(event) => setDraft((value) => ({ ...value, supplier: event.target.value }))}><option value="">Todos os fornecedores</option>{suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.trade_name}</option>)}</Select>
+        {suppliersEnabled && <Select aria-label="Fornecedor" value={draft.supplier} onChange={(event) => setDraft((value) => ({ ...value, supplier: event.target.value }))}><option value="">Todos os fornecedores</option>{suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.trade_name}</option>)}</Select>}
         <Select aria-label="Status" value={draft.status} onChange={(event) => setDraft((value) => ({ ...value, status: event.target.value }))}><option value="">Todos os status</option>{Object.entries(payableStatusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select>
         <div className="relative md:col-span-2"><Search className="pointer-events-none absolute left-3 top-3 size-4 text-muted" /><Input className="pl-9" placeholder="Número da compra" value={draft.purchase} onChange={(event) => setDraft((value) => ({ ...value, purchase: event.target.value }))} /></div>
         <PeriodFilter className="md:col-span-2 xl:col-span-4" value={draft.period} onChange={(period) => setDraft((value) => ({ ...value, period }))} />
@@ -106,4 +109,4 @@ function PurchasePayables() {
   </>;
 }
 
-export default function PurchasePayablesPage() { return <AdminGuard requiredPermissions={[permissions.managePurchasePayables]} requiredFeatures={["financial"]}><PurchasePayables /></AdminGuard>; }
+export default function PurchasePayablesPage() { return <AdminGuard requiredPermissions={[permissions.managePurchasePayables]} requiredFeatures={["purchases", "financial"]}><PurchasePayables /></AdminGuard>; }

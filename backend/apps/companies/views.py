@@ -14,7 +14,9 @@ from apps.accounts.models import User
 from apps.base.audit import audit_log, model_snapshot
 from apps.base.pagination import StandardPagination
 
-from .features import branch_feature_states
+from .features import (
+    branch_feature_states, capability_visible_permission_codes,
+)
 from .models import (
     AccessProfile, Branch, BranchSettings, Company, Customer, FunctionalPermission, Status,
     UserBranchAccess, UserCommissionOverride, UserCompanyAccess,
@@ -587,6 +589,21 @@ class FunctionalPermissionViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
+        branch = getattr(self.request, 'branch_context', None)
+        if branch is None:
+            branch_id = self.request.headers.get('X-Branch-ID')
+            company_id = self.request.query_params.get('company')
+            if branch_id:
+                branch = Branch.objects.filter(pk=branch_id).first()
+            elif company_id:
+                branch = Branch.objects.filter(
+                    company_id=company_id, is_matrix=True,
+                ).first()
+        if branch:
+            visible_codes = capability_visible_permission_codes(
+                branch, queryset.values_list('code', flat=True),
+            )
+            queryset = queryset.filter(code__in=visible_codes)
         module = self.request.query_params.get('module')
         return queryset.filter(module=module) if module else queryset
 
@@ -871,8 +888,14 @@ class UserPermissionBlockViewSet(viewsets.ModelViewSet):
         branches = Branch.objects.filter(
             company_id=company_id, status=Status.ACTIVE
         ).order_by('name', 'id')
+        branch = Branch.objects.filter(company_id=company_id, is_matrix=True).first()
         permissions = FunctionalPermission.objects.filter(
-            status=Status.ACTIVE
+            status=Status.ACTIVE,
+            code__in=capability_visible_permission_codes(
+                branch, FunctionalPermission.objects.filter(
+                    status=Status.ACTIVE,
+                ).values_list('code', flat=True),
+            ) if branch else (),
         ).order_by('module', 'label', 'code')
         return Response({
             'branches': [
@@ -931,7 +954,10 @@ class UserPermissionBlockViewSet(viewsets.ModelViewSet):
                 raise ValidationError({'branch': 'Filial fora da empresa selecionada.'})
             codes = blockable_permission_codes(target, company.id, branch_id)
             permissions = FunctionalPermission.objects.filter(
-                status=Status.ACTIVE, code__in=codes
+                status=Status.ACTIVE,
+                code__in=capability_visible_permission_codes(
+                    next(iter(branches), None), codes,
+                ) if branches else (),
             ).order_by('module', 'label', 'code')
 
         return Response({

@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from apps.base.audit import audit_log
 from apps.cash.models import CashSession, CashSessionStatus
+from apps.companies.features import require_branch_feature
 from apps.companies.models import Customer, Status
 from apps.inventory.reservations import (
     StockReservationConflict, acquire_checkout_reservation,
@@ -228,6 +229,7 @@ def create_quick_checkout(*, branch, pos_device, user, permissions, raw_items,
     session = current_pos_cash_session(pos_device, for_update=True)
     customer = None
     if customer_id is not None:
+        require_branch_feature(branch, 'customers')
         customer = Customer.objects.select_for_update().filter(
             pk=customer_id, company=branch.company, status=Status.ACTIVE,
         ).first()
@@ -305,6 +307,7 @@ def update_quick_checkout(*, checkout, pos_device, user, permissions, raw_items,
     session = current_pos_cash_session(pos_device, for_update=True)
     customer = None
     if customer_id is not None:
+        require_branch_feature(checkout.branch, 'customers')
         customer = Customer.objects.select_for_update().filter(
             pk=customer_id, company=checkout.company, status=Status.ACTIVE,
         ).first()

@@ -67,7 +67,7 @@ function PurchaseBadge({ status }: { status: PurchaseOrderStatus }) {
 }
 
 function Purchases() {
-  const { currentBranch, currentCompany, hasPermission, supportSession } =
+  const { currentBranch, currentCompany, hasFeature, hasPermission, supportSession } =
     useAuth();
   const companyId = currentCompany?.id;
   const branchId = currentBranch?.id;
@@ -75,6 +75,7 @@ function Purchases() {
     hasPermission(permissions.createPurchase) &&
     supportSession?.mode !== "READ_ONLY";
   const canViewCosts = hasPermission(permissions.viewPurchaseCosts);
+  const suppliersEnabled = hasFeature("suppliers");
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [draft, setDraft] = useState<Filters>(emptyFilters);
@@ -93,7 +94,7 @@ function Purchases() {
     setLoading(true);
     setError("");
     const params = new URLSearchParams();
-    if (selected.supplier) params.set("supplier", selected.supplier);
+    if (suppliersEnabled && selected.supplier) params.set("supplier", selected.supplier);
     if (selected.type) params.set("order_type", selected.type);
     if (selected.status) params.set("status", selected.status);
     if (selected.document.trim())
@@ -140,18 +141,20 @@ function Purchases() {
     }
     void loadRef.current(selected, key);
     let active = true;
-    http
-      .getAll<Supplier>(`suppliers/?company=${companyId}&status=active`)
-      .then((items) => {
-        if (active && context.current === key) setSuppliers(items);
-      })
-      .catch(() => {
-        if (active) setSuppliers([]);
-      });
+    if (suppliersEnabled) {
+      http
+        .getAll<Supplier>(`suppliers/?company=${companyId}&status=active`)
+        .then((items) => {
+          if (active && context.current === key) setSuppliers(items);
+        })
+        .catch(() => {
+          if (active) setSuppliers([]);
+        });
+    }
     return () => {
       active = false;
     };
-  }, [branchId, companyId]);
+  }, [branchId, companyId, suppliersEnabled]);
 
   function apply(event: React.FormEvent) {
     event.preventDefault();
@@ -188,20 +191,22 @@ function Purchases() {
           className="card grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-4"
           onSubmit={apply}
         >
-          <Select
-            aria-label="Fornecedor"
-            value={draft.supplier}
-            onChange={(event) =>
-              setDraft((value) => ({ ...value, supplier: event.target.value }))
-            }
-          >
-            <option value="">Todos os fornecedores</option>
-            {suppliers.map((supplier) => (
-              <option key={supplier.id} value={supplier.id}>
-                {supplier.trade_name}
-              </option>
-            ))}
-          </Select>
+          {suppliersEnabled && (
+            <Select
+              aria-label="Fornecedor"
+              value={draft.supplier}
+              onChange={(event) =>
+                setDraft((value) => ({ ...value, supplier: event.target.value }))
+              }
+            >
+              <option value="">Todos os fornecedores</option>
+              {suppliers.map((supplier) => (
+                <option key={supplier.id} value={supplier.id}>
+                  {supplier.trade_name}
+                </option>
+              ))}
+            </Select>
+          )}
           <Select
             aria-label="Tipo"
             value={draft.type}

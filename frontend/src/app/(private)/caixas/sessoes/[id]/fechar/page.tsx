@@ -331,7 +331,7 @@ function CloseSession() {
 
 export default function CloseSessionPage() {
   return (
-    <AdminGuard requiredPermissions={[permissions.closeCashRegister]}>
+    <AdminGuard requiredPermissions={[permissions.closeCashRegister]} requiredFeatures={["cash_register"]}>
       <CloseSession />
     </AdminGuard>
   );

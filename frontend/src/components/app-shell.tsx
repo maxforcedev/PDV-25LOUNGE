@@ -84,7 +84,7 @@ const cadastrosNavigation: NavItem[] = [
 
 const suprimentosNavigation: NavItem[] = [
   { href: "/compras", label: "Compras", icon: ClipboardList, requiredPermissions: [permissions.viewPurchase], requiredFeatures: ["purchases"] },
-  { href: "/contas-a-pagar", label: "Contas a pagar", icon: WalletCards, requiredPermissions: [permissions.managePurchasePayables], requiredFeatures: ["financial"] },
+  { href: "/contas-a-pagar", label: "Contas a pagar", icon: WalletCards, requiredPermissions: [permissions.managePurchasePayables], requiredFeatures: ["purchases", "financial"] },
   { href: "/estoque", label: "Estoque", icon: Boxes, requiredPermissions: [permissions.viewInventory], requiredFeatures: ["inventory"] },
 ];
 
@@ -304,6 +304,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const next = theme === "dark" ? "light" : "dark";
     document.documentElement.dataset.theme = next;
     localStorage.setItem("pdv.theme", next);
+    window.dispatchEvent(new Event("themechange"));
     setTheme(next);
   }
 

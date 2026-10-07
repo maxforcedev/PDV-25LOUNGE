@@ -1,6 +1,7 @@
 from rest_framework.permissions import BasePermission
 
 from apps.companies.models import Branch
+from apps.companies.features import require_branch_feature
 from apps.companies.selectors import user_has_branch_permission
 from apps.saas.permissions import support_permission_decision
 
@@ -32,6 +33,11 @@ class PurchaseFunctionalPermission(BasePermission):
             request.branch_context = Branch.objects.select_related('company').get(pk=branch_id)
         except (Branch.DoesNotExist, TypeError, ValueError):
             return False
+        require_branch_feature(request.branch_context, 'purchases')
+        if view.action in ('create', 'creation_options'):
+            require_branch_feature(request.branch_context, 'suppliers')
+        if getattr(view, 'basename', None) == 'payable-installment' or view.action == 'set_installments':
+            require_branch_feature(request.branch_context, 'financial')
         return user.is_superuser or any(
             user_has_branch_permission(user, branch_id, code) for code in codes
         )
@@ -43,6 +49,10 @@ class PurchaseFunctionalPermission(BasePermission):
         if support is not None:
             return support
         branch = getattr(request, 'branch_context', None)
+        if branch:
+            require_branch_feature(branch, 'purchases')
+            if getattr(view, 'basename', None) == 'payable-installment' or view.action == 'set_installments':
+                require_branch_feature(branch, 'financial')
         if request.user.is_superuser:
             return branch is None or branch.pk == branch_id
         return bool(

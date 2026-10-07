@@ -11,7 +11,7 @@ from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
 
 from apps.base.audit import audit_log, model_snapshot
-from apps.companies.features import require_branch_feature
+from apps.companies.features import branch_feature_enabled, require_branch_feature
 from apps.cash.models import CashSession, CashSessionStatus
 from apps.companies.models import (
     Branch, BranchSettings, Company, Customer, Status, UserBranchAccess, UserCommissionOverride,
@@ -995,7 +995,7 @@ def _calculate_sale_financials(*, company, branch, operation_type, snapshots, su
         if live_items:
             promotions = (
                 _eligible_promotions(company, timezone.now(), branch=branch, lock=lock)
-                if operation_type == OperationType.SALE else []
+                if operation_type == OperationType.SALE and branch_feature_enabled(branch, 'promotions') else []
             )
             _apply_promotions(operation_type, live_items, promotions)
         promotion_discount_total = sum(
@@ -1007,7 +1007,7 @@ def _calculate_sale_financials(*, company, branch, operation_type, snapshots, su
     else:
         promotions = (
             _eligible_promotions(company, timezone.now(), branch=branch, lock=lock)
-            if operation_type == OperationType.SALE else []
+            if operation_type == OperationType.SALE and branch_feature_enabled(branch, 'promotions') else []
         )
         promotion_discount_total, item_discount_total = _apply_promotions(
             operation_type, snapshots, promotions
@@ -2331,6 +2331,7 @@ def finalize_sale(*, branch, user, operation_type, cash_session=None, beneficiar
         return replay
 
     if customer is not None:
+        require_branch_feature(branch, 'customers')
         customer = Customer.objects.select_for_update().filter(pk=_pk(customer)).first()
         if not customer or customer.company_id != company.pk or customer.status != Status.ACTIVE:
             raise ValidationError({'customer': 'Cliente inválido, inativo ou fora da empresa.'})

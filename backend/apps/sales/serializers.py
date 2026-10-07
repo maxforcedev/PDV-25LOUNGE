@@ -7,6 +7,7 @@ from rest_framework import serializers
 from apps.accounts.models import User
 from apps.base.constants import MAX_BIGINT
 from apps.companies.models import Branch
+from apps.companies.features import branch_feature_enabled
 from apps.companies.selectors import eligible_branch_users, user_has_branch_permission
 from apps.products.models import Category, Product, SalesChannel
 from apps.products.selectors import operational_products
@@ -618,6 +619,8 @@ class CalculationSerializer(serializers.Serializer):
                 company_id=branch.company_id,
                 status='active',
             )
+            if not branch_feature_enabled(branch, 'customers'):
+                fields.pop('customer', None)
         return fields
 
 

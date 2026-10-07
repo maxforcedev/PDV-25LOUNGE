@@ -328,7 +328,7 @@ function DashboardPage() {
     href?: string;
     tone: "danger" | "warning" | "info";
   }> = [];
-  if (data?.inventory?.negative_count) {
+  if (hasFeature("inventory") && data?.inventory?.negative_count) {
     operationalAlerts.push({
       key: "negative-stock",
       title: `${data.inventory.negative_count} produto(s) com estoque negativo`,
@@ -346,7 +346,7 @@ function DashboardPage() {
       tone: "danger",
     });
   }
-  if (data?.inventory?.zero_count) {
+  if (hasFeature("inventory") && data?.inventory?.zero_count) {
     operationalAlerts.push({
       key: "zero-stock",
       title: `${data.inventory.zero_count} produto(s) com estoque zerado`,
@@ -355,7 +355,7 @@ function DashboardPage() {
       tone: "warning",
     });
   }
-  if (data?.inventory?.below_minimum_count) {
+  if (hasFeature("inventory") && data?.inventory?.below_minimum_count) {
     operationalAlerts.push({
       key: "minimum-stock",
       title: `${data.inventory.below_minimum_count} produto(s) abaixo do mínimo`,
@@ -800,7 +800,7 @@ function DashboardPage() {
 
 export default function DashboardRoute() {
   return (
-    <AdminGuard requiredPermissions={[permissions.viewDashboard]}>
+    <AdminGuard requiredPermissions={[permissions.viewDashboard]} requiredFeatures={["reports"]}>
       <DashboardPage />
     </AdminGuard>
   );

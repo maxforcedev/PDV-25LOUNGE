@@ -66,6 +66,8 @@ class SalesFunctionalPermission(BasePermission):
                 except (InvalidOperation, TypeError, ValueError):
                     pass
             return
+        if action in ('calculate', 'finalize') and request.data.get('customer') is not None:
+            require_branch_feature(branch, 'customers')
         if action in (
             'catalog', 'checkout_options', 'categories', 'calculate', 'finalize',
             'sellers', 'discount_authorizers', 'item_discount_authorizers',

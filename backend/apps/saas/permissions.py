@@ -21,7 +21,7 @@ COMMERCIAL_FEATURES_BY_BASENAME = {
     'modifiergroup': ('products',),
     'modifieroption': ('products',),
     'productmodifiergroup': ('products',),
-    'productiondestination': ('products',),
+    'productiondestination': ('products', 'production'),
     'stock': ('inventory',),
     'stock-movement': ('inventory',),
     'stock-transfer': ('inventory',),
@@ -34,9 +34,9 @@ COMMERCIAL_FEATURES_BY_BASENAME = {
     'payable-installment': ('financial',),
     'payment-method': ('financial',),
     'supplier': ('suppliers',),
-    'product-supplier': ('suppliers',),
-    'product-purchase-presentation': ('suppliers',),
-    'product-supplier-unit': ('suppliers',),
+    'product-supplier': ('products', 'suppliers'),
+    'product-purchase-presentation': ('products', 'suppliers'),
+    'product-supplier-unit': ('products', 'suppliers'),
     'presentation-preset': ('suppliers',),
     'customer': ('customers',),
     'promotion': ('promotions',),
@@ -44,6 +44,7 @@ COMMERCIAL_FEATURES_BY_BASENAME = {
 }
 
 REPORT_FEATURES_BY_ROUTE_NAME = {
+    'dashboard': ('reports',),
     'report-command-options': ('reports', 'commands', 'tables'),
     'report-commands': ('reports', 'commands', 'tables'),
     'report-tickets': ('reports', 'production'),
@@ -66,6 +67,7 @@ REPORT_FEATURES_BY_ROUTE_NAME = {
 }
 
 REPORT_FEATURES_BY_SCOPE = {
+    ('report-sales', 'receipts'): ('financial',),
     ('report-sales', 'products'): ('products',),
     ('report-customers', 'commands'): ('commands',),
     ('report-purchase-options', 'purchases'): ('purchases',),
@@ -303,7 +305,7 @@ def enforce_saas_request(request, user, view=None):
 
 def _enforce_commercial_feature(request, view, company_ids):
     features = COMMERCIAL_FEATURES_BY_BASENAME.get(getattr(view, 'basename', None))
-    if features is None and '/reports/' in request.path:
+    if features is None and ('/reports/' in request.path or request.path.rstrip('/').endswith('/dashboard')):
         route_name = getattr(getattr(request, 'resolver_match', None), 'url_name', None)
         features = REPORT_FEATURES_BY_ROUTE_NAME.get(route_name, ('reports',))
         scoped_features = REPORT_FEATURES_BY_SCOPE.get((
@@ -335,6 +337,7 @@ def request_requires_commercial_feature(request, view):
     return (
         getattr(view, 'basename', None) in COMMERCIAL_FEATURES_BY_BASENAME
         or '/reports/' in request.path
+        or request.path.rstrip('/').endswith('/dashboard')
     )
 
 

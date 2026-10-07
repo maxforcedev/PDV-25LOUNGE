@@ -84,6 +84,7 @@ def _next_number(branch):
 def _customer(branch, customer_id):
     if customer_id is None:
         return None
+    require_branch_feature(branch, 'customers')
     customer = Customer.objects.select_for_update().filter(pk=customer_id).first()
     if not customer or customer.company_id != branch.company_id or customer.status != Status.ACTIVE:
         raise ValidationError({'customer': 'Cliente inválido, inativo ou fora da empresa.'})

@@ -10,7 +10,6 @@ const inter = Inter({ subsets: ["latin"] });
 export const metadata: Metadata = {
   title: { default: "CORE PDV | Operação e gestão conectadas", template: "%s | CORE PDV" },
   description: "Conecte vendas, caixa, estoque, mesas, compras, pagamentos e gestão em uma única plataforma.",
-  icons: { icon: "/branding/core-favicon.svg" },
 };
 
 export default function RootLayout({
@@ -20,6 +19,7 @@ export default function RootLayout({
     <html lang="pt-BR" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: `(function(){try{var saved=localStorage.getItem('pdv.theme');var theme=saved==='dark'||saved==='light'?saved:(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.dataset.theme=theme}catch(e){document.documentElement.dataset.theme='light'}})()` }} />
+        <link rel="icon" href="/branding/core-favicon.png" data-runtime-branding="favicon" />
       </head>
       <body className={inter.className}>
         <BrandingProvider>

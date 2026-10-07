@@ -1,6 +1,7 @@
 from rest_framework.permissions import BasePermission
 
 from apps.companies.models import Branch
+from apps.companies.features import require_branch_feature
 from apps.companies.selectors import user_has_branch_permission, user_has_company_permission
 from apps.saas.permissions import (
     enforce_saas_request, request_requires_commercial_feature, support_permission_decision,
@@ -52,6 +53,10 @@ class ProductFunctionalPermission(BasePermission):
             request.branch_context = Branch.objects.get(pk=branch_id)
         except (Branch.DoesNotExist, TypeError, ValueError):
             return False
+        if view.action in ('production_destinations', 'production_printers'):
+            require_branch_feature(request.branch_context, 'production')
+        if view.action in ('minimum_stock', 'fraction_config', 'activate_fraction_config'):
+            require_branch_feature(request.branch_context, 'inventory')
         if view.basename == 'branchprice' or view.action == 'branch_pricing':
             company_id = request.branch_context.company_id
             if view.action in {'list', 'retrieve', 'table'}:

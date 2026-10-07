@@ -23,6 +23,8 @@ from apps.companies.selectors import (
     active_operational_branches,
     active_operational_companies,
 )
+from apps.companies.models import UserCompanyAccess
+from apps.saas.services import resolve_effective_status
 
 from .models import User
 from .password_reset import send_password_reset
@@ -48,6 +50,96 @@ def _audit_scope(request, user):
     return company, branch, {
         'available_company_ids': [item.pk for item in companies],
         'available_branch_ids': [item.pk for item in branches],
+    }
+
+
+LOGIN_SAAS_REASONS = {
+    'UNMAPPED': (
+        'Licenciamento da empresa indisponível',
+        'Esta empresa não possui um plano ativo no CORE PDV. Entre em contato com o responsável pela assinatura ou com o suporte CORE.',
+    ),
+    'INVALID_SUBSCRIPTION': (
+        'Licenciamento da empresa indisponível',
+        'A assinatura desta empresa não permite acesso operacional. Entre em contato com o responsável pela assinatura ou com o suporte CORE.',
+    ),
+    'INVALID_ENTITLEMENTS': (
+        'Licenciamento da empresa indisponível',
+        'O plano desta empresa não está configurado para operação. Entre em contato com o suporte CORE.',
+    ),
+    'CANCELLED': (
+        'Licenciamento vencido',
+        'O plano desta empresa foi encerrado e o acesso operacional foi bloqueado. Regularize a assinatura para continuar utilizando o CORE PDV.',
+    ),
+    'PAST_DUE': (
+        'Licenciamento vencido',
+        'O plano desta empresa está vencido e o acesso operacional foi bloqueado. Regularize a assinatura para continuar utilizando o CORE PDV.',
+    ),
+    'RESTRICTED': (
+        'Licenciamento vencido',
+        'O plano desta empresa está vencido e o acesso operacional foi bloqueado. Regularize a assinatura para continuar utilizando o CORE PDV.',
+    ),
+    'TRIAL_EXPIRED': (
+        'Período de teste encerrado',
+        'O período de avaliação desta empresa terminou. Escolha ou regularize um plano para continuar.',
+    ),
+    'SUSPENDED_FINANCIAL': (
+        'Licenciamento suspenso',
+        'A assinatura desta empresa está temporariamente suspensa por pendência financeira.',
+    ),
+    'SUSPENDED_ADMIN': (
+        'Acesso da empresa suspenso',
+        'Esta empresa está temporariamente indisponível. Entre em contato com o suporte CORE.',
+    ),
+    'PENDING_APPROVAL': (
+        'Empresa aguardando aprovação',
+        'Esta empresa ainda não foi aprovada para operação. Entre em contato com o suporte CORE.',
+    ),
+    'APPROVAL_REJECTED': (
+        'Acesso da empresa indisponível',
+        'Esta empresa não está aprovada para operação. Entre em contato com o suporte CORE.',
+    ),
+    'ARCHIVED': (
+        'Acesso da empresa indisponível',
+        'Esta empresa está indisponível para operação. Entre em contato com o suporte CORE.',
+    ),
+}
+
+
+def _saas_login_denial(user):
+    """Return a SaaS reason only when every otherwise-valid membership is blocked by SaaS."""
+    accesses = list(UserCompanyAccess.objects.filter(
+        user=user,
+        is_active=True,
+        can_login=True,
+        archived_at__isnull=True,
+    ).select_related('company').order_by('company_id'))
+    if not accesses:
+        return None
+
+    statuses = [resolve_effective_status(access.company) for access in accesses]
+    if any(
+        access.saas_status == UserCompanyAccess.SaaSStatus.ACTIVE
+        and access.company.status == 'active'
+        and effective['can_operate']
+        for access, effective in zip(accesses, statuses)
+    ):
+        return None
+    reason = next((
+        effective['status'] for effective in statuses
+        if effective['status'] in LOGIN_SAAS_REASONS
+    ), None)
+    if reason is None and any(
+        access.saas_status != UserCompanyAccess.SaaSStatus.ACTIVE
+        for access in accesses
+    ):
+        reason = 'INVALID_ENTITLEMENTS'
+    if not reason:
+        return None
+    title, message = LOGIN_SAAS_REASONS[reason]
+    return {
+        'detail': message,
+        'code': 'saas_access_unavailable',
+        'details': {'reason': reason, 'title': title, 'message': message},
     }
 
 
@@ -97,8 +189,9 @@ class LoginView(APIView):
         if not user.is_superuser:
             active_companies = active_operational_companies(user)
             if not active_companies.exists():
+                denial = _saas_login_denial(user)
                 return Response(
-                    {'detail': INVALID_LOGIN_MESSAGE},
+                    denial or {'detail': INVALID_LOGIN_MESSAGE},
                     status=status.HTTP_403_FORBIDDEN,
                 )
 

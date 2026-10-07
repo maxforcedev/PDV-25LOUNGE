@@ -19,12 +19,9 @@ export function BrandWordmark({
   imageClassName?: string;
 }) {
   const branding = useBranding();
-  const customLogo = compact
-    ? (dark ? branding.compact_logo_dark_url : branding.compact_logo_light_url) || branding.compact_logo_url || branding.logo_url
-    : (dark ? branding.logo_dark_url : branding.logo_light_url) || branding.logo_url;
-  const fallbackLogo = compact
-    ? `/branding/core-logo-compact-${dark ? "dark" : "light"}.svg`
-    : `/branding/core-logo-${dark ? "dark" : "light"}.svg`;
+  const theme = dark ? "dark" : branding.theme;
+  const customLogo = branding.resolveLogo({ compact, theme });
+  const fallbackLogo = branding.resolveLogo({ compact, theme, localOnly: true });
   const [failedLogo, setFailedLogo] = useState("");
   useEffect(() => { setFailedLogo(""); }, [customLogo]);
   const logo = customLogo && failedLogo !== customLogo ? customLogo : fallbackLogo;

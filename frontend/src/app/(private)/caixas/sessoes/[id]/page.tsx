@@ -839,7 +839,7 @@ function SessionDetail() {
 
 export default function SessionPage() {
   return (
-    <AdminGuard requiredPermissions={[permissions.viewCashRegister]}>
+    <AdminGuard requiredPermissions={[permissions.viewCashRegister]} requiredFeatures={["cash_register"]}>
       <SessionDetail />
     </AdminGuard>
   );

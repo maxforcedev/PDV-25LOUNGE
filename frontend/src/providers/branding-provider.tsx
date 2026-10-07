@@ -1,15 +1,30 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState } from "react";
-import { usePathname } from "next/navigation";
+import { createContext, useContext, useEffect, useLayoutEffect, useState } from "react";
 import { http } from "@/lib/http";
 import type { PublicBranding } from "@/types";
 
+export type BrandTheme = "light" | "dark";
+
+export interface BrandingLogoOptions {
+  compact?: boolean;
+  theme?: BrandTheme;
+  localOnly?: boolean;
+}
+
+const LOCAL_ASSETS = {
+  logo_url: "/branding/core-logo-light.png",
+  compact_logo_url: "/branding/core-logo-compact-light.png",
+  favicon_url: "/branding/core-favicon.png",
+  logo_light_url: "/branding/core-logo-light.png",
+  logo_dark_url: "/branding/core-logo-dark.png",
+  compact_logo_light_url: "/branding/core-logo-compact-light.png",
+  compact_logo_dark_url: "/branding/core-logo-compact-dark.png",
+};
+
 const DEFAULT_BRANDING: PublicBranding = {
   platform_name: "CORE PDV",
-  logo_url: "",
-  compact_logo_url: "",
-  favicon_url: "",
+  ...LOCAL_ASSETS,
   primary_color: "#3454d1",
   support_email: "",
   support_phone: "",
@@ -17,7 +32,16 @@ const DEFAULT_BRANDING: PublicBranding = {
   legal_settings: {},
 };
 
-const BrandingContext = createContext<PublicBranding>(DEFAULT_BRANDING);
+type BrandingContextValue = PublicBranding & {
+  theme: BrandTheme;
+  resolveLogo: (options?: BrandingLogoOptions) => string;
+};
+
+const BrandingContext = createContext<BrandingContextValue>({
+  ...DEFAULT_BRANDING,
+  theme: "light",
+  resolveLogo: () => LOCAL_ASSETS.logo_light_url,
+});
 
 function validUrl(value: unknown) {
   if (typeof value !== "string") return "";
@@ -55,6 +79,22 @@ function normalizeBranding(value: Partial<PublicBranding>): PublicBranding {
   };
 }
 
+function currentTheme(): BrandTheme {
+  return typeof document !== "undefined" && document.documentElement.dataset.theme === "dark"
+    ? "dark"
+    : "light";
+}
+
+function resolveLogo(
+  overrides: Pick<PublicBranding, keyof typeof LOCAL_ASSETS>,
+  { compact = false, theme = "light", localOnly = false }: BrandingLogoOptions = {},
+) {
+  const variant = compact ? "compact_logo" : "logo";
+  const specific = `${variant}_${theme}_url` as keyof typeof LOCAL_ASSETS;
+  const generic = `${variant}_url` as keyof typeof LOCAL_ASSETS;
+  return (!localOnly && (overrides[specific] || overrides[generic])) || LOCAL_ASSETS[specific] || LOCAL_ASSETS[generic];
+}
+
 function darkerColor(hex: string) {
   const channels = [1, 3, 5].map((offset) => Math.max(0, Math.round(Number.parseInt(hex.slice(offset, offset + 2), 16) * 0.82)));
   return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
@@ -62,12 +102,41 @@ function darkerColor(hex: string) {
 
 export function BrandingProvider({ children }: { children: React.ReactNode }) {
   const [branding, setBranding] = useState(DEFAULT_BRANDING);
-  const pathname = usePathname();
+  const [assetOverrides, setAssetOverrides] = useState<Pick<PublicBranding, keyof typeof LOCAL_ASSETS>>({
+    logo_url: "",
+    compact_logo_url: "",
+    favicon_url: "",
+    logo_light_url: "",
+    logo_dark_url: "",
+    compact_logo_light_url: "",
+    compact_logo_dark_url: "",
+  });
+  const [theme, setTheme] = useState<BrandTheme>("light");
+
+  useLayoutEffect(() => {
+    const syncTheme = () => setTheme(currentTheme());
+    syncTheme();
+    window.addEventListener("themechange", syncTheme);
+    return () => window.removeEventListener("themechange", syncTheme);
+  }, []);
 
   useEffect(() => {
     let active = true;
     http.getPublic<Partial<PublicBranding>>("public/settings/")
-      .then((settings) => active && setBranding(normalizeBranding(settings)))
+      .then((settings) => {
+        if (!active) return;
+        const normalized = normalizeBranding(settings);
+        setAssetOverrides({
+          logo_url: normalized.logo_url,
+          compact_logo_url: normalized.compact_logo_url,
+          favicon_url: normalized.favicon_url,
+          logo_light_url: normalized.logo_light_url || "",
+          logo_dark_url: normalized.logo_dark_url || "",
+          compact_logo_light_url: normalized.compact_logo_light_url || "",
+          compact_logo_dark_url: normalized.compact_logo_dark_url || "",
+        });
+        setBranding({ ...normalized, ...LOCAL_ASSETS });
+      })
       .catch(() => undefined);
     return () => { active = false; };
   }, []);
@@ -83,21 +152,27 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
     else document.title = branding.platform_name;
 
     let favicon = document.querySelector<HTMLLinkElement>('link[data-runtime-branding="favicon"]');
-      if (branding.favicon_url) {
-      if (!favicon) {
-        favicon = document.createElement("link");
-        favicon.rel = "icon";
-        favicon.dataset.runtimeBranding = "favicon";
-        document.head.appendChild(favicon);
-        }
-        favicon.href = branding.favicon_url;
-        favicon.onerror = () => favicon?.remove();
-      } else {
-      favicon?.remove();
+    if (!favicon) {
+      favicon = document.createElement("link");
+      favicon.rel = "icon";
+      favicon.dataset.runtimeBranding = "favicon";
+      document.head.appendChild(favicon);
     }
-  }, [branding, pathname]);
+    favicon.href = assetOverrides.favicon_url || LOCAL_ASSETS.favicon_url;
+    favicon.onerror = () => {
+      favicon!.href = LOCAL_ASSETS.favicon_url;
+      favicon!.onerror = null;
+    };
+  }, [assetOverrides.favicon_url, branding]);
 
-  return <BrandingContext.Provider value={branding}>{children}</BrandingContext.Provider>;
+  const faviconUrl = assetOverrides.favicon_url || LOCAL_ASSETS.favicon_url;
+  const value: BrandingContextValue = {
+    ...branding,
+    favicon_url: faviconUrl,
+    theme,
+    resolveLogo: (options) => resolveLogo(assetOverrides, { theme, ...options }),
+  };
+  return <BrandingContext.Provider value={value}>{children}</BrandingContext.Provider>;
 }
 
 export function useBranding() {
