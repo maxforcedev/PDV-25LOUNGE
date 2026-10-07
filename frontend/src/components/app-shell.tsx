@@ -55,6 +55,7 @@ const mainNavigation: NavItem[] = [
     label: "Visão geral",
     icon: LayoutDashboard,
     requiredPermissions: [permissions.viewDashboard],
+    requiredFeatures: ["reports"],
   },
 ];
 

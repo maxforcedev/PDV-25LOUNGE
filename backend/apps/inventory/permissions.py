@@ -1,5 +1,6 @@
 from rest_framework.permissions import BasePermission
 
+from apps.companies.features import require_branch_feature
 from apps.companies.models import Branch
 from apps.companies.selectors import user_has_branch_permission
 from apps.saas.permissions import support_permission_decision
@@ -7,6 +8,7 @@ from apps.saas.permissions import support_permission_decision
 
 class InventoryFunctionalPermission(BasePermission):
     message = 'Você não possui permissão para esta operação.'
+    required_feature = 'inventory'
 
     def get_code(self, view):
         return view.permission_codes.get(view.action)
@@ -26,24 +28,23 @@ class InventoryFunctionalPermission(BasePermission):
             return False
         branch_id = request.headers.get('X-Branch-ID')
         support = support_permission_decision(request, branch_id=branch_id)
-        if support is not None:
-            return support
-        if user.is_superuser and not branch_id:
+        if support:
+            require_branch_feature(request.branch_context, self.required_feature)
             return True
+        if support is False:
+            return False
         if not branch_id:
             return False
         try:
             request.branch_context = Branch.objects.get(pk=branch_id)
         except (Branch.DoesNotExist, TypeError, ValueError):
             return False
+        require_branch_feature(request.branch_context, self.required_feature)
         return user.is_superuser or any(
             user_has_branch_permission(user, branch_id, code) for code in codes
         )
 
     def has_object_permission(self, request, view, obj):
-        support = support_permission_decision(request, obj=obj)
-        if support is not None:
-            return support
         if hasattr(obj, 'origin_branch_id'):
             branch_ids = {obj.origin_branch_id, obj.destination_branch_id}
         elif getattr(obj, 'transfer_item_id', None):
@@ -56,6 +57,15 @@ class InventoryFunctionalPermission(BasePermission):
         else:
             branch_ids = {obj.branch_id}
         branch = getattr(request, 'branch_context', None)
+        support = support_permission_decision(request, obj=obj)
+        if support:
+            for branch_id in branch_ids:
+                require_branch_feature(Branch.objects.get(pk=branch_id), self.required_feature)
+            return True
+        if support is False:
+            return False
+        if branch:
+            require_branch_feature(branch, self.required_feature)
         if request.user.is_superuser:
             return branch is None or branch.pk in branch_ids
         return bool(

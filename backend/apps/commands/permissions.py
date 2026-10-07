@@ -38,13 +38,7 @@ class CommandFunctionalPermission(BasePermission):
     def _feature(view):
         if view.basename == 'table':
             return 'tables'
-        if view.action in (
-            'open', 'add_item', 'add_items', 'calculate', 'checkout_options', 'sellers',
-            'discount_authorizers', 'service_fee_authorizers', 'transfer_items',
-            'merge', 'split', 'payments', 'payment_summary', 'record_payment', 'reverse_payment',
-        ):
-            return 'commands'
-        return None
+        return 'commands'
 
     def has_permission(self, request, view):
         user = request.user

@@ -51,13 +51,17 @@ class SalesFunctionalPermission(BasePermission):
         if view.basename != 'sale':
             return
         action = view.action
-        if action in ('list', 'retrieve', 'cancel'):
-            return
         operation = self._requested_operation(request, view)
+        if action in ('list', 'retrieve', 'cancel'):
+            if operation == 'consumption':
+                require_branch_feature(branch, 'consumption')
+            return
         if action == 'beneficiaries':
             operation = 'consumption'
         if operation == 'consumption':
             require_branch_feature(branch, 'consumption')
+            if action in ('catalog', 'checkout_options', 'categories', 'calculate', 'finalize'):
+                require_branch_feature(branch, 'products')
             if action in ('calculate', 'finalize'):
                 try:
                     charged = request.data.get('charged_amount', 0)
@@ -72,6 +76,7 @@ class SalesFunctionalPermission(BasePermission):
             'catalog', 'checkout_options', 'categories', 'calculate', 'finalize',
             'sellers', 'discount_authorizers', 'item_discount_authorizers',
         ):
+            require_branch_feature(branch, 'products')
             channel_feature = {
                 'counter': 'counter',
                 'table': 'tables',
@@ -135,6 +140,8 @@ class SalesFunctionalPermission(BasePermission):
         elif object_branch_id != branch.pk:
             return False
         view._permission_object = obj
+        if view.basename == 'sale' and obj.operation_type == 'consumption':
+            require_branch_feature(branch, 'consumption')
         if view.basename == 'sale' and view.action == 'retrieve':
             codes = (
                 ('sales.view_consumption', 'sales.cancel_consumption')

@@ -80,6 +80,10 @@ type Props = {
   branchPricingAvailable: boolean;
   branches: UserBranch[];
   permissions: Permissions;
+  features: {
+    inventory: boolean;
+    production: boolean;
+  };
   activeTab?: ProductV26Tab;
   actionRef?: React.MutableRefObject<ProductV26Actions | null>;
   onReload: () => Promise<void>;
@@ -145,6 +149,7 @@ export function ProductV26Sections({
   branchPricingAvailable,
   branches,
   permissions,
+  features,
   activeTab,
   actionRef,
   onReload,
@@ -208,7 +213,9 @@ export function ProductV26Sections({
   const [history, setHistory] = useState<AuditLog[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
-  const isVisible = (tab: ProductV26Tab) => !activeTab || activeTab === tab;
+  const isVisible = (tab: ProductV26Tab) =>
+    (tab !== "production" || features.production) &&
+    (!activeTab || activeTab === tab);
   if (actionRef)
     actionRef.current = {
       openDuplicate: () => setDuplicateOpen(true),
@@ -682,7 +689,7 @@ export function ProductV26Sections({
 
       <section
         className={
-          isVisible("suppliers-stock")
+          isVisible("suppliers-stock") && features.inventory
             ? "rounded-xl border border-subtle bg-surface-muted/40 p-4"
             : "hidden"
         }
@@ -950,7 +957,7 @@ export function ProductV26Sections({
         </section>
       )}
 
-      {product.inventory_behavior === "direct" && product.unit === "un" && (
+      {features.inventory && product.inventory_behavior === "direct" && product.unit === "un" && (
         <section
           className={
             isVisible("suppliers-stock")

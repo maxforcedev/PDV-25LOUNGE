@@ -655,6 +655,10 @@ def _visible_pos_catalog(device, queryset):
 
 
 class POSTicketValidatorView(POSCashView):
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        require_branch_feature(require_device(request).branch, 'production')
+
     def _context(self, request):
         device, operator, permissions, operator_session = self.context(request)
         if 'tickets.validate' not in permissions:
@@ -694,12 +698,15 @@ class POSTicketValidateView(POSTicketValidatorView):
 
 
 class POSQuickSaleView(POSCashView):
-    required_feature = 'products'
+    required_features = ('products',)
+    requires_counter = True
 
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
-        if self.required_feature:
-            require_branch_feature(require_device(request).branch, self.required_feature)
+        for feature in self.required_features:
+            require_branch_feature(require_device(request).branch, feature)
+        if self.requires_counter:
+            require_branch_feature(require_device(request).branch, 'counter')
 
     @staticmethod
     def _require(permissions, code, message):
@@ -802,7 +809,8 @@ class POSBarcodeProductView(POSQuickSaleView):
 
 
 class POSCustomersView(POSQuickSaleView):
-    required_feature = 'customers'
+    required_features = ('customers',)
+    requires_counter = False
 
     def get(self, request):
         device, _, permissions, _ = self.context(request)
@@ -866,7 +874,8 @@ class POSCustomersView(POSQuickSaleView):
 
 
 class POSCustomerActivateView(POSQuickSaleView):
-    required_feature = 'customers'
+    required_features = ('customers',)
+    requires_counter = False
 
     def post(self, request, customer_id):
         device, operator, permissions, operator_session = self.context(request)
@@ -891,6 +900,7 @@ class POSCustomerActivateView(POSQuickSaleView):
 
 
 class POSAttendanceView(POSCashView):
+    requires_counter = False
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
         # POS table and command endpoints, including read-only helpers, share their feature gates.

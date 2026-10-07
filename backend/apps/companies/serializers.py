@@ -9,7 +9,7 @@ from .models import (
     UserBranchAccess, UserCommissionOverride, UserCompanyAccess, UserPermissionBlock,
 )
 from .rbac import PERMISSION_SCOPE_BRANCH, permission_scope
-from .features import branch_feature_enabled, capability_visible_permission_codes
+from .features import branch_feature_enabled, branch_feature_states, capability_visible_permission_codes
 from .selectors import (
     accessible_branches,
     company_permission_codes,
@@ -335,6 +335,7 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
             return fields
         feature_fields = {
             'inventory': ('allow_negative_stock', 'negative_stock_count', 'negative_stock_state'),
+            'financial': ('service_fee_rate', 'commission_rate', 'fixed_daily_cost', 'charges_service_fee'),
             'tables': ('uses_tables', 'default_table_quantity', 'default_table_seats',
                        'default_table_prefix', 'table_range_start', 'table_range_end',
                        'table_consumption_limit'),
@@ -344,8 +345,9 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
                             'command_consumption_limit', 'table_consumption_limit'),
             'cash_register': ('uses_cash_register',),
         }
+        states = branch_feature_states(branch)
         for feature, names in feature_fields.items():
-            if not branch_feature_enabled(branch, feature):
+            if not states.get(feature, {}).get('plan_allowed'):
                 for name in names:
                     fields.pop(name, None)
         return fields
@@ -639,6 +641,17 @@ class AccessProfileSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'company': 'Informe a empresa do perfil.'})
 
         permissions = attrs.get('permissions')
+        if permissions is not None:
+            branch = Branch.objects.filter(company_id=company.id, is_matrix=True).first()
+            if branch:
+                requested_codes = {permission.code for permission in permissions}
+                unavailable = requested_codes - capability_visible_permission_codes(
+                    branch, requested_codes,
+                )
+                if unavailable:
+                    raise serializers.ValidationError({
+                        'permission_codes': 'O plano atual não permite configurar uma ou mais permissões selecionadas.'
+                    })
         commission_fields = {
             field for field in ('receives_commission', 'commission_rate')
             if field in attrs and (

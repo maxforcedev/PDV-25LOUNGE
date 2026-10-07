@@ -192,7 +192,9 @@ def overview_comparison_data(request, *, start, end, filters):
                 consumptions, filters=filters, reversals=consumption_reversals,
             )
             values['consumptions_courtesies'] = consumption['subsidy']
-        can_view_result = branch_feature_enabled(request.branch_context, 'inventory') and all((
+        can_view_result = all((
+            branch_feature_enabled(request.branch_context, 'financial'),
+            branch_feature_enabled(request.branch_context, 'inventory'),
             user_has_code(request, 'reports.view_operational_result'),
             user_has_code(request, 'inventory.view_stock_costs'),
             user_has_code(request, 'commissions.view'),
@@ -910,12 +912,20 @@ class DashboardView(APIView):
                     ).data,
                 },
             }
-            response['sales']['total_received_operational'] = decimal_string(
-                dashboard_receipts['total_received']
-            )
-            response['sales']['operational_reconciliation_delta'] = decimal_string(
-                dashboard_receipts['reconciliation_delta']
-            )
+            if has_feature('financial'):
+                response['sales']['total_received_operational'] = decimal_string(
+                    dashboard_receipts['total_received']
+                )
+                response['sales']['operational_reconciliation_delta'] = decimal_string(
+                    dashboard_receipts['reconciliation_delta']
+                )
+            else:
+                for key in (
+                    'service_fee', 'commission', 'total_received', 'payment_total',
+                    'reconciliation_delta', 'total_received_sales',
+                    'payment_reconciliation_delta',
+                ):
+                    response['sales'].pop(key, None)
             if not has_feature('products'):
                 response['sales'].pop('top_products', None)
                 response['sales'].pop('top_categories', None)
@@ -1009,7 +1019,7 @@ class DashboardView(APIView):
             if include_value:
                 stock['inventory_value'] = decimal_string(stock['inventory_value'])
             response['inventory'] = stock
-        if user_has_code(request, 'reports.view_operational_result'):
+        if has_feature('financial') and user_has_code(request, 'reports.view_operational_result'):
             result_sales = sales if sales is not None else filtered_sales(
                 branch=branch,
                 start=start,

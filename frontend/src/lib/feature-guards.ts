@@ -3,6 +3,7 @@ import type { BranchFeature } from "@/types";
 type HasFeature = (feature: BranchFeature) => boolean;
 
 const routeFeatures: ReadonlyArray<[string, readonly BranchFeature[]]> = [
+  ["/dashboard", ["reports"]],
   ["/relatorios/caixa", ["reports", "cash_register"]],
   ["/relatorios/sangrias", ["reports", "cash_register"]],
   ["/relatorios/compras", ["reports", "purchases"]],
@@ -51,6 +52,10 @@ export function isFeaturePathAllowed(pathname: string, hasFeature: HasFeature) {
 }
 
 export function isFunctionalPermissionAvailable(code: string, hasFeature: HasFeature) {
+  if (code === "sales.create_consumption" || code === "sales.view_consumption" || code === "sales.cancel_consumption" || code === "reports.view_consumptions") return hasFeature("consumption");
+  if (code === "reports.view_stock_consumption") return hasFeature("inventory");
+  if (code === "reports.view_cash" || code === "reports.view_withdrawals") return hasFeature("cash_register");
+  if (code === "reports.view_operational_result" || code === "reports.view_receipts") return hasFeature("financial");
   if (code.startsWith("suppliers.")) return hasFeature("suppliers");
   if (code.startsWith("purchases.")) return hasFeature("purchases");
   if (code.startsWith("inventory.")) return hasFeature("inventory");

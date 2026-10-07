@@ -882,7 +882,7 @@ def modules_for(operator, device, *, permission_codes=None):
         'quick_sale': {'enabled': bool(operational and branch_feature_enabled(device.branch, 'counter') and 'sales.create' in permissions)},
         'tables': {'enabled': bool(operational and branch_feature_enabled(device.branch, 'tables') and permissions.intersection({'tables.view', 'tables.open'}))},
         'commands': {'enabled': bool(operational and branch_feature_enabled(device.branch, 'commands') and permissions.intersection({'commands.view', 'commands.open', 'commands.add_items'}))},
-        'ticket_validator': {'enabled': bool(operational and 'tickets.validate' in permissions)},
+        'ticket_validator': {'enabled': bool(operational and branch_feature_enabled(device.branch, 'production') and 'tickets.validate' in permissions)},
         'inventory': {'enabled': False, 'reason': 'not_implemented'},
         'reports': {'enabled': False, 'reason': 'not_implemented'},
     }

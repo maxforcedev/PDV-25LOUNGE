@@ -210,6 +210,7 @@ const configs: Record<
     description: "Total recebido, custos e despesas, resultado e margem.",
     endpoint: "operational-result",
     permission: permissions.viewOperationalResult,
+    requiredFeatures: ["financial"],
   },
 };
 

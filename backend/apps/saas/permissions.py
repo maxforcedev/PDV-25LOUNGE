@@ -51,6 +51,7 @@ REPORT_FEATURES_BY_ROUTE_NAME = {
     'report-ticket-detail': ('reports', 'production'),
     'report-ticket-options': ('reports', 'production'),
     'report-promotions': ('reports', 'promotions'),
+    'report-operational-result': ('reports', 'financial'),
     'report-modifiers': ('reports', 'products'),
     'report-customers': ('reports', 'customers'),
     'report-purchases': ('reports', 'purchases'),

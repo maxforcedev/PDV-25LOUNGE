@@ -45,13 +45,17 @@ FEATURE_LABELS = {
 # current operational catalogs, so a disabled capability never deletes history.
 PERMISSION_FEATURE_PREFIXES = {
     'audit': 'audit',
+    'audit_logs': 'audit',
+    'branch_prices': 'products',
     'cash_registers': 'cash_register',
     'categories': 'products',
     'commands': 'commands',
+    'commissions': 'financial',
     'consumption': 'consumption',
     'customers': 'customers',
     'dashboard': 'reports',
     'inventory': 'inventory',
+    'modifiers': 'products',
     'payment_methods': 'financial',
     'pos_devices': 'pos',
     'printers': 'production',
@@ -134,7 +138,19 @@ def require_branch_feature(branch, feature):
 
 def permission_feature(code):
     """Return the capability governing an operational permission code."""
-    return PERMISSION_FEATURE_PREFIXES.get(str(code or '').split('.', 1)[0])
+    code = str(code or '')
+    if code in {
+        'sales.create_consumption', 'sales.view_consumption',
+        'sales.cancel_consumption', 'reports.view_consumptions',
+    }:
+        return 'consumption'
+    if code == 'reports.view_stock_consumption':
+        return 'inventory'
+    if code in {'reports.view_cash', 'reports.view_withdrawals'}:
+        return 'cash_register'
+    if code in {'reports.view_operational_result', 'reports.view_receipts'}:
+        return 'financial'
+    return PERMISSION_FEATURE_PREFIXES.get(code.split('.', 1)[0])
 
 
 def capability_visible_permission_codes(branch, codes):

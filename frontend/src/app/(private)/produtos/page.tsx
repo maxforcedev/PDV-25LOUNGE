@@ -205,7 +205,7 @@ function ProductEditorFrame({
 }
 
 function Products() {
-  const { user, currentCompany, currentBranch, hasPermission } = useAuth();
+  const { user, currentCompany, currentBranch, hasFeature, hasPermission } = useAuth();
   const router = useRouter();
   const { id } = useParams<{ id?: string }>();
   const isDetail = Boolean(id);
@@ -227,6 +227,11 @@ function Products() {
   const canDuplicate = hasPermission(permissions.duplicateProduct);
   const canViewSuppliers = hasPermission(permissions.viewSupplier);
   const canChangeSuppliers = hasPermission(permissions.changeSupplier);
+  const inventoryEnabled = hasFeature("inventory");
+  const productionEnabled = hasFeature("production");
+  const visibleProductTabs = productTabs.filter(([tab]) =>
+    tab !== "production" || productionEnabled,
+  );
   const companyIdRef = useRef(currentCompany?.id);
   companyIdRef.current = currentCompany?.id;
   const contextRef = useRef("");
@@ -1262,7 +1267,7 @@ function Products() {
               aria-label="Seções do produto"
               className="flex overflow-x-auto border-b border-subtle px-4 sm:px-6"
             >
-              {productTabs.map(([value, label]) => (
+              {visibleProductTabs.map(([value, label]) => (
                 <button
                   key={value}
                   type="button"
@@ -1910,6 +1915,7 @@ function Products() {
               changeSuppliers: canChangeSuppliers,
               changeProduct: canChange,
             }}
+            features={{ inventory: inventoryEnabled, production: productionEnabled }}
             onReload={async () => {
               const refreshed = await http.get<Product>(
                 `products/${editing.id}/`,
@@ -1933,12 +1939,12 @@ function Products() {
             <Button
               type="button"
               variant="secondary"
-              disabled={detailTab === productTabs[0][0]}
+              disabled={detailTab === visibleProductTabs[0][0]}
               onClick={() => {
-                const index = productTabs.findIndex(
+                const index = visibleProductTabs.findIndex(
                   ([value]) => value === detailTab,
                 );
-                if (index > 0) setDetailTab(productTabs[index - 1][0]);
+                if (index > 0) setDetailTab(visibleProductTabs[index - 1][0]);
               }}
             >
               <ArrowLeft className="size-4" />
@@ -1947,13 +1953,13 @@ function Products() {
             <Button
               type="button"
               variant="secondary"
-              disabled={detailTab === productTabs[productTabs.length - 1][0]}
+              disabled={detailTab === visibleProductTabs[visibleProductTabs.length - 1][0]}
               onClick={() => {
-                const index = productTabs.findIndex(
+                const index = visibleProductTabs.findIndex(
                   ([value]) => value === detailTab,
                 );
-                if (index < productTabs.length - 1)
-                  setDetailTab(productTabs[index + 1][0]);
+                if (index < visibleProductTabs.length - 1)
+                  setDetailTab(visibleProductTabs[index + 1][0]);
               }}
             >
               Próximo

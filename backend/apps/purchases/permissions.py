@@ -36,6 +36,7 @@ class PurchaseFunctionalPermission(BasePermission):
         require_branch_feature(request.branch_context, 'purchases')
         if view.action in ('create', 'creation_options'):
             require_branch_feature(request.branch_context, 'suppliers')
+            require_branch_feature(request.branch_context, 'products')
         if getattr(view, 'basename', None) == 'payable-installment' or view.action == 'set_installments':
             require_branch_feature(request.branch_context, 'financial')
         return user.is_superuser or any(
