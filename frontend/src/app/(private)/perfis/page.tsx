@@ -68,7 +68,8 @@ function Profiles() {
   const canAdd = hasPermission(permissions.addAccessProfile);
   const canChange = hasPermission(permissions.changeAccessProfile);
   const canStatus = hasPermission(permissions.changeAccessProfileStatus);
-  const canChangeCommission = hasPermission(permissions.changeProfileCommission);
+  const commissionEnabled = hasFeature("financial");
+  const canChangeCommission = commissionEnabled && hasPermission(permissions.changeProfileCommission);
   const [data, setData] = useState<Paginated<AccessProfile> | null>(null);
   const [catalog, setCatalog] = useState<FunctionalPermission[]>([]);
   const availableCatalog = catalog.filter((permission) => isFunctionalPermissionAvailable(permission.code, hasFeature));
@@ -114,7 +115,7 @@ function Profiles() {
     try {
       const detail = await http.get<AccessProfile>(`access-profiles/${profile.id}/`);
       if (companyIdRef.current !== requestedCompanyId || detail.company !== requestedCompanyId) return;
-       setEditing(detail); setForm({ company: detail.company, name: detail.name, description: detail.description || "", receives_commission: detail.receives_commission ?? true, commission_rate: detail.commission_rate === null ? null : formatEditableDecimal(detail.commission_rate), permission_codes: detail.permission_codes }); setFields({}); setOpen(true);
+        setEditing(detail); setForm({ company: detail.company, name: detail.name, description: detail.description || "", receives_commission: detail.receives_commission ?? true, commission_rate: detail.commission_rate === null ? null : formatEditableDecimal(detail.commission_rate), permission_codes: detail.permission_codes }); setFields({}); setOpen(true);
     } catch (caught) { setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar o perfil."); }
   }
 

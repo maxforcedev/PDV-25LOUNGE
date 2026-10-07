@@ -720,7 +720,9 @@ class BranchCostAndSaleSnapshotTests(TestCase):
 class PurchaseApiRbacTests(TestCase):
     def setUp(self):
         plan = create_complete_test_plan(
-            'purchases-api', enabled_features=('purchases', 'suppliers', 'audit'),
+            'purchases-api', enabled_features=(
+                'purchases', 'suppliers', 'products', 'inventory', 'audit',
+            ),
         )
         self.user, self.company, self.subscription = create_operational_test_tenant(
             code='purchases-api',
@@ -1092,7 +1094,7 @@ class ConcurrentReceiptTests(TransactionTestCase):
 class PurchaseSupportSessionTests(TestCase):
     def setUp(self):
         version = create_plan(
-            code='purchase-support', features=('purchases', 'suppliers'),
+            code='purchase-support', features=('purchases', 'suppliers', 'products', 'inventory'),
         )
         _owner, self.company, _subscription = create_tenant(
             'Purchase Support', plan_version=version

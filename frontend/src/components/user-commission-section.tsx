@@ -12,9 +12,10 @@ type CommissionOverride = { id: number; branch: number; user: number; receives_c
 type CommissionMode = "profile" | "none" | "individual";
 
 export function UserCommissionSection({ userId }: { userId: number }) {
-  const { currentBranch, hasPermission } = useAuth();
-  const canChange = hasPermission(permissions.changeUserCommission);
-  const canRead = canChange || hasPermission(permissions.viewCommission);
+  const { currentBranch, hasFeature, hasPermission } = useAuth();
+  const financialEnabled = hasFeature("financial");
+  const canChange = financialEnabled && hasPermission(permissions.changeUserCommission);
+  const canRead = financialEnabled && (canChange || hasPermission(permissions.viewCommission));
   const [override, setOverride] = useState<CommissionOverride | null>(null);
   const [mode, setMode] = useState<CommissionMode>("profile");
   const [rate, setRate] = useState("");

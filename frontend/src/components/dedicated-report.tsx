@@ -110,6 +110,7 @@ const configs: Record<
     description: "Distribuição do total recebido por forma de pagamento.",
     endpoint: "sales",
     permission: permissions.viewReceiptsReport,
+    requiredFeatures: ["financial"],
   },
   operators: {
     title: "Operadores",
@@ -128,6 +129,7 @@ const configs: Record<
     description: "Valores históricos de comissão atribuídos aos atendentes.",
     endpoint: "sales",
     permission: permissions.viewCommission,
+    requiredFeatures: ["financial"],
   },
   discounts: {
     title: "Descontos e autorizações",

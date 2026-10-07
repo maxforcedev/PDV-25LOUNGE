@@ -22,11 +22,6 @@ class PurchaseFunctionalPermission(BasePermission):
         if not codes:
             return False
         branch_id = request.headers.get('X-Branch-ID')
-        support = support_permission_decision(request, branch_id=branch_id)
-        if support is not None:
-            return support
-        if user.is_superuser and not branch_id:
-            return True
         if not branch_id:
             return False
         try:
@@ -39,6 +34,9 @@ class PurchaseFunctionalPermission(BasePermission):
             require_branch_feature(request.branch_context, 'products')
         if getattr(view, 'basename', None) == 'payable-installment' or view.action == 'set_installments':
             require_branch_feature(request.branch_context, 'financial')
+        support = support_permission_decision(request, branch_id=branch_id)
+        if support is not None:
+            return support
         return user.is_superuser or any(
             user_has_branch_permission(user, branch_id, code) for code in codes
         )
@@ -46,14 +44,17 @@ class PurchaseFunctionalPermission(BasePermission):
     def has_object_permission(self, request, view, obj):
         order = getattr(obj, 'purchase_order', obj)
         branch_id = order.branch_id
+        branch = getattr(request, 'branch_context', None)
+        if branch is None:
+            branch = Branch.objects.select_related('company').filter(pk=branch_id).first()
+        if branch is None:
+            return False
+        require_branch_feature(branch, 'purchases')
+        if getattr(view, 'basename', None) == 'payable-installment' or view.action == 'set_installments':
+            require_branch_feature(branch, 'financial')
         support = support_permission_decision(request, obj=order)
         if support is not None:
             return support
-        branch = getattr(request, 'branch_context', None)
-        if branch:
-            require_branch_feature(branch, 'purchases')
-            if getattr(view, 'basename', None) == 'payable-installment' or view.action == 'set_installments':
-                require_branch_feature(branch, 'financial')
         if request.user.is_superuser:
             return branch is None or branch.pk == branch_id
         return bool(

@@ -391,6 +391,9 @@ class BranchViewSet(viewsets.ModelViewSet):
         branch_ids = branches.values_list('pk', flat=True)
         from apps.production.models import PrinterDevice
         from apps.products.models import Product
+        from apps.saas.services import get_entitled_features
+
+        entitled_features = get_entitled_features(company)
 
         return Response({
             'company': {
@@ -402,7 +405,7 @@ class BranchViewSet(viewsets.ModelViewSet):
                 'branches': branches.count(),
                 'products': Product.objects.filter(
                     company_id=company_id, archived_at__isnull=True,
-                ).count(),
+                ).count() if 'feature.products' in entitled_features else None,
                 'active_users': User.objects.filter(
                     is_active=True,
                     archived_at__isnull=True,
@@ -411,7 +414,7 @@ class BranchViewSet(viewsets.ModelViewSet):
                 ).distinct().count(),
                 'printer_devices': PrinterDevice.objects.filter(
                     branch_id__in=branch_ids
-                ).count(),
+                ).count() if 'feature.production' in entitled_features else None,
             },
         })
 

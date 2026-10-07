@@ -324,7 +324,7 @@ class SupplierApiTests(TestCase):
         map_existing_company(
             company=self.company,
             plan_version=create_complete_test_plan(
-                'supplier-api', enabled_features=('suppliers',),
+                'supplier-api', enabled_features=('suppliers', 'products'),
             ),
             billing_mode=Subscription.BillingMode.PAID,
         )

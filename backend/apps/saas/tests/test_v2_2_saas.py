@@ -601,7 +601,7 @@ class FailClosedSaaSContextTests(TestCase):
         )
         self.assertEqual(response.status_code, 403, response.data)
 
-    def test_features_require_an_explicit_enabled_entitlement(self):
+    def test_invalid_feature_dependencies_fail_closed(self):
         version = create_plan(code='explicit-features')
         capabilities = ensure_capability_catalog()
         PlanEntitlement.objects.create(
@@ -612,7 +612,8 @@ class FailClosedSaaSContextTests(TestCase):
         )
         _, company, _ = create_tenant('Explicit Features', plan_version=version)
 
-        self.assertEqual(get_entitled_features(company), {'feature.tables'})
+        self.assertEqual(resolve_effective_status(company)['status'], 'INVALID_ENTITLEMENTS')
+        self.assertEqual(get_entitled_features(company), set())
 
     def test_login_and_me_keep_only_operational_company_and_branches(self):
         version = create_plan(code='multi-company-context')

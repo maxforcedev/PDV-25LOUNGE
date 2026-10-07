@@ -305,14 +305,14 @@ function DashboardPage() {
   }).toString();
   const report = (slug: string, extra = "") =>
     `/relatorios/${slug}?${query}${extra}`;
-  const canViewSalesReport = hasPermission(permissions.viewSalesReport);
-  const canViewReceiptsReport = hasPermission(permissions.viewReceiptsReport);
-  const canViewProductsReport = hasPermission(permissions.viewProductsReport);
-  const canViewResultReport = hasPermission(permissions.viewOperationalResult);
-  const canViewInventory = hasPermission(permissions.viewInventory);
-  const canViewCash = hasPermission(permissions.viewCashRegister);
-  const canViewCommands = hasPermission(permissions.viewCommands);
-  const canViewSaleDetail = hasAnyPermission([
+  const canViewSalesReport = hasFeature("reports") && hasPermission(permissions.viewSalesReport);
+  const canViewReceiptsReport = hasFeature("financial") && hasPermission(permissions.viewReceiptsReport);
+  const canViewProductsReport = hasFeature("products") && hasPermission(permissions.viewProductsReport);
+  const canViewResultReport = hasFeature("financial") && hasPermission(permissions.viewOperationalResult);
+  const canViewInventory = hasFeature("inventory") && hasPermission(permissions.viewInventory);
+  const canViewCash = hasFeature("cash_register") && hasPermission(permissions.viewCashRegister);
+  const canViewCommands = hasFeature("commands") && hasPermission(permissions.viewCommands);
+  const canViewSaleDetail = hasFeature("counter") && hasAnyPermission([
     permissions.viewSale,
     permissions.cancelSale,
   ]);

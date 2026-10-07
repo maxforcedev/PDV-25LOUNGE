@@ -32,7 +32,7 @@ class TableAttendanceRegressionTests(TestCase):
             legal_name='Tables Legal',
             plan_version=create_complete_test_plan(
                 'table-attendance-regression',
-                enabled_features=('tables', 'cash_register', 'products', 'inventory'),
+                enabled_features=('tables', 'commands', 'cash_register', 'products', 'inventory'),
             ),
         )
         self.branch = self.company.branches.get(is_matrix=True)

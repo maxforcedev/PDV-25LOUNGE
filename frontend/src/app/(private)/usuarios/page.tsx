@@ -161,6 +161,7 @@ function UsersAdministration() {
     user: actor,
     currentCompany,
     currentBranch,
+    hasFeature,
     hasPermission,
   } = useAuth();
   const router = useRouter();
@@ -170,6 +171,10 @@ function UsersAdministration() {
   const canAdd = hasPermission(permissions.addUser);
   const canChange = hasPermission(permissions.changeUser);
   const canStatus = hasPermission(permissions.changeUserStatus);
+  const commissionEnabled = hasFeature("financial");
+  const visibleEditorTabs = editorTabs.filter(([tab]) =>
+    tab !== "commission" || commissionEnabled,
+  );
   const contextRef = useRef(
     `${currentCompany?.id || ""}:${currentBranch?.id || ""}`,
   );
@@ -1096,7 +1101,7 @@ function UsersAdministration() {
               aria-label="Seções do usuário"
               className="flex overflow-x-auto border-b border-subtle px-4 sm:px-6"
             >
-              {editorTabs.map(([value, label]) => (
+              {visibleEditorTabs.map(([value, label]) => (
                 <button
                   key={value}
                   type="button"
@@ -1643,7 +1648,7 @@ function UsersAdministration() {
             </div>
           )}
         </form>
-        {editing && editorTab === "commission" && (
+        {editing && commissionEnabled && editorTab === "commission" && (
           <UserCommissionSection userId={editing.id} />
         )}
         {editing && (
@@ -1651,12 +1656,12 @@ function UsersAdministration() {
             <Button
               type="button"
               variant="secondary"
-              disabled={editorTab === editorTabs[0][0]}
+              disabled={editorTab === visibleEditorTabs[0][0]}
               onClick={() => {
-                const index = editorTabs.findIndex(
+                const index = visibleEditorTabs.findIndex(
                   ([value]) => value === editorTab,
                 );
-                if (index > 0) setEditorTab(editorTabs[index - 1][0]);
+                if (index > 0) setEditorTab(visibleEditorTabs[index - 1][0]);
               }}
             >
               <ArrowLeft className="size-4" />
@@ -1665,13 +1670,13 @@ function UsersAdministration() {
             <Button
               type="button"
               variant="secondary"
-              disabled={editorTab === editorTabs[editorTabs.length - 1][0]}
+              disabled={editorTab === visibleEditorTabs[visibleEditorTabs.length - 1][0]}
               onClick={() => {
-                const index = editorTabs.findIndex(
+                const index = visibleEditorTabs.findIndex(
                   ([value]) => value === editorTab,
                 );
-                if (index < editorTabs.length - 1)
-                  setEditorTab(editorTabs[index + 1][0]);
+                if (index < visibleEditorTabs.length - 1)
+                  setEditorTab(visibleEditorTabs[index + 1][0]);
               }}
             >
               Próximo

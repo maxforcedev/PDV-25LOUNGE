@@ -8,7 +8,7 @@ const routes: Array<{
   anyFeature?: boolean;
   alternatives?: readonly FeaturePermissionAlternative[];
 }> = [
-  { href: "/dashboard", permissions: [permissions.viewDashboard] },
+  { href: "/dashboard", permissions: [permissions.viewDashboard], features: ["reports"] },
   { href: "/pdv", permissions: [], alternatives: [{ permission: permissions.createSale, features: ["counter", "cash_register"] }, { permission: permissions.createConsumption, features: ["consumption"] }] },
   { href: "/mesas", permissions: [permissions.viewTables], features: ["tables"] },
   { href: "/comandas", permissions: [permissions.viewCommands], features: ["commands"] },
@@ -46,7 +46,6 @@ export function firstAuthorizedRoute(
   branch: UserBranch | null,
 ) {
   if (company?.is_owner && !company.can_operate) return "/assinatura";
-  if (user.is_superuser) return branch ? "/dashboard" : "/perfil";
   for (const route of routes) {
     const permitted = route.permissions.some((permission) => {
       const source = isOperatingPermission(permission, user.permission_scopes) ? branch : company;

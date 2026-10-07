@@ -15,6 +15,8 @@ const STRUCTURAL_CAPABILITIES = new Set(["core.enabled", "users.max", "branches.
 const CAPABILITY_DEPENDENCIES: Record<string, string[]> = {
   "feature.inventory": ["feature.products"],
   "feature.suppliers": [],
+  "feature.counter": ["feature.products", "feature.cash_register"],
+  "feature.commands": ["feature.products", "feature.cash_register"],
   "feature.purchases": ["feature.suppliers", "feature.products", "feature.inventory"],
   "feature.promotions": ["feature.products"],
   "feature.production": ["feature.products"],

@@ -136,26 +136,27 @@ def require_branch_feature(branch, feature):
         raise PermissionDenied(f'A funcionalidade {label} está desativada nesta filial.')
 
 
-def permission_feature(code):
-    """Return the capability governing an operational permission code."""
+def permission_features(code):
+    """Return every capability required for an operational permission code."""
     code = str(code or '')
     if code in {
-        'sales.create_consumption', 'sales.view_consumption',
-        'sales.cancel_consumption', 'reports.view_consumptions',
+        'sales.create_consumption', 'sales.view_consumption', 'sales.cancel_consumption',
     }:
-        return 'consumption'
+        return ('consumption',)
+    if code == 'reports.view_consumptions':
+        return ('reports', 'consumption')
     if code == 'reports.view_stock_consumption':
-        return 'inventory'
+        return ('reports', 'inventory')
     if code in {'reports.view_cash', 'reports.view_withdrawals'}:
-        return 'cash_register'
+        return ('reports', 'cash_register')
     if code in {'reports.view_operational_result', 'reports.view_receipts'}:
-        return 'financial'
-    return PERMISSION_FEATURE_PREFIXES.get(code.split('.', 1)[0])
+        return ('reports', 'financial')
+    feature = PERMISSION_FEATURE_PREFIXES.get(code.split('.', 1)[0])
+    return (feature,) if feature else ()
 
 
 def capability_visible_permission_codes(branch, codes):
     return {
         code for code in codes
-        if (feature := permission_feature(code)) is None
-        or branch_feature_enabled(branch, feature)
+        if all(branch_feature_enabled(branch, feature) for feature in permission_features(code))
     }

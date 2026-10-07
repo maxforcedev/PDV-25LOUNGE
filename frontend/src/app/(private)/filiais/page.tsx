@@ -51,9 +51,9 @@ type BusinessOverview = {
   company: { id: number; trade_name: string; status: "active" | "inactive" };
   counts: {
     branches: number;
-    products: number;
+    products: number | null;
     active_users: number;
-    printer_devices: number;
+    printer_devices: number | null;
   };
 };
 
@@ -88,11 +88,11 @@ function addressText(address: Branch["address"]) {
 
 function BranchesAdministration() {
   const router = useRouter();
-  const { user, currentCompany, featureState, hasPermission, setCurrentBranchId, refreshUser } = useAuth();
+  const { user, currentCompany, featureState, hasFeature, hasPermission, setCurrentBranchId, refreshUser } = useAuth();
   const canAdd = hasPermission(permissions.addBranch);
   const canChange = hasPermission(permissions.changeBranch);
   const canSettings = hasPermission(permissions.changeBranchSettings);
-  const canManagePrinters = hasPermission(permissions.managePrinters);
+  const canManagePrinters = hasFeature("production") && hasPermission(permissions.managePrinters);
   const canChangeCommission = hasPermission(permissions.changeBranchCommission);
   const planAllows = (feature: Parameters<typeof featureState>[0]) =>
     Boolean(featureState(feature)?.plan_allowed);
@@ -476,6 +476,7 @@ function BranchesAdministration() {
       branch.company !== currentCompany?.id ||
       branch.status !== "active" ||
       !targetAccess ||
+      !targetAccess.features.production?.enabled ||
       !targetAccess.permissions.includes(permissions.managePrinters)
     ) return;
     setCurrentBranchId(branch.id);
@@ -511,9 +512,9 @@ function BranchesAdministration() {
               <strong className="block text-lg">{overview.company.trade_name}</strong>
               <StatusBadge active={overview.company.status === "active"} />
             </div>
-            <div><span className="label">Produtos</span><strong className="block text-2xl">{overview.counts.products}</strong></div>
+            {hasFeature("products") && overview.counts.products !== null && <div><span className="label">Produtos</span><strong className="block text-2xl">{overview.counts.products}</strong></div>}
             <div><span className="label">Usuários ativos</span><strong className="block text-2xl">{overview.counts.active_users}</strong></div>
-            <div><span className="label">Dispositivos</span><strong className="block text-2xl">{overview.counts.printer_devices}</strong></div>
+            {hasFeature("production") && overview.counts.printer_devices !== null && <div><span className="label">Dispositivos</span><strong className="block text-2xl">{overview.counts.printer_devices}</strong></div>}
             <div><span className="label">Filiais</span><strong className="block text-2xl">{overview.counts.branches}</strong></div>
           </section>
         )}
@@ -571,12 +572,12 @@ function BranchesAdministration() {
                         </td>
                         <td>
                           <div className="flex justify-end gap-1">
-                            <button
+                            {user?.branches.some((item) => item.id === branch.id && item.features.production?.enabled) && <button
                               className="icon-button"
                               disabled={
                                 branch.company !== currentCompany?.id ||
-                                branch.status !== "active" ||
-                                !user?.branches.some((item) => item.id === branch.id && item.permissions.includes(permissions.managePrinters))
+                                 branch.status !== "active" ||
+                                 !user?.branches.some((item) => item.id === branch.id && item.features.production?.enabled && item.permissions.includes(permissions.managePrinters))
                               }
                               title={
                                 canManagePrinters
@@ -586,7 +587,7 @@ function BranchesAdministration() {
                               onClick={() => openPrinters(branch)}
                             >
                               <Printer className="size-4" />
-                            </button>
+                            </button>}
                             <button
                               className="icon-button"
                               disabled={!canSettings || branch.company !== currentCompany?.id}
@@ -956,7 +957,7 @@ function BranchesAdministration() {
         tall
       >
         <div className="p-5 sm:p-6">
-          <PrinterManagement embedded />
+          {printersBranch && <PrinterManagement embedded />}
         </div>
       </Modal>
       <ConfirmDialog

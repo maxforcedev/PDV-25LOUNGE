@@ -34,41 +34,44 @@ class ProductFunctionalPermission(BasePermission):
         if request_requires_commercial_feature(request, view):
             enforce_saas_request(request, user, view)
         branch_id = request.headers.get('X-Branch-ID')
+        try:
+            branch = Branch.objects.get(pk=branch_id) if branch_id else None
+        except (Branch.DoesNotExist, TypeError, ValueError):
+            return False
+        if branch:
+            request.branch_context = branch
+        if view.action in ('production_destinations', 'production_printers'):
+            if branch is None:
+                return False
+            require_branch_feature(branch, 'production')
+        if view.action in ('minimum_stock', 'fraction_config', 'activate_fraction_config'):
+            if branch is None:
+                return False
+            require_branch_feature(branch, 'inventory')
         support = support_permission_decision(request, branch_id=branch_id)
         if support is not None:
             return support
         if user.is_superuser:
-            if branch_id:
-                try:
-                    request.branch_context = Branch.objects.get(pk=branch_id)
-                except (Branch.DoesNotExist, TypeError, ValueError):
-                    return False
             return True
         code = self.get_code(request, view)
         if not code:
             return False
         if not branch_id:
             return False
-        try:
-            request.branch_context = Branch.objects.get(pk=branch_id)
-        except (Branch.DoesNotExist, TypeError, ValueError):
+        if branch is None:
             return False
-        if view.action in ('production_destinations', 'production_printers'):
-            require_branch_feature(request.branch_context, 'production')
-        if view.action in ('minimum_stock', 'fraction_config', 'activate_fraction_config'):
-            require_branch_feature(request.branch_context, 'inventory')
         if view.basename == 'branchprice' or view.action == 'branch_pricing':
             company_id = request.branch_context.company_id
             if view.action in {'list', 'retrieve', 'table'}:
                 return (
-                    user_has_branch_permission(user, request.branch_context.pk, 'branch_prices.view')
+                    user_has_branch_permission(user, branch.pk, 'branch_prices.view')
                     or user_has_company_permission(user, company_id, 'branch_prices.view_company')
                 )
             return (
-                user_has_branch_permission(user, request.branch_context.pk, 'branch_prices.change')
+                user_has_branch_permission(user, branch.pk, 'branch_prices.change')
                 or user_has_company_permission(user, company_id, 'branch_prices.change_company')
             )
-        if not user_has_branch_permission(user, request.branch_context.pk, code):
+        if not user_has_branch_permission(user, branch.pk, code):
             return False
         return True
 

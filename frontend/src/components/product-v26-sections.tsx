@@ -81,6 +81,7 @@ type Props = {
   branches: UserBranch[];
   permissions: Permissions;
   features: {
+    suppliers: boolean;
     inventory: boolean;
     production: boolean;
   };
@@ -215,6 +216,7 @@ export function ProductV26Sections({
 
   const isVisible = (tab: ProductV26Tab) =>
     (tab !== "production" || features.production) &&
+    (tab !== "suppliers-stock" || features.suppliers || features.inventory) &&
     (!activeTab || activeTab === tab);
   if (actionRef)
     actionRef.current = {
@@ -268,7 +270,7 @@ export function ProductV26Sections({
           }),
       );
     }
-    if (isVisible("suppliers-stock") && permissions.viewSuppliers) {
+    if (isVisible("suppliers-stock") && features.suppliers && permissions.viewSuppliers) {
       requests.push(
         http
           .getAll<Supplier>(`suppliers/?company=${companyId}`)
@@ -309,6 +311,9 @@ export function ProductV26Sections({
     currentBranchId,
     permissions.viewModifiers,
     permissions.viewSuppliers,
+    features.inventory,
+    features.production,
+    features.suppliers,
     product,
     activeTab,
   ]);
@@ -1183,7 +1188,7 @@ export function ProductV26Sections({
 
       <section
         className={
-          isVisible("suppliers-stock")
+          isVisible("suppliers-stock") && features.suppliers
             ? "rounded-xl border border-subtle p-4"
             : "hidden"
         }
@@ -1251,7 +1256,7 @@ export function ProductV26Sections({
       {permissions.viewSuppliers && (
         <section
           className={
-            isVisible("suppliers-stock")
+            isVisible("suppliers-stock") && features.suppliers
               ? "rounded-xl border border-subtle p-4"
               : "hidden"
           }

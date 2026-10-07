@@ -225,12 +225,27 @@ function Products() {
     permissions.configureProductDestinations,
   );
   const canDuplicate = hasPermission(permissions.duplicateProduct);
-  const canViewSuppliers = hasPermission(permissions.viewSupplier);
-  const canChangeSuppliers = hasPermission(permissions.changeSupplier);
+  const suppliersEnabled = hasFeature("suppliers");
+  const canViewSuppliers = suppliersEnabled && hasPermission(permissions.viewSupplier);
+  const canChangeSuppliers = suppliersEnabled && hasPermission(permissions.changeSupplier);
   const inventoryEnabled = hasFeature("inventory");
   const productionEnabled = hasFeature("production");
-  const visibleProductTabs = productTabs.filter(([tab]) =>
-    tab !== "production" || productionEnabled,
+  const visibleProductTabs = productTabs.reduce<Array<[ProductV26Tab, string]>>(
+    (tabs, [tab, label]) => {
+      if (tab === "production") {
+        if (productionEnabled) tabs.push([tab, label]);
+      } else if (tab !== "suppliers-stock") {
+        tabs.push([tab, label]);
+      } else if (suppliersEnabled && inventoryEnabled) {
+        tabs.push([tab, label]);
+      } else if (suppliersEnabled) {
+        tabs.push([tab, "Fornecedores"]);
+      } else if (inventoryEnabled) {
+        tabs.push([tab, "Estoque"]);
+      }
+      return tabs;
+    },
+    [],
   );
   const companyIdRef = useRef(currentCompany?.id);
   companyIdRef.current = currentCompany?.id;
@@ -1915,7 +1930,7 @@ function Products() {
               changeSuppliers: canChangeSuppliers,
               changeProduct: canChange,
             }}
-            features={{ inventory: inventoryEnabled, production: productionEnabled }}
+            features={{ suppliers: suppliersEnabled, inventory: inventoryEnabled, production: productionEnabled }}
             onReload={async () => {
               const refreshed = await http.get<Product>(
                 `products/${editing.id}/`,

@@ -21,7 +21,7 @@ export const reportGroups: readonly ReportCenterGroup[] = [
     reports: [
       { href: "/relatorios/visao-geral", label: "Visão geral", permission: "reports.view_sales" },
       { href: "/relatorios/vendas", label: "Vendas", permission: "reports.view_sales" },
-      { href: "/relatorios/recebimentos", label: "Recebimentos / Formas de pagamento", permission: "reports.view_receipts" },
+      { href: "/relatorios/recebimentos", label: "Recebimentos / Formas de pagamento", permission: "reports.view_receipts", requiredFeatures: ["financial"] },
       { href: "/relatorios/produtos", label: "Produtos e desempenho", permission: "reports.view_products", requiredFeatures: ["products"] },
       { href: "/relatorios/atendentes", label: "Atendentes", permission: "reports.view_team" },
       { href: "/relatorios/operadores", label: "Operadores", permission: "reports.view_team" },
@@ -33,8 +33,8 @@ export const reportGroups: readonly ReportCenterGroup[] = [
     title: "Financeiro",
     description: "Resultado estimado, comissões e controle de caixa.",
     reports: [
-      { href: "/relatorios/resultado", label: "Resultado estimado", permission: "reports.view_operational_result" },
-      { href: "/relatorios/comissoes", label: "Comissões", permission: "commissions.view" },
+      { href: "/relatorios/resultado", label: "Resultado estimado", permission: "reports.view_operational_result", requiredFeatures: ["financial"] },
+      { href: "/relatorios/comissoes", label: "Comissões", permission: "commissions.view", requiredFeatures: ["financial"] },
       { href: "/relatorios/descontos", label: "Descontos e autorizações", permission: "reports.view_discounts" },
       { href: "/relatorios/caixa", label: "Caixa", permission: "reports.view_cash", requiredFeatures: ["cash_register"] },
       { href: "/relatorios/sangrias", label: "Sangrias", permission: "reports.view_withdrawals", requiredFeatures: ["cash_register"] },

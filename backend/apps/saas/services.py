@@ -62,6 +62,8 @@ FEATURE_CAPABILITY_CODES = frozenset(
 CAPABILITY_DEPENDENCIES = {
     'feature.inventory': ('feature.products',),
     'feature.suppliers': (),
+    'feature.counter': ('feature.products', 'feature.cash_register'),
+    'feature.commands': ('feature.products', 'feature.cash_register'),
     'feature.purchases': (
         'feature.suppliers',
         'feature.products',
@@ -220,6 +222,9 @@ def validate_plan_version_complete(plan_version, *, lock=False):
                 f'Entitlements invalidos: {", ".join(sorted(invalid))}.'
             ).strip()
         })
+    validate_entitlement_dependencies({
+        code: item.enabled for code, item in entitlements.items()
+    })
     return plan_version
 
 
@@ -533,28 +538,9 @@ def resolve_effective_status(company, at=None):
             'can_operate': False,
             'subscription': subscription,
         }
-    required = {
-        item.capability.code: item
-        for item in PlanEntitlement.objects.filter(
-            plan_version=subscription.plan_version,
-            capability__code__in=REQUIRED_CAPABILITY_CODES,
-            capability__is_active=True,
-        ).select_related('capability')
-    }
-    limits_valid = all(
-        code in required
-        and required[code].enabled
-        and (
-            required[code].unlimited
-            or required[code].limit_value is not None and required[code].limit_value >= 1
-        )
-        for code in ('users.max', 'branches.max')
-    )
-    if (
-        set(required) != REQUIRED_CAPABILITY_CODES
-        or not required['core.enabled'].enabled
-        or not limits_valid
-    ):
+    try:
+        validate_plan_version_complete(subscription.plan_version)
+    except ValidationError:
         return {'status': 'INVALID_ENTITLEMENTS', 'can_operate': False, 'subscription': subscription}
     if subscription.cancel_at_period_end and at >= subscription.current_period_end:
         return {'status': Subscription.Status.CANCELLED, 'can_operate': False, 'subscription': subscription}

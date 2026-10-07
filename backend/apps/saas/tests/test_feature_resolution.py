@@ -24,6 +24,7 @@ from apps.saas.services import (
     ensure_capability_catalog,
     get_entitled_features,
     map_existing_company,
+    resolve_capability_dependencies,
     resolve_effective_status,
 )
 
@@ -44,6 +45,19 @@ class CapabilityResolutionTests(TestCase):
         self.branch.settings.save(update_fields=('uses_tables', 'updated_at'))
 
     def _plan(self, code, *, tables, pos=True, devices=1, products=False, features=()):
+        features = set(features)
+        if tables:
+            features.add('tables')
+        if products:
+            features.add('products')
+        features = {
+            capability_code.removeprefix('feature.')
+            for capability_code in resolve_capability_dependencies(
+                {f'feature.{feature}' for feature in features}
+            )
+        }
+        tables = 'tables' in features
+        products = 'products' in features
         capabilities = ensure_capability_catalog()
         version = PlanVersion.objects.create(
             plan=Plan.objects.create(code=code, name=code),
@@ -79,7 +93,7 @@ class CapabilityResolutionTests(TestCase):
             enabled=products,
             unlimited=products,
         )
-        for feature in set(features) - {'tables', 'products'}:
+        for feature in features - {'tables', 'products'}:
             PlanEntitlement.objects.create(
                 plan_version=version,
                 capability=capabilities[f'feature.{feature}'],
@@ -196,7 +210,7 @@ class CapabilityResolutionTests(TestCase):
         self.assertEqual(context.exception.payload['code'], 'pos_device_limit_reached')
 
     def test_commercial_endpoints_require_their_explicit_capability(self):
-        version = self._plan('products-disabled', tables=True)
+        version = self._plan('products-disabled', tables=False)
         map_existing_company(
             company=self.company,
             plan_version=version,
@@ -223,7 +237,7 @@ class CapabilityResolutionTests(TestCase):
         second_branch = second_company.branches.get(is_matrix=True)
         map_existing_company(
             company=second_company,
-            plan_version=self._plan('products-enabled', tables=True, products=True),
+            plan_version=self._plan('products-enabled', tables=False, products=True),
             billing_mode=Subscription.BillingMode.PAID,
         )
         request.headers['X-Branch-ID'] = str(second_branch.pk)
@@ -232,7 +246,7 @@ class CapabilityResolutionTests(TestCase):
     def test_disabled_commercial_capabilities_block_direct_api_for_superuser(self):
         map_existing_company(
             company=self.company,
-            plan_version=self._plan('commercial-api-disabled', tables=True),
+            plan_version=self._plan('commercial-api-disabled', tables=False),
             billing_mode=Subscription.BillingMode.PAID,
         )
         client = self._superuser_client()
@@ -378,7 +392,7 @@ class CapabilityResolutionTests(TestCase):
 
         self.assertEqual(response.status_code, 200, response.data)
 
-    def test_commercial_options_hide_catalog_without_products_capability(self):
+    def test_commercial_options_resolve_product_dependency_for_promotions(self):
         map_existing_company(
             company=self.company,
             plan_version=self._plan(
@@ -430,7 +444,9 @@ class CapabilityResolutionTests(TestCase):
         response = self._superuser_client().get(
             f'/api/v1/pos/admin/devices/?company={self.company.pk}',
         )
-        self.assertEqual(response.status_code, 403, response.data)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['products'], [])
+        self.assertEqual(response.data['categories'], [])
 
     def test_counter_and_commands_are_hidden_when_their_features_are_disabled(self):
         self.branch.settings.uses_counter = True
@@ -443,7 +459,7 @@ class CapabilityResolutionTests(TestCase):
             company=self.company,
             plan_version=self._plan(
                 'pos-feature-modules-disabled',
-                tables=True,
+                tables=False,
                 features=('cash_register',),
             ),
             billing_mode=Subscription.BillingMode.PAID,
