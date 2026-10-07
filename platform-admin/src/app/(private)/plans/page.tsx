@@ -11,6 +11,17 @@ import { useAuth } from "@/providers/auth-provider";
 type Editor = "plan-create" | "plan-edit" | "version-create" | "version-edit";
 type Values = Record<string, string | boolean>;
 
+const STRUCTURAL_CAPABILITIES = new Set(["core.enabled", "users.max", "branches.max"]);
+const CAPABILITY_DEPENDENCIES: Record<string, string[]> = {
+  "feature.inventory": ["feature.products"],
+  "feature.suppliers": [],
+  "feature.purchases": ["feature.suppliers", "feature.products", "feature.inventory"],
+  "feature.promotions": ["feature.products"],
+  "feature.production": ["feature.products"],
+  "feature.tables": ["feature.commands"],
+  "feature.consumption": ["feature.commands"],
+};
+
 interface EntitlementDraft {
   capability: number;
   enabled: boolean;
@@ -22,7 +33,7 @@ function capabilityDrafts(capabilities: Capability[], version?: PlanVersion | nu
   const existing = new Map(version?.entitlements.map((item) => [item.capability, item]) || []);
   return capabilities.map((capability) => {
     const entitlement = existing.get(capability.id);
-    const mandatory = ["core.enabled", "users.max", "branches.max"].includes(capability.code);
+    const mandatory = STRUCTURAL_CAPABILITIES.has(capability.code);
     return {
       capability: capability.id,
       enabled: mandatory || entitlement?.enabled || false,
@@ -150,23 +161,79 @@ function EditorFields({ editor, values, setValues, capabilities, entitlements, s
 }
 
 function CapabilityMatrix({ capabilities, values, onChange }: { capabilities: Capability[]; values: EntitlementDraft[]; onChange: (items: EntitlementDraft[]) => void }) {
+  const [blockedMessage, setBlockedMessage] = useState("");
+  const capabilitiesById = new Map(capabilities.map((capability) => [capability.id, capability]));
+
+  function dependencyClosure(capabilityCodes: string[]) {
+    const resolved = new Set<string>();
+    const visiting = new Set<string>();
+    function visit(code: string) {
+      if (visiting.has(code)) throw new Error(`Ciclo de dependencias: ${code}`);
+      if (resolved.has(code)) return;
+      visiting.add(code);
+      CAPABILITY_DEPENDENCIES[code]?.forEach(visit);
+      visiting.delete(code);
+      resolved.add(code);
+    }
+    capabilityCodes.forEach(visit);
+    return resolved;
+  }
+
+  function requiredBy(capability: Capability) {
+    const enabledCodes = values
+      .filter((item) => item.enabled)
+      .map((item) => capabilitiesById.get(item.capability)?.code)
+      .filter((code): code is string => Boolean(code));
+    return enabledCodes
+      .filter((code) => code !== capability.code && dependencyClosure([code]).has(capability.code))
+      .map((code) => capabilities.find((item) => item.code === code)?.name || code);
+  }
+
   function update(capability: Capability, changes: Partial<EntitlementDraft>) {
+    const requestedEnabled = changes.enabled;
+    const dependents = requestedEnabled === false ? requiredBy(capability) : [];
+    const posEnabled = values.some((item) => (
+      capabilitiesById.get(item.capability)?.code === "pos.enabled" && item.enabled
+    ));
+    if (capability.code === "pos.devices.max" && requestedEnabled === false && posEnabled) {
+      setBlockedMessage("Dispositivos CORE POS nao pode ser desativada enquanto o CORE POS estiver habilitado.");
+      return;
+    }
+    if (dependents.length) {
+      setBlockedMessage(`${capability.name} nao pode ser desativada. Este modulo e necessario para: ${dependents.join(", ")}. Desative primeiro os modulos dependentes.`);
+      return;
+    }
+    setBlockedMessage("");
+    const required = requestedEnabled === true ? dependencyClosure([capability.code]) : new Set<string>();
     onChange(values.map((item) => {
-      if (item.capability !== capability.id) return item;
-      const mandatory = ["core.enabled", "users.max", "branches.max"].includes(capability.code);
-      const next = { ...item, ...changes };
-      if (mandatory) next.enabled = true;
-      if (!next.enabled || capability.value_type === "BOOLEAN") { next.unlimited = false; next.limit_value = ""; }
+      const itemCapability = capabilitiesById.get(item.capability);
+      const next = {
+        ...item,
+        ...(item.capability === capability.id ? changes : {}),
+      };
+      if (itemCapability && required.has(itemCapability.code)) next.enabled = true;
+      if (itemCapability && STRUCTURAL_CAPABILITIES.has(itemCapability.code)) next.enabled = true;
+      if (capability.code === "pos.enabled" && itemCapability?.code === "pos.devices.max") {
+        next.enabled = requestedEnabled === true;
+        next.unlimited = false;
+        next.limit_value = requestedEnabled === true ? item.limit_value || "1" : "";
+      }
+      if (!next.enabled || itemCapability?.value_type === "BOOLEAN") {
+        next.unlimited = false;
+        next.limit_value = "";
+      }
       if (next.unlimited) next.limit_value = "";
       return next;
     }));
   }
 
-  return <section className="border-t border-line"><div className="border-b border-line bg-[#e8ebe7] px-5 py-3"><p className="eyebrow">Capabilities</p><p className="mt-1 text-xs text-steel/60">Todas as capabilities ativas sao registradas, inclusive as desabilitadas.</p></div><div className="divide-y divide-line">{capabilities.map((capability) => {
+  return <section className="border-t border-line"><div className="border-b border-line bg-[#e8ebe7] px-5 py-3"><p className="eyebrow">Capabilities</p><p className="mt-1 text-xs text-steel/60">Todas as capabilities ativas sao registradas, inclusive as desabilitadas.</p></div>{blockedMessage && <div className="border-b border-line bg-amber-50 px-5 py-3 text-xs font-semibold text-amber-900">{blockedMessage}</div>}<div className="divide-y divide-line">{capabilities.map((capability) => {
     const item = values.find((value) => value.capability === capability.id);
     if (!item) return null;
-    const mandatory = ["core.enabled", "users.max", "branches.max"].includes(capability.code);
-    return <div className="grid gap-4 p-5 lg:grid-cols-[minmax(0,1fr)_150px_190px] lg:items-center" key={capability.id}><div><p className="font-mono text-xs font-bold">{capability.code}</p><p className="mt-1 text-sm text-steel/65">{capability.name}{capability.code === "core.enabled" ? " (obrigatoria)" : ""}</p></div><CheckField label="Habilitada" checked={item.enabled} disabled={mandatory} onChange={(enabled) => update(capability, { enabled })} />{capability.value_type === "INTEGER" ? <div className="flex gap-2"><input className="input min-w-0" type="number" min="1" disabled={!item.enabled || item.unlimited} value={item.limit_value} onChange={(event) => update(capability, { limit_value: event.target.value })} required={item.enabled && !item.unlimited} /><CheckField label="Ilimitado" checked={item.unlimited} disabled={!item.enabled} onChange={(unlimited) => update(capability, { unlimited })} /></div> : <span className="text-xs font-bold uppercase tracking-wider text-steel/50">Boolean</span>}</div>;
+    const mandatory = STRUCTURAL_CAPABILITIES.has(capability.code);
+    const dependents = requiredBy(capability);
+    const posDevicesInactive = capability.code === "pos.devices.max" && !values.some((value) => capabilitiesById.get(value.capability)?.code === "pos.enabled" && value.enabled);
+    return <div className="grid gap-4 p-5 lg:grid-cols-[minmax(0,1fr)_150px_190px] lg:items-center" key={capability.id}><div><p className="font-mono text-xs font-bold">{capability.code}</p><p className="mt-1 text-sm text-steel/65">{capability.name}{capability.code === "core.enabled" ? " (obrigatoria)" : ""}</p>{dependents.length > 0 && <p className="mt-2 text-xs font-semibold text-amber-900">DEPENDENCIA: requerido por {dependents.join(", ")}</p>}{posDevicesInactive && <p className="mt-2 text-xs font-semibold text-steel/55">Inaplicavel enquanto o CORE POS estiver desabilitado.</p>}</div><CheckField label="Habilitada" checked={item.enabled} disabled={mandatory || dependents.length > 0 || posDevicesInactive} onChange={(enabled) => update(capability, { enabled })} />{capability.value_type === "INTEGER" ? <div className="flex gap-2"><input className="input min-w-0" type="number" min="1" disabled={!item.enabled || item.unlimited || posDevicesInactive} value={item.limit_value} onChange={(event) => update(capability, { limit_value: event.target.value })} required={item.enabled && !item.unlimited} /><CheckField label="Ilimitado" checked={item.unlimited} disabled={!item.enabled || posDevicesInactive} onChange={(unlimited) => update(capability, { unlimited })} /></div> : <span className="text-xs font-bold uppercase tracking-wider text-steel/50">Boolean</span>}</div>;
   })}</div></section>;
 }
 

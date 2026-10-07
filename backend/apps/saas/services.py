@@ -57,6 +57,87 @@ FEATURE_CAPABILITY_CODES = frozenset(
     code for code, _, _ in CAPABILITY_CATALOG if code.startswith('feature.')
 )
 
+# Keep operational module prerequisites declarative so plan validation has one
+# source of truth as the catalog grows.
+CAPABILITY_DEPENDENCIES = {
+    'feature.inventory': ('feature.products',),
+    'feature.suppliers': (),
+    'feature.purchases': (
+        'feature.suppliers',
+        'feature.products',
+        'feature.inventory',
+    ),
+    'feature.promotions': ('feature.products',),
+    'feature.production': ('feature.products',),
+    'feature.tables': ('feature.commands',),
+    'feature.consumption': ('feature.commands',),
+}
+
+
+def resolve_capability_dependencies(capability_codes):
+    """Return the transitive prerequisite closure and reject invalid graphs."""
+    resolved = set()
+    visiting = []
+
+    def visit(code):
+        if code in visiting:
+            cycle = ' -> '.join((*visiting, code))
+            raise ValidationError({'capabilities': f'Ciclo de dependencias detectado: {cycle}.'})
+        if code in resolved:
+            return
+        visiting.append(code)
+        for dependency in CAPABILITY_DEPENDENCIES.get(code, ()):
+            visit(dependency)
+        visiting.pop()
+        resolved.add(code)
+
+    for capability_code in capability_codes:
+        visit(capability_code)
+    return resolved
+
+
+def validate_capability_dependency_map():
+    catalog_codes = {code for code, _, _ in CAPABILITY_CATALOG}
+    dependency_codes = {
+        dependency
+        for dependencies in CAPABILITY_DEPENDENCIES.values()
+        for dependency in dependencies
+    }
+    unknown = sorted((set(CAPABILITY_DEPENDENCIES) | dependency_codes) - catalog_codes)
+    if unknown:
+        raise ValidationError({
+            'capabilities': f'Dependencias referenciam capabilities inexistentes: {", ".join(unknown)}.'
+        })
+    resolve_capability_dependencies(CAPABILITY_DEPENDENCIES)
+
+
+def validate_entitlement_dependencies(enabled_capabilities):
+    """Validate final entitlement states without changing existing plan versions."""
+    enabled_codes = {
+        code for code, enabled in enabled_capabilities.items()
+        if enabled
+    }
+    errors = []
+    for capability_code in sorted(enabled_codes):
+        required = resolve_capability_dependencies((capability_code,)) - {capability_code}
+        missing = sorted(required - enabled_codes)
+        if missing:
+            errors.append(
+                f'A capability {capability_code} exige: {", ".join(missing)}.'
+            )
+
+    pos_enabled = enabled_capabilities.get('pos.enabled', False)
+    pos_devices_enabled = enabled_capabilities.get('pos.devices.max', False)
+    if pos_enabled and not pos_devices_enabled:
+        errors.append('pos.enabled exige uma configuracao habilitada para pos.devices.max.')
+    if not pos_enabled and pos_devices_enabled:
+        errors.append('pos.devices.max nao pode ser habilitada quando pos.enabled esta desabilitada.')
+    if errors:
+        raise ValidationError({'entitlements': errors})
+
+
+validate_capability_dependency_map()
+
 
 class OwnerEmailAlreadyExists(ValidationError):
     pass

@@ -27,6 +27,7 @@ from .services import (
     create_support_session,
     provision_saas_tenant,
     record_manual_payment,
+    validate_entitlement_dependencies,
 )
 
 BRANDING_ASSET_FIELDS = {
@@ -82,6 +83,32 @@ class PlanEntitlementSerializer(serializers.ModelSerializer):
             'unlimited', 'limit_value', 'created_at', 'updated_at',
         )
         read_only_fields = ('id', 'capability_code', 'created_at', 'updated_at')
+
+    def validate(self, attrs):
+        plan_version = attrs.get('plan_version', getattr(self.instance, 'plan_version', None))
+        capability = attrs.get('capability', getattr(self.instance, 'capability', None))
+        if not plan_version or not capability:
+            return attrs
+
+        try:
+            versions = {plan_version.pk: plan_version}
+            if self.instance:
+                versions[self.instance.plan_version_id] = self.instance.plan_version
+            for version in versions.values():
+                enabled_capabilities = {
+                    item.capability.code: item.enabled
+                    for item in version.entitlements.select_related('capability')
+                }
+                if self.instance and version.pk == self.instance.plan_version_id:
+                    enabled_capabilities.pop(self.instance.capability.code, None)
+                if version.pk == plan_version.pk:
+                    enabled_capabilities[capability.code] = attrs.get(
+                        'enabled', getattr(self.instance, 'enabled', False)
+                    )
+                validate_entitlement_dependencies(enabled_capabilities)
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(error.message_dict) from error
+        return attrs
 
 
 class PlanVersionEntitlementInputSerializer(serializers.Serializer):
@@ -162,6 +189,13 @@ class PlanVersionSerializer(serializers.ModelSerializer):
             'unlimited': True,
             'limit_value': None,
         }
+        try:
+            validate_entitlement_dependencies({
+                item['capability'].code: item['enabled']
+                for item in normalized_by_capability.values()
+            })
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(error.message_dict) from error
         attrs['entitlements'] = list(normalized_by_capability.values())
         return attrs
 
