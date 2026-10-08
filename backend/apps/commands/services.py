@@ -879,9 +879,10 @@ def confirm_order_item(*, item, user, idempotency_key, support_session=None):
     item.status = OrderItemStatus.CONFIRMED
     item.confirmed_at = timezone.now()
     item.confirmed_by = user
+    item.unit_cost = reconciled_snapshot['unit_cost']
     item.component_cost_snapshot = component_snapshots
     item.save(update_fields=(
-        'status', 'confirmed_at', 'confirmed_by', 'component_cost_snapshot', 'updated_at',
+        'status', 'confirmed_at', 'confirmed_by', 'unit_cost', 'component_cost_snapshot', 'updated_at',
     ))
     from apps.production.services import create_production_jobs
     create_production_jobs(

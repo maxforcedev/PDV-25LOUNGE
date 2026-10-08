@@ -51,7 +51,7 @@ require_value RELEASE_TAG
 [ "${#RELEASE_TAG}" -eq 40 ] && printf '%s' "$RELEASE_TAG" | grep -Eq '^[0-9a-f]{40}$' || \
     fail 'RELEASE_TAG must be a full 40-character lowercase commit SHA.'
 
-for variable in API_DOMAIN FRONTEND_DOMAIN PLATFORM_ADMIN_DOMAIN ALLOWED_HOSTS \
+for variable in API_DOMAIN FRONTEND_DOMAIN FRONTEND_URL PLATFORM_ADMIN_DOMAIN ALLOWED_HOSTS \
     CSRF_TRUSTED_ORIGINS CORS_ALLOWED_ORIGINS POSTGRES_DB POSTGRES_USER; do
     require_value "$variable"
 done

@@ -2,7 +2,13 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
-from apps.companies.services import create_company_with_matrix, ensure_permission_catalog
+from apps.cash.models import CashRegister
+from apps.cash.services import ensure_default_cash_register
+from apps.companies.services import (
+    create_branch_with_access,
+    create_company_with_matrix,
+    ensure_permission_catalog,
+)
 from apps.production.models import PrinterDevice
 from apps.products.models import ProductionDestination
 from apps.saas.models import Subscription
@@ -50,6 +56,29 @@ class BranchCompanyContextTests(TestCase):
         response = self.client.get(f'/api/v1/branches/?company={self.company_b.pk}')
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual([item['id'] for item in response.data['results']], [self.branch_b.pk])
+
+    def test_new_company_and_branch_receive_one_default_cash_register(self):
+        self.assertEqual(
+            list(self.branch_a.cash_registers.values_list('name', flat=True)),
+            ['Caixa principal'],
+        )
+        register, created = ensure_default_cash_register(
+            branch=self.branch_a,
+            actor=self.owner,
+        )
+        self.assertFalse(created)
+        self.assertEqual(register.name, 'Caixa principal')
+        self.assertEqual(CashRegister.objects.filter(branch=self.branch_a).count(), 1)
+
+        branch = create_branch_with_access(
+            creator=self.owner,
+            company=self.company_a,
+            name='Filial Centro',
+        )
+        self.assertEqual(
+            list(branch.cash_registers.values_list('name', flat=True)),
+            ['Caixa principal'],
+        )
 
     def test_cross_company_branch_id_is_blocked_for_all_actions(self):
         self.context(self.branch_a)

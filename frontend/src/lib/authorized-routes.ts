@@ -9,7 +9,6 @@ const routes: Array<{
   alternatives?: readonly FeaturePermissionAlternative[];
 }> = [
   { href: "/dashboard", permissions: [permissions.viewDashboard], features: ["reports"] },
-  { href: "/pdv", permissions: [], alternatives: [{ permission: permissions.createSale, features: ["counter", "cash_register"] }, { permission: permissions.createConsumption, features: ["consumption"] }] },
   { href: "/mesas", permissions: [permissions.viewTables], features: ["tables"] },
   { href: "/comandas", permissions: [permissions.viewCommands], features: ["commands"] },
   { href: "/caixas", permissions: [permissions.viewCashRegister], features: ["cash_register"] },

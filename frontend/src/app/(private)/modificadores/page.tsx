@@ -73,7 +73,8 @@ function ModifiersPage() {
 
   context.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}`;
 
-  async function load(token: string) {
+  async function load() {
+    const token = context.current;
     if (!currentCompany || !currentBranch) {
       setGroups([]);
       setLoading(false);
@@ -102,7 +103,7 @@ function ModifiersPage() {
   loadRef.current = load;
   useEffect(() => {
     setGroups([]);
-    void loadRef.current(`${currentCompany?.id || ""}:${currentBranch?.id || ""}`);
+    void loadRef.current();
   }, [currentCompany?.id, currentBranch?.id]);
 
   useEffect(() => {
@@ -203,7 +204,7 @@ function ModifiersPage() {
         await http.post("modifier-groups/", payload);
       }
       setModalOpen(false);
-      await load(String(currentCompany.id));
+      await load();
     } catch (caught) {
       if (caught instanceof ApiError) {
         setError(caught.message);
@@ -226,7 +227,7 @@ function ModifiersPage() {
         setViewingGroup(null);
       }
       setDeletingGroup(null);
-      await load(String(currentCompany.id));
+      await load();
     } catch (caught) {
       setError(
         caught instanceof ApiError
@@ -344,6 +345,7 @@ function ModifiersPage() {
       await http.post("modifier-groups/reorder/", {
         group_ids: next.map((item) => item.id),
       });
+      await load();
     } catch (caught) {
       setGroups(previous);
       setError(
@@ -369,6 +371,7 @@ function ModifiersPage() {
         modifier_group: viewingGroup.id,
         option_ids: next.map((item) => item.id),
       });
+      await openOptions(viewingGroup);
     } catch (caught) {
       setGroupOptions(previous);
       setError(

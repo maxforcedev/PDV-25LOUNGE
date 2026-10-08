@@ -26,6 +26,40 @@ from .models import (
     WithdrawalCategory,
 )
 
+DEFAULT_CASH_REGISTER_NAME = 'Caixa principal'
+
+
+@transaction.atomic
+def ensure_default_cash_register(*, branch, actor=None):
+    """Provision the branch's initial register without granting cash entitlement."""
+    branch = Branch.objects.select_for_update().select_related('company').get(pk=branch.pk)
+    register = CashRegister.objects.filter(
+        branch=branch, name__iexact=DEFAULT_CASH_REGISTER_NAME,
+    ).first()
+    if register:
+        return register, False
+    try:
+        with transaction.atomic():
+            register = CashRegister.objects.create(
+                branch=branch,
+                name=DEFAULT_CASH_REGISTER_NAME,
+            )
+    except IntegrityError:
+        register = CashRegister.objects.get(
+            branch=branch, name__iexact=DEFAULT_CASH_REGISTER_NAME,
+        )
+        return register, False
+    audit_log(
+        actor=actor,
+        action='cash_register.create',
+        obj=register,
+        company=branch.company,
+        branch=branch,
+        after=model_snapshot(register, ('branch_id', 'name', 'status')),
+        metadata={'source': 'branch.default_cash_register'},
+    )
+    return register, True
+
 
 def parse_money(value, field, *, positive=False, nonnegative=False):
     if isinstance(value, float):

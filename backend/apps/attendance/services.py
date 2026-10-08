@@ -250,8 +250,9 @@ def confirm_order_item(*, item, user, idempotency_key, pos_device=None, audit_me
     item.status = AttendanceOrderItemStatus.CONFIRMED
     item.confirmed_at = timezone.now()
     item.confirmed_by = user
+    item.unit_cost = snapshot['unit_cost']
     item.component_cost_snapshot = snapshot['component_cost_snapshot']
-    item.save(update_fields=('status', 'confirmed_at', 'confirmed_by', 'component_cost_snapshot', 'updated_at'))
+    item.save(update_fields=('status', 'confirmed_at', 'confirmed_by', 'unit_cost', 'component_cost_snapshot', 'updated_at'))
     if not item.order.items.filter(status=AttendanceOrderItemStatus.PENDING).exists():
         item.order.status = AttendanceOrderStatus.CONFIRMED
         item.order.save(update_fields=('status', 'updated_at'))
@@ -1125,8 +1126,9 @@ def _confirm_table_item(*, item, attendance, user, idempotency_key, pos_device=N
     item.status = AttendanceOrderItemStatus.CONFIRMED
     item.confirmed_at = timezone.now()
     item.confirmed_by = user
+    item.unit_cost = snapshot['unit_cost']
     item.component_cost_snapshot = snapshot['component_cost_snapshot']
-    item.save(update_fields=('financial_snapshot', 'status', 'confirmed_at', 'confirmed_by', 'component_cost_snapshot', 'updated_at'))
+    item.save(update_fields=('financial_snapshot', 'status', 'confirmed_at', 'confirmed_by', 'unit_cost', 'component_cost_snapshot', 'updated_at'))
     create_table_production_jobs(item=item, attendance=attendance, user=user, idempotency_key=idempotency_key)
     create_table_order_item_ticket(item=item, attendance=attendance, user=user, pos_device=pos_device)
 

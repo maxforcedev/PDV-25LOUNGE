@@ -195,6 +195,9 @@ def create_company_with_matrix(*, creator, enforce_saas_limits=True, **company_d
         company=company, name='Matriz', is_matrix=True, address_pending=True
     )
     matrix.save(enforce_saas_limit=enforce_saas_limits)
+    from apps.cash.services import ensure_default_cash_register
+
+    ensure_default_cash_register(branch=matrix, actor=creator)
     company_access = UserCompanyAccess(
         user=creator,
         company=company,
@@ -221,6 +224,9 @@ def create_branch_with_access(*, creator, **branch_data):
     assert_resource_limit(company, 'branches.max')
     branch_data['company'] = company
     branch = Branch.objects.create(**branch_data)
+    from apps.cash.services import ensure_default_cash_register
+
+    ensure_default_cash_register(branch=branch, actor=creator)
     company_access = UserCompanyAccess.objects.get(
         user=creator, company=company, is_active=True
     )

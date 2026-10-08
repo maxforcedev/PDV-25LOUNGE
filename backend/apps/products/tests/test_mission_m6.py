@@ -231,11 +231,16 @@ class IntelligentModifierMissionTests(TestCase):
                 {'option': self.bacon_option.pk, 'quantity': '1'},
             ],
         )
-        confirm_order_item(item=item, user=self.owner, idempotency_key=uuid.uuid4())
+        confirmed = confirm_order_item(item=item, user=self.owner, idempotency_key=uuid.uuid4())
 
         self.assertEqual(Stock.objects.get(product=self.red_bull, branch=self.branch).current_quantity, Decimal('10'))
         self.assertEqual(Stock.objects.get(product=self.watermelon, branch=self.branch).current_quantity, Decimal('9'))
         self.assertEqual(Stock.objects.get(product=self.bacon, branch=self.branch).current_quantity, Decimal('9'))
+        self.assertEqual(confirmed.unit_cost, Decimal('2.00'))
+        self.assertEqual(
+            {row['product'] for row in confirmed.component_cost_snapshot},
+            {self.watermelon.pk, self.bacon.pk},
+        )
 
     def test_counter_sale_substitution_uses_replacement_cost_and_cancels(self):
         for product, cost in ((self.black, '4.00'), (self.watermelon, '2.00'), (self.tropical, '3.00')):

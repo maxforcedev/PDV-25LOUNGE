@@ -287,26 +287,19 @@ CORS_EXPOSE_HEADERS = ['X-CSRFToken', 'X-Request-ID', 'X-Correlation-ID']
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
 
-_email_backend = env(
+EMAIL_BACKEND = env(
     'EMAIL_BACKEND',
     default='django.core.mail.backends.console.EmailBackend',
 )
-SMTP_MAILER_OPTIONS = {
-    'host': env('EMAIL_HOST', default='localhost'),
-    'port': env.int('EMAIL_PORT', default=587),
-    'username': env('EMAIL_HOST_USER', default=''),
-    'password': env_or_file('EMAIL_HOST_PASSWORD', default=''),
-    'use_tls': env.bool('EMAIL_USE_TLS', default=True),
-    'use_ssl': env.bool('EMAIL_USE_SSL', default=False),
-    'timeout': env.int('EMAIL_TIMEOUT', default=10),
-}
-MAILERS = {
-    'default': {
-        'BACKEND': _email_backend,
-        # Console, file and in-memory backends reject SMTP connection options.
-        'OPTIONS': SMTP_MAILER_OPTIONS if _email_backend == 'django.core.mail.backends.smtp.EmailBackend' else {},
-    },
-}
+EMAIL_HOST = env('EMAIL_HOST', default='localhost')
+EMAIL_PORT = env.int('EMAIL_PORT', default=587)
+EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = env_or_file('EMAIL_HOST_PASSWORD', default='')
+EMAIL_USE_TLS = env.bool('EMAIL_USE_TLS', default=True)
+EMAIL_USE_SSL = env.bool('EMAIL_USE_SSL', default=False)
+EMAIL_TIMEOUT = env.int('EMAIL_TIMEOUT', default=10)
+if EMAIL_USE_TLS and EMAIL_USE_SSL:
+    raise ImproperlyConfigured('EMAIL_USE_TLS and EMAIL_USE_SSL cannot both be True.')
 
 POS_CURRENT_VERSION = env('POS_CURRENT_VERSION', default='1.0.0')
 POS_LATEST_VERSION = env('POS_LATEST_VERSION', default=POS_CURRENT_VERSION)

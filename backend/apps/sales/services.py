@@ -1811,13 +1811,17 @@ def assess_sale_stock_availability(*, company, raw_items, branch,
 
 
 def _reconcile_modifier_component_costs(snapshots, stocks):
-    """Make compound snapshots describe the components actually consumed after substitutions."""
+    """Freeze CMV from the same locked modifier products consumed by stock movements."""
     for snapshot in snapshots:
         quantity = snapshot['quantity']
         components = snapshot.get('component_cost_snapshot', [])
-        for modifier in snapshot.get('modifier_snapshot', []):
+        modifiers = snapshot.get('modifier_snapshot', [])
+        has_component_costs = bool(components)
+        has_substitution = False
+        for modifier in modifiers:
             if modifier.get('stock_effect') != 'component_substitution':
                 continue
+            has_substitution = True
             target_id = modifier.get('stock_product_id')
             base_id = modifier.get('substituted_component_id')
             selected = Decimal(str(modifier['selected_quantity']))
@@ -1858,23 +1862,52 @@ def _reconcile_modifier_component_costs(snapshots, stocks):
                 ),
                 'consumption_mode': 'quantity',
             })
-        if components:
-            snapshot['unit_cost'] = exact_sum(
-                Decimal(component['unit_cost']) * Decimal(component['quantity_per_unit'])
+        if components and (has_component_costs or has_substitution):
+            base_unit_cost = exact_sum(
+                Decimal(component['unit_cost_contribution'])
+                if component.get('unit_cost_contribution') is not None
+                else Decimal(component['unit_cost']) * Decimal(component['quantity_per_unit'])
                 for component in components
             ).quantize(CENT, rounding=ROUND_HALF_UP)
-        elif any(
-            modifier.get('stock_effect') == 'component_substitution'
-            for modifier in snapshot.get('modifier_snapshot', [])
-        ):
+        elif has_substitution:
             replacement = next(
-                modifier for modifier in snapshot['modifier_snapshot']
+                modifier for modifier in modifiers
                 if modifier.get('stock_effect') == 'component_substitution'
             )
             stock = stocks[replacement['stock_product_id']]
-            snapshot['unit_cost'] = (
+            base_unit_cost = (
                 stock.average_unit_cost if stock.average_unit_cost is not None else stock.product.cost
             ).quantize(CENT, rounding=ROUND_HALF_UP)
+        else:
+            base_unit_cost = Decimal(snapshot.get('unit_cost', 0)).quantize(
+                CENT, rounding=ROUND_HALF_UP,
+            )
+        input_cost = Decimal('0')
+        for modifier in modifiers:
+            if modifier.get('stock_effect') != 'product_input':
+                continue
+            selected = Decimal(str(modifier['selected_quantity']))
+            stock = stocks.get(modifier.get('stock_product_id'))
+            if stock is None:
+                raise ValidationError({'modifiers': 'Produto adicional sem estoque bloqueado.'})
+            product = stock.product
+            unit_cost = stock.average_unit_cost if stock.average_unit_cost is not None else product.cost
+            contribution = (unit_cost * selected).quantize(CENT, rounding=ROUND_HALF_UP)
+            input_cost += contribution
+            components.append({
+                'product': product.pk,
+                'product_name': product.name,
+                'internal_code': product.internal_code,
+                'unit': product.unit,
+                'quantity_per_unit': format(selected, 'f'),
+                'consumed_quantity': format(selected * quantity, 'f'),
+                'unit_cost': f'{unit_cost:.12f}',
+                'unit_cost_contribution': f'{contribution:.2f}',
+                'consumption_mode': 'modifier_input',
+            })
+        snapshot['unit_cost'] = (base_unit_cost + input_cost).quantize(
+            CENT, rounding=ROUND_HALF_UP,
+        )
 
 
 def _prepare_payments(company, raw_payments, total, *, free_consumption,

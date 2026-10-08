@@ -71,6 +71,7 @@ services:
       CIELO_SMART_ACCESS_TOKEN_FILE: /run/secrets/cielo_smart_access_token
       PRIVATE_MEDIA_ROOT: /app/private_media
       ENVIRONMENT: ${ENVIRONMENT:-production}
+      FRONTEND_URL: ${FRONTEND_URL:?Set FRONTEND_URL to the public frontend origin}
     secrets:
       - django_secret_key
       - postgres_password
