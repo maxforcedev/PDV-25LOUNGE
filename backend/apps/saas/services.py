@@ -215,6 +215,16 @@ def validate_plan_version_complete(plan_version, *, lock=False):
             or not item.unlimited and (item.limit_value is None or item.limit_value < 1)
         ):
             invalid.append(code)
+    pos = entitlements.get('pos.enabled')
+    pos_devices = entitlements.get('pos.devices.max')
+    if pos and pos.enabled and (
+        not pos_devices
+        or not pos_devices.enabled
+        or not pos_devices.unlimited and (
+            pos_devices.limit_value is None or pos_devices.limit_value < 1
+        )
+    ):
+        invalid.append('pos.devices.max')
     if missing or invalid:
         raise ValidationError({
             'plan_version': (

@@ -35,7 +35,9 @@ from apps.saas.models import (
     SupportSession,
     TenantSaaSState,
 )
+from apps.saas.serializers import PlanVersionSerializer
 from apps.saas.services import (
+    CAPABILITY_DEPENDENCIES,
     add_months,
     apply_user_limit_states,
     create_support_session,
@@ -211,6 +213,92 @@ class PlanHistoryTests(TestCase):
             pos_enabled(disabled_company)
         self.assertEqual(context.exception.payload['code'], 'pos_not_entitled')
 
+    def test_pos_enabled_rejects_zero_devices_and_accepts_positive_or_unlimited(self):
+        capabilities = ensure_capability_catalog()
+
+        def serializer_for(code, *, unlimited, limit_value):
+            plan = Plan.objects.create(code=code, name=code)
+            entitlements = []
+            for capability in capabilities.values():
+                enabled = capability.code in {
+                    'users.max', 'branches.max', 'pos.enabled', 'pos.devices.max',
+                }
+                item_unlimited = unlimited if capability.code == 'pos.devices.max' else False
+                item_limit = (
+                    limit_value if capability.code == 'pos.devices.max' else 1
+                    if capability.code in {'users.max', 'branches.max'} else None
+                )
+                entitlements.append({
+                    'capability': capability.pk,
+                    'enabled': enabled,
+                    'unlimited': item_unlimited,
+                    'limit_value': item_limit,
+                })
+            return PlanVersionSerializer(data={
+                'plan': plan.pk,
+                'version': 1,
+                'price': '10.00',
+                'entitlements': entitlements,
+            })
+
+        zero = serializer_for('pos-zero-devices', unlimited=False, limit_value=0)
+        one = serializer_for('pos-one-device', unlimited=False, limit_value=1)
+        unlimited = serializer_for('pos-unlimited-devices', unlimited=True, limit_value=None)
+
+        self.assertFalse(zero.is_valid())
+        self.assertIn('pos.devices.max', str(zero.errors))
+        self.assertTrue(one.is_valid(), one.errors)
+        self.assertTrue(unlimited.is_valid(), unlimited.errors)
+
+    def test_legacy_pos_device_limit_zero_is_not_complete(self):
+        version = create_plan(code='legacy-pos-zero', pos_devices=1)
+        models.QuerySet(model=PlanEntitlement).filter(
+            plan_version=version, capability__code='pos.devices.max',
+        ).update(limit_value=0)
+
+        with self.assertRaises(ValidationError):
+            validate_plan_version_complete(version)
+
+    def test_plan_version_serializer_keeps_invalid_updates_atomic(self):
+        version = create_plan(code='atomic-version')
+        capabilities = ensure_capability_catalog()
+        existing = {item.capability_id: item for item in version.entitlements.all()}
+        PlanEntitlement.objects.bulk_create([
+            PlanEntitlement(plan_version=version, capability=capability)
+            for capability in capabilities.values() if capability.pk not in existing
+        ])
+        entitlements = [
+            {
+                'capability': item.capability_id,
+                'enabled': item.enabled,
+                'unlimited': item.unlimited,
+                'limit_value': item.limit_value,
+            }
+            for item in version.entitlements.all()
+        ]
+        for item in entitlements:
+            if item['capability'] == capabilities['users.max'].pk:
+                item['limit_value'] = 0
+        before = list(version.entitlements.order_by('capability_id').values_list(
+            'capability_id', 'enabled', 'unlimited', 'limit_value',
+        ))
+
+        serializer = PlanVersionSerializer(
+            version,
+            data={'price': '101.00', 'entitlements': entitlements},
+            partial=True,
+        )
+
+        self.assertFalse(serializer.is_valid())
+        version.refresh_from_db()
+        self.assertEqual(version.price, Decimal('99.00'))
+        self.assertEqual(
+            list(version.entitlements.order_by('capability_id').values_list(
+                'capability_id', 'enabled', 'unlimited', 'limit_value',
+            )),
+            before,
+        )
+
     def test_used_plan_version_and_entitlements_are_immutable(self):
         version = create_plan()
         _, _, subscription = create_tenant('Immutable', plan_version=version)
@@ -227,6 +315,40 @@ class PlanHistoryTests(TestCase):
             version.delete()
         with self.assertRaises(ValidationError):
             version.plan.delete()
+
+
+class PlatformPlanApiTests(TestCase):
+    def setUp(self):
+        self.user = create_user('platform-plan-api@example.com')
+        call_command('bootstrap_platform_admin', email=self.user.email, stdout=StringIO())
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_entitlement_api_is_read_only(self):
+        version = create_plan(code='entitlement-api')
+        entitlement = version.entitlements.get(capability__code='users.max')
+        detail = reverse('platform-entitlement-detail', args=[entitlement.pk])
+
+        self.assertEqual(self.client.post(reverse('platform-entitlement-list'), {}).status_code, 405)
+        self.assertEqual(self.client.patch(detail, {'limit_value': 10}, format='json').status_code, 405)
+        self.assertEqual(self.client.put(detail, {'limit_value': 10}, format='json').status_code, 405)
+        self.assertEqual(self.client.delete(detail).status_code, 405)
+        entitlement.refresh_from_db()
+        self.assertEqual(entitlement.limit_value, 3)
+
+    def test_capability_api_returns_backend_dependency_authority(self):
+        ensure_capability_catalog()
+
+        response = self.client.get(reverse('platform-capability-list'))
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            {item['code']: item['dependencies'] for item in response.data},
+            {
+                capability.code: list(CAPABILITY_DEPENDENCIES.get(capability.code, ()))
+                for capability in Capability.objects.filter(is_active=True)
+            },
+        )
 
 
 class ProvisioningTests(TestCase):

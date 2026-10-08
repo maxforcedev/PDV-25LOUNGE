@@ -631,32 +631,11 @@ class CapabilityViewSet(viewsets.ReadOnlyModelViewSet):
     required_platform_permission = 'platform.plans.manage'
 
 
-class PlanEntitlementViewSet(viewsets.ModelViewSet):
+class PlanEntitlementViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = PlanEntitlement.objects.select_related('plan_version', 'capability')
     serializer_class = PlanEntitlementSerializer
     permission_classes = [HasPlatformPermission]
     required_platform_permission = 'platform.plans.manage'
-    http_method_names = ('get', 'post', 'put', 'patch', 'head', 'options')
-
-    def create(self, request):
-        reason = _critical_action(request)
-        serializer = self.get_serializer(data=_without_critical_fields(request.data))
-        serializer.is_valid(raise_exception=True)
-        entitlement = serializer.save()
-        audit_log(actor=request.user, action='saas.entitlement.create', obj=entitlement, metadata={'reason': reason})
-        return Response(self.get_serializer(entitlement).data, status=status.HTTP_201_CREATED)
-
-    def update(self, request, *args, **kwargs):
-        reason = _critical_action(request)
-        instance = self.get_object()
-        serializer = self.get_serializer(
-            instance, data=_without_critical_fields(request.data),
-            partial=kwargs.get('partial', False),
-        )
-        serializer.is_valid(raise_exception=True)
-        entitlement = serializer.save()
-        audit_log(actor=request.user, action='saas.entitlement.update', obj=entitlement, metadata={'reason': reason})
-        return Response(self.get_serializer(entitlement).data)
 
 
 class PlatformPaymentViewSet(viewsets.GenericViewSet):

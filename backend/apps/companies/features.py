@@ -41,6 +41,13 @@ FEATURE_LABELS = {
     'pos': 'CORE POS',
 }
 
+BRANCH_FEATURE_DEPENDENCIES = {
+    'counter': ('cash_register',),
+    'commands': ('cash_register',),
+    'tables': ('commands',),
+    'consumption': ('commands',),
+}
+
 # RBAC definitions are durable records.  This map is only used when building
 # current operational catalogs, so a disabled capability never deletes history.
 PERMISSION_FEATURE_PREFIXES = {
@@ -113,10 +120,10 @@ def branch_feature_states(branch):
         for feature, enabled in flags.items()
         for capability in (FEATURE_CAPABILITIES.get(feature),)
     }
-    # Financial operation modules cannot be available without the Caixa feature.
-    cash_enabled = states['cash_register']['enabled']
-    for feature in ('counter', 'consumption', 'commands'):
-        states[feature]['enabled'] = states[feature]['enabled'] and cash_enabled
+    for feature, dependencies in BRANCH_FEATURE_DEPENDENCIES.items():
+        states[feature]['enabled'] = states[feature]['enabled'] and all(
+            states[dependency]['enabled'] for dependency in dependencies
+        )
     return states
 
 

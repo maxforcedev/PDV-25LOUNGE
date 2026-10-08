@@ -12,17 +12,6 @@ type Editor = "plan-create" | "plan-edit" | "version-create" | "version-edit";
 type Values = Record<string, string | boolean>;
 
 const STRUCTURAL_CAPABILITIES = new Set(["core.enabled", "users.max", "branches.max"]);
-const CAPABILITY_DEPENDENCIES: Record<string, string[]> = {
-  "feature.inventory": ["feature.products"],
-  "feature.suppliers": [],
-  "feature.counter": ["feature.products", "feature.cash_register"],
-  "feature.commands": ["feature.products", "feature.cash_register"],
-  "feature.purchases": ["feature.suppliers", "feature.products", "feature.inventory"],
-  "feature.promotions": ["feature.products"],
-  "feature.production": ["feature.products"],
-  "feature.tables": ["feature.commands"],
-  "feature.consumption": ["feature.commands"],
-};
 
 interface EntitlementDraft {
   capability: number;
@@ -165,6 +154,7 @@ function EditorFields({ editor, values, setValues, capabilities, entitlements, s
 function CapabilityMatrix({ capabilities, values, onChange }: { capabilities: Capability[]; values: EntitlementDraft[]; onChange: (items: EntitlementDraft[]) => void }) {
   const [blockedMessage, setBlockedMessage] = useState("");
   const capabilitiesById = new Map(capabilities.map((capability) => [capability.id, capability]));
+  const capabilitiesByCode = new Map(capabilities.map((capability) => [capability.code, capability]));
 
   function dependencyClosure(capabilityCodes: string[]) {
     const resolved = new Set<string>();
@@ -173,7 +163,7 @@ function CapabilityMatrix({ capabilities, values, onChange }: { capabilities: Ca
       if (visiting.has(code)) throw new Error(`Ciclo de dependencias: ${code}`);
       if (resolved.has(code)) return;
       visiting.add(code);
-      CAPABILITY_DEPENDENCIES[code]?.forEach(visit);
+      capabilitiesByCode.get(code)?.dependencies.forEach(visit);
       visiting.delete(code);
       resolved.add(code);
     }

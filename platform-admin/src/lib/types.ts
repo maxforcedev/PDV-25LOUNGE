@@ -100,6 +100,7 @@ export interface Capability {
   name: string;
   value_type: "BOOLEAN" | "INTEGER";
   is_active: boolean;
+  dependencies: string[];
 }
 
 export interface Subscription {

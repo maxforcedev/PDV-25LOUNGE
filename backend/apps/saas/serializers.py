@@ -25,6 +25,7 @@ from .models import (
     TenantSaaSState,
 )
 from .services import (
+    CAPABILITY_DEPENDENCIES,
     create_support_session,
     provision_saas_tenant,
     record_manual_payment,
@@ -90,10 +91,18 @@ class PlatformUserSerializer(serializers.ModelSerializer):
 
 
 class CapabilitySerializer(serializers.ModelSerializer):
+    dependencies = serializers.SerializerMethodField()
+
     class Meta:
         model = Capability
-        fields = ('id', 'code', 'name', 'value_type', 'is_active', 'created_at', 'updated_at')
+        fields = (
+            'id', 'code', 'name', 'value_type', 'is_active', 'dependencies',
+            'created_at', 'updated_at',
+        )
         read_only_fields = ('id', 'code', 'value_type', 'created_at', 'updated_at')
+
+    def get_dependencies(self, capability):
+        return list(CAPABILITY_DEPENDENCIES.get(capability.code, ()))
 
 
 class PlanEntitlementSerializer(serializers.ModelSerializer):
@@ -212,6 +221,22 @@ class PlanVersionSerializer(serializers.ModelSerializer):
             'unlimited': True,
             'limit_value': None,
         }
+        normalized_by_code = {
+            item['capability'].code: item
+            for item in normalized_by_capability.values()
+        }
+        pos = normalized_by_code.get('pos.enabled')
+        pos_devices = normalized_by_code.get('pos.devices.max')
+        if pos and pos['enabled'] and (
+            not pos_devices
+            or not pos_devices['enabled']
+            or not pos_devices['unlimited'] and (
+                pos_devices['limit_value'] is None or pos_devices['limit_value'] < 1
+            )
+        ):
+            raise serializers.ValidationError({
+                'entitlements': 'pos.devices.max exige limite maior que zero ou ilimitado quando pos.enabled esta habilitada.'
+            })
         try:
             validate_entitlement_dependencies({
                 item['capability'].code: item['enabled']

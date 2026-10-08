@@ -407,6 +407,24 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
                 dependency_errors['uses_cash_register'] = (
                     f'Não é possível desabilitar Caixa enquanto {labels} estiver habilitado.'
                 )
+        effective_commands = bool(
+            attrs.get('uses_commands', getattr(self.instance, 'uses_commands', False))
+            and effective_cash_register
+        )
+        effective_tables = attrs.get('uses_tables', getattr(self.instance, 'uses_tables', False))
+        effective_consumption = attrs.get(
+            'uses_consumption', getattr(self.instance, 'uses_consumption', False),
+        )
+        if attrs.get('uses_commands') is False and (
+            effective_tables or effective_consumption
+        ):
+            dependency_errors['uses_commands'] = (
+                'Não é possível desabilitar Comandas enquanto Mesas ou Consumação estiverem habilitadas.'
+            )
+        if effective_tables and not effective_commands and attrs.get('uses_tables') is True:
+            dependency_errors['uses_tables'] = 'Mesas requer Comandas habilitado nesta filial.'
+        if effective_consumption and not effective_commands and attrs.get('uses_consumption') is True:
+            dependency_errors['uses_consumption'] = 'Consumação requer Comandas habilitado nesta filial.'
         if dependency_errors:
             raise serializers.ValidationError(dependency_errors)
 

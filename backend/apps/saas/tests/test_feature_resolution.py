@@ -155,6 +155,8 @@ class CapabilityResolutionTests(TestCase):
             )
 
     def test_tables_on_allows_service_and_pos_module_payload(self):
+        self.branch.settings.uses_commands = True
+        self.branch.settings.save(update_fields=('uses_commands', 'updated_at'))
         map_existing_company(
             company=self.company,
             plan_version=self._plan('tables-on', tables=True),
@@ -179,6 +181,100 @@ class CapabilityResolutionTests(TestCase):
         )
         self.assertFalse(replayed)
         self.assertEqual(attendance.table_id, table.pk)
+
+    def test_branch_settings_rejects_tables_or_consumption_without_commands(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan(
+                'branch-settings-dependencies',
+                tables=True,
+                features=('consumption',),
+            ),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+        self.branch.settings.uses_tables = False
+        self.branch.settings.uses_consumption = False
+        self.branch.settings.uses_commands = False
+        self.branch.settings.save(update_fields=(
+            'uses_tables', 'uses_consumption', 'uses_commands', 'updated_at',
+        ))
+
+        tables = BranchSettingsSerializer(
+            self.branch.settings,
+            data={'uses_commands': False, 'uses_tables': True},
+            partial=True,
+        )
+        consumption = BranchSettingsSerializer(
+            self.branch.settings,
+            data={'uses_commands': False, 'uses_consumption': True},
+            partial=True,
+        )
+
+        self.assertFalse(tables.is_valid())
+        self.assertEqual(tables.errors['uses_tables'][0], 'Mesas requer Comandas habilitado nesta filial.')
+        self.assertFalse(consumption.is_valid())
+        self.assertEqual(consumption.errors['uses_consumption'][0], 'Consumação requer Comandas habilitado nesta filial.')
+
+    def test_branch_settings_rejects_disabling_commands_with_dependents(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan(
+                'branch-settings-disable-commands',
+                tables=True,
+                features=('consumption',),
+            ),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+        self.branch.settings.uses_tables = True
+        self.branch.settings.uses_consumption = True
+        self.branch.settings.uses_commands = True
+        self.branch.settings.save(update_fields=(
+            'uses_tables', 'uses_consumption', 'uses_commands', 'updated_at',
+        ))
+
+        serializer = BranchSettingsSerializer(
+            self.branch.settings, data={'uses_commands': False}, partial=True,
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertEqual(
+            serializer.errors['uses_commands'][0],
+            'Não é possível desabilitar Comandas enquanto Mesas ou Consumação estiverem habilitadas.',
+        )
+
+    def test_branch_feature_states_fail_closed_for_legacy_local_dependencies(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan(
+                'branch-state-dependencies',
+                tables=True,
+                features=('consumption', 'counter'),
+            ),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+        self.branch.settings.uses_cash_register = True
+        self.branch.settings.uses_commands = False
+        self.branch.settings.uses_tables = True
+        self.branch.settings.uses_consumption = True
+        self.branch.settings.save(update_fields=(
+            'uses_cash_register', 'uses_commands', 'uses_tables', 'uses_consumption', 'updated_at',
+        ))
+
+        states = branch_feature_states(self.branch)
+        self.assertFalse(states['tables']['enabled'])
+        self.assertFalse(states['consumption']['enabled'])
+
+        self.branch.settings.uses_cash_register = False
+        self.branch.settings.uses_commands = True
+        self.branch.settings.uses_counter = True
+        self.branch.settings.save(update_fields=(
+            'uses_cash_register', 'uses_commands', 'uses_counter', 'updated_at',
+        ))
+        states = branch_feature_states(self.branch)
+        self.assertFalse(states['counter']['enabled'])
+        self.assertFalse(states['commands']['enabled'])
+        self.assertFalse(states['tables']['enabled'])
+        self.assertFalse(states['consumption']['enabled'])
 
     def test_pos_entitlement_and_device_limit_are_enforced(self):
         map_existing_company(

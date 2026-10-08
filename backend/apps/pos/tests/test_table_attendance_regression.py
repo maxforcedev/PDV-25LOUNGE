@@ -37,7 +37,7 @@ class TableAttendanceRegressionTests(TestCase):
         )
         self.branch = self.company.branches.get(is_matrix=True)
         self.branch.settings.uses_tables = True
-        self.branch.settings.uses_commands = False
+        self.branch.settings.uses_commands = True
         self.branch.settings.uses_cash_register = True
         self.branch.settings.save()
         category = Category.objects.create(company=self.company, branch=self.branch, name='Table category')

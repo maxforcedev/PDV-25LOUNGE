@@ -86,11 +86,11 @@ class FeatureGateTests(TestCase):
         self.branch.settings.save()
         self.assertFalse(branch_feature_enabled(self.branch, 'commands'))
 
-    def test_tables_remain_when_cash_disabled(self):
+    def test_tables_disabled_when_cash_register_disabled(self):
         self.branch.settings.uses_cash_register = False
         self.branch.settings.save()
         states = branch_feature_states(self.branch)
-        self.assertTrue(states['tables']['enabled'])
+        self.assertFalse(states['tables']['enabled'])
 
     def test_create_table_blocked_when_tables_disabled(self):
         self.branch.settings.uses_tables = False
