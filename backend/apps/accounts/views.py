@@ -259,7 +259,10 @@ class PasswordResetConfirmView(APIView):
                 is_active=True,
                 archived_at__isnull=True,
             )
-        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+        except (
+            TypeError, ValueError, OverflowError, UnicodeDecodeError,
+            User.DoesNotExist,
+        ):
             user = None
         if user is None or not default_token_generator.check_token(user, token):
             raise ValidationError({'token': 'Este link é inválido ou expirou.'})

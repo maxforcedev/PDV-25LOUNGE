@@ -27,7 +27,7 @@ from apps.products.models import (
 from apps.sales.services import (
     apply_modifier_stock_requirements, resolve_modifiers, branch_price_map, branch_cost_map,
     calculate_command_preview, finalize_sale, CENT, strict_decimal,
-    _discount_approver, _service_fee_waiver,
+    _discount_approver, _service_fee_waiver, split_modifier_snapshot,
 )
 from apps.cash.models import CashSession, CashSessionStatus
 from apps.sales.models import PaymentMethod, PaymentMethodCode
@@ -380,15 +380,21 @@ def _move_items(*, source, destination, item_requests, user, operation, support_
             moved_ids.append(item.pk)
             after = model_snapshot(item, ('order_id', 'quantity', 'status'))
         else:
+            source_modifiers, moved_modifiers = split_modifier_snapshot(
+                item.modifier_snapshot,
+                original_quantity=item.quantity,
+                moved_quantity=quantity,
+            )
             item.quantity -= quantity
-            item.save(update_fields=('quantity', 'updated_at'))
+            item.modifier_snapshot = source_modifiers
+            item.save(update_fields=('quantity', 'modifier_snapshot', 'updated_at'))
             clone = OrderItem.objects.create(
                 order=target_order, product=item.product, quantity=quantity,
                 product_name=item.product_name, internal_code=item.internal_code, unit=item.unit,
                 category_id_snapshot=item.category_id_snapshot,
                 category_name_snapshot=item.category_name_snapshot,
                 unit_price=item.unit_price, base_unit_price=item.base_unit_price,
-                modifier_unit_total=item.modifier_unit_total, modifier_snapshot=item.modifier_snapshot,
+                modifier_unit_total=item.modifier_unit_total, modifier_snapshot=moved_modifiers,
                 unit_cost=item.unit_cost, component_cost_snapshot=item.component_cost_snapshot,
                 status=OrderItemStatus.PENDING,
             )
@@ -577,7 +583,8 @@ def _resolve_stock_requirements_for_product(product, quantity, branch, modifier_
             'internal_code': comp.internal_code, 'unit': comp.unit,
             'quantity_per_unit': str(row.quantity),
             'consumed_quantity': str(req_qty),
-            'unit_cost': str(comp_cost), 'unit_cost_contribution': str(comp_cost * req_qty),
+            'unit_cost': str(comp_cost), 'unit_cost_contribution': str(comp_cost * row.quantity),
+            'consumption_mode': 'quantity',
         })
     for row in fraction_rows:
         comp = row.component_product
@@ -599,9 +606,15 @@ def _resolve_stock_requirements_for_product(product, quantity, branch, modifier_
         component_snapshots.append({
             'product': comp.pk, 'product_name': comp.name,
             'internal_code': comp.internal_code, 'unit': comp.unit,
-            'quantity_per_unit': str(req_qty),
-            'consumed_quantity': str(content_qty),
-            'unit_cost': str(comp_cost), 'unit_cost_contribution': str(comp_cost * req_qty),
+            'consumption_mode': 'content',
+            'content_unit': config.content_unit,
+            'content_per_unit': str(row.content_quantity),
+            'consumed_content': str(content_qty),
+            'equivalent_quantity': str(row.content_quantity / config.package_content),
+            'unit_cost': str(comp_cost),
+            'unit_cost_contribution': str(
+                comp_cost * row.content_quantity / config.package_content
+            ),
         })
     apply_modifier_stock_requirements(
         requirements, product=product, quantity=quantity,

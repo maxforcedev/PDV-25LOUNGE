@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import datetime, time
 from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal, InvalidOperation
 import hashlib
@@ -683,6 +684,28 @@ def apply_modifier_stock_requirements(requirements, *, product, quantity, modifi
             requirements[stock_product_id] = (
                 requirements.get(stock_product_id, Decimal('0')) + selected_quantity
             )
+
+
+def split_modifier_snapshot(modifier_snapshot, *, original_quantity, moved_quantity):
+    """Keep substitution selections proportional when a pending line is split."""
+    remaining_quantity = original_quantity - moved_quantity
+    source_snapshot = deepcopy(modifier_snapshot or [])
+    moved_snapshot = deepcopy(modifier_snapshot or [])
+    for source, moved in zip(source_snapshot, moved_snapshot):
+        if source.get('stock_effect') != 'component_substitution':
+            continue
+        for key in ('selected_quantity', 'required_quantity'):
+            value = source.get(key)
+            if value is None:
+                continue
+            quantity = Decimal(str(value))
+            source[key] = format(
+                quantity * remaining_quantity / original_quantity, 'f',
+            )
+            moved[key] = format(
+                quantity * moved_quantity / original_quantity, 'f',
+            )
+    return source_snapshot, moved_snapshot
 
 
 def _consolidate_items(raw_items, products, *, price_overrides=None, cost_overrides=None,
@@ -2213,7 +2236,8 @@ def stock_requirements_for_product(product, quantity, branch, modifier_snapshot=
             'product': component.pk, 'product_name': component.name,
             'internal_code': component.internal_code, 'unit': component.unit,
             'quantity_per_unit': str(row.quantity), 'consumed_quantity': str(consumed),
-            'unit_cost': str(cost), 'unit_cost_contribution': str(cost * consumed),
+            'unit_cost': str(cost), 'unit_cost_contribution': str(cost * row.quantity),
+            'consumption_mode': 'quantity',
         })
     for row in fraction_rows:
         component = row.component_product
@@ -2230,8 +2254,15 @@ def stock_requirements_for_product(product, quantity, branch, modifier_snapshot=
         component_snapshots.append({
             'product': component.pk, 'product_name': component.name,
             'internal_code': component.internal_code, 'unit': component.unit,
-            'quantity_per_unit': str(consumed), 'consumed_quantity': str(content),
-            'unit_cost': str(cost), 'unit_cost_contribution': str(cost * consumed),
+            'consumption_mode': 'content',
+            'content_unit': config.content_unit,
+            'content_per_unit': str(row.content_quantity),
+            'consumed_content': str(content),
+            'equivalent_quantity': str(row.content_quantity / config.package_content),
+            'unit_cost': str(cost),
+            'unit_cost_contribution': str(
+                cost * row.content_quantity / config.package_content
+            ),
         })
     apply_modifier_stock_requirements(
         requirements, product=product, quantity=quantity,

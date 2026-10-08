@@ -21,6 +21,7 @@ from apps.products.selectors import sellable_products_for_branch
 from apps.sales.models import OperationType, PaymentMethod, PaymentMethodCode
 from apps.sales.services import (
     CENT, _discount_approver, _financial_snapshots, _reconcile_modifier_component_costs, _service_fee_waiver,
+    split_modifier_snapshot,
     branch_cost_map, branch_price_map, calculate_command_preview, calculate_order_items_preview,
     calculate_table_preview, finalize_sale, prepare_sale_products,
     normalize_discount_intent, resolve_modifiers, stock_requirements_for_product, strict_decimal,
@@ -391,14 +392,20 @@ def transfer_items(*, command, destination_id, items, user, idempotency_key, aud
             item.save(update_fields=('order', 'updated_at'))
             moved.append(item.pk)
         else:
+            source_modifiers, moved_modifiers = split_modifier_snapshot(
+                item.modifier_snapshot,
+                original_quantity=item.quantity,
+                moved_quantity=quantity,
+            )
             item.quantity -= quantity
-            item.save(update_fields=('quantity', 'updated_at'))
+            item.modifier_snapshot = source_modifiers
+            item.save(update_fields=('quantity', 'modifier_snapshot', 'updated_at'))
             clone = AttendanceOrderItem.objects.create(
                 order=order, product=item.product, quantity=quantity, product_name=item.product_name,
                 internal_code=item.internal_code, category_id_snapshot=item.category_id_snapshot,
                 category_name_snapshot=item.category_name_snapshot, unit=item.unit, unit_price=item.unit_price,
                 base_unit_price=item.base_unit_price, modifier_unit_total=item.modifier_unit_total,
-                modifier_snapshot=item.modifier_snapshot, notes=item.notes, unit_cost=item.unit_cost,
+                modifier_snapshot=moved_modifiers, notes=item.notes, unit_cost=item.unit_cost,
                 component_cost_snapshot=item.component_cost_snapshot,
             )
             moved.append(clone.pk)

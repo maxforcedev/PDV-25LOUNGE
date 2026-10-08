@@ -242,6 +242,49 @@ class IntelligentModifierMissionTests(TestCase):
             {self.watermelon.pk, self.bacon.pk},
         )
 
+    def test_compound_product_input_freezes_unit_cmv_and_consumption(self):
+        ProductModifierGroup.objects.create(product=self.combo, modifier_group=self.extra_group)
+        for product, cost in ((self.black, '70.00'), (self.watermelon, '7.00'),
+                              (self.tropical, '7.00'), (self.bacon, '7.00')):
+            stock = Stock.objects.get(product=product, branch=self.branch)
+            stock.average_unit_cost = Decimal(cost)
+            stock.save(update_fields=('average_unit_cost', 'updated_at'))
+        register = CashRegister.objects.create(branch=self.branch, name='M6 CMV')
+        session = open_session(
+            cash_register=register, opening_amount=Decimal('0.00'), user=self.owner,
+            current_branch=self.branch,
+        )
+        cash = next(method for method in ensure_default_payment_methods(self.company) if method.code == 'cash')
+        sale = finalize_sale(
+            branch=self.branch, user=self.owner, operation_type=OperationType.SALE,
+            cash_session=session.pk, seller_user=self.owner.pk,
+            items=[{
+                'product': self.combo.pk, 'quantity': '2',
+                'modifiers': [
+                    *self.selections(6, 4),
+                    {'option': self.bacon_option.pk, 'quantity': '5'},
+                ],
+            }],
+            payments=[{'payment_method': cash.pk, 'amount': 'auto', 'received_amount': '300.00'}],
+            idempotency_key=uuid.uuid4(),
+        )
+        item = sale.items.get()
+
+        self.assertEqual(item.unit_cost, Decimal('140.00'))
+        self.assertEqual(item.unit_cost * item.quantity, Decimal('280.00'))
+        bacon_snapshot = next(row for row in item.component_cost_snapshot if row['product'] == self.bacon.pk)
+        self.assertEqual(bacon_snapshot['quantity_per_unit'], '5')
+        self.assertEqual(bacon_snapshot['consumed_quantity'], '10')
+        bacon_movement = sale.stock_movements.get(stock__product=self.bacon)
+        self.assertEqual(bacon_movement.quantity, Decimal('10'))
+        self.assertEqual(bacon_movement.unit_cost_snapshot, Decimal('7.000000000000'))
+
+        stock = Stock.objects.get(product=self.bacon, branch=self.branch)
+        stock.average_unit_cost = Decimal('99.00')
+        stock.save(update_fields=('average_unit_cost', 'updated_at'))
+        item.refresh_from_db()
+        self.assertEqual(item.unit_cost, Decimal('140.00'))
+
     def test_counter_sale_substitution_uses_replacement_cost_and_cancels(self):
         for product, cost in ((self.black, '4.00'), (self.watermelon, '2.00'), (self.tropical, '3.00')):
             stock = Stock.objects.get(product=product, branch=self.branch)

@@ -103,6 +103,9 @@ function ModifiersPage() {
   loadRef.current = load;
   useEffect(() => {
     setGroups([]);
+    setViewingGroup(null);
+    setGroupOptions([]);
+    setOptionsModalOpen(false);
     void loadRef.current();
   }, [currentCompany?.id, currentBranch?.id]);
 
@@ -239,20 +242,25 @@ function ModifiersPage() {
     }
   }
 
-  async function openOptions(group: ModifierGroup) {
-    setViewingGroup(group);
-    setOptionsModalOpen(true);
+  async function loadOptions(group: ModifierGroup) {
+    const token = context.current;
     setLoadingOptions(true);
     try {
       const detail = await http.get<ModifierGroup>(
         `modifier-groups/${group.id}/`,
       );
-      setGroupOptions(detail.options || []);
+      if (context.current === token) setGroupOptions(detail.options || []);
     } catch {
-      setGroupOptions([]);
+      if (context.current === token) setGroupOptions([]);
     } finally {
-      setLoadingOptions(false);
+      if (context.current === token) setLoadingOptions(false);
     }
+  }
+
+  async function openOptions(group: ModifierGroup) {
+    setViewingGroup(group);
+    setOptionsModalOpen(true);
+    await loadOptions(group);
   }
 
   function openCreateOption() {
