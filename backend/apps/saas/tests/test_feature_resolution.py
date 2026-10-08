@@ -272,6 +272,7 @@ class CapabilityResolutionTests(TestCase):
         regularize.save()
         self.branch.settings.refresh_from_db()
         self.assertFalse(self.branch.settings.uses_tables)
+        self.assertFalse(branch_feature_states(self.branch)['tables']['enabled'])
 
     def test_downgraded_consumption_flag_does_not_block_disabling_commands(self):
         map_existing_company(
@@ -313,6 +314,32 @@ class CapabilityResolutionTests(TestCase):
 
         self.assertFalse(serializer.is_valid())
         self.assertIn('uses_tables', serializer.errors)
+        self.assertFalse(branch_feature_states(self.branch)['tables']['enabled'])
+
+    def test_off_plan_internal_settings_are_not_persisted(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan('off-plan-internal-settings', tables=False, features=('reports',)),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+        serializer = BranchSettingsSerializer(
+            self.branch.settings,
+            data={
+                'allow_negative_stock': True,
+                'service_fee_rate': '9.00',
+                'command_consumption_limit': '15.00',
+                'table_consumption_limit': '15.00',
+            },
+            partial=True,
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        serializer.save()
+        self.branch.settings.refresh_from_db()
+        self.assertFalse(self.branch.settings.allow_negative_stock)
+        self.assertEqual(self.branch.settings.service_fee_rate, Decimal('0.00'))
+        self.assertIsNone(self.branch.settings.command_consumption_limit)
+        self.assertIsNone(self.branch.settings.table_consumption_limit)
         self.assertFalse(branch_feature_states(self.branch)['tables']['enabled'])
 
     def test_branch_feature_states_fail_closed_for_legacy_local_dependencies(self):
@@ -495,6 +522,8 @@ class CapabilityResolutionTests(TestCase):
         self.assertNotIn('inventory', response.data)
 
     def test_dashboard_keeps_enabled_module_widgets(self):
+        self.branch.settings.uses_commands = True
+        self.branch.settings.save(update_fields=('uses_commands', 'updated_at'))
         map_existing_company(
             company=self.company,
             plan_version=self._plan(

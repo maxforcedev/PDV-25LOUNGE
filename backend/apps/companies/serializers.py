@@ -334,6 +334,13 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
         if branch is None:
             return fields
         requested_fields = set(getattr(self, 'initial_data', {}))
+        regularizable_legacy_flags = {
+            'uses_tables',
+            'uses_commands',
+            'uses_counter',
+            'uses_consumption',
+            'uses_cash_register',
+        }
         feature_fields = {
             'inventory': ('allow_negative_stock', 'negative_stock_count', 'negative_stock_state'),
             'financial': ('service_fee_rate', 'commission_rate', 'fixed_daily_cost', 'charges_service_fee'),
@@ -350,9 +357,9 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
         for feature, names in feature_fields.items():
             if not states.get(feature, {}).get('plan_allowed'):
                 for name in names:
-                    # Keep explicitly submitted legacy flags available so they can be
-                    # turned off, while validation still rejects an attempted re-enable.
-                    if name not in requested_fields:
+                    # Only legacy module flags may be submitted off-plan so true values
+                    # can be rejected and persisted true values can be regularized to false.
+                    if name not in regularizable_legacy_flags or name not in requested_fields:
                         fields.pop(name, None)
         return fields
 

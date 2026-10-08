@@ -264,7 +264,13 @@ class PlanHistoryTests(TestCase):
         capabilities = ensure_capability_catalog()
         existing = {item.capability_id: item for item in version.entitlements.all()}
         PlanEntitlement.objects.bulk_create([
-            PlanEntitlement(plan_version=version, capability=capability)
+            PlanEntitlement(
+                plan_version=version,
+                capability=capability,
+                enabled=False,
+                unlimited=False,
+                limit_value=None,
+            )
             for capability in capabilities.values() if capability.pk not in existing
         ])
         entitlements = [
@@ -343,7 +349,7 @@ class PlatformPlanApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(
-            {item['code']: item['dependencies'] for item in response.data},
+            {item['code']: item['dependencies'] for item in response.data['results']},
             {
                 capability.code: list(CAPABILITY_DEPENDENCIES.get(capability.code, ()))
                 for capability in Capability.objects.filter(is_active=True)
