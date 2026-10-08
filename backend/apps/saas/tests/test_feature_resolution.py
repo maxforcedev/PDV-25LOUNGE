@@ -268,18 +268,19 @@ class CapabilityResolutionTests(TestCase):
         client = self._superuser_client()
 
         now = timezone.now()
-        for path in (
-            '/api/v1/reports/purchases/',
-            '/api/v1/reports/inventory-movements/',
-            '/api/v1/reports/commands/',
-            '/api/v1/reports/purchase-options/?scope=purchases',
-            '/api/v1/reports/purchase-options/?scope=suppliers',
-            '/api/v1/reports/purchase-options/?scope=payables',
-            '/api/v1/reports/commercial-options/?scope=promotions',
-            '/api/v1/reports/commercial-options/?scope=modifiers',
-            '/api/v1/reports/commercial-options/?scope=customers',
+        for path, query_params in (
+            ('/api/v1/reports/purchases/', {}),
+            ('/api/v1/reports/inventory-movements/', {}),
+            ('/api/v1/reports/commands/', {}),
+            ('/api/v1/reports/purchase-options/', {'scope': 'purchases'}),
+            ('/api/v1/reports/purchase-options/', {'scope': 'suppliers'}),
+            ('/api/v1/reports/purchase-options/', {'scope': 'payables'}),
+            ('/api/v1/reports/commercial-options/', {'scope': 'promotions'}),
+            ('/api/v1/reports/commercial-options/', {'scope': 'modifiers'}),
+            ('/api/v1/reports/commercial-options/', {'scope': 'customers'}),
         ):
             response = client.get(path, {
+                **query_params,
                 'start_datetime': (now - timedelta(days=1)).isoformat(),
                 'end_datetime': now.isoformat(),
             })

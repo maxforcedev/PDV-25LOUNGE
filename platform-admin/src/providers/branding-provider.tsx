@@ -6,10 +6,11 @@ import type { GlobalSettings } from "@/lib/types";
 
 type Branding = Pick<GlobalSettings, "platform_name" | "logo_dark_url" | "favicon_url">;
 
+const backofficeUrl = (process.env.NEXT_PUBLIC_BACKOFFICE_URL || "http://localhost:3000").replace(/\/$/, "");
 const DEFAULT_BRANDING: Branding = {
   platform_name: "CORE PDV",
-  logo_dark_url: "",
-  favicon_url: "",
+  logo_dark_url: `${backofficeUrl}/branding/core-logo-dark.png`,
+  favicon_url: `${backofficeUrl}/branding/core-favicon.png`,
 };
 
 const BrandingContext = createContext<Branding>(DEFAULT_BRANDING);
