@@ -4,6 +4,7 @@ from io import StringIO
 from types import SimpleNamespace
 
 from django.core.exceptions import ValidationError
+from django.db import models
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
@@ -601,7 +602,7 @@ class FailClosedSaaSContextTests(TestCase):
         )
         self.assertEqual(response.status_code, 403, response.data)
 
-    def test_invalid_feature_dependencies_fail_closed(self):
+    def test_invalid_feature_dependencies_are_rejected_before_mapping(self):
         version = create_plan(code='explicit-features')
         capabilities = ensure_capability_catalog()
         PlanEntitlement.objects.create(
@@ -610,9 +611,39 @@ class FailClosedSaaSContextTests(TestCase):
             enabled=True,
             unlimited=True,
         )
-        _, company, _ = create_tenant('Explicit Features', plan_version=version)
+        _, company, _ = create_tenant('Explicit Features')
+
+        with self.assertRaises(ValidationError):
+            map_existing_company(
+                company=company,
+                plan_version=version,
+                billing_mode=Subscription.BillingMode.PAID,
+            )
+        self.assertFalse(Subscription.objects.filter(company=company).exists())
+
+    def test_legacy_invalid_feature_dependencies_fail_closed(self):
+        version = create_plan(code='legacy-explicit-features')
+        capabilities = ensure_capability_catalog()
+        for capability_code in (
+            'feature.tables',
+            'feature.commands',
+            'feature.cash_register',
+            'feature.products',
+        ):
+            PlanEntitlement.objects.create(
+                plan_version=version,
+                capability=capabilities[capability_code],
+                enabled=True,
+                unlimited=True,
+            )
+        _, company, _ = create_tenant('Legacy Explicit Features', plan_version=version)
+        models.QuerySet(model=PlanEntitlement).filter(
+            plan_version=version,
+            capability=capabilities['feature.products'],
+        ).delete()
 
         self.assertEqual(resolve_effective_status(company)['status'], 'INVALID_ENTITLEMENTS')
+        self.assertFalse(resolve_effective_status(company)['can_operate'])
         self.assertEqual(get_entitled_features(company), set())
 
     def test_login_and_me_keep_only_operational_company_and_branches(self):

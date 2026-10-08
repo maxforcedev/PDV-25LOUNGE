@@ -3,7 +3,12 @@ from decimal import Decimal
 from apps.accounts.models import User
 from apps.companies.services import create_company_with_matrix
 from apps.saas.models import Plan, PlanEntitlement, PlanVersion, Subscription
-from apps.saas.services import current_subscription, ensure_capability_catalog, map_existing_company
+from apps.saas.services import (
+    current_subscription,
+    ensure_capability_catalog,
+    map_existing_company,
+    resolve_capability_dependencies,
+)
 
 
 COMMERCIAL_FEATURES = (
@@ -55,7 +60,12 @@ def create_complete_test_plan(
         enabled=pos_enabled,
         limit_value=10 if pos_enabled else None,
     )
-    enabled_features = set(enabled_features)
+    enabled_features = {
+        capability_code.removeprefix('feature.')
+        for capability_code in resolve_capability_dependencies(
+            {f'feature.{feature}' for feature in enabled_features}
+        )
+    }
     for feature in COMMERCIAL_FEATURES:
         enabled = feature in enabled_features
         PlanEntitlement.objects.create(

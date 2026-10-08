@@ -4,8 +4,8 @@ from io import StringIO
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
-from django.conf import settings
 from django.core.cache import cache
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -650,6 +650,14 @@ class PublicPlanCatalogTests(TestCase):
             'primary_color', 'support_email', 'support_phone', 'institutional_links', 'legal_settings',
         }
         self.assertEqual(set(response.data), expected_fields)
+        self.assertEqual(
+            response.data['logo_light_url'],
+            f'{settings.FRONTEND_URL.rstrip("/")}/branding/core-logo-light.png',
+        )
+        self.assertEqual(
+            response.data['favicon_url'],
+            f'{settings.FRONTEND_URL.rstrip("/")}/branding/core-favicon.png',
+        )
 
         GlobalSaaSSettings.objects.create(
             platform_name='Safe Brand', support_email='support@example.com',
@@ -663,6 +671,14 @@ class PublicPlanCatalogTests(TestCase):
         self.assertNotIn('auto_approve_signups', response.data)
         self.assertNotIn('public_signup_billing_mode', response.data)
         self.assertNotIn('support_whatsapp', response.data)
+        configured = GlobalSaaSSettings.objects.get()
+        configured.logo_dark_file = 'saas/branding/logo-dark.png'
+        configured.save(update_fields=('logo_dark_file', 'updated_at'))
+        response = client.get(reverse('saas-public-settings'))
+        self.assertEqual(
+            response.data['logo_dark_url'],
+            'http://testserver/api/v1/public/branding/logo_dark/',
+        )
         self.assertEqual(client.post(reverse('saas-public-settings'), {}).status_code, 405)
 
 

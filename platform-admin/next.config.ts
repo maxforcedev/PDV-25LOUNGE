@@ -8,6 +8,13 @@ const apiOrigin = (() => {
     return null;
   }
 })();
+const backofficeOrigin = (() => {
+  try {
+    return new URL(process.env.NEXT_PUBLIC_BACKOFFICE_URL || "http://localhost:3000").origin;
+  } catch {
+    return null;
+  }
+})();
 
 const contentSecurityPolicy = [
   "default-src 'self'",
@@ -17,7 +24,7 @@ const contentSecurityPolicy = [
   "form-action 'self'",
   `script-src 'self' 'unsafe-inline'${isProduction ? "" : " 'unsafe-eval'"}`,
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob: https:",
+  `img-src 'self' data: blob: https: ${[apiOrigin, backofficeOrigin].filter(Boolean).join(" ")}`,
   "font-src 'self' data:",
   `connect-src 'self' ${[apiOrigin, !isProduction && "ws:", !isProduction && "wss:"].filter(Boolean).join(" ")}`,
 ].join("; ");

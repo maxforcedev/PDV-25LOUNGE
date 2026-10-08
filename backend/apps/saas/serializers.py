@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
@@ -40,6 +41,16 @@ BRANDING_ASSET_FIELDS = {
     'compact_logo_dark': 'compact_logo_dark_file',
 }
 
+DEFAULT_BRANDING_ASSETS = {
+    'logo': 'core-logo-light.png',
+    'compact_logo': 'core-logo-compact-light.png',
+    'favicon': 'core-favicon.png',
+    'logo_light': 'core-logo-light.png',
+    'logo_dark': 'core-logo-dark.png',
+    'compact_logo_light': 'core-logo-compact-light.png',
+    'compact_logo_dark': 'core-logo-compact-dark.png',
+}
+
 
 def branding_asset_url(instance, slot, request=None):
     asset = getattr(instance, BRANDING_ASSET_FIELDS[slot])
@@ -47,6 +58,18 @@ def branding_asset_url(instance, slot, request=None):
         return ''
     path = f'/api/v1/public/branding/{slot}/'
     return request.build_absolute_uri(path) if request else path
+
+
+def resolved_branding_asset_url(instance, slot, request=None):
+    candidates = (slot,) if slot == 'favicon' else (
+        slot,
+        'compact_logo' if slot.startswith('compact_') else 'logo',
+    )
+    for candidate in candidates:
+        url = branding_asset_url(instance, candidate, request)
+        if url:
+            return url
+    return f'{settings.FRONTEND_URL.rstrip("/")}/branding/{DEFAULT_BRANDING_ASSETS[slot]}'
 
 
 class PlatformLoginSerializer(serializers.Serializer):
@@ -610,7 +633,7 @@ class PublicBrandingSerializer(serializers.ModelSerializer):
     compact_logo_dark_url = serializers.SerializerMethodField()
 
     def _asset_url(self, instance, slot):
-        return branding_asset_url(instance, slot, self.context.get('request'))
+        return resolved_branding_asset_url(instance, slot, self.context.get('request'))
 
     def get_logo_url(self, instance):
         return self._asset_url(instance, 'logo')

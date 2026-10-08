@@ -261,12 +261,13 @@ class CapabilityResolutionTests(TestCase):
             plan_version=self._plan(
                 'report-source-disabled',
                 tables=False,
-                features=('reports', 'commands'),
+                features=('reports',),
             ),
             billing_mode=Subscription.BillingMode.PAID,
         )
         client = self._superuser_client()
 
+        now = timezone.now()
         for path in (
             '/api/v1/reports/purchases/',
             '/api/v1/reports/inventory-movements/',
@@ -278,7 +279,10 @@ class CapabilityResolutionTests(TestCase):
             '/api/v1/reports/commercial-options/?scope=modifiers',
             '/api/v1/reports/commercial-options/?scope=customers',
         ):
-            response = client.get(path)
+            response = client.get(path, {
+                'start_datetime': (now - timedelta(days=1)).isoformat(),
+                'end_datetime': now.isoformat(),
+            })
             self.assertEqual(response.status_code, 403, (path, response.data))
 
     def test_reports_options_hide_disabled_module_filters(self):
@@ -444,9 +448,8 @@ class CapabilityResolutionTests(TestCase):
         response = self._superuser_client().get(
             f'/api/v1/pos/admin/devices/?company={self.company.pk}',
         )
-        self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(response.data['products'], [])
-        self.assertEqual(response.data['categories'], [])
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertEqual(response.data['code'], 'pos_not_entitled')
 
     def test_counter_and_commands_are_hidden_when_their_features_are_disabled(self):
         self.branch.settings.uses_counter = True

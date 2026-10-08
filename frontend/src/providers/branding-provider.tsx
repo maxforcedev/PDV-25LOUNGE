@@ -86,13 +86,13 @@ function currentTheme(): BrandTheme {
 }
 
 function resolveLogo(
-  overrides: Pick<PublicBranding, keyof typeof LOCAL_ASSETS>,
+  branding: Pick<PublicBranding, keyof typeof LOCAL_ASSETS>,
   { compact = false, theme = "light", localOnly = false }: BrandingLogoOptions = {},
 ) {
   const variant = compact ? "compact_logo" : "logo";
   const specific = `${variant}_${theme}_url` as keyof typeof LOCAL_ASSETS;
   const generic = `${variant}_url` as keyof typeof LOCAL_ASSETS;
-  return (!localOnly && (overrides[specific] || overrides[generic])) || LOCAL_ASSETS[specific] || LOCAL_ASSETS[generic];
+  return (!localOnly && (branding[specific] || branding[generic])) || LOCAL_ASSETS[specific] || LOCAL_ASSETS[generic];
 }
 
 function darkerColor(hex: string) {
@@ -102,15 +102,6 @@ function darkerColor(hex: string) {
 
 export function BrandingProvider({ children }: { children: React.ReactNode }) {
   const [branding, setBranding] = useState(DEFAULT_BRANDING);
-  const [assetOverrides, setAssetOverrides] = useState<Pick<PublicBranding, keyof typeof LOCAL_ASSETS>>({
-    logo_url: "",
-    compact_logo_url: "",
-    favicon_url: "",
-    logo_light_url: "",
-    logo_dark_url: "",
-    compact_logo_light_url: "",
-    compact_logo_dark_url: "",
-  });
   const [theme, setTheme] = useState<BrandTheme>("light");
 
   useLayoutEffect(() => {
@@ -126,16 +117,7 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
       .then((settings) => {
         if (!active) return;
         const normalized = normalizeBranding(settings);
-        setAssetOverrides({
-          logo_url: normalized.logo_url,
-          compact_logo_url: normalized.compact_logo_url,
-          favicon_url: normalized.favicon_url,
-          logo_light_url: normalized.logo_light_url || "",
-          logo_dark_url: normalized.logo_dark_url || "",
-          compact_logo_light_url: normalized.compact_logo_light_url || "",
-          compact_logo_dark_url: normalized.compact_logo_dark_url || "",
-        });
-        setBranding({ ...normalized, ...LOCAL_ASSETS });
+        setBranding(normalized);
       })
       .catch(() => undefined);
     return () => { active = false; };
@@ -158,19 +140,18 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
       favicon.dataset.runtimeBranding = "favicon";
       document.head.appendChild(favicon);
     }
-    favicon.href = assetOverrides.favicon_url || LOCAL_ASSETS.favicon_url;
+    favicon.href = branding.favicon_url || LOCAL_ASSETS.favicon_url;
     favicon.onerror = () => {
       favicon!.href = LOCAL_ASSETS.favicon_url;
       favicon!.onerror = null;
     };
-  }, [assetOverrides.favicon_url, branding]);
+  }, [branding]);
 
-  const faviconUrl = assetOverrides.favicon_url || LOCAL_ASSETS.favicon_url;
   const value: BrandingContextValue = {
     ...branding,
-    favicon_url: faviconUrl,
+    favicon_url: branding.favicon_url || LOCAL_ASSETS.favicon_url,
     theme,
-    resolveLogo: (options) => resolveLogo(assetOverrides, { theme, ...options }),
+    resolveLogo: (options) => resolveLogo(branding, { theme, ...options }),
   };
   return <BrandingContext.Provider value={value}>{children}</BrandingContext.Provider>;
 }
