@@ -333,6 +333,7 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
         branch = getattr(self.instance, 'branch', None)
         if branch is None:
             return fields
+        requested_fields = set(getattr(self, 'initial_data', {}))
         feature_fields = {
             'inventory': ('allow_negative_stock', 'negative_stock_count', 'negative_stock_state'),
             'financial': ('service_fee_rate', 'commission_rate', 'fixed_daily_cost', 'charges_service_fee'),
@@ -349,7 +350,10 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
         for feature, names in feature_fields.items():
             if not states.get(feature, {}).get('plan_allowed'):
                 for name in names:
-                    fields.pop(name, None)
+                    # Keep explicitly submitted legacy flags available so they can be
+                    # turned off, while validation still rejects an attempted re-enable.
+                    if name not in requested_fields:
+                        fields.pop(name, None)
         return fields
 
     def get_negative_stock_count(self, settings):
@@ -372,6 +376,8 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
             return set()
 
     def validate(self, attrs):
+        from .features import BRANCH_FEATURE_DEPENDENCIES, branch_feature_states
+
         range_start = attrs.get(
             'table_range_start', self.instance.table_range_start if self.instance else 1,
         )
@@ -391,9 +397,17 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
             'uses_cash_register',
             self.instance.uses_cash_register if self.instance else False,
         )
+        feature_states = branch_feature_states(self.instance.branch) if self.instance else {}
+        feature_allowed = {
+            feature: state.get('plan_allowed', False)
+            for feature, state in feature_states.items()
+        }
         enabled_dependents = [
             field for field in dependent_features
-            if attrs.get(field, getattr(self.instance, field, False))
+            if (
+                attrs.get(field, getattr(self.instance, field, False))
+                and feature_allowed.get(field.removeprefix('uses_'), True)
+            )
         ]
         dependency_errors = {}
         if not effective_cash_register:
@@ -411,20 +425,25 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
             attrs.get('uses_commands', getattr(self.instance, 'uses_commands', False))
             and effective_cash_register
         )
-        effective_tables = attrs.get('uses_tables', getattr(self.instance, 'uses_tables', False))
-        effective_consumption = attrs.get(
-            'uses_consumption', getattr(self.instance, 'uses_consumption', False),
-        )
-        if attrs.get('uses_commands') is False and (
-            effective_tables or effective_consumption
-        ):
+        command_dependents = [
+            feature for feature, dependencies in BRANCH_FEATURE_DEPENDENCIES.items()
+            if (
+                'commands' in dependencies
+                and attrs.get(f'uses_{feature}', getattr(self.instance, f'uses_{feature}', False))
+                and feature_allowed.get(feature, True)
+            )
+        ]
+        if attrs.get('uses_commands') is False and command_dependents:
             dependency_errors['uses_commands'] = (
                 'Não é possível desabilitar Comandas enquanto Mesas ou Consumação estiverem habilitadas.'
             )
-        if effective_tables and not effective_commands and attrs.get('uses_tables') is True:
-            dependency_errors['uses_tables'] = 'Mesas requer Comandas habilitado nesta filial.'
-        if effective_consumption and not effective_commands and attrs.get('uses_consumption') is True:
-            dependency_errors['uses_consumption'] = 'Consumação requer Comandas habilitado nesta filial.'
+        if not effective_commands:
+            for feature, message in (
+                ('tables', 'Mesas requer Comandas habilitado nesta filial.'),
+                ('consumption', 'Consumação requer Comandas habilitado nesta filial.'),
+            ):
+                if attrs.get(f'uses_{feature}') is True and feature_allowed.get(feature, True):
+                    dependency_errors[f'uses_{feature}'] = message
         if dependency_errors:
             raise serializers.ValidationError(dependency_errors)
 
@@ -475,7 +494,7 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
                     message='Existem Comandas abertas. Encerre-as antes de desativar o recurso.',
                     details={'count': open_commands.count()},
                 )
-        if self.instance and request and not request.user.is_superuser:
+        if self.instance:
             company = self.instance.branch.company
             entitled = self._entitled_features(company)
             feature_map = {

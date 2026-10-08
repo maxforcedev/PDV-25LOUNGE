@@ -242,6 +242,79 @@ class CapabilityResolutionTests(TestCase):
             'Não é possível desabilitar Comandas enquanto Mesas ou Consumação estiverem habilitadas.',
         )
 
+    def test_downgraded_tables_flag_does_not_block_disabling_commands(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan(
+                'downgraded-tables', tables=False, features=('commands',),
+            ),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+        self.branch.settings.uses_tables = True
+        self.branch.settings.uses_commands = True
+        self.branch.settings.save(update_fields=('uses_tables', 'uses_commands', 'updated_at'))
+
+        serializer = BranchSettingsSerializer(
+            self.branch.settings, data={'uses_commands': False}, partial=True,
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        serializer.save()
+        self.branch.settings.refresh_from_db()
+        self.assertTrue(self.branch.settings.uses_tables)
+        self.assertFalse(self.branch.settings.uses_commands)
+        self.assertFalse(branch_feature_states(self.branch)['tables']['enabled'])
+
+        regularize = BranchSettingsSerializer(
+            self.branch.settings, data={'uses_tables': False}, partial=True,
+        )
+        self.assertTrue(regularize.is_valid(), regularize.errors)
+        regularize.save()
+        self.branch.settings.refresh_from_db()
+        self.assertFalse(self.branch.settings.uses_tables)
+
+    def test_downgraded_consumption_flag_does_not_block_disabling_commands(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan(
+                'downgraded-consumption', tables=False, features=('commands',),
+            ),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+        self.branch.settings.uses_consumption = True
+        self.branch.settings.uses_commands = True
+        self.branch.settings.save(update_fields=('uses_consumption', 'uses_commands', 'updated_at'))
+
+        serializer = BranchSettingsSerializer(
+            self.branch.settings, data={'uses_commands': False}, partial=True,
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        serializer.save()
+        self.branch.settings.refresh_from_db()
+        self.assertTrue(self.branch.settings.uses_consumption)
+        self.assertFalse(self.branch.settings.uses_commands)
+        self.assertFalse(branch_feature_states(self.branch)['consumption']['enabled'])
+
+    def test_disabled_plan_capability_rejects_reenabling_legacy_local_flag(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan(
+                'tables-plan-disabled', tables=False, features=('commands',),
+            ),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+        self.branch.settings.uses_commands = True
+        self.branch.settings.save(update_fields=('uses_commands', 'updated_at'))
+
+        serializer = BranchSettingsSerializer(
+            self.branch.settings, data={'uses_tables': True}, partial=True,
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('uses_tables', serializer.errors)
+        self.assertFalse(branch_feature_states(self.branch)['tables']['enabled'])
+
     def test_branch_feature_states_fail_closed_for_legacy_local_dependencies(self):
         map_existing_company(
             company=self.company,
