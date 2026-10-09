@@ -307,8 +307,7 @@ class POSFoundationIntegrationTests(TestCase):
 
         self.assertEqual(failed.status_code, 503, failed.data)
         self.assertEqual(failed.data['code'], 'otp_delivery_failed')
-        self.assertNotIn('challenge_id', failed.data)
-        self.assertNotIn('code', failed.data)
+        self.assertEqual(set(failed.data), {'code', 'message', 'details'})
         self.assertFalse(AuthenticationChallenge.objects.filter(
             pairing_flow_id=identify.data['pairing_flow_id'],
             consumed_at__isnull=True,
