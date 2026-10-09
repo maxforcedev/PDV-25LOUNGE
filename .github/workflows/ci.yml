@@ -153,6 +153,7 @@ jobs:
           SMTP_ENABLED: 'True'
           API_DOMAIN: api.example.invalid
           FRONTEND_DOMAIN: app.example.invalid
+          FRONTEND_URL: https://app.example.invalid
           PLATFORM_ADMIN_DOMAIN: admin.example.invalid
           ALLOWED_HOSTS: api.example.invalid,app.example.invalid,admin.example.invalid
           CSRF_TRUSTED_ORIGINS: https://app.example.invalid,https://admin.example.invalid
