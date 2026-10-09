@@ -72,6 +72,10 @@ services:
       PRIVATE_MEDIA_ROOT: /app/private_media
       ENVIRONMENT: ${ENVIRONMENT:-production}
       FRONTEND_URL: ${FRONTEND_URL:?Set FRONTEND_URL to the public frontend origin}
+      POS_CURRENT_VERSION: ${POS_CURRENT_VERSION:-1.0.0}
+      POS_LATEST_VERSION: ${POS_LATEST_VERSION:-1.0.0}
+      POS_MINIMUM_SUPPORTED_VERSION: ${POS_MINIMUM_SUPPORTED_VERSION:-1.0.0}
+      POS_OPERATOR_SESSION_MINUTES: ${POS_OPERATOR_SESSION_MINUTES:-480}
     secrets:
       - django_secret_key
       - postgres_password

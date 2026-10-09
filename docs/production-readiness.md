@@ -339,6 +339,42 @@ O overlay SMTP exige `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`,
 `DEFAULT_FROM_EMAIL`, `SALES_LEAD_EMAIL` e o secret SMTP. `EMAIL_USE_TLS` e
 `EMAIL_USE_SSL` devem ser coerentes e nunca ambos verdadeiros. A ausencia do
 secret deve bloquear SMTP, nao ser substituida por uma senha dummy.
+`production-preflight.sh` ignora todos esses requisitos quando
+`SMTP_ENABLED=False`; com `SMTP_ENABLED=True`, exige os campos, o secret e
+rejeita TLS e SSL simultaneamente ativos. `EMAIL_USE_TLS=True`,
+`EMAIL_USE_SSL=False` e `EMAIL_TIMEOUT=10` sao os defaults do overlay.
+
+`SALES_LEAD_EMAIL` e o destinatario das notificacoes do formulario comercial.
+O lead e persistido antes do envio; uma falha SMTP e registrada no servidor,
+mas nao descarta o lead nem altera a resposta publica ao visitante.
+
+### Ambiente, banco e POS
+
+Use `.env.production.example` como o contrato publico completo do deploy. No
+modo Swarm, `POSTGRES_HOST`, `POSTGRES_PORT` e `DATABASE_URL` nao devem ser
+definidos: `docker-stack.yml` monta a conexao interna como
+`postgresql://${POSTGRES_USER}@db:5432/${POSTGRES_DB}` e recebe a senha apenas
+do secret `postgres_password`.
+
+`FRONTEND_URL` e obrigatorio e deve conter a origem HTTPS publica do
+Backoffice. O backend usa essa origem para links de redefinicao de senha e de
+pareamento POS. A redefinicao aponta para `/redefinir-senha`, usa o backend de
+email configurado e falhas de entrega nao revelam se o email possui uma conta.
+
+O CORE POS recebe a URL da API no build do aplicativo, nunca como variavel
+runtime do backend nem como segredo no APK:
+
+```bash
+flutter build apk --release \
+  --dart-define=POS_API_BASE_URL=https://api.corepdv.com
+```
+
+O backend recebe `POS_CURRENT_VERSION`, `POS_LATEST_VERSION`,
+`POS_MINIMUM_SUPPORTED_VERSION` e `POS_OPERATOR_SESSION_MINUTES` pelo stack.
+Os defaults atuais sao respectivamente `1.0.0`, `1.0.0`, `1.0.0` e `480`.
+Para imagens web, `NEXT_PUBLIC_API_URL` e `NEXT_PUBLIC_BACKOFFICE_URL` sao
+argumentos de build definidos pelo workflow de publicacao; exporta-los no
+servidor Swarm nao altera imagens ja publicadas.
 
 ### Preflight e migrations
 
