@@ -39,6 +39,7 @@ RESEND_COOLDOWN = timedelta(minutes=1)
 PIN_LOCK_TTL = timedelta(minutes=15)
 PIN_FAILURE_LIMIT = 5
 performance_logger = logging.getLogger('pos.performance')
+logger = logging.getLogger(__name__)
 
 
 def _error(code, message, details=None, status_code=400):
@@ -270,8 +271,11 @@ def identify_branch(identifier, request):
     return flow, channels
 
 
+@transaction.atomic
 def request_otp(flow_id, channel_id, request):
-    flow = PairingFlow.objects.select_related('branch__company').filter(pk=flow_id).first()
+    flow = PairingFlow.objects.select_for_update().select_related(
+        'branch__company',
+    ).filter(pk=flow_id).first()
     if not flow or flow.expires_at <= timezone.now():
         _error('pairing_flow_expired', 'O fluxo de pareamento expirou.', status_code=400)
     validate_device_branch_for_pairing(flow.branch)
@@ -293,7 +297,21 @@ def request_otp(flow_id, channel_id, request):
         code_hash=make_password(code), expires_at=timezone.now() + OTP_TTL,
         resend_count=(previous.resend_count + 1) if previous else 0,
     )
-    send_mail('Codigo de pareamento CORE POS', f'Seu codigo de pareamento e: {code}', settings.DEFAULT_FROM_EMAIL, [channel['_destination']], fail_silently=False)
+    try:
+        send_mail(
+            'Codigo de pareamento CORE POS',
+            f'Seu codigo de pareamento e: {code}',
+            settings.DEFAULT_FROM_EMAIL,
+            [channel['_destination']],
+            fail_silently=False,
+        )
+    except Exception:
+        logger.exception('POS pairing OTP delivery failed for flow_id=%s.', flow.pk)
+        _error(
+            'otp_delivery_failed',
+            'Nao foi possivel enviar o codigo de pareamento. Tente novamente.',
+            status_code=503,
+        )
     return challenge
 
 

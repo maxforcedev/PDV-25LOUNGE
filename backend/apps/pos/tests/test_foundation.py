@@ -285,6 +285,40 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(confirmation.status_code, 201, confirmation.data)
         return confirmation, otp.data['challenge_id']
 
+    def test_pairing_otp_delivery_failure_rolls_back_the_challenge(self):
+        identify = self.client.post(
+            reverse('pos:pairing-identify'),
+            {'identifier': self.branch.licensing_code},
+            format='json',
+        )
+        self.assertEqual(identify.status_code, 200, identify.data)
+        channel = identify.data['channels'][0]
+        payload = {
+            'pairing_flow_id': identify.data['pairing_flow_id'],
+            'channel_id': channel['id'],
+        }
+
+        with patch(
+            'apps.pos.services.send_mail', side_effect=OSError('SMTP unavailable'),
+        ):
+            failed = self.client.post(
+                reverse('pos:pairing-request-otp'), payload, format='json',
+            )
+
+        self.assertEqual(failed.status_code, 503, failed.data)
+        self.assertEqual(failed.data['code'], 'otp_delivery_failed')
+        self.assertNotIn('challenge_id', failed.data)
+        self.assertNotIn('code', failed.data)
+        self.assertFalse(AuthenticationChallenge.objects.filter(
+            pairing_flow_id=identify.data['pairing_flow_id'],
+            consumed_at__isnull=True,
+        ).exists())
+
+        retried = self.client.post(
+            reverse('pos:pairing-request-otp'), payload, format='json',
+        )
+        self.assertEqual(retried.status_code, 200, retried.data)
+
     def create_pos_operator(self):
         operator = User.objects.create_user(
             email=f'operator-{uuid4()}@example.com',

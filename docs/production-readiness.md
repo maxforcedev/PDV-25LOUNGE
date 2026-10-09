@@ -343,6 +343,9 @@ secret deve bloquear SMTP, nao ser substituida por uma senha dummy.
 `SMTP_ENABLED=False`; com `SMTP_ENABLED=True`, exige os campos, o secret e
 rejeita TLS e SSL simultaneamente ativos. `EMAIL_USE_TLS=True`,
 `EMAIL_USE_SSL=False` e `EMAIL_TIMEOUT=10` sao os defaults do overlay.
+Tambem bloqueia os placeholders documentados `smtp.example.invalid`,
+`replace-with-smtp-user` e `sales@example.invalid`; substitua-os por dados
+reais antes de habilitar SMTP.
 
 `SALES_LEAD_EMAIL` e o destinatario das notificacoes do formulario comercial.
 O lead e persistido antes do envio; uma falha SMTP e registrada no servidor,
@@ -358,8 +361,11 @@ do secret `postgres_password`.
 
 `FRONTEND_URL` e obrigatorio e deve conter a origem HTTPS publica do
 Backoffice. O backend usa essa origem para links de redefinicao de senha e de
-pareamento POS. A redefinicao aponta para `/redefinir-senha`, usa o backend de
-email configurado e falhas de entrega nao revelam se o email possui uma conta.
+configuracao/reset de PIN do POS. A redefinicao aponta para
+`/redefinir-senha` e os links de PIN para `/pos/pin`. O pareamento inicial do
+dispositivo envia um OTP por email e nao usa um link baseado em `FRONTEND_URL`.
+A redefinicao usa o backend de email configurado e falhas de entrega nao
+revelam se o email possui uma conta.
 
 O CORE POS recebe a URL da API no build do aplicativo, nunca como variavel
 runtime do backend nem como segredo no APK:

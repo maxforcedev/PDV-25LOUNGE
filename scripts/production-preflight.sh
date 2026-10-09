@@ -32,6 +32,16 @@ require_image() {
     printf 'Image available: %s\n' "$image"
 }
 
+reject_example_placeholder() {
+    name=$1
+    value=$(printenv "$name")
+    case "$value" in
+        smtp.example.invalid|replace-with-smtp-user|sales@example.invalid)
+            fail "$name must replace the documented example placeholder when SMTP is enabled."
+            ;;
+    esac
+}
+
 stack_config() {
     if [ "$SMTP_ENABLED" = 'True' ]; then
         [ -f "$SMTP_STACK_FILE" ] || fail "SMTP stack file '$SMTP_STACK_FILE' was not found."
@@ -85,6 +95,9 @@ esac
 if [ "$SMTP_ENABLED" = 'True' ]; then
     for variable in EMAIL_HOST EMAIL_PORT EMAIL_HOST_USER DEFAULT_FROM_EMAIL SALES_LEAD_EMAIL; do
         require_value "$variable"
+    done
+    for variable in EMAIL_HOST EMAIL_HOST_USER SALES_LEAD_EMAIL; do
+        reject_example_placeholder "$variable"
     done
     [ "${EMAIL_USE_TLS:-True}" != 'True' ] || [ "${EMAIL_USE_SSL:-False}" != 'True' ] || \
         fail 'EMAIL_USE_TLS and EMAIL_USE_SSL cannot both be True.'
