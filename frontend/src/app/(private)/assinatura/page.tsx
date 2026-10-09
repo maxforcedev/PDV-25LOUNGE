@@ -3,7 +3,7 @@ import { OwnerGuard } from "@/components/owner-guard";
 import { SubscriptionCenter } from "@/components/subscription-center";
 
 export const metadata: Metadata = {
-  title: "Assinatura | CORE PDV",
+  title: "Assinatura ",
 };
 
 export default function SubscriptionPage() {

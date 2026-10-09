@@ -5,7 +5,7 @@ import { PublicFooter } from "@/components/marketing/public-footer";
 import { PublicHeader } from "@/components/marketing/public-header";
 import { PaymentDevices, ProductEvidence, VideoTeaser } from "@/components/marketing/product-evidence";
 
-export const metadata: Metadata = { title: "CORE PDV | PDV, gestão e pagamentos para sua operação", description: "Conecte vendas, caixa, estoque, mesas, compras, pagamentos e gestão em uma única plataforma." };
+export const metadata: Metadata = { title: "Core Pdv", description: "Conecte vendas, caixa, estoque, mesas, compras, pagamentos e gestão em uma única plataforma." };
 
 const structuredData = { "@context": "https://schema.org", "@type": "SoftwareApplication", name: "CORE PDV", applicationCategory: "BusinessApplication", operatingSystem: "Web", description: "Plataforma para conectar operações de ponto de venda e gestão." };
 const flow = ["Venda", "Pagamento", "Caixa", "Estoque", "Gestão"];

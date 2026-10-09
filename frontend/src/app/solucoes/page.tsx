@@ -5,7 +5,7 @@ import { PublicFooter } from "@/components/marketing/public-footer";
 import { PublicHeader } from "@/components/marketing/public-header";
 import { ProductEvidence } from "@/components/marketing/product-evidence";
 
-export const metadata: Metadata = { title: "Soluções | CORE PDV", description: "Conheça os fluxos de operação e gestão conectados pelo CORE." };
+export const metadata: Metadata = { title: "Soluções ", description: "Conheça os fluxos de operação e gestão conectados pelo CORE." };
 
 const sections = [
   ["CORE POS / Vendas", "No CORE POS, venda, operadores, caixa, atendimento e permissões operacionais fazem parte da rotina de quem está atendendo.", "Venda → pagamento → caixa", "/site/screenshots/core-pos-venda.webp", "Tela real do CORE POS na venda rápida"],

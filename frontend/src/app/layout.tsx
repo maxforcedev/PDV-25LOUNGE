@@ -8,7 +8,7 @@ import { CookieConsent } from "@/components/marketing/cookie-consent";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: { default: "CORE PDV | Operação e gestão conectadas", template: "%s | CORE PDV" },
+  title: { default: "CORE PDV | Operação e gestão conectadas", template: "%s | Core Pdv" },
   description: "Conecte vendas, caixa, estoque, mesas, compras, pagamentos e gestão em uma única plataforma.",
 };
 

@@ -6,8 +6,8 @@ import { BrandingProvider } from "@/providers/branding-provider";
 const fallbackFavicon = `${(process.env.NEXT_PUBLIC_BACKOFFICE_URL || "http://localhost:3000").replace(/\/$/, "")}/branding/core-favicon.png`;
 
 export const metadata: Metadata = {
-  title: "CORE Platform Operations",
-  description: "Console administrativo da plataforma CORE",
+  title: "CORE Admin",
+  description: "Administrativo da plataforma CORE",
   robots: { index: false, follow: false },
 };
 

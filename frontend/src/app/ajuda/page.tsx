@@ -6,7 +6,7 @@ import { PublicFooter } from "@/components/marketing/public-footer";
 import { PublicHeader } from "@/components/marketing/public-header";
 
 export const metadata: Metadata = {
-  title: "Central de Ajuda | CORE PDV",
+  title: "Central de Ajuda ",
   description: "Guias para os fluxos de venda, caixa, estoque, usuários, permissões e relatórios do CORE.",
 };
 

@@ -4,7 +4,7 @@ import { PublicHeader } from "@/components/marketing/public-header";
 import { PlansCatalog } from "@/components/marketing/plans-catalog";
 
 export const metadata: Metadata = {
-  title: "Planos | CORE PDV",
+  title: "Planos ",
   description: "Conheça os planos do CORE PDV e fale com nossa equipe sobre a sua operação.",
 };
 
