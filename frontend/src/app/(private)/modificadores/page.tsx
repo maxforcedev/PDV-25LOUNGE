@@ -103,9 +103,28 @@ function ModifiersPage() {
   loadRef.current = load;
   useEffect(() => {
     setGroups([]);
+    setError("");
+    setSaving(false);
+    setReordering(false);
+    setDraggedGroupId(null);
+    setDraggedOptionId(null);
+    setModalOpen(false);
+    setEditing(null);
+    setFields({});
+    setOptions([]);
+    setDeletingGroup(null);
+    setDeletingOption(null);
     setViewingGroup(null);
     setGroupOptions([]);
+    setLoadingOptions(false);
     setOptionsModalOpen(false);
+    setOptionEditing(null);
+    setOptionForm({
+      name: "",
+      option_type: "add",
+      additional_price: "0",
+      stock_product: "",
+    });
     void loadRef.current();
   }, [currentCompany?.id, currentBranch?.id]);
 
@@ -114,12 +133,17 @@ function ModifiersPage() {
       setStockProducts([]);
       return;
     }
+    const token = context.current;
     void http
       .getAll<Product>(
         `products/?company=${currentCompany.id}&lifecycle=active&status=active&inventory_behavior=direct`,
       )
-      .then(setStockProducts)
-      .catch(() => setStockProducts([]));
+      .then((products) => {
+        if (context.current === token) setStockProducts(products);
+      })
+      .catch(() => {
+        if (context.current === token) setStockProducts([]);
+      });
   }, [currentCompany?.id, currentBranch?.id]);
 
   function openCreate() {
@@ -160,6 +184,7 @@ function ModifiersPage() {
 
   async function save() {
     if (!currentCompany) return;
+    const token = context.current;
     const minimum = Number(form.min_selections) || 0;
     const maximum = form.max_selections ? Number(form.max_selections) : null;
     const minimumTotal = form.allow_option_quantity
@@ -206,9 +231,11 @@ function ModifiersPage() {
       } else {
         await http.post("modifier-groups/", payload);
       }
+      if (context.current !== token) return;
       setModalOpen(false);
       await load();
     } catch (caught) {
+      if (context.current !== token) return;
       if (caught instanceof ApiError) {
         setError(caught.message);
         setFields(caught.fields || {});
@@ -216,15 +243,17 @@ function ModifiersPage() {
         setError("Não foi possível salvar o modificador.");
       }
     } finally {
-      setSaving(false);
+      if (context.current === token) setSaving(false);
     }
   }
 
   async function deleteGroup() {
     if (!canChange || !currentCompany || !deletingGroup) return;
+    const token = context.current;
     setSaving(true);
     try {
       await http.delete(`modifier-groups/${deletingGroup.id}/`);
+      if (context.current !== token) return;
       if (viewingGroup?.id === deletingGroup.id) {
         setOptionsModalOpen(false);
         setViewingGroup(null);
@@ -232,13 +261,14 @@ function ModifiersPage() {
       setDeletingGroup(null);
       await load();
     } catch (caught) {
+      if (context.current !== token) return;
       setError(
         caught instanceof ApiError
           ? caught.message
           : "Não foi possível excluir o grupo.",
       );
     } finally {
-      setSaving(false);
+      if (context.current === token) setSaving(false);
     }
   }
 
@@ -285,6 +315,7 @@ function ModifiersPage() {
 
   async function saveOption() {
     if (!viewingGroup || !currentCompany) return;
+    const token = context.current;
     setSaving(true);
     setError("");
     try {
@@ -302,6 +333,7 @@ function ModifiersPage() {
       } else {
         await http.post("modifier-options/", payload);
       }
+      if (context.current !== token) return;
       setOptionEditing(null);
       setOptionForm({
         name: "",
@@ -311,37 +343,42 @@ function ModifiersPage() {
       });
       await openOptions(viewingGroup);
     } catch (caught) {
+      if (context.current !== token) return;
       setError(
         caught instanceof ApiError
           ? caught.message
           : "Não foi possível salvar a opção.",
       );
     } finally {
-      setSaving(false);
+      if (context.current === token) setSaving(false);
     }
   }
 
   async function deleteOption() {
     if (!canChange || !deletingOption) return;
+    const token = context.current;
     setSaving(true);
     try {
       await http.delete(`modifier-options/${deletingOption.id}/`);
+      if (context.current !== token) return;
       if (optionEditing?.id === deletingOption.id) openCreateOption();
       setDeletingOption(null);
       if (viewingGroup) await openOptions(viewingGroup);
     } catch (caught) {
+      if (context.current !== token) return;
       setError(
         caught instanceof ApiError
           ? caught.message
           : "Não foi possível remover a opção.",
       );
     } finally {
-      setSaving(false);
+      if (context.current === token) setSaving(false);
     }
   }
 
   async function reorderGroups(sourceId: number, targetId: number) {
     if (reordering || sourceId === targetId) return;
+    const token = context.current;
     const previous = groups;
     const next = [...groups];
     const source = next.findIndex((item) => item.id === sourceId);
@@ -353,20 +390,25 @@ function ModifiersPage() {
       await http.post("modifier-groups/reorder/", {
         group_ids: next.map((item) => item.id),
       });
+      if (context.current !== token) return;
       await load();
     } catch (caught) {
+      if (context.current !== token) return;
       setGroups(previous);
       setError(
         friendlyError(caught, "Não foi possível ordenar os grupos.").message,
       );
     } finally {
-      setReordering(false);
-      setDraggedGroupId(null);
+      if (context.current === token) {
+        setReordering(false);
+        setDraggedGroupId(null);
+      }
     }
   }
 
   async function reorderOptions(sourceId: number, targetId: number) {
     if (!viewingGroup || reordering || sourceId === targetId) return;
+    const token = context.current;
     const previous = groupOptions;
     const next = [...groupOptions];
     const source = next.findIndex((item) => item.id === sourceId);
@@ -379,15 +421,19 @@ function ModifiersPage() {
         modifier_group: viewingGroup.id,
         option_ids: next.map((item) => item.id),
       });
+      if (context.current !== token) return;
       await openOptions(viewingGroup);
     } catch (caught) {
+      if (context.current !== token) return;
       setGroupOptions(previous);
       setError(
         friendlyError(caught, "Não foi possível ordenar as opções.").message,
       );
     } finally {
-      setReordering(false);
-      setDraggedOptionId(null);
+      if (context.current === token) {
+        setReordering(false);
+        setDraggedOptionId(null);
+      }
     }
   }
 

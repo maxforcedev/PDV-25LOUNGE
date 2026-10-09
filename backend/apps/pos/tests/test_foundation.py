@@ -1089,6 +1089,10 @@ class POSFoundationIntegrationTests(TestCase):
 
     def test_bootstrap_reports_fixed_and_flexible_cash_state_without_fake_selection(self):
         operator, paired = self.login_pos_operator()
+        default_register = CashRegister.objects.get(
+            branch=self.branch,
+            name='Caixa principal',
+        )
         fixed_register = CashRegister.objects.create(branch=self.branch, name='Bar')
         fixed_session = open_session(
             fixed_register, '25.00', operator, self.branch, allow_pos_only=True,
@@ -1137,7 +1141,7 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertNotIn('session', flexible.data['cash'])
         self.assertEqual(
             {item['id'] for item in flexible.data['cash']['registers']},
-            {fixed_register.pk, flexible_register.pk},
+            {default_register.pk, fixed_register.pk, flexible_register.pk},
         )
 
     def test_pos_cash_requires_operator_scope_and_uses_pos_only_operator_rbac(self):
