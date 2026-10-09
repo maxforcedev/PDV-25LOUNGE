@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from django.core import mail
 from django.test import TestCase, override_settings
 from django.utils.encoding import force_bytes
@@ -5,6 +7,7 @@ from django.utils.http import urlsafe_base64_encode
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
+from apps.base.models import AuditLog
 
 
 @override_settings(
@@ -29,6 +32,29 @@ class SelfServicePasswordResetTests(TestCase):
         self.assertEqual(known.data, unknown.data)
         self.assertEqual(len(mail.outbox), 1)
         self.assertIn('/redefinir-senha?uid=', mail.outbox[0].body)
+
+    def test_delivery_failure_is_logged_without_changing_the_neutral_response(self):
+        with self.assertLogs('apps.accounts.password_reset', level='ERROR') as logs:
+            with patch(
+                'apps.accounts.password_reset.send_mail',
+                side_effect=OSError('SMTP unavailable'),
+            ):
+                response = self.client.post(
+                    self.request_url,
+                    {'email': self.user.email},
+                    format='json',
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {
+            'detail': 'Se existir uma conta vinculada a este e-mail, enviaremos as instruções para redefinição.'
+        })
+        self.assertNotIn(self.user.email, '\n'.join(logs.output))
+        audit = AuditLog.objects.filter(
+            action='auth.password_reset_requested',
+            object_id=str(self.user.pk),
+        ).latest('id')
+        self.assertEqual(audit.metadata['source'], 'self_service')
 
     def test_confirmation_accepts_valid_link_and_rejects_malformed_uid(self):
         uid = urlsafe_base64_encode(force_bytes(self.user.pk))
