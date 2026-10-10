@@ -117,7 +117,7 @@ class Block6Fixture:
                 'commands-block6',
                 enabled_features=(
                     'tables', 'commands', 'cash_register', 'counter', 'consumption',
-                    'products', 'inventory', 'production', 'promotions',
+                    'products', 'inventory', 'production', 'promotions', 'financial',
                 ),
             ),
             billing_mode=Subscription.BillingMode.PAID,

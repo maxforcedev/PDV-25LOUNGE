@@ -50,6 +50,11 @@ class DashboardFinalAdjustmentTests(TestCase):
         )
         PlanEntitlement.objects.create(
             plan_version=version,
+            capability=capabilities['feature.counter'],
+            unlimited=True,
+        )
+        PlanEntitlement.objects.create(
+            plan_version=version,
             capability=capabilities['feature.commands'],
             unlimited=True,
         )

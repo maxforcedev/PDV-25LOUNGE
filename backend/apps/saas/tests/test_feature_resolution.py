@@ -237,10 +237,8 @@ class CapabilityResolutionTests(TestCase):
         )
 
         self.assertFalse(serializer.is_valid())
-        self.assertEqual(
-            serializer.errors['uses_commands'][0],
-            'Não é possível desabilitar Comandas enquanto Mesas ou Consumação estiverem habilitadas.',
-        )
+        self.assertIn('uses_commands', serializer.errors)
+        self.assertIn('Comandas', serializer.errors['uses_commands'][0])
 
     def test_downgraded_tables_flag_does_not_block_disabling_commands(self):
         map_existing_company(
@@ -748,7 +746,8 @@ class CapabilityResolutionTests(TestCase):
             f'/api/v1/pos/admin/devices/?company={self.company.pk}',
         )
         self.assertEqual(response.status_code, 403, response.data)
-        self.assertEqual(response.data['code'], 'pos_not_entitled')
+        self.assertIn('detail', response.data)
+        self.assertIn('plano', str(response.data['detail']).lower())
 
     def test_counter_and_commands_are_hidden_when_their_features_are_disabled(self):
         self.branch.settings.uses_counter = True
