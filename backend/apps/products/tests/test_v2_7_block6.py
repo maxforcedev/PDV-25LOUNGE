@@ -1310,6 +1310,10 @@ class ProductMissionM5Tests(ProductRbacFixture, TestCase):
     def test_duplicate_without_branch_config_creates_only_current_branch_config(self):
         from apps.companies.services import create_branch_with_access
 
+        self.cat_a.available_counter = False
+        self.cat_a.available_table = True
+        self.cat_a.available_command = False
+        self.cat_a.save()
         other_branch = create_branch_with_access(
             creator=self.owner_a, company=self.company_a, name='Outra filial duplicada',
         )
@@ -1332,6 +1336,9 @@ class ProductMissionM5Tests(ProductRbacFixture, TestCase):
         self.assertEqual(Product.objects.filter(company=self.company_a).count(), before_count + 1)
         copied = ProductBranchConfig.objects.get(product=duplicate, branch=self.branch_a)
         self.assertEqual(copied.category_id, self.cat_a.pk)
+        self.assertFalse(copied.available_counter)
+        self.assertTrue(copied.available_table)
+        self.assertFalse(copied.available_command)
         self.assertEqual(ProductBranchConfig.objects.filter(product=duplicate).count(), 1)
         self.assertFalse(ProductBranchConfig.objects.filter(
             product=duplicate, branch=other_branch,
