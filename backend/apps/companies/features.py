@@ -98,16 +98,12 @@ def branch_feature_states(branch):
         settings = BranchSettings()
     flags = settings.feature_flags()
 
-    from apps.saas.services import (
-        effective_entitlement, get_entitled_features, resolve_effective_status,
-    )
+    from apps.saas.services import effective_entitlement, resolve_effective_status
 
-    entitled = get_entitled_features(branch.company)
     operational = resolve_effective_status(branch.company)['can_operate']
     plan_allowed = {
-        feature: capability in entitled or bool(
-            capability and not capability.startswith('feature.')
-            and (entitlement := effective_entitlement(branch.company, capability))
+        feature: bool(
+            (entitlement := effective_entitlement(branch.company, capability))
             and entitlement.enabled
         )
         for feature, capability in FEATURE_CAPABILITIES.items()

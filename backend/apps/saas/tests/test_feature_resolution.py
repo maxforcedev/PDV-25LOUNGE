@@ -316,6 +316,101 @@ class CapabilityResolutionTests(TestCase):
         self.assertIn('uses_tables', serializer.errors)
         self.assertFalse(branch_feature_states(self.branch)['tables']['enabled'])
 
+    def test_pos_branch_switch_uses_the_pos_entitlement(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan('pos-branch-switch-enabled', tables=False, pos=True),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+
+        serializer = BranchSettingsSerializer(
+            self.branch.settings, data={'uses_pos': True}, partial=True,
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_pos_branch_switch_rejects_an_unentitled_enable(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan('pos-branch-switch-disabled', tables=False, pos=False),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+
+        serializer = BranchSettingsSerializer(
+            self.branch.settings, data={'uses_pos': True}, partial=True,
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('uses_pos', serializer.errors)
+
+    def test_off_plan_legacy_switch_does_not_block_an_unrelated_patch(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan('legacy-off-plan-patch', tables=False, products=True),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+
+        serializer = BranchSettingsSerializer(
+            self.branch.settings, data={'uses_products': True}, partial=True,
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_off_plan_legacy_switch_can_be_regularized_but_not_reenabled(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan('legacy-off-plan-regularization', tables=False, products=True),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+
+        regularize = BranchSettingsSerializer(
+            self.branch.settings, data={'uses_inventory': False}, partial=True,
+        )
+        reenabling = BranchSettingsSerializer(
+            self.branch.settings, data={'uses_inventory': True}, partial=True,
+        )
+
+        self.assertTrue(regularize.is_valid(), regularize.errors)
+        regularize.save()
+        self.branch.settings.refresh_from_db()
+        self.assertFalse(self.branch.settings.uses_inventory)
+        self.assertFalse(reenabling.is_valid())
+        self.assertIn('uses_inventory', reenabling.errors)
+
+    def test_suspended_tenant_keeps_plan_allowed_but_disables_the_feature(self):
+        subscription, _ = map_existing_company(
+            company=self.company,
+            plan_version=self._plan('suspended-plan-allowed', tables=False, products=True),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+        subscription.status = Subscription.Status.SUSPENDED_FINANCIAL
+        subscription.save(update_fields=('status', 'updated_at'))
+
+        state = branch_feature_states(self.branch)['products']
+
+        self.assertTrue(state['plan_allowed'])
+        self.assertFalse(state['enabled'])
+
+    def test_inventory_requires_products_when_both_features_are_entitled(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan(
+                'inventory-branch-dependency', tables=False, features=('inventory',),
+            ),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+        self.branch.settings.uses_products = False
+        self.branch.settings.save(update_fields=('uses_products', 'updated_at'))
+
+        serializer = BranchSettingsSerializer(
+            self.branch.settings,
+            data={'uses_inventory': True, 'uses_products': False},
+            partial=True,
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('uses_inventory', serializer.errors)
+
     def test_off_plan_internal_settings_are_not_persisted(self):
         map_existing_company(
             company=self.company,

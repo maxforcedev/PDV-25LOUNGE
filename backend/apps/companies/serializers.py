@@ -392,13 +392,6 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
             return 'clear'
         return 'enabled_with_negatives' if settings.allow_negative_stock else 'legacy_inconsistent'
 
-    def _entitled_features(self, company):
-        try:
-            from apps.saas.services import get_entitled_features
-            return set(get_entitled_features(company))
-        except Exception:
-            return set()
-
     def validate(self, attrs):
         range_start = attrs.get(
             'table_range_start', self.instance.table_range_start if self.instance else 1,
@@ -419,15 +412,18 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
             feature: attrs.get(field, getattr(self.instance, field, False))
             for feature, field in BRANCH_FEATURE_FIELDS.items()
         }
+        final_enabled = {
+            feature: bool(final_flags[feature] and feature_allowed.get(feature, False))
+            for feature in BRANCH_FEATURE_FIELDS
+        }
         dependency_errors = {}
         for feature, field in BRANCH_FEATURE_FIELDS.items():
-            if final_flags[feature] and not feature_allowed.get(feature, True):
+            if attrs.get(field) is True and not feature_allowed.get(feature, False):
                 dependency_errors[field] = 'O plano não permite esta funcionalidade.'
                 continue
             missing = [
                 dependency for dependency in BRANCH_FEATURE_DEPENDENCIES.get(feature, ())
-                if final_flags[feature] and not final_flags[dependency]
-                and feature_allowed.get(feature, True)
+                if final_enabled[feature] and not final_enabled[dependency]
             ]
             if missing:
                 dependency_errors[field] = (
@@ -436,12 +432,11 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
                     + ' habilitado nesta filial.'
                 )
         for prerequisite in BRANCH_FEATURE_FIELDS:
-            if final_flags[prerequisite]:
+            if final_enabled[prerequisite]:
                 continue
             dependents = [
                 feature for feature, dependencies in BRANCH_FEATURE_DEPENDENCIES.items()
-                if prerequisite in dependencies and final_flags[feature]
-                and feature_allowed.get(feature, True)
+                if prerequisite in dependencies and final_enabled[feature]
             ]
             if dependents:
                 dependency_errors[BRANCH_FEATURE_FIELDS[prerequisite]] = (
@@ -499,15 +494,6 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
                     message='Existem Comandas abertas. Encerre-as antes de desativar o recurso.',
                     details={'count': open_commands.count()},
                 )
-        if self.instance:
-            company = self.instance.branch.company
-            entitled = self._entitled_features(company)
-            for feature, field in BRANCH_FEATURE_FIELDS.items():
-                capability = {'pos': 'pos.enabled'}.get(feature, f'feature.{feature}')
-                if attrs.get(field) is True and capability not in entitled:
-                    raise serializers.ValidationError(
-                        {field: f'O plano não permite a funcionalidade "{capability}".'}
-                    )
         return attrs
 
     def to_representation(self, instance):
