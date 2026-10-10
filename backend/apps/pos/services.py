@@ -18,7 +18,7 @@ from rest_framework.exceptions import AuthenticationFailed
 from apps.base.audit import audit_log
 from apps.base.exceptions import DomainValidationError
 from apps.cash.models import CashRegister, CashRegisterStatus, CashSession, CashSessionStatus
-from apps.companies.features import branch_feature_enabled
+from apps.companies.features import branch_feature_enabled, require_branch_feature
 from apps.companies.models import Branch, Company, Status, UserBranchAccess, UserCompanyAccess
 from apps.companies.rbac import OPERATING_PERMISSION_CODES
 from apps.companies.selectors import (
@@ -173,6 +173,7 @@ def validate_device_operational(device, *, check_version=True, refresh=True):
     if device.branch.status != Status.ACTIVE:
         _error('branch_not_operational', 'A filial nao esta operacional.', status_code=403)
     pos_enabled(device.branch.company)
+    require_branch_feature(device.branch, 'pos')
     if check_version:
         version_gate(device.app_version)
     return device
@@ -264,6 +265,7 @@ def identify_branch(identifier, request):
     if branch.status != Status.ACTIVE:
         _error('branch_not_operational', 'A filial nao esta operacional.', status_code=403)
     pos_enabled(branch.company)
+    require_branch_feature(branch, 'pos')
     channels = pairing_channels(branch)
     if not channels:
         _error('pairing_contact_unavailable', 'A filial nao possui um contato de pareamento disponivel.', status_code=409)
@@ -319,6 +321,7 @@ def validate_device_branch_for_pairing(branch):
     if branch.status != Status.ACTIVE:
         _error('branch_not_operational', 'A filial nao esta operacional.', status_code=403)
     pos_enabled(branch.company)
+    require_branch_feature(branch, 'pos')
 
 
 def confirm_pairing(challenge_id, code, device_data, request):
@@ -895,7 +898,7 @@ def modules_for(operator, device, *, permission_codes=None):
         operator, device.branch,
     )
     enabled = pos_enabled(device.branch.company)
-    operational = enabled and device.branch.status == Status.ACTIVE
+    operational = enabled and device.branch.status == Status.ACTIVE and branch_feature_enabled(device.branch, 'pos')
     return permissions, {
         'quick_sale': {'enabled': bool(operational and branch_feature_enabled(device.branch, 'counter') and 'sales.create' in permissions)},
         'tables': {'enabled': bool(operational and branch_feature_enabled(device.branch, 'tables') and permissions.intersection({'tables.view', 'tables.open'}))},

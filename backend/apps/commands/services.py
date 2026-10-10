@@ -12,7 +12,7 @@ from rest_framework import status
 from rest_framework.exceptions import APIException, ValidationError
 
 from apps.base.audit import audit_log, model_snapshot
-from apps.companies.features import require_branch_feature
+from apps.companies.features import branch_feature_enabled, require_branch_feature
 from apps.companies.models import Branch, Company, Customer, Status
 from apps.companies.selectors import eligible_branch_users
 from apps.inventory.models import (
@@ -927,7 +927,10 @@ def confirm_order_item(*, item, user, idempotency_key, support_session=None):
 def _branch_allows_negative(branch):
     from apps.companies.models import BranchSettings
     settings = BranchSettings.objects.filter(branch=branch).first()
-    return bool(settings and settings.allow_negative_stock)
+    return bool(
+        branch_feature_enabled(branch, 'inventory')
+        and settings and settings.allow_negative_stock
+    )
 
 
 def _confirmed_consumption(command):
@@ -944,7 +947,10 @@ def _assert_consumption_limit(command, item):
     from apps.companies.models import BranchSettings
 
     settings = BranchSettings.objects.select_for_update().filter(branch=command.branch).first()
-    if not settings or not settings.consumption_limit_enabled:
+    if (
+        not branch_feature_enabled(command.branch, 'consumption')
+        or not settings or not settings.consumption_limit_enabled
+    ):
         return
     attempt = (item.unit_price * item.quantity).quantize(CENT, rounding=ROUND_HALF_UP)
     for label, limit in [('comanda', settings.command_consumption_limit)]:

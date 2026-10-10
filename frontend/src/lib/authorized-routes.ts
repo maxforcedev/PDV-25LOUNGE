@@ -12,6 +12,7 @@ const routes: Array<{
   { href: "/mesas", permissions: [permissions.viewTables], features: ["tables"] },
   { href: "/comandas", permissions: [permissions.viewCommands], features: ["commands"] },
   { href: "/caixas", permissions: [permissions.viewCashRegister], features: ["cash_register"] },
+  { href: "/vendas", permissions: [permissions.viewSale], features: ["counter"] },
   { href: "/producao/fila", permissions: [permissions.viewPrintJobs], features: ["production"] },
   { href: "/producao/rotas-impressao", permissions: [permissions.managePrintRoutes], features: ["production"] },
   { href: "/producao/impressoras", permissions: [permissions.managePrinters], features: ["production"] },

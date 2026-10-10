@@ -439,6 +439,11 @@ class CapabilityResolutionTests(TestCase):
         request.headers['X-Branch-ID'] = str(second_branch.pk)
         enforce_saas_request(request, self.user, view)
 
+        second_branch.settings.uses_products = False
+        second_branch.settings.save(update_fields=('uses_products', 'updated_at'))
+        with self.assertRaises(PermissionDenied):
+            enforce_saas_request(request, self.user, view)
+
     def test_disabled_commercial_capabilities_block_direct_api_for_superuser(self):
         map_existing_company(
             company=self.company,

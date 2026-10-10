@@ -9,7 +9,14 @@ from .models import (
     UserBranchAccess, UserCommissionOverride, UserCompanyAccess, UserPermissionBlock,
 )
 from .rbac import PERMISSION_SCOPE_BRANCH, permission_scope
-from .features import branch_feature_enabled, branch_feature_states, capability_visible_permission_codes
+from .features import (
+    BRANCH_FEATURE_DEPENDENCIES,
+    BRANCH_FEATURE_FIELDS,
+    FEATURE_LABELS,
+    branch_feature_enabled,
+    branch_feature_states,
+    capability_visible_permission_codes,
+)
 from .selectors import (
     accessible_branches,
     company_permission_codes,
@@ -288,6 +295,17 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
     uses_counter = serializers.BooleanField(required=False)
     uses_consumption = serializers.BooleanField(required=False)
     uses_cash_register = serializers.BooleanField(required=False)
+    uses_production = serializers.BooleanField(required=False)
+    uses_products = serializers.BooleanField(required=False)
+    uses_inventory = serializers.BooleanField(required=False)
+    uses_purchases = serializers.BooleanField(required=False)
+    uses_suppliers = serializers.BooleanField(required=False)
+    uses_customers = serializers.BooleanField(required=False)
+    uses_promotions = serializers.BooleanField(required=False)
+    uses_reports = serializers.BooleanField(required=False)
+    uses_audit = serializers.BooleanField(required=False)
+    uses_financial = serializers.BooleanField(required=False)
+    uses_pos = serializers.BooleanField(required=False)
     charges_service_fee = serializers.BooleanField(required=False)
     default_table_quantity = serializers.IntegerField(min_value=1, max_value=500, required=False)
     table_range_start = serializers.IntegerField(min_value=1, max_value=500, required=False)
@@ -304,7 +322,10 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
             'id', 'branch', 'allow_negative_stock', 'service_fee_rate',
             'commission_rate', 'fixed_daily_cost',
             'uses_tables', 'uses_commands', 'uses_counter',
-            'uses_consumption', 'uses_cash_register', 'charges_service_fee',
+            'uses_consumption', 'uses_cash_register', 'uses_production',
+            'uses_products', 'uses_inventory', 'uses_purchases', 'uses_suppliers',
+            'uses_customers', 'uses_promotions', 'uses_reports', 'uses_audit',
+            'uses_financial', 'uses_pos', 'charges_service_fee',
             'default_table_quantity', 'default_table_seats', 'default_table_prefix',
             'table_range_start', 'table_range_end',
             'consumption_limit_enabled', 'command_consumption_limit', 'table_consumption_limit',
@@ -334,13 +355,6 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
         if branch is None:
             return fields
         requested_fields = set(getattr(self, 'initial_data', {}))
-        regularizable_legacy_flags = {
-            'uses_tables',
-            'uses_commands',
-            'uses_counter',
-            'uses_consumption',
-            'uses_cash_register',
-        }
         feature_fields = {
             'inventory': ('allow_negative_stock', 'negative_stock_count', 'negative_stock_state'),
             'financial': ('service_fee_rate', 'commission_rate', 'fixed_daily_cost', 'charges_service_fee'),
@@ -352,15 +366,18 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
             'consumption': ('uses_consumption', 'consumption_limit_enabled',
                             'command_consumption_limit', 'table_consumption_limit'),
             'cash_register': ('uses_cash_register',),
+            **{feature: (field,) for feature, field in BRANCH_FEATURE_FIELDS.items()
+               if feature not in {'tables', 'commands', 'counter', 'consumption', 'cash_register'}},
         }
         states = branch_feature_states(branch)
         for feature, names in feature_fields.items():
             if not states.get(feature, {}).get('plan_allowed'):
                 for name in names:
-                    # Only legacy module flags may be submitted off-plan so true values
-                    # can be rejected and persisted true values can be regularized to false.
-                    if name not in regularizable_legacy_flags or name not in requested_fields:
-                        fields.pop(name, None)
+                    # Commercial switches remain writable so an explicit off-plan
+                    # enable is rejected and persisted legacy values can be disabled.
+                    if name.startswith('uses_') and name in requested_fields:
+                        continue
+                    fields.pop(name, None)
         return fields
 
     def get_negative_stock_count(self, settings):
@@ -383,8 +400,6 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
             return set()
 
     def validate(self, attrs):
-        from .features import BRANCH_FEATURE_DEPENDENCIES, branch_feature_states
-
         range_start = attrs.get(
             'table_range_start', self.instance.table_range_start if self.instance else 1,
         )
@@ -395,62 +410,45 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 'table_range_end': 'Informe um intervalo entre 1 e 500 mesas.'
             })
-        dependent_features = {
-            'uses_counter': 'Balcão',
-            'uses_consumption': 'Consumação',
-            'uses_commands': 'Comandas',
-        }
-        effective_cash_register = attrs.get(
-            'uses_cash_register',
-            self.instance.uses_cash_register if self.instance else False,
-        )
         feature_states = branch_feature_states(self.instance.branch) if self.instance else {}
         feature_allowed = {
             feature: state.get('plan_allowed', False)
             for feature, state in feature_states.items()
         }
-        enabled_dependents = [
-            field for field in dependent_features
-            if (
-                attrs.get(field, getattr(self.instance, field, False))
-                and feature_allowed.get(field.removeprefix('uses_'), True)
-            )
-        ]
+        final_flags = {
+            feature: attrs.get(field, getattr(self.instance, field, False))
+            for feature, field in BRANCH_FEATURE_FIELDS.items()
+        }
         dependency_errors = {}
-        if not effective_cash_register:
-            for field in enabled_dependents:
-                if attrs.get(field) is True:
-                    dependency_errors[field] = (
-                        f'{dependent_features[field]} requer Caixa habilitado nesta filial.'
-                    )
-            if attrs.get('uses_cash_register') is False and enabled_dependents:
-                labels = ', '.join(dependent_features[field] for field in enabled_dependents)
-                dependency_errors['uses_cash_register'] = (
-                    f'Não é possível desabilitar Caixa enquanto {labels} estiver habilitado.'
-                )
-        effective_commands = bool(
-            attrs.get('uses_commands', getattr(self.instance, 'uses_commands', False))
-            and effective_cash_register
-        )
-        command_dependents = [
-            feature for feature, dependencies in BRANCH_FEATURE_DEPENDENCIES.items()
-            if (
-                'commands' in dependencies
-                and attrs.get(f'uses_{feature}', getattr(self.instance, f'uses_{feature}', False))
+        for feature, field in BRANCH_FEATURE_FIELDS.items():
+            if final_flags[feature] and not feature_allowed.get(feature, True):
+                dependency_errors[field] = 'O plano não permite esta funcionalidade.'
+                continue
+            missing = [
+                dependency for dependency in BRANCH_FEATURE_DEPENDENCIES.get(feature, ())
+                if final_flags[feature] and not final_flags[dependency]
                 and feature_allowed.get(feature, True)
-            )
-        ]
-        if attrs.get('uses_commands') is False and command_dependents:
-            dependency_errors['uses_commands'] = (
-                'Não é possível desabilitar Comandas enquanto Mesas ou Consumação estiverem habilitadas.'
-            )
-        if not effective_commands:
-            for feature, message in (
-                ('tables', 'Mesas requer Comandas habilitado nesta filial.'),
-                ('consumption', 'Consumação requer Comandas habilitado nesta filial.'),
-            ):
-                if attrs.get(f'uses_{feature}') is True and feature_allowed.get(feature, True):
-                    dependency_errors[f'uses_{feature}'] = message
+            ]
+            if missing:
+                dependency_errors[field] = (
+                    f'{FEATURE_LABELS[feature]} requer '
+                    + ' e '.join(FEATURE_LABELS[dependency] for dependency in missing)
+                    + ' habilitado nesta filial.'
+                )
+        for prerequisite in BRANCH_FEATURE_FIELDS:
+            if final_flags[prerequisite]:
+                continue
+            dependents = [
+                feature for feature, dependencies in BRANCH_FEATURE_DEPENDENCIES.items()
+                if prerequisite in dependencies and final_flags[feature]
+                and feature_allowed.get(feature, True)
+            ]
+            if dependents:
+                dependency_errors[BRANCH_FEATURE_FIELDS[prerequisite]] = (
+                    f'Não é possível desabilitar {FEATURE_LABELS[prerequisite]} enquanto '
+                    + ' ou '.join(FEATURE_LABELS[feature] for feature in dependents)
+                    + ' estiverem habilitados.'
+                )
         if dependency_errors:
             raise serializers.ValidationError(dependency_errors)
 
@@ -504,17 +502,11 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
         if self.instance:
             company = self.instance.branch.company
             entitled = self._entitled_features(company)
-            feature_map = {
-                'uses_tables': 'feature.tables',
-                'uses_commands': 'feature.commands',
-                'uses_counter': 'feature.counter',
-                'uses_consumption': 'feature.consumption',
-                'uses_cash_register': 'feature.cash_register',
-            }
-            for field, feature in feature_map.items():
-                if attrs.get(field) is True and feature not in entitled:
+            for feature, field in BRANCH_FEATURE_FIELDS.items():
+                capability = {'pos': 'pos.enabled'}.get(feature, f'feature.{feature}')
+                if attrs.get(field) is True and capability not in entitled:
                     raise serializers.ValidationError(
-                        {field: f'O plano não permite a funcionalidade "{feature}".'}
+                        {field: f'O plano não permite a funcionalidade "{capability}".'}
                     )
         return attrs
 

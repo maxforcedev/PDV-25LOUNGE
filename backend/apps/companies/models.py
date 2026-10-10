@@ -325,6 +325,17 @@ class BranchSettings(BaseModel):
     uses_counter = models.BooleanField(default=True)
     uses_consumption = models.BooleanField(default=True)
     uses_cash_register = models.BooleanField(default=True)
+    uses_production = models.BooleanField(default=True)
+    uses_products = models.BooleanField(default=True)
+    uses_inventory = models.BooleanField(default=True)
+    uses_purchases = models.BooleanField(default=True)
+    uses_suppliers = models.BooleanField(default=True)
+    uses_customers = models.BooleanField(default=True)
+    uses_promotions = models.BooleanField(default=True)
+    uses_reports = models.BooleanField(default=True)
+    uses_audit = models.BooleanField(default=True)
+    uses_financial = models.BooleanField(default=True)
+    uses_pos = models.BooleanField(default=True)
     charges_service_fee = models.BooleanField(default=False)
     default_table_quantity = models.PositiveIntegerField(default=20)
     table_range_start = models.PositiveIntegerField(default=1)
@@ -389,9 +400,17 @@ class BranchSettings(BaseModel):
             'counter': self.uses_counter,
             'consumption': self.uses_consumption,
             'cash_register': self.uses_cash_register,
-            'service_fee': self.charges_service_fee,
-            'negative_stock': self.allow_negative_stock,
-            'consumption_limit': self.consumption_limit_enabled,
+            'production': self.uses_production,
+            'products': self.uses_products,
+            'inventory': self.uses_inventory,
+            'purchases': self.uses_purchases,
+            'suppliers': self.uses_suppliers,
+            'customers': self.uses_customers,
+            'promotions': self.uses_promotions,
+            'reports': self.uses_reports,
+            'audit': self.uses_audit,
+            'financial': self.uses_financial,
+            'pos': self.uses_pos,
         }
 
     def __str__(self):

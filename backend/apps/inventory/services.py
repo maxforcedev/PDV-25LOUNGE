@@ -11,6 +11,7 @@ from rest_framework.exceptions import PermissionDenied
 
 from apps.base.audit import audit_log, model_snapshot
 from apps.base.exceptions import DomainValidationError
+from apps.companies.features import branch_feature_enabled
 from apps.companies.models import Branch, Company, Status
 from apps.companies.selectors import user_has_branch_permission
 from apps.products.models import (
@@ -436,7 +437,7 @@ def apply_locked_stock(*, stock, quantity, user, movement_type, reason='', sale=
         )
     if negative_final and negative_delta:
         from apps.companies.models import BranchSettings
-        allow_negative = BranchSettings.objects.filter(
+        allow_negative = branch_feature_enabled(stock.branch, 'inventory') and BranchSettings.objects.filter(
             branch_id=stock.branch_id, allow_negative_stock=True
         ).exists()
         if not allow_negative:

@@ -42,6 +42,7 @@ import { useAuth } from "@/providers/auth-provider";
 import type {
   Address,
   Branch,
+  BranchFeature,
   BranchPayload,
   BranchSettings,
   Paginated,
@@ -76,6 +77,29 @@ const emptyForm: BranchPayload = {
   address: emptyAddress,
 };
 
+const commercialModuleSettings = [
+  { feature: "tables", field: "uses_tables", label: "Mesas" },
+  { feature: "commands", field: "uses_commands", label: "Comandas" },
+  { feature: "counter", field: "uses_counter", label: "Balcão" },
+  { feature: "consumption", field: "uses_consumption", label: "Consumação" },
+  { feature: "cash_register", field: "uses_cash_register", label: "Caixa" },
+  { feature: "production", field: "uses_production", label: "Produção e impressão" },
+  { feature: "products", field: "uses_products", label: "Produtos e catálogo" },
+  { feature: "inventory", field: "uses_inventory", label: "Estoque" },
+  { feature: "purchases", field: "uses_purchases", label: "Compras" },
+  { feature: "suppliers", field: "uses_suppliers", label: "Fornecedores" },
+  { feature: "customers", field: "uses_customers", label: "Clientes" },
+  { feature: "promotions", field: "uses_promotions", label: "Promoções" },
+  { feature: "reports", field: "uses_reports", label: "Relatórios" },
+  { feature: "audit", field: "uses_audit", label: "Auditoria" },
+  { feature: "financial", field: "uses_financial", label: "Financeiro" },
+  { feature: "pos", field: "uses_pos", label: "CORE POS" },
+] as const satisfies ReadonlyArray<{
+  feature: BranchFeature;
+  field: keyof BranchSettings;
+  label: string;
+}>;
+
 function addressText(address: Branch["address"]) {
   if (!address) return "Não informado";
   if (typeof address === "string") return address;
@@ -96,6 +120,8 @@ function BranchesAdministration() {
   const canChangeCommission = hasPermission(permissions.changeBranchCommission);
   const planAllows = (feature: Parameters<typeof featureState>[0]) =>
     Boolean(featureState(feature)?.plan_allowed);
+  const moduleEnabled = (feature: BranchFeature) =>
+    Boolean(settings?.feature_flags?.[feature]);
   const [data, setData] = useState<Paginated<Branch> | null>(null);
   const [overview, setOverview] = useState<BusinessOverview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -410,10 +436,9 @@ function BranchesAdministration() {
     setSettingsFields({});
     setError("");
     try {
-      setSettings(
-        await http.patch<BranchSettings>(
-          `branches/${settingsBranch.id}/settings/?company=${currentCompany?.id}`,
-          {
+      const updatedSettings = await http.patch<BranchSettings>(
+        `branches/${settingsBranch.id}/settings/?company=${currentCompany?.id}`,
+        {
             ...(planAllows("inventory") && { allow_negative_stock: settings.allow_negative_stock }),
             ...(planAllows("financial") && {
               service_fee_rate: settings.service_fee_rate,
@@ -421,14 +446,15 @@ function BranchesAdministration() {
               fixed_daily_cost: settings.fixed_daily_cost,
               charges_service_fee: settings.charges_service_fee,
             }),
-            ...(planAllows("tables") && { uses_tables: settings.uses_tables }),
-            ...(planAllows("commands") && { uses_commands: settings.uses_commands }),
-            ...(planAllows("counter") && { uses_counter: settings.uses_counter }),
-            ...(planAllows("consumption") && { uses_consumption: settings.uses_consumption }),
-            ...(planAllows("cash_register") && { uses_cash_register: settings.uses_cash_register }),
-          },
-        ),
+            ...Object.fromEntries(
+              commercialModuleSettings
+                .filter(({ feature }) => planAllows(feature))
+                .map(({ field }) => [field, settings[field]]),
+            ),
+        },
       );
+      setSettings(updatedSettings);
+      await refreshUser();
       setSettingsBranch(null);
       setSuccess("Configurações da filial salvas com sucesso.");
     } catch (caught) {
@@ -828,7 +854,7 @@ function BranchesAdministration() {
           <form onSubmit={saveSettings}>
             <div className="space-y-5 p-5 sm:p-6">
               {error && <Alert message={error} />}
-               {planAllows("inventory") && <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-4">
+                {moduleEnabled("inventory") && <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-4">
                 <input
                   type="checkbox"
                   className="mt-0.5 size-4 accent-primary"
@@ -891,34 +917,18 @@ function BranchesAdministration() {
                 <strong className="block text-xs">Operação</strong>
                 <small className="mt-1 block text-[11px] text-slate-500">Ative ou desative recursos desta filial.</small>
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                   {planAllows("tables") && <label className="flex items-center gap-2 text-xs">
-                    <input type="checkbox" className="size-4 accent-primary" checked={settings.uses_tables ?? false} onChange={(event) => setSettings((value) => value ? { ...value, uses_tables: event.target.checked } : value)} disabled={settingsSaving} />
-                    Mesas
-                   </label>}
-                   {planAllows("commands") && <label className="flex items-center gap-2 text-xs">
-                    <input type="checkbox" className="size-4 accent-primary" checked={settings.uses_commands ?? false} onChange={(event) => setSettings((value) => value ? { ...value, uses_commands: event.target.checked } : value)} disabled={settingsSaving} />
-                    Comandas
-                   </label>}
-                   {planAllows("counter") && <label className="flex items-center gap-2 text-xs">
-                    <input type="checkbox" className="size-4 accent-primary" checked={settings.uses_counter ?? true} onChange={(event) => setSettings((value) => value ? { ...value, uses_counter: event.target.checked } : value)} disabled={settingsSaving} />
-                    Balcão
-                   </label>}
-                   {planAllows("consumption") && <label className="flex items-center gap-2 text-xs">
-                    <input type="checkbox" className="size-4 accent-primary" checked={settings.uses_consumption ?? true} onChange={(event) => setSettings((value) => value ? { ...value, uses_consumption: event.target.checked } : value)} disabled={settingsSaving} />
-                    Consumação
-                   </label>}
-                   {planAllows("cash_register") && <label className="flex items-center gap-2 text-xs">
-                    <input type="checkbox" className="size-4 accent-primary" checked={settings.uses_cash_register ?? true} onChange={(event) => setSettings((value) => value ? { ...value, uses_cash_register: event.target.checked } : value)} disabled={settingsSaving} />
-                    Caixa
-                   </label>}
-                   {planAllows("financial") && <label className="flex items-center gap-2 text-xs">
+                    {commercialModuleSettings.map(({ feature, field, label }) => planAllows(feature) && <label key={feature} className="flex items-center gap-2 text-xs">
+                     <input type="checkbox" className="size-4 accent-primary" checked={settings[field] as boolean} onChange={(event) => setSettings((value) => value ? { ...value, [field]: event.target.checked } : value)} disabled={settingsSaving} />
+                     {label}
+                    </label>)}
+                    {moduleEnabled("financial") && <label className="flex items-center gap-2 text-xs">
                     <input type="checkbox" className="size-4 accent-primary" checked={settings.charges_service_fee ?? false} onChange={(event) => setSettings((value) => value ? { ...value, charges_service_fee: event.target.checked } : value)} disabled={settingsSaving} />
                     Cobra taxa de serviço
                    </label>}
                 </div>
               </div>
-               {planAllows("consumption") && <div className="rounded-lg border border-slate-200 p-4"><strong className="block text-xs">Limites de consumo</strong><label className="mt-4 flex items-center gap-2 text-xs"><input type="checkbox" className="size-4 accent-primary" checked={settings.consumption_limit_enabled} onChange={(event) => setSettings((value) => value ? { ...value, consumption_limit_enabled: event.target.checked } : value)} disabled={settingsSaving} />Habilitar limite de consumo confirmado</label>{settings.consumption_limit_enabled && <div className="mt-3 grid gap-3 sm:grid-cols-2"><Field label="Limite por comanda (R$)" optional><Input inputMode="decimal" value={settings.command_consumption_limit || ""} onChange={(event) => setSettings((value) => value ? { ...value, command_consumption_limit: event.target.value || null } : value)} disabled={settingsSaving} /></Field><Field label="Limite agregado por mesa (R$)" optional><Input inputMode="decimal" value={settings.table_consumption_limit || ""} onChange={(event) => setSettings((value) => value ? { ...value, table_consumption_limit: event.target.value || null } : value)} disabled={settingsSaving} /></Field></div>}</div>}
-               {planAllows("financial") && <>
+                {moduleEnabled("consumption") && <div className="rounded-lg border border-slate-200 p-4"><strong className="block text-xs">Limites de consumo</strong><label className="mt-4 flex items-center gap-2 text-xs"><input type="checkbox" className="size-4 accent-primary" checked={settings.consumption_limit_enabled} onChange={(event) => setSettings((value) => value ? { ...value, consumption_limit_enabled: event.target.checked } : value)} disabled={settingsSaving} />Habilitar limite de consumo confirmado</label>{settings.consumption_limit_enabled && <div className="mt-3 grid gap-3 sm:grid-cols-2"><Field label="Limite por comanda (R$)" optional><Input inputMode="decimal" value={settings.command_consumption_limit || ""} onChange={(event) => setSettings((value) => value ? { ...value, command_consumption_limit: event.target.value || null } : value)} disabled={settingsSaving} /></Field><Field label="Limite agregado por mesa (R$)" optional><Input inputMode="decimal" value={settings.table_consumption_limit || ""} onChange={(event) => setSettings((value) => value ? { ...value, table_consumption_limit: event.target.value || null } : value)} disabled={settingsSaving} /></Field></div>}</div>}
+                {moduleEnabled("financial") && <>
                  <div className="grid gap-4 sm:grid-cols-2">
                    <Field label="Taxa de serviço (%)" error={fieldError(settingsFields, "service_fee_rate")}>
                      <Input required type="number" min="0" max="100" step="0.01" value={settings.service_fee_rate} onChange={(event) => setSettings((value) => value ? { ...value, service_fee_rate: event.target.value } : value)} disabled={settingsSaving} />

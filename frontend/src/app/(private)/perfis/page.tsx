@@ -71,8 +71,8 @@ function Profiles() {
   const commissionEnabled = hasFeature("financial");
   const canChangeCommission = commissionEnabled && hasPermission(permissions.changeProfileCommission);
   const [data, setData] = useState<Paginated<AccessProfile> | null>(null);
-  const [catalog, setCatalog] = useState<FunctionalPermission[]>([]);
-  const availableCatalog = catalog.filter((permission) => isFunctionalPermissionAvailable(permission.code, hasFeature));
+  const [permissionCatalog, setCatalog] = useState<FunctionalPermission[]>([]);
+  const catalog = permissionCatalog.filter((permission) => isFunctionalPermissionAvailable(permission.code, hasFeature));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");

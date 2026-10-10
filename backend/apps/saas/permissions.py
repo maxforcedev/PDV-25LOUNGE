@@ -31,7 +31,7 @@ COMMERCIAL_FEATURES_BY_BASENAME = {
     'advanced-inventory-report': ('inventory',),
     'purchase-order': ('purchases',),
     'purchase-receipt': ('purchases',),
-    'payable-installment': ('financial',),
+    'payable-installment': ('purchases', 'financial'),
     'payment-method': ('financial',),
     'supplier': ('suppliers',),
     'product-supplier': ('products', 'suppliers'),
@@ -41,10 +41,27 @@ COMMERCIAL_FEATURES_BY_BASENAME = {
     'customer': ('customers',),
     'promotion': ('promotions',),
     'audit-log': ('audit',),
+    'cash-register': ('cash_register',),
+    'cash-session': ('cash_register',),
+    'cash-movement': ('cash_register',),
+    'cash-beneficiary': ('cash_register',),
+    'table': ('tables',),
+    'command': ('commands',),
+    'orderitem': ('commands',),
+    'printer-device': ('production',),
+    'production-job': ('production',),
+    'print-job': ('production',),
+    'print-document': ('production',),
+    'print-route': ('production',),
+    'print-route-override': ('production',),
+    'ticket': ('production',),
+    'pos-admin-device': ('pos',),
 }
 
 REPORT_FEATURES_BY_ROUTE_NAME = {
     'dashboard': ('reports',),
+    'report-sales': ('reports', 'counter'),
+    'report-cancellations': ('reports', 'counter'),
     'report-command-options': ('reports', 'commands', 'tables'),
     'report-commands': ('reports', 'commands', 'tables'),
     'report-tickets': ('reports', 'production'),
@@ -321,17 +338,29 @@ def _enforce_commercial_feature(request, view, company_ids):
 
     from apps.companies.features import require_branch_feature
 
-    branch_id = request.headers.get('X-Branch-ID')
-    if branch_id:
-        branch = Branch.objects.filter(pk=branch_id, company_id=next(iter(company_ids))).first()
-    else:
-        branch = Branch.objects.filter(
-            company_id=next(iter(company_ids)), is_matrix=True,
-        ).first()
-    if branch is None:
+    data = request.data if isinstance(request.data, dict) else {}
+    routed_object = _routed_object(request, view)
+    routed_branch_id = (
+        routed_object.pk if isinstance(routed_object, Branch)
+        else getattr(routed_object, 'branch_id', None)
+    )
+    branch_ids = {
+        str(value) for value in (
+            request.headers.get('X-Branch-ID'), request.query_params.get('branch'),
+            data.get('branch'), data.get('origin_branch'), data.get('destination_branch'),
+            routed_branch_id,
+        ) if value
+    }
+    branches = list(Branch.objects.filter(
+        pk__in=branch_ids, company_id=next(iter(company_ids)),
+    )) if branch_ids else list(Branch.objects.filter(
+        company_id=next(iter(company_ids)), is_matrix=True,
+    )[:1])
+    if not branches or len(branches) != len(branch_ids or {None}):
         raise PermissionDenied('A filial de contexto nao pertence a empresa informada.')
     for feature in features:
-        require_branch_feature(branch, feature)
+        for branch in branches:
+            require_branch_feature(branch, feature)
 
 
 def request_requires_commercial_feature(request, view):

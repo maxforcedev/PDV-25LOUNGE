@@ -3176,6 +3176,7 @@ class POSAdminDeviceViewSet(viewsets.ModelViewSet):
         queryset = POSDevice.objects.filter(
             branch__in=accessible_branches(self.request.user, permission_code),
             branch__company_id=company_id,
+            branch__settings__uses_pos=True,
         ).select_related('branch__company', 'replaced_by')
         branch_id = self.request.query_params.get('branch')
         if branch_id:

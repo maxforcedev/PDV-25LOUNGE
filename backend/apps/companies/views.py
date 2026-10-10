@@ -15,7 +15,7 @@ from apps.base.audit import audit_log, model_snapshot
 from apps.base.pagination import StandardPagination
 
 from .features import (
-    branch_feature_states, capability_visible_permission_codes,
+    BRANCH_FEATURE_FIELDS, branch_feature_states, capability_visible_permission_codes,
 )
 from .models import (
     AccessProfile, Branch, BranchSettings, Company, Customer, FunctionalPermission, Status,
@@ -229,8 +229,7 @@ class CompanyViewSet(viewsets.ModelViewSet):
                     after=model_snapshot(settings, (
                         'allow_negative_stock', 'service_fee_rate',
                         'commission_rate', 'fixed_daily_cost', 'uses_tables',
-                        'uses_commands', 'uses_counter', 'uses_consumption',
-                        'uses_cash_register', 'charges_service_fee',
+                        *BRANCH_FEATURE_FIELDS.values(), 'charges_service_fee',
                     )), metadata=operation_metadata,
                 )
         for profile in company.access_profiles.prefetch_related('permissions'):
@@ -438,8 +437,7 @@ class BranchViewSet(viewsets.ModelViewSet):
                 after=model_snapshot(settings, (
                     'allow_negative_stock', 'service_fee_rate',
                     'commission_rate', 'fixed_daily_cost', 'uses_tables',
-                    'uses_commands', 'uses_counter', 'uses_consumption',
-                    'uses_cash_register', 'charges_service_fee',
+                    *BRANCH_FEATURE_FIELDS.values(), 'charges_service_fee',
                 )), metadata=operation_metadata,
             )
         for access in UserBranchAccess.objects.filter(branch=branch):
@@ -498,8 +496,7 @@ class BranchViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         fields = (
             'allow_negative_stock', 'service_fee_rate', 'commission_rate',
-            'fixed_daily_cost', 'uses_tables', 'uses_commands', 'uses_counter',
-            'uses_consumption', 'uses_cash_register', 'charges_service_fee',
+            'fixed_daily_cost', *BRANCH_FEATURE_FIELDS.values(), 'charges_service_fee',
             'default_table_quantity', 'default_table_seats', 'default_table_prefix',
             'consumption_limit_enabled', 'command_consumption_limit', 'table_consumption_limit',
         )

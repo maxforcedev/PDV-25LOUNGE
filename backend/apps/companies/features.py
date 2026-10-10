@@ -42,10 +42,19 @@ FEATURE_LABELS = {
 }
 
 BRANCH_FEATURE_DEPENDENCIES = {
-    'counter': ('cash_register',),
-    'commands': ('cash_register',),
+    'inventory': ('products',),
+    'counter': ('products', 'cash_register'),
+    'commands': ('products', 'cash_register'),
+    'purchases': ('suppliers', 'products', 'inventory'),
+    'promotions': ('products',),
+    'production': ('products',),
     'tables': ('commands',),
     'consumption': ('commands',),
+}
+
+BRANCH_FEATURE_FIELDS = {
+    feature: f'uses_{feature}'
+    for feature in FEATURE_CAPABILITIES
 }
 
 # RBAC definitions are durable records.  This map is only used when building
@@ -88,9 +97,6 @@ def branch_feature_states(branch):
     except BranchSettings.DoesNotExist:
         settings = BranchSettings()
     flags = settings.feature_flags()
-    # These modules have no branch-specific switch; their plan entitlement is decisive.
-    for feature in FEATURE_CAPABILITIES:
-        flags.setdefault(feature, True)
 
     from apps.saas.services import (
         effective_entitlement, get_entitled_features, resolve_effective_status,
@@ -98,32 +104,38 @@ def branch_feature_states(branch):
 
     entitled = get_entitled_features(branch.company)
     operational = resolve_effective_status(branch.company)['can_operate']
-    states = {
-        feature: {
-            'enabled': enabled and (
-                capability is None
-                or capability in entitled
-                or bool(
-                    operational
-                    and not capability.startswith('feature.')
-                    and (entitlement := effective_entitlement(branch.company, capability))
-                    and entitlement.enabled
-                )
-            ),
-            'plan_allowed': capability is None or capability in entitled or bool(
-                operational
-                and not capability.startswith('feature.')
-                and (entitlement := effective_entitlement(branch.company, capability))
-                and entitlement.enabled
-            ),
-        }
-        for feature, enabled in flags.items()
-        for capability in (FEATURE_CAPABILITIES.get(feature),)
-    }
-    for feature, dependencies in BRANCH_FEATURE_DEPENDENCIES.items():
-        states[feature]['enabled'] = states[feature]['enabled'] and all(
-            states[dependency]['enabled'] for dependency in dependencies
+    plan_allowed = {
+        feature: capability in entitled or bool(
+            capability and not capability.startswith('feature.')
+            and (entitlement := effective_entitlement(branch.company, capability))
+            and entitlement.enabled
         )
+        for feature, capability in FEATURE_CAPABILITIES.items()
+    }
+    states = {
+        feature: {'plan_allowed': plan_allowed[feature], 'enabled': False}
+        for feature in FEATURE_CAPABILITIES
+    }
+    resolving = set()
+
+    def resolve(feature):
+        if feature in resolving:
+            return False
+        if states[feature]['enabled']:
+            return True
+        resolving.add(feature)
+        enabled = bool(
+            operational
+            and plan_allowed[feature]
+            and flags.get(feature, False)
+            and all(resolve(dependency) for dependency in BRANCH_FEATURE_DEPENDENCIES.get(feature, ()))
+        )
+        resolving.remove(feature)
+        states[feature]['enabled'] = enabled
+        return enabled
+
+    for feature in FEATURE_CAPABILITIES:
+        resolve(feature)
     return states
 
 

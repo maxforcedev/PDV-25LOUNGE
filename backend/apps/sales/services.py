@@ -245,6 +245,8 @@ def _financial_snapshots(branch, service_fee_base, *, commission_base=None,
     if lock:
         queryset = queryset.select_for_update()
     settings = queryset.filter(branch=branch).first()
+    if not branch_feature_enabled(branch, 'financial'):
+        return Decimal('0.00'), Decimal('0.00'), Decimal('0.00'), Decimal('0.00')
     service_fee_rate = service_fee_rate_snapshot
     if service_fee_rate is None:
         service_fee_rate = (
@@ -1625,7 +1627,10 @@ def _lock_required_stocks(branch, requirements, content_requirements=None, reser
     allow_negative = False
     from apps.companies.models import BranchSettings
     branch_settings = BranchSettings.objects.filter(branch=branch).first()
-    allow_negative = bool(branch_settings and branch_settings.allow_negative_stock)
+    allow_negative = bool(
+        branch_feature_enabled(branch, 'inventory')
+        and branch_settings and branch_settings.allow_negative_stock
+    )
     stocks = {
         stock.product_id: stock
         for stock in Stock.objects.select_for_update().select_related('product')
@@ -1688,7 +1693,10 @@ def catalog_product_operational_states(branch, products):
     branch_settings = BranchSettings.objects.filter(branch=branch).only(
         'allow_negative_stock',
     ).first()
-    allow_negative = bool(branch_settings and branch_settings.allow_negative_stock)
+    allow_negative = bool(
+        branch_feature_enabled(branch, 'inventory')
+        and branch_settings and branch_settings.allow_negative_stock
+    )
 
     direct_ids = {
         product.pk for product in products
@@ -1771,7 +1779,10 @@ def assess_sale_stock_availability(*, company, raw_items, branch,
     branch_settings = BranchSettings.objects.filter(branch=branch).only(
         'allow_negative_stock',
     ).first()
-    allow_negative = bool(branch_settings and branch_settings.allow_negative_stock)
+    allow_negative = bool(
+        branch_feature_enabled(branch, 'inventory')
+        and branch_settings and branch_settings.allow_negative_stock
+    )
     stocks = {
         stock.product_id: stock
         for stock in Stock.objects.select_related('product').filter(

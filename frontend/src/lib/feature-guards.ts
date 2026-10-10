@@ -31,6 +31,7 @@ const routeFeatures: ReadonlyArray<[string, readonly BranchFeature[]]> = [
   ["/fornecedores", ["suppliers"]],
   ["/clientes", ["customers"]],
   ["/promocoes", ["promotions"]],
+  ["/vendas", ["counter"]],
   ["/produtos", ["products"]],
   ["/categorias", ["products"]],
   ["/modificadores", ["products"]],

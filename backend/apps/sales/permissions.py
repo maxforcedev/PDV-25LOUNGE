@@ -55,6 +55,8 @@ class SalesFunctionalPermission(BasePermission):
         if action in ('list', 'retrieve', 'cancel'):
             if operation == 'consumption':
                 require_branch_feature(branch, 'consumption')
+            elif action == 'list':
+                require_branch_feature(branch, 'counter')
             return
         if action == 'beneficiaries':
             operation = 'consumption'
@@ -84,6 +86,10 @@ class SalesFunctionalPermission(BasePermission):
             }.get(self._requested_channel(request, view), 'counter')
             require_branch_feature(branch, channel_feature)
             require_branch_feature(branch, 'cash_register')
+        if action in ('checkout_options', 'service_fee_authorizers'):
+            require_branch_feature(branch, 'financial')
+        if action == 'service_fee_authorizers':
+            require_branch_feature(branch, 'counter')
 
     def has_permission(self, request, view):
         if (
@@ -142,6 +148,8 @@ class SalesFunctionalPermission(BasePermission):
         view._permission_object = obj
         if view.basename == 'sale' and obj.operation_type == 'consumption':
             require_branch_feature(branch, 'consumption')
+        elif view.basename == 'sale':
+            require_branch_feature(branch, 'counter')
         if view.basename == 'sale' and view.action == 'retrieve':
             codes = (
                 ('sales.view_consumption', 'sales.cancel_consumption')

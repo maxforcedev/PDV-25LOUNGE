@@ -285,6 +285,18 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertEqual(confirmation.status_code, 201, confirmation.data)
         return confirmation, otp.data['challenge_id']
 
+    def test_pairing_is_blocked_when_pos_is_disabled_for_the_branch(self):
+        self.branch.settings.uses_pos = False
+        self.branch.settings.save(update_fields=('uses_pos', 'updated_at'))
+
+        response = self.client.post(
+            reverse('pos:pairing-identify'),
+            {'identifier': self.branch.licensing_code},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 403, response.data)
+
     def test_pairing_otp_delivery_failure_rolls_back_the_challenge(self):
         identify = self.client.post(
             reverse('pos:pairing-identify'),

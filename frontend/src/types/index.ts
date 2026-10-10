@@ -327,6 +327,17 @@ export interface BranchSettings {
   uses_counter: boolean;
   uses_consumption: boolean;
   uses_cash_register: boolean;
+  uses_production: boolean;
+  uses_products: boolean;
+  uses_inventory: boolean;
+  uses_purchases: boolean;
+  uses_suppliers: boolean;
+  uses_customers: boolean;
+  uses_promotions: boolean;
+  uses_reports: boolean;
+  uses_audit: boolean;
+  uses_financial: boolean;
+  uses_pos: boolean;
   charges_service_fee: boolean;
   default_table_quantity: number;
   table_range_start: number;
