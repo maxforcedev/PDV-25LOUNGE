@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
@@ -24,9 +25,11 @@ from apps.inventory.models import Stock
 from apps.products.models import (
     Category, ModifierGroup, ModifierOption, ModifierOptionType,
     Product, ProductBranchConfig, ProductModifierGroup, BranchProductPrice,
-    FractionableProductConfig, SalesChannel, Unit, InventoryBehavior,
+    FractionableProductConfig, ProductProductionDestination, ProductionDestination,
+    SalesChannel, Unit, InventoryBehavior,
 )
 from apps.products.serializers import FractionableProductConfigSerializer, ProductSerializer
+from apps.products.services import duplicate_product
 from apps.inventory.content import content_breakdown
 from apps.sales.services import ensure_default_payment_methods
 
@@ -228,6 +231,67 @@ class BranchPriceTests(ProductRbacFixture, TestCase):
 
 
 class CategoryConfigurationTests(ProductRbacFixture, TestCase):
+    def test_new_product_inherits_selected_category_defaults(self):
+        self.cat_a.available_counter = True
+        self.cat_a.available_table = False
+        self.cat_a.available_command = False
+        self.cat_a.participates_in_service_fee = False
+        self.cat_a.participates_in_commission = True
+        self.cat_a.save()
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).post(
+            '/api/v1/products/', {
+                'company': self.company_a.pk,
+                'category': self.cat_a.pk,
+                'name': 'Produto com defaults',
+                'internal_code': 'DEFAULTS-001',
+                'unit': Unit.UNIT,
+                'cost': '1.00',
+                'sale_price': '2.00',
+            }, format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        product = Product.objects.get(pk=response.data['id'])
+        self.assertTrue(product.available_counter)
+        self.assertFalse(product.available_table)
+        self.assertFalse(product.available_command)
+        self.assertFalse(product.participates_in_service_fee)
+        self.assertTrue(product.participates_in_commission)
+
+    def test_explicit_product_values_override_category_defaults(self):
+        self.cat_a.available_counter = False
+        self.cat_a.available_table = False
+        self.cat_a.available_command = False
+        self.cat_a.participates_in_service_fee = False
+        self.cat_a.participates_in_commission = False
+        self.cat_a.save()
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).post(
+            '/api/v1/products/', {
+                'company': self.company_a.pk,
+                'category': self.cat_a.pk,
+                'name': 'Produto com escolhas',
+                'internal_code': 'DEFAULTS-002',
+                'unit': Unit.UNIT,
+                'cost': '1.00',
+                'sale_price': '2.00',
+                'available_counter': True,
+                'available_table': True,
+                'available_command': True,
+                'participates_in_service_fee': True,
+                'participates_in_commission': True,
+            }, format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        product = Product.objects.get(pk=response.data['id'])
+        self.assertTrue(product.available_counter)
+        self.assertTrue(product.available_table)
+        self.assertTrue(product.available_command)
+        self.assertTrue(product.participates_in_service_fee)
+        self.assertTrue(product.participates_in_commission)
+
     def test_category_is_created_in_the_active_branch_and_cannot_be_assigned_elsewhere(self):
         from apps.companies.services import create_branch_with_access
 
@@ -1160,6 +1224,227 @@ class ProductMissionM5Tests(ProductRbacFixture, TestCase):
         self.assertNotEqual(duplicate.pk, self.product_a.pk)
         copied = ProductBranchConfig.objects.get(product=duplicate, branch=self.branch_a)
         self.assertEqual(copied.category_id, self.cat_a.pk)
+
+    def test_duplicate_without_branch_config_creates_only_current_branch_config(self):
+        from apps.companies.services import create_branch_with_access
+
+        other_branch = create_branch_with_access(
+            creator=self.owner_a, company=self.company_a, name='Outra filial duplicada',
+        )
+        other_category = Category.objects.create(
+            company=self.company_a, branch=other_branch, name='Categoria remota',
+        )
+        ProductBranchConfig.objects.create(
+            product=self.product_a, branch=other_branch, category=other_category,
+        )
+        before_count = Product.objects.filter(company=self.company_a).count()
+        client = self.api_client(self.owner_a, self.branch_a.pk)
+
+        response = client.post(
+            f'/api/v1/products/{self.product_a.pk}/duplicate/',
+            {'branch_config': False}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        duplicate = Product.objects.get(pk=response.data['id'])
+        self.assertEqual(Product.objects.filter(company=self.company_a).count(), before_count + 1)
+        copied = ProductBranchConfig.objects.get(product=duplicate, branch=self.branch_a)
+        self.assertEqual(copied.category_id, self.cat_a.pk)
+        self.assertEqual(ProductBranchConfig.objects.filter(product=duplicate).count(), 1)
+        self.assertFalse(ProductBranchConfig.objects.filter(
+            product=duplicate, branch=other_branch,
+        ).exists())
+        self.assertFalse(BranchProductPrice.objects.filter(product=duplicate).exists())
+        self.assertTrue(any(
+            row['id'] == duplicate.pk
+            for row in client.get('/api/v1/products/').data['results']
+        ))
+        self.assertEqual(client.get(f'/api/v1/products/{duplicate.pk}/').status_code, 200)
+
+    def test_duplicate_branch_config_copies_only_current_branch_price_and_configuration(self):
+        from apps.companies.services import create_branch_with_access
+
+        source_config = ProductBranchConfig.objects.get(
+            product=self.product_a, branch=self.branch_a,
+        )
+        source_config.is_available = False
+        source_config.available_counter = False
+        source_config.available_table = True
+        source_config.available_command = False
+        source_config.participates_in_service_fee = False
+        source_config.participates_in_commission = True
+        source_config.save()
+        BranchProductPrice.objects.create(
+            product=self.product_a, branch=self.branch_a, sale_price='4.50',
+        )
+        other_branch = create_branch_with_access(
+            creator=self.owner_a, company=self.company_a, name='Outra configuração',
+        )
+        other_category = Category.objects.create(
+            company=self.company_a, branch=other_branch, name='Categoria da outra filial',
+        )
+        ProductBranchConfig.objects.create(
+            product=self.product_a,
+            branch=other_branch,
+            category=other_category,
+            is_available=True,
+            available_counter=True,
+            available_table=False,
+            available_command=True,
+        )
+        self.product_a.category = other_category
+        self.product_a.save(update_fields=('category', 'updated_at'))
+        BranchProductPrice.objects.create(
+            product=self.product_a, branch=other_branch, sale_price='9.50',
+        )
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).post(
+            f'/api/v1/products/{self.product_a.pk}/duplicate/',
+            {'branch_config': True}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        duplicate = Product.objects.get(pk=response.data['id'])
+        copied = ProductBranchConfig.objects.get(product=duplicate, branch=self.branch_a)
+        self.assertEqual(duplicate.category_id, self.cat_a.pk)
+        self.assertEqual(copied.category_id, self.cat_a.pk)
+        self.assertFalse(copied.is_available)
+        self.assertFalse(copied.available_counter)
+        self.assertTrue(copied.available_table)
+        self.assertFalse(copied.available_command)
+        self.assertFalse(copied.participates_in_service_fee)
+        self.assertTrue(copied.participates_in_commission)
+        self.assertFalse(ProductBranchConfig.objects.filter(
+            product=duplicate, branch=other_branch,
+        ).exists())
+        self.assertEqual(
+            BranchProductPrice.objects.get(product=duplicate, branch=self.branch_a).sale_price,
+            Decimal('4.50'),
+        )
+        self.assertFalse(BranchProductPrice.objects.filter(
+            product=duplicate, branch=other_branch,
+        ).exists())
+
+    def test_duplicate_rejects_missing_current_branch_configuration(self):
+        ProductBranchConfig.objects.filter(
+            product=self.product_a, branch=self.branch_a,
+        ).delete()
+        before_count = Product.objects.filter(company=self.company_a).count()
+
+        with self.assertRaises(DjangoValidationError):
+            duplicate_product(
+                product=self.product_a,
+                branch=self.branch_a,
+                options={'branch_config': False},
+            )
+
+        self.assertEqual(Product.objects.filter(company=self.company_a).count(), before_count)
+
+    def test_duplicate_destinations_are_limited_to_the_current_branch(self):
+        from apps.companies.services import create_branch_with_access
+
+        current_destination = ProductionDestination.objects.create(
+            branch=self.branch_a, name='Cozinha atual', code='ATUAL',
+        )
+        ProductProductionDestination.objects.create(
+            product=self.product_a, destination=current_destination,
+        )
+        other_branch = create_branch_with_access(
+            creator=self.owner_a, company=self.company_a, name='Filial dos destinos',
+        )
+        other_category = Category.objects.create(
+            company=self.company_a, branch=other_branch, name='Categoria destino',
+        )
+        ProductBranchConfig.objects.create(
+            product=self.product_a, branch=other_branch, category=other_category,
+        )
+        other_destination = ProductionDestination.objects.create(
+            branch=other_branch, name='Cozinha remota', code='REMOTA',
+        )
+        ProductProductionDestination.objects.create(
+            product=self.product_a, destination=other_destination,
+        )
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).post(
+            f'/api/v1/products/{self.product_a.pk}/duplicate/',
+            {'destinations': True}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        duplicate = Product.objects.get(pk=response.data['id'])
+        self.assertTrue(ProductProductionDestination.objects.filter(
+            product=duplicate, destination=current_destination,
+        ).exists())
+        self.assertFalse(ProductProductionDestination.objects.filter(
+            product=duplicate, destination=other_destination,
+        ).exists())
+
+    def test_copy_category_rejects_soft_deleted_category(self):
+        from apps.companies.services import create_branch_with_access
+
+        target = create_branch_with_access(
+            creator=self.owner_a, company=self.company_a, name='Destino excluído',
+        )
+        Category.objects.filter(pk=self.cat_a.pk).update(
+            deleted_at=timezone.now(), status=Status.INACTIVE,
+        )
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).post(
+            '/api/v1/products/copy-category-config/',
+            {
+                'category': self.cat_a.pk,
+                'source_branch': self.branch_a.pk,
+                'target_branches': [target.pk],
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn('category', response.data)
+
+    def test_copy_branch_configuration_rejects_deleted_source_category(self):
+        from apps.companies.services import create_branch_with_access
+
+        target = create_branch_with_access(
+            creator=self.owner_a, company=self.company_a, name='Destino inválido',
+        )
+        Category.objects.filter(pk=self.cat_a.pk).update(
+            deleted_at=timezone.now(), status=Status.INACTIVE,
+        )
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).post(
+            f'/api/v1/products/{self.product_a.pk}/copy-branch-config/',
+            {'source_branch': self.branch_a.pk, 'target_branches': [target.pk]},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn('products', response.data)
+
+    def test_copy_branch_configuration_rejects_source_category_from_another_branch(self):
+        from apps.companies.services import create_branch_with_access
+
+        other_branch = create_branch_with_access(
+            creator=self.owner_a, company=self.company_a, name='Origem inconsistente',
+        )
+        target = create_branch_with_access(
+            creator=self.owner_a, company=self.company_a, name='Destino inconsistente',
+        )
+        foreign_category = Category.objects.create(
+            company=self.company_a, branch=other_branch, name='Categoria de outra filial',
+        )
+        ProductBranchConfig.objects.filter(
+            product=self.product_a, branch=self.branch_a,
+        ).update(category=foreign_category)
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).post(
+            f'/api/v1/products/{self.product_a.pk}/copy-branch-config/',
+            {'source_branch': self.branch_a.pk, 'target_branches': [target.pk]},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn('products', response.data)
 
     def test_private_product_image_is_not_available_to_another_company(self):
         response = self.api_client(self.owner_a, self.branch_a.pk).get(

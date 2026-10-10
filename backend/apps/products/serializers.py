@@ -682,6 +682,13 @@ class ProductSerializer(CompanyBoundSerializer):
     def create(self, validated_data):
         components = validated_data.pop('components', None)
         fraction_components = validated_data.pop('fraction_components', None)
+        category = validated_data['category']
+        for field in (
+            'available_counter', 'available_table', 'available_command',
+            'participates_in_service_fee', 'participates_in_commission',
+        ):
+            if field not in validated_data:
+                validated_data[field] = getattr(category, field)
         try:
             return create_product(
                 branch=getattr(self.context.get('request'), 'branch_context', None),

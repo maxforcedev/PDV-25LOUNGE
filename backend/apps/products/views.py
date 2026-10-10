@@ -1041,7 +1041,9 @@ class ProductViewSet(CatalogViewSet):
         ):
             raise PermissionDenied('Voce nao possui permissao para copiar fornecedores.')
         duplicate = duplicate_product(
-            product=source, options=serializer.validated_data
+            product=source,
+            branch=request.branch_context,
+            options=serializer.validated_data,
         )
         audit_log(
             actor=request.user, action='product.duplicate', obj=duplicate,
@@ -1105,10 +1107,14 @@ class ProductViewSet(CatalogViewSet):
         source_branch = data['source_branch']
         try:
             category = Category.objects.get(
-                pk=data.pop('category'), branch_id=source_branch,
+                pk=data.pop('category'),
+                branch_id=source_branch,
+                deleted_at__isnull=True,
             )
         except Category.DoesNotExist:
-            raise ValidationError({'category': 'A categoria deve pertencer à filial de origem.'})
+            raise ValidationError({
+                'category': 'A categoria deve estar ativa e pertencer à filial de origem.'
+            })
         if category.company_id != request.branch_context.company_id:
             raise ValidationError({'category': 'Categoria fora da empresa atual.'})
         self._validate_copy_branches(

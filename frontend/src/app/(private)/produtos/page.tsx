@@ -1359,9 +1359,27 @@ function Products() {
                   <Select
                     required
                     value={form.category || ""}
-                    onChange={(event) =>
-                      update("category", Number(event.target.value))
-                    }
+                    onChange={(event) => {
+                      const categoryId = Number(event.target.value);
+                      const selected = categories.find(
+                        (item) => item.id === categoryId,
+                      );
+                      setForm((current) => ({
+                        ...current,
+                        category: categoryId,
+                        ...(!editing && selected
+                          ? {
+                              available_counter: selected.available_counter,
+                              available_table: selected.available_table,
+                              available_command: selected.available_command,
+                              participates_in_service_fee:
+                                selected.participates_in_service_fee,
+                              participates_in_commission:
+                                selected.participates_in_commission,
+                            }
+                          : {}),
+                      }));
+                    }}
                   >
                     <option value="">Selecione uma categoria</option>
                     {categories.map((item) => (

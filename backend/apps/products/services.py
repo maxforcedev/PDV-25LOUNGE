@@ -411,6 +411,19 @@ def copy_branch_configuration(*, products, source_branch, target_branches):
         raise ValidationError({
             'products': 'Um ou mais produtos não possuem configuração na filial de origem.'
         })
+    products_by_id = {product.pk: product for product in locked_products}
+    for product_id, source_config in source_configs.items():
+        source_category = source_config.category
+        product = products_by_id[product_id]
+        if (
+            source_category is None
+            or source_category.deleted_at is not None
+            or source_category.branch_id != source.pk
+            or source_category.company_id != product.company_id
+        ):
+            raise ValidationError({
+                'products': 'Um ou mais produtos possuem categoria inválida na filial de origem.'
+            })
     source_prices = {
         row.product_id: row for row in BranchProductPrice.objects.filter(
             branch=source, product_id__in=product_ids
@@ -444,35 +457,32 @@ def copy_branch_configuration(*, products, source_branch, target_branches):
                 branch=target,
                 defaults={'is_available': False},
             )
-            config.is_available = source_config.is_available if source_config else False
-            if source_config and source_config.category_id:
-                source_category = source_config.category
-                target_category = Category.objects.filter(
-                    branch=target, name__iexact=source_category.name,
-                    deleted_at__isnull=True,
-                ).first()
-                if target_category is None:
-                    target_category = Category.objects.create(
-                        company=product.company,
-                        branch=target,
-                        name=source_category.name,
-                        description=source_category.description,
-                        sort_order=source_category.sort_order,
-                        available_counter=source_category.available_counter,
-                        available_table=source_category.available_table,
-                        available_command=source_category.available_command,
-                        participates_in_service_fee=source_category.participates_in_service_fee,
-                        participates_in_commission=source_category.participates_in_commission,
-                        status=source_category.status,
-                    )
-                config.category = target_category
-            else:
-                config.category = None
+            config.is_available = source_config.is_available
+            source_category = source_config.category
+            target_category = Category.objects.filter(
+                branch=target, name__iexact=source_category.name,
+                deleted_at__isnull=True,
+            ).first()
+            if target_category is None:
+                target_category = Category.objects.create(
+                    company=product.company,
+                    branch=target,
+                    name=source_category.name,
+                    description=source_category.description,
+                    sort_order=source_category.sort_order,
+                    available_counter=source_category.available_counter,
+                    available_table=source_category.available_table,
+                    available_command=source_category.available_command,
+                    participates_in_service_fee=source_category.participates_in_service_fee,
+                    participates_in_commission=source_category.participates_in_commission,
+                    status=source_category.status,
+                )
+            config.category = target_category
             for field in (
                 'available_counter', 'available_table', 'available_command',
                 'participates_in_service_fee', 'participates_in_commission',
             ):
-                setattr(config, field, getattr(source_config, field) if source_config else None)
+                setattr(config, field, getattr(source_config, field))
             config.save()
             source_price = source_prices.get(product.pk)
             target_price = BranchProductPrice.objects.filter(
@@ -554,11 +564,34 @@ def branch_configuration_snapshot(product, branch):
 
 
 @transaction.atomic
-def duplicate_product(*, product, options):
+def duplicate_product(*, product, branch, options):
     source = Product.objects.select_for_update().select_related('company', 'category').get(
         pk=product.pk if hasattr(product, 'pk') else product
     )
     Company.objects.select_for_update().get(pk=source.company_id)
+    branch = Branch.objects.select_for_update().filter(
+        pk=branch.pk if hasattr(branch, 'pk') else branch,
+        company_id=source.company_id,
+    ).first()
+    if branch is None:
+        raise ValidationError({'branch': 'A filial atual é inválida para duplicação.'})
+    source_config = ProductBranchConfig.objects.select_for_update().select_related(
+        'category'
+    ).filter(product=source, branch=branch).first()
+    if source_config is None:
+        raise ValidationError({
+            'branch_config': 'O produto não possui configuração na filial atual.'
+        })
+    source_category = source_config.category
+    if (
+        source_category is None
+        or source_category.deleted_at is not None
+        or source_category.branch_id != branch.pk
+        or source_category.company_id != source.company_id
+    ):
+        raise ValidationError({
+            'branch_config': 'A categoria da configuração atual do produto é inválida.'
+        })
     base_name = f'{source.name} (copia)'
     name = base_name
     suffix = 2
@@ -567,7 +600,7 @@ def duplicate_product(*, product, options):
         suffix += 1
     duplicate = create_product(
         company=source.company,
-        category=source.category,
+        category=source_category,
         name=name,
         description=source.description,
         internal_code='',
@@ -589,6 +622,21 @@ def duplicate_product(*, product, options):
         components=[],
         fraction_components=[],
     )
+    branch_config_data = {
+        'product': duplicate,
+        'branch': branch,
+        'category': source_category,
+    }
+    if options.get('branch_config'):
+        branch_config_data.update({
+            field: getattr(source_config, field)
+            for field in (
+                'is_available', 'available_counter', 'available_table',
+                'available_command', 'participates_in_service_fee',
+                'participates_in_commission',
+            )
+        })
+    ProductBranchConfig.objects.create(**branch_config_data)
     if options.get('composition') and source.inventory_behavior == InventoryBehavior.COMPONENTS:
         replace_composition(product=duplicate, components=[
             {'component_product': row.component_product, 'quantity': row.quantity}
@@ -616,24 +664,15 @@ def duplicate_product(*, product, options):
                 content_unit=fraction.content_unit,
             )
     if options.get('branch_config'):
-        for config in source.branch_configs.all():
-            ProductBranchConfig.objects.create(
-                product=duplicate,
-                branch=config.branch,
-                is_available=config.is_available,
-                available_counter=config.available_counter,
-                available_table=config.available_table,
-                available_command=config.available_command,
-                participates_in_service_fee=config.participates_in_service_fee,
-                participates_in_commission=config.participates_in_commission,
-                category=config.category,
-            )
-        for price in source.branch_prices.all():
+        source_price = BranchProductPrice.objects.filter(
+            product=source, branch=branch,
+        ).first()
+        if source_price:
             BranchProductPrice.objects.create(
-                product=duplicate, branch=price.branch, sale_price=price.sale_price
+                product=duplicate, branch=branch, sale_price=source_price.sale_price
             )
     if options.get('destinations'):
-        for link in source.production_destination_links.all():
+        for link in source.production_destination_links.filter(destination__branch=branch):
             ProductProductionDestination.objects.create(
                 product=duplicate, destination=link.destination
             )
