@@ -356,8 +356,8 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
             return fields
         requested_fields = set(getattr(self, 'initial_data', {}))
         feature_fields = {
-            'inventory': ('allow_negative_stock', 'negative_stock_count', 'negative_stock_state'),
-            'financial': ('service_fee_rate', 'commission_rate', 'fixed_daily_cost', 'charges_service_fee'),
+            'inventory': ('uses_inventory', 'allow_negative_stock', 'negative_stock_count', 'negative_stock_state'),
+            'financial': ('uses_financial', 'service_fee_rate', 'commission_rate', 'fixed_daily_cost', 'charges_service_fee'),
             'tables': ('uses_tables', 'default_table_quantity', 'default_table_seats',
                        'default_table_prefix', 'table_range_start', 'table_range_end',
                        'table_consumption_limit'),
@@ -367,7 +367,10 @@ class BranchSettingsSerializer(serializers.ModelSerializer):
                             'command_consumption_limit', 'table_consumption_limit'),
             'cash_register': ('uses_cash_register',),
             **{feature: (field,) for feature, field in BRANCH_FEATURE_FIELDS.items()
-               if feature not in {'tables', 'commands', 'counter', 'consumption', 'cash_register'}},
+               if feature not in {
+                   'inventory', 'financial', 'tables', 'commands', 'counter',
+                   'consumption', 'cash_register',
+               }},
         }
         states = branch_feature_states(branch)
         for feature, names in feature_fields.items():

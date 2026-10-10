@@ -420,6 +420,9 @@ class CapabilityResolutionTests(TestCase):
             data={
                 'allow_negative_stock': True,
                 'service_fee_rate': '9.00',
+                'commission_rate': '8.00',
+                'fixed_daily_cost': '100.00',
+                'charges_service_fee': True,
                 'command_consumption_limit': '15.00',
                 'table_consumption_limit': '15.00',
             },
@@ -431,6 +434,9 @@ class CapabilityResolutionTests(TestCase):
         self.branch.settings.refresh_from_db()
         self.assertFalse(self.branch.settings.allow_negative_stock)
         self.assertEqual(self.branch.settings.service_fee_rate, Decimal('0.00'))
+        self.assertEqual(self.branch.settings.commission_rate, Decimal('0.00'))
+        self.assertEqual(self.branch.settings.fixed_daily_cost, Decimal('0.00'))
+        self.assertFalse(self.branch.settings.charges_service_fee)
         self.assertIsNone(self.branch.settings.command_consumption_limit)
         self.assertIsNone(self.branch.settings.table_consumption_limit)
         self.assertFalse(branch_feature_states(self.branch)['tables']['enabled'])
