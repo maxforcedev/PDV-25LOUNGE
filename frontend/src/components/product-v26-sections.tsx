@@ -36,6 +36,11 @@ import {
 } from "@/lib/format";
 import { contentUnitLabel, packageContentDisplay } from "@/lib/inventory";
 import { ApiError, http } from "@/lib/http";
+import {
+  productBranchConfigPayload,
+  visibleProductBranchChannels,
+  type ProductBranchChannelFeatures,
+} from "@/lib/product-branch-channels";
 import type {
   EmbeddedProductSupplier,
   EmbeddedProductSupplierUnit,
@@ -85,7 +90,7 @@ type Props = {
     suppliers: boolean;
     inventory: boolean;
     production: boolean;
-  };
+  } & ProductBranchChannelFeatures;
   activeTab?: ProductV26Tab;
   actionRef?: React.MutableRefObject<ProductV26Actions | null>;
   onReload: () => Promise<void>;
@@ -381,16 +386,7 @@ export function ProductV26Sections({
         setBranchConfig(
           await http.put<ProductBranchConfig>(
             `products/${product.id}/branch-config/`,
-            {
-              is_available: branchConfig.is_available,
-              available_counter: branchConfig.available_counter,
-              available_table: branchConfig.available_table,
-              available_command: branchConfig.available_command,
-              participates_in_service_fee:
-                branchConfig.participates_in_service_fee,
-              participates_in_commission:
-                branchConfig.participates_in_commission,
-            },
+            productBranchConfigPayload(branchConfig, features),
           ),
         ),
       "Disponibilidade e canais da filial salvos.",
@@ -796,7 +792,7 @@ export function ProductV26Sections({
               Disponibilidade na filial
             </h3>
             <p className="mt-1 text-[11px] text-muted">
-              Preço efetivo:{" "}
+              Preço na filial:{" "}
               {formatDecimalBRL(
                 branchConfig?.effective_sale_price ||
                   product.branch_configuration?.sale_price,
@@ -826,34 +822,28 @@ export function ProductV26Sections({
               />
               Produto disponível nesta filial
             </label>
+            <p className="text-xs font-bold">Canais de venda</p>
             <div className="grid gap-3 sm:grid-cols-3">
-              {(
-                Object.keys(channelLabels) as Array<keyof typeof channelLabels>
-              ).map((channel) => (
+              {visibleProductBranchChannels(features).map((channel) => (
                 <Field key={channel} label={channelLabels[channel]}>
-                  <Select
-                    disabled={!permissions.branch}
-                    value={String(branchConfig[`available_${channel}`])}
-                    onChange={(event) =>
-                      setBranchConfig(
-                        (value) =>
-                          value && {
-                            ...value,
-                            [`available_${channel}`]:
-                              event.target.value === "true",
-                          },
-                      )
-                    }
-                  >
-                    <option value="true">Disponível nesta filial</option>
-                    <option value="false">Indisponível nesta filial</option>
-                  </Select>
-                  <span className="mt-1 block text-[10px] text-muted">
-                    Efetivo:{" "}
-                    {branchConfig.effective_channels[channel]
-                      ? "disponível"
-                      : "indisponível"}
-                  </span>
+                  <label className="flex items-center gap-2 text-xs font-semibold">
+                    <input
+                      type="checkbox"
+                      className="size-4 accent-primary"
+                      disabled={!permissions.branch}
+                      checked={branchConfig[`available_${channel}`]}
+                      onChange={(event) =>
+                        setBranchConfig(
+                          (value) =>
+                            value && {
+                              ...value,
+                              [`available_${channel}`]: event.target.checked,
+                            },
+                        )
+                      }
+                    />
+                    Disponível neste canal
+                  </label>
                 </Field>
               ))}
             </div>

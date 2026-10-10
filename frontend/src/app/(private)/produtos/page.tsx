@@ -240,6 +240,9 @@ function Products() {
   const canChangeSuppliers = suppliersEnabled && hasPermission(permissions.changeSupplier);
   const inventoryEnabled = hasFeature("inventory");
   const productionEnabled = hasFeature("production");
+  const counterEnabled = hasFeature("counter");
+  const tablesEnabled = hasFeature("tables");
+  const commandsEnabled = hasFeature("commands");
   const visibleProductTabs = productTabs.reduce<Array<[ProductV26Tab, string]>>(
     (tabs, [tab, label]) => {
       if (tab === "production") {
@@ -1897,7 +1900,14 @@ function Products() {
               changeSuppliers: canChangeSuppliers,
               changeProduct: canChange,
             }}
-            features={{ suppliers: suppliersEnabled, inventory: inventoryEnabled, production: productionEnabled }}
+            features={{
+              suppliers: suppliersEnabled,
+              inventory: inventoryEnabled,
+              production: productionEnabled,
+              counter: counterEnabled,
+              tables: tablesEnabled,
+              commands: commandsEnabled,
+            }}
             onReload={async () => {
               const refreshed = await http.get<Product>(
                 `products/${editing.id}/`,

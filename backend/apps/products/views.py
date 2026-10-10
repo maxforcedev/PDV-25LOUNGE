@@ -862,7 +862,10 @@ class ProductViewSet(CatalogViewSet):
         )) if config else {}
         payload = {**request.data, 'product': product.pk, 'branch': branch.pk}
         serializer = ProductBranchConfigSerializer(
-            config, data=payload, context={'request': request}
+            config,
+            data=payload,
+            partial=config is not None,
+            context={'request': request},
         )
         serializer.is_valid(raise_exception=True)
         config = serializer.save()

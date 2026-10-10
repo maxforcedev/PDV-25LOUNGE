@@ -29,7 +29,7 @@ from apps.products.models import (
     SalesChannel, Unit, InventoryBehavior,
 )
 from apps.products.serializers import FractionableProductConfigSerializer, ProductSerializer
-from apps.products.services import duplicate_product
+from apps.products.services import branch_configuration_snapshot, duplicate_product
 from apps.inventory.content import content_breakdown
 from apps.sales.services import ensure_default_payment_methods
 
@@ -803,6 +803,97 @@ class ModifierTests(ProductRbacFixture, TestCase):
 
 
 class ProductMissionM5Tests(ProductRbacFixture, TestCase):
+    def test_branch_configuration_snapshot_without_config_has_no_channels(self):
+        ProductBranchConfig.objects.filter(
+            product=self.product_a, branch=self.branch_a,
+        ).delete()
+
+        snapshot = branch_configuration_snapshot(self.product_a, self.branch_a)
+
+        self.assertFalse(snapshot['is_available'])
+        self.assertEqual(
+            snapshot['channel_configuration'],
+            {'counter': False, 'table': False, 'command': False},
+        )
+        self.assertEqual(
+            snapshot['effective_channels'],
+            {'counter': False, 'table': False, 'command': False},
+        )
+
+    def test_branch_configuration_snapshot_respects_operational_gates(self):
+        settings = self.branch_a.settings
+        settings.uses_counter = True
+        settings.uses_tables = True
+        settings.uses_commands = True
+        settings.save()
+        config = ProductBranchConfig.objects.get(
+            product=self.product_a, branch=self.branch_a,
+        )
+        config.is_available = True
+        config.available_counter = True
+        config.available_table = True
+        config.available_command = True
+        config.save()
+
+        self.assertEqual(
+            branch_configuration_snapshot(self.product_a, self.branch_a)['effective_channels'],
+            {'counter': True, 'table': True, 'command': True},
+        )
+        config.is_available = False
+        config.save(update_fields=('is_available', 'updated_at'))
+        self.assertFalse(any(
+            branch_configuration_snapshot(self.product_a, self.branch_a)['effective_channels'].values()
+        ))
+        config.is_available = True
+        config.save(update_fields=('is_available', 'updated_at'))
+        self.product_a.is_sellable = False
+        self.product_a.save(update_fields=('is_sellable', 'updated_at'))
+        self.assertFalse(any(
+            branch_configuration_snapshot(self.product_a, self.branch_a)['effective_channels'].values()
+        ))
+        self.product_a.is_sellable = True
+        self.product_a.status = Status.INACTIVE
+        self.product_a.save(update_fields=('is_sellable', 'status', 'updated_at'))
+        self.assertFalse(any(
+            branch_configuration_snapshot(self.product_a, self.branch_a)['effective_channels'].values()
+        ))
+        self.product_a.status = Status.ACTIVE
+        self.product_a.archived_at = timezone.now()
+        self.product_a.save(update_fields=('status', 'archived_at', 'updated_at'))
+        self.assertFalse(any(
+            branch_configuration_snapshot(self.product_a, self.branch_a)['effective_channels'].values()
+        ))
+        self.product_a.archived_at = None
+        self.product_a.save(update_fields=('archived_at', 'updated_at'))
+        settings.uses_tables = False
+        settings.save(update_fields=('uses_tables', 'updated_at'))
+        channels = branch_configuration_snapshot(self.product_a, self.branch_a)['effective_channels']
+        self.assertTrue(channels['counter'])
+        self.assertFalse(channels['table'])
+        self.assertTrue(channels['command'])
+
+    def test_branch_config_partial_update_preserves_hidden_channels(self):
+        config = ProductBranchConfig.objects.get(
+            product=self.product_a, branch=self.branch_a,
+        )
+        config.available_counter = True
+        config.available_table = True
+        config.available_command = True
+        config.save()
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).put(
+            f'/api/v1/products/{self.product_a.pk}/branch-config/',
+            {'is_available': False, 'available_counter': False},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        config.refresh_from_db()
+        self.assertFalse(config.is_available)
+        self.assertFalse(config.available_counter)
+        self.assertTrue(config.available_table)
+        self.assertTrue(config.available_command)
+
     def test_create_product_returns_201_with_branch_context(self):
         category = Category.objects.create(
             company=self.company_a, branch=self.branch_a, name='Produtos novos',

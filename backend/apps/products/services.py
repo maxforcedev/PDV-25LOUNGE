@@ -5,6 +5,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import F, Q
 from django.utils import timezone
 
+from apps.companies.features import branch_feature_enabled
 from apps.companies.models import Branch, Company, Status
 
 from .models import (
@@ -530,23 +531,36 @@ def branch_configuration_snapshot(product, branch):
     price = BranchProductPrice.objects.filter(
         product=product, branch=branch
     ).values_list('sale_price', flat=True).first()
-    overrides = {
-        channel: getattr(config, f'available_{channel}') if config else None
+    channel_features = {
+        SalesChannel.COUNTER: 'counter',
+        SalesChannel.TABLE: 'tables',
+        SalesChannel.COMMAND: 'commands',
+    }
+    channel_configuration = {
+        channel: bool(getattr(config, f'available_{channel}')) if config else False
         for channel in SalesChannel.values
     }
+    is_operational = bool(
+        config
+        and config.is_available
+        and product.status == Status.ACTIVE
+        and product.archived_at is None
+        and product.is_sellable
+    )
     return {
         'branch_id': branch.pk,
         'category_id': config.category_id if config else None,
         'is_available': config.is_available if config else False,
-        'channel_overrides': overrides,
+        'channel_configuration': channel_configuration,
         'participation_overrides': {
             field: getattr(config, field) if config else None
             for field in ('participates_in_service_fee', 'participates_in_commission')
         },
         'effective_channels': {
-            channel: (
-                getattr(product, f'available_{channel}')
-                if overrides[channel] is None else overrides[channel]
+            channel: bool(
+                is_operational
+                and channel_configuration[channel]
+                and branch_feature_enabled(branch, channel_features[channel])
             )
             for channel in SalesChannel.values
         },
