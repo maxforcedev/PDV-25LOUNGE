@@ -22,6 +22,11 @@ class SellableCatalogSelectorTests(TestCase):
         )
 
     def product(self, *, name, code, **attributes):
+        channel_attributes = {
+            key: attributes.pop(key)
+            for key in tuple(attributes)
+            if key.startswith('available_')
+        }
         product = Product.objects.create(
             company=self.company,
             category=self.category,
@@ -34,7 +39,7 @@ class SellableCatalogSelectorTests(TestCase):
         )
         ProductBranchConfig.objects.create(
             product=product, branch=self.branch, category=self.category,
-            **{key: value for key, value in attributes.items() if key.startswith('available_')},
+            **channel_attributes,
         )
         return product
 

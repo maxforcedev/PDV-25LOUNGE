@@ -252,14 +252,14 @@ class CategoryConfigurationTests(ProductRbacFixture, TestCase):
         )
 
         self.assertEqual(response.status_code, 201, response.data)
-        product = Product.objects.get(pk=response.data['id'])
-        self.assertTrue(product.available_counter)
-        self.assertFalse(product.available_table)
-        self.assertFalse(product.available_command)
-        self.assertFalse(product.participates_in_service_fee)
-        self.assertTrue(product.participates_in_commission)
+        config = ProductBranchConfig.objects.get(product_id=response.data['id'], branch=self.branch_a)
+        self.assertTrue(config.available_counter)
+        self.assertFalse(config.available_table)
+        self.assertFalse(config.available_command)
+        self.assertFalse(config.participates_in_service_fee)
+        self.assertTrue(config.participates_in_commission)
 
-    def test_explicit_product_values_override_category_defaults(self):
+    def test_product_creation_uses_category_channel_defaults(self):
         self.cat_a.available_counter = False
         self.cat_a.available_table = False
         self.cat_a.available_command = False
@@ -276,19 +276,17 @@ class CategoryConfigurationTests(ProductRbacFixture, TestCase):
                 'unit': Unit.UNIT,
                 'cost': '1.00',
                 'sale_price': '2.00',
-                'available_counter': True,
-                'available_table': True,
-                'available_command': True,
                 'participates_in_service_fee': True,
                 'participates_in_commission': True,
             }, format='json',
         )
 
         self.assertEqual(response.status_code, 201, response.data)
+        config = ProductBranchConfig.objects.get(product_id=response.data['id'], branch=self.branch_a)
+        self.assertFalse(config.available_counter)
+        self.assertFalse(config.available_table)
+        self.assertFalse(config.available_command)
         product = Product.objects.get(pk=response.data['id'])
-        self.assertTrue(product.available_counter)
-        self.assertTrue(product.available_table)
-        self.assertTrue(product.available_command)
         self.assertTrue(product.participates_in_service_fee)
         self.assertTrue(product.participates_in_commission)
 
@@ -336,9 +334,6 @@ class CategoryConfigurationTests(ProductRbacFixture, TestCase):
         self.assertTrue(config.available_counter)
 
     def test_apply_config_preserves_audit_before_state(self):
-        self.product_a.available_counter = True
-        self.product_a.available_table = True
-        self.product_a.available_command = True
         self.product_a.participates_in_service_fee = True
         self.product_a.participates_in_commission = True
         self.product_a.save()
@@ -355,8 +350,6 @@ class CategoryConfigurationTests(ProductRbacFixture, TestCase):
 
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data['updated_products'], 1)
-        self.product_a.refresh_from_db()
-        self.assertTrue(self.product_a.available_command)
         config = ProductBranchConfig.objects.get(
             product=self.product_a, branch=self.branch_a
         )
@@ -365,7 +358,7 @@ class CategoryConfigurationTests(ProductRbacFixture, TestCase):
         audit = AuditLog.objects.filter(
             action='category.apply_config', object_id=str(self.product_a.pk)
         ).latest('pk')
-        self.assertIsNone(audit.before['available_command'])
+        self.assertTrue(audit.before['available_command'])
         self.assertFalse(audit.after['available_command'])
 
 
@@ -1051,13 +1044,11 @@ class ProductMissionM5Tests(ProductRbacFixture, TestCase):
             '3.000',
         )
 
-    def test_branch_channel_inheritance_uses_null_as_global_default(self):
-        self.product_a.available_counter = False
-        self.product_a.save()
+    def test_branch_channel_is_explicit(self):
         config = ProductBranchConfig.objects.get(
             product=self.product_a, branch=self.branch_a,
         )
-        config.available_counter = None
+        config.available_counter = False
         config.available_table = True
         config.available_command = False
         config.save()
@@ -1067,7 +1058,7 @@ class ProductMissionM5Tests(ProductRbacFixture, TestCase):
         )
 
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertIsNone(response.data['available_counter'])
+        self.assertFalse(response.data['available_counter'])
         self.assertFalse(response.data['effective_channels']['counter'])
         self.assertTrue(response.data['effective_channels']['table'])
         self.assertFalse(response.data['effective_channels']['command'])
@@ -1084,7 +1075,7 @@ class ProductMissionM5Tests(ProductRbacFixture, TestCase):
         source.is_available = False
         source.available_counter = False
         source.available_table = True
-        source.available_command = None
+        source.available_command = False
         source.save()
 
         response = self.api_client(self.owner_a, self.branch_a.pk).post(
@@ -1098,7 +1089,7 @@ class ProductMissionM5Tests(ProductRbacFixture, TestCase):
         self.assertFalse(copied.is_available)
         self.assertFalse(copied.available_counter)
         self.assertTrue(copied.available_table)
-        self.assertIsNone(copied.available_command)
+        self.assertFalse(copied.available_command)
 
     def test_copy_branch_configuration_reuses_product_and_equivalent_category(self):
         from apps.companies.services import create_branch_with_access

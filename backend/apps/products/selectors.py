@@ -1,6 +1,7 @@
 from django.db.models import CharField, DecimalField, OuterRef, Q, Subquery
 from django.db.models.functions import Coalesce
 
+from apps.companies.features import branch_feature_enabled
 from apps.companies.models import Status
 
 from .models import (
@@ -30,6 +31,13 @@ def sellable_products_for_branch(branch, channel, *, search=None, barcode=None):
     """Return products that are currently sellable at a branch and sales channel."""
     if channel not in SalesChannel.values:
         raise ValueError('Canal de venda invalido.')
+    channel_features = {
+        SalesChannel.COUNTER: 'counter',
+        SalesChannel.TABLE: 'tables',
+        SalesChannel.COMMAND: 'commands',
+    }
+    if not branch_feature_enabled(branch, channel_features[channel]):
+        return Product.objects.none()
 
     channel_field = f'available_{channel}'
     branch_price = BranchProductPrice.objects.filter(
@@ -43,9 +51,7 @@ def sellable_products_for_branch(branch, channel, *, search=None, barcode=None):
             Subquery(branch_price), 'sale_price', output_field=DecimalField(),
         ),
         branch_available=Subquery(branch_config.values('is_available')[:1]),
-        branch_channel=Coalesce(
-            Subquery(branch_config.values(channel_field)[:1]), channel_field,
-        ),
+        branch_channel=Subquery(branch_config.values(channel_field)[:1]),
         effective_category_id=Coalesce(
             Subquery(branch_config.values('category_id')[:1]), 'category_id',
             output_field=Product._meta.get_field('category').target_field,

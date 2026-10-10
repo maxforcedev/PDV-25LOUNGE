@@ -3,7 +3,6 @@ import uuid
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import BooleanField, Count, F, Max, OuterRef, Q, Subquery
-from django.db.models.functions import Coalesce
 from django.db import IntegrityError, transaction
 from django.http import FileResponse
 from django.utils import timezone
@@ -456,8 +455,7 @@ class ProductViewSet(CatalogViewSet):
         'category_id', 'name', 'description', 'internal_code', 'sku', 'barcode', 'unit',
         'cost', 'sale_price', 'image', 'image_file', 'status', 'inventory_behavior',
         'archived_at', 'archived_by_id',
-        'is_sellable', 'is_favorite', 'available_counter', 'available_table',
-        'available_command', 'participates_in_service_fee',
+        'is_sellable', 'is_favorite', 'participates_in_service_fee',
         'participates_in_commission',
     )
 
@@ -541,6 +539,13 @@ class ProductViewSet(CatalogViewSet):
             channel = params.get('channel', SalesChannel.COUNTER)
             if channel not in SalesChannel.values:
                 raise ValidationError({'channel': 'Canal de venda invalido.'})
+            channel_features = {
+                SalesChannel.COUNTER: 'counter',
+                SalesChannel.TABLE: 'tables',
+                SalesChannel.COMMAND: 'commands',
+            }
+            if branch and not branch_feature_enabled(branch, channel_features[channel]):
+                return queryset.none()
             if branch:
                 config = ProductBranchConfig.objects.filter(
                     branch=branch, product_id=OuterRef('pk')
@@ -549,12 +554,9 @@ class ProductViewSet(CatalogViewSet):
                     effective_branch_available=Subquery(
                         config.values('is_available')[:1], output_field=BooleanField(),
                     ),
-                    effective_branch_channel=Coalesce(
-                        Subquery(
-                            config.values(f'available_{channel}')[:1],
-                            output_field=BooleanField(),
-                        ),
-                        f'available_{channel}',
+                    effective_branch_channel=Subquery(
+                        config.values(f'available_{channel}')[:1],
+                        output_field=BooleanField(),
                     ),
                 ).filter(
                     effective_branch_available=True,

@@ -73,9 +73,6 @@ type ProductForm = {
   is_sellable: boolean;
   is_favorite: boolean;
   inventory_behavior: InventoryBehavior;
-  available_counter: boolean;
-  available_table: boolean;
-  available_command: boolean;
   participates_in_service_fee: boolean;
   participates_in_commission: boolean;
   emits_ticket: boolean;
@@ -108,9 +105,6 @@ const blank = (company = 0, includeCost = false): ProductForm => ({
   is_sellable: true,
   is_favorite: false,
   inventory_behavior: "direct",
-  available_counter: true,
-  available_table: true,
-  available_command: true,
   participates_in_service_fee: true,
   participates_in_commission: true,
   emits_ticket: false,
@@ -540,9 +534,6 @@ function Products() {
               is_sellable: detail.is_sellable,
               is_favorite: detail.is_favorite,
               inventory_behavior: detail.inventory_behavior,
-              available_counter: detail.available_counter,
-              available_table: detail.available_table,
-              available_command: detail.available_command,
               participates_in_service_fee: detail.participates_in_service_fee,
               participates_in_commission: detail.participates_in_commission,
               emits_ticket: detail.emits_ticket,
@@ -1369,9 +1360,6 @@ function Products() {
                         category: categoryId,
                         ...(!editing && selected
                           ? {
-                              available_counter: selected.available_counter,
-                              available_table: selected.available_table,
-                              available_command: selected.available_command,
                               participates_in_service_fee:
                                 selected.participates_in_service_fee,
                               participates_in_commission:
@@ -1584,46 +1572,6 @@ function Products() {
                   />
                   Produto favorito
                 </label>
-                <fieldset className="sm:col-span-2 lg:col-span-3 rounded-lg border border-subtle p-4">
-                  <legend className="px-1 text-xs font-bold">
-                    Canais globais de venda
-                  </legend>
-                  <p className="mb-3 text-[10px] text-muted">
-                    A filial pode herdar ou sobrescrever cada canal.
-                  </p>
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    <label className="flex items-center gap-2 text-xs font-semibold">
-                      <input
-                        type="checkbox"
-                        checked={form.available_counter}
-                        onChange={(event) =>
-                          update("available_counter", event.target.checked)
-                        }
-                      />
-                      Balcão
-                    </label>
-                    <label className="flex items-center gap-2 text-xs font-semibold">
-                      <input
-                        type="checkbox"
-                        checked={form.available_table}
-                        onChange={(event) =>
-                          update("available_table", event.target.checked)
-                        }
-                      />
-                      Mesa
-                    </label>
-                    <label className="flex items-center gap-2 text-xs font-semibold">
-                      <input
-                        type="checkbox"
-                        checked={form.available_command}
-                        onChange={(event) =>
-                          update("available_command", event.target.checked)
-                        }
-                      />
-                      Comanda
-                    </label>
-                  </div>
-                </fieldset>
                 <fieldset className="sm:col-span-2 lg:col-span-3 rounded-lg border border-subtle p-4">
                   <legend className="px-1 text-xs font-bold">
                     Participação financeira

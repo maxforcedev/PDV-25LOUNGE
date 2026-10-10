@@ -192,9 +192,6 @@ class Product(BaseModel):
     )
     is_sellable = models.BooleanField(default=True)
     is_favorite = models.BooleanField(default=False)
-    available_counter = models.BooleanField(default=True)
-    available_table = models.BooleanField(default=True)
-    available_command = models.BooleanField(default=True)
     participates_in_service_fee = models.BooleanField(default=True)
     participates_in_commission = models.BooleanField(default=True)
     emits_ticket = models.BooleanField(default=False)
@@ -440,9 +437,9 @@ class ProductBranchConfig(BaseModel):
         blank=True, null=True,
     )
     is_available = models.BooleanField(default=True)
-    available_counter = models.BooleanField(blank=True, null=True)
-    available_table = models.BooleanField(blank=True, null=True)
-    available_command = models.BooleanField(blank=True, null=True)
+    available_counter = models.BooleanField(default=True)
+    available_table = models.BooleanField(default=True)
+    available_command = models.BooleanField(default=True)
     participates_in_service_fee = models.BooleanField(blank=True, null=True)
     participates_in_commission = models.BooleanField(blank=True, null=True)
 
@@ -472,8 +469,7 @@ class ProductBranchConfig(BaseModel):
 
     def effective_channel(self, channel):
         field = f'available_{channel}'
-        override = getattr(self, field)
-        return getattr(self.product, field) if override is None else override
+        return bool(getattr(self, field))
 
     def effective_participation(self, field):
         if field not in ('participates_in_service_fee', 'participates_in_commission'):

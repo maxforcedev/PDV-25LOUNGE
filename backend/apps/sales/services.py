@@ -893,9 +893,15 @@ def _channel_available(product, branch, channel, configs=None):
     )
     if config is None or not config.is_available:
         return False
+    channel_features = {
+        SalesChannel.COUNTER: 'counter',
+        SalesChannel.TABLE: 'tables',
+        SalesChannel.COMMAND: 'commands',
+    }
+    if not branch_feature_enabled(branch, channel_features[channel]):
+        return False
     field = f'available_{channel}'
-    override = getattr(config, field) if config else None
-    return getattr(product, field) if override is None else override
+    return bool(getattr(config, field))
 
 
 def _eligible_promotions(company, timestamp, *, branch=None, lock=False):

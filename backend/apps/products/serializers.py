@@ -280,8 +280,20 @@ class ProductBranchConfigSerializer(serializers.ModelSerializer):
         return fields
 
     def get_effective_channels(self, config):
+        channel_features = {
+            SalesChannel.COUNTER: 'counter',
+            SalesChannel.TABLE: 'tables',
+            SalesChannel.COMMAND: 'commands',
+        }
         return {
-            channel: config.effective_channel(channel)
+            channel: bool(
+                config.is_available
+                and config.product.status == Status.ACTIVE
+                and config.product.archived_at is None
+                and config.product.is_sellable
+                and config.effective_channel(channel)
+                and branch_feature_enabled(config.branch, channel_features[channel])
+            )
             for channel in SalesChannel.values
         }
 
@@ -311,6 +323,12 @@ class ProductBranchConfigSerializer(serializers.ModelSerializer):
         if category and branch and category.branch_id != branch.pk:
             raise serializers.ValidationError({'category': 'A categoria deve pertencer a filial ativa.'})
         return attrs
+
+    def create(self, validated_data):
+        category = validated_data['category']
+        for field in ('available_counter', 'available_table', 'available_command'):
+            validated_data.setdefault(field, getattr(category, field))
+        return super().create(validated_data)
 
 
 class ProductionDestinationSerializer(serializers.ModelSerializer):
@@ -386,7 +404,6 @@ class ProductSerializer(CompanyBoundSerializer):
             'sku',
             'image', 'image_url', 'is_sellable', 'is_favorite', 'inventory_behavior', 'status',
             'archived_at', 'archived_by',
-            'available_counter', 'available_table', 'available_command',
             'participates_in_service_fee', 'participates_in_commission',
             'emits_ticket',
             'components', 'fraction_components', 'suggested_cost', 'suggested_sale_price',
@@ -457,8 +474,6 @@ class ProductSerializer(CompanyBoundSerializer):
                 data['category'] = config.category_id
                 data['category_name'] = config.category.name
             if config:
-                for channel in SalesChannel.values:
-                    data[f'available_{channel}'] = config.effective_channel(channel)
                 for field in (
                     'participates_in_service_fee', 'participates_in_commission',
                 ):
@@ -683,12 +698,8 @@ class ProductSerializer(CompanyBoundSerializer):
         components = validated_data.pop('components', None)
         fraction_components = validated_data.pop('fraction_components', None)
         category = validated_data['category']
-        for field in (
-            'available_counter', 'available_table', 'available_command',
-            'participates_in_service_fee', 'participates_in_commission',
-        ):
-            if field not in validated_data:
-                validated_data[field] = getattr(category, field)
+        for field in ('participates_in_service_fee', 'participates_in_commission'):
+            validated_data.setdefault(field, getattr(category, field))
         try:
             return create_product(
                 branch=getattr(self.context.get('request'), 'branch_context', None),
@@ -706,10 +717,7 @@ class ProductSerializer(CompanyBoundSerializer):
         components = validated_data.pop('components', None)
         fraction_components = validated_data.pop('fraction_components', None)
         category = validated_data.pop('category', None)
-        branch_fields = (
-            'available_counter', 'available_table', 'available_command',
-            'participates_in_service_fee', 'participates_in_commission',
-        )
+        branch_fields = ('participates_in_service_fee', 'participates_in_commission')
         branch = getattr(self.context.get('request'), 'branch_context', None)
         branch_values = {}
         if branch:
@@ -816,10 +824,7 @@ class ProductSerializer(CompanyBoundSerializer):
             'branch': branch.pk,
             'is_available': config.is_available if config else False,
             'channels': {
-                channel: (
-                    config.effective_channel(channel) if config
-                    else getattr(product, f'available_{channel}')
-                )
+                channel: config.effective_channel(channel) if config else False
                 for channel in SalesChannel.values
             },
             'sale_price': f'{(product.sale_price if branch_price is None else branch_price):.2f}',

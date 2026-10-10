@@ -775,12 +775,10 @@ def add_order_item(*, command, user, product_id, quantity, modifiers=None,
         raise ValidationError({'product': 'Produto arquivado.'})
     if not product.is_sellable:
         raise ValidationError({'product': 'Produto não vendável.'})
-    if not product.available_command:
-        raise ValidationError({'product': 'Produto não disponível para comanda.'})
     branch_config = ProductBranchConfig.objects.filter(
         branch=command.branch, product=product
     ).first()
-    if branch_config is None or not branch_config.is_available or branch_config.available_command is False:
+    if branch_config is None or not branch_config.is_available or not branch_config.available_command:
         raise ValidationError({'product': 'Produto indisponível para Comanda nesta filial.'})
     if product.unit == Unit.UNIT and quantity != quantity.to_integral_value():
         raise ValidationError({'quantity': 'Produto UN exige quantidade inteira.'})

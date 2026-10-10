@@ -192,8 +192,7 @@ def add_order_items(*, command, user, items, idempotency_key, audit_metadata=Non
         config = ProductBranchConfig.objects.filter(branch=command.branch, product=product).first()
         if not (
             product.status == Status.ACTIVE and product.archived_at is None and product.is_sellable
-            and product.available_command and config and config.is_available
-            and config.available_command is not False
+            and config and config.is_available and config.available_command
         ):
             raise ValidationError({'product': 'Produto indisponível para Comanda nesta filial.'})
         quantity = strict_decimal(entry['quantity'], field='quantity', decimal_places=3, max_digits=14)

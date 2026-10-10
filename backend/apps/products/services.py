@@ -63,7 +63,12 @@ def create_product(*, branch=None, components=None, fraction_components=None, **
         if branch.company_id != product.company_id:
             raise ValidationError({'branch': 'A filial deve pertencer a empresa do produto.'})
         ProductBranchConfig.objects.create(
-            product=product, branch=branch, category=product.category,
+            product=product,
+            branch=branch,
+            category=product.category,
+            available_counter=product.category.available_counter,
+            available_table=product.category.available_table,
+            available_command=product.category.available_command,
         )
     return product
 
@@ -626,6 +631,9 @@ def duplicate_product(*, product, branch, options):
         'product': duplicate,
         'branch': branch,
         'category': source_category,
+        'available_counter': source_category.available_counter,
+        'available_table': source_category.available_table,
+        'available_command': source_category.available_command,
     }
     if options.get('branch_config'):
         branch_config_data.update({

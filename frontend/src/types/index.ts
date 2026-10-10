@@ -576,9 +576,9 @@ export interface ProductBranchConfig {
   branch: number;
   branch_name: string;
   is_available: boolean;
-  available_counter: boolean | null;
-  available_table: boolean | null;
-  available_command: boolean | null;
+  available_counter: boolean;
+  available_table: boolean;
+  available_command: boolean;
   participates_in_service_fee: boolean | null;
   participates_in_commission: boolean | null;
   effective_participation: {
@@ -860,9 +860,6 @@ export interface Product {
   sale_price: string;
   is_sellable: boolean;
   is_favorite: boolean;
-  available_counter: boolean;
-  available_table: boolean;
-  available_command: boolean;
   participates_in_service_fee: boolean;
   participates_in_commission: boolean;
   emits_ticket: boolean;

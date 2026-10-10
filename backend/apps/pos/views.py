@@ -1086,8 +1086,10 @@ class POSAttendanceCatalogView(POSAttendanceView, POSQuickSaleView):
         require_branch_feature(device.branch, 'commands')
         request._pos_branch = device.branch
         queryset = _pos_catalog_queryset(
-            device.branch, search=request.query_params.get('search'),
-        ).filter(available_command=True)
+            device.branch,
+            channel=SalesChannel.COMMAND,
+            search=request.query_params.get('search'),
+        )
         return Response({'products': self._catalog_payload(
             request, _visible_pos_catalog(device, queryset), device.branch,
         )})

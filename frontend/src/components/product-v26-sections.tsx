@@ -247,7 +247,7 @@ export function ProductV26Sections({
     );
     setFractionUnit(product.fraction_config?.content_unit || "ml");
     const requests: Promise<void>[] = [];
-    if (isVisible("suppliers-stock")) {
+    if (isVisible("data") || isVisible("suppliers-stock")) {
       requests.push(
         http
           .get<ProductBranchConfig>(`products/${product.id}/branch-config/`)
@@ -784,7 +784,7 @@ export function ProductV26Sections({
 
       <section
         className={
-          isVisible("suppliers-stock")
+          isVisible("data")
             ? "rounded-xl border border-subtle p-4"
             : "hidden"
         }
@@ -840,20 +840,11 @@ export function ProductV26Sections({
                           value && {
                             ...value,
                             [`available_${channel}`]:
-                              event.target.value === "null"
-                                ? null
-                                : event.target.value === "true",
+                              event.target.value === "true",
                           },
                       )
                     }
                   >
-                    <option value="null">
-                      Herdar global (
-                      {product[`available_${channel}`]
-                        ? "disponível"
-                        : "indisponível"}
-                      )
-                    </option>
                     <option value="true">Disponível nesta filial</option>
                     <option value="false">Indisponível nesta filial</option>
                   </Select>
