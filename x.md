@@ -1,273 +1,370 @@
-Confie no estado atual do projeto e **não reverta as correções já feitas nos commits `464ef3d` e `e9124e7`**.
+CORE PDV — MISSÃO 2 / PARTE 1
+Enforcement global de módulos: Plano → Filial → RBAC
+Trabalhe sobre o main atual do projeto maxforcedev/PDV-25LOUNGE.
+Antes de alterar, leia a implementação existente. Não substitua a arquitetura atual por outro sistema. Esta missão deve consolidar e completar o que já existe.
+Hoje já temos uma boa fundação em:
+backend/apps/companies/features.py
+backend/apps/saas/services.py
+backend/apps/saas/permissions.py
+backend/apps/companies/models.py
+backend/apps/companies/serializers.py
+backend/apps/accounts/serializers.py
 
-A análise do GitHub mostrou que a missão crítica está praticamente concluída. Restam somente **duas pendências objetivas** para fecharmos essa etapa.
+frontend/src/lib/feature-guards.ts
+frontend/src/lib/authorized-routes.ts
+frontend/src/providers/auth-provider.tsx
+frontend/src/components/admin-guard.tsx
+frontend/src/components/app-shell.tsx
 
-Não faça refactor amplo, não redesenhe telas e não altere arquitetura já validada.
+backend/apps/pos/services.py
 
-# 1. CORRIGIR O ÚNICO TESTE QUE ESTÁ QUEBRANDO O CI
+A regra definitiva do CORE passa a ser:
+RECURSO EFETIVO =
+tenant operacional
+AND entitlement/plano habilitado
+AND módulo habilitado naquela filial
+AND dependências do módulo habilitadas
 
-Estado atual do GitHub Actions no commit:
+AÇÃO AUTORIZADA =
+recurso efetivo
+AND RBAC/permissão do usuário
 
-`e9124e7f01a264ee6880b710066a5ed96c70a43f`
+RBAC nunca pode habilitar recurso fora do plano ou desabilitado na filial.
+Superusuário, Owner, perfil administrativo ou permissão gravada no banco também não devem transformar uma capability comercial indisponível em disponível.
+DISPONIBILIDADE OPERACIONAL POR FILIAL PARA TODOS OS MÓDULOS
+Hoje BranchSettings.feature_flags() possui switches locais principalmente para:
+tables
+commands
+counter
+consumption
+cash_register
 
-Resultado:
+Enquanto diversos outros módulos definidos em FEATURE_CAPABILITIES usam implicitamente True na filial.
+Isso precisa ser corrigido.
+A filial deve possuir disponibilidade operacional explícita para todos os módulos comerciais atualmente existentes:
+tables
+commands
+counter
+consumption
+cash_register
+production
+products
+inventory
+purchases
+suppliers
+customers
+promotions
+reports
+audit
+financial
+pos
 
-- Platform Admin lint/build ✅
-- Frontend lint/build ✅
-- Backend system check ✅
-- Migrations check ✅
-- Backend tests 🔴
-- 487 testes executados
-- somente 1 failure
+Preserve os campos atuais e, seguindo o padrão já existente de BranchSettings, adicione os switches ausentes, por exemplo:
+uses_products
+uses_inventory
+uses_purchases
+uses_suppliers
+uses_customers
+uses_promotions
+uses_production
+uses_reports
+uses_audit
+uses_financial
+uses_pos
 
-Teste quebrado:
+Não transformar nesta missão BranchSettings em uma arquitetura completamente diferente.
+Criar migration segura e não destrutiva.
+Para os novos campos, preservar o comportamento existente das filiais atuais:
+default=True
 
-`apps.pos.tests.test_foundation.POSFoundationIntegrationTests.test_bootstrap_reports_fixed_and_flexible_cash_state_without_fake_selection`
+O entitlement continua sendo a autoridade superior.
+Portanto:
+plano OFF + filial ON = OFF
+plano ON + filial OFF = OFF
+plano ON + filial ON = ON
 
-O teste atualmente espera que, no modo FLEXIBLE, a lista de caixas contenha apenas:
+core.enabled, users.max, branches.max, limites quantitativos e outras capabilities que não representam módulo operacional de filial não devem virar switches de filial.
+NÃO CONFUNDIR MÓDULO COM CONFIGURAÇÃO INTERNA
+Continuam sendo configurações/subfeatures e NÃO novos módulos comerciais:
+allow_negative_stock
+charges_service_fee
+consumption_limit_enabled
+service_fee_rate
+commission_rate
+fixed_daily_cost
 
-- `Bar`
-- `Pista`
-
-Porém agora toda nova filial recebe corretamente o caixa provisionado automaticamente:
-
-`Caixa principal`
-
-Portanto o bootstrap POS retorna corretamente:
-
-- `Caixa principal`
-- `Bar`
-- `Pista`
-
-O teste antigo ficou incompatível com a nova regra de provisionamento.
-
-## Corrigir o teste, NÃO a produção
-
-Atualizar o teste para considerar o `Caixa principal` como caixa real, válido e elegível no modo FLEXIBLE.
-
-Não:
-
-- filtrar `Caixa principal` do bootstrap;
-- esconder o caixa padrão do POS;
-- remover o provisionamento automático;
-- alterar `ensure_default_cash_register`;
-- enfraquecer a nova regra apenas para satisfazer o teste.
-
-A regra correta permanece:
-
-`nova empresa -> Matriz -> Caixa principal`
-
-`nova filial -> Caixa principal`
-
-O teste é que precisa acompanhar a arquitetura nova.
-
----
-
-# 2. FECHAR RACE CONDITION RESTANTE EM MODIFICADORES
-
-O bug principal de Modificadores já foi corrigido.
-
-Hoje `load()` e `loadOptions()` usam corretamente o contexto:
-
-`companyId:branchId`
-
-e descartam respostas antigas.
-
-Porém ainda existe uma condição de corrida nas mutations de opções.
-
-Arquivo:
-
-`frontend/src/app/(private)/modificadores/page.tsx`
-
-Fluxos afetados:
-
-- `saveOption`
-- `deleteOption`
-- `reorderOptions`
-
-## Cenário do problema
-
+Elas só podem ser usadas quando o módulo correspondente estiver efetivamente disponível.
 Exemplo:
+inventory OFF
+→ configuração de estoque negativo não opera/não aparece
 
-1. usuário está na Filial A;
-2. salva uma opção;
-3. request ainda está em andamento;
-4. usuário troca para Filial B;
-5. o `useEffect` limpa corretamente:
-   - `viewingGroup`
-   - `groupOptions`
-   - modal;
-6. a request antiga da Filial A termina;
-7. o callback ainda pode executar `openOptions(viewingGroup)` usando o grupo antigo;
-8. isso pode reabrir estado da Filial A dentro do contexto da Filial B.
+financial OFF
+→ taxa, comissão e configurações financeiras não operam/não aparecem
 
-`loadOptions()` já impede que a resposta antiga altere `groupOptions`, mas o próprio `openOptions()` ainda pode alterar:
+DEPENDÊNCIAS NA FILIAL
+O plano já possui dependências declarativas em CAPABILITY_DEPENDENCIES.
+A disponibilidade operacional da filial precisa respeitar a mesma lógica.
+No mínimo:
+inventory → products
 
-- `viewingGroup`;
-- `optionsModalOpen`;
+counter → products + cash_register
 
-antes da proteção interna do request.
+commands → products + cash_register
 
-## Corrigir
+purchases → suppliers + products + inventory
 
-Nas operações assíncronas que fazem mutation, capturar o contexto antes da request:
+promotions → products
 
-`const token = context.current`
+production → products
 
-Depois de cada `await` relevante e antes de alterar novamente o estado da interface ou chamar `openOptions`, validar:
+tables → commands
 
-`if (context.current !== token) return`
+consumption → commands
 
-Aplicar isso de forma consistente em:
+Não permitir estados efetivos incoerentes.
+Exemplo:
+products = OFF
+inventory = ON
 
-- salvar opção;
-- excluir opção;
-- reordenar opção.
+resultado efetivo:
+inventory = OFF
 
-Se houver o mesmo padrão em criação/edição/exclusão/reordenação de grupos, revisar e corrigir somente onde necessário.
+Ao editar a filial, preferir validação clara. Não criar estado silenciosamente inconsistente no banco.
+Se o usuário tentar habilitar um módulo sem seu requisito, retornar erro amigável indicando a dependência.
+Ao desabilitar um pré-requisito que possui módulos dependentes habilitados, exigir que os dependentes sejam desabilitados na mesma alteração ou tratar de forma segura e explícita.
+Não apagar dados históricos ao desabilitar módulos.
+branch_feature_states() COMO FONTE DE VERDADE
+Consolidar:
+branch_feature_states(branch)
 
-Não remover a proteção de contexto já existente.
 
-Não simplificar removendo o controle de race condition.
+como resolução canônica de disponibilidade comercial da filial.
+Cada módulo deve informar pelo menos:
+plan_allowed
+enabled
 
-O comportamento esperado é:
+enabled só pode ser True se:
+plano permite
++
+switch da filial permite
++
+dependências efetivas permitem
++
+tenant está operacional
 
-`response da Filial A chegando depois que usuário foi para Filial B`
-→ resposta é ignorada
-→ modal antigo não reabre
-→ estado da Filial B permanece intacto.
+require_branch_feature() deve continuar sendo a barreira fail-closed no backend.
+Não duplicar regras diferentes em vários módulos.
+BACKEND — AUDITORIA COMPLETA
+Auditar todos os endpoints tenant/operacionais existentes e garantir enforcement do módulo correspondente.
+Isso inclui, conforme aplicável:
+Balcão/vendas
+Consumação
+Mesas
+Comandas
+Caixa
+Produtos
+Categorias
+Modificadores
+Preços por filial
+Estoque
+Transferências
+Inventários
+Perdas
+Compras
+Recebimentos
+Contas a pagar
+Fornecedores
+Clientes
+Promoções
+Produção
+Impressoras
+Rotas de impressão
+Fila de impressão
+Tickets
+Financeiro
+Formas de pagamento
+Comissões
+Dashboard
+Relatórios
+Auditoria
+Dispositivos POS
+APIs operacionais do POS
 
----
+Não depender exclusivamente de esconder interface.
+Uma chamada direta à API deve receber 403 quando o módulo estiver:
+fora do plano
+OU
+desabilitado naquela filial
 
-# 3. ADICIONAR TESTE/COBERTURA PARA A NOVA REGRA DO CAIXA
+A regra vale para leitura e escrita quando o endpoint pertence àquele módulo.
+Recursos compostos exigem todas as capabilities relevantes.
+Exemplos:
+contas a pagar
+→ purchases + financial
 
-Além de corrigir o teste antigo, garantir que exista cobertura clara para:
+produto/fornecedor
+→ products + suppliers
 
-- nova empresa recebe exatamente um `Caixa principal`;
-- nova filial recebe exatamente um `Caixa principal`;
-- chamada repetida de `ensure_default_cash_register` não cria duplicata;
-- POS FLEXIBLE lista o `Caixa principal` junto aos outros caixas ativos;
-- POS FIXED continua respeitando o caixa definido no `BranchPOSSettings`.
+relatório de estoque
+→ reports + inventory
 
-Não mudar a regra de produção.
+relatório financeiro
+→ reports + financial
 
----
+relatório de mesas/comandas
+→ reports + tables + commands
 
-# 4. NÃO ALTERAR O CMV
+Atualize os mapas existentes em SaaSTenantRuntimePermission/COMMERCIAL_FEATURES_BY_BASENAME/rotas específicas em vez de criar uma segunda arquitetura concorrente.
+Endpoints customizados que não utilizem basename também precisam ser auditados.
+FRONTEND — FAIL CLOSED
+O mesmo estado resolvido pelo backend deve continuar chegando em:
+User.branches[].features
 
-A implementação atual de CMV foi revisada e está aprovada.
+E deve comandar toda a interface.
+Quando um módulo estiver indisponível:
+não aparece no menu
+URL direta é bloqueada
+página privada não renderiza
+botões do módulo não aparecem
+atalhos não aparecem
+cards/KPIs do módulo não aparecem
+selects/opções exclusivas daquele módulo não aparecem
+permissões funcionais daquele módulo não aparecem como opção operacional
 
-Não mexer em:
+Revise:
+app-shell.tsx
+feature-guards.ts
+authorized-routes.ts
+AdminGuard
+páginas privadas
+editor de permissões
 
-- `_reconcile_modifier_component_costs`;
-- snapshot de custo;
-- `product_input`;
-- `component_substitution`;
-- `SaleItem.unit_cost`;
-- `OrderItem.unit_cost`;
-- `AttendanceOrderItem.unit_cost`;
-- custo médio por filial;
-- movimentações de estoque;
-- cancelamento;
-- transferências proporcionais;
-- snapshot histórico.
+Não confiar apenas no AppShell.
+Digitar diretamente, por exemplo:
+/estoque
+/compras
+/producao
+/relatorios/...
+/pos-dispositivos
 
-O estado atual está correto:
+deve falhar/redirect quando a feature da filial estiver desligada.
+MEU NEGÓCIO → CONFIGURAÇÕES DA FILIAL
+Na seção existente:
+Operação
+Ative ou desative recursos desta filial.
 
-- custo usa estoque da filial;
-- `average_unit_cost` com fallback para `product.cost`;
-- adicional entra no CMV;
-- substituição troca contribuição de custo;
-- quantidade > 1 não multiplica duas vezes o CMV unitário;
-- custo histórico permanece congelado.
+passar a permitir controlar todos os módulos operacionais que o plano daquela empresa possui.
+Exibir somente módulos que tenham:
+plan_allowed = true
 
-Não refatore essa parte nesta missão.
+Não permitir habilitar via payload manual uma feature que o plano não possui.
+Depois de salvar, o auth/me/estado de features e a interface devem refletir imediatamente a nova disponibilidade.
+Usar nomes amigáveis em português.
+CORE POS
+O POS também faz parte desta regra.
+feature.pos/pos.enabled não deve ser apenas uma configuração visual.
+Se a empresa possui POS no plano, mas a filial desabilitou POS:
+novo pareamento na filial → bloqueado
+dispositivo existente → não pode continuar operacional
+bootstrap → bloqueado
+operador → não deve conseguir iniciar operação
+venda → bloqueada
 
----
+Para módulos internos do POS:
+Venda rápida → counter + permissão
+Mesas → tables + permissão
+Comandas → commands + permissão
+Caixa → cash_register + permissão
 
-# 5. NÃO ALTERAR AS OUTRAS CORREÇÕES CRÍTICAS
+Manter modules_for() baseado em branch_feature_enabled().
+Não criar allowlist funcional por máquina. A regra continua sendo:
+plano + filial + RBAC
 
-Preservar integralmente:
+Configuração do dispositivo não substitui autorização funcional.
+PRESERVAÇÃO DE DADOS E RBAC
+Desabilitar módulo:
+NÃO remove registros
+NÃO remove histórico
+NÃO apaga permissões dos perfis
+NÃO apaga configuração do módulo
+NÃO apaga devices
+NÃO apaga vendas
 
-### Reset de senha
+Apenas torna a funcionalidade indisponível operacionalmente.
+Se posteriormente o plano/filial reabilitar o módulo, as permissões RBAC existentes voltam a ser consideradas.
+Isso é importante:
+Entitlement/feature decide SE o módulo existe para aquele contexto.
+RBAC decide QUEM pode usá-lo.
 
-- `/esqueci-senha` público;
-- `/redefinir-senha` público;
-- resposta neutra para e-mail existente/inexistente;
-- rate limit;
-- token Django;
-- UID inválido retorna erro controlado;
-- sem enumeração de contas.
+NÃO MEXER AINDA
+Esta é somente a Parte 1 da Missão 2.
+Não entrar ainda em:
+regras específicas de categoria
+propagação de produtos
+copiar produto para filial
+canais de venda do produto
+alteração de comportamento de estoque do produto
+redesign de modificadores
+rotas Produto → Setor → Impressora
+UX de POS Devices
+dashboard visual
+relatórios visuais
+importação por planilha
+Platform Admin público
 
-### POS web
+Também não alterar:
+CMV já aprovado
+snapshot histórico de custos
+motor financeiro
+motor de estoque
+pagamentos
+Cielo
+Stone
+PagBank
+SMTP/Resend
+recuperação de senha
 
-Manter:
+TESTES OBRIGATÓRIOS
+Atualizar/criar cobertura para confirmar:
+plano OFF / filial ON / RBAC ON → bloqueado
+plano ON / filial OFF / RBAC ON → bloqueado
+plano ON / filial ON / RBAC OFF → bloqueado
+plano ON / filial ON / RBAC ON → permitido
 
-`/pdv -> /dashboard`
+dependência da filial OFF → dependente OFF
 
-O Backoffice não deve voltar a vender.
+endpoint direto bloqueado
+módulo some do frontend
+deep-link é bloqueado
+POS da filial desabilitada é bloqueado
+módulo reabilitado preserva RBAC/dados
 
-### CORE POS
+Cobrir pelo menos um módulo de cada grupo relevante e testes específicos das dependências.
+Preservar os testes existentes.
+Corrigir os testes, e não executar. O GitHub já faz isso.
+Não executar:
+python manage.py test
+python manage.py check
+migrate
+makemigrations
+npm test
+npm run build
+npm run lint
+flutter test
+flutter build
 
-Manter:
-
-`POS_API_BASE_URL`
-
-obrigatório.
-
-Debug pode usar HTTP/IP local.
-
-Release continua exigindo HTTPS.
-
-### SMTP
-
-Manter a arquitetura atual:
-
-- credenciais via env/secret;
-- Docker Secret para senha;
-- `docker-stack.smtp.yml`;
-- validação TLS/SSL;
-- console backend em desenvolvimento.
-
-Não colocar segredo no repositório.
-
----
-
-# 6. PRINCÍPIOS
-
-Não enfraquecer produção para fazer teste passar.
-
-O teste deve refletir a regra nova.
-
-Não remover proteção de contexto de Modificadores.
-
-Não alterar entitlement/RBAC.
-
-Não fazer mudanças fora deste escopo.
-
-Não criar migrations desnecessárias.
-
-Não alterar comportamento financeiro já validado.
-
----
-
-# 7. EXECUÇÃO
-
-Faça somente essas correções.
-
-Atualize os testes necessários.
-
-**Não execute testes, builds, Flutter ou suíte localmente. O GitHub Actions fará a validação após o push.**
-
+Se migration for necessária, escrevê-la corretamente sem executá-la.
+ENTREGA
 Ao concluir:
+faça commit e push no main;
+informe o SHA;
+liste os arquivos alterados;
+informe a migration criada;
+explique como ficou a regra:
+Plano → Filial → Dependências → RBAC
 
-1. faça commit;
-2. faça push;
-3. informe o SHA;
-4. liste os arquivos alterados;
-5. explique a correção do teste do POS;
-6. explique como fechou a race de Modificadores;
-7. confirme explicitamente que não alterou a lógica de CMV;
-8. não considere concluído deixando workaround ou TODO.
-
-O objetivo final é deixar o GitHub Actions totalmente verde sem modificar as regras corretas já implementadas.
+informe quais endpoints/módulos foram auditados;
+confirme que URL direta/API/POS também estão fail-closed;
+confirme que dados e permissões históricas não são apagados;
+confirme explicitamente que não entrou nas Partes 2–7 da Missão 2.
+Não faça deploy. Não mexa na VPS.
