@@ -389,19 +389,28 @@ def copy_branch_configuration(*, products, source_branch, target_branches):
     if len(company_ids) != 1:
         raise ValidationError({'products': 'Todos os produtos devem pertencer a mesma empresa.'})
     company_id = company_ids.pop()
-    source = Branch.objects.select_for_update().get(pk=source_branch, company_id=company_id)
+    source = Branch.objects.select_for_update().filter(
+        pk=source_branch, company_id=company_id, status=Status.ACTIVE,
+    ).first()
+    if source is None:
+        raise ValidationError({'source_branch': 'A filial de origem é inválida ou inativa.'})
     if source.pk in set(target_branches):
         raise ValidationError({'target_branches': 'A origem nao pode ser um destino.'})
     targets = list(Branch.objects.select_for_update().filter(
-        pk__in=target_branches, company_id=company_id
+        pk__in=target_branches, company_id=company_id, status=Status.ACTIVE,
     ).order_by('pk'))
     if len(targets) != len(set(target_branches)):
         raise ValidationError({'target_branches': 'Uma filial de destino e invalida.'})
     source_configs = {
         row.product_id: row for row in ProductBranchConfig.objects.filter(
             branch=source, product_id__in=product_ids
-        )
+        ).select_related('category')
     }
+    missing_source_configs = set(product_ids) - set(source_configs)
+    if missing_source_configs:
+        raise ValidationError({
+            'products': 'Um ou mais produtos não possuem configuração na filial de origem.'
+        })
     source_prices = {
         row.product_id: row for row in BranchProductPrice.objects.filter(
             branch=source, product_id__in=product_ids
@@ -439,7 +448,8 @@ def copy_branch_configuration(*, products, source_branch, target_branches):
             if source_config and source_config.category_id:
                 source_category = source_config.category
                 target_category = Category.objects.filter(
-                    branch=target, name__iexact=source_category.name
+                    branch=target, name__iexact=source_category.name,
+                    deleted_at__isnull=True,
                 ).first()
                 if target_category is None:
                     target_category = Category.objects.create(
@@ -458,7 +468,10 @@ def copy_branch_configuration(*, products, source_branch, target_branches):
                 config.category = target_category
             else:
                 config.category = None
-            for field in ('available_counter', 'available_table', 'available_command'):
+            for field in (
+                'available_counter', 'available_table', 'available_command',
+                'participates_in_service_fee', 'participates_in_commission',
+            ):
                 setattr(config, field, getattr(source_config, field) if source_config else None)
             config.save()
             source_price = source_prices.get(product.pk)
@@ -508,8 +521,13 @@ def branch_configuration_snapshot(product, branch):
     }
     return {
         'branch_id': branch.pk,
+        'category_id': config.category_id if config else None,
         'is_available': config.is_available if config else False,
         'channel_overrides': overrides,
+        'participation_overrides': {
+            field: getattr(config, field) if config else None
+            for field in ('participates_in_service_fee', 'participates_in_commission')
+        },
         'effective_channels': {
             channel: (
                 getattr(product, f'available_{channel}')
@@ -606,6 +624,9 @@ def duplicate_product(*, product, options):
                 available_counter=config.available_counter,
                 available_table=config.available_table,
                 available_command=config.available_command,
+                participates_in_service_fee=config.participates_in_service_fee,
+                participates_in_commission=config.participates_in_commission,
+                category=config.category,
             )
         for price in source.branch_prices.all():
             BranchProductPrice.objects.create(

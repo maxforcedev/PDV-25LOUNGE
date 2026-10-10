@@ -17,8 +17,10 @@ from apps.base.audit import audit_log, model_snapshot
 from apps.base.report_exports import render_report_export
 from apps.base.pagination import StandardPagination
 from apps.companies.models import Branch, Company, Status
+from apps.companies.features import branch_feature_enabled
 from apps.companies.selectors import (
-    accessible_companies, user_has_branch_permission, user_has_company_permission,
+    accessible_branches, accessible_companies, user_has_branch_permission,
+    user_has_company_permission,
 )
 from .models import BranchProductPrice, Category, InventoryBehavior, Product, SalesChannel
 from .models import (
@@ -57,21 +59,58 @@ from .services import (
 
 
 BRANCH_PRICING_UNAVAILABLE_MESSAGE = (
-    'Preços por filial ficam disponíveis quando a empresa possuir mais de uma filial ativa.'
+    'Preços por filial ficam disponíveis quando você possuir acesso a pelo menos duas filiais ativas.'
 )
 
 
-def active_branch_count(company_id):
-    return Branch.objects.filter(company_id=company_id, status=Status.ACTIVE).count()
+def product_enabled_accessible_branches(user, company_id, *, permission_code=None):
+    """Return active company branches the user can operate with Products enabled."""
+    branches = accessible_branches(user, permission_code).filter(
+        company_id=company_id,
+        company__status=Status.ACTIVE,
+        status=Status.ACTIVE,
+    ).select_related('company', 'settings').order_by('name', 'id')
+    return [branch for branch in branches if branch_feature_enabled(branch, 'products')]
 
 
-def assert_branch_pricing_available(company_id):
-    if active_branch_count(company_id) < 2:
+def pricing_branches(company_id, *, user=None, context_branch=None):
+    if user is None:
+        return list(Branch.objects.filter(
+            company_id=company_id, status=Status.ACTIVE,
+        ).order_by('name', 'id'))
+    branches = product_enabled_accessible_branches(user, company_id)
+    can_compare_company = user.is_superuser or any(
+        user_has_company_permission(user, company_id, code)
+        for code in ('branch_prices.view_company', 'branch_prices.change_company')
+    )
+    if can_compare_company:
+        return branches
+    return [
+        branch for branch in branches
+        if context_branch is not None and branch.pk == context_branch.pk
+    ]
+
+
+def active_branch_count(company_id, *, user=None, context_branch=None):
+    return len(pricing_branches(
+        company_id, user=user, context_branch=context_branch,
+    ))
+
+
+def assert_branch_pricing_available(company_id, *, user=None, context_branch=None):
+    branches = pricing_branches(
+        company_id, user=user, context_branch=context_branch,
+    )
+    if len(branches) < 2:
         raise ValidationError({'detail': BRANCH_PRICING_UNAVAILABLE_MESSAGE})
+    return branches
 
 
-def branch_price_comparison(company_id, *, product=None, category=None, status=None):
-    assert_branch_pricing_available(company_id)
+def branch_price_comparison(company_id, *, user=None, context_branch=None,
+                            product=None, category=None, status=None):
+    branches = assert_branch_pricing_available(
+        company_id, user=user, context_branch=context_branch,
+    )
     company = Company.objects.get(pk=company_id)
     products_queryset = priceable_products(company=company)
     if product is not None:
@@ -84,11 +123,6 @@ def branch_price_comparison(company_id, *, product=None, category=None, status=N
     if status is not None:
         products_queryset = products_queryset.filter(status=status)
     products = list(products_queryset.order_by('name', 'id'))
-    branches = list(
-        Branch.objects.filter(company_id=company_id, status=Status.ACTIVE).order_by(
-            'name', 'id'
-        )
-    )
     prices = {
         (price.product_id, price.branch_id): price.sale_price
         for price in BranchProductPrice.objects.filter(
@@ -538,7 +572,9 @@ class ProductViewSet(CatalogViewSet):
         branch = getattr(request, 'branch_context', None)
         if branch is None:
             raise ValidationError({'branch': 'Informe a filial ativa no cabecalho.'})
-        count = active_branch_count(branch.company_id)
+        count = active_branch_count(
+            branch.company_id, user=request.user, context_branch=branch,
+        )
         return Response({
             'available': count >= 2,
             'active_branch_count': count,
@@ -1021,12 +1057,16 @@ class ProductViewSet(CatalogViewSet):
             self.get_serializer(duplicate).data, status=status.HTTP_201_CREATED
         )
 
-    def _validate_copy_branches(self, request, source, targets):
-        for branch_id in [source, *targets]:
-            if not request.user.is_superuser and not user_has_branch_permission(
-                request.user, branch_id, 'products.configure_branch'
-            ):
-                raise PermissionDenied('Filial fora do contexto autorizado para copia.')
+    def _validate_copy_branches(self, request, company_id, source, targets):
+        eligible_ids = {
+            branch.pk for branch in product_enabled_accessible_branches(
+                request.user, company_id, permission_code='products.configure_branch',
+            )
+        }
+        if source not in eligible_ids or any(target not in eligible_ids for target in targets):
+            raise PermissionDenied(
+                'A cópia exige filiais ativas, autorizadas e com Produtos habilitado.'
+            )
 
     @action(detail=True, methods=('post',), url_path='copy-branch-config')
     def copy_branch_config(self, request, pk=None):
@@ -1035,7 +1075,7 @@ class ProductViewSet(CatalogViewSet):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         self._validate_copy_branches(
-            request, data['source_branch'], data['target_branches']
+            request, product.company_id, data['source_branch'], data['target_branches']
         )
         copied = copy_branch_configuration(
             products=[product], **data
@@ -1062,18 +1102,24 @@ class ProductViewSet(CatalogViewSet):
         serializer = CopyCategoryConfigurationSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        branch = request.branch_context
+        source_branch = data['source_branch']
         try:
             category = Category.objects.get(
-                pk=data.pop('category'), branch=branch
+                pk=data.pop('category'), branch_id=source_branch,
             )
         except Category.DoesNotExist:
+            raise ValidationError({'category': 'A categoria deve pertencer à filial de origem.'})
+        if category.company_id != request.branch_context.company_id:
             raise ValidationError({'category': 'Categoria fora da empresa atual.'})
         self._validate_copy_branches(
-            request, data['source_branch'], data['target_branches']
+            request, category.company_id, source_branch, data['target_branches']
         )
         products = list(
-            Product.objects.filter(branch_configs__category=category).order_by('pk')
+            Product.objects.filter(
+                company_id=category.company_id,
+                branch_configs__branch_id=source_branch,
+                branch_configs__category=category,
+            ).order_by('pk')
         )
         copied = copy_branch_configuration(products=products, **data)
         reference = uuid.uuid4()
@@ -1117,29 +1163,12 @@ class ProductViewSet(CatalogViewSet):
             if product_status not in Status.values:
                 raise ValidationError({'status': 'Informe um status válido.'})
             filters['status'] = product_status
-        data = branch_price_comparison(request.branch_context.company_id, **filters)
-        if not (
-            request.user.is_superuser or user_has_company_permission(
-                request.user,
-                request.branch_context.company_id,
-                'branch_prices.view_company',
-            )
-        ):
-            branch = request.branch_context
-            data['branches'] = [
-                item for item in data['branches'] if item['id'] == branch.pk
-            ]
-            for product_row in data['products']:
-                branch_key = str(branch.pk)
-                product_row['prices'] = {
-                    branch_key: product_row['prices'].get(branch_key)
-                }
-                product_row['availability'] = {
-                    branch_key: product_row['availability'].get(branch_key, False)
-                }
-                product_row['cells'] = {
-                    branch_key: product_row['cells'][branch_key]
-                }
+        data = branch_price_comparison(
+            request.branch_context.company_id,
+            user=request.user,
+            context_branch=request.branch_context,
+            **filters,
+        )
         if request.query_params.get('export') in ('csv', 'xlsx', 'pdf'):
             branch_columns = {
                 branch['id']: f'Preço - {branch["name"]}' for branch in data['branches']
@@ -1196,7 +1225,9 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
         branch = getattr(request, 'branch_context', None)
         if branch is None:
             raise ValidationError({'branch': 'Informe a filial ativa no cabecalho.'})
-        assert_branch_pricing_available(branch.company_id)
+        assert_branch_pricing_available(
+            branch.company_id, user=request.user, context_branch=branch,
+        )
 
     def _has_company_permission(self, code):
         branch = self.request.branch_context
@@ -1208,6 +1239,13 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
         context_branch = self.request.branch_context
         if target_branch.company_id != context_branch.company_id:
             raise PermissionDenied('Filial fora da empresa atual.')
+        accessible_ids = {
+            branch.pk for branch in product_enabled_accessible_branches(
+                self.request.user, context_branch.company_id,
+            )
+        }
+        if target_branch.pk not in accessible_ids:
+            raise PermissionDenied('Você não possui acesso à filial selecionada.')
         if target_branch.pk == context_branch.pk:
             if not self.request.user.is_superuser and not user_has_branch_permission(
                 self.request.user, context_branch.pk, 'branch_prices.change'
@@ -1219,6 +1257,11 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         branch = self.request.branch_context
+        visible_branch_ids = {
+            item.pk for item in pricing_branches(
+                branch.company_id, user=self.request.user, context_branch=branch,
+            )
+        }
         queryset = BranchProductPrice.objects.select_related('product', 'branch').filter(
             product__company_id=branch.company_id,
             product__status=Status.ACTIVE,
@@ -1226,11 +1269,9 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
             branch__status=Status.ACTIVE,
             product__branch_configs__branch=F('branch'),
             product__branch_configs__is_available=True,
+            branch_id__in=visible_branch_ids,
         )
-        if self.action in {'list', 'retrieve', 'table'}:
-            if not self._has_company_permission('branch_prices.view_company'):
-                queryset = queryset.filter(branch=branch)
-        elif not self._has_company_permission('branch_prices.change_company'):
+        if self.action not in {'list', 'retrieve', 'table'} and not self._has_company_permission('branch_prices.change_company'):
             queryset = queryset.filter(branch=branch)
         params = self.request.query_params
         if params.get('product'):
@@ -1263,22 +1304,9 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
         branch = getattr(request, 'branch_context', None)
         if branch is None:
             raise ValidationError({'branch': ['Informe a filial ativa no cabecalho.']})
-        data = branch_price_comparison(branch.company_id)
-        if not self._has_company_permission('branch_prices.view_company'):
-            data['branches'] = [
-                item for item in data['branches'] if item['id'] == branch.pk
-            ]
-            for product in data['products']:
-                branch_key = str(branch.pk)
-                product['prices'] = {
-                    branch_key: product['prices'].get(branch_key)
-                }
-                product['availability'] = {
-                    branch_key: product['availability'].get(branch_key, False)
-                }
-                product['cells'] = {
-                    branch_key: product['cells'][branch_key]
-                }
+        data = branch_price_comparison(
+            branch.company_id, user=request.user, context_branch=branch,
+        )
         overrides = self.get_queryset().order_by('product__name', 'id')
         data['overrides'] = self.get_serializer(overrides, many=True).data
         return Response(data)
@@ -1428,6 +1456,7 @@ class BranchProductPriceViewSet(viewsets.ModelViewSet):
 
     @transaction.atomic
     def perform_destroy(self, instance):
+        self._assert_mutation_scope(instance.branch)
         before = model_snapshot(instance, ('product_id', 'branch_id', 'sale_price'))
         audit_log(
             actor=self.request.user, action='branch_price.delete', obj=instance,

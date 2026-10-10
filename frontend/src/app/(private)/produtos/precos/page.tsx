@@ -298,10 +298,10 @@ function BranchPrices() {
           {error && <Alert message={error} />}
           {success && <Alert type="success" message={success} />}
           {branchPricingAvailable === false ? (
-            <EmptyState
-              title="Preços por filial indisponíveis"
-              description="Preços por filial ficam disponíveis quando a empresa possuir mais de uma filial ativa."
-            />
+              <EmptyState
+                title="Preços por filial indisponíveis"
+                description="Preços por filial ficam disponíveis quando você possuir acesso a pelo menos duas filiais ativas."
+              />
           ) : (
             <>
           {!!Object.keys(lineErrors).length && (

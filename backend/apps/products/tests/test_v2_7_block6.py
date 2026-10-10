@@ -213,8 +213,64 @@ class BranchPriceTests(ProductRbacFixture, TestCase):
             FunctionalPermission.Scope.COMPANY,
         )
 
+    def test_branch_pricing_is_unavailable_without_another_accessible_branch(self):
+        from apps.companies.models import Branch
+
+        Branch.objects.create(company=self.company_a, name='Sem acesso')
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).get(
+            '/api/v1/products/branch-pricing/'
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertFalse(response.data['available'])
+        self.assertEqual(response.data['active_branch_count'], 1)
+
 
 class CategoryConfigurationTests(ProductRbacFixture, TestCase):
+    def test_category_is_created_in_the_active_branch_and_cannot_be_assigned_elsewhere(self):
+        from apps.companies.services import create_branch_with_access
+
+        other_branch = create_branch_with_access(
+            creator=self.owner_a, company=self.company_a, name='Outra categoria',
+        )
+        other_category = Category.objects.create(
+            company=self.company_a, branch=other_branch, name='Outra filial',
+        )
+
+        created = self.api_client(self.owner_a, self.branch_a.pk).post(
+            '/api/v1/categories/', {
+                'company': self.company_a.pk,
+                'branch': other_branch.pk,
+                'name': 'Criada na matriz',
+            }, format='json',
+        )
+        rejected = self.api_client(self.owner_a, self.branch_a.pk).patch(
+            f'/api/v1/products/{self.product_a.pk}/',
+            {'category': other_category.pk}, format='json',
+        )
+
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(created.data['branch'], self.branch_a.pk)
+        self.assertEqual(rejected.status_code, 400, rejected.data)
+        self.assertIn('category', rejected.data)
+
+    def test_category_edit_does_not_propagate_without_explicit_apply(self):
+        config = ProductBranchConfig.objects.get(
+            product=self.product_a, branch=self.branch_a,
+        )
+        config.available_counter = True
+        config.save()
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).patch(
+            f'/api/v1/categories/{self.cat_a.pk}/',
+            {'available_counter': False}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        config.refresh_from_db()
+        self.assertTrue(config.available_counter)
+
     def test_apply_config_preserves_audit_before_state(self):
         self.product_a.available_counter = True
         self.product_a.available_table = True
@@ -979,6 +1035,138 @@ class ProductMissionM5Tests(ProductRbacFixture, TestCase):
         self.assertFalse(copied.available_counter)
         self.assertTrue(copied.available_table)
         self.assertIsNone(copied.available_command)
+
+    def test_copy_branch_configuration_reuses_product_and_equivalent_category(self):
+        from apps.companies.services import create_branch_with_access
+
+        target = create_branch_with_access(
+            creator=self.owner_a, company=self.company_a, name='Filial com categoria',
+        )
+        equivalent = Category.objects.create(
+            company=self.company_a, branch=target, name=self.cat_a.name,
+        )
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).post(
+            f'/api/v1/products/{self.product_a.pk}/copy-branch-config/',
+            {'source_branch': self.branch_a.pk, 'target_branches': [target.pk]},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(Product.objects.filter(company=self.company_a).count(), 1)
+        copied = ProductBranchConfig.objects.get(product=self.product_a, branch=target)
+        self.assertEqual(copied.category_id, equivalent.pk)
+
+    def test_copy_branch_configuration_creates_destination_category(self):
+        from apps.companies.services import create_branch_with_access
+
+        target = create_branch_with_access(
+            creator=self.owner_a, company=self.company_a, name='Filial sem categoria',
+        )
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).post(
+            f'/api/v1/products/{self.product_a.pk}/copy-branch-config/',
+            {'source_branch': self.branch_a.pk, 'target_branches': [target.pk]},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        category = Category.objects.get(branch=target, name=self.cat_a.name)
+        copied = ProductBranchConfig.objects.get(product=self.product_a, branch=target)
+        self.assertEqual(copied.category_id, category.pk)
+        self.assertEqual(category.company_id, self.company_a.pk)
+
+    def test_copy_branch_configuration_rejects_inactive_inaccessible_and_disabled_targets(self):
+        from apps.companies.models import Branch
+        from apps.companies.services import create_branch_with_access
+
+        inactive = create_branch_with_access(
+            creator=self.owner_a, company=self.company_a, name='Filial inativa',
+        )
+        inactive.status = Status.INACTIVE
+        inactive.save(update_fields=('status', 'updated_at'))
+        inaccessible = Branch.objects.create(
+            company=self.company_a, name='Filial sem acesso',
+        )
+        disabled = create_branch_with_access(
+            creator=self.owner_a, company=self.company_a, name='Produtos desligados',
+        )
+        disabled.settings.uses_products = False
+        disabled.settings.save(update_fields=('uses_products', 'updated_at'))
+
+        client = self.api_client(self.owner_a, self.branch_a.pk)
+        for target in (inactive, inaccessible, disabled):
+            response = client.post(
+                f'/api/v1/products/{self.product_a.pk}/copy-branch-config/',
+                {'source_branch': self.branch_a.pk, 'target_branches': [target.pk]},
+                format='json',
+            )
+            self.assertEqual(response.status_code, 403, response.data)
+
+    def test_copy_category_requires_its_source_branch(self):
+        from apps.companies.services import create_branch_with_access
+
+        source = create_branch_with_access(
+            creator=self.owner_a, company=self.company_a, name='Outra origem',
+        )
+        target = create_branch_with_access(
+            creator=self.owner_a, company=self.company_a, name='Destino categoria',
+        )
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).post(
+            '/api/v1/products/copy-category-config/',
+            {
+                'category': self.cat_a.pk,
+                'source_branch': source.pk,
+                'target_branches': [target.pk],
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn('category', response.data)
+
+    def test_copy_category_copies_only_configs_from_its_source_branch(self):
+        from apps.companies.services import create_branch_with_access
+
+        target = create_branch_with_access(
+            creator=self.owner_a, company=self.company_a, name='Destino da cópia',
+        )
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).post(
+            '/api/v1/products/copy-category-config/',
+            {
+                'category': self.cat_a.pk,
+                'source_branch': self.branch_a.pk,
+                'target_branches': [target.pk],
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['count'], 1)
+        copied = ProductBranchConfig.objects.get(product=self.product_a, branch=target)
+        self.assertEqual(copied.category.branch_id, target.pk)
+        self.assertEqual(copied.category.name, self.cat_a.name)
+
+    def test_duplicate_creates_a_new_product_with_branch_category_configuration(self):
+        response = self.api_client(self.owner_a, self.branch_a.pk).post(
+            f'/api/v1/products/{self.product_a.pk}/duplicate/',
+            {'branch_config': True}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        duplicate = Product.objects.get(pk=response.data['id'])
+        self.assertNotEqual(duplicate.pk, self.product_a.pk)
+        copied = ProductBranchConfig.objects.get(product=duplicate, branch=self.branch_a)
+        self.assertEqual(copied.category_id, self.cat_a.pk)
+
+    def test_private_product_image_is_not_available_to_another_company(self):
+        response = self.api_client(self.owner_a, self.branch_a.pk).get(
+            f'/api/v1/products/{self.product_b.pk}/image/'
+        )
+
+        self.assertEqual(response.status_code, 404)
 
     def test_view_permission_does_not_grant_archive_or_minimum_stock_change(self):
         viewer = create_user('m5-viewer@prod.com')

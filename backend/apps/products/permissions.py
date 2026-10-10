@@ -60,7 +60,9 @@ class ProductFunctionalPermission(BasePermission):
             return False
         if branch is None:
             return False
-        if view.basename == 'branchprice' or view.action == 'branch_pricing':
+        if view.action == 'branch_pricing':
+            return user_has_branch_permission(user, branch.pk, 'products.view')
+        if view.basename == 'branchprice':
             company_id = request.branch_context.company_id
             if view.action in {'list', 'retrieve', 'table'}:
                 return (

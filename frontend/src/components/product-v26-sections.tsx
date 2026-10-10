@@ -62,6 +62,7 @@ export type ProductV26Actions = {
 
 type Permissions = {
   branch: boolean;
+  viewBranchPrices: boolean;
   minimum: boolean;
   fraction: boolean;
   destinations: boolean;
@@ -222,10 +223,16 @@ export function ProductV26Sections({
     actionRef.current = {
       openDuplicate: () => setDuplicateOpen(true),
       openCopy: () => {
+        setCopySource(String(currentBranchId));
         setCopyOpen("product");
         setCopyTargets([]);
       },
     };
+
+  useEffect(() => {
+    setCopySource(String(currentBranchId));
+    setCopyTargets([]);
+  }, [currentBranchId]);
 
   useEffect(() => {
     let active = true;
@@ -492,7 +499,6 @@ export function ProductV26Sections({
       copyOpen === "category"
         ? "Configuração da categoria copiada para as filiais selecionadas."
         : "Configuração do produto copiada para as filiais selecionadas.",
-      false,
     );
     if (copied) setCopyOpen(null);
   }
@@ -678,8 +684,9 @@ export function ProductV26Sections({
   const stock = product.branch_stock;
   const exactStock = stock?.current_content != null && product.fraction_config;
   const targetBranches = branches.filter(
-    (branch) => String(branch.id) !== copySource,
+    (branch) => branch.id !== currentBranchId,
   );
+  const sourceBranch = branches.find((branch) => branch.id === currentBranchId);
 
   return (
     <div
@@ -797,7 +804,7 @@ export function ProductV26Sections({
               . O preço por filial continua no fluxo dedicado.
             </p>
           </div>
-          {branchPricingAvailable && (
+          {permissions.viewBranchPrices && branchPricingAvailable && (
             <Link href="/produtos/precos" className="btn btn-secondary">
               Preços
             </Link>
@@ -1133,7 +1140,7 @@ export function ProductV26Sections({
 
       {!activeTab &&
         (permissions.duplicate ||
-          (permissions.branch && branches.length > 1)) && (
+          (permissions.branch && targetBranches.length > 0)) && (
           <section className="rounded-xl border border-subtle p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -1157,12 +1164,13 @@ export function ProductV26Sections({
                     Duplicar produto
                   </Button>
                 )}
-                {permissions.branch && branches.length > 1 && (
+                {permissions.branch && targetBranches.length > 0 && (
                   <>
                     <Button
                       type="button"
                       variant="secondary"
                       onClick={() => {
+                        setCopySource(String(currentBranchId));
                         setCopyOpen("product");
                         setCopyTargets([]);
                       }}
@@ -1173,6 +1181,7 @@ export function ProductV26Sections({
                       type="button"
                       variant="secondary"
                       onClick={() => {
+                        setCopySource(String(currentBranchId));
                         setCopyOpen("category");
                         setCopyTargets([]);
                       }}
@@ -1443,26 +1452,12 @@ export function ProductV26Sections({
             ? "Copiar configuração da categoria"
             : "Copiar configuração do produto"
         }
-        description="Selecione a origem e uma ou mais filiais de destino."
+        description="A configuração da filial atual será copiada para os destinos selecionados."
         onClose={() => setCopyOpen(null)}
       >
         <div className="space-y-4 p-5">
           <Field label="Filial de origem">
-            <Select
-              value={copySource}
-              onChange={(event) => {
-                setCopySource(event.target.value);
-                setCopyTargets((value) =>
-                  value.filter((id) => String(id) !== event.target.value),
-                );
-              }}
-            >
-              {branches.map((branch) => (
-                <option key={branch.id} value={branch.id}>
-                  {branch.name}
-                </option>
-              ))}
-            </Select>
+            <Input value={sourceBranch?.name || "Filial atual"} readOnly />
           </Field>
           <fieldset>
             <legend className="label">Filiais de destino</legend>
@@ -1489,7 +1484,7 @@ export function ProductV26Sections({
             </div>
           </fieldset>
           <fieldset>
-            <legend className="label">Seções do comando atual</legend>
+            <legend className="label">Configurações copiadas</legend>
             <div className="grid gap-2 sm:grid-cols-2">
               {[
                 "Disponibilidade e canais",

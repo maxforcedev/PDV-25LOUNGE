@@ -225,6 +225,22 @@ function Products() {
     permissions.configureProductDestinations,
   );
   const canDuplicate = hasPermission(permissions.duplicateProduct);
+  const canViewBranchPrices =
+    hasPermission(permissions.viewBranchPrice) ||
+    hasPermission(permissions.viewCompanyBranchPrice) ||
+    hasPermission(permissions.changeBranchPrice) ||
+    hasPermission(permissions.changeCompanyBranchPrice);
+  const eligibleCopyBranches = (user?.branches || []).filter(
+    (branch) =>
+      branch.company_id === currentCompany?.id &&
+      branch.status === "active" &&
+      Boolean(branch.features.products?.enabled) &&
+      (user?.is_superuser ||
+        branch.permissions.includes(permissions.configureProductBranch)),
+  );
+  const hasEligibleCopyTarget = eligibleCopyBranches.some(
+    (branch) => branch.id !== currentBranch?.id,
+  );
   const suppliersEnabled = hasFeature("suppliers");
   const canViewSuppliers = suppliersEnabled && hasPermission(permissions.viewSupplier);
   const canChangeSuppliers = suppliersEnabled && hasPermission(permissions.changeSupplier);
@@ -914,7 +930,7 @@ function Products() {
                   Cadastro em lote
                 </Link>
               )}
-              {branchPricingAvailable && (
+              {canViewBranchPrices && branchPricingAvailable && (
                 <Link href="/produtos/precos" className="btn btn-secondary">
                   <DollarSign className="size-4" />
                   Preços por filial
@@ -1241,15 +1257,7 @@ function Products() {
               )}
               {editing &&
                 canConfigureBranch &&
-                (user?.branches || []).filter(
-                  (branch) =>
-                    branch.company_id === currentCompany?.id &&
-                    branch.status === "active" &&
-                    (user?.is_superuser ||
-                      branch.permissions.includes(
-                        permissions.configureProductBranch,
-                      )),
-                ).length > 1 && (
+                hasEligibleCopyTarget && (
                   <Button
                     type="button"
                     variant="secondary"
@@ -1909,17 +1917,10 @@ function Products() {
             branchPricingAvailable={branchPricingAvailable}
             activeTab={isDetail ? detailTab : undefined}
             actionRef={productActionsRef}
-            branches={(user?.branches || []).filter(
-              (branch) =>
-                branch.company_id === currentCompany.id &&
-                branch.status === "active" &&
-                (user?.is_superuser ||
-                  branch.permissions.includes(
-                    permissions.configureProductBranch,
-                  )),
-            )}
+            branches={eligibleCopyBranches}
             permissions={{
               branch: canConfigureBranch,
+              viewBranchPrices: canViewBranchPrices,
               minimum: hasPermission(permissions.changeMinimum),
               fraction: canConfigureFraction,
               destinations: canConfigureDestinations,
