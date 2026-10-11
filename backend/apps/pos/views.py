@@ -16,6 +16,8 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.base.cost_visibility import redact_cost_payload
+
 from apps.base.audit import audit_log, model_snapshot
 from apps.base.exceptions import DomainValidationError
 from apps.base.pagination import StandardPagination
@@ -1291,6 +1293,11 @@ class POSAttendanceCommandDetailView(POSAttendanceView):
         data['orders'] = list(AttendanceOrderItem.objects.filter(
             order__command=command,
         ).values('id', 'order_id', 'product_id', 'product_name', 'quantity', 'unit', 'unit_price', 'modifier_snapshot', 'notes', 'status', 'confirmed_at'))
+        include_costs = 'inventory.view_stock_costs' in permissions
+        for item in data['orders']:
+            item['modifier_snapshot'] = redact_cost_payload(
+                item['modifier_snapshot'], include_costs=include_costs,
+            )
         return Response(data)
 
 
@@ -2075,7 +2082,10 @@ def _quick_checkout_payload(checkout, *, permissions=()):
         'cash_session_status': session_status,
         'discount_intent': checkout.discount_intent,
         'service_fee_waived': checkout.service_fee_waived,
-        'preview': checkout.financial_snapshot,
+        'preview': redact_cost_payload(
+            checkout.financial_snapshot,
+            include_costs='inventory.view_stock_costs' in permissions,
+        ),
         'paid_amount': str(paid),
         'remaining_amount': str(remaining),
         'payment_integration': (
