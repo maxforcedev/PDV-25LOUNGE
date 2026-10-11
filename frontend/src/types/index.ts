@@ -597,11 +597,15 @@ export interface ProductBranchStock {
   stock_id?: number | null;
   current_quantity?: string;
   minimum_quantity?: string;
+  maximum_quantity?: string | null;
   unit?: string;
   unit_cost?: string;
   current_content?: string;
   content_unit?: ContentUnit;
   package_content?: string;
+  equivalent_quantity?: string;
+  complete_packages?: string;
+  residual_content?: string;
 }
 
 export interface ProductionDestination {

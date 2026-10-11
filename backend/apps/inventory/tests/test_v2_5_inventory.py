@@ -7,6 +7,7 @@ from django.core.exceptions import ValidationError
 from django.db import close_old_connections
 from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
@@ -182,6 +183,76 @@ class TransferFlowTests(TestCase):
         self.assertEqual(destination_stock.current_quantity, Decimal('20.000'))
         self.assertEqual(destination_stock.average_unit_cost, Decimal('3.000000000000'))
         self.assertEqual(StockTransferReceipt.objects.filter(transfer=transfer).count(), 2)
+
+    def test_transfer_requires_inventory_at_both_branches_throughout_workflow(self):
+        destination_settings = self.destination.settings
+        destination_settings.uses_inventory = False
+        destination_settings.save(update_fields=('uses_inventory', 'updated_at'))
+        with self.assertRaises(PermissionDenied):
+            transfer_fixture(self.origin, self.destination, self.product, self.user)
+
+        destination_settings.uses_inventory = True
+        destination_settings.save(update_fields=('uses_inventory', 'updated_at'))
+        transfer = transfer_fixture(
+            self.origin, self.destination, self.product, self.user, quantity='3'
+        )
+        origin_settings = self.origin.settings
+        origin_settings.uses_inventory = False
+        origin_settings.save(update_fields=('uses_inventory', 'updated_at'))
+        with self.assertRaises(PermissionDenied):
+            dispatch_stock_transfer(
+                transfer=transfer, idempotency_key=uuid.uuid4(), user=self.user,
+            )
+
+        origin_settings.uses_inventory = True
+        origin_settings.save(update_fields=('uses_inventory', 'updated_at'))
+        dispatch_stock_transfer(
+            transfer=transfer, idempotency_key=uuid.uuid4(), user=self.user,
+        )
+        item = transfer.items.get()
+        destination_settings.uses_inventory = False
+        destination_settings.save(update_fields=('uses_inventory', 'updated_at'))
+        with self.assertRaises(PermissionDenied):
+            receive_stock_transfer(
+                transfer=transfer, idempotency_key=uuid.uuid4(), items=[],
+                finalize=True, user=self.user,
+            )
+
+        destination_settings.uses_inventory = True
+        destination_settings.save(update_fields=('uses_inventory', 'updated_at'))
+        receive_stock_transfer(
+            transfer=transfer, idempotency_key=uuid.uuid4(), items=[],
+            finalize=True, user=self.user,
+        )
+        origin_settings.uses_inventory = False
+        origin_settings.save(update_fields=('uses_inventory', 'updated_at'))
+        with self.assertRaises(PermissionDenied):
+            resolve_transfer_divergence(
+                divergence=item.divergence,
+                idempotency_key=uuid.uuid4(),
+                resolution_type=TransferResolutionType.FOUND_RECEIPT,
+                quantity='1', observation='Inventário desativado', user=self.user,
+            )
+
+    def test_transfer_keeps_is_available_independent_from_inventory_feature(self):
+        ProductBranchConfig.objects.filter(
+            product=self.product, branch__in=(self.origin, self.destination),
+        ).update(is_available=False)
+
+        transfer = transfer_fixture(
+            self.origin, self.destination, self.product, self.user, quantity='3'
+        )
+        dispatch_stock_transfer(
+            transfer=transfer, idempotency_key=uuid.uuid4(), user=self.user,
+        )
+        receipt = receive_stock_transfer(
+            transfer=transfer,
+            idempotency_key=uuid.uuid4(),
+            items=[{'transfer_item': transfer.items.get().pk, 'quantity': '3'}],
+            user=self.user,
+        )
+
+        self.assertEqual(receipt.items.get().received_quantity, Decimal('3.000'))
 
     def test_dispatch_is_idempotent_and_finalize_accepts_no_received_lines(self):
         transfer = transfer_fixture(

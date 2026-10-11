@@ -24,7 +24,7 @@ class ProductFunctionalPermission(BasePermission):
             if request.method == 'GET':
                 return 'products.view'
         if view.action == 'minimum_stock' and request.method == 'GET':
-            return 'products.view'
+            return 'inventory.view'
         return view.permission_codes.get(view.action)
 
     def has_permission(self, request, view):

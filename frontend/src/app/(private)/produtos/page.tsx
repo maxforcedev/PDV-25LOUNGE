@@ -239,6 +239,7 @@ function Products() {
   const canViewSuppliers = suppliersEnabled && hasPermission(permissions.viewSupplier);
   const canChangeSuppliers = suppliersEnabled && hasPermission(permissions.changeSupplier);
   const inventoryEnabled = hasFeature("inventory");
+  const canViewInventory = inventoryEnabled && hasPermission(permissions.viewInventory);
   const productionEnabled = hasFeature("production");
   const counterEnabled = hasFeature("counter");
   const tablesEnabled = hasFeature("tables");
@@ -249,11 +250,11 @@ function Products() {
         if (productionEnabled) tabs.push([tab, label]);
       } else if (tab !== "suppliers-stock") {
         tabs.push([tab, label]);
-      } else if (suppliersEnabled && inventoryEnabled) {
+      } else if (canViewSuppliers && canViewInventory) {
         tabs.push([tab, label]);
-      } else if (suppliersEnabled) {
+      } else if (canViewSuppliers) {
         tabs.push([tab, "Fornecedores"]);
-      } else if (inventoryEnabled) {
+      } else if (canViewInventory) {
         tabs.push([tab, "Estoque"]);
       }
       return tabs;
@@ -1890,7 +1891,7 @@ function Products() {
             permissions={{
               branch: canConfigureBranch,
               viewBranchPrices: canViewBranchPrices,
-              minimum: hasPermission(permissions.changeMinimum),
+              minimum: canViewInventory && hasPermission(permissions.changeMinimum),
               fraction: canConfigureFraction,
               destinations: canConfigureDestinations,
               duplicate: canDuplicate,
@@ -1902,7 +1903,7 @@ function Products() {
             }}
             features={{
               suppliers: suppliersEnabled,
-              inventory: inventoryEnabled,
+              inventory: canViewInventory,
               production: productionEnabled,
               counter: counterEnabled,
               tables: tablesEnabled,

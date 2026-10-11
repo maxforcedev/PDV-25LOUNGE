@@ -1124,15 +1124,32 @@ class ProductMissionM5Tests(ProductRbacFixture, TestCase):
         self.assertEqual(response.data['branch_stock']['current_quantity'], '7.000000000')
         minimum = client.put(
             f'/api/v1/products/{self.product_a.pk}/minimum-stock/',
-            {'minimum_quantity': '3.000'}, format='json',
+            {'minimum_quantity': '3.000', 'maximum_quantity': '9.000'}, format='json',
         )
         self.assertEqual(minimum.status_code, 200, minimum.data)
         self.assertEqual(minimum.data['minimum_quantity'], '3.000')
+        self.assertEqual(minimum.data['maximum_quantity'], '9.000')
+        branch_stock = client.get(f'/api/v1/products/{self.product_a.pk}/').data[
+            'branch_stock'
+        ]
+        self.assertEqual(branch_stock['minimum_quantity'], '3.000')
+        self.assertEqual(branch_stock['maximum_quantity'], '9.000')
+        cleared = client.put(
+            f'/api/v1/products/{self.product_a.pk}/minimum-stock/',
+            {'minimum_quantity': '3.000', 'maximum_quantity': None}, format='json',
+        )
+        self.assertEqual(cleared.status_code, 200, cleared.data)
+        self.assertIsNone(cleared.data['maximum_quantity'])
         self.assertEqual(
             client.get(f'/api/v1/products/{self.product_a.pk}/').data[
                 'branch_stock'
             ]['minimum_quantity'],
             '3.000',
+        )
+        self.assertIsNone(
+            client.get(f'/api/v1/products/{self.product_a.pk}/').data[
+                'branch_stock'
+            ]['maximum_quantity'],
         )
 
     def test_branch_channel_is_explicit(self):
@@ -1554,10 +1571,64 @@ class ProductMissionM5Tests(ProductRbacFixture, TestCase):
         client = self.api_client(viewer, self.branch_a.pk)
 
         archive = client.post(f'/api/v1/products/{self.product_a.pk}/archive/')
+        detail = client.get(f'/api/v1/products/{self.product_a.pk}/')
+        minimum_read = client.get(
+            f'/api/v1/products/{self.product_a.pk}/minimum-stock/'
+        )
         minimum = client.put(
             f'/api/v1/products/{self.product_a.pk}/minimum-stock/',
             {'minimum_quantity': '1.000'}, format='json',
         )
 
         self.assertEqual(archive.status_code, 403)
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertNotIn('branch_stock', detail.data)
+        self.assertEqual(minimum_read.status_code, 403)
         self.assertEqual(minimum.status_code, 403)
+
+    def test_inventory_view_exposes_branch_stock_and_minimum_read_only(self):
+        viewer = create_user('inventory-viewer@prod.com')
+        profile = make_profile(
+            self.company_a, 'Inventory product viewer',
+            ['products.view', 'inventory.view'],
+        )
+        UserCompanyAccess.objects.create(
+            user=viewer, company=self.company_a, access_profile=profile, is_active=True,
+        )
+        UserBranchAccess.objects.create(
+            user=viewer, branch=self.branch_a, access_profile=profile,
+        )
+        client = self.api_client(viewer, self.branch_a.pk)
+
+        detail = client.get(f'/api/v1/products/{self.product_a.pk}/')
+        minimum_read = client.get(
+            f'/api/v1/products/{self.product_a.pk}/minimum-stock/'
+        )
+        minimum_change = client.put(
+            f'/api/v1/products/{self.product_a.pk}/minimum-stock/',
+            {'minimum_quantity': '1.000'}, format='json',
+        )
+
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertIn('branch_stock', detail.data)
+        self.assertEqual(minimum_read.status_code, 200, minimum_read.data)
+        self.assertEqual(minimum_change.status_code, 403)
+
+    def test_inventory_feature_off_hides_stock_and_blocks_minimum_operations(self):
+        self.settings_a.uses_inventory = False
+        self.settings_a.save(update_fields=('uses_inventory', 'updated_at'))
+        client = self.api_client(self.owner_a, self.branch_a.pk)
+
+        detail = client.get(f'/api/v1/products/{self.product_a.pk}/')
+        minimum_read = client.get(
+            f'/api/v1/products/{self.product_a.pk}/minimum-stock/'
+        )
+        minimum_change = client.put(
+            f'/api/v1/products/{self.product_a.pk}/minimum-stock/',
+            {'minimum_quantity': '1.000'}, format='json',
+        )
+
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertNotIn('branch_stock', detail.data)
+        self.assertEqual(minimum_read.status_code, 403)
+        self.assertEqual(minimum_change.status_code, 403)

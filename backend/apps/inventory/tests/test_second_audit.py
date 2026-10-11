@@ -18,7 +18,7 @@ from apps.companies.models import (
     UserCompanyAccess,
 )
 from apps.companies.services import ensure_permission_catalog
-from apps.products.models import Category, Product, ProductBranchConfig
+from apps.products.models import Category, InventoryBehavior, Product, ProductBranchConfig
 from apps.reports.selectors import filtered_inventory_movements, inventory_kpis
 from apps.saas.tests.helpers import create_complete_test_plan, create_operational_test_tenant
 
@@ -126,13 +126,19 @@ class SecondAuditInventoryTests(TestCase):
         self.assertEqual(inventory_kpis(self.branch)['physical_products'], 1)
 
     def test_physical_operation_requires_branch_configuration(self):
-        ProductBranchConfig.objects.filter(
-            product=self.product, branch=self.branch,
-        ).delete()
+        unconfigured_product = Product.objects.create(
+            company=self.company,
+            category=self.category,
+            name='Sem configuração física',
+            internal_code='SEM-CONFIG-AUDIT',
+            cost=Decimal('2.00'),
+            sale_price=Decimal('5.00'),
+            inventory_behavior=InventoryBehavior.DIRECT,
+        )
 
         with self.assertRaises(DomainValidationError):
             entry(
-                product=self.product,
+                product=unconfigured_product,
                 branch=self.branch,
                 user=self.user,
                 quantity='1',

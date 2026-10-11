@@ -8,6 +8,7 @@ from apps.companies.models import Status
 from apps.companies.features import branch_feature_enabled
 from apps.companies.selectors import user_has_branch_permission, user_has_company_permission
 from apps.base.exceptions import DomainValidationError
+from apps.saas.permissions import support_permission_decision
 
 from .models import (
     BranchProductPrice, Category, ContentUnit, FractionableProductConfig,
@@ -434,8 +435,12 @@ class ProductSerializer(CompanyBoundSerializer):
         if not can_view_costs:
             fields.pop('cost', None)
             fields.pop('suggested_cost', None)
-        if branch and not branch_feature_enabled(branch, 'inventory'):
+        if branch and (
+            not branch_feature_enabled(branch, 'inventory')
+            or not self._can_view_inventory(branch)
+        ):
             fields.pop('branch_stock', None)
+        if branch and not branch_feature_enabled(branch, 'inventory'):
             fields.pop('fraction_config', None)
         if branch and not branch_feature_enabled(branch, 'production'):
             fields.pop('production_destinations', None)
@@ -870,6 +875,10 @@ class ProductSerializer(CompanyBoundSerializer):
                 'stock_id': stock.pk if stock else None,
                 'current_quantity': format(stock.current_quantity if stock else Decimal('0'), 'f'),
                 'minimum_quantity': format(stock.minimum_quantity if stock else Decimal('0'), 'f'),
+                'maximum_quantity': (
+                    format(stock.maximum_quantity, 'f')
+                    if stock and stock.maximum_quantity is not None else None
+                ),
                 'unit': product.unit,
             }
             config = self._valid_fraction_config(product)
@@ -960,6 +969,18 @@ class ProductSerializer(CompanyBoundSerializer):
             request.user.is_superuser
             or user_has_branch_permission(request.user, branch.pk, 'inventory.view_stock_costs')
         ))
+
+    def _can_view_inventory(self, branch):
+        request = self.context.get('request')
+        if not request:
+            return False
+        support = support_permission_decision(request, branch_id=branch.pk)
+        if support is not None:
+            return support
+        return (
+            request.user.is_superuser
+            or user_has_branch_permission(request.user, branch.pk, 'inventory.view')
+        )
 
     def get_fraction_config(self, product):
         try:

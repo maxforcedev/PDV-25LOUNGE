@@ -11,7 +11,7 @@ from rest_framework.exceptions import PermissionDenied
 
 from apps.base.audit import audit_log, model_snapshot
 from apps.base.exceptions import DomainValidationError
-from apps.companies.features import branch_feature_enabled
+from apps.companies.features import branch_feature_enabled, require_branch_feature
 from apps.companies.models import Branch, Company, Status
 from apps.companies.selectors import user_has_branch_permission
 from apps.products.models import (
@@ -967,6 +967,8 @@ def create_stock_transfer(*, origin_branch, destination_branch, items, user,
         raise ValidationError({'destination_branch': 'As duas filiais devem estar ativas.'})
     if origin.company.status != Status.ACTIVE:
         raise ValidationError({'origin_branch': 'A empresa deve estar ativa.'})
+    require_branch_feature(origin, 'inventory')
+    require_branch_feature(destination, 'inventory')
     if not isinstance(items, list) or not items:
         raise ValidationError({'items': 'Informe ao menos um produto.'})
     prepared = []
@@ -1087,6 +1089,8 @@ def dispatch_stock_transfer(*, transfer, idempotency_key, user, support_session=
         transfer.origin_branch, user, 'inventory.transfer.dispatch',
         support_session=support_session,
     )
+    require_branch_feature(transfer.origin_branch, 'inventory')
+    require_branch_feature(transfer.destination_branch, 'inventory')
     origin = transfer.origin_branch
     try:
         key = uuid.UUID(str(idempotency_key))
@@ -1307,6 +1311,8 @@ def receive_stock_transfer(*, transfer, idempotency_key, items, user,
         transfer.destination_branch, user, 'inventory.transfer.receive',
         support_session=support_session,
     )
+    require_branch_feature(transfer.origin_branch, 'inventory')
+    require_branch_feature(transfer.destination_branch, 'inventory')
     destination = transfer.destination_branch
     try:
         key = uuid.UUID(str(idempotency_key))
@@ -1485,6 +1491,8 @@ def resolve_transfer_divergence(*, divergence, idempotency_key, resolution_type,
         target_branch, user, 'inventory.transfer.resolve',
         support_session=support_session,
     )
+    require_branch_feature(transfer.origin_branch, 'inventory')
+    require_branch_feature(transfer.destination_branch, 'inventory')
     target_branch = (
         transfer.destination_branch
         if resolution_type == TransferResolutionType.FOUND_RECEIPT
