@@ -18,6 +18,7 @@ import {
 import { decimalCompare, decimalIsZero, fieldError, formatDecimalBRL, formatEditableDecimal, formatQuantity } from "@/lib/format";
 import { ApiError, friendlyError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
+import { applyModifierProductSuggestion } from "@/lib/modifier-option-suggestions";
 import { useAuth } from "@/providers/auth-provider";
 import type { ModifierGroup, ModifierOption, Product } from "@/types";
 
@@ -70,6 +71,7 @@ function ModifiersPage() {
   const [draggedGroupId, setDraggedGroupId] = useState<number | null>(null);
   const [draggedOptionId, setDraggedOptionId] = useState<number | null>(null);
   const context = useRef("");
+  const optionSuggestionTouched = useRef({ name: false, additionalPrice: false });
 
   context.current = `${currentCompany?.id || ""}:${currentBranch?.id || ""}`;
 
@@ -119,6 +121,7 @@ function ModifiersPage() {
     setLoadingOptions(false);
     setOptionsModalOpen(false);
     setOptionEditing(null);
+    optionSuggestionTouched.current = { name: false, additionalPrice: false };
     setOptionForm({
       name: "",
       option_type: "add",
@@ -136,7 +139,7 @@ function ModifiersPage() {
     const token = context.current;
     void http
       .getAll<Product>(
-        `products/?company=${currentCompany.id}&lifecycle=active&status=active&inventory_behavior=direct`,
+        `products/?company=${currentCompany.id}&lifecycle=active&status=active`,
       )
       .then((products) => {
         if (context.current === token) setStockProducts(products);
@@ -295,6 +298,7 @@ function ModifiersPage() {
 
   function openCreateOption() {
     setOptionEditing(null);
+    optionSuggestionTouched.current = { name: false, additionalPrice: false };
     setOptionForm({
       name: "",
       option_type: "add",
@@ -305,6 +309,7 @@ function ModifiersPage() {
 
   function openEditOption(opt: ModifierOption) {
     setOptionEditing(opt);
+    optionSuggestionTouched.current = { name: true, additionalPrice: true };
     setOptionForm({
       name: opt.name,
       option_type: opt.option_type === "text" ? "add" : opt.option_type,
@@ -335,6 +340,7 @@ function ModifiersPage() {
       }
       if (context.current !== token) return;
       setOptionEditing(null);
+      optionSuggestionTouched.current = { name: false, additionalPrice: false };
       setOptionForm({
         name: "",
         option_type: "add",
@@ -776,9 +782,10 @@ function ModifiersPage() {
                     <Field label="Nome">
                       <Input
                         value={optionForm.name}
-                        onChange={(e) =>
-                          setOptionForm({ ...optionForm, name: e.target.value })
-                        }
+                        onChange={(e) => {
+                          optionSuggestionTouched.current.name = true;
+                          setOptionForm({ ...optionForm, name: e.target.value });
+                        }}
                         disabled={saving}
                         placeholder="Ex.: Bacon extra"
                       />
@@ -813,12 +820,13 @@ function ModifiersPage() {
                         inputMode="decimal"
                         min="0"
                         value={optionForm.additional_price}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          optionSuggestionTouched.current.additionalPrice = true;
                           setOptionForm({
                             ...optionForm,
                             additional_price: e.target.value,
-                          })
-                        }
+                          });
+                        }}
                         disabled={saving}
                       />
                     </Field>
@@ -828,16 +836,37 @@ function ModifiersPage() {
                         <Select
                           required
                           value={optionForm.stock_product}
-                          onChange={(e) =>
-                            setOptionForm({
-                              ...optionForm,
-                              stock_product: e.target.value,
-                            })
-                          }
+                          onChange={(e) => {
+                            const product = stockProducts.find(
+                              (item) => item.id === Number(e.target.value),
+                            );
+                            if (product && optionForm.option_type === "product_input")
+                              optionSuggestionTouched.current = {
+                                name: false,
+                                additionalPrice: false,
+                              };
+                            setOptionForm(
+                              product && optionForm.option_type === "product_input"
+                                ? applyModifierProductSuggestion(
+                                  optionForm,
+                                  product,
+                                  optionSuggestionTouched.current,
+                                )
+                                : {
+                                  ...optionForm,
+                                  stock_product: e.target.value,
+                                },
+                            );
+                          }}
                           disabled={saving}
                         >
                           <option value="">Selecione</option>
-                          {stockProducts.map((product) => (
+                          {stockProducts
+                            .filter((product) => (
+                              optionForm.option_type === "product_input"
+                              || product.inventory_behavior === "direct"
+                            ))
+                            .map((product) => (
                               <option key={product.id} value={product.id}>
                                 {product.name} ({product.unit.toUpperCase()})
                               </option>

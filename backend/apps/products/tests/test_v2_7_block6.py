@@ -171,6 +171,25 @@ class ProductCrossTenantTests(ProductRbacFixture, TestCase):
 # ---------------------------------------------------------------------------
 
 class BranchPriceTests(ProductRbacFixture, TestCase):
+    def test_product_list_exposes_effective_branch_price_with_default_fallback(self):
+        BranchProductPrice.objects.create(
+            product=self.product_a, branch=self.branch_a, sale_price=Decimal('4.50'),
+        )
+        fallback = Product.objects.create(
+            company=self.company_a, category=self.cat_a, name='Preço padrão',
+            internal_code='PRICE-FALLBACK', unit=Unit.UNIT, cost=Decimal('1.00'),
+            sale_price=Decimal('6.25'), inventory_behavior=InventoryBehavior.DIRECT,
+        )
+        ProductBranchConfig.objects.create(
+            product=fallback, branch=self.branch_a, category=self.cat_a,
+        )
+
+        response = self.api_client(self.owner_a, self.branch_a.pk).get('/api/v1/products/')
+        prices = {item['id']: item['effective_sale_price'] for item in response.data['results']}
+
+        self.assertEqual(prices[self.product_a.pk], '4.50')
+        self.assertEqual(prices[fallback.pk], '6.25')
+
     def test_change_branch_price_allowed_for_own_branch(self):
         client = self.api_client(self.owner_a, self.branch_a.pk)
         resp = client.post('/api/v1/branch-prices/', {

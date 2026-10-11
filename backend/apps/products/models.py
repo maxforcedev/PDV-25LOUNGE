@@ -907,8 +907,13 @@ class ModifierOption(SoftDeletedModifierModel):
         errors = {}
         if product.company_id != group.company_id:
             errors['stock_product'] = 'O produto deve pertencer à mesma empresa do grupo.'
-        if product.inventory_behavior != InventoryBehavior.DIRECT:
-            errors['stock_product'] = 'A opção deve apontar para produto com estoque próprio.'
+        if not requires_product:
+            errors['stock_product'] = 'Apenas opções vinculadas a produto ou substituição podem usar produto real.'
+        elif (
+            self.option_type == ModifierOptionType.COMPONENT_SUBSTITUTION
+            and product.inventory_behavior != InventoryBehavior.DIRECT
+        ):
+            errors['stock_product'] = 'A substituição deve apontar para produto com estoque próprio.'
         if group.branch_id and not ProductBranchConfig.objects.filter(
             product=product, branch=group.branch
         ).exists():

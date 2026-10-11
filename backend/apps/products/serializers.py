@@ -383,6 +383,7 @@ class ProductSerializer(CompanyBoundSerializer):
     )
     suggested_cost = serializers.SerializerMethodField()
     suggested_sale_price = serializers.SerializerMethodField()
+    effective_sale_price = serializers.SerializerMethodField()
     branch_configuration = serializers.SerializerMethodField()
     branch_stock = serializers.SerializerMethodField()
     fraction_config = serializers.SerializerMethodField()
@@ -408,6 +409,7 @@ class ProductSerializer(CompanyBoundSerializer):
             'participates_in_service_fee', 'participates_in_commission',
             'emits_ticket',
             'components', 'fraction_components', 'suggested_cost', 'suggested_sale_price',
+            'effective_sale_price',
             'branch_configuration', 'branch_stock', 'fraction_config',
             'production_destinations', 'purchase_presentations', 'suppliers',
             'created_at', 'updated_at',
@@ -417,6 +419,17 @@ class ProductSerializer(CompanyBoundSerializer):
         if product.image_file:
             return f'/api/v1/products/{product.pk}/image/'
         return product.image
+
+    def get_effective_sale_price(self, product):
+        branch = getattr(self.context.get('request'), 'branch_context', None)
+        if branch:
+            prices = getattr(product, '_prefetched_objects_cache', {}).get('branch_prices', ())
+            price = next(
+                (item.sale_price for item in prices if item.branch_id == branch.pk), None
+            )
+            if price is not None:
+                return f'{price:.2f}'
+        return f'{product.sale_price:.2f}'
 
     def get_fields(self):
         fields = super().get_fields()

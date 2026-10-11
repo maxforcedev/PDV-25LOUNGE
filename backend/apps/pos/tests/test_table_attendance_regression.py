@@ -18,7 +18,7 @@ from apps.commands.services import create_table
 from apps.inventory.models import Stock
 from apps.pos.models import POSDevice
 from apps.products.models import Category, InventoryBehavior, Product, ProductBranchConfig, Unit
-from apps.sales.services import ensure_default_payment_methods
+from apps.sales.services import cancel_sale, ensure_default_payment_methods
 from apps.saas.tests.helpers import create_complete_test_plan, create_operational_test_tenant
 
 
@@ -88,6 +88,27 @@ class TableAttendanceRegressionTests(TestCase):
         self.assertEqual(closed.status, TableAttendanceStatus.CLOSED)
         self.assertIsNotNone(closed.sale_id)
         self.assertFalse(AttendanceCommand.objects.filter(table=table).exists())
+
+    def test_cancelling_closed_table_sale_restores_confirmed_stock_once(self):
+        attendance = self._table_with_order('Cancelled table sale')
+        record_table_payment(
+            attendance=attendance, user=self.user, payment_method_id=self.cash_method.pk,
+            pos_device=self.device, amount=Decimal('10.00'), received_amount=Decimal('10.00'),
+            idempotency_key=uuid4(),
+        )
+        closed, _ = close_table_attendance(
+            attendance=attendance, user=self.user, idempotency_key=uuid4(), pos_device=self.device,
+        )
+
+        cancelled = cancel_sale(
+            sale=closed.sale, branch=self.branch, user=self.user, reason='Teste de estorno',
+        )
+
+        self.assertEqual(cancelled.status, 'cancelled')
+        self.assertEqual(
+            Stock.objects.get(product=self.product, branch=self.branch).current_quantity,
+            Decimal('20.000'),
+        )
 
     def test_close_normalizes_serialized_manual_discount_intent(self):
         for discount_type, value in (

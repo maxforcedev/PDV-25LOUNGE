@@ -25,9 +25,10 @@ from apps.products.models import (
     Unit, SalesChannel, InventoryBehavior,
 )
 from apps.sales.services import (
-    apply_modifier_stock_requirements, resolve_modifiers, branch_price_map, branch_cost_map,
+    resolve_modifiers, branch_price_map, branch_cost_map,
     calculate_command_preview, finalize_sale, CENT, strict_decimal,
     _discount_approver, _service_fee_waiver, split_modifier_snapshot,
+    stock_requirements_for_product,
 )
 from apps.cash.models import CashSession, CashSessionStatus
 from apps.sales.models import PaymentMethod, PaymentMethodCode
@@ -548,79 +549,9 @@ def split_command(*, command, items, identifier, user, idempotency_key, support_
 
 
 def _resolve_stock_requirements_for_product(product, quantity, branch, modifier_snapshot=None):
-    requirements = {}
-    content_requirements = {}
-    component_snapshots = []
-    if product.inventory_behavior == InventoryBehavior.NONE:
-        apply_modifier_stock_requirements(
-            requirements, product=product, quantity=quantity,
-            modifier_snapshot=modifier_snapshot,
-        )
-        return requirements, content_requirements, component_snapshots
-    if product.inventory_behavior == InventoryBehavior.DIRECT:
-        requirements[product.pk] = requirements.get(product.pk, Decimal('0')) + quantity
-        apply_modifier_stock_requirements(
-            requirements, product=product, quantity=quantity,
-            modifier_snapshot=modifier_snapshot,
-        )
-        return requirements, content_requirements, component_snapshots
-    normal_rows = ProductComponent.objects.filter(
-        parent_product=product
-    ).select_related('component_product').order_by('component_product_id')
-    fraction_rows = ProductFractionComponent.objects.filter(
-        parent_product=product
-    ).select_related('component_product').order_by('component_product_id')
-    cost_map = branch_cost_map(branch, set(
-        [row.component_product_id for row in list(normal_rows) + list(fraction_rows)]
-    ))
-    for row in normal_rows:
-        comp = row.component_product
-        req_qty = row.quantity * quantity
-        requirements[comp.pk] = requirements.get(comp.pk, Decimal('0')) + req_qty
-        comp_cost = cost_map.get(comp.pk, comp.cost)
-        component_snapshots.append({
-            'product': comp.pk, 'product_name': comp.name,
-            'internal_code': comp.internal_code, 'unit': comp.unit,
-            'quantity_per_unit': str(row.quantity),
-            'consumed_quantity': str(req_qty),
-            'unit_cost': str(comp_cost), 'unit_cost_contribution': str(comp_cost * row.quantity),
-            'consumption_mode': 'quantity',
-        })
-    for row in fraction_rows:
-        comp = row.component_product
-        try:
-            config = comp.fraction_config
-        except Exception:
-            config = None
-        if not config or not config.tracking_active:
-            raise ValidationError({
-                'product': f'O componente fracionado {comp.name} não possui rastreamento ativo.'
-            })
-        content_qty = row.content_quantity * quantity
-        content_requirements[comp.pk] = content_requirements.get(comp.pk, Decimal('0')) + content_qty
-        req_qty = (content_qty / config.package_content).quantize(
-            Decimal('0.001'), rounding=ROUND_HALF_UP
-        )
-        requirements[comp.pk] = requirements.get(comp.pk, Decimal('0')) + req_qty
-        comp_cost = cost_map.get(comp.pk, comp.cost)
-        component_snapshots.append({
-            'product': comp.pk, 'product_name': comp.name,
-            'internal_code': comp.internal_code, 'unit': comp.unit,
-            'consumption_mode': 'content',
-            'content_unit': config.content_unit,
-            'content_per_unit': str(row.content_quantity),
-            'consumed_content': str(content_qty),
-            'equivalent_quantity': str(row.content_quantity / config.package_content),
-            'unit_cost': str(comp_cost),
-            'unit_cost_contribution': str(
-                comp_cost * row.content_quantity / config.package_content
-            ),
-        })
-    apply_modifier_stock_requirements(
-        requirements, product=product, quantity=quantity,
-        modifier_snapshot=modifier_snapshot,
+    return stock_requirements_for_product(
+        product, quantity, branch, modifier_snapshot,
     )
-    return requirements, content_requirements, component_snapshots
 
 
 def _validate_branch_active(branch):
@@ -881,6 +812,7 @@ def confirm_order_item(*, item, user, idempotency_key, support_session=None):
 
     reconciled_snapshot = {
         'quantity': item.quantity,
+        'unit_cost': item.unit_cost,
         'component_cost_snapshot': component_snapshots,
         'modifier_snapshot': item.modifier_snapshot,
     }

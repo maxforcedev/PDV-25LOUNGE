@@ -862,6 +862,7 @@ export interface Product {
   unit: string;
   cost: string | null;
   sale_price: string;
+  effective_sale_price?: string;
   is_sellable: boolean;
   is_favorite: boolean;
   participates_in_service_fee: boolean;

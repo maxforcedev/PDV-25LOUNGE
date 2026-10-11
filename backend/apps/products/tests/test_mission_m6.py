@@ -242,6 +242,132 @@ class IntelligentModifierMissionTests(TestCase):
             {self.watermelon.pk, self.bacon.pk},
         )
 
+    def test_product_input_modifier_expands_components_and_prices_no_stock_cost(self):
+        host = self.product('Produto principal', 'M6-HOST')
+        host_stock, _created = Stock.objects.get_or_create(product=host, branch=self.branch)
+        host_stock.current_quantity = Decimal('10')
+        host_stock.average_unit_cost = Decimal('1.00')
+        host_stock.last_unit_cost = Decimal('1.00')
+        host_stock.save(update_fields=(
+            'current_quantity', 'average_unit_cost', 'last_unit_cost', 'updated_at',
+        ))
+        ProductModifierGroup.objects.create(product=host, modifier_group=self.extra_group)
+        composed_input = Product.objects.create(
+            company=self.company, category=self.category, name='Porção de bacon',
+            internal_code='M6-BACON-COMP', unit=Unit.UNIT, cost=Decimal('4.00'),
+            sale_price=Decimal('8.00'), inventory_behavior=InventoryBehavior.COMPONENTS,
+            is_sellable=False,
+        )
+        ProductComponent.objects.create(
+            parent_product=composed_input, component_product=self.bacon, quantity=Decimal('2'),
+        )
+        composed_input.is_sellable = True
+        composed_input.save()
+        ProductBranchConfig.objects.create(
+            product=composed_input, branch=self.branch, category=self.category,
+        )
+        no_stock_input = Product.objects.create(
+            company=self.company, category=self.category, name='Serviço especial',
+            internal_code='M6-SERVICE', unit=Unit.UNIT, cost=Decimal('2.50'),
+            sale_price=Decimal('5.00'), inventory_behavior=InventoryBehavior.NONE,
+        )
+        ProductBranchConfig.objects.create(
+            product=no_stock_input, branch=self.branch, category=self.category,
+        )
+        composed_option = ModifierOption.objects.create(
+            modifier_group=self.extra_group, name='Porção de bacon',
+            option_type=ModifierOptionType.PRODUCT_INPUT, stock_product=composed_input,
+        )
+        no_stock_option = ModifierOption.objects.create(
+            modifier_group=self.extra_group, name='Serviço especial',
+            option_type=ModifierOptionType.PRODUCT_INPUT, stock_product=no_stock_input,
+        )
+
+        command = open_command(branch=self.branch, user=self.owner, identifier='M6 components input')
+        item = add_order_item(
+            command=command, user=self.owner, product_id=host.pk, quantity=Decimal('1'),
+            modifiers=[
+                {'option': composed_option.pk, 'quantity': '2'},
+                {'option': no_stock_option.pk, 'quantity': '2'},
+            ],
+        )
+        confirmed = confirm_order_item(item=item, user=self.owner, idempotency_key=uuid.uuid4())
+
+        self.assertEqual(Stock.objects.get(product=host, branch=self.branch).current_quantity, Decimal('9'))
+        self.assertEqual(Stock.objects.get(product=self.bacon, branch=self.branch).current_quantity, Decimal('6'))
+        self.assertEqual(confirmed.unit_cost, Decimal('10.00'))
+        self.assertEqual(
+            {row['consumption_mode'] for row in confirmed.component_cost_snapshot},
+            {'modifier_input_component', 'modifier_input_no_stock'},
+        )
+        self.assertEqual(StockMovement.objects.filter(order_item=item).count(), 2)
+
+        cancel_order_item(item=item, user=self.owner, idempotency_key=uuid.uuid4(), reason='Teste')
+        self.assertEqual(Stock.objects.get(product=host, branch=self.branch).current_quantity, Decimal('10'))
+        self.assertEqual(Stock.objects.get(product=self.bacon, branch=self.branch).current_quantity, Decimal('10'))
+
+    def test_product_input_unit_requires_integer_modifier_quantity(self):
+        with self.assertRaisesRegex(ValidationError, 'quantidade inteira'):
+            resolve_modifiers(
+                self.red_bull,
+                [
+                    {'option': self.melancia.pk, 'quantity': '1'},
+                    {'option': self.bacon_option.pk, 'quantity': '0.5'},
+                ],
+                self.company.pk,
+                branch=self.branch,
+            )
+
+    def test_counter_sale_modifier_uses_branch_cost_and_reverses_without_duplication(self):
+        main_product = self.product('Lanche base', 'M6-MAIN')
+        cola = self.product('Coca-Cola Lata', 'M6-COLA')
+        for product, quantity, cost in (
+            (main_product, '10', '1.00'),
+            (cola, '30', '3.20'),
+        ):
+            stock, _created = Stock.objects.get_or_create(product=product, branch=self.branch)
+            stock.current_quantity = Decimal(quantity)
+            stock.average_unit_cost = Decimal(cost)
+            stock.last_unit_cost = Decimal(cost)
+            stock.save(update_fields=(
+                'current_quantity', 'average_unit_cost', 'last_unit_cost', 'updated_at',
+            ))
+        ProductModifierGroup.objects.create(product=main_product, modifier_group=self.extra_group)
+        cola_option = ModifierOption.objects.create(
+            modifier_group=self.extra_group, name='Coca-Cola Lata',
+            option_type=ModifierOptionType.PRODUCT_INPUT,
+            additional_price=Decimal('8.00'), stock_product=cola,
+        )
+        register = CashRegister.objects.create(branch=self.branch, name='M6 Coca')
+        session = open_session(
+            cash_register=register, opening_amount=Decimal('0.00'), user=self.owner,
+            current_branch=self.branch,
+        )
+        cash = next(method for method in ensure_default_payment_methods(self.company) if method.code == 'cash')
+        sale = finalize_sale(
+            branch=self.branch, user=self.owner, operation_type=OperationType.SALE,
+            cash_session=session.pk, seller_user=self.owner.pk,
+            items=[{
+                'product': main_product.pk, 'quantity': '1',
+                'modifiers': [{'option': cola_option.pk, 'quantity': '2'}],
+            }],
+            payments=[{'payment_method': cash.pk, 'amount': 'auto', 'received_amount': '30.00'}],
+            idempotency_key=uuid.uuid4(),
+        )
+        item = sale.items.get()
+        cola_cost = next(
+            row for row in item.component_cost_snapshot if row['product'] == cola.pk
+        )
+
+        self.assertEqual(item.modifier_unit_total, Decimal('16.00'))
+        self.assertEqual(item.unit_cost, Decimal('7.40'))
+        self.assertEqual(cola_cost['unit_cost_contribution'], '6.40')
+        self.assertEqual(Stock.objects.get(product=cola, branch=self.branch).current_quantity, Decimal('28'))
+        self.assertEqual(sale.stock_movements.filter(stock__product=cola).count(), 1)
+
+        cancel_sale(sale=sale, branch=self.branch, user=self.owner, reason='Teste Coca-Cola')
+        self.assertEqual(Stock.objects.get(product=cola, branch=self.branch).current_quantity, Decimal('30'))
+
     def test_compound_product_input_freezes_unit_cmv_and_consumption(self):
         ProductModifierGroup.objects.create(product=self.combo, modifier_group=self.extra_group)
         for product, cost in ((self.black, '70.00'), (self.watermelon, '7.00'),

@@ -478,6 +478,66 @@ def _format_quantity(value):
     return text.rstrip('0').rstrip('.') if '.' in text else text
 
 
+def _modifier_component_effects(product):
+    """Freeze a composed modifier's physical inputs with the option snapshot."""
+    normal_rows = list(ProductComponent.objects.filter(
+        parent_product=product
+    ).select_related('component_product').order_by('component_product_id'))
+    fraction_rows = list(ProductFractionComponent.objects.filter(
+        parent_product=product
+    ).select_related('component_product__fraction_config').order_by('component_product_id'))
+    if not normal_rows and not fraction_rows:
+        raise ValidationError({
+            'modifiers': f'O produto composto {product.name} não possui composição.'
+        })
+    effects = []
+    for row in normal_rows:
+        component = row.component_product
+        if (
+            component.status != Status.ACTIVE
+            or component.archived_at is not None
+            or component.inventory_behavior != InventoryBehavior.DIRECT
+        ):
+            raise ValidationError({
+                'modifiers': f'A composição de {product.name} possui componente indisponível.'
+            })
+        effects.append({
+            'product_id': component.pk,
+            'product_name': component.name,
+            'internal_code': component.internal_code,
+            'unit': component.unit,
+            'consumption_mode': 'quantity',
+            'quantity_per_unit': format(row.quantity, 'f'),
+        })
+    for row in fraction_rows:
+        component = row.component_product
+        try:
+            config = component.fraction_config
+        except FractionableProductConfig.DoesNotExist:
+            config = None
+        if (
+            component.status != Status.ACTIVE
+            or component.archived_at is not None
+            or component.inventory_behavior != InventoryBehavior.DIRECT
+            or not config
+            or not config.tracking_active
+        ):
+            raise ValidationError({
+                'modifiers': f'A composição de {product.name} possui fonte fracionada indisponível.'
+            })
+        effects.append({
+            'product_id': component.pk,
+            'product_name': component.name,
+            'internal_code': component.internal_code,
+            'unit': component.unit,
+            'consumption_mode': 'content',
+            'content_unit': config.content_unit,
+            'content_per_unit': format(row.content_quantity, 'f'),
+            'package_content': format(config.package_content, 'f'),
+        })
+    return effects
+
+
 def _resolve_modifiers(product, raw_modifiers, company_id, *, branch=None,
                        item_quantity=Decimal('1')):
     from apps.products.models import (
@@ -534,6 +594,15 @@ def _resolve_modifiers(product, raw_modifiers, company_id, *, branch=None,
             raise ValidationError({'modifiers': 'Quantidade de modificador inválida.'})
         if qty <= 0:
             raise ValidationError({'modifiers': 'A quantidade da opção deve ser positiva.'})
+        if (
+            opt.option_type == 'product_input'
+            and opt.stock_product_id
+            and opt.stock_product.unit == Unit.UNIT
+            and qty != qty.to_integral_value()
+        ):
+            raise ValidationError({
+                'modifiers': f'A opção {opt.name} exige quantidade inteira.'
+            })
         group = opt.modifier_group
         if (
             group.allow_option_quantity is False
@@ -622,10 +691,18 @@ def _resolve_modifiers(product, raw_modifiers, company_id, *, branch=None,
                     config = ProductBranchConfig.objects.filter(
                         product=stock_product, branch=branch
                     ).first()
-                    if config is None or not config.is_available:
+                    if config is None:
                         raise ValidationError({
                             'modifiers': f'A opção {opt.name} está indisponível nesta filial.'
                         })
+            component_effects = (
+                _modifier_component_effects(stock_product)
+                if (
+                    stock_product
+                    and opt.option_type == 'product_input'
+                    and stock_product.inventory_behavior == InventoryBehavior.COMPONENTS
+                ) else []
+            )
             contribution = (opt.additional_price * qty).quantize(
                 Decimal('0.01'), rounding=ROUND_HALF_UP
             )
@@ -642,6 +719,13 @@ def _resolve_modifiers(product, raw_modifiers, company_id, *, branch=None,
                 'sort_order': opt.sort_order,
                 'stock_product_id': stock_product.pk if stock_product else None,
                 'stock_product_name': stock_product.name if stock_product else '',
+                'stock_product_inventory_behavior': (
+                    stock_product.inventory_behavior if stock_product else None
+                ),
+                'stock_product_cost': (
+                    str(stock_product.cost) if stock_product else None
+                ),
+                'stock_components': component_effects,
                 'stock_effect': (
                     'component_substitution'
                     if opt.option_type == 'component_substitution' else
@@ -658,8 +742,10 @@ def _resolve_modifiers(product, raw_modifiers, company_id, *, branch=None,
     return modifier_total, snapshot
 
 
-def apply_modifier_stock_requirements(requirements, *, product, quantity, modifier_snapshot):
+def apply_modifier_stock_requirements(requirements, *, product, quantity, modifier_snapshot,
+                                      content_requirements=None):
     """Replace base-component requirements and add modifier products from frozen selections."""
+    content_requirements = content_requirements if content_requirements is not None else {}
     for modifier in modifier_snapshot or []:
         stock_product_id = modifier.get('stock_product_id')
         if not stock_product_id:
@@ -670,10 +756,34 @@ def apply_modifier_stock_requirements(requirements, *, product, quantity, modifi
             raise ValidationError({'modifiers': 'Snapshot de modificador inválido.'})
         effect = modifier.get('stock_effect')
         if effect == 'product_input':
-            requirements[stock_product_id] = (
-                requirements.get(stock_product_id, Decimal('0'))
-                + selected_quantity * quantity
-            )
+            behavior = modifier.get('stock_product_inventory_behavior')
+            if behavior in (None, InventoryBehavior.DIRECT):
+                requirements[stock_product_id] = (
+                    requirements.get(stock_product_id, Decimal('0'))
+                    + selected_quantity * quantity
+                )
+            elif behavior == InventoryBehavior.COMPONENTS:
+                multiplier = selected_quantity * quantity
+                for component in modifier.get('stock_components', []):
+                    component_id = component.get('product_id')
+                    if not component_id:
+                        raise ValidationError({'modifiers': 'Composição de modificador inválida.'})
+                    if component.get('consumption_mode') == 'content':
+                        content = Decimal(str(component['content_per_unit'])) * multiplier
+                        package_content = Decimal(str(component['package_content']))
+                        required = (content / package_content).quantize(
+                            Decimal('0.000000001'), rounding=ROUND_HALF_UP
+                        )
+                        content_requirements[component_id] = (
+                            content_requirements.get(component_id, Decimal('0')) + content
+                        )
+                    else:
+                        required = Decimal(str(component['quantity_per_unit'])) * multiplier
+                    requirements[component_id] = (
+                        requirements.get(component_id, Decimal('0')) + required
+                    )
+            elif behavior != InventoryBehavior.NONE:
+                raise ValidationError({'modifiers': 'Comportamento de estoque do modificador inválido.'})
         elif effect == 'component_substitution':
             base_product_id = modifier.get('substituted_component_id')
             if not base_product_id or requirements.get(base_product_id, Decimal('0')) < selected_quantity:
@@ -1511,6 +1621,7 @@ def _prepare_products(company, raw_items, *, branch=None, channel=SalesChannel.C
             apply_modifier_stock_requirements(
                 requirements, product=product, quantity=quantity,
                 modifier_snapshot=snapshot['modifier_snapshot'],
+                content_requirements=content_requirements,
             )
             continue
         if product.inventory_behavior == InventoryBehavior.DIRECT:
@@ -1518,6 +1629,7 @@ def _prepare_products(company, raw_items, *, branch=None, channel=SalesChannel.C
             apply_modifier_stock_requirements(
                 requirements, product=product, quantity=quantity,
                 modifier_snapshot=snapshot['modifier_snapshot'],
+                content_requirements=content_requirements,
             )
             continue
         rows = rows_by_parent.get(product.pk, [])
@@ -1615,6 +1727,7 @@ def _prepare_products(company, raw_items, *, branch=None, channel=SalesChannel.C
         apply_modifier_stock_requirements(
             requirements, product=product, quantity=quantity,
             modifier_snapshot=snapshot['modifier_snapshot'],
+            content_requirements=content_requirements,
         )
     return snapshots, requirements, content_requirements, subtotal
 
@@ -1927,24 +2040,91 @@ def _reconcile_modifier_component_costs(snapshots, stocks):
             if modifier.get('stock_effect') != 'product_input':
                 continue
             selected = Decimal(str(modifier['selected_quantity']))
-            stock = stocks.get(modifier.get('stock_product_id'))
-            if stock is None:
-                raise ValidationError({'modifiers': 'Produto adicional sem estoque bloqueado.'})
-            product = stock.product
-            unit_cost = stock.average_unit_cost if stock.average_unit_cost is not None else product.cost
-            contribution = (unit_cost * selected).quantize(CENT, rounding=ROUND_HALF_UP)
-            input_cost += contribution
-            components.append({
-                'product': product.pk,
-                'product_name': product.name,
-                'internal_code': product.internal_code,
-                'unit': product.unit,
-                'quantity_per_unit': format(selected, 'f'),
-                'consumed_quantity': format(selected * quantity, 'f'),
-                'unit_cost': f'{unit_cost:.12f}',
-                'unit_cost_contribution': f'{contribution:.2f}',
-                'consumption_mode': 'modifier_input',
-            })
+            behavior = modifier.get('stock_product_inventory_behavior')
+            if behavior in (None, InventoryBehavior.DIRECT):
+                stock = stocks.get(modifier.get('stock_product_id'))
+                if stock is None:
+                    raise ValidationError({'modifiers': 'Produto adicional sem estoque bloqueado.'})
+                product = stock.product
+                unit_cost = stock.average_unit_cost if stock.average_unit_cost is not None else product.cost
+                contribution = (unit_cost * selected).quantize(CENT, rounding=ROUND_HALF_UP)
+                input_cost += contribution
+                components.append({
+                    'product': product.pk,
+                    'product_name': product.name,
+                    'internal_code': product.internal_code,
+                    'unit': product.unit,
+                    'quantity_per_unit': format(selected, 'f'),
+                    'consumed_quantity': format(selected * quantity, 'f'),
+                    'unit_cost': f'{unit_cost:.12f}',
+                    'unit_cost_contribution': f'{contribution:.2f}',
+                    'consumption_mode': 'modifier_input',
+                })
+            elif behavior == InventoryBehavior.COMPONENTS:
+                for component in modifier.get('stock_components', []):
+                    component_id = component.get('product_id')
+                    stock = stocks.get(component_id)
+                    if stock is None:
+                        raise ValidationError({'modifiers': 'Componente adicional sem estoque bloqueado.'})
+                    component_product = stock.product
+                    unit_cost = (
+                        stock.average_unit_cost
+                        if stock.average_unit_cost is not None else component_product.cost
+                    )
+                    if component.get('consumption_mode') == 'content':
+                        content_per_unit = Decimal(str(component['content_per_unit']))
+                        package_content = Decimal(str(component['package_content']))
+                        equivalent_per_unit = content_per_unit / package_content
+                        contribution = exact_multiply(
+                            unit_cost, equivalent_per_unit * selected,
+                        ).quantize(CENT, rounding=ROUND_HALF_UP)
+                        components.append({
+                            'product': component_product.pk,
+                            'product_name': component_product.name,
+                            'internal_code': component_product.internal_code,
+                            'unit': component_product.unit,
+                            'consumption_mode': 'modifier_input_content',
+                            'content_unit': component['content_unit'],
+                            'content_per_unit': format(content_per_unit * selected, 'f'),
+                            'consumed_content': format(content_per_unit * selected * quantity, 'f'),
+                            'equivalent_quantity': format(equivalent_per_unit * selected, 'f'),
+                            'unit_cost': f'{unit_cost:.12f}',
+                            'unit_cost_contribution': f'{contribution:.2f}',
+                        })
+                    else:
+                        quantity_per_unit = Decimal(str(component['quantity_per_unit'])) * selected
+                        contribution = (unit_cost * quantity_per_unit).quantize(
+                            CENT, rounding=ROUND_HALF_UP,
+                        )
+                        components.append({
+                            'product': component_product.pk,
+                            'product_name': component_product.name,
+                            'internal_code': component_product.internal_code,
+                            'unit': component_product.unit,
+                            'quantity_per_unit': format(quantity_per_unit, 'f'),
+                            'consumed_quantity': format(quantity_per_unit * quantity, 'f'),
+                            'unit_cost': f'{unit_cost:.12f}',
+                            'unit_cost_contribution': f'{contribution:.2f}',
+                            'consumption_mode': 'modifier_input_component',
+                        })
+                    input_cost += contribution
+            elif behavior == InventoryBehavior.NONE:
+                product_cost = Decimal(str(modifier.get('stock_product_cost') or '0'))
+                contribution = (product_cost * selected).quantize(CENT, rounding=ROUND_HALF_UP)
+                input_cost += contribution
+                components.append({
+                    'product': modifier.get('stock_product_id'),
+                    'product_name': modifier.get('stock_product_name', ''),
+                    'internal_code': '',
+                    'unit': '',
+                    'quantity_per_unit': format(selected, 'f'),
+                    'consumed_quantity': format(selected * quantity, 'f'),
+                    'unit_cost': f'{product_cost:.12f}',
+                    'unit_cost_contribution': f'{contribution:.2f}',
+                    'consumption_mode': 'modifier_input_no_stock',
+                })
+            else:
+                raise ValidationError({'modifiers': 'Comportamento de estoque do modificador inválido.'})
         snapshot['unit_cost'] = (base_unit_cost + input_cost).quantize(
             CENT, rounding=ROUND_HALF_UP,
         )
@@ -2226,6 +2406,7 @@ def stock_requirements_for_product(product, quantity, branch, modifier_snapshot=
         apply_modifier_stock_requirements(
             requirements, product=product, quantity=quantity,
             modifier_snapshot=modifier_snapshot,
+            content_requirements=content_requirements,
         )
         return requirements, content_requirements, component_snapshots
     if product.inventory_behavior == InventoryBehavior.DIRECT:
@@ -2233,6 +2414,7 @@ def stock_requirements_for_product(product, quantity, branch, modifier_snapshot=
         apply_modifier_stock_requirements(
             requirements, product=product, quantity=quantity,
             modifier_snapshot=modifier_snapshot,
+            content_requirements=content_requirements,
         )
         return requirements, content_requirements, component_snapshots
     normal_rows = ProductComponent.objects.filter(
@@ -2284,6 +2466,7 @@ def stock_requirements_for_product(product, quantity, branch, modifier_snapshot=
     apply_modifier_stock_requirements(
         requirements, product=product, quantity=quantity,
         modifier_snapshot=modifier_snapshot,
+        content_requirements=content_requirements,
     )
     return requirements, content_requirements, component_snapshots
 
@@ -2842,7 +3025,20 @@ def cancel_sale(*, sale, branch, user, reason=''):
         StockMovement.objects.select_for_update().filter(pk__in=attendance_movement_ids)
         .order_by('stock_id', 'pk')
     ) if attendance_movement_ids else []
-    originals = direct_movements + command_movements + attendance_movements
+    table_movement_ids = list(
+        StockMovement.objects.filter(
+            table_order_item__order__attendance__sale=sale,
+            table_order_item__status='confirmed',
+            movement_type=original_type,
+            original_movement__isnull=True,
+            cancellation_movements__isnull=True,
+        ).values_list('pk', flat=True).order_by('stock_id', 'pk')
+    )
+    table_movements = list(
+        StockMovement.objects.select_for_update().filter(pk__in=table_movement_ids)
+        .order_by('stock_id', 'pk')
+    ) if table_movement_ids else []
+    originals = direct_movements + command_movements + attendance_movements + table_movements
     stock_ids = sorted({movement.stock_id for movement in originals})
     stocks = {
         stock.pk: stock
@@ -2855,13 +3051,18 @@ def cancel_sale(*, sale, branch, user, reason=''):
         else MovementType.SALE_CANCELLATION
     )
     for original in originals:
+        table_cancellation = original.table_order_item_id is not None
         apply_locked_stock(
             stock=stocks[original.stock_id], quantity=-original.quantity, user=user,
-            movement_type=cancellation_type, sale=sale,
+            movement_type=MovementType.SALE_CANCELLATION if table_cancellation else cancellation_type,
+            sale=None if table_cancellation else sale,
             original_movement=original, reason=reason,
             domain_origin=(
-                MovementDomainOrigin.ORDER_CANCELLATION
-                if original.order_item_id else MovementDomainOrigin.LEGACY
+                MovementDomainOrigin.TABLE_ORDER_CANCELLATION
+                if table_cancellation else (
+                    MovementDomainOrigin.ORDER_CANCELLATION
+                    if original.order_item_id else MovementDomainOrigin.LEGACY
+                )
             ),
             order_item=original.order_item,
             unit_cost_snapshot=(
@@ -2870,6 +3071,7 @@ def cancel_sale(*, sale, branch, user, reason=''):
                 else original.stock.product.cost
             ),
             attendance_order_item=original.attendance_order_item,
+            table_order_item=original.table_order_item,
         )
     sale.status = SaleStatus.CANCELLED
     sale.cancelled_at = timezone.now()
@@ -2878,7 +3080,22 @@ def cancel_sale(*, sale, branch, user, reason=''):
     sale.save(update_fields=(
         'status', 'cancelled_at', 'cancelled_by', 'cancellation_reason', 'updated_at',
     ))
-    if sale.channel != SalesChannel.COMMAND:
+    if sale.channel == SalesChannel.TABLE:
+        from apps.attendance.models import TableOrderItem
+        from apps.production.services import (
+            cancel_table_ticket_for_item, create_table_cancellation_jobs,
+        )
+
+        table_items = TableOrderItem.objects.filter(
+            order__attendance__sale=sale, status='confirmed',
+        ).select_related('order__attendance')
+        for item in table_items:
+            create_table_cancellation_jobs(
+                item=item, attendance=item.order.attendance, user=user,
+                idempotency_key=sale.idempotency_key, reason=reason,
+            )
+            cancel_table_ticket_for_item(item=item, user=user)
+    elif sale.channel != SalesChannel.COMMAND:
         from apps.production.services import cancel_ticket_for_source, create_sale_cancellation_jobs
 
         create_sale_cancellation_jobs(sale=sale, user=user, idempotency_key=sale.idempotency_key, reason=reason)

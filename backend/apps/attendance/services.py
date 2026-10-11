@@ -245,7 +245,12 @@ def confirm_order_item(*, item, user, idempotency_key, pos_device=None, audit_me
             unit_cost_snapshot=stock.average_unit_cost if stock.average_unit_cost is not None else stock.product.cost,
             content_quantity=-contents[product_id] if product_id in contents else None,
         )
-    snapshot = {'quantity': item.quantity, 'component_cost_snapshot': component_snapshots, 'modifier_snapshot': item.modifier_snapshot}
+    snapshot = {
+        'quantity': item.quantity,
+        'unit_cost': item.unit_cost,
+        'component_cost_snapshot': component_snapshots,
+        'modifier_snapshot': item.modifier_snapshot,
+    }
     _reconcile_modifier_component_costs([snapshot], stocks)
     item.status = AttendanceOrderItemStatus.CONFIRMED
     item.confirmed_at = timezone.now()
@@ -1104,7 +1109,12 @@ def _confirm_table_item(*, item, attendance, user, idempotency_key, pos_device=N
             domain_origin=MovementDomainOrigin.TABLE_ORDER, table_order_item=item,
             unit_cost_snapshot=stock.average_unit_cost if stock.average_unit_cost is not None else stock.product.cost,
             content_quantity=-contents[product_id] if product_id in contents else None)
-    snapshot = {'quantity': item.quantity, 'component_cost_snapshot': component_snapshots, 'modifier_snapshot': item.modifier_snapshot}
+    snapshot = {
+        'quantity': item.quantity,
+        'unit_cost': item.unit_cost,
+        'component_cost_snapshot': component_snapshots,
+        'modifier_snapshot': item.modifier_snapshot,
+    }
     _reconcile_modifier_component_costs([snapshot], stocks)
     preview = calculate_order_items_preview(
         branch=attendance.branch, order_items=[item], channel=SalesChannel.TABLE,
