@@ -235,9 +235,12 @@ class TransferFlowTests(TestCase):
             )
 
     def test_transfer_keeps_is_available_independent_from_inventory_feature(self):
-        ProductBranchConfig.objects.filter(
-            product=self.product, branch__in=(self.origin, self.destination),
-        ).update(is_available=False)
+        for branch in (self.origin, self.destination):
+            config = ProductBranchConfig.objects.get(
+                product=self.product, branch=branch,
+            )
+            config.is_available = False
+            config.save(update_fields=('is_available', 'updated_at'))
 
         transfer = transfer_fixture(
             self.origin, self.destination, self.product, self.user, quantity='3'
