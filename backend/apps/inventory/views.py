@@ -262,14 +262,31 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
             branch__in=branches,
             product__inventory_behavior='direct',
             product__branch_configs__branch=F('branch_id'),
-            product__branch_configs__is_available=True,
-        ).filter(
-            Q(product__archived_at__isnull=True, product__status=Status.ACTIVE)
-            | Q(product__archived_at__isnull=False) & (
-                Q(current_content__isnull=False) & ~Q(current_content=0)
-                | Q(current_content__isnull=True) & ~Q(current_quantity=0)
+        )
+        archived_nonzero = (
+            Q(current_content__isnull=False) & ~Q(current_content=0)
+            | Q(current_content__isnull=True) & ~Q(current_quantity=0)
+        )
+        lifecycle = InventoryQuerySerializer(
+            data=self.request.query_params
+        )
+        lifecycle.is_valid(raise_exception=True)
+        lifecycle = lifecycle.validated_data.get('lifecycle')
+        if lifecycle == 'active':
+            queryset = queryset.filter(product__archived_at__isnull=True, product__status=Status.ACTIVE)
+        elif lifecycle == 'archived':
+            queryset = queryset.filter(product__archived_at__isnull=False)
+        elif lifecycle == 'all':
+            queryset = queryset.filter(
+                Q(product__archived_at__isnull=False)
+                | Q(product__archived_at__isnull=True, product__status=Status.ACTIVE)
             )
-        ).distinct()
+        else:
+            queryset = queryset.filter(
+                Q(product__archived_at__isnull=True, product__status=Status.ACTIVE)
+                | Q(product__archived_at__isnull=False) & archived_nonzero
+            )
+        queryset = queryset.distinct()
         queryset = self._filtered_queryset(queryset)
         ordering = self.request.query_params.get('ordering', 'product')
         descending = ordering.startswith('-')
@@ -377,7 +394,6 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
             branch=branch, status=Status.ACTIVE, deleted_at__isnull=True,
             branch_product_configs__in=ProductBranchConfig.objects.filter(
                 product__in=eligible_inventory_products(branch), branch=branch,
-                is_available=True,
             ),
         ).distinct().order_by('sort_order', 'name')
         return Response({'categories': [
@@ -592,7 +608,6 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
             branch_product_configs__product__status=Status.ACTIVE,
             branch_product_configs__product__archived_at__isnull=True,
             branch_product_configs__product__inventory_behavior='direct',
-            branch_product_configs__is_available=True,
         ).distinct().order_by('sort_order', 'name', 'id')
         category_id = request.query_params.get('category')
         search = (request.query_params.get('search') or '').strip()
@@ -608,19 +623,19 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
                 ) from error
             products = Product.objects.filter(
                 company_id=branch.company_id, branch_configs__branch=branch,
-                branch_configs__category=category, branch_configs__is_available=True,
+                branch_configs__category=category,
                 inventory_behavior='direct', status=Status.ACTIVE, archived_at__isnull=True,
             ).select_related('fraction_config').order_by('name', 'id')
         elif request.query_params.get('all') == 'true':
             products = Product.objects.filter(
                 company_id=branch.company_id, branch_configs__branch=branch,
-                branch_configs__is_available=True, inventory_behavior='direct', status=Status.ACTIVE,
+                inventory_behavior='direct', status=Status.ACTIVE,
                 archived_at__isnull=True,
             ).select_related('fraction_config').order_by('name', 'id')
         elif search:
             products = Product.objects.filter(
                 company_id=branch.company_id, branch_configs__branch=branch,
-                branch_configs__is_available=True, inventory_behavior='direct', status=Status.ACTIVE,
+                inventory_behavior='direct', status=Status.ACTIVE,
                 archived_at__isnull=True,
             ).filter(
                 Q(name__icontains=search)
@@ -631,7 +646,7 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
         configs = {
             config.product_id: config
             for config in ProductBranchConfig.objects.filter(
-                branch=branch, product__in=products, is_available=True,
+                branch=branch, product__in=products,
             ).select_related('category')
         }
         balances = dict(Stock.objects.filter(
@@ -1129,7 +1144,7 @@ class InventoryCountViewSet(viewsets.ReadOnlyModelViewSet):
         configs = {
             config.product_id: config
             for config in ProductBranchConfig.objects.filter(
-                branch=branch, product__in=products, is_available=True,
+                branch=branch, product__in=products,
             ).select_related('category')
         }
         options = []

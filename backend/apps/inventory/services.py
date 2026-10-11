@@ -167,12 +167,10 @@ def _validate_operational_stock(product, branch):
         )
     if product.company_id != branch.company_id:
         raise ValidationError({'branch': 'A filial deve pertencer a empresa do produto.'})
-    if not ProductBranchConfig.objects.filter(
-        product=product, branch=branch, is_available=True
-    ).exists():
+    if not ProductBranchConfig.objects.filter(product=product, branch=branch).exists():
         raise DomainValidationError(
             code='product_not_enabled_for_branch',
-            message='Habilite o produto nesta filial antes de movimentar o estoque.',
+            message='Configure o produto nesta filial antes de movimentar o estoque.',
             details={'product_id': product.pk, 'branch_id': branch.pk},
         )
     if product.inventory_behavior != InventoryBehavior.DIRECT:
@@ -695,6 +693,8 @@ def adjustment(product, branch, user, final_quantity=None, final_content=None, r
 @transaction.atomic
 def write_off_archived_stock(*, stock, user, reason):
     reason = (reason or '').strip()
+    if not reason:
+        raise ValidationError({'reason': 'Informe o motivo da baixa residual.'})
     stock = Stock.objects.select_related(
         'product', 'branch', 'branch__company', 'product__fraction_config',
     ).select_for_update(of=('self',)).get(pk=_pk(stock))
@@ -800,7 +800,6 @@ def group_entry(*, branch, category=None, items, user, operation_reference,
         inventory_behavior=InventoryBehavior.DIRECT,
         status=Status.ACTIVE,
         branch_configs__branch=branch,
-        branch_configs__is_available=True,
         archived_at__isnull=True,
     )
     if category is not None:
@@ -990,14 +989,13 @@ def create_stock_transfer(*, origin_branch, destination_branch, items, user,
             inventory_behavior=InventoryBehavior.DIRECT, status=Status.ACTIVE,
             archived_at__isnull=True,
             branch_configs__branch=origin,
-            branch_configs__is_available=True,
         ).order_by('pk')
     }
     if set(products) != seen:
         raise ValidationError({'items': 'Todos os produtos devem ser fisicos e ativos nesta empresa.'})
     unavailable = [
         product_id for product_id in products if not ProductBranchConfig.objects.filter(
-            product_id=product_id, branch=destination, is_available=True
+            product_id=product_id, branch=destination
         ).exists()
     ]
     if unavailable:

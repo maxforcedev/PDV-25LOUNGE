@@ -168,6 +168,9 @@ export function ProductV26Sections({
   const [minimumQuantity, setMinimumQuantity] = useState(
     formatEditableDecimal(product.branch_stock?.minimum_quantity || "0"),
   );
+  const [maximumQuantity, setMaximumQuantity] = useState(
+    formatEditableDecimal(product.branch_stock?.maximum_quantity || ""),
+  );
   const [printers, setPrinters] = useState<PrinterDevice[]>([]);
   const [destinations, setDestinations] = useState<ProductionDestination[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -246,6 +249,9 @@ export function ProductV26Sections({
     setSelectedDestinations([]);
     setMinimumQuantity(
       formatEditableDecimal(product.branch_stock?.minimum_quantity || "0"),
+    );
+    setMaximumQuantity(
+      formatEditableDecimal(product.branch_stock?.maximum_quantity || ""),
     );
     setFractionContent(
       formatEditableDecimal(product.fraction_config?.package_content || ""),
@@ -398,8 +404,11 @@ export function ProductV26Sections({
       () =>
         http.put(`products/${product.id}/minimum-stock/`, {
           minimum_quantity: minimumQuantity.replace(",", "."),
+          maximum_quantity: maximumQuantity.trim()
+            ? maximumQuantity.replace(",", ".")
+            : null,
         }),
-      "Estoque mínimo da filial salvo.",
+      "Limites de estoque da filial salvos.",
     );
   }
 
@@ -762,6 +771,16 @@ export function ProductV26Sections({
                     onChange={(event) => setMinimumQuantity(event.target.value)}
                   />
                 </Field>
+                <Field label="Estoque máximo desta filial" optional>
+                  <Input
+                    inputMode="decimal"
+                    min="0"
+                    step="0.001"
+                    value={maximumQuantity}
+                    disabled={!permissions.minimum}
+                    onChange={(event) => setMaximumQuantity(event.target.value)}
+                  />
+                </Field>
                 {permissions.minimum && (
                   <Button
                     type="button"
@@ -769,7 +788,7 @@ export function ProductV26Sections({
                     loading={busy}
                     onClick={() => void saveMinimumStock()}
                   >
-                    Salvar mínimo
+                    Salvar limites
                   </Button>
                 )}
               </div>

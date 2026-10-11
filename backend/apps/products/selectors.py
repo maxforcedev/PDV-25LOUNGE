@@ -83,7 +83,15 @@ def sellable_products_for_branch(branch, channel, *, search=None, barcode=None):
 
 
 def inventory_products(branch):
-    return operational_products(branch).filter(inventory_behavior=InventoryBehavior.DIRECT)
+    return Product.objects.filter(
+        company_id=branch.company_id,
+        status=Status.ACTIVE,
+        archived_at__isnull=True,
+        inventory_behavior=InventoryBehavior.DIRECT,
+        branch_configs__branch=branch,
+        branch_configs__branch__status=Status.ACTIVE,
+        branch_configs__branch__company__status=Status.ACTIVE,
+    ).distinct()
 
 
 def countable_products(branch):

@@ -190,6 +190,9 @@ class InventoryQuerySerializer(serializers.Serializer):
     branch = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
     category = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
     product = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
+    lifecycle = serializers.ChoiceField(
+        choices=('active', 'archived', 'all'), required=False,
+    )
 
 
 class StockMovementQuerySerializer(InventoryQuerySerializer):

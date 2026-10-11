@@ -53,6 +53,7 @@ type Summary = {
 };
 type StockFilters = {
   state: string;
+  lifecycle: string;
   category: string;
   status: string;
   behavior: string;
@@ -66,6 +67,7 @@ type OperationSuccess = {
 };
 const emptyFilters: StockFilters = {
   state: "",
+  lifecycle: "",
   category: "",
   status: "",
   behavior: "",
@@ -108,6 +110,7 @@ function Inventory() {
   const [success, setSuccess] = useState<OperationSuccess | null>(null);
   const [search, setSearch] = useState("");
   const [state, setState] = useState("");
+  const [lifecycle, setLifecycle] = useState("");
   const [category, setCategory] = useState("");
   const [status, setStatus] = useState("");
   const [behavior, setBehavior] = useState("");
@@ -145,7 +148,7 @@ function Inventory() {
     : selectedProduct?.fraction_config || null;
   const activeUnit = selected?.unit || selectedProduct?.unit;
   function params(
-    filters: StockFilters = { state, category, status, behavior },
+    filters: StockFilters = { state, lifecycle, category, status, behavior },
     searchValue = search,
     orderingValue = ordering,
   ) {
@@ -155,6 +158,7 @@ function Inventory() {
     });
     if (searchValue) value.set("search", searchValue);
     if (filters.state) value.set("state", filters.state);
+    if (filters.lifecycle) value.set("lifecycle", filters.lifecycle);
     if (filters.category) value.set("category", filters.category);
     if (filters.status) value.set("status", filters.status);
     if (filters.behavior) value.set("inventory_behavior", filters.behavior);
@@ -222,6 +226,7 @@ function Inventory() {
     const initialFilters = { ...emptyFilters, state: initialState };
     setSearch("");
     setState(initialState);
+    setLifecycle("");
     setCategory("");
     setStatus("");
     setBehavior("");
@@ -434,12 +439,13 @@ function Inventory() {
           ? "Ajuste de saldo"
           : "Limites de estoque";
   function openFilters() {
-    setDraft({ state, category, status, behavior });
+    setDraft({ state, lifecycle, category, status, behavior });
     setFiltersOpen(true);
   }
   function applyFilters() {
     const appliedParams = params(draft);
     setState(draft.state);
+    setLifecycle(draft.lifecycle);
     setCategory(draft.category);
     setStatus(draft.status);
     setBehavior(draft.behavior);
@@ -450,6 +456,7 @@ function Inventory() {
     const appliedParams = params(emptyFilters);
     setDraft(emptyFilters);
     setState("");
+    setLifecycle("");
     setCategory("");
     setStatus("");
     setBehavior("");
@@ -502,7 +509,7 @@ function Inventory() {
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {canViewKpis && (
               <>
-                <button type="button" className="card flex items-center gap-4 p-5 text-left" onClick={() => { const filters = { state: "negative", category, status, behavior }; setState("negative"); setDraft(filters); void load(undefined, params(filters)); }}>
+                <button type="button" className="card flex items-center gap-4 p-5 text-left" onClick={() => { const filters = { state: "negative", lifecycle, category, status, behavior }; setState("negative"); setDraft(filters); void load(undefined, params(filters)); }}>
                   <span className="flex size-10 items-center justify-center rounded-lg bg-red-700 text-white">
                     <TriangleAlert className="size-5" />
                   </span>
@@ -652,6 +659,22 @@ function Inventory() {
                       <option value="zero">Zerado</option>
                     </Select>
                   </Field>
+                  <Field label="Situação">
+                    <Select
+                      value={draft.lifecycle}
+                      onChange={(event) =>
+                        setDraft((value) => ({
+                          ...value,
+                          lifecycle: event.target.value,
+                        }))
+                      }
+                    >
+                      <option value="">Padrão</option>
+                      <option value="active">Ativos</option>
+                      <option value="archived">Arquivados</option>
+                      <option value="all">Todos</option>
+                    </Select>
+                  </Field>
                   <Field label="Status">
                     <Select
                       value={draft.status}
@@ -746,7 +769,7 @@ function Inventory() {
                           <strong className="block">
                             {stock.product_name}
                           </strong>
-                          {stock.product_deleted && <span className="mt-1 inline-flex rounded-full border border-danger/30 bg-danger-surface px-2 py-0.5 text-[10px] font-bold text-danger-strong">Excluído</span>}
+                          {stock.product_deleted && <span className="mt-1 inline-flex rounded-full border border-danger/30 bg-danger-surface px-2 py-0.5 text-[10px] font-bold text-danger-strong">Arquivado</span>}
                           <span className="text-[11px] text-slate-400">
                             {stock.internal_code}
                           </span>

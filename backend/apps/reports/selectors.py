@@ -34,7 +34,7 @@ from apps.inventory.models import (
     StockTransferItem,
 )
 from apps.products.models import InventoryBehavior, ProductBranchConfig
-from apps.products.selectors import operational_product_configs
+from apps.products.selectors import inventory_products
 from apps.sales.models import OperationType, Payment, PaymentMethod, PaymentMethodCode, Sale, SaleItem, SaleStatus
 
 from .financials import FinancialAggregator, allocate_money
@@ -1405,15 +1405,15 @@ def stock_consumption_report(*, branch, start, end, filters):
 
 
 def inventory_kpis(branch, *, include_value=False, category=None):
-    configs = operational_product_configs(branch)
+    products = inventory_products(branch)
     if category:
-        configs = configs.filter(category_id=category)
+        products = products.filter(branch_configs__category_id=category)
     stocks = Stock.objects.select_related(
         'product', 'product__fraction_config'
     ).filter(
         branch=branch,
         product__inventory_behavior=InventoryBehavior.DIRECT,
-        product_id__in=configs.values('product_id'),
+        product_id__in=products.values('pk'),
     )
     stocks = list(stocks)
     quantities = [stock.equivalent_quantity() for stock in stocks]
@@ -1450,14 +1450,26 @@ def stock_position_report(*, branch, filters):
         branch=branch,
         product__inventory_behavior=InventoryBehavior.DIRECT,
         product__branch_configs__branch=branch,
-    ).filter(
-        Q(
-            product__archived_at__isnull=True,
-            product__status=Status.ACTIVE,
-            product__branch_configs__is_available=True,
-        )
-        | Q(product__archived_at__isnull=False) & ~Q(current_quantity=0)
     )
+    archived_nonzero = (
+        Q(current_content__isnull=False) & ~Q(current_content=0)
+        | Q(current_content__isnull=True) & ~Q(current_quantity=0)
+    )
+    lifecycle = filters.get('lifecycle')
+    if lifecycle == 'active':
+        queryset = queryset.filter(product__archived_at__isnull=True, product__status=Status.ACTIVE)
+    elif lifecycle == 'archived':
+        queryset = queryset.filter(product__archived_at__isnull=False)
+    elif lifecycle == 'all':
+        queryset = queryset.filter(
+            Q(product__archived_at__isnull=False)
+            | Q(product__archived_at__isnull=True, product__status=Status.ACTIVE)
+        )
+    else:
+        queryset = queryset.filter(
+            Q(product__archived_at__isnull=True, product__status=Status.ACTIVE)
+            | Q(product__archived_at__isnull=False) & archived_nonzero
+        )
     if filters.get('product') is not None:
         queryset = queryset.filter(product_id=filters['product'])
     if filters.get('category') is not None:
@@ -1473,7 +1485,7 @@ def stock_position_report(*, branch, filters):
     if state == 'archived_with_stock':
         queryset = queryset.filter(
             product__archived_at__isnull=False,
-        ).exclude(current_quantity=0)
+        ).filter(archived_nonzero)
     elif state == 'negative':
         queryset = queryset.filter(
             product__archived_at__isnull=True, current_quantity__lt=0,

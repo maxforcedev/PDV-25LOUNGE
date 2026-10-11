@@ -15,7 +15,6 @@ def eligible_workflow_stocks(branch, *, exclude_open_counts=False):
         product__archived_at__isnull=True,
         product__inventory_behavior=InventoryBehavior.DIRECT,
         product__branch_configs__branch=branch,
-        product__branch_configs__is_available=True,
     )
     if exclude_open_counts:
         queryset = queryset.annotate(has_open_count=Exists(

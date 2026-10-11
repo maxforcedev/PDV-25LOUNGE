@@ -199,6 +199,9 @@ class StockPositionReportQuerySerializer(BaseReportQuerySerializer):
         ),
         required=False,
     )
+    lifecycle = serializers.ChoiceField(
+        choices=('active', 'archived', 'all'), required=False,
+    )
     search = serializers.CharField(max_length=200, required=False, allow_blank=False)
     ordering = serializers.ChoiceField(
         choices=('product', '-product', 'balance', '-balance'), required=False,

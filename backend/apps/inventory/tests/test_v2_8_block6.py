@@ -20,7 +20,7 @@ from apps.inventory.models import (
     MovementType, MovementDomainOrigin, Stock, StockMovement,
 )
 from apps.inventory.services import (
-    apply_locked_stock,
+    adjustment, apply_locked_stock,
 )
 from apps.products.models import (
     Category, Product, ProductBranchConfig, Unit, InventoryBehavior,
@@ -191,12 +191,19 @@ class SaleStockDeductionTests(InventoryRegressionFixture, TestCase):
 
 
 class AdjustmentTests(InventoryRegressionFixture, TestCase):
-    def test_adjustment_changes_stock(self):
+    def test_adjustment_changes_stock_with_movement(self):
         stock = Stock.objects.get(product=self.product, branch=self.branch)
-        stock.current_quantity = Decimal('200')
-        stock.save(update_fields=('current_quantity', 'updated_at'))
+        movement = adjustment(
+            self.product,
+            self.branch,
+            self.owner,
+            final_quantity='200',
+            reason='Inventário corrigido',
+        )
         stock.refresh_from_db()
         self.assertEqual(stock.current_quantity, Decimal('200'))
+        self.assertEqual(movement.stock_id, stock.pk)
+        self.assertEqual(movement.movement_type, MovementType.ADJUSTMENT)
 
 
 class NoOrphanMovementsTests(InventoryRegressionFixture, TestCase):

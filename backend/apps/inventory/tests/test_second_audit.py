@@ -7,6 +7,8 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
+from apps.base.models import AuditLog
+from apps.base.exceptions import DomainValidationError
 from apps.companies.models import (
     AccessProfile,
     Branch,
@@ -20,7 +22,7 @@ from apps.products.models import Category, Product, ProductBranchConfig
 from apps.reports.selectors import filtered_inventory_movements, inventory_kpis
 from apps.saas.tests.helpers import create_complete_test_plan, create_operational_test_tenant
 
-from ..models import InventoryCountMode, Stock
+from ..models import InventoryCountMode, Stock, StockMovement
 from ..services import create_inventory_count, entry
 
 
@@ -102,6 +104,41 @@ class SecondAuditInventoryTests(TestCase):
         )
         self.assertEqual(response.status_code, 201, response.data)
 
+    def test_unavailable_product_remains_physical_inventory_eligible(self):
+        config = ProductBranchConfig.objects.get(
+            product=self.product, branch=self.branch,
+        )
+        config.is_available = False
+        config.save(update_fields=('is_available', 'updated_at'))
+
+        movement = entry(
+            product=self.product,
+            branch=self.branch,
+            user=self.user,
+            quantity='2',
+            reason='Recebimento físico',
+        )
+
+        self.assertEqual(movement.quantity, Decimal('2.000'))
+        position = self.client.get('/api/v1/stocks/')
+        self.assertEqual(position.status_code, 200, position.data)
+        self.assertEqual(position.data['count'], 1)
+        self.assertEqual(inventory_kpis(self.branch)['physical_products'], 1)
+
+    def test_physical_operation_requires_branch_configuration(self):
+        ProductBranchConfig.objects.filter(
+            product=self.product, branch=self.branch,
+        ).delete()
+
+        with self.assertRaises(DomainValidationError):
+            entry(
+                product=self.product,
+                branch=self.branch,
+                user=self.user,
+                quantity='1',
+                reason='Sem configuração',
+            )
+
     def test_archived_balance_is_only_in_position_and_can_be_written_off(self):
         entry(
             product=self.product,
@@ -129,9 +166,39 @@ class SecondAuditInventoryTests(TestCase):
             format='json',
         )
         self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(StockMovement.objects.filter(stock=stock).count(), 2)
+        self.assertTrue(AuditLog.objects.filter(
+            action='inventory.archived_stock_write_off',
+        ).exists())
         stock.refresh_from_db()
         self.assertEqual(stock.current_quantity, Decimal('0.000'))
         self.assertEqual(self.client.get('/api/v1/stocks/').data['count'], 0)
+        archived = self.client.get('/api/v1/stocks/?lifecycle=archived')
+        self.assertEqual(archived.status_code, 200, archived.data)
+        self.assertEqual(archived.data['count'], 1)
+
+    def test_archived_stock_write_off_requires_reason(self):
+        entry(
+            product=self.product,
+            branch=self.branch,
+            user=self.user,
+            quantity='1',
+            reason='Carga inicial',
+        )
+        Product.objects.filter(pk=self.product.pk).update(
+            archived_at=timezone.now(), archived_by=self.user,
+        )
+        stock = Stock.objects.get(product=self.product, branch=self.branch)
+
+        response = self.client.post(
+            f'/api/v1/stocks/{stock.pk}/write-off-residual/',
+            {'reason': ''},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        stock.refresh_from_db()
+        self.assertEqual(stock.current_quantity, Decimal('1.000'))
 
     def test_full_count_uses_only_operational_products_from_current_branch(self):
         other_category = Category.objects.create(

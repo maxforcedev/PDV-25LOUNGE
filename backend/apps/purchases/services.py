@@ -207,16 +207,16 @@ def _assert_supplier_available_for_branch(*, supplier, branch):
         })
 
 
-def _assert_product_available_for_branch(*, product, branch):
+def _assert_product_configured_for_branch(*, product, branch):
     from apps.products.models import ProductBranchConfig
 
     if product.archived_at is not None:
         raise ValidationError({'product': 'O produto está arquivado.'})
     if not ProductBranchConfig.objects.filter(
-        product=product, branch=branch, is_available=True
+        product=product, branch=branch
     ).exists():
         raise ValidationError({
-            'product': 'O produto não está habilitado na filial da compra.'
+            'product': 'O produto não está configurado na filial da compra.'
         })
 
 
@@ -337,7 +337,7 @@ def _create_items(order, raw_items, *, allow_exclusive=False):
             supplier_code = ''
             product_supplier = None
             product_supplier_unit = None
-        _assert_product_available_for_branch(product=product, branch=order.branch)
+        _assert_product_configured_for_branch(product=product, branch=order.branch)
         quantity = strict_decimal(
             raw.get('ordered_quantity', raw.get('quantity')),
             f'items.{index - 1}.ordered_quantity',
@@ -861,7 +861,7 @@ def place_purchase_order(*, purchase_order, user, support_session=None,
             item, company=order.company, supplier=order.supplier,
             allow_exclusive=allow_exclusive,
         )
-        _assert_product_available_for_branch(product=item.product, branch=order.branch)
+        _assert_product_configured_for_branch(product=item.product, branch=order.branch)
     _assert_installment_reconciliation(order)
     order.status = PurchaseOrderStatus.PLACED
     order.placed_by = user
