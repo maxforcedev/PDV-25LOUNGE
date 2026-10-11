@@ -514,7 +514,7 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
         except DjangoValidationError as exc:
             detail = exc.message_dict if hasattr(exc, 'message_dict') else {'detail': exc.messages}
             return Response(detail, status=status.HTTP_400_BAD_REQUEST)
-        output = CalculationOutputSerializer(data=result)
+        output = CalculationOutputSerializer(data=result, context={'request': request})
         if not output.is_valid():
             raise InternalContractError()
         response_data = dict(output.data)

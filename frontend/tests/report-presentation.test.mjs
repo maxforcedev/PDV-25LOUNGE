@@ -3,22 +3,25 @@ import test from "node:test";
 
 import {
   branchPriceState,
-  phaseOneReportGroups,
+  reportGroups,
 } from "../src/lib/report-presentation.ts";
 
-test("report center exposes only phase one groups and required links", () => {
-  assert.deepEqual(phaseOneReportGroups.map((group) => group.title), [
+test("report center exposes current feature-gated groups and required links", () => {
+  assert.deepEqual(reportGroups.map((group) => group.title), [
     "Vendas",
     "Financeiro",
     "Estoque",
+    "Inventários",
+    "Compras",
+    "Operação",
   ]);
-  const reports = phaseOneReportGroups.flatMap((group) => group.reports);
-  assert.equal(reports.length, 15);
+  const reports = reportGroups.flatMap((group) => group.reports);
+  assert.equal(reports.length, 26);
   assert.equal(reports.find((item) => item.href === "/relatorios/resultado")?.label, "Resultado estimado");
   assert.equal(reports.find((item) => item.href === "/relatorios/descontos")?.label, "Descontos e autorizações");
   assert.equal(reports.find((item) => item.href === "/relatorios/operadores")?.label, "Operadores");
   assert.equal(reports.find((item) => item.href === "/relatorios/movimentacoes")?.permission, "reports.view_inventory");
-  assert.equal(reports.some((item) => item.href.includes("fornecedores")), false);
+  assert.equal(reports.find((item) => item.href === "/relatorios/fornecedores")?.permission, "suppliers.view");
 });
 
 test("unavailable branch price takes precedence over specific and inherited prices", () => {

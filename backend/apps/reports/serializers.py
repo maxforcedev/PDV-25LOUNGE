@@ -3,6 +3,8 @@ from decimal import Decimal
 from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import serializers
 
+from apps.base.cost_visibility import can_view_branch_commissions, can_view_branch_costs, redact_cost_payload
+
 from apps.accounts.models import User
 from apps.base.constants import MAX_BIGINT
 from apps.cash.models import CashRegister, CashSession, CashSessionStatus, WithdrawalCategory
@@ -416,23 +418,16 @@ class ReportSaleItemSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         request = self.context.get('request')
         branch = getattr(request, 'branch_context', None) if request else None
-        can_view_cost = bool(request and request.user.is_superuser)
-        if request and branch and not request.user.is_superuser:
-            from apps.companies.selectors import user_has_branch_permission
-
-            can_view_cost = user_has_branch_permission(
-                request.user, branch.pk, 'inventory.view_stock_costs'
-            )
+        can_view_cost = can_view_branch_costs(request, getattr(branch, 'pk', None))
         if not can_view_cost:
             for key in ('unit_cost', 'cost_total', 'margin_amount', 'margin_percentage'):
                 data.pop(key, None)
-        can_view_commission = bool(request and request.user.is_superuser)
-        if request and branch and not request.user.is_superuser:
-            from apps.companies.selectors import user_has_branch_permission
-
-            can_view_commission = user_has_branch_permission(
-                request.user, branch.pk, 'commissions.view'
-            )
+        data['modifier_snapshot'] = redact_cost_payload(
+            data.get('modifier_snapshot', []), include_costs=can_view_cost,
+        )
+        can_view_commission = can_view_branch_commissions(
+            request, getattr(branch, 'pk', None),
+        )
         if not can_view_commission:
             data.pop('commission_amount', None)
         return data

@@ -2,6 +2,8 @@ from decimal import Decimal, InvalidOperation
 
 from rest_framework import serializers
 
+from apps.base.cost_visibility import can_view_branch_costs, redact_cost_payload
+
 from apps.accounts.models import User
 from .models import (
     Command, CommandPayment, CommandStatus, Order, OrderItem, OrderItemStatus, OrderStatus,
@@ -61,6 +63,31 @@ class CommandSerializer(serializers.ModelSerializer):
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if not can_view_branch_costs(
+            request, getattr(branch, 'pk', None),
+            permission_codes=self.context.get('permission_codes'),
+        ):
+            fields.pop('unit_cost', None)
+            fields.pop('component_cost_snapshot', None)
+        return fields
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        data['modifier_snapshot'] = redact_cost_payload(
+            data.get('modifier_snapshot', []),
+            include_costs=can_view_branch_costs(
+                request, getattr(branch, 'pk', None),
+                permission_codes=self.context.get('permission_codes'),
+            ),
+        )
+        return data
+
     class Meta:
         model = OrderItem
         fields = (

@@ -1350,7 +1350,9 @@ class POSAttendanceCommandItemsView(POSAttendanceView):
         except AttendanceConflict as error:
             self._domain(error)
         response = Response(
-            AttendanceOrderItemSerializer(items, many=True).data,
+            AttendanceOrderItemSerializer(
+                items, many=True, context={'request': request, 'permission_codes': permissions},
+            ).data,
             status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED,
         )
         if replayed:
@@ -1373,7 +1375,9 @@ class POSAttendanceItemConfirmView(POSAttendanceView):
             )
         except AttendanceConflict as error:
             self._domain(error)
-        return Response(AttendanceOrderItemSerializer(item).data)
+        return Response(AttendanceOrderItemSerializer(
+            item, context={'request': request, 'permission_codes': permissions},
+        ).data)
 
 
 class POSAttendanceItemCancelView(POSAttendanceView):
@@ -1393,7 +1397,9 @@ class POSAttendanceItemCancelView(POSAttendanceView):
             )
         except AttendanceConflict as error:
             self._domain(error)
-        response = Response(AttendanceOrderItemSerializer(item).data)
+        response = Response(AttendanceOrderItemSerializer(
+            item, context={'request': request, 'permission_codes': permissions},
+        ).data)
         if replayed:
             response['Idempotency-Replayed'] = 'true'
         return response
@@ -1506,6 +1512,7 @@ class POSTableAttendanceView(POSAttendanceView):
                 'items__production_jobs__print_jobs',
             ).all(),
             many=True,
+            context={'request': request, 'permission_codes': permissions},
         ).data
         documents = []
         for document_type in (
@@ -1537,7 +1544,9 @@ class POSTableAttendanceOrdersView(POSTableAttendanceView):
                 audit_metadata=self.audit_metadata(device, operator_session))
         except AttendanceConflict as error:
             self._domain(error)
-        response = Response(TableOrderItemSerializer(items, many=True).data, status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED)
+        response = Response(TableOrderItemSerializer(
+            items, many=True, context={'request': request, 'permission_codes': permissions},
+        ).data, status=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED)
         if replayed:
             response['Idempotency-Replayed'] = 'true'
         return response
@@ -1554,7 +1563,9 @@ class POSTableAttendanceItemCancelView(POSAttendanceView):
             item, replayed = cancel_table_item(item=item, user=operator, audit_metadata=self.audit_metadata(device, operator_session), **serializer.validated_data)
         except AttendanceConflict as error:
             self._domain(error)
-        return Response(TableOrderItemSerializer(item).data, headers={'Idempotency-Replayed': 'true'} if replayed else None)
+        return Response(TableOrderItemSerializer(
+            item, context={'request': request, 'permission_codes': permissions},
+        ).data, headers={'Idempotency-Replayed': 'true'} if replayed else None)
 
 
 class POSTableAttendanceItemDiscountView(POSAttendanceView):
@@ -1577,7 +1588,9 @@ class POSTableAttendanceItemDiscountView(POSAttendanceView):
             )
         except AttendanceConflict as error:
             self._domain(error)
-        return Response(TableOrderItemSerializer(item).data,
+        return Response(TableOrderItemSerializer(
+            item, context={'request': request, 'permission_codes': permissions},
+        ).data,
                         headers={'Idempotency-Replayed': 'true'} if replayed else None)
 
 

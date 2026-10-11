@@ -2,6 +2,8 @@ from decimal import Decimal, InvalidOperation
 
 from rest_framework import serializers
 
+from apps.base.cost_visibility import can_view_branch_costs, redact_cost_payload
+
 from .models import (
     AttendanceCommand, AttendanceOrder, AttendanceOrderItem, AttendancePayment,
     TableAttendance, TableOrder, TableOrderItem, TablePayment, TablePaymentAllocation,
@@ -21,6 +23,19 @@ class AttendanceCommandSerializer(serializers.ModelSerializer):
 
 
 class AttendanceOrderItemSerializer(serializers.ModelSerializer):
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        data['modifier_snapshot'] = redact_cost_payload(
+            data.get('modifier_snapshot', []),
+            include_costs=can_view_branch_costs(
+                request, getattr(branch, 'pk', None),
+                permission_codes=self.context.get('permission_codes'),
+            ),
+        )
+        return data
+
     class Meta:
         model = AttendanceOrderItem
         fields = (
@@ -204,6 +219,34 @@ class TableOrderItemSerializer(serializers.ModelSerializer):
         if 'processing' in statuses:
             return 'processing'
         return 'pending'
+
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        if not can_view_branch_costs(
+            request, getattr(branch, 'pk', None),
+            permission_codes=self.context.get('permission_codes'),
+        ):
+            fields.pop('unit_cost', None)
+            fields.pop('component_cost_snapshot', None)
+        return fields
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        include_costs = can_view_branch_costs(
+            request, getattr(branch, 'pk', None),
+            permission_codes=self.context.get('permission_codes'),
+        )
+        data['modifier_snapshot'] = redact_cost_payload(
+            data.get('modifier_snapshot', []), include_costs=include_costs,
+        )
+        data['financial_snapshot'] = redact_cost_payload(
+            data.get('financial_snapshot', {}), include_costs=include_costs,
+        )
+        return data
 
     class Meta:
         model = TableOrderItem

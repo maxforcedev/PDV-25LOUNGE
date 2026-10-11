@@ -330,7 +330,7 @@ class CommandViewSet(viewsets.ReadOnlyModelViewSet):
             seller_user=seller_user, discount=serializer.validated_data['discount'],
             service_fee_waived=serializer.validated_data['service_fee_waived'],
         )
-        output = CalculationOutputSerializer(data=result)
+        output = CalculationOutputSerializer(data=result, context={'request': request})
         output.is_valid(raise_exception=True)
         request.audit_fallback_suppressed = True
         response_data = dict(output.data)

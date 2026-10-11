@@ -907,6 +907,8 @@ class ModifierOption(SoftDeletedModifierModel):
         errors = {}
         if product.company_id != group.company_id:
             errors['stock_product'] = 'O produto deve pertencer à mesma empresa do grupo.'
+        if product.status != Status.ACTIVE or product.archived_at is not None:
+            errors['stock_product'] = 'O produto ou insumo deve estar ativo e não arquivado.'
         if not requires_product:
             errors['stock_product'] = 'Apenas opções vinculadas a produto ou substituição podem usar produto real.'
         elif (

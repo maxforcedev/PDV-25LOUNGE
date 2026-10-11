@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from apps.companies.selectors import user_has_branch_permission
+from apps.base.cost_visibility import can_view_branch_costs
 from apps.sales.serializers import readable_user_name
 
 from .models import AuditLog
@@ -22,6 +23,7 @@ BRANCH_COST_KEYS = frozenset({
     'transfer_dispatched_cost_value', 'transfer_received_cost_value',
     'in_transit_cost_value',
     'total_cost', 'inventory_value', 'estimated_value',
+    'stock_product_cost',
 })
 _OMIT = object()
 
@@ -119,16 +121,7 @@ class AuditLogSerializer(serializers.ModelSerializer):
                 )
             )
         )
-        can_stock_costs = bool(
-            user
-            and (
-                user.is_superuser
-                or unrestricted_support
-                or branch_id and user_has_branch_permission(
-                    user, branch_id, 'inventory.view_stock_costs'
-                )
-            )
-        )
+        can_stock_costs = can_view_branch_costs(request, branch_id)
         purchase_module = audit_module_key(log.action, log.object_type) == 'purchases'
         options = {
             'purchase_module': purchase_module,

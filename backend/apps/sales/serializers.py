@@ -4,6 +4,8 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 
+from apps.base.cost_visibility import can_view_branch_costs, redact_cost_payload
+
 from apps.accounts.models import User
 from apps.base.constants import MAX_BIGINT
 from apps.companies.models import Branch
@@ -271,15 +273,26 @@ class SaleItemSerializer(serializers.ModelSerializer):
         fields = super().get_fields()
         request = self.context.get('request')
         branch = getattr(request, 'branch_context', None) if request else None
-        if not request or not (
-            request.user.is_superuser
-            or branch and user_has_branch_permission(
-                request.user, branch.pk, 'inventory.view_stock_costs'
-            )
+        if not can_view_branch_costs(
+            request, getattr(branch, 'pk', None),
+            permission_codes=self.context.get('permission_codes'),
         ):
             fields.pop('unit_cost', None)
             fields.pop('component_cost_snapshot', None)
         return fields
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        data['modifier_snapshot'] = redact_cost_payload(
+            data.get('modifier_snapshot', []),
+            include_costs=can_view_branch_costs(
+                request, getattr(branch, 'pk', None),
+                permission_codes=self.context.get('permission_codes'),
+            ),
+        )
+        return data
 
     def get_discount_approved_by_name(self, item):
         return readable_user_name(item.discount_approved_by)
@@ -675,6 +688,19 @@ class CalculationItemOutputSerializer(serializers.Serializer):
     )
     participates_in_service_fee = serializers.BooleanField()
     participates_in_commission = serializers.BooleanField()
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        branch = getattr(request, 'branch_context', None) if request else None
+        data['modifier_snapshot'] = redact_cost_payload(
+            data.get('modifier_snapshot', []),
+            include_costs=can_view_branch_costs(
+                request, getattr(branch, 'pk', None),
+                permission_codes=self.context.get('permission_codes'),
+            ),
+        )
+        return data
 
 
 class CalculationOutputSerializer(serializers.Serializer):
