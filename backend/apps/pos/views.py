@@ -36,7 +36,8 @@ from apps.cash.services import (
 )
 from apps.companies.permissions import FunctionalCompanyPermission
 from apps.companies.selectors import (
-    accessible_branches, customer_search_queryset, inactive_customer_identity_match,
+    accessible_branches, customer_search_queryset, eligible_branch_users,
+    inactive_customer_identity_match,
 )
 from apps.companies.services import (
     CustomerIdentityConflict, customer_identity_payload, set_customer_status,
@@ -50,7 +51,7 @@ from apps.attendance.models import (
 from apps.attendance.serializers import (
     AttendanceCancelItemSerializer, AttendanceCommandSerializer, AttendanceConfirmItemSerializer,
     AttendanceFinalizeSerializer, AttendanceItemsSerializer,
-    AttendanceOpenCommandSerializer,
+    AttendanceOpenCommandSerializer, AttendanceSetSellerSerializer,
     AttendanceOrderItemSerializer, AttendancePaymentInputSerializer,
     AttendancePaymentSerializer, AttendanceReversePaymentSerializer,
     AttendanceTransferItemsSerializer, AttendanceBillRequestSerializer, AttendanceTableGroupSerializer,
@@ -66,6 +67,7 @@ from apps.attendance.services import (
     reverse_payment as reverse_attendance_payment,
     group_tables as group_attendance_tables, separate_table_from_group,
     set_bill_requested,
+    set_command_seller,
     transfer_items as transfer_attendance_items,
     open_table_attendance, save_table_order, table_summary, cancel_table_item,
     record_table_payment, preview_table_payment_allocations, reverse_table_payment, set_table_bill_requested, close_table_attendance,
@@ -1047,7 +1049,7 @@ class POSAttendanceCommandsView(POSAttendanceView):
         device, _, permissions, _ = self.context(request)
         self._require(permissions, 'commands.view', 'Você não possui permissão para consultar comandas nesta filial.')
         require_branch_feature(device.branch, 'commands')
-        queryset = AttendanceCommand.objects.filter(branch=device.branch).select_related('customer', 'sale')
+        queryset = AttendanceCommand.objects.filter(branch=device.branch).select_related('customer', 'sale', 'seller_user')
         if request.query_params.get('open_only') != 'false':
             queryset = queryset.filter(status=AttendanceCommandStatus.OPEN)
         query = request.query_params.get('q', '').strip()
@@ -1069,7 +1071,7 @@ class POSAttendanceCommandsView(POSAttendanceView):
                 branch=device.branch, user=operator,
                 idempotency_key=data['idempotency_key'],
                 identifier=data['identifier'], customer_id=data.get('customer'),
-                people_count=data.get('people_count'), notes=data['notes'],
+                people_count=data.get('people_count'), notes=data['notes'], seller_user=data.get('seller_user'),
                 audit_metadata=self.audit_metadata(device, operator_session),
             )
         except AttendanceConflict as error:
@@ -1082,6 +1084,16 @@ class POSAttendanceCommandsView(POSAttendanceView):
         if replayed:
             response['Idempotency-Replayed'] = 'true'
         return response
+
+
+class POSAttendanceCommandSellersView(POSAttendanceView):
+    def get(self, request):
+        device, _, permissions, _ = self.context(request)
+        self._require(permissions, 'commands.open', 'Você não possui permissão para definir o atendente.')
+        return Response([
+            {'id': seller.pk, 'name': seller.get_full_name().strip() or seller.email}
+            for seller in eligible_branch_users(device.branch, 'sales.create')
+        ])
 
 
 class POSAttendanceCatalogView(POSAttendanceView, POSQuickSaleView):
@@ -1302,6 +1314,27 @@ class POSAttendanceCommandDetailView(POSAttendanceView):
                 item['modifier_snapshot'], include_costs=include_costs,
             )
         return Response(data)
+
+
+class POSAttendanceCommandSellerView(POSAttendanceView):
+    def post(self, request, command_id):
+        device, operator, permissions, operator_session = self.context(request)
+        self._require(permissions, 'commands.open', 'Você não possui permissão para definir o atendente.')
+        serializer = AttendanceSetSellerSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            command, replayed = set_command_seller(
+                command=self._command(device, command_id), user=operator,
+                seller_user=serializer.validated_data['seller_user'],
+                idempotency_key=serializer.validated_data['idempotency_key'],
+                audit_metadata=self.audit_metadata(device, operator_session),
+            )
+        except AttendanceConflict as error:
+            self._domain(error)
+        response = Response(AttendanceCommandSerializer(command).data)
+        if replayed:
+            response['Idempotency-Replayed'] = 'true'
+        return response
 
 
 class POSAttendanceBillRequestView(POSAttendanceView):

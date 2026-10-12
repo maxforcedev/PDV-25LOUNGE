@@ -3,13 +3,15 @@ from uuid import uuid4
 
 from django.test import TestCase
 
+from apps.accounts.models import User
 from apps.attendance.models import AttendanceOrderItem
 from apps.attendance.services import (
     AttendanceConflict, add_order_items, command_summary, confirm_order_item,
-    finalize_command, open_command, record_payment, transfer_items,
+    finalize_command, open_command, record_payment, set_command_seller, transfer_items,
 )
 from apps.cash.models import CashRegister
 from apps.cash.services import open_session
+from apps.companies.models import UserBranchAccess, UserCommissionOverride, UserCompanyAccess
 from apps.inventory.models import Stock, StockMovement
 from apps.products.models import (
     Category, InventoryBehavior, Product, ProductBranchConfig, Unit,
@@ -78,6 +80,23 @@ class POS5AttendanceTests(TestCase):
             branch=self.branch, user=self.owner, idempotency_key=key or uuid4(),
             identifier=identifier,
         )
+
+    def seller(self, *, commission_rate=None, receives_commission=True):
+        seller = User.objects.create_user(
+            email=f'pos5-seller-{uuid4()}@example.com', password='POS5-seller-password-123!',
+        )
+        profile = self.owner.company_accesses.get(company=self.company).access_profile
+        UserCompanyAccess.objects.create(
+            user=seller, company=self.company, access_profile=profile,
+        )
+        UserBranchAccess.objects.create(
+            user=seller, branch=self.branch, access_profile=profile,
+        )
+        UserCommissionOverride.objects.create(
+            branch=self.branch, user=seller, updated_by=self.owner,
+            receives_commission=receives_commission, commission_rate=commission_rate,
+        )
+        return seller
 
     def add_confirmed_item(self, command):
         _, items, _ = add_order_items(
@@ -162,6 +181,68 @@ class POS5AttendanceTests(TestCase):
 
         self.assertEqual(closed.sale.commission_rate, Decimal('5.00'))
         self.assertEqual(closed.sale.commission_amount, Decimal('0.50'))
+
+    def test_command_commission_uses_responsible_seller_and_frozen_override(self):
+        seller = self.seller(commission_rate=Decimal('7.00'))
+        command, _ = open_command(
+            branch=self.branch, user=self.owner, seller_user=seller.pk,
+            idempotency_key=uuid4(), identifier='Seller owner',
+        )
+        self.add_confirmed_item(command)
+        record_payment(
+            command=command, user=self.owner, payment_method_id=self.cash_method.pk,
+            amount='4.00', received_amount='4.00', cash_session_id=self.cash_session.pk,
+            idempotency_key=uuid4(),
+        )
+        override = seller.commission_overrides.get(branch=self.branch)
+        override.commission_rate = Decimal('11.00')
+        override.save(update_fields=('commission_rate', 'updated_at'))
+
+        closed = self.close(command)
+
+        self.assertEqual(closed.sale.seller_user_id, seller.pk)
+        self.assertEqual(closed.sale.created_by_id, self.owner.pk)
+        self.assertEqual(closed.closed_by_id, self.owner.pk)
+        self.assertEqual(closed.sale.commission_rate, Decimal('7.00'))
+        self.assertEqual(closed.sale.commission_amount, Decimal('0.70'))
+
+    def test_command_seller_without_commission_keeps_zero_rate(self):
+        seller = self.seller(receives_commission=False)
+        command, _ = open_command(
+            branch=self.branch, user=self.owner, seller_user=seller.pk,
+            idempotency_key=uuid4(), identifier='No commission',
+        )
+        self.add_confirmed_item(command)
+
+        closed = self.close(command)
+
+        self.assertEqual(closed.sale.seller_user_id, seller.pk)
+        self.assertEqual(closed.sale.commission_rate, Decimal('0.00'))
+        self.assertEqual(closed.sale.commission_amount, Decimal('0.00'))
+
+    def test_historical_paid_command_requires_assignment_without_retroactive_commission(self):
+        seller = self.seller(commission_rate=Decimal('9.00'))
+        command, _ = self.open_standalone(identifier='Historical')
+        type(command).objects.filter(pk=command.pk).update(
+            seller_user=None, commission_rate_snapshot=None,
+        )
+        command.refresh_from_db()
+        self.add_confirmed_item(command)
+        record_payment(
+            command=command, user=self.owner, payment_method_id=self.cash_method.pk,
+            amount='4.00', received_amount='4.00', cash_session_id=self.cash_session.pk,
+            idempotency_key=uuid4(),
+        )
+        assigned, replayed = set_command_seller(
+            command=command, user=self.owner, seller_user=seller.pk, idempotency_key=uuid4(),
+        )
+
+        closed = self.close(assigned)
+
+        self.assertFalse(replayed)
+        self.assertEqual(closed.sale.seller_user_id, seller.pk)
+        self.assertEqual(closed.sale.commission_rate, Decimal('0.00'))
+        self.assertEqual(closed.sale.commission_amount, Decimal('0.00'))
 
     def test_item_transfers_keep_history_between_standalone_commands(self):
         source, _ = self.open_standalone(identifier='Source')

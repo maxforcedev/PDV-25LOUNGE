@@ -36,6 +36,7 @@ class AttendanceOperationType(models.TextChoices):
     # Historical only; no new writes for the legacy open-table operation.
     OPEN_TABLE = 'open_table', 'Abrir mesa'
     OPEN_COMMAND = 'open_command', 'Abrir comanda'
+    SET_COMMAND_SELLER = 'set_command_seller', 'Definir atendente da comanda'
     ADD_ITEMS = 'add_items', 'Adicionar itens'
     # Historical only; no new writes for the legacy command-to-table transfer.
     TRANSFER_COMMAND = 'transfer_command', 'Transferir comanda'
@@ -80,6 +81,10 @@ class AttendanceCommand(BaseModel):
     status = models.CharField(max_length=10, choices=AttendanceCommandStatus.choices, default=AttendanceCommandStatus.OPEN)
     opened_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='opened_attendance_commands')
     opened_by_name_snapshot = models.CharField(max_length=200, blank=True, default='')
+    seller_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='sold_attendance_commands', blank=True, null=True,
+    )
     table_name_snapshot = models.CharField(max_length=100, blank=True, default='')
     customer_name_snapshot = models.CharField(max_length=200, blank=True, default='')
     closed_at = models.DateTimeField(blank=True, null=True)
@@ -88,6 +93,7 @@ class AttendanceCommand(BaseModel):
     sale = models.OneToOneField('sales.Sale', on_delete=models.PROTECT, related_name='attendance_command', blank=True, null=True)
     checkout_discount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     checkout_service_fee_waived = models.BooleanField(default=False)
+    commission_rate_snapshot = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True)
     bill_requested_at = models.DateTimeField(blank=True, null=True)
     bill_requested_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,

@@ -11,11 +11,19 @@ from .models import (
 
 
 class AttendanceCommandSerializer(serializers.ModelSerializer):
+    seller_user_name = serializers.SerializerMethodField()
+
+    def get_seller_user_name(self, command):
+        if command.seller_user_id is None:
+            return ''
+        return command.seller_user.get_full_name().strip() or command.seller_user.email
+
     class Meta:
         model = AttendanceCommand
         fields = (
             'id', 'number', 'identifier', 'customer',
             'people_count', 'notes', 'status', 'opened_by', 'opened_by_name_snapshot',
+            'seller_user', 'seller_user_name',
             'customer_name_snapshot', 'bill_requested_at', 'bill_requested_by', 'closed_at',
             'closed_by', 'sale', 'created_at', 'updated_at',
         )
@@ -76,11 +84,17 @@ class AttendanceOpenCommandSerializer(serializers.Serializer):
     customer = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     people_count = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     notes = serializers.CharField(max_length=1000, required=False, allow_blank=True, default='')
+    seller_user = serializers.IntegerField(min_value=1, required=False, allow_null=True)
 
     def validate(self, attrs):
         if 'table' in self.initial_data:
             raise serializers.ValidationError({'table': 'Mesa é operada exclusivamente por atendimento de mesa.'})
         return attrs
+
+
+class AttendanceSetSellerSerializer(serializers.Serializer):
+    idempotency_key = serializers.UUIDField()
+    seller_user = serializers.IntegerField(min_value=1)
 
 
 class AttendanceTableGroupSerializer(serializers.Serializer):

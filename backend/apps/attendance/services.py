@@ -12,6 +12,7 @@ from django.utils import timezone
 from apps.base.audit import audit_log, model_snapshot
 from apps.companies.features import require_branch_feature
 from apps.companies.models import Branch, Customer, Status
+from apps.companies.selectors import eligible_branch_users
 from apps.inventory.models import MovementDomainOrigin, MovementNature, MovementType
 from apps.inventory.materialization import materialize_stock
 from apps.inventory.services import apply_locked_stock
@@ -92,13 +93,24 @@ def _customer(branch, customer_id):
     return customer
 
 
+def _eligible_command_seller(branch, seller_user):
+    if seller_user is None:
+        return None
+    seller = eligible_branch_users(branch, 'sales.create').filter(
+        pk=getattr(seller_user, 'pk', seller_user),
+    ).first()
+    if seller is None:
+        raise ValidationError({'seller_user': 'Atendente sem acesso ativo à filial.'})
+    return seller
+
+
 def _audit_metadata(metadata=None, **values):
     return {**(metadata or {}), **values}
 
 
 @transaction.atomic
 def open_command(*, branch, user, idempotency_key, identifier='', customer_id=None,
-                  people_count=None, notes='', audit_metadata=None):
+                   people_count=None, notes='', seller_user=None, audit_metadata=None):
     branch = _active_branch(branch)
     require_branch_feature(branch, 'commands')
     operation, replayed = _operation(
@@ -107,30 +119,41 @@ def open_command(*, branch, user, idempotency_key, identifier='', customer_id=No
         payload={
             'people_count': people_count, 'identifier': identifier,
             'notes': notes, 'customer': customer_id,
+            'seller_user': getattr(seller_user, 'pk', seller_user),
         },
     )
     if replayed:
         return AttendanceCommand.objects.get(pk=operation.result['command_id']), True
     customer = _customer(branch, customer_id)
+    seller = _eligible_command_seller(branch, seller_user)
+    if seller_user is None:
+        seller = eligible_branch_users(branch, 'sales.create').filter(pk=user.pk).first()
     command = AttendanceCommand.objects.create(
         company=branch.company, branch=branch, number=_next_number(branch),
         identifier=identifier, people_count=people_count, notes=notes, customer=customer,
         opened_by=user, opened_by_name_snapshot=_operator_name(user),
-        customer_name_snapshot=customer.name if customer else '',
+        customer_name_snapshot=customer.name if customer else '', seller_user=seller,
     )
+    _service_fee_rate, _fee_amount, commission_rate, _commission_amount = _financial_snapshots(
+        branch, Decimal('0.00'), commission_base=Decimal('0.00'), seller_user=seller,
+        lock=True,
+    )
+    command.commission_rate_snapshot = commission_rate
+    command.save(update_fields=(
+        'commission_rate_snapshot', 'updated_at',
+    ))
     operation.result = {'command_id': command.pk}
     operation.save(update_fields=('result', 'updated_at'))
     audit_log(
         actor=user, action='attendance.command.open', obj=command,
         company=branch.company, branch=branch,
-        after=model_snapshot(command, ('number', 'identifier', 'status')),
+        after=model_snapshot(command, ('number', 'identifier', 'status', 'seller_user_id')),
         metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)),
     )
     return command, False
 
 
-def financial_state(command, *, lock=False, discount=None, service_fee_waived=None,
-                    seller_user=None):
+def financial_state(command, *, lock=False, discount=None, service_fee_waived=None):
     items = AttendanceOrderItem.objects.filter(
         order__command=command, status=AttendanceOrderItemStatus.CONFIRMED,
     ).select_related('product__category').order_by('id')
@@ -143,8 +166,9 @@ def financial_state(command, *, lock=False, discount=None, service_fee_waived=No
             command.checkout_service_fee_waived
             if service_fee_waived is None else service_fee_waived
         ),
-        seller_user=seller_user,
+        seller_user=command.seller_user,
         lock=lock, include_internal_snapshots=True,
+        commission_rate_snapshot=command.commission_rate_snapshot,
     )
     payments = AttendancePayment.objects.filter(
         command=command, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
@@ -155,6 +179,57 @@ def financial_state(command, *, lock=False, discount=None, service_fee_waived=No
         Sum('amount'), Value(Decimal('0.00'), output_field=DecimalField(max_digits=14, decimal_places=2)),
     ))['total']
     return preview, paid, max(preview['total'] - paid, Decimal('0.00'))
+
+
+@transaction.atomic
+def set_command_seller(*, command, user, seller_user, idempotency_key, audit_metadata=None):
+    command = AttendanceCommand.objects.select_for_update().select_related('branch__company').get(pk=command.pk)
+    if command.status != AttendanceCommandStatus.OPEN:
+        raise AttendanceConflict('command_closed', 'A comanda deve estar aberta.')
+    operation, replayed = _operation(
+        branch=command.branch, operation_type=AttendanceOperationType.SET_COMMAND_SELLER,
+        idempotency_key=idempotency_key,
+        payload={'command': command.pk, 'seller_user': getattr(seller_user, 'pk', seller_user)},
+    )
+    if replayed:
+        return command, True
+    seller = _eligible_command_seller(command.branch, seller_user)
+    locked_payments = list(AttendancePayment.objects.select_for_update().filter(command=command))
+    reversed_payment_ids = {
+        payment.reversal_of_id for payment in locked_payments
+        if payment.reversal_of_id is not None
+    }
+    has_payment = any(
+        payment.status == AttendancePaymentStatus.APPLIED
+        and payment.pk not in reversed_payment_ids
+        for payment in locked_payments
+    )
+    if has_payment and command.seller_user_id:
+        raise AttendanceConflict(
+            'command_seller_locked',
+            'O atendente não pode ser alterado após o primeiro pagamento.',
+        )
+    before = model_snapshot(command, ('seller_user_id', 'commission_rate_snapshot'))
+    command.seller_user = seller
+    if has_payment:
+        # Historical paid commands never captured a seller rate; preserve the no-commission policy.
+        command.commission_rate_snapshot = Decimal('0.00')
+    else:
+        _service_fee_rate, _fee_amount, commission_rate, _commission_amount = _financial_snapshots(
+            command.branch, Decimal('0.00'), commission_base=Decimal('0.00'),
+            seller_user=seller, lock=True,
+        )
+        command.commission_rate_snapshot = commission_rate
+    command.save(update_fields=('seller_user', 'commission_rate_snapshot', 'updated_at'))
+    operation.result = {'command_id': command.pk}
+    operation.save(update_fields=('result', 'updated_at'))
+    audit_log(
+        actor=user, action='attendance.command.seller.set', obj=command,
+        company=command.company, branch=command.branch, before=before,
+        after=model_snapshot(command, ('seller_user_id', 'commission_rate_snapshot')),
+        metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key)),
+    )
+    return command, False
 
 
 def command_summary(command):
@@ -692,9 +767,10 @@ def finalize_command(*, command, user, cash_session_id, payments, idempotency_ke
     ).first()
     if cash_session is None:
         raise ValidationError({'cash_session': 'Informe uma sessão aberta da filial.'})
+    if command.seller_user_id is None:
+        raise ValidationError({'seller_user': 'Informe o atendente responsável antes de fechar a comanda.'})
     preview, paid, remaining = financial_state(
         command, lock=True, discount=discount, service_fee_waived=service_fee_waived,
-        seller_user=user,
     )
     if paid > preview['total']:
         raise AttendanceConflict('command_paid_exceeds_final_total', 'Os pagamentos parciais excedem o total final.')
@@ -726,7 +802,7 @@ def finalize_command(*, command, user, cash_session_id, payments, idempotency_ke
         cash_session=cash_session, items=sale_items, payments=normalized, discount=discount,
         discount_authorization=discount_authorization, service_fee_waived=service_fee_waived,
         service_fee_authorization=service_fee_authorization, idempotency_key=idempotency_key,
-        channel=SalesChannel.COMMAND, seller_user=user, customer=command.customer,
+        channel=SalesChannel.COMMAND, seller_user=command.seller_user, customer=command.customer,
         confirmed_order_items=confirmed, internal_permission_code='commands.finalize',
         precomputed_financials=preview, attendance_payment_sources=[*ledger, *([None] * len(payments))],
         pos_device=pos_device, allow_pos_only=pos_device is not None,
