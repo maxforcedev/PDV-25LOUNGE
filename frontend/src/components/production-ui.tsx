@@ -72,7 +72,7 @@ function destinationName(job: PrintJob, destinations: ProductionDestination[]) {
   return (
     snapshot?.name ||
     destinations.find((item) => item.id === job.destination)?.name ||
-    job.destination ? `Destino #${job.destination}` : "-"
+    (job.destination ? `Destino #${job.destination}` : "-")
   );
 }
 
@@ -207,7 +207,7 @@ export function PrintQueue({
       >
         <ExternalLink className="size-4" />
       </Link>
-      {canRetry && canRetryJob(job) && (
+      {canRetry && canRetryJob(job) && job.connection_type !== "network" && (
         <button
           className="icon-button"
           disabled={busy === job.id}
@@ -745,7 +745,7 @@ export function PrintJobDetail({ id }: { id: string }) {
     }
   }
   const snapshot = job?.payload_snapshot || {};
-  const order = snapshot.order_item as
+  const order = snapshot.source_item as
     | {
         product_name?: string;
         internal_code?: string;

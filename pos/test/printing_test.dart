@@ -60,7 +60,9 @@ void main() {
     expect(recovered.single.attemptedAt, isNotNull);
   });
 
-  test('renderer identifies cancellation and does not include prices', () {
+  test(
+      'renderer identifies cancellation, modifiers, and does not include prices',
+      () {
     const job = PrintJob(
       id: 1,
       printerId: 2,
@@ -77,7 +79,21 @@ void main() {
         'source_item': {
           'quantity': '1',
           'product_name': 'X-Bacon',
-          'modifiers': [],
+          'modifiers': [
+            {
+              'option_type': 'add',
+              'option_name': 'Bacon',
+              'selected_quantity': '2',
+              'stock_product_cost': '3.50',
+            },
+            {'option_type': 'remove', 'option_name': 'Cebola'},
+            {
+              'option_type': 'component_substitution',
+              'substituted_component_name': 'Queijo',
+              'option_name': 'Brioche',
+              'selected_quantity': '1',
+            },
+          ],
           'notes': ''
         },
       },
@@ -85,7 +101,12 @@ void main() {
     final bytes =
         ProductionTicketRenderer().render([job], paperWidth: 80, cut: true);
     expect(bytes, containsAll(<int>[0x1b, 0x40, 0x1d, 0x56]));
-    expect(String.fromCharCodes(bytes), isNot(contains('R\$')));
+    final rendered = String.fromCharCodes(bytes);
+    expect(rendered, contains('+ 2 x Bacon'));
+    expect(rendered, contains('- SEM Cebola'));
+    expect(rendered, contains('SUBSTITUIR Queijo POR 1 x Brioche'));
+    expect(rendered, isNot(contains('R\$')));
+    expect(rendered, isNot(contains('3.50')));
   });
 
   test('test ticket keeps a visible safe width for 58mm paper', () {

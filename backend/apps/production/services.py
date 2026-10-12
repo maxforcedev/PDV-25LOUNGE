@@ -66,6 +66,43 @@ def _batch_key(idempotency_key, destination_id, device_id, event):
     return uuid.uuid5(uuid.NAMESPACE_URL, f'print-batch:{idempotency_key}:{destination_id}:{device_id}:{event}')
 
 
+def _production_printers(*, destination, branch):
+    """Only queue production work for printers the branch POS can execute."""
+    return destination.printer_devices.filter(
+        branch=branch,
+        status=Status.ACTIVE,
+        connection_type=PrinterConnectionType.NETWORK,
+    )
+
+
+def _cancel_unprinted_jobs(*, production_job, user):
+    """Cancel work that never crossed the physical dispatch boundary.
+
+    A cancellation notice is needed only for printers that may already have
+    received the original ticket. This also prevents a stale pending order from
+    being printed after its item was cancelled.
+    """
+    printer_ids = []
+    jobs = list(production_job.print_jobs.select_for_update())
+    for job in jobs:
+        if (
+            job.status in (PrintJobStatus.PENDING, PrintJobStatus.PROCESSING, PrintJobStatus.FAILED)
+            and job.physical_dispatch_started_at is None
+        ):
+            job.status = PrintJobStatus.CANCELLED
+            job.claimed_by = None
+            job.lease_until = None
+            job.last_error = 'Cancelado antes do despacho físico.'
+            job.save(update_fields=('status', 'claimed_by', 'lease_until', 'last_error', 'updated_at'))
+            audit_log(
+                actor=user, action='print_job.cancelled_before_dispatch', obj=job,
+                company=job.company, branch=job.branch,
+            )
+        elif job.status != PrintJobStatus.CANCELLED:
+            printer_ids.append(job.printer_device_id)
+    return printer_ids
+
+
 INITIAL_DOCUMENT_TYPES = (
     PrintDocumentType.TABLE_CONFERENCE,
     PrintDocumentType.TABLE_FINAL_RECEIPT,
@@ -586,7 +623,7 @@ def create_production_jobs(*, item, command, user, idempotency_key):
         if not created:
             continue
         audit_log(actor=user, action='production_job.create', obj=production_job, company=command.company, branch=command.branch, metadata={'idempotency_key': str(idempotency_key)})
-        for device in destination.printer_devices.filter(branch=command.branch, status=Status.ACTIVE):
+        for device in _production_printers(destination=destination, branch=command.branch):
             job = PrintJob.objects.create(
                 company=command.company, branch=command.branch, production_job=production_job,
                 destination=destination, printer_device=device, payload_snapshot=production_job.payload_snapshot,
@@ -609,8 +646,7 @@ def create_cancellation_jobs(*, item, command, user, idempotency_key, reason):
         if not created:
             continue
         audit_log(actor=user, action='production_job.cancel_notice', obj=cancellation, company=command.company, branch=command.branch, metadata={'idempotency_key': str(idempotency_key)})
-        device_ids = original.print_jobs.values_list('printer_device_id', flat=True)
-        for device_id in device_ids:
+        for device_id in _cancel_unprinted_jobs(production_job=original, user=user):
             job = PrintJob.objects.create(company=command.company, branch=command.branch, production_job=cancellation, destination=original.destination, printer_device_id=device_id, payload_snapshot=cancellation.payload_snapshot, idempotency_key=uuid.uuid5(uuid.NAMESPACE_URL, f'production:{cancellation.pk}:device:{device_id}'), batch_key=_batch_key(idempotency_key, original.destination_id, device_id, ProductionEvent.CANCEL))
             audit_log(actor=user, action='print_job.enqueue_cancellation', obj=job, company=command.company, branch=command.branch)
 
@@ -632,7 +668,7 @@ def create_sale_production_jobs(*, sale, user, idempotency_key):
             if not created:
                 continue
             audit_log(actor=user, action='production_job.create', obj=production_job, company=sale.company, branch=sale.branch, metadata={'idempotency_key': str(idempotency_key)})
-            for device in destination.printer_devices.filter(branch=sale.branch, status=Status.ACTIVE):
+            for device in _production_printers(destination=destination, branch=sale.branch):
                 job = PrintJob.objects.create(company=sale.company, branch=sale.branch, production_job=production_job,
                     destination=destination, printer_device=device, payload_snapshot=production_job.payload_snapshot,
                     idempotency_key=uuid.uuid5(uuid.NAMESPACE_URL, f'production:{production_job.pk}:device:{device.pk}'), batch_key=_batch_key(idempotency_key, destination.pk, device.pk, ProductionEvent.NEW))
@@ -651,7 +687,7 @@ def create_sale_cancellation_jobs(*, sale, user, idempotency_key, reason):
             if not created:
                 continue
             audit_log(actor=user, action='production_job.cancel_notice', obj=cancellation, company=sale.company, branch=sale.branch, metadata={'idempotency_key': str(idempotency_key)})
-            for device_id in original.print_jobs.values_list('printer_device_id', flat=True):
+            for device_id in _cancel_unprinted_jobs(production_job=original, user=user):
                 job = PrintJob.objects.create(company=sale.company, branch=sale.branch, production_job=cancellation,
                     destination=original.destination, printer_device_id=device_id, payload_snapshot=cancellation.payload_snapshot,
                     idempotency_key=uuid.uuid5(uuid.NAMESPACE_URL, f'production:{cancellation.pk}:device:{device_id}'), batch_key=_batch_key(idempotency_key, original.destination_id, device_id, ProductionEvent.CANCEL))
@@ -716,7 +752,7 @@ def create_attendance_production_jobs(*, item, command, user, idempotency_key):
             continue
         audit_log(actor=user, action='production_job.create', obj=job, company=command.company,
                   branch=command.branch, metadata={'idempotency_key': str(idempotency_key)})
-        for device in destination.printer_devices.filter(branch=command.branch, status=Status.ACTIVE):
+        for device in _production_printers(destination=destination, branch=command.branch):
             print_job = PrintJob.objects.create(
                 company=command.company, branch=command.branch, production_job=job,
                 destination=destination, printer_device=device, payload_snapshot=job.payload_snapshot,
@@ -754,7 +790,7 @@ def create_attendance_cancellation_jobs(*, item, command, user, idempotency_key,
         audit_log(actor=user, action='production_job.cancel_notice', obj=cancellation,
                   company=command.company, branch=command.branch,
                   metadata={'idempotency_key': str(idempotency_key)})
-        for device_id in original.print_jobs.values_list('printer_device_id', flat=True):
+        for device_id in _cancel_unprinted_jobs(production_job=original, user=user):
             job = PrintJob.objects.create(
                 company=command.company, branch=command.branch, production_job=cancellation,
                 destination=original.destination, printer_device_id=device_id,
@@ -793,7 +829,7 @@ def create_table_production_jobs(*, item, attendance, user, idempotency_key):
             continue
         audit_log(actor=user, action='production_job.create', obj=job, company=attendance.company,
                   branch=attendance.branch, metadata={'idempotency_key': str(idempotency_key)})
-        for device in destination.printer_devices.filter(branch=attendance.branch, status=Status.ACTIVE):
+        for device in _production_printers(destination=destination, branch=attendance.branch):
             PrintJob.objects.create(
                 company=attendance.company, branch=attendance.branch, production_job=job,
                 destination=destination, printer_device=device, payload_snapshot=job.payload_snapshot,
@@ -838,7 +874,7 @@ def create_table_cancellation_jobs(*, item, attendance, user, idempotency_key, r
         audit_log(actor=user, action='production_job.cancel_notice', obj=cancellation,
                   company=attendance.company, branch=attendance.branch,
                   metadata={'idempotency_key': str(idempotency_key)})
-        for device_id in original.print_jobs.values_list('printer_device_id', flat=True):
+        for device_id in _cancel_unprinted_jobs(production_job=original, user=user):
             PrintJob.objects.create(
                 company=attendance.company, branch=attendance.branch,
                 production_job=cancellation, destination=original.destination,
@@ -973,6 +1009,8 @@ def retry_print_job(*, job, user):
             PrintJob.objects.select_for_update().filter(batch_key=job.batch_key)
             if job.batch_key else [job]
         )
+    if any(item.physical_dispatch_started_at for item in jobs):
+        raise ValueError('Despacho físico já iniciado exige reimpressão explícita; não faça retry automático.')
     if any(item.status not in (PrintJobStatus.FAILED, PrintJobStatus.PENDING) for item in jobs):
         raise ValueError('Todos os jobs do ticket físico precisam estar pendentes ou falhos para retry.')
     for item in jobs:
@@ -1163,12 +1201,13 @@ def complete_print_job(*, job_id, device, outcome, error='', metadata=None):
         raise ValueError('Job de impressão não encontrado.')
     jobs = list(_claimed_batch(job=job, device=device).select_related('printer_device'))
     now = timezone.now()
+    failed_before_send = outcome == 'failed' and (metadata or {}).get('failed_before_send') is True
     if not jobs or any(
         item.status != PrintJobStatus.PROCESSING or item.claimed_by_id != device.pk
-        or item.physical_dispatch_started_at is None
+        or (not failed_before_send and item.physical_dispatch_started_at is None)
         for item in jobs
     ):
-        raise ValueError('Este POS não possui um dispatch físico iniciado para o job.')
+        raise ValueError('Este POS não possui um claim ou dispatch físico válido para o job.')
     status = {
         'printed': PrintJobStatus.PRINTED,
         'failed': PrintJobStatus.FAILED,

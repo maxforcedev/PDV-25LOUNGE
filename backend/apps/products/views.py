@@ -1012,9 +1012,18 @@ class ProductViewSet(CatalogViewSet):
         ).prefetch_related('destinations'))
         if len(selected) != len(serializer.validated_data['printers']):
             raise ValidationError({'printers': 'Uma impressora não pertence à filial ou está inativa.'})
-        destinations = [device.destinations.order_by('id').first() for device in selected]
-        if any(destination is None for destination in destinations):
+        destination_sets = [list(device.destinations.order_by('id')) for device in selected]
+        if any(not destinations for destinations in destination_sets):
             raise ValidationError({'printers': 'Uma impressora não possui destino operacional.'})
+        if any(len(destinations) != 1 for destinations in destination_sets):
+            raise ValidationError({
+                'printers': 'Use setores de produção para impressoras com múltiplos destinos.',
+            })
+        destinations = [destinations[0] for destinations in destination_sets]
+        if len({destination.pk for destination in destinations}) != len(destinations):
+            raise ValidationError({
+                'printers': 'Impressoras do mesmo setor devem ser configuradas pelo setor de produção.',
+            })
         before = list(printers.values_list('pk', flat=True))
         for link in ProductProductionDestination.objects.filter(
             product=product, destination__branch=branch,

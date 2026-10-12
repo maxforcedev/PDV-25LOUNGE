@@ -37,9 +37,14 @@ class LocalBridgePrinterAdapter(PrinterAdapter):
         return PrintOutcome('failed', 'Print Bridge necessária para utilizar esta impressora.')
 
 
+class UnsupportedPrinterAdapter(PrinterAdapter):
+    def dispatch(self, print_job):
+        return PrintOutcome('failed', 'Esta integração de impressora ainda não possui executor compatível.')
+
+
 def adapter_for(print_job):
     if print_job.printer_device.connection_type == 'network':
         return NetworkPrinterAdapter()
     if print_job.printer_device.connection_type in ('usb', 'bluetooth'):
         return LocalBridgePrinterAdapter()
-    return ManualPrinterAdapter()
+    return UnsupportedPrinterAdapter()

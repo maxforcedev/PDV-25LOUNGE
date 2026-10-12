@@ -735,6 +735,10 @@ def _resolve_modifiers(product, raw_modifiers, company_id, *, branch=None,
                     group.substitution_component_id
                     if opt.option_type == 'component_substitution' else None
                 ),
+                'substituted_component_name': (
+                    group.substitution_component.name
+                    if opt.option_type == 'component_substitution' else ''
+                ),
                 'required_quantity': str(
                     sum(selected_qty for _selected_option, selected_qty in selections_by_group[group.pk])
                 ) if opt.option_type == 'component_substitution' else None,

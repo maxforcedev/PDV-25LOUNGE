@@ -14,7 +14,7 @@ from apps.production.serializers import PrintDocumentResultSerializer, PrintJobS
 from apps.production.services import (
     PHYSICAL_DISPATCH_TIMEOUT_SECONDS, claim_print_job, complete_print_job,
     expire_abandoned_print_dispatches, reconcile_print_jobs, reprint_print_job,
-    retry_print_job, start_print_dispatch, test_printer_device,
+    retry_print_job, start_print_dispatch, test_printer_device, manual_dispatch_print_job,
 )
 
 
@@ -125,11 +125,57 @@ class POSPrintExecutorTests(TestCase):
         self.assertEqual(reprint.status, PrintJobStatus.PENDING)
         self.assertEqual(reprint.reprint_of_id, uncertain.pk)
 
+    def test_failed_after_dispatch_requires_explicit_reprint(self):
+        failed = self._job()
+        claim_print_job(job_id=failed.pk, device=self.first)
+        start_print_dispatch(job_id=failed.pk, device=self.first)
+        complete_print_job(
+            job_id=failed.pk, device=self.first, outcome='failed',
+            error='connection dropped after send',
+        )
+
+        with self.assertRaises(ValueError):
+            retry_print_job(job=failed, user=self.owner)
+
+        failed.refresh_from_db()
+        self.assertEqual(failed.status, PrintJobStatus.FAILED)
+        self.assertIsNotNone(failed.physical_dispatch_started_at)
+
+    def test_stone_manual_dispatch_never_claims_physical_success(self):
+        stone = PrinterDevice.objects.create(
+            branch=self.branch, name='Stone', status=Status.ACTIVE,
+            connection_type='stone_integrated',
+        )
+        document = PrintDocument.objects.create(
+            company=self.company, branch=self.branch, document_type='ticket',
+            source_type='fixture', source_id=str(uuid.uuid4()), snapshot={},
+            snapshot_hash=uuid.uuid4().hex,
+        )
+        job = PrintJob.objects.create(
+            company=self.company, branch=self.branch, printer_device=stone,
+            print_document=document, payload_snapshot={},
+        )
+
+        manual_dispatch_print_job(job=job, user=self.owner)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, PrintJobStatus.FAILED)
+        self.assertIsNone(job.printed_at)
+
     def test_completion_requires_dispatch_and_batch_reprint_keeps_the_ticket_whole(self):
         job = self._job()
         claim_print_job(job_id=job.pk, device=self.first)
         with self.assertRaises(ValueError):
             complete_print_job(job_id=job.pk, device=self.first, outcome='failed')
+
+        complete_print_job(
+            job_id=job.pk, device=self.first, outcome='failed',
+            error='printer configuration unavailable',
+            metadata={'failed_before_send': True},
+        )
+        job.refresh_from_db()
+        self.assertEqual(job.status, PrintJobStatus.FAILED)
+        self.assertIsNone(job.physical_dispatch_started_at)
 
         batch_key = uuid.uuid4()
         first = self._job(batch_key=batch_key, status=PrintJobStatus.PRINTED)
@@ -233,7 +279,11 @@ class POSPrintExecutorTests(TestCase):
     def test_document_jobs_expose_raw_document_type_and_immutable_snapshot(self):
         for document_type in PrintDocumentType.values:
             with self.subTest(document_type=document_type):
-                snapshot = {'document_type': document_type, 'source': 'fixture'}
+                snapshot = {
+                    'document_type': document_type,
+                    'source': 'fixture',
+                    'modifiers': [{'option_name': 'Bacon', 'stock_product_cost': '3.50'}],
+                }
                 document = PrintDocument.objects.create(
                     company=self.company, branch=self.branch, document_type=document_type,
                     source_type='fixture', source_id=str(uuid.uuid4()), snapshot=snapshot,
@@ -247,7 +297,37 @@ class POSPrintExecutorTests(TestCase):
                 data = PrintJobSerializer(job).data
 
                 self.assertEqual(data['document_type'], document_type)
-                self.assertEqual(data['document_snapshot'], snapshot)
+                self.assertNotIn(
+                    'stock_product_cost', data['document_snapshot']['modifiers'][0],
+                )
+                self.assertNotIn(
+                    'stock_product_cost', data['payload_snapshot']['snapshot']['modifiers'][0],
+                )
+                document.refresh_from_db()
+                self.assertEqual(
+                    document.snapshot['modifiers'][0]['stock_product_cost'], '3.50',
+                )
+
+    def test_cost_permission_controls_print_snapshot_visibility(self):
+        document = PrintDocument.objects.create(
+            company=self.company, branch=self.branch, document_type='ticket',
+            source_type='fixture', source_id=str(uuid.uuid4()),
+            snapshot={'modifiers': [{'stock_product_cost': '3.50'}]},
+            snapshot_hash=uuid.uuid4().hex,
+        )
+        job = PrintJob.objects.create(
+            company=self.company, branch=self.branch, printer_device=self.printer,
+            print_document=document,
+            payload_snapshot={'source_item': {'modifiers': [{'stock_product_cost': '3.50'}]}},
+        )
+
+        hidden = PrintJobSerializer(job, context={'permission_codes': ()}).data
+        visible = PrintJobSerializer(
+            job, context={'permission_codes': {'inventory.view_stock_costs'}},
+        ).data
+
+        self.assertNotIn('stock_product_cost', hidden['payload_snapshot']['source_item']['modifiers'][0])
+        self.assertEqual(visible['payload_snapshot']['source_item']['modifiers'][0]['stock_product_cost'], '3.50')
 
     def test_document_result_reports_the_document_queue_and_reprint_state(self):
         job = self._job()

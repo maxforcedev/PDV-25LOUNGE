@@ -3,11 +3,23 @@ import ipaddress
 import re
 
 from apps.products.models import ProductionDestination
+from apps.base.cost_visibility import can_view_branch_costs, redact_cost_payload
 
 from .models import (
     PrintDocument, PrintDocumentType, PrintJob, PrintJobStatus, PrintRoute,
     PrintRouteMode, PrintRouteOverride, PrinterConnectionType, PrinterDevice, ProductionJob, Ticket,
 )
+
+
+def _response_snapshot(serializer, value, branch_id):
+    return redact_cost_payload(
+        value,
+        include_costs=can_view_branch_costs(
+            serializer.context.get('request'),
+            branch_id,
+            permission_codes=serializer.context.get('permission_codes'),
+        ),
+    )
 
 
 def print_document_state(document):
@@ -123,21 +135,32 @@ class PrinterDeviceSerializer(serializers.ModelSerializer):
 
 
 class ProductionJobSerializer(serializers.ModelSerializer):
+    payload_snapshot = serializers.SerializerMethodField()
+
     class Meta:
         model = ProductionJob
         fields = ('id', 'company', 'branch', 'order_item', 'attendance_order_item', 'table_order_item', 'sale_item', 'destination', 'event', 'payload_snapshot', 'original_job', 'created_at')
 
+    def get_payload_snapshot(self, job):
+        return _response_snapshot(self, job.payload_snapshot, job.branch_id)
+
 
 class TicketSerializer(serializers.ModelSerializer):
+    identification_snapshot = serializers.SerializerMethodField()
+
     class Meta:
         model = Ticket
         fields = ('id', 'company', 'branch', 'number', 'quantity', 'status', 'issued_at', 'used_at', 'cancelled_at', 'reprint_count', 'identification_snapshot', 'source_sale_item', 'source_order_item', 'created_at', 'updated_at')
+
+    def get_identification_snapshot(self, ticket):
+        return _response_snapshot(self, ticket.identification_snapshot, ticket.branch_id)
 
 
 class PrintJobSerializer(serializers.ModelSerializer):
     production_event = serializers.CharField(source='production_job.event', read_only=True, allow_null=True)
     document_type = serializers.CharField(source='print_document.document_type', read_only=True, allow_null=True)
-    document_snapshot = serializers.JSONField(source='print_document.snapshot', read_only=True, allow_null=True)
+    document_snapshot = serializers.SerializerMethodField()
+    payload_snapshot = serializers.SerializerMethodField()
     printer_name = serializers.CharField(source='printer_device.name', read_only=True)
     connection_type = serializers.CharField(source='printer_device.connection_type', read_only=True)
     error_summary = serializers.SerializerMethodField()
@@ -160,6 +183,14 @@ class PrintJobSerializer(serializers.ModelSerializer):
 
     def get_error_summary(self, job):
         return (job.last_error or '')[:300]
+
+    def get_document_snapshot(self, job):
+        if job.print_document_id is None:
+            return None
+        return _response_snapshot(self, job.print_document.snapshot, job.branch_id)
+
+    def get_payload_snapshot(self, job):
+        return _response_snapshot(self, job.payload_snapshot, job.branch_id)
 
     def get_origin_type(self, job):
         if job.is_test:
@@ -289,6 +320,7 @@ class PrintRouteOverrideSerializer(_RouteSerializer):
 
 class PrintDocumentSerializer(serializers.ModelSerializer):
     document_type = PrintDocumentTypeField(read_only=True)
+    snapshot = serializers.SerializerMethodField()
     print_jobs = PrintJobSerializer(many=True, read_only=True)
     initial_printed = serializers.SerializerMethodField()
     reprint_eligible = serializers.SerializerMethodField()
@@ -306,6 +338,9 @@ class PrintDocumentSerializer(serializers.ModelSerializer):
 
     def get_initial_printed(self, document):
         return print_document_state(document)['initial_printed']
+
+    def get_snapshot(self, document):
+        return _response_snapshot(self, document.snapshot, document.branch_id)
 
     def get_retry_eligible(self, document):
         return print_document_state(document)['retry_eligible']

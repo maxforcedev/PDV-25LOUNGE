@@ -66,12 +66,22 @@ class PrintManager with WidgetsBindingObserver {
       final claimed = await _api.claimPrintJob(available.first.id);
       if (claimed.isEmpty) return;
       final printer = printers[claimed.first.printerId];
-      if (printer == null) return;
+      if (printer == null) {
+        await _failBeforeSend(
+          claimed,
+          'Impressora de rede não está disponível nesta configuração do POS.',
+        );
+        return;
+      }
       // A claimed batch is a single physical document. Never blend different
       // printer targets or document purposes into one socket payload.
       if (claimed.any((job) =>
           job.printerId != printer.id ||
           job.documentType != claimed.first.documentType)) {
+        await _failBeforeSend(
+          claimed,
+          'Lote de impressão possui destinos ou tipos de documento incompatíveis.',
+        );
         return;
       }
       await _api.renewPrintLease(claimed.first.id);
@@ -80,6 +90,15 @@ class PrintManager with WidgetsBindingObserver {
       // Printing must never block sales or turn transient internet loss into a retry.
     } finally {
       _running = false;
+    }
+  }
+
+  Future<void> _failBeforeSend(List<PrintJob> jobs, String error) async {
+    try {
+      await _api.reportPrintResult(jobs.first.id, 'failed',
+          error: error, metadata: const {'failed_before_send': true});
+    } catch (_) {
+      // The lease can safely expire because no physical dispatch was started.
     }
   }
 
@@ -153,14 +172,16 @@ class PrintManager with WidgetsBindingObserver {
         printerObserved: result.printerObserved,
       ));
     }
-    final outcome =
-        result.state == PrintTransportState.sent ? 'printed' : 'uncertain';
+    // A raw TCP socket can confirm delivery to the network, not that paper was
+    // rendered. Keep the job explicit until an acknowledged transport exists.
+    final outcome = 'uncertain';
     try {
       await _api.reportPrintResult(jobs.first.id, outcome,
-          error: result.detail, metadata: {
-        'transport': 'tcp_lan',
-        'printer_observed': result.printerObserved,
-      });
+          error: result.detail,
+          metadata: {
+            'transport': 'tcp_lan',
+            'printer_observed': result.printerObserved,
+          });
       await _ledger.removeAll(ids);
     } catch (_) {
       // The sent ledger is reconciled as uncertain after connectivity returns.

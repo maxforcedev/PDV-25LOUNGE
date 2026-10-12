@@ -369,7 +369,10 @@ class POSPrintingView(POSDeviceView):
 
     @staticmethod
     def _jobs_payload(jobs, request):
-        return PrintJobSerializer(jobs, many=True, context={'request': request}).data
+        # The POS only needs operational ticket data, never internal cost data.
+        return PrintJobSerializer(
+            jobs, many=True, context={'request': request, 'permission_codes': ()},
+        ).data
 
 
 class POSPrintJobsView(POSPrintingView):

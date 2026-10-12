@@ -194,6 +194,25 @@ class MissionM8PrinterTests(TestCase):
             other_destination,
         )
 
+    def test_legacy_product_printer_endpoint_rejects_ambiguous_destinations(self):
+        kitchen = self.create_destination()
+        bar = self.create_destination('Bar', 'bar')
+        printer = self.create_printer(destination_ids=[kitchen.pk, bar.pk])
+        category = Category.objects.create(company=self.company, name='Bebidas')
+        product = Product.objects.create(
+            company=self.company, category=category, name='Suco',
+            internal_code='SUCO-M8-AMB', sale_price='10.00',
+        )
+        ProductBranchConfig.objects.create(product=product, branch=self.branch)
+
+        response = self.client.put(
+            f'/api/v1/products/{product.pk}/production-printers/',
+            {'printers': [printer.pk]}, format='json',
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertFalse(ProductProductionDestination.objects.filter(product=product).exists())
+
     def test_reprint_is_explicit_audited_and_permission_protected(self):
         printer = self.create_printer()
         document = PrintDocument.objects.create(

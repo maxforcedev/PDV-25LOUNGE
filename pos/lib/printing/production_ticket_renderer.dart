@@ -55,8 +55,8 @@ class ProductionTicketRenderer {
     } else if (reprint) {
       _reprintBanner(bytes, first.reprintNumber, width);
     }
-    _center(bytes,
-        '${(payload['destination'] as Map?)?['name'] ?? 'PRODUCAO'}', width,
+    _center(bytes, '${(payload['destination'] as Map?)?['name'] ?? 'PRODUCAO'}',
+        width,
         bold: true, large: true);
     _line(bytes, '-' * width);
     final table = payload['table'] as Map?;
@@ -70,11 +70,13 @@ class ProductionTicketRenderer {
     _line(bytes, _time(payload));
     for (final job in jobs) {
       final item = job.payload['source_item'] as Map? ?? const {};
-      _line(bytes, '${_formatQuantity(item['quantity'])}x ${item['product_name'] ?? ''}',
+      _line(bytes,
+          '${_formatQuantity(item['quantity'])}x ${item['product_name'] ?? ''}',
           bold: true, large: true);
       _itemDetails(bytes, item, width);
     }
-    if (cancelled && '${payload['cancellation_reason'] ?? ''}'.trim().isNotEmpty) {
+    if (cancelled &&
+        '${payload['cancellation_reason'] ?? ''}'.trim().isNotEmpty) {
       _line(bytes, 'Motivo: ${payload['cancellation_reason']}', bold: true);
     }
     _lineIfPresent(bytes, 'Atendente', payload['operator'], width);
@@ -86,7 +88,8 @@ class ProductionTicketRenderer {
     final snapshot = _snapshot(payload);
     final type = job.documentType!;
     final detailed = _documentFormat(payload) != 'simplified';
-    _centerIfPresent(bytes, _first(snapshot, ['company_name', 'company']), width,
+    _centerIfPresent(
+        bytes, _first(snapshot, ['company_name', 'company']), width,
         bold: true);
     _centerIfPresent(bytes, _first(snapshot, ['branch_name', 'branch']), width);
     if (job.reprintNumber > 0 || payload['reprint'] == true) {
@@ -119,18 +122,22 @@ class ProductionTicketRenderer {
     }
   }
 
-  void _tableDocument(BytesBuilder bytes, Map<String, dynamic> snapshot,
-      int width, {required String? fiscalLabel, required bool detailed}) {
+  void _tableDocument(
+      BytesBuilder bytes, Map<String, dynamic> snapshot, int width,
+      {required String? fiscalLabel, required bool detailed}) {
     if (fiscalLabel != null) _center(bytes, fiscalLabel, width, bold: true);
-    _centerIfPresent(bytes, _tableLabel(snapshot), width, bold: true, large: true);
+    _centerIfPresent(bytes, _tableLabel(snapshot), width,
+        bold: true, large: true);
     _commonDocumentHeader(bytes, snapshot, width, attendant: true);
     _documentItems(bytes, snapshot, width, detailed: detailed);
     _financials(bytes, snapshot, width);
-    _lineIfPresent(bytes, 'Cliente', _first(snapshot, ['customer_name', 'customer']), width);
+    _lineIfPresent(bytes, 'Cliente',
+        _first(snapshot, ['customer_name', 'customer']), width);
   }
 
-  void _receiptDocument(BytesBuilder bytes, Map<String, dynamic> snapshot,
-      int width, {required bool detailed}) {
+  void _receiptDocument(
+      BytesBuilder bytes, Map<String, dynamic> snapshot, int width,
+      {required bool detailed}) {
     _lineIfPresent(bytes, 'Venda', _saleNumber(snapshot), width);
     final table = _tableLabel(snapshot);
     if (table.isNotEmpty) _line(bytes, table);
@@ -144,78 +151,110 @@ class ProductionTicketRenderer {
         _first(snapshot, ['customer', 'customer_name']), width);
   }
 
-  void _finalTableReceiptDocument(BytesBuilder bytes,
-      Map<String, dynamic> snapshot, int width, {required bool detailed}) {
-    _center(bytes, 'RECIBO DE FECHAMENTO DA MESA', width, bold: true,
-        large: true);
+  void _finalTableReceiptDocument(
+      BytesBuilder bytes, Map<String, dynamic> snapshot, int width,
+      {required bool detailed}) {
+    _center(bytes, 'RECIBO DE FECHAMENTO DA MESA', width,
+        bold: true, large: true);
     _center(bytes, 'RELATORIO GERENCIAL', width, bold: true);
     _center(bytes, '*** NAO E DOCUMENTO FISCAL ***', width, bold: true);
     _line(bytes, '-' * width);
-    _lineIfPresent(bytes, 'Endereco', _first(snapshot, ['branch_address']), width);
-    _lineIfPresent(bytes, 'Telefone', _first(snapshot, ['branch_phone']), width);
+    _lineIfPresent(
+        bytes, 'Endereco', _first(snapshot, ['branch_address']), width);
+    _lineIfPresent(
+        bytes, 'Telefone', _first(snapshot, ['branch_phone']), width);
     _centerIfPresent(bytes, _tableLabel(snapshot), width, bold: true);
-    _lineIfPresent(bytes, 'Atendimento', _first(snapshot, ['attendance_id']), width);
+    _lineIfPresent(
+        bytes, 'Atendimento', _first(snapshot, ['attendance_id']), width);
     _lineIfPresent(bytes, 'Fechada em', _first(snapshot, ['closed_at']), width);
-    _lineIfPresent(bytes, 'Impresso em', DateTime.now().toLocal().toString().substring(0, 16), width);
+    _lineIfPresent(bytes, 'Impresso em',
+        DateTime.now().toLocal().toString().substring(0, 16), width);
     if (detailed) {
-      _lineIfPresent(bytes, 'Aberta em', _first(snapshot, ['opened_at']), width);
+      _lineIfPresent(
+          bytes, 'Aberta em', _first(snapshot, ['opened_at']), width);
       _lineIfPresent(bytes, 'Cliente', _first(snapshot, ['customer']), width);
     }
-    _documentItems(bytes, snapshot, width, detailed: detailed,
-        includeUnitPrice: true);
+    _documentItems(bytes, snapshot, width,
+        detailed: detailed, includeUnitPrice: true);
     _financials(bytes, snapshot, width);
     _payments(bytes, snapshot, width);
-    _lineIfPresent(bytes, 'Operador', _first(snapshot, ['operator', 'attendant']), width);
+    _lineIfPresent(
+        bytes, 'Operador', _first(snapshot, ['operator', 'attendant']), width);
     _line(bytes, '-' * width);
     _center(bytes, 'OBRIGADO PELA PREFERENCIA', width);
   }
 
-  void _conferenceDocument(BytesBuilder bytes, Map<String, dynamic> snapshot,
-      int width, {required bool detailed}) {
+  void _conferenceDocument(
+      BytesBuilder bytes, Map<String, dynamic> snapshot, int width,
+      {required bool detailed}) {
     _center(bytes, 'CONFERENCIA DA CONTA', width, bold: true, large: true);
     _center(bytes, 'RELATORIO GERENCIAL', width, bold: true);
     _center(bytes, '*** NAO E DOCUMENTO FISCAL ***', width, bold: true);
     _line(bytes, '-' * width);
-    _lineIfPresent(bytes, 'Endereco', _first(snapshot, ['branch_address']), width);
-    _lineIfPresent(bytes, 'Telefone', _first(snapshot, ['branch_phone']), width);
+    _lineIfPresent(
+        bytes, 'Endereco', _first(snapshot, ['branch_address']), width);
+    _lineIfPresent(
+        bytes, 'Telefone', _first(snapshot, ['branch_phone']), width);
     _centerIfPresent(bytes, _tableLabel(snapshot), width, bold: true);
-    _lineIfPresent(bytes, 'Atendimento', _first(snapshot, ['attendance_id']), width);
+    _lineIfPresent(
+        bytes, 'Atendimento', _first(snapshot, ['attendance_id']), width);
     _lineIfPresent(bytes, 'Aberta em', _first(snapshot, ['opened_at']), width);
-    _lineIfPresent(bytes, 'Impresso em', DateTime.now().toLocal().toString().substring(0, 16), width);
-    _lineIfPresent(bytes, 'Atendente', _first(snapshot, ['attendant', 'operator']), width);
+    _lineIfPresent(bytes, 'Impresso em',
+        DateTime.now().toLocal().toString().substring(0, 16), width);
+    _lineIfPresent(
+        bytes, 'Atendente', _first(snapshot, ['attendant', 'operator']), width);
     _lineIfPresent(bytes, 'Cliente', _first(snapshot, ['customer']), width);
     _documentItems(bytes, snapshot, width, detailed: detailed);
     _financials(bytes, snapshot, width);
     _payments(bytes, snapshot, width);
   }
 
-  void _paymentDocument(BytesBuilder bytes, Map<String, dynamic> snapshot, int width) {
+  void _paymentDocument(
+      BytesBuilder bytes, Map<String, dynamic> snapshot, int width) {
     final nestedPayment = _map(snapshot['payment']);
     final payment = nestedPayment.isEmpty ? snapshot : nestedPayment;
     _centerIfPresent(bytes, _tableLabel(snapshot), width, bold: true);
-    _lineIfPresent(bytes, 'Pagamento', _first(payment, ['payment_id', 'number', 'id']), width);
-    _lineIfPresent(bytes, 'Forma', _first(payment, ['payment_method_name', 'method_name', 'method']), width);
+    _lineIfPresent(bytes, 'Pagamento',
+        _first(payment, ['payment_id', 'number', 'id']), width);
+    _lineIfPresent(
+        bytes,
+        'Forma',
+        _first(payment, ['payment_method_name', 'method_name', 'method']),
+        width);
     _lineIfPresent(bytes, 'Valor', _first(payment, ['amount']), width);
-    _lineIfPresent(bytes, 'Recebido', _first(payment, ['received_amount']), width);
+    _lineIfPresent(
+        bytes, 'Recebido', _first(payment, ['received_amount']), width);
     _lineIfPresent(bytes, 'Troco', _first(payment, ['change_amount']), width);
-    _lineIfPresent(bytes, 'Data/hora', _first(payment, ['created_at', 'paid_at']), width);
+    _lineIfPresent(
+        bytes, 'Data/hora', _first(payment, ['created_at', 'paid_at']), width);
     _lineIfPresent(bytes, 'Operador',
         _first(snapshot, ['operator', 'attendant', 'operator_name']), width);
   }
 
-  void _ticketDocument(BytesBuilder bytes, Map<String, dynamic> snapshot, int width) {
+  void _ticketDocument(
+      BytesBuilder bytes, Map<String, dynamic> snapshot, int width) {
     final nestedTicket = _map(snapshot['ticket']);
     final ticket = nestedTicket.isEmpty ? snapshot : nestedTicket;
     final item = _map(ticket['item']);
     final number = _first(ticket, ['number', 'ticket_number']);
     _center(bytes, number == null ? 'TICKET' : 'TICKET #$number', width,
         bold: true, large: true);
-    _lineIfPresent(bytes, 'Produto',
-        _first(ticket, ['product_name', 'product']) ?? _first(item, ['product_name', 'name', 'product']), width);
-    _lineIfPresent(bytes, 'Quantidade',
-        _formatQuantity(_first(ticket, ['quantity']) ?? _first(item, ['quantity'])), width);
-    _lineIfPresent(bytes, 'Codigo', _first(ticket, ['validation_code', 'code']), width);
-    _lineIfPresent(bytes, 'Data/hora', _first(ticket, ['issued_at', 'created_at']), width);
+    _lineIfPresent(
+        bytes,
+        'Produto',
+        _first(ticket, ['product_name', 'product']) ??
+            _first(item, ['product_name', 'name', 'product']),
+        width);
+    _lineIfPresent(
+        bytes,
+        'Quantidade',
+        _formatQuantity(
+            _first(ticket, ['quantity']) ?? _first(item, ['quantity'])),
+        width);
+    _lineIfPresent(
+        bytes, 'Codigo', _first(ticket, ['validation_code', 'code']), width);
+    _lineIfPresent(
+        bytes, 'Data/hora', _first(ticket, ['issued_at', 'created_at']), width);
   }
 
   void _commonDocumentHeader(
@@ -223,16 +262,19 @@ class ProductionTicketRenderer {
       {bool attendant = false}) {
     _lineIfPresent(bytes, 'Data/hora',
         _first(snapshot, ['opened_at', 'created_at', 'issued_at']), width);
-    _lineIfPresent(bytes, 'Endereco', _first(snapshot, ['branch_address']), width);
-    _lineIfPresent(bytes, 'Telefone', _first(snapshot, ['branch_phone']), width);
+    _lineIfPresent(
+        bytes, 'Endereco', _first(snapshot, ['branch_address']), width);
+    _lineIfPresent(
+        bytes, 'Telefone', _first(snapshot, ['branch_phone']), width);
     if (attendant) {
       _lineIfPresent(bytes, 'Atendente',
           _first(snapshot, ['attendant', 'operator', 'seller']), width);
     }
   }
 
-  void _documentItems(BytesBuilder bytes, Map<String, dynamic> snapshot,
-      int width, {required bool detailed, bool includeUnitPrice = false}) {
+  void _documentItems(
+      BytesBuilder bytes, Map<String, dynamic> snapshot, int width,
+      {required bool detailed, bool includeUnitPrice = false}) {
     final items = snapshot['items'];
     if (items is! List || items.isEmpty) return;
     _line(bytes, '-' * width);
@@ -245,7 +287,9 @@ class ProductionTicketRenderer {
       final unitPrice = _first(item, ['unit_price']);
       final description = '$quantity${quantity.isEmpty ? '' : 'x '} $name'
           '${includeUnitPrice && unitPrice != null ? ' ($unitPrice)' : ''}';
-      _columns(bytes, description,
+      _columns(
+          bytes,
+          description,
           _first(item, ['line_total', 'net_subtotal', 'subtotal', 'total']) ??
               _first(financial, ['net_subtotal', 'subtotal']),
           width,
@@ -262,15 +306,32 @@ class ProductionTicketRenderer {
     if (modifiers is List) {
       for (final modifier in modifiers) {
         final values = _map(modifier);
-        final label = _first(values, ['name', 'label', 'option_name']) ?? '${modifier ?? ''}';
-        if (label.trim().isNotEmpty) _line(bytes, '* $label');
+        final label = _first(values, ['name', 'label', 'option_name']) ??
+            '${modifier ?? ''}';
+        if (label.trim().isNotEmpty) {
+          final quantity = _formatQuantity(values['selected_quantity']);
+          final quantityPrefix = quantity.isEmpty ? '' : '$quantity x ';
+          final group = _first(values, ['group_name']) ?? '';
+          final substitutedComponent =
+              _first(values, ['substituted_component_name']);
+          final prefix = switch ('${values['option_type'] ?? ''}') {
+            'remove' => '- SEM ',
+            'component_substitution' => substitutedComponent == null
+                ? (group.isEmpty ? 'SUBSTITUIR ' : 'SUBSTITUIR $group POR ')
+                : 'SUBSTITUIR $substitutedComponent POR ',
+            'observation' || 'text' => 'OBS: ',
+            _ => '+ ',
+          };
+          _line(bytes, '$prefix$quantityPrefix$label');
+        }
       }
     }
     final notes = '${item['notes'] ?? ''}'.trim();
     if (notes.isNotEmpty) _line(bytes, 'OBS: $notes', bold: true);
   }
 
-  void _financials(BytesBuilder bytes, Map<String, dynamic> snapshot, int width) {
+  void _financials(
+      BytesBuilder bytes, Map<String, dynamic> snapshot, int width) {
     final financials = {
       ...snapshot,
       ..._map(snapshot['financials']),
@@ -291,7 +352,8 @@ class ProductionTicketRenderer {
     final rows = <MapEntry<String, String>>[];
     for (final entry in labels.entries) {
       final value = financials[entry.key];
-      if (value != null && '$value'.trim().isNotEmpty &&
+      if (value != null &&
+          '$value'.trim().isNotEmpty &&
           (entry.key != 'discount_total' || _number(value) != 0)) {
         if (!rows.any((row) => row.key == entry.value)) {
           rows.add(MapEntry(entry.value, '$value'));
@@ -312,10 +374,12 @@ class ProductionTicketRenderer {
     _center(bytes, 'PAGAMENTOS', width, bold: true);
     for (final raw in payments) {
       final payment = _map(raw);
-      final method = _first(payment, ['payment_method_name', 'method_name', 'method']);
+      final method =
+          _first(payment, ['payment_method_name', 'method_name', 'method']);
       if (method == null) continue;
       _columns(bytes, method, _first(payment, ['amount']), width);
-      _lineIfPresent(bytes, 'Recebido', _first(payment, ['received_amount']), width);
+      _lineIfPresent(
+          bytes, 'Recebido', _first(payment, ['received_amount']), width);
       _lineIfPresent(bytes, 'Troco', _first(payment, ['change_amount']), width);
     }
   }
@@ -356,7 +420,8 @@ class ProductionTicketRenderer {
     final parsed = num.tryParse(raw.replaceAll(',', '.'));
     if (parsed == null) return raw;
     var text = parsed.toStringAsFixed(3);
-    text = text.replaceFirst(RegExp(r'0+$'), '').replaceFirst(RegExp(r'\.$'), '');
+    text =
+        text.replaceFirst(RegExp(r'0+$'), '').replaceFirst(RegExp(r'\.$'), '');
     return text.replaceAll('.', ',');
   }
 
@@ -374,7 +439,9 @@ class ProductionTicketRenderer {
   }
 
   String _time(Map<String, dynamic> payload) {
-    final instant = DateTime.tryParse('${payload['created_at'] ?? ''}')?.toLocal() ?? DateTime.now();
+    final instant =
+        DateTime.tryParse('${payload['created_at'] ?? ''}')?.toLocal() ??
+            DateTime.now();
     String part(int value) => value.toString().padLeft(2, '0');
     return '${part(instant.day)}/${part(instant.month)}/${instant.year} ${part(instant.hour)}:${part(instant.minute)}';
   }
@@ -402,14 +469,18 @@ class ProductionTicketRenderer {
     }
   }
 
-  void _lineIfPresent(BytesBuilder bytes, String label, String? value, int width) {
+  void _lineIfPresent(
+      BytesBuilder bytes, String label, String? value, int width) {
     if (value != null && value.trim().isNotEmpty) {
       _line(bytes, '$label: ${_dateLabel(label) ? _formatDate(value) : value}');
     }
   }
 
   bool _dateLabel(String label) => const {
-        'Data/hora', 'Aberta em', 'Fechada em', 'Impresso em',
+        'Data/hora',
+        'Aberta em',
+        'Fechada em',
+        'Impresso em',
       }.contains(label);
 
   String _formatDate(String value) {
@@ -419,11 +490,11 @@ class ProductionTicketRenderer {
     return '${part(instant.day)}/${part(instant.month)}/${instant.year} ${part(instant.hour)}:${part(instant.minute)}';
   }
 
-  num _number(Object? value) => num.tryParse('${value ?? ''}'.replaceAll(',', '.')) ?? 0;
+  num _number(Object? value) =>
+      num.tryParse('${value ?? ''}'.replaceAll(',', '.')) ?? 0;
 
   String _totalDiscount(Map<String, dynamic> values) {
-    final total =
-        _number(values['promotion_discount_total']) +
+    final total = _number(values['promotion_discount_total']) +
         _number(values['item_discount_total']) +
         _number(values['checkout_discount_total'] ?? values['discount']);
     return total.toStringAsFixed(2);
@@ -457,7 +528,9 @@ class ProductionTicketRenderer {
       _line(bytes, wrapped[index], bold: bold);
     }
     final finalLeft = wrapped.isEmpty ? '' : wrapped.last;
-    _line(bytes, '$finalLeft${' ' * (width - finalLeft.length - rightText.length)}$rightText', bold: bold);
+    _line(bytes,
+        '$finalLeft${' ' * (width - finalLeft.length - rightText.length)}$rightText',
+        bold: bold);
   }
 
   void _line(BytesBuilder bytes, String value,
@@ -491,12 +564,39 @@ class ProductionTicketRenderer {
 
   List<int> _encode(String value) {
     const cp850 = {
-      'á': 160, 'à': 133, 'â': 131, 'ã': 198, 'ä': 132, 'é': 130,
-      'ê': 136, 'ë': 137, 'í': 161, 'ì': 141, 'î': 140, 'ó': 162,
-      'ò': 149, 'ô': 147, 'õ': 228, 'ö': 148, 'ú': 163, 'ù': 151,
-      'û': 150, 'ü': 129, 'ç': 135, 'Á': 181, 'À': 183, 'Â': 182,
-      'Ã': 199, 'É': 144, 'Ê': 210, 'Í': 214, 'Ó': 224, 'Ô': 226,
-      'Õ': 229, 'Ú': 233, 'Ç': 128,
+      'á': 160,
+      'à': 133,
+      'â': 131,
+      'ã': 198,
+      'ä': 132,
+      'é': 130,
+      'ê': 136,
+      'ë': 137,
+      'í': 161,
+      'ì': 141,
+      'î': 140,
+      'ó': 162,
+      'ò': 149,
+      'ô': 147,
+      'õ': 228,
+      'ö': 148,
+      'ú': 163,
+      'ù': 151,
+      'û': 150,
+      'ü': 129,
+      'ç': 135,
+      'Á': 181,
+      'À': 183,
+      'Â': 182,
+      'Ã': 199,
+      'É': 144,
+      'Ê': 210,
+      'Í': 214,
+      'Ó': 224,
+      'Ô': 226,
+      'Õ': 229,
+      'Ú': 233,
+      'Ç': 128,
     };
     return value.runes.map((rune) {
       final character = String.fromCharCode(rune);
