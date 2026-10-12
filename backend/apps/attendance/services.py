@@ -104,6 +104,41 @@ def _eligible_command_seller(branch, seller_user):
     return seller
 
 
+def _is_legacy_unassigned_command(command):
+    """Only pre-seller migrations can lack both identities and a rate snapshot."""
+    return command.seller_user_id is None and command.commission_rate_snapshot is None
+
+
+def _freeze_command_item_financials(command, financial_snapshots):
+    items = list(AttendanceOrderItem.objects.select_for_update().filter(
+        order__command=command, status=AttendanceOrderItemStatus.CONFIRMED,
+    ).order_by('id'))
+    if len(items) != len(financial_snapshots):
+        raise AttendanceConflict('command_financial_snapshot_mismatch', 'Itens financeiros da comanda foram alterados.')
+    for item, financial in zip(items, financial_snapshots):
+        if item.financial_snapshot:
+            continue
+        item.financial_snapshot = {
+            'promotion': financial['promotion'],
+            'promotion_name': financial['promotion_name'],
+            'promotion_discount_type': financial['promotion_discount_type'],
+            'promotion_discount_value': (
+                str(financial['promotion_discount_value'])
+                if financial['promotion_discount_value'] is not None else None
+            ),
+            'promotion_benefit': str(financial['promotion_benefit']),
+            'manual_discount_intent': {
+                'type': financial['manual_discount_intent']['type'],
+                'value': str(financial['manual_discount_intent']['value']),
+            },
+            'manual_discount': str(financial['manual_discount']),
+            'net_subtotal': str(financial['net_subtotal']),
+            'participates_in_service_fee': financial['participates_in_service_fee'],
+            'participates_in_commission': financial['participates_in_commission'],
+        }
+        item.save(update_fields=('financial_snapshot', 'updated_at'))
+
+
 def _audit_metadata(metadata=None, **values):
     return {**(metadata or {}), **values}
 
@@ -195,23 +230,18 @@ def set_command_seller(*, command, user, seller_user, idempotency_key, audit_met
         return command, True
     seller = _eligible_command_seller(command.branch, seller_user)
     locked_payments = list(AttendancePayment.objects.select_for_update().filter(command=command))
-    reversed_payment_ids = {
-        payment.reversal_of_id for payment in locked_payments
-        if payment.reversal_of_id is not None
-    }
-    has_payment = any(
+    payment_started = any(
         payment.status == AttendancePaymentStatus.APPLIED
-        and payment.pk not in reversed_payment_ids
         for payment in locked_payments
     )
-    if has_payment and command.seller_user_id:
+    if payment_started and not _is_legacy_unassigned_command(command):
         raise AttendanceConflict(
             'command_seller_locked',
             'O atendente não pode ser alterado após o primeiro pagamento.',
         )
     before = model_snapshot(command, ('seller_user_id', 'commission_rate_snapshot'))
     command.seller_user = seller
-    if has_payment:
+    if payment_started:
         # Historical paid commands never captured a seller rate; preserve the no-commission policy.
         command.commission_rate_snapshot = Decimal('0.00')
     else:
@@ -661,6 +691,8 @@ def record_payment(*, command, user, payment_method_id, amount, idempotency_key,
         command=command, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
     )
     has_payment = bool(list(paid_rows))
+    if command.seller_user_id is None and not (has_payment and _is_legacy_unassigned_command(command)):
+        raise ValidationError({'seller_user': 'Informe o atendente responsável antes do primeiro pagamento.'})
     requested_discount = strict_decimal(
         discount if discount is not None else command.checkout_discount,
         field='discount', decimal_places=2, max_digits=14,
@@ -685,9 +717,11 @@ def record_payment(*, command, user, payment_method_id, amount, idempotency_key,
         command.checkout_discount = requested_discount
         command.checkout_service_fee_waived = requested_waiver
         command.save(update_fields=('checkout_discount', 'checkout_service_fee_waived', 'updated_at'))
-    _, paid, remaining = financial_state(command, lock=True)
+    preview, paid, remaining = financial_state(command, lock=True)
     if amount > remaining:
         raise AttendanceConflict('command_overpayment', f'O pagamento excede o saldo de R$ {remaining:.2f}.')
+    if not has_payment:
+        _freeze_command_item_financials(command, preview['_snapshots'])
     payment = AttendancePayment.objects.create(
         company=command.company, branch=command.branch, command=command,
         payment_method=method, amount=amount, received_amount=received_amount,

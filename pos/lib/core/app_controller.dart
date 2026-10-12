@@ -1487,6 +1487,9 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
+  Future<List<AttendanceSeller>?> attendanceCommandSellers() =>
+      _attendance(_api.attendanceCommandSellers);
+
   Future<List<QuickSaleProduct>?> attendanceCatalog({String? search}) =>
       _attendance(() => _api.attendanceCatalog(search: search));
 
@@ -1498,6 +1501,7 @@ class AppController extends ChangeNotifier {
     String identifier = '',
     int? customerId,
     int? peopleCount,
+    int? sellerUserId,
     String notes = '',
   }) async {
     try {
@@ -1506,6 +1510,7 @@ class AppController extends ChangeNotifier {
         identifier: identifier,
         customerId: customerId,
         peopleCount: peopleCount,
+        sellerUserId: sellerUserId,
         notes: notes,
       );
     } on PosApiException catch (error) {
@@ -1518,6 +1523,17 @@ class AppController extends ChangeNotifier {
 
   Future<AttendanceCommandDetail?> attendanceCommandDetail(int commandId) =>
       _attendance(() => _api.attendanceCommandDetail(commandId));
+
+  Future<AttendanceCommand?> setAttendanceCommandSeller({
+    required int commandId,
+    required int sellerUserId,
+    required String idempotencyKey,
+  }) =>
+      _attendance(() => _api.setAttendanceCommandSeller(
+            commandId: commandId,
+            sellerUserId: sellerUserId,
+            idempotencyKey: idempotencyKey,
+          ));
 
   Future<AttendanceCommand?> setAttendanceBillRequested({
     required int commandId,

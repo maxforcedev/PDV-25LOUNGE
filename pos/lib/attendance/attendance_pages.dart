@@ -158,14 +158,18 @@ class _CommandsPageState extends State<CommandsPage> {
   }
 
   Future<void> _open() async {
+    final sellers = await widget.controller.attendanceCommandSellers();
+    if (sellers == null || sellers.isEmpty || !mounted) return;
     final details = await showDialog<_OpenDetails>(
         context: context,
-        builder: (_) => const _OpenCommandDialog(title: 'Nova comanda'));
+        builder: (_) =>
+            _OpenCommandDialog(title: 'Nova comanda', sellers: sellers));
     if (details == null) return;
     final command = await widget.controller.openAttendanceCommand(
         idempotencyKey: createIdempotencyKey(),
         identifier: details.identifier,
         peopleCount: details.peopleCount,
+        sellerUserId: details.sellerUserId,
         notes: details.notes);
     if (command != null && mounted) {
       await Navigator.of(context).push(MaterialPageRoute(
@@ -208,7 +212,8 @@ class _CommandsPageState extends State<CommandsPage> {
                         return ListTile(
                           leading: const Icon(Icons.receipt_long_outlined),
                           title: Text(command.label),
-                          subtitle: Text(command.number),
+                          subtitle: Text(
+                              '${command.number} | Vendedor: ${command.sellerUserName.isEmpty ? 'Pendente' : command.sellerUserName}'),
                           trailing: Text(
                               command.status == 'open' ? 'ABERTA' : 'FECHADA'),
                           onTap: () => Navigator.of(context).push(
@@ -240,6 +245,11 @@ class _CommandDetailPageState extends State<CommandDetailPage> {
   bool get _open => _detail?.command.status == 'open';
   bool _allowed(String permission) =>
       _open && _can(widget.controller, permission);
+  bool get _paymentStarted =>
+      _ledger?.payments.any((payment) => payment.status == 'applied') ?? false;
+  bool get _canSetSeller =>
+      _allowed('commands.open') &&
+      (!_paymentStarted || _detail?.command.sellerUserId == null);
 
   @override
   void initState() {
@@ -308,6 +318,25 @@ class _CommandDetailPageState extends State<CommandDetailPage> {
         receivedAmount: payment.received,
         cashSessionId: payment.session?.id,
         idempotencyKey: createIdempotencyKey());
+    if (mounted) await _load();
+  }
+
+  Future<void> _setSeller() async {
+    final sellers = await widget.controller.attendanceCommandSellers();
+    if (!mounted || sellers == null || sellers.isEmpty) return;
+    final seller = await showDialog<AttendanceSeller>(
+      context: context,
+      builder: (_) => _SellerPicker(
+        sellers: sellers,
+        selectedId: _detail?.command.sellerUserId,
+      ),
+    );
+    if (seller == null) return;
+    await widget.controller.setAttendanceCommandSeller(
+      commandId: widget.command.id,
+      sellerUserId: seller.id,
+      idempotencyKey: createIdempotencyKey(),
+    );
     if (mounted) await _load();
   }
 
@@ -391,6 +420,23 @@ class _CommandDetailPageState extends State<CommandDetailPage> {
               : ListView(padding: const EdgeInsets.all(16), children: [
                   _SummaryCard(summary: detail.summary),
                   const SizedBox(height: 12),
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.person_outline),
+                      title: const Text('Vendedor responsável'),
+                      subtitle: Text(detail.command.sellerUserName.isEmpty
+                          ? 'Pendente de definição'
+                          : detail.command.sellerUserName),
+                      trailing: _canSetSeller
+                          ? TextButton(
+                              onPressed: _setSeller,
+                              child: Text(detail.command.sellerUserId == null
+                                  ? 'DEFINIR'
+                                  : 'ALTERAR'),
+                            )
+                          : null,
+                    ),
+                  ),
                   if (detail.command.notes.isNotEmpty)
                     Text('Obs.: ${detail.command.notes}'),
                   if (detail.command.billRequested)
@@ -506,15 +552,18 @@ class _LedgerCard extends StatelessWidget {
 }
 
 class _OpenDetails {
-  const _OpenDetails(this.identifier, this.peopleCount, this.notes);
+  const _OpenDetails(
+      this.identifier, this.peopleCount, this.sellerUserId, this.notes);
   final String identifier;
   final int? peopleCount;
+  final int sellerUserId;
   final String notes;
 }
 
 class _OpenCommandDialog extends StatefulWidget {
-  const _OpenCommandDialog({required this.title});
+  const _OpenCommandDialog({required this.title, required this.sellers});
   final String title;
+  final List<AttendanceSeller> sellers;
   @override
   State<_OpenCommandDialog> createState() => _OpenCommandDialogState();
 }
@@ -523,6 +572,7 @@ class _OpenCommandDialogState extends State<_OpenCommandDialog> {
   final _identifier = TextEditingController();
   final _people = TextEditingController();
   final _notes = TextEditingController();
+  int? _sellerUserId;
   @override
   void dispose() {
     _identifier.dispose();
@@ -543,6 +593,17 @@ class _OpenCommandDialogState extends State<_OpenCommandDialog> {
                 controller: _people,
                 keyboardType: TextInputType.number,
                 decoration: const InputDecoration(labelText: 'Pessoas')),
+            DropdownButtonFormField<int>(
+              initialValue: _sellerUserId,
+              isExpanded: true,
+              decoration:
+                  const InputDecoration(labelText: 'Vendedor responsável'),
+              items: widget.sellers
+                  .map((seller) => DropdownMenuItem(
+                      value: seller.id, child: Text(seller.name)))
+                  .toList(growable: false),
+              onChanged: (value) => setState(() => _sellerUserId = value),
+            ),
             TextField(
                 controller: _notes,
                 decoration: const InputDecoration(labelText: 'Observação'))
@@ -552,12 +613,40 @@ class _OpenCommandDialogState extends State<_OpenCommandDialog> {
                 onPressed: () => Navigator.pop(context),
                 child: const Text('CANCELAR')),
             FilledButton(
-                onPressed: () => Navigator.pop(
-                    context,
-                    _OpenDetails(_identifier.text.trim(),
-                        int.tryParse(_people.text), _notes.text.trim())),
+                onPressed: _sellerUserId == null
+                    ? null
+                    : () => Navigator.pop(
+                        context,
+                        _OpenDetails(
+                            _identifier.text.trim(),
+                            int.tryParse(_people.text),
+                            _sellerUserId!,
+                            _notes.text.trim())),
                 child: const Text('CONFIRMAR'))
           ]);
+}
+
+class _SellerPicker extends StatelessWidget {
+  const _SellerPicker({required this.sellers, this.selectedId});
+  final List<AttendanceSeller> sellers;
+  final int? selectedId;
+
+  @override
+  Widget build(BuildContext context) => SimpleDialog(
+        title: const Text('Vendedor responsável'),
+        children: sellers
+            .map((seller) => SimpleDialogOption(
+                  onPressed: () => Navigator.pop(context, seller),
+                  child: Row(children: [
+                    Icon(seller.id == selectedId
+                        ? Icons.check_circle
+                        : Icons.person_outline),
+                    const SizedBox(width: 12),
+                    Expanded(child: Text(seller.name)),
+                  ]),
+                ))
+            .toList(growable: false),
+      );
 }
 
 class _NewItem {

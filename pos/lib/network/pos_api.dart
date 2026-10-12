@@ -188,6 +188,7 @@ abstract class PosApi {
   }) =>
       throw UnimplementedError();
   Future<List<AttendanceCommand>> attendanceCommands({String? query});
+  Future<List<AttendanceSeller>> attendanceCommandSellers();
   Future<List<QuickSaleProduct>> attendanceCatalog({String? search});
   Future<CommandCheckoutOptions> commandCheckoutOptions();
   Future<AttendanceCommandDetail> attendanceCommandDetail(int commandId);
@@ -201,7 +202,13 @@ abstract class PosApi {
     String identifier,
     int? customerId,
     int? peopleCount,
+    int? sellerUserId,
     String notes,
+  });
+  Future<AttendanceCommand> setAttendanceCommandSeller({
+    required int commandId,
+    required int sellerUserId,
+    required String idempotencyKey,
   });
   Future<List<AttendanceOrderItem>> addAttendanceItems({
     required int commandId,
@@ -1199,6 +1206,15 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   }
 
   @override
+  Future<List<AttendanceSeller>> attendanceCommandSellers() async {
+    final payload = await _request('GET', 'commands/sellers/');
+    return (payload as List<dynamic>)
+        .cast<Map<String, dynamic>>()
+        .map(AttendanceSeller.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
   Future<List<QuickSaleProduct>> attendanceCatalog({String? search}) async {
     final suffix = search == null || search.trim().isEmpty
         ? ''
@@ -1239,6 +1255,7 @@ class HttpPosApi implements PosApi, PosCredentialCache {
     String identifier = '',
     int? customerId,
     int? peopleCount,
+    int? sellerUserId,
     String notes = '',
   }) async =>
       AttendanceCommand.fromJson(await _request('POST', 'commands/', body: {
@@ -1246,8 +1263,21 @@ class HttpPosApi implements PosApi, PosCredentialCache {
         'identifier': identifier,
         if (customerId != null) 'customer': customerId,
         if (peopleCount != null) 'people_count': peopleCount,
+        if (sellerUserId != null) 'seller_user': sellerUserId,
         'notes': notes,
       }));
+
+  @override
+  Future<AttendanceCommand> setAttendanceCommandSeller({
+    required int commandId,
+    required int sellerUserId,
+    required String idempotencyKey,
+  }) async =>
+      AttendanceCommand.fromJson(await _request(
+        'POST',
+        'commands/$commandId/seller/',
+        body: {'seller_user': sellerUserId, 'idempotency_key': idempotencyKey},
+      ));
 
   @override
   Future<List<AttendanceOrderItem>> addAttendanceItems({

@@ -2,6 +2,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from django.test import TestCase
+from django.core.exceptions import ValidationError
 
 from apps.accounts.models import User
 from apps.attendance.models import AttendanceOrderItem
@@ -223,16 +224,16 @@ class POS5AttendanceTests(TestCase):
     def test_historical_paid_command_requires_assignment_without_retroactive_commission(self):
         seller = self.seller(commission_rate=Decimal('9.00'))
         command, _ = self.open_standalone(identifier='Historical')
-        type(command).objects.filter(pk=command.pk).update(
-            seller_user=None, commission_rate_snapshot=None,
-        )
-        command.refresh_from_db()
         self.add_confirmed_item(command)
         record_payment(
             command=command, user=self.owner, payment_method_id=self.cash_method.pk,
             amount='4.00', received_amount='4.00', cash_session_id=self.cash_session.pk,
             idempotency_key=uuid4(),
         )
+        type(command).objects.filter(pk=command.pk).update(
+            seller_user=None, commission_rate_snapshot=None,
+        )
+        command.refresh_from_db()
         assigned, replayed = set_command_seller(
             command=command, user=self.owner, seller_user=seller.pk, idempotency_key=uuid4(),
         )
@@ -243,6 +244,111 @@ class POS5AttendanceTests(TestCase):
         self.assertEqual(closed.sale.seller_user_id, seller.pk)
         self.assertEqual(closed.sale.commission_rate, Decimal('0.00'))
         self.assertEqual(closed.sale.commission_amount, Decimal('0.00'))
+
+    def test_new_command_without_seller_cannot_record_first_payment(self):
+        command, _ = self.open_standalone(identifier='Missing seller')
+        type(command).objects.filter(pk=command.pk).update(seller_user=None)
+        command.refresh_from_db()
+        self.add_confirmed_item(command)
+
+        with self.assertRaises(ValidationError) as error:
+            record_payment(
+                command=command, user=self.owner, payment_method_id=self.cash_method.pk,
+                amount='4.00', received_amount='4.00', cash_session_id=self.cash_session.pk,
+                idempotency_key=uuid4(),
+            )
+
+        self.assertIn('seller_user', error.exception.message_dict)
+
+    def test_payment_idempotency_replay_remains_valid_after_seller_data_is_missing(self):
+        command, _ = self.open_standalone(identifier='Payment replay')
+        self.add_confirmed_item(command)
+        key = uuid4()
+        first = record_payment(
+            command=command, user=self.owner, payment_method_id=self.cash_method.pk,
+            amount='4.00', received_amount='4.00', cash_session_id=self.cash_session.pk,
+            idempotency_key=key,
+        )
+        type(command).objects.filter(pk=command.pk).update(seller_user=None)
+        command.refresh_from_db()
+
+        replay = record_payment(
+            command=command, user=self.owner, payment_method_id=self.cash_method.pk,
+            amount='4.00', received_amount='4.00', cash_session_id=self.cash_session.pk,
+            idempotency_key=key,
+        )
+
+        self.assertEqual(replay.pk, first.pk)
+
+    def test_historical_unpaid_command_can_be_regularized_before_payment(self):
+        seller = self.seller(commission_rate=Decimal('9.00'))
+        command, _ = self.open_standalone(identifier='Historical unpaid')
+        type(command).objects.filter(pk=command.pk).update(
+            seller_user=None, commission_rate_snapshot=None,
+        )
+        command.refresh_from_db()
+        self.add_confirmed_item(command)
+        with self.assertRaises(ValidationError):
+            record_payment(
+                command=command, user=self.owner, payment_method_id=self.cash_method.pk,
+                amount='4.00', received_amount='4.00', cash_session_id=self.cash_session.pk,
+                idempotency_key=uuid4(),
+            )
+
+        regularized, _ = set_command_seller(
+            command=command, user=self.owner, seller_user=seller.pk, idempotency_key=uuid4(),
+        )
+        record_payment(
+            command=regularized, user=self.owner, payment_method_id=self.cash_method.pk,
+            amount='4.00', received_amount='4.00', cash_session_id=self.cash_session.pk,
+            idempotency_key=uuid4(),
+        )
+        closed = self.close(regularized)
+
+        self.assertEqual(closed.sale.commission_rate, Decimal('9.00'))
+
+    def test_seller_cannot_change_after_payment_starts(self):
+        command, _ = self.open_standalone(identifier='Locked seller')
+        self.add_confirmed_item(command)
+        record_payment(
+            command=command, user=self.owner, payment_method_id=self.cash_method.pk,
+            amount='4.00', received_amount='4.00', cash_session_id=self.cash_session.pk,
+            idempotency_key=uuid4(),
+        )
+
+        with self.assertRaises(AttendanceConflict) as error:
+            set_command_seller(
+                command=command, user=self.owner, seller_user=self.seller().pk,
+                idempotency_key=uuid4(),
+            )
+
+        self.assertEqual(error.exception.code, 'command_seller_locked')
+
+    def test_first_payment_freezes_item_financial_participation(self):
+        config = ProductBranchConfig.objects.get(product=self.product, branch=self.branch)
+        config.participates_in_service_fee = True
+        config.participates_in_commission = True
+        config.save(update_fields=(
+            'participates_in_service_fee', 'participates_in_commission', 'updated_at',
+        ))
+        command, _ = self.open_standalone(identifier='Frozen participation')
+        self.add_confirmed_item(command)
+        record_payment(
+            command=command, user=self.owner, payment_method_id=self.cash_method.pk,
+            amount='4.00', received_amount='4.00', cash_session_id=self.cash_session.pk,
+            idempotency_key=uuid4(),
+        )
+        config.participates_in_service_fee = False
+        config.participates_in_commission = False
+        config.save(update_fields=(
+            'participates_in_service_fee', 'participates_in_commission', 'updated_at',
+        ))
+
+        closed = self.close(command)
+        item = closed.sale.items.get()
+
+        self.assertTrue(item.participates_in_service_fee)
+        self.assertTrue(item.participates_in_commission)
 
     def test_item_transfers_keep_history_between_standalone_commands(self):
         source, _ = self.open_standalone(identifier='Source')

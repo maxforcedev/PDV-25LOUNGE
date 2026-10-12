@@ -73,10 +73,31 @@ void main() {
               'idempotency_key': 'open-key',
               'identifier': 'Ana',
               'people_count': 2,
+              'seller_user': 3,
               'notes': 'Janela',
             });
             return http.Response(
                 jsonEncode({'id': 7, 'number': 'A000007'}), 201);
+          case '/api/v1/pos/commands/sellers/':
+            expect(request.method, 'GET');
+            return http.Response(
+                jsonEncode([
+                  {'id': 3, 'name': 'Ana Vendedora'}
+                ]),
+                200);
+          case '/api/v1/pos/commands/7/seller/':
+            expect(jsonDecode(request.body), {
+              'seller_user': 3,
+              'idempotency_key': 'seller-key',
+            });
+            return http.Response(
+                jsonEncode({
+                  'id': 7,
+                  'number': 'A000007',
+                  'seller_user': 3,
+                  'seller_user_name': 'Ana Vendedora',
+                }),
+                200);
           case '/api/v1/pos/commands/7/items/':
             expect(jsonDecode(request.body), {
               'items': [
@@ -137,9 +158,20 @@ void main() {
       idempotencyKey: 'open-key',
       identifier: 'Ana',
       peopleCount: 2,
+      sellerUserId: 3,
       notes: 'Janela',
     );
     expect(command.id, 7);
+    expect((await api.attendanceCommandSellers()).single.name, 'Ana Vendedora');
+    expect(
+      (await api.setAttendanceCommandSeller(
+        commandId: command.id,
+        sellerUserId: 3,
+        idempotencyKey: 'seller-key',
+      ))
+          .sellerUserId,
+      3,
+    );
     final items = await api.addAttendanceItems(
         commandId: command.id,
         items: [

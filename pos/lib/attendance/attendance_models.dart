@@ -398,6 +398,8 @@ class AttendanceCommand {
     this.notes = '',
     this.summary = const {},
     this.billRequestedAt,
+    this.sellerUserId,
+    this.sellerUserName = '',
   });
 
   factory AttendanceCommand.fromJson(Map<String, dynamic> json) =>
@@ -411,6 +413,8 @@ class AttendanceCommand {
         notes: json['notes'] as String? ?? '',
         summary: json['summary'] as Map<String, dynamic>? ?? const {},
         billRequestedAt: json['bill_requested_at'] as String?,
+        sellerUserId: json['seller_user'] as int?,
+        sellerUserName: json['seller_user_name'] as String? ?? '',
       );
 
   final int id;
@@ -422,10 +426,23 @@ class AttendanceCommand {
   final String notes;
   final Map<String, dynamic> summary;
   final String? billRequestedAt;
+  final int? sellerUserId;
+  final String sellerUserName;
 
   bool get billRequested => billRequestedAt != null;
 
   String get label => identifier.isEmpty ? number : identifier;
+}
+
+class AttendanceSeller {
+  const AttendanceSeller({required this.id, required this.name});
+
+  factory AttendanceSeller.fromJson(Map<String, dynamic> json) =>
+      AttendanceSeller(
+          id: json['id'] as int, name: json['name'] as String? ?? '');
+
+  final int id;
+  final String name;
 }
 
 class AttendanceCommandDetail {
