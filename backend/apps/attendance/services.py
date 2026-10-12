@@ -129,7 +129,8 @@ def open_command(*, branch, user, idempotency_key, identifier='', customer_id=No
     return command, False
 
 
-def financial_state(command, *, lock=False, discount=None, service_fee_waived=None):
+def financial_state(command, *, lock=False, discount=None, service_fee_waived=None,
+                    seller_user=None):
     items = AttendanceOrderItem.objects.filter(
         order__command=command, status=AttendanceOrderItemStatus.CONFIRMED,
     ).select_related('product__category').order_by('id')
@@ -142,6 +143,7 @@ def financial_state(command, *, lock=False, discount=None, service_fee_waived=No
             command.checkout_service_fee_waived
             if service_fee_waived is None else service_fee_waived
         ),
+        seller_user=seller_user,
         lock=lock, include_internal_snapshots=True,
     )
     payments = AttendancePayment.objects.filter(
@@ -692,6 +694,7 @@ def finalize_command(*, command, user, cash_session_id, payments, idempotency_ke
         raise ValidationError({'cash_session': 'Informe uma sessão aberta da filial.'})
     preview, paid, remaining = financial_state(
         command, lock=True, discount=discount, service_fee_waived=service_fee_waived,
+        seller_user=user,
     )
     if paid > preview['total']:
         raise AttendanceConflict('command_paid_exceeds_final_total', 'Os pagamentos parciais excedem o total final.')

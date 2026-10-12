@@ -32,6 +32,7 @@ class POS5AttendanceTests(TestCase):
                 'pos5-attendance',
                 enabled_features=(
                     'tables', 'commands', 'cash_register', 'production', 'products', 'inventory',
+                    'financial',
                 ),
             ),
         )
@@ -149,6 +150,18 @@ class POS5AttendanceTests(TestCase):
 
         self.assertEqual(command_summary(command)['paid_total'], '4.00')
         self.assertEqual(command_summary(command)['remaining_balance'], '6.00')
+
+    def test_finalized_command_uses_the_seller_commission_rate(self):
+        settings = self.branch.settings
+        settings.commission_rate = Decimal('5.00')
+        settings.save(update_fields=('commission_rate', 'updated_at'))
+        command, _ = self.open_standalone()
+        self.add_confirmed_item(command)
+
+        closed = self.close(command)
+
+        self.assertEqual(closed.sale.commission_rate, Decimal('5.00'))
+        self.assertEqual(closed.sale.commission_amount, Decimal('0.50'))
 
     def test_item_transfers_keep_history_between_standalone_commands(self):
         source, _ = self.open_standalone(identifier='Source')

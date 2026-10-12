@@ -2432,7 +2432,21 @@ def stock_requirements_for_product(product, quantity, branch, modifier_snapshot=
     })
     for row in normal_rows:
         component = row.component_product
+        if (
+            component.company_id != product.company_id
+            or component.status != Status.ACTIVE
+            or component.archived_at is not None
+            or component.inventory_behavior != InventoryBehavior.DIRECT
+        ):
+            raise ValidationError({
+                'product': f'O componente {component.name} é inválido ou está inativo.'
+            })
         consumed = row.quantity * quantity
+        rounded_consumed = consumed.quantize(Decimal('0.001'))
+        if rounded_consumed != consumed:
+            raise ValidationError({
+                'product': 'A composição gera quantidade com mais de três casas.'
+            })
         requirements[component.pk] = requirements.get(component.pk, Decimal('0')) + consumed
         cost = cost_map.get(component.pk, component.cost)
         component_snapshots.append({
@@ -2445,9 +2459,15 @@ def stock_requirements_for_product(product, quantity, branch, modifier_snapshot=
     for row in fraction_rows:
         component = row.component_product
         config = getattr(component, 'fraction_config', None)
-        if not config or not config.tracking_active:
+        if (
+            component.company_id != product.company_id
+            or component.status != Status.ACTIVE
+            or component.archived_at is not None
+            or component.inventory_behavior != InventoryBehavior.DIRECT
+            or not config or not config.tracking_active
+        ):
             raise ValidationError({
-                'product': f'O componente fracionado {component.name} não possui rastreamento ativo.'
+                'product': f'O componente fracionado {component.name} é inválido ou não possui rastreamento ativo.'
             })
         content = row.content_quantity * quantity
         content_requirements[component.pk] = content_requirements.get(component.pk, Decimal('0')) + content

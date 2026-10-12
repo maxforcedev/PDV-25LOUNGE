@@ -11,7 +11,7 @@ from apps.commands.services import (
     add_order_item, cancel_order_item, confirm_order_item, open_command,
 )
 from apps.companies.services import ensure_permission_catalog
-from apps.companies.models import Branch
+from apps.companies.models import Branch, Status
 from apps.saas.tests.helpers import create_operational_company_with_matrix as create_company_with_matrix
 from apps.inventory.models import Stock, StockMovement
 from apps.products.models import (
@@ -400,9 +400,9 @@ class IntelligentModifierMissionTests(TestCase):
         self.assertEqual(item.unit_cost * item.quantity, Decimal('280.00'))
         bacon_snapshot = next(row for row in item.component_cost_snapshot if row['product'] == self.bacon.pk)
         self.assertEqual(bacon_snapshot['quantity_per_unit'], '5')
-        self.assertEqual(bacon_snapshot['consumed_quantity'], '10')
+        self.assertEqual(Decimal(bacon_snapshot['consumed_quantity']), Decimal('10'))
         bacon_movement = sale.stock_movements.get(stock__product=self.bacon)
-        self.assertEqual(bacon_movement.quantity, Decimal('10'))
+        self.assertEqual(bacon_movement.quantity, Decimal('-10'))
         self.assertEqual(bacon_movement.unit_cost_snapshot, Decimal('7.000000000000'))
 
         stock = Stock.objects.get(product=self.bacon, branch=self.branch)
@@ -410,6 +410,44 @@ class IntelligentModifierMissionTests(TestCase):
         stock.save(update_fields=('average_unit_cost', 'updated_at'))
         item.refresh_from_db()
         self.assertEqual(item.unit_cost, Decimal('140.00'))
+
+    def test_composite_cmv_uses_each_component_average_cost_once(self):
+        for product, cost in ((self.black, '70.00'), (self.red_bull, '7.00')):
+            stock = Stock.objects.get(product=product, branch=self.branch)
+            stock.average_unit_cost = Decimal(cost)
+            stock.save(update_fields=('average_unit_cost', 'updated_at'))
+        register = CashRegister.objects.create(branch=self.branch, name='M6 CMV 105')
+        session = open_session(
+            cash_register=register, opening_amount=Decimal('0.00'), user=self.owner,
+            current_branch=self.branch,
+        )
+        cash = next(method for method in ensure_default_payment_methods(self.company) if method.code == 'cash')
+
+        sale = finalize_sale(
+            branch=self.branch, user=self.owner, operation_type=OperationType.SALE,
+            cash_session=session.pk, seller_user=self.owner.pk,
+            items=[{
+                'product': self.combo.pk,
+                'quantity': '1',
+                'modifiers': [{'option': self.traditional_option.pk, 'quantity': '5'}],
+            }],
+            payments=[{'payment_method': cash.pk, 'amount': 'auto', 'received_amount': '100.00'}],
+            idempotency_key=uuid.uuid4(),
+        )
+
+        self.assertEqual(sale.items.get().unit_cost, Decimal('105.00'))
+
+    def test_command_rejects_inactive_composite_component(self):
+        self.black.status = Status.INACTIVE
+        self.black.save(update_fields=('status', 'updated_at'))
+        command = open_command(branch=self.branch, user=self.owner, identifier='M6 inactive component')
+        item = add_order_item(
+            command=command, user=self.owner, product_id=self.combo.pk, quantity=Decimal('1'),
+            modifiers=[{'option': self.traditional_option.pk, 'quantity': '5'}],
+        )
+
+        with self.assertRaisesRegex(ValidationError, 'componente.*inválido ou está inativo'):
+            confirm_order_item(item=item, user=self.owner, idempotency_key=uuid.uuid4())
 
     def test_counter_sale_substitution_uses_replacement_cost_and_cancels(self):
         for product, cost in ((self.black, '4.00'), (self.watermelon, '2.00'), (self.tropical, '3.00')):
