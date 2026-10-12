@@ -1,5 +1,8 @@
 from datetime import timedelta
+from decimal import Decimal
 import uuid
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from django.test import TestCase
 from django.utils import timezone
@@ -15,6 +18,7 @@ from apps.production.services import (
     PHYSICAL_DISPATCH_TIMEOUT_SECONDS, claim_print_job, complete_print_job,
     expire_abandoned_print_dispatches, reconcile_print_jobs, reprint_print_job,
     retry_print_job, start_print_dispatch, test_printer_device, manual_dispatch_print_job,
+    ticket_validation_data,
 )
 
 
@@ -124,6 +128,63 @@ class POSPrintExecutorTests(TestCase):
         )
         self.assertEqual(reprint.status, PrintJobStatus.PENDING)
         self.assertEqual(reprint.reprint_of_id, uncertain.pk)
+
+    def test_reconciliation_keeps_a_proven_pre_send_failure_retryable(self):
+        failed = self._job()
+        claim_print_job(job_id=failed.pk, device=self.first)
+        start_print_dispatch(job_id=failed.pk, device=self.first)
+
+        self.assertEqual(
+            reconcile_print_jobs(device=self.first, entries=[{
+                'job_id': failed.pk,
+                'state': 'failed_before_send',
+                'printer_observed': True,
+            }]),
+            [failed.pk],
+        )
+
+        failed.refresh_from_db()
+        self.assertEqual(failed.status, PrintJobStatus.FAILED)
+        self.assertIsNone(failed.physical_dispatch_started_at)
+        self.printer.refresh_from_db()
+        self.assertEqual(self.printer.operational_status, 'online')
+        retry_print_job(job=failed, user=self.owner)
+        failed.refresh_from_db()
+        self.assertEqual(failed.status, PrintJobStatus.PENDING)
+
+    def test_ticket_validation_never_exposes_modifier_costs(self):
+        redemptions = MagicMock()
+        redemptions.aggregate.return_value = {'total': None}
+        ticket = SimpleNamespace(
+            number=1,
+            status='issued',
+            quantity=Decimal('1.000'),
+            issued_at=timezone.now(),
+            source_sale_item_id=1,
+            source_attendance_order_item_id=None,
+            source_table_order_item_id=None,
+            identification_snapshot={
+                'product_name': 'Hambúrguer',
+                'unit': 'UN',
+                'modifiers': [{
+                    'option_name': 'Bacon',
+                    'selected_quantity': '2',
+                    'stock_product_cost': '3.50',
+                    'component_cost_snapshot': {'unit_cost': '1.00'},
+                }],
+                'notes': 'Bem passado',
+            },
+            redemptions=redemptions,
+        )
+
+        data = ticket_validation_data(ticket)
+
+        self.assertEqual(data['modifiers'][0]['option_name'], 'Bacon')
+        self.assertNotIn('stock_product_cost', data['modifiers'][0])
+        self.assertNotIn('component_cost_snapshot', data['modifiers'][0])
+        self.assertEqual(
+            ticket.identification_snapshot['modifiers'][0]['stock_product_cost'], '3.50',
+        )
 
     def test_failed_after_dispatch_requires_explicit_reprint(self):
         failed = self._job()

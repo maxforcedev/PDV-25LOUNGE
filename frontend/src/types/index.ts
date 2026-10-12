@@ -712,6 +712,7 @@ export interface PrintJob {
   idempotency_key: string;
   processing_at: string | null;
   printed_at: string | null;
+  physical_dispatch_started_at: string | null;
   reprint_of: number | null;
   reprint_number: number;
   reprint_eligible: boolean;

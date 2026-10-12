@@ -8,7 +8,6 @@ import {
   Pencil,
   Plus,
   RotateCcw,
-  Send,
   Printer,
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
@@ -98,7 +97,7 @@ function jobLabel(job: PrintJob) {
 }
 
 function canRetryJob(job: PrintJob) {
-  return job.status === "failed";
+  return job.status === "failed" && !job.physical_dispatch_started_at;
 }
 
 function canReprintJob(job: PrintJob) {
@@ -172,7 +171,7 @@ export function PrintQueue({
 
   async function act(
     job: PrintJob,
-    action: "retry" | "reprint" | "manual-dispatch",
+    action: "retry" | "reprint",
   ) {
     setBusy(job.id);
     setError("");
@@ -207,7 +206,7 @@ export function PrintQueue({
       >
         <ExternalLink className="size-4" />
       </Link>
-      {canRetry && canRetryJob(job) && job.connection_type !== "network" && (
+      {canRetry && canRetryJob(job) && (
         <button
           className="icon-button"
           disabled={busy === job.id}
@@ -215,16 +214,6 @@ export function PrintQueue({
           title="Tentar novamente"
         >
           <RotateCcw className="size-4" />
-        </button>
-      )}
-      {canRetry && canRetryJob(job) && (
-        <button
-          className="icon-button"
-          disabled={busy === job.id}
-          onClick={() => void act(job, "manual-dispatch")}
-          title="Registrar despacho manual"
-        >
-          <Send className="size-4" />
         </button>
       )}
       {canReprint && canReprintJob(job) && (
@@ -724,7 +713,7 @@ export function PrintJobDetail({ id }: { id: string }) {
   useEffect(() => {
     void load();
   }, [id]);
-  async function act(action: "retry" | "reprint" | "manual-dispatch") {
+  async function act(action: "retry" | "reprint") {
     setBusy(true);
     setError("");
     try {
@@ -817,16 +806,6 @@ export function PrintJobDetail({ id }: { id: string }) {
                       Tentar novamente
                     </Button>
                   )}
-                  {canRetry && canRetryJob(job) && (
-                      <Button
-                        variant="secondary"
-                        loading={busy}
-                        onClick={() => void act("manual-dispatch")}
-                      >
-                        <Send className="size-4" />
-                        Despacho manual
-                      </Button>
-                    )}
                   {canReprint && canReprintJob(job) && (
                     <Button loading={busy} onClick={() => void act("reprint")}>
                       <Printer className="size-4" />

@@ -9,6 +9,7 @@ from django.db.models import Max, Sum
 from django.utils import timezone
 
 from apps.base.audit import audit_log
+from apps.base.cost_visibility import redact_cost_payload
 from apps.base.exceptions import DomainValidationError
 from apps.companies.models import Company, Status
 from apps.products.models import ProductProductionDestination
@@ -910,7 +911,9 @@ def ticket_validation_data(ticket):
     redeemed = _redeemed_quantity(ticket)
     cancelled = ticket.status == TicketStatus.CANCELLED
     remaining = Decimal('0.000') if cancelled else ticket.quantity - redeemed
-    snapshot = ticket.identification_snapshot or {}
+    # POS ticket validation is operational only; preserve the stored snapshot
+    # while never disclosing internal inventory costs to an operator.
+    snapshot = redact_cost_payload(ticket.identification_snapshot or {}, include_costs=False)
     return {
         'number': ticket.number,
         'status': ticket.status,
@@ -1226,11 +1229,16 @@ def complete_print_job(*, job_id, device, outcome, error='', metadata=None):
             item.printed_at = now
         item.save(update_fields=('status', 'last_error', 'executor_metadata', 'lease_until',
                                  'physical_dispatch_started_at', 'printed_at', 'updated_at'))
+        printer_observed = bool((metadata or {}).get('printer_observed'))
         _record_printer_observation(
             item,
-            status=PrinterOperationalStatus.ONLINE if status == PrintJobStatus.PRINTED else PrinterOperationalStatus.OFFLINE if item.is_test else PrinterOperationalStatus.FAILED,
+            status=(
+                PrinterOperationalStatus.ONLINE
+                if status == PrintJobStatus.PRINTED or printer_observed
+                else PrinterOperationalStatus.OFFLINE if item.is_test else PrinterOperationalStatus.FAILED
+            ),
             error=item.last_error,
-            observed=status == PrintJobStatus.PRINTED or bool((metadata or {}).get('printer_observed')),
+            observed=status == PrintJobStatus.PRINTED or printer_observed,
         )
         audit_log(actor=None, action=f'print_job.{outcome}', obj=item, company=item.company, branch=item.branch,
                   metadata={
@@ -1292,6 +1300,7 @@ def reconcile_print_jobs(*, device, entries):
                 metadata={
                     'reconciled': True,
                     'printer_observed': entry.get('printer_observed') is True,
+                    'failed_before_send': state == 'failed_before_send',
                 },
             )
         except ValueError:
