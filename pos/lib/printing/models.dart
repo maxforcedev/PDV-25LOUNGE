@@ -71,8 +71,8 @@ class PrintDocumentResult {
     final rawDocument = json['document'] is Map
         ? json['document'] as Map
         : json['print_document'] is Map
-             ? json['print_document'] as Map
-             : json;
+            ? json['print_document'] as Map
+            : json;
     final document = Map<String, dynamic>.from(rawDocument);
     final jobs = document['print_jobs'] is List
         ? document['print_jobs'] as List
@@ -82,26 +82,34 @@ class PrintDocumentResult {
     final initialJobs =
         jobs.whereType<Map>().where((job) => job['reprint_of'] == null);
     final initialPrinted = document['initial_printed'] == true ||
-        (initialJobs.isNotEmpty && initialJobs.every((job) => job['status'] == 'printed'));
-    final retryEligible = document['retry_eligible'] == true || initialJobs.any((job) =>
-        job['status'] == 'failed' && job['physical_dispatch_started_at'] == null);
-    final queued = !retryEligible && (document['queued'] == true || initialJobs.any((job) =>
-        job['status'] == 'pending' || job['status'] == 'processing'));
-    final reprintEligible = !retryEligible && !queued &&
-        initialJobs.isNotEmpty && initialJobs.every((job) =>
+        (initialJobs.isNotEmpty &&
+            initialJobs.every((job) => job['status'] == 'printed'));
+    final retryEligible = document['retry_eligible'] == true ||
+        initialJobs.any((job) =>
+            job['status'] == 'failed' &&
+            job['physical_dispatch_started_at'] == null);
+    final queued = !retryEligible &&
+        (document['queued'] == true ||
+            initialJobs.any((job) =>
+                job['status'] == 'pending' || job['status'] == 'processing'));
+    final reprintEligible = !retryEligible &&
+        !queued &&
+        initialJobs.isNotEmpty &&
+        initialJobs.every((job) =>
             job['status'] == 'printed' || job['status'] == 'uncertain');
-    final reprintNumbers = jobs.whereType<Map>().map(
-        (job) => (job['reprint_number'] as num?)?.toInt() ?? 0);
+    final reprintNumbers = jobs
+        .whereType<Map>()
+        .map((job) => (job['reprint_number'] as num?)?.toInt() ?? 0);
     return PrintDocumentResult(
       id: document['id']?.toString(),
       documentType: PrintDocumentType.fromApiValue(
           document['document_type'] ?? json['document_type']),
       reprintNumber: (document['reprint_number'] as num?)?.toInt() ??
           (json['reprint_number'] as num?)?.toInt() ??
-           (reprintNumbers.isEmpty
-               ? 0
-               : reprintNumbers.reduce((current, next) =>
-                   current > next ? current : next)),
+          (reprintNumbers.isEmpty
+              ? 0
+              : reprintNumbers
+                  .reduce((current, next) => current > next ? current : next)),
       initialPrinted: initialPrinted,
       reprintEligible: reprintEligible,
       retryEligible: retryEligible,
@@ -110,7 +118,8 @@ class PrintDocumentResult {
   }
 
   static PrintDocumentResult? maybeFromJson(Object? value) {
-    if (value is Map) return PrintDocumentResult.fromJson(Map<String, dynamic>.from(value));
+    if (value is Map)
+      return PrintDocumentResult.fromJson(Map<String, dynamic>.from(value));
     if (value is num || value is String) {
       final id = value.toString();
       return id.isEmpty ? null : PrintDocumentResult(id: id);
@@ -145,14 +154,15 @@ class PrintJob {
     required this.idempotencyKey,
     required this.isTest,
     required this.status,
+    this.attempts = 0,
     required this.reprintNumber,
     this.documentType,
     this.documentId,
   });
 
   factory PrintJob.fromJson(Map<String, dynamic> json) {
-    final payload = Map<String, dynamic>.from(
-        json['payload_snapshot'] as Map? ?? const {});
+    final payload =
+        Map<String, dynamic>.from(json['payload_snapshot'] as Map? ?? const {});
     final documentSnapshot = json['document_snapshot'] as Map?;
     if (documentSnapshot != null && documentSnapshot.isNotEmpty) {
       payload['snapshot'] = Map<String, dynamic>.from(documentSnapshot);
@@ -161,11 +171,11 @@ class PrintJob {
         ? json['print_document'] as Map
         : json['document'] is Map
             ? json['document'] as Map
-        : payload['print_document'] is Map
-            ? payload['print_document'] as Map
-            : payload['document'] is Map
-                ? payload['document'] as Map
-                : const {};
+            : payload['print_document'] is Map
+                ? payload['print_document'] as Map
+                : payload['document'] is Map
+                    ? payload['document'] as Map
+                    : const {};
     final document = Map<String, dynamic>.from(rawDocument);
     return PrintJob(
       id: json['id'] as int,
@@ -174,11 +184,11 @@ class PrintJob {
       idempotencyKey: json['idempotency_key'].toString(),
       isTest: json['is_test'] == true,
       status: json['status'] as String? ?? 'pending',
+      attempts: (json['attempts'] as num?)?.toInt() ?? 0,
       reprintNumber: (json['reprint_number'] as num?)?.toInt() ?? 0,
-      documentType: PrintDocumentType.fromApiValue(
-          json['document_type'] ??
-              document['document_type'] ??
-              payload['document_type']),
+      documentType: PrintDocumentType.fromApiValue(json['document_type'] ??
+          document['document_type'] ??
+          payload['document_type']),
       documentId: (json['print_document'] is num
               ? json['print_document']
               : json['print_document'] is String
@@ -196,6 +206,7 @@ class PrintJob {
   final String idempotencyKey;
   final bool isTest;
   final String status;
+  final int attempts;
   final int reprintNumber;
   final PrintDocumentType? documentType;
   final String? documentId;

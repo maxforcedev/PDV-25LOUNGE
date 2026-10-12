@@ -37,6 +37,7 @@ void main() {
       jobId: 10,
       printerId: 2,
       idempotencyKey: 'stable',
+      attempt: 1,
       state: 'sent',
       printerObserved: true,
     ));
@@ -44,6 +45,7 @@ void main() {
     expect(recovered.single.jobId, 10);
     expect(recovered.single.state, 'sent');
     expect(recovered.single.printerObserved, isTrue);
+    expect(recovered.single.attempt, 1);
   });
 
   test('ledger preserves an attempted job for safe reconciliation', () async {

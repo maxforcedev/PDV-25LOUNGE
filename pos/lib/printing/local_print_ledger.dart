@@ -7,6 +7,7 @@ class PrintLedgerEntry {
     required this.jobId,
     required this.printerId,
     required this.idempotencyKey,
+    this.attempt = 0,
     required this.state,
     this.printerObserved = false,
     this.attemptedAt,
@@ -19,6 +20,7 @@ class PrintLedgerEntry {
         jobId: json['job_id'] as int,
         printerId: json['printer_id'] as int,
         idempotencyKey: json['idempotency_key'] as String? ?? '',
+        attempt: json['attempt'] as int? ?? 0,
         state: json['state'] as String? ?? 'attempted',
         printerObserved: json['printer_observed'] == true,
         attemptedAt: json['attempted_at'] as String?,
@@ -29,6 +31,7 @@ class PrintLedgerEntry {
   final int jobId;
   final int printerId;
   final String idempotencyKey;
+  final int attempt;
   final String state;
   final bool printerObserved;
   final String? attemptedAt;
@@ -39,6 +42,7 @@ class PrintLedgerEntry {
         'job_id': jobId,
         'printer_id': printerId,
         'idempotency_key': idempotencyKey,
+        'attempt': attempt,
         'state': state,
         'printer_observed': printerObserved,
         'attempted_at': attemptedAt,
@@ -77,8 +81,10 @@ class LocalPrintLedger {
       jobId: entry.jobId,
       printerId: entry.printerId,
       idempotencyKey: entry.idempotencyKey,
+      attempt: entry.attempt,
       state: entry.state,
-      printerObserved: entry.printerObserved || previous?.printerObserved == true,
+      printerObserved:
+          entry.printerObserved || previous?.printerObserved == true,
       attemptedAt: entry.attemptedAt ?? previous?.attemptedAt ?? now,
       sentAt: entry.sentAt ??
           previous?.sentAt ??

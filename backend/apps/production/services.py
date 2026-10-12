@@ -1253,6 +1253,12 @@ def complete_print_job(*, job_id, device, outcome, error='', metadata=None):
 def reconcile_print_jobs(*, device, entries):
     expire_abandoned_print_dispatches(branch=device.branch)
     reconciled = []
+    entries_by_job_id = {
+        entry.get('job_id'): entry
+        for entry in entries
+        if isinstance(entry.get('job_id'), int)
+    }
+    handled_batches = set()
     for entry in entries:
         job_id = entry.get('job_id')
         state = entry.get('state')
@@ -1261,6 +1267,51 @@ def reconcile_print_jobs(*, device, entries):
         job = PrintJob.objects.filter(pk=job_id, branch=device.branch).first()
         if not job:
             continue
+        batch_identity = job.batch_key or job.pk
+        if batch_identity in handled_batches:
+            continue
+        if state == 'failed_before_send' and job.status == PrintJobStatus.UNCERTAIN:
+            jobs = list(_claimed_batch(job=job, device=device).select_related('printer_device'))
+            if jobs and all(
+                item.status == PrintJobStatus.UNCERTAIN
+                and item.claimed_by_id == device.pk
+                and item.physical_dispatch_started_at is not None
+                and str(entries_by_job_id.get(item.pk, {}).get('idempotency_key', ''))
+                    == str(item.idempotency_key)
+                and entries_by_job_id.get(item.pk, {}).get('attempt') == item.attempts
+                and entries_by_job_id.get(item.pk, {}).get('state') == 'failed_before_send'
+                for item in jobs
+            ):
+                observed = any(
+                    entries_by_job_id[item.pk].get('printer_observed') is True
+                    for item in jobs
+                )
+                for item in jobs:
+                    item.status = PrintJobStatus.FAILED
+                    item.lease_until = None
+                    item.physical_dispatch_started_at = None
+                    item.last_error = 'Falha antes do envio físico confirmada na reconciliação.'
+                    item.executor_metadata = {
+                        'device_id': str(device.pk), 'reconciled': True,
+                        'failed_before_send': True, 'attempt': item.attempts,
+                    }
+                    item.save(update_fields=(
+                        'status', 'lease_until', 'physical_dispatch_started_at',
+                        'last_error', 'executor_metadata', 'updated_at',
+                    ))
+                    _record_printer_observation(
+                        item,
+                        status=PrinterOperationalStatus.ONLINE if observed else PrinterOperationalStatus.FAILED,
+                        error=item.last_error, observed=observed,
+                    )
+                    audit_log(
+                        actor=None, action='print_job.recovered_pre_send_failure', obj=item,
+                        company=item.company, branch=item.branch,
+                        metadata={'device_id': str(device.pk), 'attempt': item.attempts},
+                    )
+                    reconciled.append(item.pk)
+                handled_batches.add(batch_identity)
+                continue
         terminal_statuses = {
             'acknowledged': (PrintJobStatus.PRINTED,),
             'sent': (PrintJobStatus.PRINTED, PrintJobStatus.UNCERTAIN),

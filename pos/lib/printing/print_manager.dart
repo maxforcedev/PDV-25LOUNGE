@@ -116,6 +116,8 @@ class PrintManager with WidgetsBindingObserver {
         for (final entry in reconcilable)
           {
             'job_id': entry.jobId,
+            'idempotency_key': entry.idempotencyKey,
+            'attempt': entry.attempt,
             'state': entry.state,
             'printer_observed': entry.printerObserved,
           },
@@ -132,6 +134,7 @@ class PrintManager with WidgetsBindingObserver {
         jobId: job.id,
         printerId: job.printerId,
         idempotencyKey: job.idempotencyKey,
+        attempt: job.attempts,
         state: 'attempted',
       ));
     }
@@ -148,6 +151,7 @@ class PrintManager with WidgetsBindingObserver {
           jobId: job.id,
           printerId: job.printerId,
           idempotencyKey: job.idempotencyKey,
+          attempt: job.attempts,
           state: 'failed_before_send',
           printerObserved: result.printerObserved,
         ));
@@ -168,6 +172,7 @@ class PrintManager with WidgetsBindingObserver {
         jobId: job.id,
         printerId: job.printerId,
         idempotencyKey: job.idempotencyKey,
+        attempt: job.attempts,
         state: 'sent',
         printerObserved: result.printerObserved,
       ));

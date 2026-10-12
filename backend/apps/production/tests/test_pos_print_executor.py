@@ -319,6 +319,79 @@ class POSPrintExecutorTests(TestCase):
             {PrintJobStatus.UNCERTAIN},
         )
 
+    def test_late_pre_send_reconciliation_recovers_only_the_original_attempt(self):
+        job = self._job()
+        claim_print_job(job_id=job.pk, device=self.first)
+        start_print_dispatch(job_id=job.pk, device=self.first)
+        job.refresh_from_db()
+        PrintJob.objects.filter(pk=job.pk).update(
+            physical_dispatch_started_at=timezone.now() - timedelta(
+                seconds=PHYSICAL_DISPATCH_TIMEOUT_SECONDS + 1,
+            ),
+        )
+
+        self.assertEqual(
+            reconcile_print_jobs(device=self.first, entries=[{
+                'job_id': job.pk,
+                'idempotency_key': str(job.idempotency_key),
+                'attempt': job.attempts,
+                'state': 'failed_before_send',
+            }]),
+            [job.pk],
+        )
+        job.refresh_from_db()
+        self.assertEqual(job.status, PrintJobStatus.FAILED)
+        self.assertIsNone(job.physical_dispatch_started_at)
+        retry_print_job(job=job, user=self.owner)
+
+        stale = self._job()
+        claim_print_job(job_id=stale.pk, device=self.first)
+        start_print_dispatch(job_id=stale.pk, device=self.first)
+        stale.refresh_from_db()
+        PrintJob.objects.filter(pk=stale.pk).update(
+            physical_dispatch_started_at=timezone.now() - timedelta(
+                seconds=PHYSICAL_DISPATCH_TIMEOUT_SECONDS + 1,
+            ),
+        )
+        self.assertEqual(
+            reconcile_print_jobs(device=self.first, entries=[{
+                'job_id': stale.pk,
+                'idempotency_key': str(stale.idempotency_key),
+                'attempt': stale.attempts + 1,
+                'state': 'failed_before_send',
+            }]),
+            [],
+        )
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, PrintJobStatus.UNCERTAIN)
+        with self.assertRaises(ValueError):
+            retry_print_job(job=stale, user=self.owner)
+
+    def test_late_sent_reconciliation_remains_uncertain(self):
+        job = self._job()
+        claim_print_job(job_id=job.pk, device=self.first)
+        start_print_dispatch(job_id=job.pk, device=self.first)
+        job.refresh_from_db()
+        PrintJob.objects.filter(pk=job.pk).update(
+            physical_dispatch_started_at=timezone.now() - timedelta(
+                seconds=PHYSICAL_DISPATCH_TIMEOUT_SECONDS + 1,
+            ),
+        )
+
+        self.assertEqual(
+            reconcile_print_jobs(device=self.first, entries=[{
+                'job_id': job.pk,
+                'idempotency_key': str(job.idempotency_key),
+                'attempt': job.attempts,
+                'state': 'sent',
+            }]),
+            [job.pk],
+        )
+        job.refresh_from_db()
+        self.assertEqual(job.status, PrintJobStatus.UNCERTAIN)
+        with self.assertRaises(ValueError):
+            retry_print_job(job=job, user=self.owner)
+
     def test_failed_connection_does_not_claim_the_printer_was_seen(self):
         job = self._job()
         claim_print_job(job_id=job.pk, device=self.first)
