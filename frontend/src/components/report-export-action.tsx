@@ -1,13 +1,22 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, Download } from "lucide-react";
+import { ChevronDown, Download, FileSpreadsheet, FileText } from "lucide-react";
 import { http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
-import { Button } from "@/components/ui";
 
-type ExportFormat = "pdf" | "csv" | "xlsx";
+type ExportOption =
+  | { format: "pdf"; mode: "executive"; label: string }
+  | { format: "pdf"; mode: "detailed"; label: string }
+  | { format: "xlsx" | "csv"; label: string };
+
+const exportOptions: ExportOption[] = [
+  { format: "pdf", mode: "executive", label: "PDF - Resumo executivo" },
+  { format: "pdf", mode: "detailed", label: "PDF - Relatório detalhado" },
+  { format: "xlsx", label: "Excel - Dados completos" },
+  { format: "csv", label: "CSV - Dados completos" },
+];
 
 export function ReportExportAction({
   path,
@@ -22,12 +31,14 @@ export function ReportExportAction({
 
   if (!hasPermission(permissions.exportReports)) return null;
 
-  async function download(format: ExportFormat) {
+  async function download(option: ExportOption) {
     setDownloading(true);
     setStatus("Preparando relatório...");
     try {
       const exportQuery = new URLSearchParams(query);
-      exportQuery.set("export", format);
+      exportQuery.set("export", option.format);
+      if (option.format === "pdf") exportQuery.set("pdf_mode", option.mode);
+      else exportQuery.delete("pdf_mode");
       const { blob, filename } = await http.download(
         `${path}?${exportQuery.toString()}`,
       );
@@ -64,12 +75,13 @@ export function ReportExportAction({
           <ChevronDown className="size-4" />
         </summary>
         <div className="absolute right-0 z-20 mt-2 min-w-40 overflow-hidden rounded-lg border border-subtle bg-surface p-1 shadow-lg">
-          {(["xlsx", "pdf", "csv"] as ExportFormat[]).map((format) => (
-            <button key={format} type="button" disabled={downloading} className="flex w-full items-center rounded-md px-3 py-2 text-left text-xs font-semibold text-fg hover:bg-surface-muted disabled:opacity-50" onClick={(event) => {
+          {exportOptions.map((option) => (
+            <button key={`${option.format}-${"mode" in option ? option.mode : "full"}`} type="button" disabled={downloading} className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs font-semibold text-fg hover:bg-surface-muted disabled:opacity-50" onClick={(event) => {
               event.currentTarget.closest("details")?.removeAttribute("open");
-              void download(format);
+              void download(option);
             }}>
-              {format === "xlsx" ? "Excel (.xlsx)" : format.toUpperCase()}
+              {option.format === "pdf" ? <FileText className="size-4 text-danger" /> : <FileSpreadsheet className="size-4 text-success" />}
+              {option.label}
             </button>
           ))}
         </div>

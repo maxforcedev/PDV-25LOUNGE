@@ -642,7 +642,9 @@ class BaseReportView(APIView):
         )
         serializer.is_valid(raise_exception=True)
         start, end = parse_datetime_range(request.query_params, required=True)
-        return serializer.validated_data, start, end
+        data = dict(serializer.validated_data)
+        data.pop('pdf_mode', None)
+        return data, start, end
 
     def serialize_rows(self, rows, request):
         return self.row_serializer_class(rows, many=True, context={'request': request}).data

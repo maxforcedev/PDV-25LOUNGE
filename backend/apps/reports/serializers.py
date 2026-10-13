@@ -36,6 +36,7 @@ class BaseReportQuerySerializer(serializers.Serializer):
     start_datetime = serializers.CharField(max_length=64, required=False)
     end_datetime = serializers.CharField(max_length=64, required=False)
     export = serializers.ChoiceField(choices=('csv', 'xlsx', 'pdf'), required=False)
+    pdf_mode = serializers.ChoiceField(choices=('executive', 'detailed'), required=False)
     page = serializers.IntegerField(min_value=1, max_value=MAX_BIGINT, required=False)
     page_size = serializers.IntegerField(min_value=1, max_value=200, required=False)
 
