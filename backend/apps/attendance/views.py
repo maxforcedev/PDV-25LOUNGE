@@ -23,6 +23,28 @@ from .services import (
 )
 
 
+_PAYMENT_DERIVED_RESULT_FIELDS = {
+    'paid_total', 'remaining_balance', 'payment_exceeds_total',
+}
+
+
+def _can_view_command_payments(request, branch):
+    support_can_view = support_permission_decision(request, branch_id=branch.pk)
+    return bool(
+        support_can_view or request.user.is_superuser
+        or user_has_branch_permission(request.user, branch.pk, 'commands.payments.view')
+    )
+
+
+def _redact_payment_derived_result(result, *, payments_visible):
+    if payments_visible:
+        return result
+    return {
+        key: value for key, value in result.items()
+        if key not in _PAYMENT_DERIVED_RESULT_FIELDS
+    }
+
+
 class AttendanceLegacyServiceFeeRegularizationsView(APIView):
     permission_classes = [CommandFunctionalPermission]
     action = 'legacy_service_fee_regularizations'
@@ -64,7 +86,10 @@ class AttendanceCommandServiceFeeRegularizationView(APIView):
             )
         except AttendanceConflict as error:
             return Response({'code': error.code, 'detail': error.message}, status=409)
-        response = Response(AttendanceLegacyServiceFeeRegularizationSerializer(command).data)
+        data = AttendanceLegacyServiceFeeRegularizationSerializer(command).data
+        if not _can_view_command_payments(request, branch):
+            data.pop('payment_count', None)
+        response = Response(data)
         if replayed:
             response['Idempotency-Replayed'] = 'true'
         return response
@@ -86,13 +111,12 @@ class AttendanceCommandFinancialRegularizationView(APIView):
             'promotion_benefit', 'manual_discount_intent', 'manual_discount', 'net_subtotal',
             'participates_in_service_fee', 'participates_in_commission',
         )
-        support_can_view = support_permission_decision(request, branch_id=branch.pk)
-        payments_visible = bool(
-            support_can_view or request.user.is_superuser
-            or user_has_branch_permission(request.user, branch.pk, 'commands.payments.view')
-        )
+        payments_visible = _can_view_command_payments(request, branch)
+        command_data = AttendanceLegacyServiceFeeRegularizationSerializer(command).data
+        if not payments_visible:
+            command_data.pop('payment_count', None)
         return Response({
-            'command': AttendanceLegacyServiceFeeRegularizationSerializer(command).data,
+            'command': command_data,
             'financial_status': command_financial_status(command, confirmed),
             'service_fee_rate_regularization_required': command.service_fee_rate_snapshot is None,
             'items': [{
@@ -128,6 +152,7 @@ class AttendanceCommandItemFinancialRegularizationView(APIView):
         except AttendanceConflict as error:
             return Response({'code': error.code, 'detail': error.message}, status=409)
         support_can_view = support_permission_decision(request, branch_id=branch.pk)
+        payments_visible = _can_view_command_payments(request, branch)
         if not (support_can_view or request.user.is_superuser or user_has_branch_permission(
             request.user, branch.pk, 'commissions.view',
         )):
@@ -135,6 +160,7 @@ class AttendanceCommandItemFinancialRegularizationView(APIView):
                 key: value for key, value in result.items()
                 if key not in {'commission_rate', 'commission_amount'}
             }
+        result = _redact_payment_derived_result(result, payments_visible=payments_visible)
         response = Response(result)
         if replayed:
             response['Idempotency-Replayed'] = 'true'
