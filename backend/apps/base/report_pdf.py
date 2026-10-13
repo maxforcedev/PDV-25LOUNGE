@@ -51,6 +51,7 @@ CURRENCY_KEYS = {
     'change_amount', 'applied_total', 'received_total', 'change_total',
     'net_subtotal', 'subtotal', 'unit_price', 'modifier_unit_total', 'contribution',
     'average_unit_cost', 'last_unit_cost',
+    'reconciliation_delta', 'payment_reconciliation_delta',
 }
 PERCENT_TERMS = ('percent', 'percentage', 'participation', 'rate')
 PERCENT_KEYS = {'margin_percent', 'margin_percentage', 'commission_rate'}
@@ -184,6 +185,9 @@ def _label(key):
         'additional_price': 'Adicional unitário',
         'selected_quantity': 'Quantidade selecionada',
         'contribution': 'Valor adicional',
+        'direct_quantity': 'Venda direta',
+        'modifier_quantity': 'Como modificador',
+        'consolidated_quantity': 'Total consolidado',
     }
     if key in special:
         return special[key]
@@ -315,14 +319,15 @@ def _styles():
         'subtitle': ParagraphStyle('CoreReportSubtitle', parent=source['Normal'], fontSize=9, leading=13, textColor=CORE_MUTED, spaceAfter=12),
         'section': ParagraphStyle('CoreReportSection', parent=source['Heading2'], fontName='Helvetica-Bold', fontSize=12, leading=16, textColor=CORE_DARK, spaceBefore=15, spaceAfter=7, keepWithNext=True),
         'section_note': ParagraphStyle('CoreReportSectionNote', parent=source['Normal'], fontSize=8, leading=10, textColor=CORE_MUTED, alignment=2),
-        'body': ParagraphStyle('CoreReportBody', parent=source['BodyText'], fontSize=8.6, leading=11.5, textColor=CORE_DARK, wordWrap='CJK', splitLongWords=1),
-        'small': ParagraphStyle('CoreReportSmall', parent=source['BodyText'], fontSize=7.5, leading=9.5, textColor=CORE_DARK, wordWrap='CJK', splitLongWords=1),
-        'right': ParagraphStyle('CoreReportRight', parent=source['BodyText'], fontSize=8.6, leading=11.5, textColor=CORE_DARK, alignment=2, wordWrap='CJK', splitLongWords=1),
+        'body': ParagraphStyle('CoreReportBody', parent=source['BodyText'], fontSize=8.6, leading=11.5, textColor=CORE_DARK, wordWrap='LTR', splitLongWords=0),
+        'small': ParagraphStyle('CoreReportSmall', parent=source['BodyText'], fontSize=7.5, leading=9.5, textColor=CORE_DARK, wordWrap='LTR', splitLongWords=0),
+        'right': ParagraphStyle('CoreReportRight', parent=source['BodyText'], fontSize=8.6, leading=11.5, textColor=CORE_DARK, alignment=2, wordWrap='LTR', splitLongWords=0),
         'table_header': ParagraphStyle('CoreReportTableHeader', parent=source['BodyText'], fontName='Helvetica-Bold', fontSize=7.5, leading=9, textColor=CORE_DARK),
         'table_header_light': ParagraphStyle('CoreReportTableHeaderLight', parent=source['BodyText'], fontName='Helvetica-Bold', fontSize=7.5, leading=9, textColor=colors.white),
         'card_label': ParagraphStyle('CoreReportCardLabel', parent=source['BodyText'], fontName='Helvetica-Bold', fontSize=7.2, leading=9, textColor=CORE_MUTED),
         'card_value': ParagraphStyle('CoreReportCardValue', parent=source['BodyText'], fontName='Helvetica-Bold', fontSize=15, leading=18, textColor=CORE_DARK),
         'card_note': ParagraphStyle('CoreReportCardNote', parent=source['BodyText'], fontSize=7.3, leading=9, textColor=CORE_MUTED),
+        'record_title': ParagraphStyle('CoreReportRecordTitle', parent=source['Heading3'], fontName='Helvetica-Bold', fontSize=10, leading=13, textColor=CORE_DARK, spaceBefore=9, spaceAfter=4, keepWithNext=True),
     }
 
 
@@ -601,10 +606,60 @@ def _table_widths(document, headers, rows):
     return [document.width * weight / total for weight in weights]
 
 
+def _record_table(document, headers, rows, styles):
+    """Present wide rows as labeled field pairs instead of unusable columns."""
+    content = []
+    spans = []
+    for index, row in enumerate(rows, 1):
+        identity = (
+            row.get('sale_number') or row.get('operation_number') or row.get('record')
+            or row.get('name') or f'Registro {index}'
+        )
+        start = len(content)
+        content.append([_paragraph(str(identity), styles['table_header']), '', '', ''])
+        spans.append(('SPAN', (0, start), (-1, start)))
+        fields = [key for key in headers if row.get(key) not in (None, '', [], {})]
+        for offset in range(0, len(fields), 2):
+            left = fields[offset]
+            right = fields[offset + 1] if offset + 1 < len(fields) else None
+            cells = [
+                _paragraph(_label(left), styles['small']),
+                _paragraph(pdf_value(row.get(left), left, row=row), styles['body']),
+            ]
+            if right:
+                cells.extend((
+                    _paragraph(_label(right), styles['small']),
+                    _paragraph(pdf_value(row.get(right), right, row=row), styles['body']),
+                ))
+            else:
+                cells.extend(('', ''))
+            content.append(cells)
+    if not content:
+        return None
+    table = LongTable(
+        content, colWidths=[document.width * .16, document.width * .34] * 2,
+        splitByRow=1, splitInRow=0, hAlign='LEFT',
+    )
+    table.setStyle(TableStyle([
+        *spans,
+        ('BACKGROUND', (0, 0), (-1, -1), colors.white),
+        ('BACKGROUND', (0, 0), (-1, 0), CORE_PALE),
+        ('LINEBELOW', (0, 0), (-1, -1), .25, CORE_BORDER),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+    ]))
+    return table
+
+
 def report_table(document, headers, rows, styles, *, status_column=None, emphasize_last=False,
                  dark_header=False, quantity_units=None):
     if not headers:
         return None
+    if len(headers) > 6:
+        return _record_table(document, headers, rows, styles)
     header_style = styles['table_header_light'] if dark_header else styles['table_header']
     quantity_units = quantity_units or {}
     content = [[_paragraph(_label(key).upper(), header_style) for key in headers]]
@@ -891,9 +946,19 @@ def _executive_story(story, document, styles, kind, summary, rows):
                 _timeline_chart(timeline, document.width - 16, weekly_comparison.get('previous')),
                 document.width,
             ))
+        consumption = sales.get('product_consumption')
         ranking_key, ranking = _ranking_rows(sales)
-        if ranking:
-            story.append(_section_heading('Produtos em destaque' if 'product' in ranking_key else _label(ranking_key), styles))
+        if isinstance(consumption, list) and consumption:
+            _table_section(
+                story, document, styles, 'Produtos em destaque · consumo consolidado',
+                ('product_name', 'direct_quantity', 'modifier_quantity', 'consolidated_quantity', 'unit'),
+                consumption, note='Venda direta + modificadores elegíveis',
+            )
+        elif ranking:
+            story.append(_section_heading(
+                'Produtos em destaque · vendas diretas' if 'product' in ranking_key else _label(ranking_key),
+                styles,
+            ))
             value_key = 'quantity' if any('quantity' in row for row in ranking) else 'sales_revenue'
             story.append(_RoundedPanel(
                 _bar_chart(ranking, width=document.width - 16, title_key='product_name' if 'product' in ranking_key else 'name', value_key=value_key, max_items=5),
@@ -1018,7 +1083,203 @@ def _related_details(story, document, styles, headers, rows, kind):
     return bool(grouped)
 
 
+def _summary_audit_rows(data, prefix=''):
+    rows = []
+    for key, value in (data or {}).items():
+        label = f'{prefix} · {_label(key)}' if prefix else _label(key)
+        if isinstance(value, Mapping):
+            rows.extend(_summary_audit_rows(value, label))
+        elif not isinstance(value, (list, tuple)):
+            rows.append({'indicator': label, 'value': value, '__report_key': key})
+    return rows
+
+
+def _sale_fact_table(document, styles, facts):
+    cells = []
+    for label, key, value in facts:
+        if value in (None, ''):
+            continue
+        cells.append([
+            _paragraph(label.upper(), styles['card_label']),
+            _paragraph(pdf_value(value, key), styles['body']),
+        ])
+    if not cells:
+        return None
+    rows = []
+    for offset in range(0, len(cells), 2):
+        row = cells[offset] + (cells[offset + 1] if offset + 1 < len(cells) else ['', ''])
+        rows.append(row)
+    return Table(rows, colWidths=[document.width * .14, document.width * .36] * 2, style=TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#FAFBFE')),
+        ('BOX', (0, 0), (-1, -1), .45, CORE_BORDER),
+        ('INNERGRID', (0, 0), (-1, -1), .25, CORE_BORDER),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('TOPPADDING', (0, 0), (-1, -1), 5),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+    ]))
+
+
+def _sale_detail_blocks(story, document, styles, headers, rows, sample_label):
+    story.append(_section_heading(
+        'Vendas detalhadas', styles, sample_label or 'Operações e pagamentos vinculados',
+    ))
+    if not rows:
+        story.append(_paragraph('Sem registros para os filtros selecionados.', styles['body']))
+        return
+    displayed = {
+        'event_at', 'created_at', 'sale_number', 'status', 'channel', 'operator', 'seller',
+        'subtotal', 'promotion_discount_total', 'item_discount_total', 'discount',
+        'sales_revenue', 'service_fee', 'total_received', 'payment_total', 'items', 'payments',
+    }
+    for index, sale in enumerate(rows, 1):
+        if not isinstance(sale, Mapping):
+            continue
+        number = sale.get('sale_number') or sale.get('operation_number') or f'Registro {index}'
+        occurred_at = sale.get('event_at') or sale.get('created_at')
+        title = f'Venda {number}'
+        if occurred_at:
+            title = f'{title} · {pdf_value(occurred_at, "event_at")}'
+        story.append(_paragraph(title, styles['record_title']))
+        discount_keys = ('promotion_discount_total', 'item_discount_total', 'discount')
+        total_discount = (
+            sum((_decimal(sale.get(key)) or Decimal('0.00')) for key in discount_keys)
+            if any(sale.get(key) not in (None, '') for key in discount_keys) else None
+        )
+        facts = _sale_fact_table(document, styles, (
+            ('Situação', 'status', sale.get('status')),
+            ('Canal', 'channel', sale.get('channel')),
+            ('Operador', 'operator', sale.get('operator')),
+            ('Vendedor', 'seller', sale.get('seller')),
+            ('Total', 'total_received', sale.get('total_received')),
+            ('Faturamento', 'sales_revenue', sale.get('sales_revenue')),
+            ('Descontos', 'total_discount', total_discount),
+            ('Taxa de serviço', 'service_fee', sale.get('service_fee')),
+            ('Pagamentos', 'payment_total', sale.get('payment_total')),
+        ))
+        if facts:
+            story.append(facts)
+        items = sale.get('items') or []
+        if items:
+            story.append(_paragraph('Itens da venda', styles['record_title']))
+            item_rows = []
+            for item in items:
+                if not isinstance(item, Mapping):
+                    continue
+                item_rows.append({
+                    'product_name': item.get('product_name') or item.get('product'),
+                    'quantity': item.get('quantity'), 'unit': item.get('unit'),
+                    'unit_price': item.get('unit_price'),
+                    'net_subtotal': item.get('net_subtotal', item.get('subtotal')),
+                })
+            if item_rows:
+                story.append(report_table(
+                    document, ('product_name', 'quantity', 'unit', 'unit_price', 'net_subtotal'),
+                    item_rows, styles,
+                ))
+            for item_index, item in enumerate(items, 1):
+                if not isinstance(item, Mapping) or not item.get('modifier_snapshot'):
+                    continue
+                item_name = item.get('product_name') or 'Item não identificado'
+                item_id = item.get('id') or item_index
+                story.append(_paragraph(
+                    f'Modificadores do item {item_id} · {item_name}', styles['small'],
+                ))
+                modifier_rows = [
+                    modifier for modifier in item['modifier_snapshot']
+                    if isinstance(modifier, Mapping)
+                ]
+                story.append(report_table(
+                    document,
+                    ('group_name', 'option_name', 'selected_quantity', 'additional_price', 'contribution'),
+                    modifier_rows, styles,
+                ))
+        payments = [payment for payment in (sale.get('payments') or []) if isinstance(payment, Mapping)]
+        if payments:
+            story.append(_paragraph(f'Pagamentos da venda {number}', styles['record_title']))
+            story.append(report_table(
+                document,
+                ('payment_method_name', 'applied_amount', 'received_amount', 'change_amount'),
+                payments, styles,
+            ))
+        audit_rows = [
+            {'indicator': _label(key), 'value': sale.get(key), '__report_key': key}
+            for key in headers
+            if key not in displayed and sale.get(key) not in (None, '', [], {})
+        ]
+        if audit_rows:
+            story.append(_paragraph('Dados de auditoria da venda', styles['record_title']))
+            story.append(report_table(document, ('indicator', 'value'), audit_rows, styles))
+
+
+def _sales_detailed_story(story, document, styles, summary, headers, rows, sample_label):
+    metrics = _metrics('sales', summary)[:4]
+    cards = _metric_cards(document, metrics, styles)
+    if cards:
+        story.append(_section_heading('Resumo e conferência', styles, 'Dados consolidados'))
+        story.append(cards)
+    commercial_keys = (
+        'gross', 'sales_revenue', 'count', 'ticket_average', 'total_discount',
+        'service_fee', 'total_received', 'payment_total', 'reconciliation_delta',
+    )
+    commercial_rows = [
+        {'indicator': _label(key), 'value': summary[key], '__report_key': key}
+        for key in commercial_keys if key in summary and summary[key] is not None
+    ]
+    if commercial_rows:
+        _table_section(
+            story, document, styles, 'Desempenho de vendas', ('indicator', 'value'),
+            commercial_rows,
+        )
+    section_titles = {
+        'product_ranking': 'Ranking de vendas diretas',
+        'product_consumption': 'Consumo consolidado de produtos',
+        'payment_totals': 'Recebimentos por forma de pagamento',
+        'modifier_ranking': 'Modificadores utilizados',
+        'promotion_ranking': 'Promoções aplicadas',
+        'category_ranking': 'Produtos por categoria',
+        'operator_groups': 'Desempenho por operador',
+        'seller_groups': 'Desempenho por vendedor',
+    }
+    section_columns = {
+        'product_ranking': ('product_name', 'quantity', 'sales_revenue', 'discounts', 'sale_count'),
+        'product_consumption': (
+            'product_name', 'direct_quantity', 'modifier_quantity',
+            'consolidated_quantity', 'unit',
+        ),
+        'payment_totals': ('name', 'payment_total', 'percentage'),
+        'modifier_ranking': ('group_name', 'option_name', 'quantity', 'additional_revenue'),
+        'promotion_ranking': ('promotion_name', 'uses', 'discount', 'net_revenue'),
+        'category_ranking': ('category_name', 'quantity', 'sales_revenue', 'discounts', 'sale_count'),
+        'operator_groups': ('user', 'count', 'sales_revenue', 'total_received'),
+        'seller_groups': ('user', 'count', 'sales_revenue', 'total_received'),
+    }
+    for key, title in section_titles.items():
+        values = summary.get(key)
+        if isinstance(values, list) and values:
+            section_headers = tuple(
+                field for field in section_columns[key]
+                if any(isinstance(row, Mapping) and field in row for row in values)
+            )
+            if section_headers:
+                _table_section(story, document, styles, title, section_headers, values)
+    _sale_detail_blocks(story, document, styles, headers, rows, sample_label)
+    audit_rows = _summary_audit_rows({
+        key: value for key, value in summary.items()
+        if key not in commercial_keys and key not in section_titles
+    })
+    if audit_rows:
+        _table_section(
+            story, document, styles, 'Critérios e auditoria do período',
+            ('indicator', 'value'), audit_rows,
+        )
+
+
 def _detailed_story(story, document, styles, kind, summary, headers, rows, sample_label=''):
+    if kind == 'sales':
+        _sales_detailed_story(story, document, styles, summary, headers, rows, sample_label)
+        return
     metrics = _metrics(kind, summary)[:4]
     cards = _metric_cards(document, metrics, styles)
     if cards:

@@ -1,5 +1,5 @@
 from datetime import timedelta
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from django.db.models import (
     Case,
@@ -475,6 +475,72 @@ def product_commercial_breakdowns(queryset, filters=None, reversals=()):
     return (
         sorted(modifier_rows, key=lambda row: (-row['quantity'], row['group_name'], row['option_name'])),
         sorted(promotions.values(), key=lambda row: (-row['uses'], row['promotion_name'])),
+    )
+
+
+def product_consumption_breakdown(queryset, filters=None, reversals=()):
+    """Describe commercial product quantity without inferring stock movements.
+
+    Direct item quantities remain the sales-ranking definition. A modifier is
+    included only when its immutable snapshot identifies the selected stock
+    product and records a product-input or component-substitution effect.
+    """
+    products = {}
+
+    def entry(product_id, name, *, internal_code='', unit=''):
+        return products.setdefault(product_id, {
+            'product_id': product_id,
+            'product_name': name,
+            'internal_code': internal_code,
+            'unit': unit,
+            'direct_quantity': Decimal('0.000'),
+            'modifier_quantity': Decimal('0.000'),
+        })
+
+    for sales, sign in ((queryset, 1), (reversals, -1)):
+        for sale in sales:
+            for row in _sale_item_financials(sale, filters):
+                item = row['item']
+                entry(
+                    item.product_id, item.product_name,
+                    internal_code=item.internal_code, unit=item.unit,
+                )['direct_quantity'] += sign * item.quantity
+                for snapshot in item.modifier_snapshot or []:
+                    product_id = snapshot.get('stock_product_id')
+                    product_name = snapshot.get('stock_product_name')
+                    option_type = snapshot.get('option_type')
+                    stock_effect = snapshot.get('stock_effect')
+                    if not product_id or not product_name:
+                        continue
+                    if (option_type, stock_effect) == ('product_input', 'product_input'):
+                        multiplier = item.quantity
+                    elif (option_type, stock_effect) == (
+                        'component_substitution', 'component_substitution',
+                    ):
+                        # Substitution quantities are already frozen for the full line.
+                        multiplier = Decimal('1')
+                    else:
+                        continue
+                    try:
+                        selected_quantity = Decimal(str(snapshot['selected_quantity']))
+                    except (InvalidOperation, KeyError, TypeError, ValueError):
+                        continue
+                    entry(product_id, product_name)['modifier_quantity'] += (
+                        sign * selected_quantity * multiplier
+                    )
+
+    rows = []
+    for row in products.values():
+        row['consolidated_quantity'] = (
+            row['direct_quantity'] + row['modifier_quantity']
+        )
+        if row['consolidated_quantity']:
+            rows.append(row)
+    return sorted(
+        rows,
+        key=lambda row: (
+            -row['consolidated_quantity'], -row['direct_quantity'], row['product_name'],
+        ),
     )
 
 

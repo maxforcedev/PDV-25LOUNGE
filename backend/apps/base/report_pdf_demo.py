@@ -32,66 +32,77 @@ class DemoRequest:
 
 
 def _sales_rows():
-    payments = ('Cartão de crédito', 'PIX', 'Dinheiro', 'PIX', 'Cartão de débito')
-    amounts = ('184.00', '72.00', '140.00', '230.00', '96.00', '315.00', '68.00', '120.00', '54.00', '195.00', '89.00', '160.00')
-    rows = []
-    for index, amount in enumerate(amounts):
-        number = 10284 - index
-        payment = payments[index % len(payments)]
-        modifiers = (
-            [
-                {
-                    'group_id': 41, 'group_name': 'Adicionais', 'option_id': 412,
-                    'option_name': 'Dose de gin', 'option_type': 'product_input',
-                    'additional_price': '9.50', 'selected_quantity': '1',
-                    'contribution': '9.50', 'sort_order': 1,
-                },
-                {
-                    'group_id': 42, 'group_name': 'Preparo', 'option_id': 421,
-                    'option_name': 'Taça com gelo', 'option_type': 'choice',
-                    'additional_price': '0.00', 'selected_quantity': '1',
-                    'contribution': '0.00', 'sort_order': 1,
-                },
-            ] if index == 2 else []
-        )
-        item_price = '21.50' if modifiers else '12.00'
-        item_total = '43.00' if modifiers else '24.00'
-        rows.append({
-            'event_at': f'2026-10-13T{21 - index // 3:02d}:{36 - (index % 3) * 11:02d}:00-03:00',
-            'sale_number': f'#{number}', 'status': 'finalized', 'payment_method_name': payment,
-            'total_received': amount, 'operator': 'Equipe Centro',
+    coca_modifier = {
+        'group_id': 41, 'group_name': 'Adicionais', 'option_id': 412,
+        'option_name': 'Coca Lata', 'option_type': 'product_input',
+        'additional_price': '7.00', 'selected_quantity': '2', 'contribution': '14.00',
+        'stock_product_id': 10, 'stock_product_name': 'Coca Lata',
+        'stock_effect': 'product_input',
+    }
+    return [
+        {
+            'event_at': '2026-10-13T18:10:00-03:00', 'sale_number': 'V000001',
+            'status': 'finalized', 'channel': 'counter', 'operator': 'Equipe Centro',
+            'total_received': '22.00', 'sales_revenue': '22.00', 'payment_total': '22.00',
+            'items': [
+                {'id': 1, 'product_name': 'Coca Lata', 'quantity': '2', 'unit': 'un.', 'unit_price': '7.00', 'subtotal': '14.00', 'net_subtotal': '14.00'},
+                {'id': 2, 'product_name': 'Amendoim', 'quantity': '1', 'unit': 'un.', 'unit_price': '8.00', 'subtotal': '8.00', 'net_subtotal': '8.00'},
+            ],
+            'payments': [{'payment_method_name': 'PIX', 'applied_amount': '22.00', 'received_amount': '22.00', 'change_amount': '0.00'}],
+        },
+        {
+            'event_at': '2026-10-13T19:25:00-03:00', 'sale_number': 'V000002',
+            'status': 'finalized', 'channel': 'counter', 'operator': 'Equipe Centro',
+            'total_received': '105.00', 'sales_revenue': '105.00', 'payment_total': '105.00',
+            'items': [
+                {'id': 3, 'product_name': 'Coca Lata', 'quantity': '6', 'unit': 'un.', 'unit_price': '7.00', 'subtotal': '42.00', 'net_subtotal': '42.00'},
+                {'id': 4, 'product_name': 'Combo da Casa', 'quantity': '1', 'unit': 'un.', 'unit_price': '63.00', 'subtotal': '63.00', 'net_subtotal': '63.00'},
+            ],
+            'payments': [{'payment_method_name': 'Cartão de crédito', 'applied_amount': '105.00', 'received_amount': '105.00', 'change_amount': '0.00'}],
+        },
+        {
+            'event_at': '2026-10-13T20:40:00-03:00', 'sale_number': 'V000003',
+            'status': 'finalized', 'channel': 'counter', 'operator': 'Equipe Centro',
+            'total_received': '36.00', 'sales_revenue': '36.00', 'payment_total': '36.00',
             'items': [{
-                'product_name': 'Combo Gin Tônica' if modifiers else 'Heineken Long Neck',
-                'quantity': '2', 'unit': 'un.', 'unit_price': item_price,
-                'base_unit_price': '12.00',
-                'modifier_unit_total': '9.50' if modifiers else '0.00',
-                'modifier_snapshot': modifiers,
-                'promotion_benefit': '0.00', 'manual_discount': '0.00',
-                'subtotal': item_total, 'net_subtotal': item_total,
+                'id': 5, 'product_name': 'Batata Frita', 'quantity': '1', 'unit': 'un.',
+                'unit_price': '36.00', 'base_unit_price': '22.00', 'modifier_unit_total': '14.00',
+                'modifier_snapshot': [coca_modifier], 'subtotal': '36.00', 'net_subtotal': '36.00',
             }],
-            'payments': [{'payment_method_name': payment, 'applied_amount': amount, 'received_amount': amount, 'change_amount': '0.00'}],
-        })
-    return rows
+            'payments': [
+                {'payment_method_name': 'Cartão de crédito', 'applied_amount': '5.00', 'received_amount': '5.00', 'change_amount': '0.00'},
+                {'payment_method_name': 'PIX', 'applied_amount': '20.00', 'received_amount': '20.00', 'change_amount': '0.00'},
+                {'payment_method_name': 'Dinheiro', 'applied_amount': '11.00', 'received_amount': '11.00', 'change_amount': '0.00'},
+            ],
+        },
+    ]
 
 
 SALES_SUMMARY = {
-    'gross': '24850.00', 'sales_revenue': '23720.00', 'count': 162,
-    'ticket_average': '146.42', 'total_discount': '1130.00', 'service_fee': '0.00',
-    'total_received': '23720.00',
+    'gross': '163.00', 'sales_revenue': '163.00', 'count': 3,
+    'ticket_average': '54.33', 'total_discount': '0.00', 'service_fee': '0.00',
+    'total_received': '163.00', 'payment_total': '163.00', 'reconciliation_delta': '0.00',
     'payment_totals': [
-        {'name': 'PIX', 'payment_total': '12334.40', 'percentage': '52.00'},
-        {'name': 'Cartão', 'payment_total': '8064.80', 'percentage': '34.00'},
-        {'name': 'Dinheiro', 'payment_total': '3320.80', 'percentage': '14.00'},
+        {'name': 'PIX', 'payment_total': '42.00', 'percentage': '25.77'},
+        {'name': 'Cartão de crédito', 'payment_total': '110.00', 'percentage': '67.48'},
+        {'name': 'Dinheiro', 'payment_total': '11.00', 'percentage': '6.75'},
     ],
     'hourly_sales': [
-        {'hour': '17:00', 'sales_revenue': '2510.00'}, {'hour': '18:00', 'sales_revenue': '2980.00'},
-        {'hour': '19:00', 'sales_revenue': '3370.00'}, {'hour': '20:00', 'sales_revenue': '3100.00'},
-        {'hour': '21:00', 'sales_revenue': '4020.00'}, {'hour': '22:00', 'sales_revenue': '3550.00'},
-        {'hour': '23:00', 'sales_revenue': '4190.00'},
+        {'hour': '20:00', 'sales_revenue': '163.00'},
     ],
     'product_ranking': [
-        {'product_name': 'Heineken Long Neck', 'quantity': '94', 'unit': 'un.'}, {'product_name': 'Red Bull Tradicional', 'quantity': '58', 'unit': 'un.'},
-        {'product_name': 'Combo Gin', 'quantity': '32', 'unit': 'un.'}, {'product_name': 'Água sem gás', 'quantity': '29', 'unit': 'un.'},
+        {'product_name': 'Coca Lata', 'quantity': '8', 'unit': 'un.', 'sales_revenue': '56.00'},
+        {'product_name': 'Amendoim', 'quantity': '1', 'unit': 'un.', 'sales_revenue': '8.00'},
+        {'product_name': 'Batata Frita', 'quantity': '1', 'unit': 'un.', 'sales_revenue': '36.00'},
+        {'product_name': 'Combo da Casa', 'quantity': '1', 'unit': 'un.', 'sales_revenue': '63.00'},
+    ],
+    'product_consumption': [
+        {'product_name': 'Coca Lata', 'unit': 'un.', 'direct_quantity': '8', 'modifier_quantity': '2', 'consolidated_quantity': '10'},
+        {'product_name': 'Amendoim', 'unit': 'un.', 'direct_quantity': '1', 'modifier_quantity': '0', 'consolidated_quantity': '1'},
+        {'product_name': 'Batata Frita', 'unit': 'un.', 'direct_quantity': '1', 'modifier_quantity': '0', 'consolidated_quantity': '1'},
+    ],
+    'modifier_ranking': [
+        {'group_name': 'Adicionais', 'option_name': 'Coca Lata', 'quantity': '2', 'additional_revenue': '14.00'},
     ],
 }
 
@@ -133,7 +144,7 @@ def main():
     _write(
         'vendas-detalhado-demo.pdf', 'Relatório de Vendas', 'detailed', sale_headers,
         sales_rows, SALES_SUMMARY,
-        sample_label='Amostra demonstrativa: 12 de 162 vendas consolidadas',
+        sample_label='Dados demonstrativos: 3 vendas e R$ 163,00 conciliados',
     )
     _write('resultado-operacional-demo.pdf', 'Resultado Operacional', 'executive', ('statement', 'value'), [], RESULT_SUMMARY)
     _write('posicao-estoque-demo.pdf', 'Posição de Estoque', 'executive', ('product', 'current_quantity', 'minimum_quantity', 'unit', 'state'), STOCK_ROWS, STOCK_SUMMARY, {'as_of': '2026-10-13T11:40:00-03:00'})

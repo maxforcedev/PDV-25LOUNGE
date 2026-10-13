@@ -5,6 +5,7 @@ from apps.saas.permissions import support_permission_decision
 
 
 _COST_KEYS = frozenset({
+    'cost', 'margin', 'margin_percent',
     'stock_product_cost', 'unit_cost', 'unit_cost_snapshot',
     'unit_cost_contribution', 'average_unit_cost', 'last_unit_cost',
     'component_cost_snapshot', 'cost_total', 'total_cost', 'cost_impact',

@@ -21,6 +21,7 @@ from apps.base.export_labels import (
     promotion_discount_value_label,
 )
 from apps.base.audit import audit_log
+from apps.base.cost_visibility import can_view_branch_costs, redact_cost_payload
 from apps.base.models import AuditLog
 from apps.base.report_exports import render_report_export, report_key_value_rows
 from apps.base.pagination import StandardPagination
@@ -87,6 +88,7 @@ from .selectors import (
     operational_result,
     period_end_exclusive,
     product_commercial_breakdowns,
+    product_consumption_breakdown,
     receipt_event_rows,
     receipt_event_summary,
     receipt_summary,
@@ -1131,6 +1133,9 @@ class SalesReportView(BaseReportView):
         modifier_rows, promotion_rows = product_commercial_breakdowns(
             sales_graph, filters, sales_reversals,
         )
+        consumption_rows = product_consumption_breakdown(
+            sales_graph, filters, sales_reversals,
+        )
         operator_groups = (
             sale_user_groups(
                 sales_graph, 'created_by', filters, sales_reversals,
@@ -1286,6 +1291,19 @@ class SalesReportView(BaseReportView):
             ],
             'product_ranking': [_ranking_json(row) for row in products],
             'category_ranking': [_ranking_json(row) for row in categories],
+            'product_consumption': [
+                {
+                    **row,
+                    **{
+                        key: decimal_string(row[key], 3)
+                        for key in (
+                            'direct_quantity', 'modifier_quantity',
+                            'consolidated_quantity',
+                        )
+                    },
+                }
+                for row in consumption_rows
+            ],
             'modifier_ranking': [
                 {
                     **row,
@@ -1363,13 +1381,13 @@ class SalesReportView(BaseReportView):
             ), 3)
             result['product_count'] = len(products)
             result['category_count'] = len(categories)
-            result['has_costs'] = user_has_code(
-                request, 'inventory.view_stock_costs'
+            result['has_costs'] = can_view_branch_costs(
+                request, request.branch_context.pk,
             )
             result['discounts'] = decimal_string(sum(
                 (row['discounts'] for row in products), Decimal('0.00')
             ))
-            if user_has_code(request, 'inventory.view_stock_costs'):
+            if result['has_costs']:
                 result['cost'] = decimal_string(sum(
                     (row['cost'] for row in products), Decimal('0.00')
                 ))
@@ -1497,10 +1515,16 @@ class SalesReportView(BaseReportView):
             result.pop('operator_groups', None)
         if not can_view_sellers:
             result.pop('seller_groups', None)
+        # Rankings are assembled outside serializers. Redact them before every
+        # response/export path so a sales scope cannot indirectly expose costs.
+        result = redact_cost_payload(
+            result,
+            include_costs=can_view_branch_costs(request, request.branch_context.pk),
+        )
         summary_keys = {
             'products': {
                 'product_ranking', 'category_ranking', 'modifier_ranking',
-                'promotion_ranking', 'quantity', 'product_count', 'category_count',
+                'promotion_ranking', 'product_consumption', 'quantity', 'product_count', 'category_count',
                 'has_costs', 'sales_revenue', 'discounts', 'cost', 'margin',
             },
             'receipts': set(result),
@@ -1540,6 +1564,9 @@ class SalesReportView(BaseReportView):
                         'cost': row.get('cost'),
                         'margin': row.get('margin'),
                         'margin_percent': row.get('margin_percent'),
+                        'direct_quantity': row['quantity'],
+                        'modifier_quantity': None,
+                        'consolidated_quantity': row['quantity'],
                     }
                     for row in result.get('product_ranking', [])
                 ] + [
@@ -1555,17 +1582,39 @@ class SalesReportView(BaseReportView):
                         'cost': row.get('cost'),
                         'margin': row.get('margin'),
                         'margin_percent': row.get('margin_percent'),
+                        'direct_quantity': None,
+                        'modifier_quantity': None,
+                        'consolidated_quantity': None,
                     }
                     for row in result.get('category_ranking', [])
+                ] + [
+                    {
+                        'ranking_type': 'Consumo consolidado',
+                        'name': row['product_name'],
+                        'internal_code': row.get('internal_code', ''),
+                        'quantity': row['consolidated_quantity'],
+                        'sales_revenue': None,
+                        'discounts': None,
+                        'sale_count': None,
+                        'ticket_average': None,
+                        'cost': None,
+                        'margin': None,
+                        'margin_percent': None,
+                        'direct_quantity': row['direct_quantity'],
+                        'modifier_quantity': row['modifier_quantity'],
+                        'consolidated_quantity': row['consolidated_quantity'],
+                    }
+                    for row in result.get('product_consumption', [])
                 ]
                 return self.export_response(
                     request, filename='relatorio-produtos.csv', title='Relatório de produtos',
                     headers=(
                         'ranking_type', 'name', 'internal_code', 'quantity',
                         'sale_count', 'sales_revenue', 'discounts', 'ticket_average',
+                        'direct_quantity', 'modifier_quantity', 'consolidated_quantity',
                     ) + ((
                         'cost', 'margin', 'margin_percent',
-                    ) if user_has_code(request, 'inventory.view_stock_costs') else ()),
+                    ) if result.get('has_costs') else ()),
                     rows=ranking_rows, period=canonical_datetime_range(start, end), summary=result,
                 )
             if scope == 'receipts':

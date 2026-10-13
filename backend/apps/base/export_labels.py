@@ -166,6 +166,29 @@ EXPORT_LABELS = {
     'received_quantity': 'Quantidade recebida',
     'unreceived_quantity': 'Quantidade não recebida',
     'item_details': 'Detalhamento por item',
+    'product_consumption': 'Consumo consolidado de produtos',
+    'direct_quantity': 'Venda direta',
+    'modifier_quantity': 'Como modificador',
+    'consolidated_quantity': 'Total consolidado',
+    'modifier_ranking': 'Modificadores utilizados',
+    'promotion_ranking': 'Promoções aplicadas',
+    'category_ranking': 'Produtos por categoria',
+    'operator_groups': 'Desempenho por operador',
+    'seller_groups': 'Desempenho por vendedor',
+    'event_accounting': 'Critério de contabilização',
+    'payment_reconciliation_delta': 'Diferença de reconciliação',
+    'additional_revenue': 'Receita adicional',
+    'margin': 'Margem',
+    'margin_percent': 'Margem percentual',
+    'basis': 'Critério',
+    'inflows': 'Entradas',
+    'reversals': 'Reversões',
+    'operation_id': 'ID da operação',
+    'operation_key': 'Chave da operação',
+    'product_id': 'ID do produto',
+    'category_id': 'ID da categoria',
+    'group_id': 'ID do grupo',
+    'option_id': 'ID da opção',
 }
 
 
@@ -223,6 +246,7 @@ EXPORT_VALUES = {
     'command': 'Comanda',
     'active': 'Ativo',
     'inactive': 'Inativo',
+    'payment_occurred_at': 'Data de ocorrência do pagamento',
 }
 
 
