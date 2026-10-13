@@ -79,7 +79,7 @@ function FinancialRegularizationsPage() {
       <div className="space-y-4 p-4 sm:p-6 lg:p-8">
         <section className="card border-danger/30 p-4 text-sm">
           <strong className="block">Ação excepcional e auditada</strong>
-          <p className="mt-1 text-muted">Informe somente uma taxa comprovada por evidência histórica. A operação não altera pagamentos, descontos, comissão, estoque ou custos já registrados.</p>
+          <p className="mt-1 text-muted">Informe somente uma taxa comprovada por evidência histórica. A operação não altera pagamentos, descontos, comissão, estoque ou custos já registrados. Se as condições históricas dos itens não forem comprováveis, a regularização permanecerá bloqueada.</p>
         </section>
         {error && <Alert message={error} />}
         {success && <Alert message={success} type="success" />}

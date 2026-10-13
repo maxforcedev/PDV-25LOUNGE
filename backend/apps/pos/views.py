@@ -1304,7 +1304,10 @@ class POSAttendanceCommandDetailView(POSAttendanceView):
         self._require(permissions, 'commands.view', 'Você não possui permissão para consultar comandas nesta filial.')
         command = self._command(device, command_id)
         data = AttendanceCommandSerializer(command).data
-        data['summary'] = command_summary(command)
+        try:
+            data['summary'] = command_summary(command)
+        except AttendanceConflict as error:
+            self._domain(error)
         data['orders'] = list(AttendanceOrderItem.objects.filter(
             order__command=command,
         ).values('id', 'order_id', 'product_id', 'product_name', 'quantity', 'unit', 'unit_price', 'modifier_snapshot', 'notes', 'status', 'confirmed_at'))
@@ -1453,7 +1456,11 @@ class POSAttendanceCommandPaymentView(POSAttendanceView):
         device, _, permissions, _ = self.context(request)
         self._require(permissions, 'commands.payments.view', 'Você não possui permissão para consultar pagamentos.')
         command = self._command(device, command_id)
-        return Response({'summary': command_summary(command), 'payments': AttendancePaymentSerializer(command.payments.select_related('payment_method'), many=True).data})
+        try:
+            summary = command_summary(command)
+        except AttendanceConflict as error:
+            self._domain(error)
+        return Response({'summary': summary, 'payments': AttendancePaymentSerializer(command.payments.select_related('payment_method'), many=True).data})
 
     def post(self, request, command_id):
         device, operator, permissions, operator_session = self.context(request)

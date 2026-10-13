@@ -118,6 +118,38 @@ def _has_unknown_legacy_service_fee_rate(command):
     )
 
 
+def _has_complete_item_financial_snapshot(item):
+    snapshot = item.financial_snapshot
+    return isinstance(snapshot, dict) and all(field in snapshot for field in (
+        'promotion', 'promotion_name', 'promotion_discount_type',
+        'promotion_discount_value', 'promotion_benefit', 'manual_discount_intent',
+        'manual_discount', 'net_subtotal', 'participates_in_service_fee',
+        'participates_in_commission',
+    ))
+
+
+def _legacy_unfrozen_command_items(command, items):
+    """Return pre-payment confirmed items whose original financial conditions are unknown."""
+    first_payment_at = AttendancePayment.objects.filter(command=command).order_by(
+        'created_at', 'id',
+    ).values_list('created_at', flat=True).first()
+    if first_payment_at is None:
+        return []
+    return [
+        item for item in items
+        if not _has_complete_item_financial_snapshot(item)
+        and (item.confirmed_at or item.created_at) <= first_payment_at
+    ]
+
+
+def _assert_command_financial_snapshot_integrity(command, items):
+    if _legacy_unfrozen_command_items(command, items):
+        raise AttendanceConflict(
+            'legacy_item_financial_snapshot_unknown',
+            'Itens históricos sem condições financeiras comprovadas impedem a consolidação; regularize os dados históricos antes de continuar.',
+        )
+
+
 def _freeze_command_item_financials(command, financial_snapshots):
     items = list(AttendanceOrderItem.objects.select_for_update().filter(
         order__command=command, status=AttendanceOrderItemStatus.CONFIRMED,
@@ -274,8 +306,10 @@ def financial_state(command, *, lock=False, discount=None, service_fee_waived=No
     ).select_related('product__category').order_by('id')
     if lock:
         items = items.select_for_update()
+    items = list(items)
+    _assert_command_financial_snapshot_integrity(command, items)
     preview = calculate_command_preview(
-        branch=command.branch, order_items=list(items),
+        branch=command.branch, order_items=items,
         discount=command.checkout_discount if discount is None else discount,
         service_fee_waived=(
             command.checkout_service_fee_waived
