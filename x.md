@@ -1,370 +1,646 @@
-CORE PDV — MISSÃO 2 / PARTE 1
-Enforcement global de módulos: Plano → Filial → RBAC
-Trabalhe sobre o main atual do projeto maxforcedev/PDV-25LOUNGE.
-Antes de alterar, leia a implementação existente. Não substitua a arquitetura atual por outro sistema. Esta missão deve consolidar e completar o que já existe.
-Hoje já temos uma boa fundação em:
-backend/apps/companies/features.py
-backend/apps/saas/services.py
-backend/apps/saas/permissions.py
-backend/apps/companies/models.py
-backend/apps/companies/serializers.py
-backend/apps/accounts/serializers.py
+# CORE PDV — MISSÃO 3 | PARTE 1
+## REFORMULAÇÃO PROFISSIONAL DOS RELATÓRIOS E EXPORTAÇÕES
 
-frontend/src/lib/feature-guards.ts
-frontend/src/lib/authorized-routes.ts
-frontend/src/providers/auth-provider.tsx
-frontend/src/components/admin-guard.tsx
-frontend/src/components/app-shell.tsx
+**Repositório:** `maxforcedev/PDV-25LOUNGE`  
+**Branch:** `main`  
+**Commit de referência:** `a457bc7`  
+**Prioridade:** Alta  
+**Escopo principal:** CORE Backoffice, relatórios e exportações PDF.
 
-backend/apps/pos/services.py
+## 1. OBJETIVO
 
-A regra definitiva do CORE passa a ser:
-RECURSO EFETIVO =
-tenant operacional
-AND entitlement/plano habilitado
-AND módulo habilitado naquela filial
-AND dependências do módulo habilitadas
+Precisamos transformar os relatórios do CORE PDV em documentos profissionais, modernos, organizados e úteis para a gestão empresarial.
 
-AÇÃO AUTORIZADA =
-recurso efetivo
-AND RBAC/permissão do usuário
+O problema atual não é necessariamente a falta de dados, mas a maneira como eles são organizados e apresentados.
 
-RBAC nunca pode habilitar recurso fora do plano ou desabilitado na filial.
-Superusuário, Owner, perfil administrativo ou permissão gravada no banco também não devem transformar uma capability comercial indisponível em disponível.
-DISPONIBILIDADE OPERACIONAL POR FILIAL PARA TODOS OS MÓDULOS
-Hoje BranchSettings.feature_flags() possui switches locais principalmente para:
-tables
-commands
-counter
-consumption
-cash_register
+Já identificamos casos em que o relatório de apenas um dia gera aproximadamente 90 páginas, sem uma apresentação adequada, sem a identidade visual oficial do CORE e com informações excessivamente fragmentadas.
 
-Enquanto diversos outros módulos definidos em FEATURE_CAPABILITIES usam implicitamente True na filial.
-Isso precisa ser corrigido.
-A filial deve possuir disponibilidade operacional explícita para todos os módulos comerciais atualmente existentes:
-tables
-commands
-counter
-consumption
-cash_register
-production
-products
-inventory
-purchases
-suppliers
-customers
-promotions
-reports
-audit
-financial
-pos
+O objetivo desta missão é:
 
-Preserve os campos atuais e, seguindo o padrão já existente de BranchSettings, adicione os switches ausentes, por exemplo:
-uses_products
-uses_inventory
-uses_purchases
-uses_suppliers
-uses_customers
-uses_promotions
-uses_production
-uses_reports
-uses_audit
-uses_financial
-uses_pos
+- Modernizar completamente a apresentação dos PDFs.
+- Utilizar a identidade visual oficial do CORE PDV.
+- Reduzir páginas desnecessárias e informações repetidas.
+- Destacar os indicadores mais importantes.
+- Separar relatórios executivos de relatórios detalhados.
+- Organizar tabelas, agrupamentos, resumos e informações financeiras.
+- Preservar todos os dados autorizados.
+- Manter as exportações em Excel e CSV funcionando corretamente.
 
-Não transformar nesta missão BranchSettings em uma arquitetura completamente diferente.
-Criar migration segura e não destrutiva.
-Para os novos campos, preservar o comportamento existente das filiais atuais:
-default=True
+**Não modificar a lógica dos relatórios nem os cálculos comerciais e financeiros.**
 
-O entitlement continua sendo a autoridade superior.
-Portanto:
-plano OFF + filial ON = OFF
-plano ON + filial OFF = OFF
-plano ON + filial ON = ON
+---
 
-core.enabled, users.max, branches.max, limites quantitativos e outras capabilities que não representam módulo operacional de filial não devem virar switches de filial.
-NÃO CONFUNDIR MÓDULO COM CONFIGURAÇÃO INTERNA
-Continuam sendo configurações/subfeatures e NÃO novos módulos comerciais:
-allow_negative_stock
-charges_service_fee
-consumption_limit_enabled
-service_fee_rate
-commission_rate
-fixed_daily_cost
+## 2. ANÁLISE DA ESTRUTURA ATUAL
 
-Elas só podem ser usadas quando o módulo correspondente estiver efetivamente disponível.
-Exemplo:
-inventory OFF
-→ configuração de estoque negativo não opera/não aparece
+A geração de arquivos está centralizada principalmente em:
 
-financial OFF
-→ taxa, comissão e configurações financeiras não operam/não aparecem
+`backend/apps/base/report_exports.py`
 
-DEPENDÊNCIAS NA FILIAL
-O plano já possui dependências declarativas em CAPABILITY_DEPENDENCIES.
-A disponibilidade operacional da filial precisa respeitar a mesma lógica.
-No mínimo:
-inventory → products
+Esse módulo já utiliza:
 
-counter → products + cash_register
+- ReportLab para PDFs.
+- OpenPyXL para Excel.
+- CSV para exportações tabulares.
+- `render_report_export()` como mecanismo compartilhado.
+- `report_key_value_rows()` para converter estruturas existentes.
+- `_structured_sections()` para transformar estruturas do resumo em tabelas.
 
-commands → products + cash_register
+O backend dos relatórios está principalmente em:
 
-purchases → suppliers + products + inventory
+`backend/apps/reports/views.py`
 
-promotions → products
+A interface de exportação está em:
 
-production → products
+`frontend/src/components/report-export-action.tsx`
 
-tables → commands
+Há também diferentes componentes de relatórios em:
 
-consumption → commands
+- `frontend/src/components/dedicated-report.tsx`
+- `frontend/src/components/commands-report.tsx`
+- `frontend/src/components/commercial-complement-report.tsx`
+- `frontend/src/components/phase-three-report.tsx`
+- `frontend/src/components/tickets-report.tsx`
+- `frontend/src/components/reports-center.tsx`
 
-Não permitir estados efetivos incoerentes.
-Exemplo:
-products = OFF
-inventory = ON
+### Problemas de apresentação identificados
 
-resultado efetivo:
-inventory = OFF
+**1. Identidade visual insuficiente**
 
-Ao editar a filial, preferir validação clara. Não criar estado silenciosamente inconsistente no banco.
-Se o usuário tentar habilitar um módulo sem seu requisito, retornar erro amigável indicando a dependência.
-Ao desabilitar um pré-requisito que possui módulos dependentes habilitados, exigir que os dependentes sejam desabilitados na mesma alteração ou tratar de forma segura e explícita.
-Não apagar dados históricos ao desabilitar módulos.
-branch_feature_states() COMO FONTE DE VERDADE
-Consolidar:
-branch_feature_states(branch)
+O PDF utiliza basicamente texto, sem incorporar adequadamente a logo oficial.
 
+**2. Tabelas excessivamente genéricas**
 
-como resolução canônica de disponibilidade comercial da filial.
-Cada módulo deve informar pelo menos:
-plan_allowed
-enabled
+As colunas recebem larguras iguais, independentemente do conteúdo.
 
-enabled só pode ser True se:
-plano permite
-+
-switch da filial permite
-+
-dependências efetivas permitem
-+
-tenant está operacional
+**3. Fontes pequenas**
 
-require_branch_feature() deve continuar sendo a barreira fail-closed no backend.
-Não duplicar regras diferentes em vários módulos.
-BACKEND — AUDITORIA COMPLETA
-Auditar todos os endpoints tenant/operacionais existentes e garantir enforcement do módulo correspondente.
-Isso inclui, conforme aplicável:
-Balcão/vendas
-Consumação
-Mesas
-Comandas
-Caixa
-Produtos
-Categorias
-Modificadores
-Preços por filial
-Estoque
-Transferências
-Inventários
-Perdas
-Compras
-Recebimentos
-Contas a pagar
-Fornecedores
-Clientes
-Promoções
-Produção
-Impressoras
-Rotas de impressão
-Fila de impressão
-Tickets
-Financeiro
-Formas de pagamento
-Comissões
-Dashboard
-Relatórios
-Auditoria
-Dispositivos POS
-APIs operacionais do POS
+Existem tabelas com fontes de aproximadamente 5 a 6 pontos.
 
-Não depender exclusivamente de esconder interface.
-Uma chamada direta à API deve receber 403 quando o módulo estiver:
-fora do plano
-OU
-desabilitado naquela filial
+**4. Estruturas repetitivas**
 
-A regra vale para leitura e escrita quando o endpoint pertence àquele módulo.
-Recursos compostos exigem todas as capabilities relevantes.
+`_structured_sections()` transforma indiscriminadamente diversas listas e estruturas do resumo em novas tabelas.
+
+Dependendo da resposta, isso pode duplicar informações já exibidas em outras seções.
+
+**5. Paginação inadequada**
+
+Existem cabeçalhos repetidos nas tabelas, mas falta uma hierarquia visual mais completa.
+
+**6. Falta de distinção entre visão executiva e detalhamento**
+
+Um empresário que deseja verificar o desempenho do dia não deveria precisar percorrer dezenas de páginas de registros operacionais.
+
+### Diretriz arquitetural
+
+**Reutilizar e evoluir o mecanismo centralizado já existente.**
+
+Não desenvolver um gerador separado para cada página e não duplicar a lógica financeira do backend.
+
+---
+
+## 3. DOIS FORMATOS DE RELATÓRIO PDF
+
+Implementar dois modos de exportação.
+
+### A. RELATÓRIO EXECUTIVO — PADRÃO
+
+Destinado ao empresário ou gestor que deseja compreender o desempenho do negócio rapidamente.
+
+Esse relatório deverá conter:
+
+- Identificação da empresa e filial.
+- Título do relatório.
+- Período selecionado.
+- Data e horário de geração.
+- Indicadores essenciais.
+- Totais consolidados.
+- Tabelas resumidas.
+- Agrupamentos realmente relevantes.
+- Observações importantes, quando existirem.
+
+Não incluir automaticamente todos os registros individuais do período.
+
+A finalidade é apresentar uma visão clara, objetiva e profissional.
+
+**O número de páginas deverá ser consequência do conteúdo realmente necessário, sem imposição arbitrária de um limite.**
+
+### B. RELATÓRIO DETALHADO
+
+Destinado à conferência, contabilidade, auditoria e análise aprofundada.
+
+Deverá apresentar:
+
+- Identificação e período.
+- Resumo financeiro.
+- Indicadores principais.
+- Registros detalhados autorizados.
+- Agrupamentos pertinentes.
+- Informações operacionais relevantes.
+- Paginação adequada.
+
+O modo detalhado poderá possuir mais páginas, pois sua finalidade é apresentar informações completas.
+
+Entretanto, não poderá gerar duplicações desnecessárias nem tabelas desorganizadas.
+
+### Regra fundamental
+
+**Nunca excluir silenciosamente dados de um relatório detalhado.**
+
+O PDF executivo é uma apresentação resumida intencional.
+
+O PDF detalhado é uma apresentação completa, de acordo com o escopo e as permissões do relatório.
+
+CSV e Excel deverão continuar oferecendo os dados completos previstos pelos contratos atuais.
+
+---
+
+## 4. NOVA IDENTIDADE VISUAL DOS PDFs
+
+Os relatórios deverão utilizar a identidade oficial do CORE PDV.
+
+### Paleta de cores
+
+**Azul principal:** `#3454D1`  
+**Azul escuro:** `#2945B6`  
+**Texto principal:** `#283C50`  
+**Texto secundário:** `#64748B`  
+**Fundo auxiliar:** `#F0F2F8`  
+**Bordas:** `#E2E8F0`  
+**Sucesso:** `#17C666`  
+**Atenção:** `#FFA21D`  
+**Perigo:** `#EA4D4D`
+
+A paleta deverá ser utilizada com sobriedade, mantendo legibilidade na impressão.
+
+### Logo oficial
+
+Utilizar a nova identidade oficial do CORE PDV:
+
+- CORE em azul-marinho.
+- PDV em azul vivo.
+- Símbolo espiral no O.
+- Slogan: **O CORAÇÃO DO SEU NEGÓCIO**.
+
+O frontend já possui os assets oficiais em:
+
+`frontend/public/branding/`
+
+Incluindo:
+
+- `core-logo-light.png`
+- `core-logo-dark.png`
+- Versões compactas.
+
+O backend deverá utilizar o asset oficial apropriado, garantindo sua disponibilidade no ambiente de produção.
+
+Não depender de uma requisição externa ao frontend para renderizar a marca dentro do PDF.
+
+Não reconstruir a logo usando texto genérico.
+
+Preservar o branding dinâmico da plataforma quando aplicável, utilizando somente assets autorizados e seguros.
+
+### Cabeçalho
+
+Criar um cabeçalho profissional contendo:
+
+- Logo CORE PDV.
+- Título do relatório.
+- Nome da empresa.
+- Nome da filial.
+- Período.
+- Data e horário da geração.
+
+O nome empresarial deve receber destaque apropriado, pois o relatório pertence à operação daquele cliente.
+
+### Rodapé
+
+Criar um rodapé padronizado com:
+
+- Identificação discreta do CORE PDV.
+- Data da geração, quando apropriado.
+- Numeração de páginas.
+- Separador visual discreto.
+
+Preferencialmente:
+
+`Página X de Y`
+
+Sem ocupar espaço excessivo do documento.
+
+---
+
+## 5. NOVA HIERARQUIA DOS DOCUMENTOS
+
+O documento deverá seguir uma ordem lógica.
+
+### Primeira seção — Identificação
+
+Cabeçalho, título, período e filtros relevantes.
+
+### Segunda seção — Resumo executivo
+
+Apresentar os principais números do relatório.
+
+Por exemplo, em um relatório de vendas:
+
+- Valor bruto.
+- Descontos.
+- Faturamento.
+- Quantidade de vendas.
+- Ticket médio.
+- Total recebido, quando autorizado.
+- Cancelamentos, quando pertinentes.
+
+Esses indicadores deverão ser derivados dos dados oficiais já calculados pelo sistema.
+
+Não criar novos cálculos paralelos.
+
+### Terceira seção — Análise consolidada
+
+Exibir agrupamentos relevantes ao relatório.
+
 Exemplos:
-contas a pagar
-→ purchases + financial
 
-produto/fornecedor
-→ products + suppliers
+- Vendas por forma de pagamento.
+- Desempenho de produtos.
+- Resultados por vendedor.
+- Vendas por horário.
+- Movimentações por categoria.
 
-relatório de estoque
-→ reports + inventory
+Mostrar apenas os agrupamentos que realmente pertencem ao relatório solicitado.
 
-relatório financeiro
-→ reports + financial
+### Quarta seção — Detalhamento
 
-relatório de mesas/comandas
-→ reports + tables + commands
+Somente quando aplicável ao modo selecionado.
 
-Atualize os mapas existentes em SaaSTenantRuntimePermission/COMMERCIAL_FEATURES_BY_BASENAME/rotas específicas em vez de criar uma segunda arquitetura concorrente.
-Endpoints customizados que não utilizem basename também precisam ser auditados.
-FRONTEND — FAIL CLOSED
-O mesmo estado resolvido pelo backend deve continuar chegando em:
-User.branches[].features
+Apresentar tabelas e informações operacionais completas, sem duplicar as seções anteriores.
 
-E deve comandar toda a interface.
-Quando um módulo estiver indisponível:
-não aparece no menu
-URL direta é bloqueada
-página privada não renderiza
-botões do módulo não aparecem
-atalhos não aparecem
-cards/KPIs do módulo não aparecem
-selects/opções exclusivas daquele módulo não aparecem
-permissões funcionais daquele módulo não aparecem como opção operacional
+---
 
-Revise:
-app-shell.tsx
-feature-guards.ts
-authorized-routes.ts
-AdminGuard
-páginas privadas
-editor de permissões
+## 6. CORRIGIR AS PÁGINAS EXCESSIVAS
 
-Não confiar apenas no AppShell.
-Digitar diretamente, por exemplo:
-/estoque
-/compras
-/producao
-/relatorios/...
-/pos-dispositivos
+Essa é uma das prioridades da missão.
 
-deve falhar/redirect quando a feature da filial estiver desligada.
-MEU NEGÓCIO → CONFIGURAÇÕES DA FILIAL
-Na seção existente:
-Operação
-Ative ou desative recursos desta filial.
+Investigar especialmente:
 
-passar a permitir controlar todos os módulos operacionais que o plano daquela empresa possui.
-Exibir somente módulos que tenham:
-plan_allowed = true
+- `_structured_sections()`
+- `report_key_value_rows()`
+- Estruturas passadas pelo parâmetro `summary`.
+- Repetições entre `summary` e `rows`.
+- Tabelas aninhadas.
+- Campos JSON muito extensos.
+- Agrupamentos que não pertencem ao relatório solicitado.
 
-Não permitir habilitar via payload manual uma feature que o plano não possui.
-Depois de salvar, o auth/me/estado de features e a interface devem refletir imediatamente a nova disponibilidade.
-Usar nomes amigáveis em português.
-CORE POS
-O POS também faz parte desta regra.
-feature.pos/pos.enabled não deve ser apenas uma configuração visual.
-Se a empresa possui POS no plano, mas a filial desabilitou POS:
-novo pareamento na filial → bloqueado
-dispositivo existente → não pode continuar operacional
-bootstrap → bloqueado
-operador → não deve conseguir iniciar operação
-venda → bloqueada
+### Comportamento desejado
 
-Para módulos internos do POS:
-Venda rápida → counter + permissão
-Mesas → tables + permissão
-Comandas → commands + permissão
-Caixa → cash_register + permissão
+Um relatório executivo de um dia deverá apresentar os principais indicadores e agrupamentos, sem despejar todo o histórico de registros.
 
-Manter modules_for() baseado em branch_feature_enabled().
-Não criar allowlist funcional por máquina. A regra continua sendo:
-plano + filial + RBAC
+Um relatório detalhado deverá manter os registros completos, mas organizar adequadamente as páginas.
 
-Configuração do dispositivo não substitui autorização funcional.
-PRESERVAÇÃO DE DADOS E RBAC
-Desabilitar módulo:
-NÃO remove registros
-NÃO remove histórico
-NÃO apaga permissões dos perfis
-NÃO apaga configuração do módulo
-NÃO apaga devices
-NÃO apaga vendas
+Não transformar automaticamente todos os arrays presentes em `summary` em seções do PDF.
 
-Apenas torna a funcionalidade indisponível operacionalmente.
-Se posteriormente o plano/filial reabilitar o módulo, as permissões RBAC existentes voltam a ser consideradas.
-Isso é importante:
-Entitlement/feature decide SE o módulo existe para aquele contexto.
-RBAC decide QUEM pode usá-lo.
+Adotar seleção explícita e controlada de seções conforme o tipo de relatório.
 
-NÃO MEXER AINDA
-Esta é somente a Parte 1 da Missão 2.
-Não entrar ainda em:
-regras específicas de categoria
-propagação de produtos
-copiar produto para filial
-canais de venda do produto
-alteração de comportamento de estoque do produto
-redesign de modificadores
-rotas Produto → Setor → Impressora
-UX de POS Devices
-dashboard visual
-relatórios visuais
-importação por planilha
-Platform Admin público
+### Evitar
 
-Também não alterar:
-CMV já aprovado
-snapshot histórico de custos
-motor financeiro
-motor de estoque
-pagamentos
-Cielo
-Stone
-PagBank
-SMTP/Resend
-recuperação de senha
+- Repetir a mesma informação em três tabelas diferentes.
+- Incluir JSON bruto no PDF.
+- Criar páginas praticamente vazias.
+- Cortar tabelas indevidamente.
+- Quebrar títulos dos seus respectivos conteúdos.
+- Utilizar espaçamentos exagerados.
+- Gerar páginas apenas para pequenos agrupamentos que poderiam estar juntos.
+- Diminuir fontes excessivamente para tentar encaixar tudo.
 
-TESTES OBRIGATÓRIOS
-Atualizar/criar cobertura para confirmar:
-plano OFF / filial ON / RBAC ON → bloqueado
-plano ON / filial OFF / RBAC ON → bloqueado
-plano ON / filial ON / RBAC OFF → bloqueado
-plano ON / filial ON / RBAC ON → permitido
+**Não resolver o problema de 90 páginas simplesmente eliminando registros obrigatórios ou limitando a quantidade de linhas.**
 
-dependência da filial OFF → dependente OFF
+---
 
-endpoint direto bloqueado
-módulo some do frontend
-deep-link é bloqueado
-POS da filial desabilitada é bloqueado
-módulo reabilitado preserva RBAC/dados
+## 7. TABELAS PROFISSIONAIS
 
-Cobrir pelo menos um módulo de cada grupo relevante e testes específicos das dependências.
-Preservar os testes existentes.
-Corrigir os testes, e não executar. O GitHub já faz isso.
-Não executar:
-python manage.py test
-python manage.py check
-migrate
-makemigrations
-npm test
-npm run build
-npm run lint
-flutter test
-flutter build
+Reformular a apresentação das tabelas PDF.
 
-Se migration for necessária, escrevê-la corretamente sem executá-la.
-ENTREGA
-Ao concluir:
-faça commit e push no main;
-informe o SHA;
-liste os arquivos alterados;
-informe a migration criada;
-explique como ficou a regra:
-Plano → Filial → Dependências → RBAC
+### Requisitos
 
-informe quais endpoints/módulos foram auditados;
-confirme que URL direta/API/POS também estão fail-closed;
-confirme que dados e permissões históricas não são apagados;
-confirme explicitamente que não entrou nas Partes 2–7 da Missão 2.
-Não faça deploy. Não mexa na VPS.
+- Cabeçalhos legíveis.
+- Colunas com larguras proporcionais ao conteúdo.
+- Alinhamento à esquerda para descrições.
+- Alinhamento à direita para valores financeiros.
+- Alinhamento adequado de quantidades e datas.
+- Alternância discreta de fundo entre linhas, quando útil.
+- Separadores leves.
+- Quebra de texto controlada.
+- Títulos de colunas repetidos nas páginas seguintes.
+- Quebras de página inteligentes.
+- Linhas de totais com destaque.
+- Ausência de sobreposição de conteúdo.
+- Fonte adequada para leitura e impressão.
+
+Não utilizar fontes minúsculas como solução padrão.
+
+### Orientação da página
+
+Preservar A4 como padrão.
+
+Utilizar retrato para relatórios compactos e paisagem quando o conteúdo tabular exigir.
+
+Não definir a orientação exclusivamente pela quantidade de colunas sem considerar suas larguras e conteúdos.
+
+Campos secundários muito extensos poderão ser apresentados em seções complementares, quando isso melhorar a legibilidade e preservar a informação no modo detalhado.
+
+---
+
+## 8. FORMATAÇÃO BRASILEIRA
+
+Padronizar corretamente:
+
+**Moeda:** R$ 1.234,56
+
+**Datas:** 13/10/2026
+
+**Data e hora:** 13/10/2026 às 14:30
+
+**Percentuais:** 10,00%
+
+**Quantidades:** precisão e unidade adequadas ao produto ou indicador.
+
+**Valores negativos:** apresentação consistente.
+
+**Campos inexistentes:** representar como não disponível, e não como zero fictício.
+
+Respeitar o fuso horário da empresa ou filial quando configurado, preservando os critérios de período já implementados.
+
+Garantir suporte adequado a acentos e caracteres da língua portuguesa nos PDFs.
+
+Não converter valores monetários utilizando operações imprecisas de ponto flutuante.
+
+---
+
+## 9. RELATÓRIOS CONTEMPLADOS
+
+A nova estrutura de apresentação deverá ser aplicável aos relatórios do CORE Backoffice.
+
+### Vendas e comercial
+
+- Visão geral.
+- Vendas.
+- Recebimentos.
+- Produtos e desempenho.
+- Atendentes.
+- Operadores.
+- Comissões.
+- Descontos.
+- Cancelamentos.
+- Consumações.
+
+### Financeiro
+
+- Resultado operacional estimado.
+- Caixa.
+- Sangrias.
+- Contas a pagar.
+
+### Estoque e compras
+
+- Posição de estoque.
+- Movimentações.
+- Consumo e custos.
+- Transferências.
+- Inventários.
+- Compras.
+- Fornecedores.
+- Preços por filial.
+
+### Operação
+
+- Mesas e comandas.
+- Promoções.
+- Modificadores.
+- Tickets.
+- Clientes.
+
+Reutilizar os endpoints e contratos existentes.
+
+Não adicionar métricas que ainda não existam no backend.
+
+Cada relatório deverá apresentar somente indicadores pertinentes à sua finalidade, respeitando os dados e as permissões existentes.
+
+### Prioridade de implementação
+
+Começar pelos relatórios:
+
+1. Visão geral.
+2. Vendas.
+3. Recebimentos.
+4. Caixa.
+5. Resultado operacional.
+
+Depois aplicar o mesmo padrão aos demais relatórios, sem duplicar componentes de geração.
+
+---
+
+## 10. MELHORIAS NO EXCEL E CSV
+
+O foco principal é o PDF, mas preservar e organizar as outras exportações.
+
+### Excel
+
+Manter:
+
+- Dados completos.
+- Separação lógica entre resumo e dados.
+- Nomes de colunas compreensíveis.
+- Filtros.
+- Congelamento de cabeçalhos.
+- Formatação monetária.
+- Formatação de datas.
+- Valores numéricos utilizáveis em fórmulas.
+- Proteção contra fórmulas maliciosas originadas de dados externos.
+
+Realizar apenas ajustes necessários para manter consistência e legibilidade.
+
+### CSV
+
+Preservar:
+
+- Todos os registros autorizados.
+- Cabeçalhos.
+- Compatibilidade com Excel.
+- Codificação adequada.
+- Ausência de truncamentos.
+- Proteção contra injeção de fórmulas.
+
+Não substituir dados completos do CSV ou Excel por versões executivas.
+
+---
+
+## 11. NOVA EXPERIÊNCIA DE EXPORTAÇÃO NO BACKOFFICE
+
+Revisar:
+
+`frontend/src/components/report-export-action.tsx`
+
+Atualmente, o menu de exportação apresenta PDF, Excel e CSV.
+
+Evoluir esse comportamento para oferecer:
+
+**PDF — Resumo executivo**
+
+**PDF — Relatório detalhado**
+
+**Excel — Dados completos**
+
+**CSV — Dados completos**
+
+### Compatibilidade
+
+Preservar os endpoints existentes.
+
+O parâmetro atual `export=pdf` deverá continuar válido e representar o relatório executivo por padrão.
+
+Introduzir um parâmetro específico para selecionar o detalhamento, por exemplo `pdf_mode`, validado por uma lista explícita de valores permitidos.
+
+Não utilizar esse parâmetro para alterar cálculos ou filtros de negócio.
+
+Quando a exportação em PDF não estiver disponível para determinado relatório, preservar um comportamento consistente e informar a limitação sem inventar dados.
+
+### Interface
+
+- Manter o estilo visual do Backoffice.
+- Exibir carregamento durante a exportação.
+- Evitar acionamentos duplicados.
+- Apresentar erros compreensíveis.
+- Manter nomes de arquivos legíveis.
+- Preservar os filtros selecionados pelo usuário.
+- Respeitar a filial ativa.
+- Respeitar a permissão `reports.export`.
+
+---
+
+## 12. SEGURANÇA E MULTIEMPRESA
+
+A exportação precisa manter todas as regras de segurança já existentes.
+
+### Obrigatório
+
+- Isolamento por tenant.
+- Isolamento por filial.
+- Permissões granulares dos relatórios.
+- Autorização de exportação.
+- Restrições de custos e margens.
+- Restrições de informações financeiras.
+- Redação de dados não autorizados antes da renderização.
+- Respeito às sessões de suporte CORE.
+- Auditoria das exportações.
+
+O mecanismo de PDF deve consumir somente dados já autorizados.
+
+Não implementar atalhos que busquem informações diretamente de outras empresas ou filiais.
+
+Não deixar a geração executiva revelar indicadores derivados que permitam contornar permissões financeiras.
+
+Os dois modos de PDF deverão usar os mesmos critérios de autorização.
+
+---
+
+## 13. DESEMPENHO E CONFIABILIDADE
+
+A geração de PDFs deverá evitar processamento desnecessário.
+
+Investigar especialmente estruturas duplicadas e materializações repetidas de grandes conjuntos de dados.
+
+Preservar paginação e filtragem nas consultas existentes.
+
+Não limitar silenciosamente relatórios detalhados.
+
+Se um relatório ultrapassar os limites operacionais suportados, utilizar tratamento explícito e seguro, sem retornar um documento incompleto apresentado como completo.
+
+Não introduzir dependência obrigatória de serviços externos para gerar PDF.
+
+Garantir que o mecanismo funcione no ambiente de produção, inclusive nos containers Docker utilizados pelo CORE PDV.
+
+---
+
+## 14. RESTRIÇÕES DA MISSÃO
+
+**NÃO criar, modificar ou executar testes automatizados.**
+
+Não adicionar testes Django, frontend, integração ou E2E.
+
+Não iniciar auditoria geral do projeto.
+
+Não alterar cálculos financeiros.
+
+Não alterar as regras de comissões.
+
+Não modificar a lógica de CMV.
+
+Não alterar o estoque ou os saldos.
+
+Não modificar vendas ou pagamentos históricos.
+
+Não alterar o CORE POS.
+
+Não refatorar componentes não relacionados.
+
+Não criar um novo sistema de relatórios paralelo.
+
+Não modificar o dashboard operacional fora do necessário para as exportações.
+
+Não iniciar outra parte da Missão 3.
+
+**Esta missão é exclusivamente sobre a apresentação e a exportação dos relatórios.**
+
+---
+
+## 15. CRITÉRIOS DE CONCLUSÃO
+
+A entrega deverá garantir:
+
+1. PDFs com a identidade visual oficial do CORE PDV.
+2. Cabeçalho e rodapé profissionais.
+3. Informações corretas da empresa, filial e período.
+4. Relatório executivo organizado e compacto.
+5. Relatório detalhado completo.
+6. Remoção de duplicações desnecessárias.
+7. Tabelas legíveis e corretamente paginadas.
+8. Formatação monetária e datas brasileiras.
+9. Ausência de campos JSON brutos desnecessários no PDF.
+10. Preservação dos dados e cálculos originais.
+11. CSV e Excel íntegros.
+12. Permissões e auditoria preservadas.
+13. Interface de exportação clara e integrada.
+14. Funcionamento compatível com o ambiente Docker de produção.
+
+---
+
+## 16. ENTREGA FINAL
+
+Apresentar um relatório técnico contendo:
+
+- Diagnóstico das principais causas da paginação excessiva.
+- Arquivos modificados.
+- Arquitetura adotada para os novos PDFs.
+- Como são selecionados os indicadores de cada relatório.
+- Funcionamento do modo executivo e detalhado.
+- Como a logo oficial foi incorporada.
+- Como foram tratadas as tabelas e quebras de página.
+- Como foram preservadas as permissões.
+- Alterações na interface do Backoffice.
+- Eventuais limitações remanescentes.
+- Hash do commit.
+- Confirmação do push para `main`.
+
+Publicar a implementação na branch `main`.
+
+Não iniciar outra missão após a entrega.
+
+## RESULTADO ESPERADO
+
+O CORE PDV deverá passar a gerar relatórios com aparência de um produto SaaS profissional, utilizando sua identidade visual oficial e oferecendo informações organizadas para empresários, gestores e equipes administrativas.
+
+O relatório executivo deverá apresentar rapidamente os dados essenciais do negócio.
+
+O relatório detalhado deverá preservar a profundidade necessária para conferência e auditoria.
+
+**Nosso objetivo não é apenas reduzir páginas: é transformar os relatórios em uma ferramenta de gestão profissional e confiável, compatível com a identidade e o posicionamento comercial do CORE PDV.**

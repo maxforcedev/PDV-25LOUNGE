@@ -198,6 +198,12 @@ def render_report_export(request, *, filename, title, headers, rows, period=None
     headers, rows = tuple(headers), list(rows)
     filename = f'{filename.rsplit(".", 1)[0]}.{export_format}'
     labels = [export_label(key) for key in headers]
+    if (export_format == 'pdf' and filename == 'relatorio-vendas.pdf'
+            and request.query_params.get('scope') == 'overview'):
+        from .sales_overview_pdf import render_sales_overview
+        return render_sales_overview(
+            request, filename=filename, rows=rows, period=period, summary=summary,
+        )
     company_name = _company_name(request.branch_context)
     metadata = (
         ('Empresa', company_name),
