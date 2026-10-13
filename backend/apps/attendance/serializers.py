@@ -32,11 +32,13 @@ class AttendanceCommandSerializer(serializers.ModelSerializer):
 
 class AttendanceLegacyServiceFeeRegularizationSerializer(serializers.ModelSerializer):
     payment_count = serializers.IntegerField(read_only=True)
+    branch = serializers.IntegerField(source='branch_id', read_only=True)
+    branch_name = serializers.CharField(source='branch.name', read_only=True)
 
     class Meta:
         model = AttendanceCommand
         fields = (
-            'id', 'number', 'identifier', 'status', 'created_at', 'service_fee_rate_snapshot',
+            'id', 'number', 'identifier', 'branch', 'branch_name', 'status', 'created_at', 'service_fee_rate_snapshot',
             'payment_count',
         )
 

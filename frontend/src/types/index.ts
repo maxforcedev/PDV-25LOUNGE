@@ -2306,14 +2306,105 @@ export interface CommandPayment {
   created_at: string;
 }
 
+export type CommandFinancialStatus = "NORMAL" | "REGULARIZATION_REQUIRED" | "REGULARIZED";
+
+export interface FinancialRegularizationStatus {
+  state: CommandFinancialStatus;
+  code: "legacy_item_financial_snapshot_unknown" | "legacy_service_fee_rate_unknown" | null;
+  message: string;
+  summary_available: boolean;
+  item_ids: number[];
+}
+
 export interface LegacyServiceFeeRegularizationCommand {
   id: number;
   number: string;
   identifier: string;
+  branch: number;
+  branch_name: string;
   status: "open";
   created_at: string;
-  service_fee_rate_snapshot: null;
+  service_fee_rate_snapshot: string | null;
   payment_count: number;
+  financial_status: FinancialRegularizationStatus;
+}
+
+export interface CommandItemFinancialSnapshot {
+  promotion: number | null;
+  promotion_name: string | null;
+  promotion_discount_type: "percentage" | "fixed_amount" | null;
+  promotion_discount_value: string | null;
+  promotion_benefit: string;
+  manual_discount_intent: { type: "amount" | "percentage"; value: string };
+  manual_discount: string;
+  net_subtotal: string;
+  participates_in_service_fee: boolean;
+  participates_in_commission: boolean;
+}
+
+export interface FinancialRegularizationItem {
+  id: number;
+  product_name: string;
+  quantity: string;
+  unit_price: string;
+  gross_subtotal: string;
+  confirmed_at: string | null;
+  created_at: string;
+  financial_snapshot: Partial<CommandItemFinancialSnapshot> | null;
+  issue: "missing" | "inconsistent";
+  missing_financial_fields: string[];
+}
+
+export interface FinancialRegularizationPayment {
+  id: number;
+  amount: string;
+  status: "applied" | "reversed";
+  payment_method__name: string;
+  created_at: string;
+  reversal_of_id: number | null;
+}
+
+export interface CommandFinancialRegularizationDetail {
+  command: LegacyServiceFeeRegularizationCommand;
+  financial_status: FinancialRegularizationStatus;
+  service_fee_rate_regularization_required: boolean;
+  items: FinancialRegularizationItem[];
+  payments_visible: boolean;
+  payments: FinancialRegularizationPayment[];
+}
+
+export interface ItemFinancialRegularizationPreview {
+  preview_available: boolean;
+  reason?: string;
+  subtotal?: string;
+  promotion_discount?: string;
+  manual_discount?: string;
+  service_fee_rate?: string;
+  service_fee?: string;
+  commission_rate?: string;
+  commission_amount?: string;
+  total_due?: string;
+  paid_total?: string;
+  remaining_balance?: string;
+  payment_exceeds_total?: boolean;
+}
+
+export interface ItemFinancialRegularizationResult {
+  command_id: number;
+  item_ids: number[];
+  preview_available: boolean;
+  reason?: string;
+  total_due?: string;
+  paid_total?: string;
+  remaining_balance?: string;
+}
+
+export interface ItemFinancialRegularizationPayload {
+  items: Array<{ item: number; financial_snapshot: CommandItemFinancialSnapshot }>;
+  justification: string;
+  evidence_reference: string;
+  idempotency_key?: string;
+  preview?: boolean;
 }
 
 export interface OrderItem {

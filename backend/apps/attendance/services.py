@@ -72,6 +72,26 @@ def _operation(*, branch, operation_type, idempotency_key, payload):
     ), False
 
 
+def _legacy_item_regularization_fingerprint(*, command, confirmed, items, justification, evidence_reference,
+                                            expected_item_ids):
+    """Recognize only the normalized payload persisted before the replay fix."""
+    submitted = {entry['item']: entry['financial_snapshot'] for entry in items}
+    item_by_id = {item.pk: item for item in confirmed}
+    if set(submitted) != set(expected_item_ids) or not set(submitted).issubset(item_by_id):
+        return None
+    try:
+        snapshots = {
+            item_id: _snapshot_payload(_normalized_item_financial_snapshot(item_by_id[item_id], snapshot))
+            for item_id, snapshot in submitted.items()
+        }
+    except ValidationError:
+        return None
+    return _fingerprint({
+        'command': command.pk, 'items': snapshots, 'justification': justification,
+        'evidence_reference': evidence_reference,
+    })
+
+
 def _active_branch(branch):
     branch = Branch.objects.select_for_update().select_related('company').get(pk=branch.pk)
     if branch.status != Status.ACTIVE or branch.company.status != Status.ACTIVE:
@@ -229,13 +249,18 @@ def regularize_command_item_financials(*, command, user, items, justification, e
     command = AttendanceCommand.objects.select_for_update().select_related('branch__company').get(pk=command.pk)
     if command.status != AttendanceCommandStatus.OPEN:
         raise AttendanceConflict('command_closed', 'A regularização exige comanda aberta.')
+    request_payload = {
+        'command': command.pk, 'items': items, 'justification': justification,
+        'evidence_reference': evidence_reference,
+    }
+    operation = None
     if not preview:
-        operation, replayed = _operation(
-            branch=command.branch, operation_type=AttendanceOperationType.REGULARIZE_COMMAND_ITEM_FINANCIALS,
+        operation = AttendanceOperation.objects.select_for_update().filter(
+            branch=command.branch,
+            operation_type=AttendanceOperationType.REGULARIZE_COMMAND_ITEM_FINANCIALS,
             idempotency_key=idempotency_key,
-            payload={'command': command.pk, 'items': items, 'justification': justification, 'evidence_reference': evidence_reference},
-        )
-        if replayed:
+        ).first()
+        if operation and operation.payload_fingerprint == _fingerprint(request_payload):
             return operation.result, True
     confirmed = list(AttendanceOrderItem.objects.select_for_update().filter(
         order__command=command, status=AttendanceOrderItemStatus.CONFIRMED,
@@ -243,6 +268,17 @@ def regularize_command_item_financials(*, command, user, items, justification, e
     affected = _legacy_unfrozen_command_items(command, confirmed)
     affected_ids = {item.pk for item in affected}
     submitted = {entry['item']: entry['financial_snapshot'] for entry in items}
+    if operation:
+        legacy_fingerprint = _legacy_item_regularization_fingerprint(
+            command=command, confirmed=confirmed, items=items, justification=justification,
+            evidence_reference=evidence_reference, expected_item_ids=operation.result.get('item_ids', []),
+        )
+        if legacy_fingerprint and operation.payload_fingerprint == legacy_fingerprint:
+            return operation.result, True
+        raise AttendanceConflict(
+            'idempotency_key_conflict',
+            'A chave de idempotência já foi usada com outros dados.',
+        )
     if affected_ids != set(submitted):
         raise AttendanceConflict('legacy_item_financial_snapshot_incomplete', 'Informe condições financeiras comprovadas para todos os itens históricos pendentes.')
     before = {str(item.pk): item.financial_snapshot for item in affected}
@@ -257,6 +293,14 @@ def regularize_command_item_financials(*, command, user, items, justification, e
         preview_data = calculate_command_preview(branch=command.branch, order_items=confirmed, discount=command.checkout_discount, service_fee_waived=command.checkout_service_fee_waived, seller_user=command.seller_user, include_internal_snapshots=True, item_financials_frozen=True, service_fee_rate_snapshot=command.service_fee_rate_snapshot, commission_rate_snapshot=command.commission_rate_snapshot)
         paid = AttendancePayment.objects.filter(command=command, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True).aggregate(total=Coalesce(Sum('amount'), Value(Decimal('0.00'), output_field=DecimalField(max_digits=14, decimal_places=2))))['total']
         return {'preview_available': True, 'subtotal': str(preview_data['subtotal']), 'promotion_discount': str(preview_data['promotion_discount_total']), 'manual_discount': str(preview_data['discount']), 'service_fee_rate': str(preview_data['service_fee_rate']), 'service_fee': str(preview_data['service_fee_amount']), 'commission_rate': str(preview_data['commission_rate']), 'commission_amount': str(preview_data['commission_amount']), 'total_due': str(preview_data['total']), 'paid_total': str(paid), 'remaining_balance': str(max(preview_data['total'] - paid, Decimal('0.00'))), 'payment_exceeds_total': paid > preview_data['total']}, False
+    operation, replayed = _operation(
+        branch=command.branch,
+        operation_type=AttendanceOperationType.REGULARIZE_COMMAND_ITEM_FINANCIALS,
+        idempotency_key=idempotency_key,
+        payload=request_payload,
+    )
+    if replayed:
+        return operation.result, True
     for item in affected:
         item.save(update_fields=('financial_snapshot', 'updated_at'))
     if not _has_unknown_legacy_service_fee_rate(command):

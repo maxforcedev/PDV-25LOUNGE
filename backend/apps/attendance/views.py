@@ -6,6 +6,7 @@ from rest_framework.views import APIView
 
 from apps.commands.permissions import CommandFunctionalPermission
 from apps.companies.selectors import user_has_branch_permission
+from apps.saas.permissions import support_permission_decision
 
 from .models import AttendanceCommand, AttendanceCommandStatus, AttendanceOrderItem, AttendanceOrderItemStatus, AttendancePaymentStatus
 from .serializers import (
@@ -80,12 +81,33 @@ class AttendanceCommandFinancialRegularizationView(APIView):
         command = get_object_or_404(AttendanceCommand, pk=command_id, branch=branch)
         confirmed = list(AttendanceOrderItem.objects.filter(order__command=command, status=AttendanceOrderItemStatus.CONFIRMED).order_by('id'))
         affected = _legacy_unfrozen_command_items(command, confirmed)
+        required_snapshot_fields = (
+            'promotion', 'promotion_name', 'promotion_discount_type', 'promotion_discount_value',
+            'promotion_benefit', 'manual_discount_intent', 'manual_discount', 'net_subtotal',
+            'participates_in_service_fee', 'participates_in_commission',
+        )
+        support_can_view = support_permission_decision(request, branch_id=branch.pk)
+        payments_visible = bool(
+            support_can_view or request.user.is_superuser
+            or user_has_branch_permission(request.user, branch.pk, 'commands.payments.view')
+        )
         return Response({
             'command': AttendanceLegacyServiceFeeRegularizationSerializer(command).data,
             'financial_status': command_financial_status(command, confirmed),
             'service_fee_rate_regularization_required': command.service_fee_rate_snapshot is None,
-            'items': [{'id': item.pk, 'product_name': item.product_name, 'quantity': str(item.quantity), 'unit_price': str(item.unit_price), 'confirmed_at': item.confirmed_at, 'created_at': item.created_at, 'financial_snapshot': item.financial_snapshot, 'issue': 'inconsistent' if item.financial_snapshot else 'missing'} for item in affected],
-            'payments': list(command.payments.select_related('payment_method').values('id', 'amount', 'status', 'payment_method__name', 'created_at', 'reversal_of_id')) if request.user.is_superuser or user_has_branch_permission(request.user, branch.pk, 'commands.payments.view') else [],
+            'items': [{
+                'id': item.pk, 'product_name': item.product_name, 'quantity': str(item.quantity),
+                'unit_price': str(item.unit_price), 'gross_subtotal': str(item.unit_price * item.quantity),
+                'confirmed_at': item.confirmed_at, 'created_at': item.created_at,
+                'financial_snapshot': item.financial_snapshot,
+                'issue': 'inconsistent' if item.financial_snapshot else 'missing',
+                'missing_financial_fields': [
+                    field for field in required_snapshot_fields
+                    if not isinstance(item.financial_snapshot, dict) or field not in item.financial_snapshot
+                ],
+            } for item in affected],
+            'payments_visible': payments_visible,
+            'payments': list(command.payments.select_related('payment_method').values('id', 'amount', 'status', 'payment_method__name', 'created_at', 'reversal_of_id')) if payments_visible else [],
         })
 
 
@@ -105,6 +127,14 @@ class AttendanceCommandItemFinancialRegularizationView(APIView):
             result, replayed = regularize_command_item_financials(command=command, user=request.user, **data)
         except AttendanceConflict as error:
             return Response({'code': error.code, 'detail': error.message}, status=409)
+        support_can_view = support_permission_decision(request, branch_id=branch.pk)
+        if not (support_can_view or request.user.is_superuser or user_has_branch_permission(
+            request.user, branch.pk, 'commissions.view',
+        )):
+            result = {
+                key: value for key, value in result.items()
+                if key not in {'commission_rate', 'commission_amount'}
+            }
         response = Response(result)
         if replayed:
             response['Idempotency-Replayed'] = 'true'
