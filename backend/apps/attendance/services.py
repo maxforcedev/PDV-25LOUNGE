@@ -202,7 +202,8 @@ def financial_state(command, *, lock=False, discount=None, service_fee_waived=No
             if service_fee_waived is None else service_fee_waived
         ),
         seller_user=command.seller_user,
-        lock=lock, include_internal_snapshots=True,
+        lock=lock, include_internal_snapshots=True, item_financials_frozen=True,
+        service_fee_rate_snapshot=command.service_fee_rate_snapshot,
         commission_rate_snapshot=command.commission_rate_snapshot,
     )
     payments = AttendancePayment.objects.filter(
@@ -691,6 +692,9 @@ def record_payment(*, command, user, payment_method_id, amount, idempotency_key,
         command=command, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
     )
     has_payment = bool(list(paid_rows))
+    payment_started = AttendancePayment.objects.select_for_update(of=('self',)).filter(
+        command=command, status=AttendancePaymentStatus.APPLIED,
+    ).exists()
     if command.seller_user_id is None and not (has_payment and _is_legacy_unassigned_command(command)):
         raise ValidationError({'seller_user': 'Informe o atendente responsável antes do primeiro pagamento.'})
     requested_discount = strict_decimal(
@@ -722,6 +726,9 @@ def record_payment(*, command, user, payment_method_id, amount, idempotency_key,
         raise AttendanceConflict('command_overpayment', f'O pagamento excede o saldo de R$ {remaining:.2f}.')
     if not has_payment:
         _freeze_command_item_financials(command, preview['_snapshots'])
+        if not payment_started:
+            command.service_fee_rate_snapshot = preview['service_fee_rate']
+            command.save(update_fields=('service_fee_rate_snapshot', 'updated_at'))
     payment = AttendancePayment.objects.create(
         company=command.company, branch=command.branch, command=command,
         payment_method=method, amount=amount, received_amount=received_amount,
@@ -735,7 +742,7 @@ def record_payment(*, command, user, payment_method_id, amount, idempotency_key,
 
 @transaction.atomic
 def reverse_payment(*, payment, user, reason, idempotency_key, audit_metadata=None):
-    payment = AttendancePayment.objects.select_for_update().select_related(
+    payment = AttendancePayment.objects.select_for_update(of=('self',)).select_related(
         'command__branch__company', 'payment_method', 'cash_session',
     ).get(pk=payment.pk)
     command = payment.command

@@ -1,24 +1,27 @@
 from decimal import Decimal
+from datetime import timedelta
 from uuid import uuid4
 
 from django.test import TestCase
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.attendance.models import AttendanceOrderItem
 from apps.attendance.services import (
     AttendanceConflict, add_order_items, command_summary, confirm_order_item,
-    finalize_command, open_command, record_payment, set_command_seller, transfer_items,
+    finalize_command, financial_state, open_command, record_payment, reverse_payment,
+    set_command_seller, transfer_items,
 )
 from apps.cash.models import CashRegister
 from apps.cash.services import open_session
-from apps.companies.models import UserBranchAccess, UserCommissionOverride, UserCompanyAccess
+from apps.companies.models import Status, UserBranchAccess, UserCommissionOverride, UserCompanyAccess
 from apps.inventory.models import Stock, StockMovement
 from apps.products.models import (
     Category, InventoryBehavior, Product, ProductBranchConfig, Unit,
 )
 from apps.production.models import Ticket
-from apps.sales.models import Sale
+from apps.sales.models import Promotion, PromotionDiscountType, Sale
 from apps.sales.services import ensure_default_payment_methods
 from apps.saas.tests.helpers import create_complete_test_plan, create_operational_test_tenant
 
@@ -35,7 +38,7 @@ class POS5AttendanceTests(TestCase):
                 'pos5-attendance',
                 enabled_features=(
                     'tables', 'commands', 'cash_register', 'production', 'products', 'inventory',
-                    'financial',
+                    'financial', 'promotions',
                 ),
             ),
         )
@@ -349,6 +352,163 @@ class POS5AttendanceTests(TestCase):
 
         self.assertTrue(item.participates_in_service_fee)
         self.assertTrue(item.participates_in_commission)
+
+    def test_paid_command_keeps_ended_promotion_and_only_applies_new_promotion_to_new_item(self):
+        promotion = Promotion.objects.create(
+            company=self.company, branch=self.branch, name='POS5 initial promotion',
+            discount_type=PromotionDiscountType.PERCENTAGE, discount_value=Decimal('10.00'),
+            starts_at=timezone.now() - timedelta(minutes=1), status=Status.ACTIVE,
+        )
+        promotion.products.add(self.product)
+        command, _ = self.open_standalone(identifier='Frozen promotion')
+        self.add_confirmed_item(command)
+        record_payment(
+            command=command, user=self.owner, payment_method_id=self.cash_method.pk,
+            amount='4.00', received_amount='4.00', cash_session_id=self.cash_session.pk,
+            idempotency_key=uuid4(),
+        )
+        promotion.status = Status.INACTIVE
+        promotion.save(update_fields=('status', 'updated_at'))
+        later_promotion = Promotion.objects.create(
+            company=self.company, branch=self.branch, name='POS5 later promotion',
+            discount_type=PromotionDiscountType.PERCENTAGE, discount_value=Decimal('50.00'),
+            starts_at=timezone.now() - timedelta(minutes=1), status=Status.ACTIVE,
+        )
+        later_promotion.products.add(self.product)
+        _order, items, _ = add_order_items(
+            command=command, user=self.owner,
+            items=[{'product': self.product.pk, 'quantity': Decimal('1.000')}],
+            idempotency_key=uuid4(),
+        )
+        confirm_order_item(item=items[0], user=self.owner, idempotency_key=uuid4())
+
+        preview, _paid, _remaining = financial_state(command)
+
+        self.assertEqual(preview['promotion_discount_total'], Decimal('6.00'))
+        self.assertEqual(
+            [item['promotion_benefit'] for item in preview['items']],
+            [Decimal('1.00'), Decimal('5.00')],
+        )
+        closed = self.close(command)
+        self.assertEqual(closed.sale.promotion_discount_total, Decimal('6.00'))
+
+    def test_first_payment_freezes_service_fee_rate(self):
+        settings = self.branch.settings
+        settings.charges_service_fee = True
+        settings.service_fee_rate = Decimal('10.00')
+        settings.save(update_fields=('charges_service_fee', 'service_fee_rate', 'updated_at'))
+        command, _ = self.open_standalone(identifier='Frozen service fee')
+        self.add_confirmed_item(command)
+        record_payment(
+            command=command, user=self.owner, payment_method_id=self.cash_method.pk,
+            amount='5.00', received_amount='5.00', cash_session_id=self.cash_session.pk,
+            idempotency_key=uuid4(),
+        )
+        command.refresh_from_db()
+        settings.service_fee_rate = Decimal('15.00')
+        settings.save(update_fields=('service_fee_rate', 'updated_at'))
+
+        preview, _paid, remaining = financial_state(command)
+
+        self.assertEqual(command.service_fee_rate_snapshot, Decimal('10.00'))
+        self.assertEqual(preview['service_fee_rate'], Decimal('10.00'))
+        self.assertEqual(preview['service_fee_amount'], Decimal('1.00'))
+        self.assertEqual(remaining, Decimal('6.00'))
+        closed = self.close(command)
+        self.assertEqual(closed.sale.service_fee_rate, Decimal('10.00'))
+        self.assertEqual(closed.sale.service_fee_amount, Decimal('1.00'))
+
+    def test_disabled_service_fee_freezes_without_charge(self):
+        settings = self.branch.settings
+        settings.charges_service_fee = False
+        settings.service_fee_rate = Decimal('10.00')
+        settings.save(update_fields=('charges_service_fee', 'service_fee_rate', 'updated_at'))
+        command, _ = self.open_standalone(identifier='No service fee')
+        self.add_confirmed_item(command)
+        record_payment(
+            command=command, user=self.owner, payment_method_id=self.cash_method.pk,
+            amount='4.00', received_amount='4.00', cash_session_id=self.cash_session.pk,
+            idempotency_key=uuid4(),
+        )
+        command.refresh_from_db()
+        settings.charges_service_fee = True
+        settings.service_fee_rate = Decimal('15.00')
+        settings.save(update_fields=('charges_service_fee', 'service_fee_rate', 'updated_at'))
+
+        preview, _paid, _remaining = financial_state(command)
+
+        self.assertEqual(command.service_fee_rate_snapshot, Decimal('0.00'))
+        self.assertEqual(preview['service_fee_amount'], Decimal('0.00'))
+
+    def test_waived_service_fee_remains_zero_with_its_rate_snapshot(self):
+        settings = self.branch.settings
+        settings.charges_service_fee = True
+        settings.service_fee_rate = Decimal('10.00')
+        settings.save(update_fields=('charges_service_fee', 'service_fee_rate', 'updated_at'))
+        command, _ = self.open_standalone(identifier='Waived service fee')
+        self.add_confirmed_item(command)
+        record_payment(
+            command=command, user=self.owner, payment_method_id=self.cash_method.pk,
+            amount='4.00', received_amount='4.00', cash_session_id=self.cash_session.pk,
+            service_fee_waived=True, idempotency_key=uuid4(),
+        )
+        command.refresh_from_db()
+        settings.service_fee_rate = Decimal('15.00')
+        settings.save(update_fields=('service_fee_rate', 'updated_at'))
+
+        preview, _paid, _remaining = financial_state(command)
+
+        self.assertEqual(command.service_fee_rate_snapshot, Decimal('10.00'))
+        self.assertEqual(preview['service_fee_amount'], Decimal('0.00'))
+
+    def test_custom_commission_remains_independent_from_service_fee_snapshot(self):
+        seller = self.seller(commission_rate=Decimal('7.00'))
+        settings = self.branch.settings
+        settings.charges_service_fee = True
+        settings.service_fee_rate = Decimal('10.00')
+        settings.save(update_fields=('charges_service_fee', 'service_fee_rate', 'updated_at'))
+        command, _ = open_command(
+            branch=self.branch, user=self.owner, seller_user=seller.pk,
+            idempotency_key=uuid4(), identifier='Independent rates',
+        )
+        self.add_confirmed_item(command)
+        record_payment(
+            command=command, user=self.owner, payment_method_id=self.cash_method.pk,
+            amount='5.00', received_amount='5.00', cash_session_id=self.cash_session.pk,
+            idempotency_key=uuid4(),
+        )
+        command.refresh_from_db()
+        settings.service_fee_rate = Decimal('15.00')
+        settings.save(update_fields=('service_fee_rate', 'updated_at'))
+
+        preview, _paid, _remaining = financial_state(command)
+
+        self.assertEqual(preview['service_fee_rate'], Decimal('10.00'))
+        self.assertEqual(preview['commission_rate'], Decimal('7.00'))
+        self.assertEqual(preview['commission_amount'], Decimal('0.70'))
+
+    def test_historical_paid_command_does_not_invent_service_fee_snapshot(self):
+        command, _ = self.open_standalone(identifier='Historical service fee')
+        self.add_confirmed_item(command)
+        payment = record_payment(
+            command=command, user=self.owner, payment_method_id=self.cash_method.pk,
+            amount='4.00', received_amount='4.00', cash_session_id=self.cash_session.pk,
+            idempotency_key=uuid4(),
+        )
+        type(command).objects.filter(pk=command.pk).update(service_fee_rate_snapshot=None)
+        command.refresh_from_db()
+        reverse_payment(
+            payment=payment, user=self.owner, reason='Teste de legado', idempotency_key=uuid4(),
+        )
+
+        record_payment(
+            command=command, user=self.owner, payment_method_id=self.cash_method.pk,
+            amount='2.00', received_amount='2.00', cash_session_id=self.cash_session.pk,
+            idempotency_key=uuid4(),
+        )
+        command.refresh_from_db()
+
+        self.assertIsNone(command.service_fee_rate_snapshot)
 
     def test_item_transfers_keep_history_between_standalone_commands(self):
         source, _ = self.open_standalone(identifier='Source')
