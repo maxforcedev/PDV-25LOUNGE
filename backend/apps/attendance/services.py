@@ -148,6 +148,77 @@ def _freeze_command_item_financials(command, financial_snapshots):
         item.save(update_fields=('financial_snapshot', 'updated_at'))
 
 
+@transaction.atomic
+def regularize_command_service_fee_rate(*, command, user, service_fee_rate, justification,
+                                        evidence_reference, idempotency_key, audit_metadata=None):
+    """Persist the evidenced historical rate without changing the existing ledger."""
+    service_fee_rate = strict_decimal(
+        service_fee_rate, field='service_fee_rate', decimal_places=2, max_digits=5,
+    )
+    if not Decimal('0.00') <= service_fee_rate <= Decimal('100.00'):
+        raise ValidationError({'service_fee_rate': 'A taxa de serviço deve estar entre 0 e 100.'})
+    justification = (justification or '').strip()
+    evidence_reference = (evidence_reference or '').strip()
+    if not justification:
+        raise ValidationError({'justification': 'Informe a justificativa da regularização.'})
+    if not evidence_reference:
+        raise ValidationError({'evidence_reference': 'Informe a referência da evidência histórica.'})
+
+    command = AttendanceCommand.objects.select_for_update().select_related('branch__company').get(pk=command.pk)
+    operation, replayed = _operation(
+        branch=command.branch,
+        operation_type=AttendanceOperationType.REGULARIZE_COMMAND_SERVICE_FEE,
+        idempotency_key=idempotency_key,
+        payload={
+            'command': command.pk,
+            'service_fee_rate': str(service_fee_rate),
+            'justification': justification,
+            'evidence_reference': evidence_reference,
+        },
+    )
+    if replayed:
+        return command, True
+    if command.status != AttendanceCommandStatus.OPEN:
+        raise AttendanceConflict('command_closed', 'A regularização exige comanda aberta.')
+    if not _has_unknown_legacy_service_fee_rate(command):
+        raise AttendanceConflict(
+            'legacy_service_fee_rate_not_regularizable',
+            'A comanda não possui uma taxa histórica pendente de regularização.',
+        )
+
+    before = model_snapshot(command, ('service_fee_rate_snapshot',))
+    command.service_fee_rate_snapshot = service_fee_rate
+    preview, paid, remaining = financial_state(command, lock=True)
+    if paid > preview['total']:
+        raise AttendanceConflict(
+            'command_paid_exceeds_regularized_total',
+            'Os pagamentos existentes excedem o total com a taxa histórica informada.',
+        )
+    command.save(update_fields=('service_fee_rate_snapshot', 'updated_at'))
+    operation.result = {
+        'command_id': command.pk,
+        'service_fee_rate': str(service_fee_rate),
+        'total_due': str(preview['total']),
+        'paid_total': str(paid),
+        'remaining_balance': str(remaining),
+    }
+    operation.save(update_fields=('result', 'updated_at'))
+    audit_log(
+        actor=user, action='attendance.command.service_fee_rate.regularize', obj=command,
+        company=command.company, branch=command.branch, before=before,
+        after=model_snapshot(command, ('service_fee_rate_snapshot',)),
+        metadata=_audit_metadata(
+            audit_metadata,
+            operation_id=operation.pk,
+            idempotency_key=str(idempotency_key),
+            justification=justification,
+            evidence_reference=evidence_reference,
+            financial_state=operation.result,
+        ),
+    )
+    return command, False
+
+
 def _audit_metadata(metadata=None, **values):
     return {**(metadata or {}), **values}
 
@@ -738,8 +809,8 @@ def record_payment(*, command, user, payment_method_id, amount, idempotency_key,
     preview, paid, remaining = financial_state(command, lock=True)
     if amount > remaining:
         raise AttendanceConflict('command_overpayment', f'O pagamento excede o saldo de R$ {remaining:.2f}.')
+    _freeze_command_item_financials(command, preview['_snapshots'])
     if not has_payment:
-        _freeze_command_item_financials(command, preview['_snapshots'])
         if not payment_started:
             command.service_fee_rate_snapshot = preview['service_fee_rate']
             command.save(update_fields=('service_fee_rate_snapshot', 'updated_at'))

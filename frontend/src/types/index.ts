@@ -2306,6 +2306,16 @@ export interface CommandPayment {
   created_at: string;
 }
 
+export interface LegacyServiceFeeRegularizationCommand {
+  id: number;
+  number: string;
+  identifier: string;
+  status: "open";
+  created_at: string;
+  service_fee_rate_snapshot: null;
+  payment_count: number;
+}
+
 export interface OrderItem {
   id: number;
   order: number;

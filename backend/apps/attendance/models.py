@@ -58,6 +58,7 @@ class AttendanceOperationType(models.TextChoices):
     TABLE_CANCEL_ORDER = 'table_cancel_order', 'Cancelar pedido de mesa'
     TABLE_SET_CUSTOMER = 'table_set_customer', 'Alterar cliente da mesa'
     TABLE_CHECKOUT_CONTEXT = 'table_checkout_context', 'Atualizar contexto financeiro da mesa'
+    REGULARIZE_COMMAND_SERVICE_FEE = 'regularize_command_service_fee', 'Regularizar taxa histórica de comanda'
 
 
 class AttendanceCommand(BaseModel):

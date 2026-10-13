@@ -61,13 +61,14 @@ function CommandsPage() {
   return (
     <>
       <PageHeader title="Comandas" description="Comandas abertas e fechadas da filial." action={
-        canOpen ? (
           <div className="flex flex-wrap items-end gap-2">
+            <Link href="/comandas/regularizacoes-financeiras" className="btn btn-secondary">Regularizações financeiras</Link>
+            {canOpen ? <>
             <input className="input" value={identifier} onChange={(e) => setIdentifier(e.target.value)} disabled={opening} placeholder="Identificação (ex.: Junior)" />
             <div className="min-w-60"><CustomerQuickPicker value={customer} onChange={setCustomer} disabled={opening} /></div>
             <Button loading={opening} onClick={() => void openCommand()}><Plus className="size-4" />Abrir</Button>
+            </> : null}
           </div>
-        ) : undefined
       } />
       <div className="space-y-4 p-4 sm:p-6 lg:p-8">
         {error && <Alert message={error} />}

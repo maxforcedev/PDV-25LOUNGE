@@ -32,11 +32,13 @@ class CommandFunctionalPermission(BasePermission):
         'payment_summary': 'commands.payments.view',
         'record_payment': 'commands.payments.record',
         'reverse_payment': 'commands.payments.reverse',
+        'legacy_service_fee_regularizations': 'commands.view',
+        'regularize_service_fee_rate': 'commands.regularize_service_fee_rate',
     }
 
     @staticmethod
     def _feature(view):
-        if view.basename == 'table':
+        if getattr(view, 'basename', None) == 'table':
             return 'tables'
         return 'commands'
 

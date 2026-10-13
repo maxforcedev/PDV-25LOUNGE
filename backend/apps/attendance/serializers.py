@@ -30,6 +30,26 @@ class AttendanceCommandSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class AttendanceLegacyServiceFeeRegularizationSerializer(serializers.ModelSerializer):
+    payment_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = AttendanceCommand
+        fields = (
+            'id', 'number', 'identifier', 'status', 'created_at', 'service_fee_rate_snapshot',
+            'payment_count',
+        )
+
+
+class AttendanceServiceFeeRegularizationInputSerializer(serializers.Serializer):
+    service_fee_rate = serializers.DecimalField(
+        max_digits=5, decimal_places=2, min_value=Decimal('0.00'), max_value=Decimal('100.00'),
+    )
+    justification = serializers.CharField(min_length=3, max_length=2000, trim_whitespace=True)
+    evidence_reference = serializers.CharField(min_length=3, max_length=1000, trim_whitespace=True)
+    idempotency_key = serializers.UUIDField()
+
+
 class AttendanceOrderItemSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)

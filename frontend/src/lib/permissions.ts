@@ -35,6 +35,7 @@ export const permissions = {
   viewCommands: "commands.view", openCommand: "commands.open", addCommandItems: "commands.add_items", cancelCommandItems: "commands.cancel_items", finalizeCommand: "commands.finalize",
   transferCommandItems: "commands.transfer_items", mergeCommands: "commands.merge", splitCommand: "commands.split",
   viewCommandPayments: "commands.payments.view", recordCommandPayment: "commands.payments.record", reverseCommandPayment: "commands.payments.reverse",
+  regularizeCommandServiceFee: "commands.regularize_service_fee_rate",
   viewPaymentMethod: "payment_methods.view", changePaymentMethod: "payment_methods.change",
   viewSalesReport: "reports.view_sales", viewConsumptionsReport: "reports.view_consumptions", viewCashReport: "reports.view_cash", viewWithdrawalsReport: "reports.view_withdrawals", viewInventoryReport: "reports.view_inventory", viewOperationalResult: "reports.view_operational_result", viewStockConsumptionReport: "reports.view_stock_consumption", exportReports: "reports.export",
   viewPromotion: "promotions.view", changePromotion: "promotions.change",
