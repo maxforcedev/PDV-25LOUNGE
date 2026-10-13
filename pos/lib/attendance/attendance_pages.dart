@@ -246,7 +246,12 @@ class _CommandDetailPageState extends State<CommandDetailPage> {
   bool _allowed(String permission) =>
       _open && _can(widget.controller, permission);
   bool get _paymentStarted =>
-      _ledger?.payments.any((payment) => payment.status == 'applied') ?? false;
+       _ledger?.payments.any((payment) => payment.status == 'applied') ?? false;
+  bool get _financialBlocked =>
+      _detail?.financialStatus['state'] == 'REGULARIZATION_REQUIRED' ||
+      _ledger?.financialStatus['state'] == 'REGULARIZATION_REQUIRED';
+  String get _financialBlockMessage =>
+      '${_detail?.financialStatus['message'] ?? _ledger?.financialStatus['message'] ?? 'Regularização administrativa necessária.'}';
   bool get _canSetSeller =>
       _allowed('commands.open') &&
       (!_paymentStarted || _detail?.command.sellerUserId == null);
@@ -418,7 +423,10 @@ class _CommandDetailPageState extends State<CommandDetailPage> {
               ? const Center(
                   child: Text('Não foi possível carregar a comanda.'))
               : ListView(padding: const EdgeInsets.all(16), children: [
-                  _SummaryCard(summary: detail.summary),
+                   if (_financialBlocked)
+                     Card(child: Padding(padding: const EdgeInsets.all(16), child: Text('PENDÊNCIA FINANCEIRA\n$_financialBlockMessage\nItens e pagamentos históricos continuam disponíveis. Não registre pagamentos ou finalize esta comanda até a regularização administrativa.', style: const TextStyle(color: Colors.deepOrange, fontWeight: FontWeight.w700))))
+                   else
+                     _SummaryCard(summary: detail.summary),
                   const SizedBox(height: 12),
                   Card(
                     child: ListTile(
@@ -478,13 +486,14 @@ class _CommandDetailPageState extends State<CommandDetailPage> {
                   _LedgerCard(
                       ledger: _ledger,
                       canReverse: _allowed('commands.payments.reverse'),
+                      financialBlocked: _financialBlocked,
                       onReverse: _reverse),
-                  if (_allowed('commands.payments.record'))
+                   if (_allowed('commands.payments.record') && !_financialBlocked)
                     FilledButton.icon(
                         onPressed: _payment,
                         icon: const Icon(Icons.payments_outlined),
                         label: const Text('REGISTRAR PAGAMENTO')),
-                  if (_allowed('commands.finalize'))
+                   if (_allowed('commands.finalize') && !_financialBlocked)
                     OutlinedButton.icon(
                         onPressed: _bill,
                         icon: Icon(detail.command.billRequested
@@ -526,10 +535,11 @@ class _LedgerCard extends StatelessWidget {
   const _LedgerCard(
       {required this.ledger,
       required this.canReverse,
-      required this.onReverse});
+      required this.onReverse, required this.financialBlocked});
   final AttendanceLedger? ledger;
   final bool canReverse;
   final ValueChanged<AttendancePayment> onReverse;
+  final bool financialBlocked;
   @override
   Widget build(BuildContext context) => Card(
       child: Padding(
@@ -537,7 +547,7 @@ class _LedgerCard extends StatelessWidget {
           child:
               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('Pagamentos', style: Theme.of(context).textTheme.titleMedium),
-            _SummaryCard(summary: ledger?.summary ?? const {}),
+            if (!financialBlocked) _SummaryCard(summary: ledger?.summary ?? const {}),
             ...?ledger?.payments.map((payment) => ListTile(
                 contentPadding: EdgeInsets.zero,
                 title: Text(payment.paymentMethodName),

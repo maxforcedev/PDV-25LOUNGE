@@ -50,6 +50,34 @@ class AttendanceServiceFeeRegularizationInputSerializer(serializers.Serializer):
     idempotency_key = serializers.UUIDField()
 
 
+class AttendanceItemFinancialRegularizationInputSerializer(serializers.Serializer):
+    items = serializers.ListField(child=serializers.DictField(), allow_empty=False)
+    justification = serializers.CharField(min_length=3, max_length=2000, trim_whitespace=True)
+    evidence_reference = serializers.CharField(min_length=3, max_length=1000, trim_whitespace=True)
+    idempotency_key = serializers.UUIDField(required=False)
+    preview = serializers.BooleanField(required=False, default=False)
+
+    def validate_items(self, values):
+        normalized, seen = [], set()
+        for value in values:
+            if set(value) != {'item', 'financial_snapshot'}:
+                raise serializers.ValidationError('Cada item deve informar somente o item e o snapshot financeiro.')
+            try:
+                item = int(value['item'])
+            except (TypeError, ValueError) as error:
+                raise serializers.ValidationError('Item inválido.') from error
+            if item < 1 or item in seen or not isinstance(value['financial_snapshot'], dict):
+                raise serializers.ValidationError('Itens devem ser únicos e conter um snapshot financeiro.')
+            normalized.append({'item': item, 'financial_snapshot': value['financial_snapshot']})
+            seen.add(item)
+        return normalized
+
+    def validate(self, attrs):
+        if not attrs['preview'] and 'idempotency_key' not in attrs:
+            raise serializers.ValidationError({'idempotency_key': 'Informe a chave de idempotência.'})
+        return attrs
+
+
 class AttendanceOrderItemSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)

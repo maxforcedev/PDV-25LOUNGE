@@ -59,6 +59,7 @@ class AttendanceOperationType(models.TextChoices):
     TABLE_SET_CUSTOMER = 'table_set_customer', 'Alterar cliente da mesa'
     TABLE_CHECKOUT_CONTEXT = 'table_checkout_context', 'Atualizar contexto financeiro da mesa'
     REGULARIZE_COMMAND_SERVICE_FEE = 'regularize_command_service_fee', 'Regularizar taxa histórica de comanda'
+    REGULARIZE_COMMAND_ITEM_FINANCIALS = 'regularize_command_item_financials', 'Regularizar condições históricas de itens'
 
 
 class AttendanceCommand(BaseModel):
@@ -174,7 +175,7 @@ class AttendanceTableGroupMembership(BaseModel):
 class AttendanceOperation(BaseModel):
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='attendance_operations')
     branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='attendance_operations')
-    operation_type = models.CharField(max_length=32, choices=AttendanceOperationType.choices)
+    operation_type = models.CharField(max_length=40, choices=AttendanceOperationType.choices)
     idempotency_key = models.UUIDField(editable=False)
     payload_fingerprint = models.CharField(max_length=64, editable=False)
     result = models.JSONField(default=dict)

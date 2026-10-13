@@ -61,7 +61,7 @@ from apps.attendance.serializers import (
     TableCheckoutContextSerializer, TableCloseSerializer, TableItemDiscountSerializer,
 )
 from apps.attendance.services import (
-    AttendanceConflict, add_order_items, cancel_order_item, command_summary, confirm_order_item,
+    AttendanceConflict, add_order_items, cancel_order_item, command_financial_status, command_summary, confirm_order_item,
     finalize_command as finalize_attendance_command, open_command as open_attendance_command,
     record_payment as record_attendance_payment,
     reverse_payment as reverse_attendance_payment,
@@ -1304,10 +1304,12 @@ class POSAttendanceCommandDetailView(POSAttendanceView):
         self._require(permissions, 'commands.view', 'Você não possui permissão para consultar comandas nesta filial.')
         command = self._command(device, command_id)
         data = AttendanceCommandSerializer(command).data
-        try:
+        financial_status = command_financial_status(command)
+        data['financial_status'] = financial_status
+        if financial_status['summary_available']:
             data['summary'] = command_summary(command)
-        except AttendanceConflict as error:
-            self._domain(error)
+        else:
+            data['summary'] = None
         data['orders'] = list(AttendanceOrderItem.objects.filter(
             order__command=command,
         ).values('id', 'order_id', 'product_id', 'product_name', 'quantity', 'unit', 'unit_price', 'modifier_snapshot', 'notes', 'status', 'confirmed_at'))
@@ -1456,11 +1458,12 @@ class POSAttendanceCommandPaymentView(POSAttendanceView):
         device, _, permissions, _ = self.context(request)
         self._require(permissions, 'commands.payments.view', 'Você não possui permissão para consultar pagamentos.')
         command = self._command(device, command_id)
-        try:
+        financial_status = command_financial_status(command)
+        if financial_status['summary_available']:
             summary = command_summary(command)
-        except AttendanceConflict as error:
-            self._domain(error)
-        return Response({'summary': summary, 'payments': AttendancePaymentSerializer(command.payments.select_related('payment_method'), many=True).data})
+        else:
+            summary = None
+        return Response({'summary': summary, 'financial_status': financial_status, 'payments': AttendancePaymentSerializer(command.payments.select_related('payment_method'), many=True).data})
 
     def post(self, request, command_id):
         device, operator, permissions, operator_session = self.context(request)

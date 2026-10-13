@@ -450,6 +450,7 @@ class AttendanceCommandDetail {
     required this.command,
     required this.items,
     required this.summary,
+    this.financialStatus = const {},
   });
 
   factory AttendanceCommandDetail.fromJson(Map<String, dynamic> json) =>
@@ -460,11 +461,13 @@ class AttendanceCommandDetail {
             .map(AttendanceOrderItem.fromJson)
             .toList(growable: false),
         summary: json['summary'] as Map<String, dynamic>? ?? const {},
+        financialStatus: json['financial_status'] as Map<String, dynamic>? ?? const {},
       );
 
   final AttendanceCommand command;
   final List<AttendanceOrderItem> items;
   final Map<String, dynamic> summary;
+  final Map<String, dynamic> financialStatus;
 }
 
 class AttendanceOrderItem {
@@ -534,7 +537,7 @@ class AttendancePayment {
 }
 
 class AttendanceLedger {
-  const AttendanceLedger({required this.summary, required this.payments});
+  const AttendanceLedger({required this.summary, required this.payments, this.financialStatus = const {}});
 
   factory AttendanceLedger.fromJson(Map<String, dynamic> json) =>
       AttendanceLedger(
@@ -543,8 +546,10 @@ class AttendanceLedger {
             .cast<Map<String, dynamic>>()
             .map(AttendancePayment.fromJson)
             .toList(growable: false),
+        financialStatus: json['financial_status'] as Map<String, dynamic>? ?? const {},
       );
 
   final Map<String, dynamic> summary;
   final List<AttendancePayment> payments;
+  final Map<String, dynamic> financialStatus;
 }

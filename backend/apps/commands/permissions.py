@@ -34,6 +34,8 @@ class CommandFunctionalPermission(BasePermission):
         'reverse_payment': 'commands.payments.reverse',
         'legacy_service_fee_regularizations': 'commands.view',
         'regularize_service_fee_rate': 'commands.regularize_service_fee_rate',
+        'financial_regularization_detail': 'commands.view',
+        'regularize_item_financials': 'commands.regularize_item_financial_snapshots',
     }
 
     @staticmethod

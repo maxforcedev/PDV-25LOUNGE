@@ -25,7 +25,7 @@ from apps.sales.services import (
     split_modifier_snapshot,
     branch_cost_map, branch_price_map, calculate_command_preview, calculate_order_items_preview,
     calculate_table_preview, finalize_sale, prepare_sale_products,
-    normalize_discount_intent, resolve_modifiers, stock_requirements_for_product, strict_decimal,
+    normalize_discount_intent, resolve_discount_intent, resolve_modifiers, stock_requirements_for_product, strict_decimal,
 )
 
 from .models import (
@@ -118,14 +118,55 @@ def _has_unknown_legacy_service_fee_rate(command):
     )
 
 
+def _normalized_item_financial_snapshot(item, snapshot=None):
+    snapshot = item.financial_snapshot if snapshot is None else snapshot
+    if not isinstance(snapshot, dict):
+        raise ValidationError({'financial_snapshot': 'O snapshot financeiro deve ser um objeto.'})
+    required = (
+        'promotion', 'promotion_name', 'promotion_discount_type', 'promotion_discount_value',
+        'promotion_benefit', 'manual_discount_intent', 'manual_discount', 'net_subtotal',
+        'participates_in_service_fee', 'participates_in_commission',
+    )
+    if any(field not in snapshot for field in required):
+        raise ValidationError({'financial_snapshot': 'O snapshot financeiro está incompleto.'})
+    subtotal = (item.unit_price * item.quantity).quantize(CENT, rounding=ROUND_HALF_UP)
+    promotion = snapshot['promotion']
+    benefit = strict_decimal(snapshot['promotion_benefit'], field='financial_snapshot.promotion_benefit', decimal_places=2, max_digits=14)
+    if benefit < 0 or benefit > subtotal:
+        raise ValidationError({'financial_snapshot': 'O benefício promocional é inválido.'})
+    if promotion is None:
+        if any(snapshot[field] is not None for field in ('promotion_name', 'promotion_discount_type', 'promotion_discount_value')) or benefit:
+            raise ValidationError({'financial_snapshot': 'Dados de promoção sem promoção comprovada.'})
+        promotion_data = {'promotion': None, 'promotion_name': None, 'promotion_discount_type': None, 'promotion_discount_value': None}
+    else:
+        if isinstance(promotion, bool) or not isinstance(promotion, int) or promotion < 1:
+            raise ValidationError({'financial_snapshot': 'Promoção histórica inválida.'})
+        name = str(snapshot['promotion_name'] or '').strip()
+        kind = snapshot['promotion_discount_type']
+        value = strict_decimal(snapshot['promotion_discount_value'], field='financial_snapshot.promotion_discount_value', decimal_places=2, max_digits=14)
+        if not name or kind not in ('percentage', 'fixed_amount') or value <= 0 or (kind == 'percentage' and value > 100):
+            raise ValidationError({'financial_snapshot': 'Condições da promoção histórica inválidas.'})
+        expected = ((subtotal * value / Decimal('100')) if kind == 'percentage' else value * item.quantity).quantize(CENT, rounding=ROUND_HALF_UP)
+        if benefit != min(expected, subtotal):
+            raise ValidationError({'financial_snapshot': 'O benefício promocional não corresponde à condição informada.'})
+        promotion_data = {'promotion': promotion, 'promotion_name': name, 'promotion_discount_type': kind, 'promotion_discount_value': value}
+    intent = normalize_discount_intent(snapshot['manual_discount_intent'], field='financial_snapshot.manual_discount_intent')
+    manual_discount = strict_decimal(snapshot['manual_discount'], field='financial_snapshot.manual_discount', decimal_places=2, max_digits=14)
+    _, expected_manual = resolve_discount_intent(intent, subtotal - benefit, field='financial_snapshot.manual_discount_intent')
+    net_subtotal = strict_decimal(snapshot['net_subtotal'], field='financial_snapshot.net_subtotal', decimal_places=2, max_digits=14)
+    if manual_discount != expected_manual or net_subtotal != subtotal - benefit - manual_discount:
+        raise ValidationError({'financial_snapshot': 'Os descontos e subtotal líquido não são coerentes.'})
+    if type(snapshot['participates_in_service_fee']) is not bool or type(snapshot['participates_in_commission']) is not bool:
+        raise ValidationError({'financial_snapshot': 'As participações financeiras devem ser booleanas.'})
+    return {**promotion_data, 'promotion_benefit': benefit, 'manual_discount_intent': intent, 'manual_discount': manual_discount, 'net_subtotal': net_subtotal, 'participates_in_service_fee': snapshot['participates_in_service_fee'], 'participates_in_commission': snapshot['participates_in_commission']}
+
+
 def _has_complete_item_financial_snapshot(item):
-    snapshot = item.financial_snapshot
-    return isinstance(snapshot, dict) and all(field in snapshot for field in (
-        'promotion', 'promotion_name', 'promotion_discount_type',
-        'promotion_discount_value', 'promotion_benefit', 'manual_discount_intent',
-        'manual_discount', 'net_subtotal', 'participates_in_service_fee',
-        'participates_in_commission',
-    ))
+    try:
+        _normalized_item_financial_snapshot(item)
+    except ValidationError:
+        return False
+    return True
 
 
 def _legacy_unfrozen_command_items(command, items):
@@ -148,6 +189,82 @@ def _assert_command_financial_snapshot_integrity(command, items):
             'legacy_item_financial_snapshot_unknown',
             'Itens históricos sem condições financeiras comprovadas impedem a consolidação; regularize os dados históricos antes de continuar.',
         )
+
+
+def command_financial_status(command, items=None):
+    if items is None:
+        items = list(AttendanceOrderItem.objects.filter(order__command=command, status=AttendanceOrderItemStatus.CONFIRMED).order_by('id'))
+    issues = _legacy_unfrozen_command_items(command, items)
+    if issues:
+        return {'state': 'REGULARIZATION_REQUIRED', 'code': 'legacy_item_financial_snapshot_unknown', 'message': 'Itens históricos sem condições financeiras comprovadas exigem regularização administrativa.', 'summary_available': False, 'item_ids': [item.pk for item in issues]}
+    if _has_unknown_legacy_service_fee_rate(command):
+        return {'state': 'REGULARIZATION_REQUIRED', 'code': 'legacy_service_fee_rate_unknown', 'message': 'A taxa de serviço histórica exige regularização administrativa.', 'summary_available': False, 'item_ids': []}
+    if AttendanceOperation.objects.filter(
+        branch=command.branch, operation_type=AttendanceOperationType.REGULARIZE_COMMAND_ITEM_FINANCIALS,
+        result__command_id=command.pk,
+    ).exists():
+        return {'state': 'REGULARIZED', 'code': None, 'message': '', 'summary_available': True, 'item_ids': []}
+    return {'state': 'NORMAL', 'code': None, 'message': '', 'summary_available': True, 'item_ids': []}
+
+
+def _snapshot_payload(normalized):
+    return {
+        'promotion': normalized['promotion'], 'promotion_name': normalized['promotion_name'],
+        'promotion_discount_type': normalized['promotion_discount_type'],
+        'promotion_discount_value': str(normalized['promotion_discount_value']) if normalized['promotion_discount_value'] is not None else None,
+        'promotion_benefit': str(normalized['promotion_benefit']),
+        'manual_discount_intent': {'type': normalized['manual_discount_intent']['type'], 'value': str(normalized['manual_discount_intent']['value'])},
+        'manual_discount': str(normalized['manual_discount']), 'net_subtotal': str(normalized['net_subtotal']),
+        'participates_in_service_fee': normalized['participates_in_service_fee'],
+        'participates_in_commission': normalized['participates_in_commission'],
+    }
+
+
+@transaction.atomic
+def regularize_command_item_financials(*, command, user, items, justification, evidence_reference,
+                                       idempotency_key=None, preview=False, audit_metadata=None):
+    justification, evidence_reference = (justification or '').strip(), (evidence_reference or '').strip()
+    if not justification or not evidence_reference:
+        raise ValidationError({'justification': 'Informe justificativa e referência da evidência.'})
+    command = AttendanceCommand.objects.select_for_update().select_related('branch__company').get(pk=command.pk)
+    if command.status != AttendanceCommandStatus.OPEN:
+        raise AttendanceConflict('command_closed', 'A regularização exige comanda aberta.')
+    confirmed = list(AttendanceOrderItem.objects.select_for_update().filter(
+        order__command=command, status=AttendanceOrderItemStatus.CONFIRMED,
+    ).select_related('product__category').order_by('id'))
+    affected = _legacy_unfrozen_command_items(command, confirmed)
+    affected_ids = {item.pk for item in affected}
+    submitted = {entry['item']: entry['financial_snapshot'] for entry in items}
+    if affected_ids != set(submitted):
+        raise AttendanceConflict('legacy_item_financial_snapshot_incomplete', 'Informe condições financeiras comprovadas para todos os itens históricos pendentes.')
+    before = {str(item.pk): item.financial_snapshot for item in affected}
+    normalized = {}
+    for item in affected:
+        normalized[item.pk] = _normalized_item_financial_snapshot(item, submitted[item.pk])
+        item.financial_snapshot = _snapshot_payload(normalized[item.pk])
+    _assert_command_financial_snapshot_integrity(command, confirmed)
+    if preview:
+        return {'preview_available': False, 'reason': 'A prévia consolidada será confirmada após persistir os snapshots comprovados.'}, False
+    operation, replayed = _operation(
+        branch=command.branch, operation_type=AttendanceOperationType.REGULARIZE_COMMAND_ITEM_FINANCIALS,
+        idempotency_key=idempotency_key,
+        payload={'command': command.pk, 'items': {key: _snapshot_payload(value) for key, value in normalized.items()}, 'justification': justification, 'evidence_reference': evidence_reference},
+    )
+    if replayed:
+        return operation.result, True
+    for item in affected:
+        item.save(update_fields=('financial_snapshot', 'updated_at'))
+    if not _has_unknown_legacy_service_fee_rate(command):
+        preview_data, paid, remaining = financial_state(command, lock=True)
+        if paid > preview_data['total']:
+            raise AttendanceConflict('command_paid_exceeds_regularized_total', 'Os pagamentos existentes excedem o total regularizado.')
+        result = {'preview_available': True, 'total_due': str(preview_data['total']), 'paid_total': str(paid), 'remaining_balance': str(remaining)}
+    else:
+        result = {'preview_available': False, 'reason': 'Regularize a taxa histórica de serviço após recuperar os itens.'}
+    operation.result = {'command_id': command.pk, 'item_ids': sorted(affected_ids), **result}
+    operation.save(update_fields=('result', 'updated_at'))
+    audit_log(actor=user, action='attendance.command.item_financials.regularize', obj=command, company=command.company, branch=command.branch, before=before, after={str(item.pk): item.financial_snapshot for item in affected}, metadata=_audit_metadata(audit_metadata, idempotency_key=str(idempotency_key), operation_id=operation.pk, justification=justification, evidence_reference=evidence_reference))
+    return operation.result, False
 
 
 def _freeze_command_item_financials(command, financial_snapshots):
