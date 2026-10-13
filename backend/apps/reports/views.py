@@ -159,7 +159,7 @@ def payment_distribution(rows, total_received):
 
 def overview_comparison_data(
     request, *, start, end, filters, include_received=True,
-    include_result=True, current_values=None,
+    include_result=True, current_values=None, receipt_scope='sales_only',
 ):
     """Return the selected interval against the immediately preceding interval.
 
@@ -167,6 +167,13 @@ def overview_comparison_data(
     half-open, so the previous end is the instant immediately before `start`.
     `current_values` lets the dashboard reuse aggregates it has already made.
     """
+    if receipt_scope not in ('sales_only', 'operational'):
+        raise ValueError('Unsupported receipt scope.')
+    receipt_operation_types = (
+        (OperationType.SALE, OperationType.CONSUMPTION)
+        if receipt_scope == 'operational' else (OperationType.SALE,)
+    )
+
     def numeric_decimal(value):
         if isinstance(value, bool) or not isinstance(value, (Decimal, int, float)):
             return None
@@ -192,13 +199,7 @@ def overview_comparison_data(
             'service_fee': commercial['service_fee'],
             'cancellations': cancellations['value'],
         }
-        if include_received:
-            receipts = receipt_summary(
-                branch=request.branch_context, start=period_start, end=period_end,
-                filters=filters, inflow_sales=sales,
-                operation_types=(OperationType.SALE,),
-            )
-            values['total_received'] = receipts['total_received']
+        consumptions = None
         if (
             branch_feature_enabled(request.branch_context, 'consumption')
             and any(user_has_code(request, code) for code in (
@@ -213,6 +214,22 @@ def overview_comparison_data(
                 consumptions, filters=filters, reversals=consumption_reversals,
             )
             values['consumptions_courtesies'] = consumption['subsidy']
+        if include_received:
+            receipt_inflows = sales
+            if receipt_scope == 'operational':
+                if consumptions is None:
+                    consumptions, _ = period_event_sales(
+                        branch=request.branch_context, start=period_start,
+                        end=period_end, filters=filters,
+                        operation_types=(OperationType.CONSUMPTION,),
+                    )
+                receipt_inflows = sales + consumptions
+            receipts = receipt_summary(
+                branch=request.branch_context, start=period_start, end=period_end,
+                filters=filters, inflow_sales=receipt_inflows,
+                operation_types=receipt_operation_types,
+            )
+            values['total_received'] = receipts['total_received']
         can_view_result = include_result and all((
             branch_feature_enabled(request.branch_context, 'financial'),
             branch_feature_enabled(request.branch_context, 'inventory'),
@@ -296,6 +313,7 @@ def overview_comparison_data(
         'previous_period': canonical_datetime_range(previous_start, previous_end),
         'basis': 'contiguous_equivalent_period',
         'timezone': timezone.get_default_timezone_name(),
+        'receipt_scope': receipt_scope,
         'current': serialize(current),
         'previous': serialize(previous),
         'deltas': deltas,
@@ -812,6 +830,9 @@ class DashboardView(APIView):
         }
 
         can_view_consumptions = has_feature('consumption') and user_has_code(request, 'sales.view_consumption')
+        dashboard_receipt_scope = (
+            'operational' if can_view_consumptions else 'sales_only'
+        )
         item_filters = {'category': category} if category else {}
         sales = None
         dashboard_consumption_graph = None
@@ -880,7 +901,7 @@ class DashboardView(APIView):
                 inflow_sales=sales_graph + (dashboard_consumption_graph or []),
                 operation_types=(
                     (OperationType.SALE, OperationType.CONSUMPTION)
-                    if can_view_consumptions else (OperationType.SALE,)
+                    if dashboard_receipt_scope == 'operational' else (OperationType.SALE,)
                 ),
             )
             latest_count = sales.count()
@@ -945,9 +966,7 @@ class DashboardView(APIView):
                     )
                 ],
                 'payment_distribution': distribution,
-                'payment_distribution_scope': (
-                    'operational' if can_view_consumptions else 'sales_only'
-                ),
+                'payment_distribution_scope': dashboard_receipt_scope,
                 'top_products': [
                     {
                         **row, 'quantity': decimal_string(row['quantity'], 3),
@@ -1163,6 +1182,7 @@ class DashboardView(APIView):
                 include_received=has_feature('financial'),
                 include_result=can_view_result,
                 current_values=comparison_current,
+                receipt_scope=dashboard_receipt_scope,
             )
         response['availability'] = {
             'sales': 'available' if can_view_sales else 'restricted',

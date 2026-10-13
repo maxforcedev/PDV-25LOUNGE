@@ -1976,6 +1976,7 @@ export interface OperationalResultReportSummary {
 }
 /** A section may be absent; this value explains whether that is RBAC or a disabled module. */
 export type DashboardAvailability = "available" | "restricted" | "unavailable";
+export type ReceiptScope = "operational" | "sales_only";
 
 /** Money and quantities are decimal strings except for legacy ranking cost fields. */
 export type DashboardDecimal = string;
@@ -2009,6 +2010,7 @@ export interface DashboardPeriodComparison {
   previous_period: ReportPeriod;
   basis: "contiguous_equivalent_period";
   timezone: string;
+  receipt_scope: ReceiptScope;
   current: DashboardComparisonValues;
   previous: DashboardComparisonValues;
   deltas: Partial<Record<keyof DashboardComparisonValues, DashboardComparisonDelta>>;
@@ -2100,7 +2102,7 @@ export interface DashboardData {
       payment_total: DashboardDecimal;
       percentage: DashboardDecimal;
     }>;
-    payment_distribution_scope?: "operational" | "sales_only";
+    payment_distribution_scope?: ReceiptScope;
     hourly_sales: Array<{
       hour: string;
       count: number;
