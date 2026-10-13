@@ -318,15 +318,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
   }
 
   bool _requiresConfiguration(QuickSaleProduct product) =>
-      product.modifierGroups.any(
-        (group) =>
-            group.required ||
-            group.minSelections > 0 ||
-            (double.tryParse(group.minTotalQuantity.replaceAll(',', '.')) ??
-                    0) >
-                0 ||
-            group.requiredQuantity != null,
-      );
+      product.modifierGroups.isNotEmpty;
 
   double? _stockNumber(Object? value) =>
       double.tryParse('$value'.replaceAll(',', '.'));
@@ -440,7 +432,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
       product: product,
       quantity: quantity,
     );
-    if (product.modifierGroups.isNotEmpty) {
+    if (_requiresConfiguration(product)) {
       await _editProduct(product, initial: item, checkBatchAvailability: true);
       return;
     }

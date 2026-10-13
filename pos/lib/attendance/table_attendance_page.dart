@@ -238,13 +238,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
   }
 
   bool _requiresConfiguration(QuickSaleProduct product) =>
-      product.modifierGroups.any(
-        (group) =>
-            group.required ||
-            group.minSelections > 0 ||
-            _tableCartNumber(group.minTotalQuantity) > 0 ||
-            group.requiredQuantity != null,
-      );
+      product.modifierGroups.isNotEmpty;
 
   Future<void> _editNewItem(
       QuickSaleProduct product, QuickSaleCartItem item) async {
@@ -417,7 +411,7 @@ class _TableOrderPageState extends State<TableOrderPage> {
       product: product,
       quantity: quantity,
     );
-    if (product.modifierGroups.isNotEmpty) {
+    if (_requiresConfiguration(product)) {
       await _editNewItem(product, item);
     } else {
       await _addCartItem(item);
