@@ -20,7 +20,7 @@ from reportlab.lib.pagesizes import A4, landscape, portrait
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.pdfgen import canvas
-from reportlab.platypus import Flowable, KeepTogether, LongTable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import CondPageBreak, Flowable, LongTable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .export_labels import export_label, export_value
 
@@ -55,6 +55,63 @@ PERCENT_TERMS = ('percent', 'percentage', 'participation', 'rate')
 PERCENT_KEYS = {'margin_percent', 'margin_percentage', 'commission_rate'}
 QUANTITY_TERMS = ('count', 'quantity', 'uses', 'products', 'records', 'items')
 ENTITY_NAME_KEYS = ('name', 'display_name', 'full_name', 'title', 'label', 'description')
+
+# Nested records are presentation contracts, not an invitation to serialize every
+# attribute of an already-authorized root object. The profiles mirror the report
+# domains and deliberately exclude personal, cost and administrative attributes.
+NESTED_FIELD_ALLOWLISTS = {
+    'sales': {
+        'operator': ('id', 'name'), 'seller': ('id', 'name'),
+        'discount_approved_by': ('id', 'name'), 'beneficiary': ('id', 'name', 'user_type'),
+        'cancelled_by': ('id', 'name'), 'service_fee_waived_by': ('id', 'name'),
+        'customer': ('id', 'name'),
+        'cash_session': ('id', 'status', 'register.id', 'register.name'),
+        'user': ('id', 'name'), 'product': ('id', 'name', 'internal_code'),
+        'category': ('id', 'name'),
+        'items': (
+            'id', 'product', 'product_name', 'internal_code', 'unit', 'quantity', 'unit_price',
+            'base_unit_price', 'modifier_unit_total', 'category', 'subtotal', 'promotion_name',
+            'promotion_discount_type', 'promotion_discount_value', 'promotion_benefit',
+            'manual_discount', 'discount_approved_by', 'commercial_value', 'charged_value',
+            'subsidy_value', 'commission_amount', 'net_subtotal', 'unit_cost', 'cost_total',
+            'margin_amount', 'margin_percentage', 'participates_in_service_fee',
+            'participates_in_commission',
+        ),
+        'payments': (
+            'payment_method_name', 'payment_method_code', 'amount', 'applied_amount',
+            'received_amount', 'change_amount', 'occurred_at', 'origin', 'operator', 'status',
+        ),
+        'payment_method': ('id', 'name', 'code'),
+    },
+    'finance': {
+        'operator': ('id', 'name'), 'beneficiary': ('id', 'name'),
+        'cash_register': ('id', 'name'), 'cash_session': ('id', 'status', 'register.id', 'register.name'),
+        'payment_method': ('id', 'name', 'code'), 'sale': ('id', 'sale_number', 'operation_key'),
+        'command': ('id', 'number', 'reference'), 'operators': ('id', 'name'),
+    },
+    'stock': {'product': ('id', 'name', 'internal_code')},
+    'inventory': {
+        'product': ('id', 'name', 'internal_code'), 'category': ('id', 'name'),
+        'operator': ('id', 'name'), 'supplier': ('id', 'name'),
+        'items': (
+            'id', 'product', 'unit', 'expected_quantity', 'counted_quantity',
+            'difference_quantity', 'type', 'theoretical_content', 'counted_content',
+            'difference_content', 'package_content', 'content_unit',
+            'expected_complete_packages', 'expected_residual_content',
+            'counted_complete_packages', 'counted_residual_content',
+            'difference_complete_packages', 'difference_residual_content',
+            'unit_cost_snapshot', 'cost_impact', 'sent_quantity', 'received_quantity',
+            'cost_value',
+        ),
+        'quantities_by_unit': ('unit', 'sent_quantity', 'received_quantity', 'difference_quantity'),
+    },
+    'operations': {
+        'operator': ('id', 'name'), 'seller': ('id', 'name'), 'user': ('id', 'name'),
+        'customer': ('id', 'name'), 'product': ('id', 'name', 'internal_code'),
+        'category': ('id', 'name'), 'payment_method': ('id', 'name', 'code'),
+        'sale': ('id', 'sale_number', 'operation_key'), 'command': ('id', 'number', 'reference'),
+    },
+}
 
 
 def _decimal(value):
@@ -239,26 +296,46 @@ def _summary_scalars(summary):
     return [(key, value) for key, value in (summary or {}).items() if not isinstance(value, (dict, list))]
 
 
-def _flatten_row(row, prefix=''):
-    """Expand a previously authorized record while retaining its relationship path."""
+def _nested_paths(headers, kind):
+    paths = set()
+    allowlist = NESTED_FIELD_ALLOWLISTS.get(kind, {})
+    for header in headers:
+        header = str(header)
+        paths.add(header)
+        root, separator, child = header.partition('.')
+        if separator:
+            paths.add(f'{root}.{child}')
+        elif root in allowlist:
+            paths.update(f'{root}.{field}' for field in allowlist[root])
+    return paths
+
+
+def _flatten_row(row, prefix='', *, allowed_paths=()):
+    """Flatten only explicit report fields and the profile's approved child fields."""
     flattened = {}
     for key, value in (row or {}).items() if isinstance(row, Mapping) else ():
         if str(key).startswith('__'):
             continue
         field = f'{prefix}.{key}' if prefix else str(key)
         if isinstance(value, dict):
-            flattened.update(_flatten_row(value, field))
+            if any(path.startswith(f'{field}.') for path in allowed_paths):
+                flattened.update(_flatten_row(value, field, allowed_paths=allowed_paths))
         elif isinstance(value, (list, tuple)):
-            flattened[field] = value
-        else:
+            if field in allowed_paths:
+                flattened[field] = value
+        elif field in allowed_paths:
             flattened[field] = value
     return flattened
 
 
-def _expanded_table_data(headers, rows):
+def _expanded_table_data(headers, rows, kind):
     roots = tuple(dict.fromkeys(str(header).split('.', 1)[0] for header in headers))
+    allowed_paths = _nested_paths(headers, kind)
     expanded_rows = [
-        _flatten_row({root: row[root] for root in roots if isinstance(row, Mapping) and root in row})
+        _flatten_row(
+            {root: row[root] for root in roots if isinstance(row, Mapping) and root in row},
+            allowed_paths=allowed_paths,
+        )
         for row in rows
     ]
     expanded_headers = []
@@ -536,7 +613,7 @@ def report_table(document, headers, rows, styles, *, status_column=None, emphasi
     return table
 
 
-def _section_heading(story, title, styles, note=None, minimum_following_height=0):
+def _section_heading(title, styles, note=None):
     if note:
         heading = Table([[_paragraph(title, styles['section']), _paragraph(note, styles['section_note'])]], colWidths=[None, 3.2 * cm], style=TableStyle([
             ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'), ('LEFTPADDING', (0, 0), (-1, -1), 0),
@@ -544,10 +621,26 @@ def _section_heading(story, title, styles, note=None, minimum_following_height=0
         ]))
     else:
         heading = _paragraph(title, styles['section'])
-    if minimum_following_height:
-        story.append(KeepTogether([heading, Spacer(1, minimum_following_height)]))
-    else:
-        story.append(heading)
+    return heading
+
+
+def _table_section(story, document, styles, title, headers, rows, *, note=None,
+                   status_column=None, dark_header=False, quantity_units=None):
+    """Keep a table heading with its real header and first rows, not the whole table."""
+    table = report_table(
+        document, headers, rows, styles, status_column=status_column,
+        dark_header=dark_header, quantity_units=quantity_units,
+    )
+    if table is None:
+        return
+    heading = _section_heading(title, styles, note)
+    preview = report_table(
+        document, headers, rows[:2], styles, status_column=status_column,
+        dark_header=dark_header, quantity_units=quantity_units,
+    )
+    heading_height = heading.wrap(document.width, document.height)[1]
+    preview_height = preview.wrap(document.width, document.height)[1]
+    story.extend((CondPageBreak(heading_height + preview_height + 4), heading, table))
 
 
 def _bar_chart(values, *, width, title_key, value_key, max_items=7, colorset=None, percent_key=None):
@@ -659,23 +752,39 @@ def _financial_statement(document, summary, styles, kind, width=None):
     else:
         items = tuple((export_label(key), key) for key, _ in _summary_scalars(summary)[:6])
     rows = []
+    emphasis_key = 'total_received' if kind == 'sales' else 'estimated_result' if kind == 'result' else None
+    emphasized_row = None
     for label, key in items:
         if key in summary and summary[key] is not None:
             value = pdf_value(summary[key], key)
             if key in ('total_discount', 'historical_sales_cogs', 'commission', 'operating_expenses', 'costs_and_expenses') and not value.startswith('-'):
                 value = f'- {value}'
             rows.append([_paragraph(label, styles['body']), _paragraph(value, styles['right'])])
+            if key == emphasis_key:
+                emphasized_row = len(rows) - 1
     if not rows:
         return None
     width = width or document.width
-    result_value = _decimal(summary.get('estimated_result', summary.get('result')))
-    result_background = CORE_SUCCESS if result_value is None or result_value >= 0 else colors.HexColor('#FEE2E2')
-    return Table(rows, colWidths=[width * .62, width * .38], style=TableStyle([
+    commands = [
         ('LINEBELOW', (0, 0), (-1, -1), .3, CORE_BORDER), ('TOPPADDING', (0, 0), (-1, -1), 5),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 5), ('LEFTPADDING', (0, 0), (-1, -1), 8), ('RIGHTPADDING', (0, 0), (-1, -1), 8),
-        ('BACKGROUND', (0, -1), (-1, -1), result_background), ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-        ('TEXTCOLOR', (0, -1), (-1, -1), colors.white if result_background == CORE_SUCCESS else CORE_DANGER),
-    ]))
+    ]
+    if emphasized_row is not None:
+        if kind == 'sales':
+            background, text_color = colors.HexColor('#E8EEFF'), CORE_BLUE
+        else:
+            result_value = _decimal(summary.get('estimated_result'))
+            background, text_color = (
+                (CORE_SUCCESS, colors.white) if result_value is not None and result_value > 0
+                else (colors.HexColor('#FEE2E2'), CORE_DANGER) if result_value is not None and result_value < 0
+                else (CORE_PALE, CORE_DARK)
+            )
+        commands.extend((
+            ('BACKGROUND', (0, emphasized_row), (-1, emphasized_row), background),
+            ('FONTNAME', (0, emphasized_row), (-1, emphasized_row), 'Helvetica-Bold'),
+            ('TEXTCOLOR', (0, emphasized_row), (-1, emphasized_row), text_color),
+        ))
+    return Table(rows, colWidths=[width * .62, width * .38], style=TableStyle(commands))
 
 
 def _payment_rows(summary):
@@ -700,7 +809,7 @@ def _stock_attention(rows):
 
 def _executive_story(story, document, styles, kind, summary, rows):
     if not summary:
-        _section_heading(story, 'Sem dados consolidados', styles)
+        story.append(_section_heading('Sem dados consolidados', styles))
         story.append(_paragraph(
             'Não há indicadores autorizados para os filtros selecionados. O relatório executivo não inclui automaticamente registros individuais; use o modo detalhado para conferência.',
             styles['body'],
@@ -709,7 +818,7 @@ def _executive_story(story, document, styles, kind, summary, rows):
     metrics = _metrics(kind, summary)
     cards = _metric_cards(document, metrics, styles)
     if cards:
-        _section_heading(story, 'Visão de resultado' if kind == 'result' else 'Indicadores do período' if kind in ('sales', 'dashboard') else 'Estoque da filial' if kind == 'stock' else 'Indicadores consolidados', styles, 'Dados consolidados' if kind != 'stock' else 'Saldo atual')
+        story.append(_section_heading('Visão de resultado' if kind == 'result' else 'Indicadores do período' if kind in ('sales', 'dashboard') else 'Estoque da filial' if kind == 'stock' else 'Indicadores consolidados', styles, 'Dados consolidados' if kind != 'stock' else 'Saldo atual'))
         story.extend([cards, Spacer(1, 5)])
     if kind in ('sales', 'dashboard'):
         sales = _nested(summary, 'sales') if kind == 'dashboard' else summary
@@ -718,7 +827,7 @@ def _executive_story(story, document, styles, kind, summary, rows):
         statement = _financial_statement(document, sales, styles, 'sales', left_width - 16)
         payments = _payment_rows(sales)
         if statement or payments:
-            _section_heading(story, 'Composição financeira', styles)
+            story.append(_section_heading('Composição financeira', styles))
             left = statement or _paragraph('Sem composição financeira autorizada.', styles['body'])
             right = [_paragraph('Recebimentos por forma', styles['body'])]
             payment_value = next((key for key in ('payment_total', 'received_total', 'applied_total', 'amount') if any(key in row for row in payments)), 'amount')
@@ -740,17 +849,17 @@ def _executive_story(story, document, styles, kind, summary, rows):
         timeline = sales.get('hourly_sales') or weekly_comparison.get('current')
         if isinstance(timeline, list) and timeline:
             has_comparison = isinstance(weekly_comparison.get('previous'), list) and weekly_comparison['previous']
-            _section_heading(
-                story, 'Vendas por horário' if timeline_key == 'hourly_sales' else 'Evolução de vendas', styles,
+            story.append(_section_heading(
+                'Vendas por horário' if timeline_key == 'hourly_sales' else 'Evolução de vendas', styles,
                 'Atual e período anterior' if has_comparison else 'Horários registrados no período' if timeline_key == 'hourly_sales' else 'Dias registrados no período',
-            )
+            ))
             story.append(_RoundedPanel(
                 _timeline_chart(timeline, document.width - 16, weekly_comparison.get('previous')),
                 document.width,
             ))
         ranking_key, ranking = _ranking_rows(sales)
         if ranking:
-            _section_heading(story, 'Produtos em destaque' if 'product' in ranking_key else _label(ranking_key), styles)
+            story.append(_section_heading('Produtos em destaque' if 'product' in ranking_key else _label(ranking_key), styles))
             value_key = 'quantity' if any('quantity' in row for row in ranking) else 'sales_revenue'
             story.append(_RoundedPanel(
                 _bar_chart(ranking, width=document.width - 16, title_key='product_name' if 'product' in ranking_key else 'name', value_key=value_key, max_items=5),
@@ -760,10 +869,10 @@ def _executive_story(story, document, styles, kind, summary, rows):
     if kind == 'result':
         statement = _financial_statement(document, summary, styles, kind)
         if statement:
-            _section_heading(story, 'Composição do resultado', styles)
+            story.append(_section_heading('Composição do resultado', styles))
             story.append(_RoundedPanel(statement, document.width))
         if 'margin' in summary or 'notice' in summary:
-            _section_heading(story, 'Leitura gerencial', styles)
+            story.append(_section_heading('Leitura gerencial', styles))
             margin = pdf_value(summary.get('margin'), 'margin_percent') if 'margin' in summary else 'Não disponível'
             notice = str(summary.get('notice') or 'Estimativa gerencial baseada nos dados autorizados. Não substitui demonstração contábil.')
             insight = Table([[
@@ -779,31 +888,32 @@ def _executive_story(story, document, styles, kind, summary, rows):
     if kind == 'stock':
         attention = _stock_attention(rows)
         if attention:
-            _section_heading(story, 'Produtos que precisam de atenção', styles, 'Prioridades da filial')
             headers = tuple(key for key in ('product', 'current_quantity', 'minimum_quantity', 'state') if any(key in row for row in attention))
-            story.append(report_table(
-                document, headers, attention, styles,
+            _table_section(
+                story, document, styles, 'Produtos que precisam de atenção', headers, attention,
+                note='Prioridades da filial',
                 status_column='state' if 'state' in headers else None,
                 dark_header=True,
                 quantity_units={key: 'unit' for key in ('current_quantity', 'minimum_quantity')},
-            ))
-        _section_heading(story, 'Nota de gestão', styles)
+            )
+        story.append(_section_heading('Nota de gestão', styles))
         story.append(_paragraph('Verifique itens críticos e planeje reposições conforme os movimentos registrados.', styles['body']))
         return
     ranking_key, ranking = _ranking_rows(summary)
     if ranking:
-        _section_heading(story, _label(ranking_key), styles)
+        story.append(_section_heading(_label(ranking_key), styles))
         value_key = next((key for key in ('amount', 'sales_revenue', 'net_revenue', 'quantity', 'count') if any(key in row for row in ranking)), 'count')
         name_key = next((key for key in ('name', 'product_name', 'category_name', 'supplier_name') if any(key in row for row in ranking)), 'name')
         story.append(_RoundedPanel(_bar_chart(ranking, width=document.width - 16, title_key=name_key, value_key=value_key, max_items=6), document.width))
     elif rows:
-        _section_heading(story, 'Leitura operacional', styles)
+        story.append(_section_heading('Leitura operacional', styles))
         story.append(_paragraph('Consulte o PDF detalhado para os registros autorizados do período.', styles['body']))
 
 
-def _related_details(story, document, styles, headers, rows):
-    """Render nested lists only for relationships authorized by a root header."""
+def _related_details(story, document, styles, headers, rows, kind):
+    """Render only relationship rows whose child fields are in the profile contract."""
     grouped = {}
+    allowlist = NESTED_FIELD_ALLOWLISTS.get(kind, {})
 
     def collect(row, identity, prefix=''):
         if not isinstance(row, Mapping):
@@ -813,14 +923,28 @@ def _related_details(story, document, styles, headers, rows):
                 continue
             section_key = f'{prefix}.{key}' if prefix else key
             if isinstance(values, dict):
-                collect(values, identity, section_key)
+                # Nested dictionaries can identify a relationship, but cannot
+                # introduce list sections unless that path is explicitly listed.
+                if any(path.startswith(f'{section_key}.') for path in allowlist):
+                    collect(values, identity, section_key)
             elif isinstance(values, (list, tuple)) and values:
+                child_fields = allowlist.get(section_key)
+                if not child_fields:
+                    continue
                 grouped.setdefault(section_key, [])
                 if all(isinstance(item, dict) for item in values):
-                    children = [{'record': identity, **item} for item in values]
+                    children = [
+                        {
+                            'record': identity,
+                            **{
+                                child_key: child_value for child_key, child_value in item.items()
+                                if child_key in child_fields
+                                or any(path.startswith(f'{child_key}.') for path in child_fields)
+                            },
+                        }
+                        for item in values
+                    ]
                     grouped[section_key].extend(children)
-                    for child in children:
-                        collect(child, identity, section_key)
                 else:
                     grouped[section_key].extend(
                         {'record': identity, 'value': item, '__report_key': key}
@@ -837,33 +961,28 @@ def _related_details(story, document, styles, headers, rows):
         headers = ('record',) + tuple(dict.fromkeys(
             field for item in values for field in item if not field.startswith('__') and field != 'record'
         ))
-        headers, values = _expanded_table_data(headers, values)
-        _section_heading(story, f'{_label(key)} por registro', styles)
-        story.append(report_table(document, headers, values, styles))
+        headers, values = _expanded_table_data(headers, values, kind)
+        _table_section(
+            story, document, styles, f'{_label(key)} por registro', headers, values,
+        )
     return bool(grouped)
 
 
-def _detailed_story(story, document, styles, summary, headers, rows, sample_label=''):
-    metrics = _metrics(_profile('', '', summary), summary)[:4]
+def _detailed_story(story, document, styles, kind, summary, headers, rows, sample_label=''):
+    metrics = _metrics(kind, summary)[:4]
     cards = _metric_cards(document, metrics, styles)
     if cards:
-        _section_heading(story, 'Resumo e conferência', styles)
+        story.append(_section_heading('Resumo e conferência', styles))
         story.append(cards)
     scalars = _summary_scalars(summary)
     if scalars:
-        _section_heading(story, 'Resumo consolidado', styles)
         summary_rows = [{'indicator': _label(key), 'value': value, '__report_key': key} for key, value in scalars]
-        story.append(report_table(document, ('indicator', 'value'), summary_rows, styles))
+        _table_section(story, document, styles, 'Resumo consolidado', ('indicator', 'value'), summary_rows)
     # Detailed exports retain every authorized aggregate rather than applying the
     # executive editorial limits.
     for key, section_headers, section_rows in _structured_sections(summary):
-        section_headers, section_rows = _expanded_table_data(section_headers, section_rows)
-        _section_heading(story, _label(key), styles, minimum_following_height=26)
-        story.append(report_table(document, section_headers, section_rows, styles))
-    _section_heading(
-        story, 'Movimentações individualizadas', styles,
-        sample_label or 'Registros autorizados', minimum_following_height=34,
-    )
+        section_headers, section_rows = _expanded_table_data(section_headers, section_rows, kind)
+        _table_section(story, document, styles, _label(key), section_headers, section_rows)
     visible_headers = tuple(
         key for key in headers
         if not any(
@@ -871,12 +990,16 @@ def _detailed_story(story, document, styles, summary, headers, rows, sample_labe
             for row in rows
         )
     )
-    visible_headers, visible_rows = _expanded_table_data(visible_headers, rows)
+    visible_headers, visible_rows = _expanded_table_data(visible_headers, rows, kind)
     if rows and visible_headers:
-        story.append(report_table(document, visible_headers, visible_rows, styles))
+        _table_section(
+            story, document, styles, 'Movimentações individualizadas', visible_headers, visible_rows,
+            note=sample_label or 'Registros autorizados',
+        )
     elif not rows:
+        story.append(_section_heading('Movimentações individualizadas', styles, sample_label or 'Registros autorizados'))
         story.append(_paragraph('Sem registros para os filtros selecionados.', styles['body']))
-    _related_details(story, document, styles, headers, rows)
+    _related_details(story, document, styles, headers, rows, kind)
 
 
 class _ReportCanvas(canvas.Canvas):
@@ -983,7 +1106,7 @@ def render_pdf_export(request, *, filename, title, headers, rows, period=None, s
         if mode == 'executive':
             _executive_story(story, document, styles, kind, summary, rows)
         else:
-            _detailed_story(story, document, styles, summary, headers, rows, sample_label)
+            _detailed_story(story, document, styles, kind, summary, headers, rows, sample_label)
         footer = f'CORE PDV · {mode_label} · Gerado em {generated_at}'
         document.build(story, onFirstPage=_header(company, branch, mode_label), onLaterPages=_header(company, branch, mode_label), canvasmaker=lambda *args, **kwargs: _ReportCanvas(*args, footer=footer, **kwargs))
     except Exception as exc:
