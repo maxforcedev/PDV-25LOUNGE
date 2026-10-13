@@ -317,6 +317,8 @@ function DashboardPage() {
     permissions.cancelSale,
   ]);
   const sales = data?.sales;
+  const paymentDistribution = sales?.payment_distribution ?? [];
+  const topProducts = sales?.top_products ?? [];
   const result =
     data?.operational_result?.result ??
     data?.operational_result?.estimated_result;
@@ -337,7 +339,7 @@ function DashboardPage() {
       tone: "danger",
     });
   }
-  if (sales && !decimalIsZero(sales.reconciliation_delta)) {
+  if (sales?.reconciliation_delta && !decimalIsZero(sales.reconciliation_delta)) {
     operationalAlerts.push({
       key: "reconciliation",
       title: `${formatBRL(sales.reconciliation_delta.replace(/^-/, ""))} de divergência de pagamentos`,
@@ -593,9 +595,9 @@ function DashboardPage() {
                         </Link>
                       )}
                     </div>
-                    {sales.top_products.length ? (
+                    {topProducts.length ? (
                       <ol className="divide-y divide-subtle px-5">
-                        {sales.top_products.slice(0, 5).map((row, index) => {
+                        {topProducts.slice(0, 5).map((row, index) => {
                           const content = (
                             <>
                               <span className="flex min-w-0 items-center gap-3">
@@ -661,9 +663,9 @@ function DashboardPage() {
                         </Link>
                       )}
                     </div>
-                    {sales.payment_distribution.length ? (
+                    {paymentDistribution.length ? (
                       <div className="divide-y divide-subtle px-5">
-                        {sales.payment_distribution.map((row) => {
+                        {paymentDistribution.map((row) => {
                           const content = (
                             <>
                               <span className="text-sm font-semibold">

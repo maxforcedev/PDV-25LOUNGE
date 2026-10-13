@@ -1974,81 +1974,182 @@ export interface OperationalResultReportSummary {
   cash_session: number | null;
   notice: string;
 }
+/** A section may be absent; this value explains whether that is RBAC or a disabled module. */
+export type DashboardAvailability = "available" | "restricted" | "unavailable";
+
+/** Money and quantities are decimal strings except for legacy ranking cost fields. */
+export type DashboardDecimal = string;
+
+export interface DashboardComparisonValues {
+  gross_revenue?: DashboardDecimal;
+  net_revenue?: DashboardDecimal;
+  sales_count?: number;
+  ticket_average?: DashboardDecimal;
+  total_received?: DashboardDecimal;
+  discounts?: DashboardDecimal;
+  service_fee?: DashboardDecimal;
+  cancellations?: DashboardDecimal;
+  estimated_result?: DashboardDecimal;
+  /** Cost-derived; present only with cost and commission access. */
+  estimated_margin?: DashboardDecimal;
+}
+
+export interface DashboardComparisonDelta {
+  /** Absolute difference is still valid when percentage comparison is unavailable. */
+  amount: DashboardDecimal | null;
+  percentage: DashboardDecimal | null;
+  direction: "up" | "down" | "stable" | null;
+  comparable: boolean;
+  unavailable_reason: "missing_value" | "zero_prior" | null;
+}
+
+/** Same-duration interval immediately before the selected, inclusive period. */
+export interface DashboardPeriodComparison {
+  current_period: ReportPeriod;
+  previous_period: ReportPeriod;
+  basis: "contiguous_equivalent_period";
+  timezone: string;
+  current: DashboardComparisonValues;
+  previous: DashboardComparisonValues;
+  deltas: Partial<Record<keyof DashboardComparisonValues, DashboardComparisonDelta>>;
+}
+
+/**
+ * Product quantities are commercial consumption only. The category filter is
+ * applied to the originating historical sale item; eligible stock modifiers on
+ * that item are then included, rather than filtering the modifier product.
+ */
+export interface DashboardProductConsumption {
+  product_id: number;
+  product_name: string;
+  internal_code: string;
+  unit: string;
+  direct_quantity: DashboardDecimal;
+  modifier_quantity: DashboardDecimal;
+  consolidated_quantity: DashboardDecimal;
+}
+
 export interface DashboardData {
+  /** Selected business-timezone period. All financial sections use this range. */
   period: ReportPeriod;
   filters?: {
     category: number | null;
     categories: Array<{ id: number; name: string }>;
   };
+  /** Availability is authorization/module state, never a substitute zero value. */
+  availability: {
+    sales: DashboardAvailability;
+    consumptions: DashboardAvailability;
+    financial_receipts: DashboardAvailability;
+    operational_result: DashboardAvailability;
+    inventory: DashboardAvailability;
+    team: DashboardAvailability;
+    costs: DashboardAvailability;
+    commissions: DashboardAvailability;
+  };
+  /** Identifies root sections as selected-period metrics or live operational state. */
+  metadata: {
+    period_metrics: {
+      reference: "selected_period";
+      period: ReportPeriod;
+      timezone: string;
+      sections: string[];
+    };
+    operational_state: {
+      reference: "current_at_response";
+      as_of: string;
+      sections: string[];
+    };
+  };
   sales?: {
-    sales_revenue: string;
-    consumption_charged: string;
-    effective_revenue: string;
-    service_fee: string;
-    total_received: string;
-    payment_total: string;
-    reconciliation_delta: string;
-    gross: string;
-    commission?: string;
+    event_accounting: {
+      basis: string;
+      inflows: string;
+      reversals: string;
+    };
+    sales_revenue: DashboardDecimal;
+    consumption_charged: DashboardDecimal;
+    effective_revenue: DashboardDecimal;
+    service_fee?: DashboardDecimal;
+    total_received?: DashboardDecimal;
+    payment_total?: DashboardDecimal;
+    reconciliation_delta?: DashboardDecimal;
+    total_received_operational?: DashboardDecimal;
+    operational_reconciliation_delta?: DashboardDecimal;
+    gross: DashboardDecimal;
+    commission?: DashboardDecimal;
     count: number;
-    average: string;
-    ticket_average: string;
-    account_discount: string;
-    item_discount: string;
-    manual_discount: string;
+    inflow_count: number;
+    reversal_count: number;
+    average: DashboardDecimal;
+    ticket_average: DashboardDecimal;
+    account_discount: DashboardDecimal;
+    item_discount: DashboardDecimal;
+    manual_discount: DashboardDecimal;
     manual_discount_count: number;
-    promotion_discount: string;
-    total_discount: string;
-    cancellations: { count: number; value: string };
-    payment_distribution: Array<{
+    promotion_discount: DashboardDecimal;
+    total_discount: DashboardDecimal;
+    customer_total: DashboardDecimal;
+    total_received_sales?: DashboardDecimal;
+    payment_reconciliation_delta?: DashboardDecimal;
+    cancellations: { count: number; value: DashboardDecimal };
+    payment_distribution?: Array<{
       code: string;
       name: string;
-      amount: string;
-      payment_total: string;
-      percentage: string;
+      amount: DashboardDecimal;
+      payment_total: DashboardDecimal;
+      percentage: DashboardDecimal;
     }>;
-    payment_distribution_scope: "operational" | "sales_only";
+    payment_distribution_scope?: "operational" | "sales_only";
     hourly_sales: Array<{
       hour: string;
       count: number;
-      sales_revenue: string;
-      effective_revenue: string;
-      service_fee: string;
-      total_received: string;
+      sales_revenue: DashboardDecimal;
+      effective_revenue: DashboardDecimal;
+      service_fee: DashboardDecimal;
+      total_received: DashboardDecimal;
     }>;
-    top_products: Array<{
+    top_products?: Array<{
       product_id?: number;
       product_name: string;
-      quantity: string;
-      sales_revenue: string;
+      internal_code: string;
+      quantity: DashboardDecimal;
+      sales_revenue: DashboardDecimal;
+      revenue: DashboardDecimal;
+      discounts: number | DashboardDecimal;
+      /** Permission-gated cost/margin fields retained for existing consumers. */
+      cost?: number | DashboardDecimal;
+      margin?: number | DashboardDecimal;
+      margin_percent?: number | DashboardDecimal;
     }>;
-    top_categories: Array<{
+    top_categories?: Array<{
       category_id?: number;
       category_name: string;
-      quantity: string;
-      sales_revenue: string;
+      quantity: DashboardDecimal;
+      sales_revenue: DashboardDecimal;
+      revenue: DashboardDecimal;
+      discounts: number | DashboardDecimal;
+      cost?: number | DashboardDecimal;
+      margin?: number | DashboardDecimal;
+      margin_percent?: number | DashboardDecimal;
     }>;
+    product_consumption?: DashboardProductConsumption[];
+    product_consumption_filter_basis?: "originating_sale_item";
     top_sellers: ReportUserGroup[];
     top_operators: ReportUserGroup[];
     heatmap: Array<{
       weekday: number;
       hour: number;
       count: number;
-      sales_revenue: string;
-      average: string;
+      sales_revenue: DashboardDecimal;
+      revenue: DashboardDecimal;
+      average: DashboardDecimal;
     }>;
     weekly_comparison: {
-      current: Array<{
-        date: string;
-        count: number;
-        sales_revenue: string;
-      }>;
-      previous: Array<{
-        date: string;
-        count: number;
-        sales_revenue: string;
-      }>;
+      current: Array<{ date: string; count: number; sales_revenue: DashboardDecimal; revenue: DashboardDecimal }>;
+      previous: Array<{ date: string; count: number; sales_revenue: DashboardDecimal; revenue: DashboardDecimal }>;
     };
+    period_comparison: DashboardPeriodComparison;
     latest_sales: {
       count: number;
       page: number;
@@ -2061,22 +2162,30 @@ export interface DashboardData {
     };
   };
   consumptions?: {
+    event_accounting: string;
     count: number;
-    reference: string;
-    charged: string;
-    subsidy: string;
-    sales_revenue: string;
-    consumption_charged: string;
-    effective_revenue: string;
-    service_fee: string;
-    total_received: string;
-    payment_total: string;
-    reconciliation_delta: string;
+    inflow_count: number;
+    reversal_count: number;
+    reference: DashboardDecimal;
+    charged: DashboardDecimal;
+    subsidy: DashboardDecimal;
+    sales_revenue: DashboardDecimal;
+    consumption_charged: DashboardDecimal;
+    effective_revenue: DashboardDecimal;
+    service_fee: DashboardDecimal;
+    total_received: DashboardDecimal;
+    payment_total: DashboardDecimal;
+    reconciliation_delta: DashboardDecimal;
+    cancellations: {
+      count: number;
+      reversed_total_received: DashboardDecimal;
+      reversed_payment_total: DashboardDecimal;
+    };
   };
-  withdrawals?: { count: number; amount: string };
+  withdrawals?: { count: number; amount: DashboardDecimal };
   commands?: {
     open_count: number;
-    open_table_count: number;
+    open_table_count?: number;
   };
   current_cash?: CashReportRow[];
   inventory?: {
@@ -2084,26 +2193,28 @@ export interface DashboardData {
     negative_count: number;
     below_minimum_count: number;
     physical_products: number;
-    inventory_value?: string;
+    /** Current stock valuation, present only with inventory cost permission. */
+    inventory_value?: DashboardDecimal;
   };
+  /** Present only when financial, cost, and commission permissions permit the estimate. */
   operational_result?: {
-    sales_revenue: string;
-    consumption_charged: string;
-    effective_revenue: string;
-    service_fee: string;
-    total_received: string;
-    payment_total: string;
-    reconciliation_delta: string;
-    costs_and_expenses: string;
-    result?: string;
-    estimated_result?: string;
-    margin?: string | null;
-    charged_consumption?: string;
-    historical_sales_cogs?: string;
-    historical_consumption_cogs?: string;
-    commission?: string;
-    operating_expenses?: string;
-    fixed_cost?: string;
+    sales_revenue: DashboardDecimal;
+    consumption_charged: DashboardDecimal;
+    effective_revenue: DashboardDecimal;
+    service_fee: DashboardDecimal;
+    total_received: DashboardDecimal;
+    payment_total: DashboardDecimal;
+    reconciliation_delta: DashboardDecimal;
+    costs_and_expenses: DashboardDecimal;
+    result?: DashboardDecimal;
+    estimated_result?: DashboardDecimal;
+    margin?: DashboardDecimal | null;
+    charged_consumption?: DashboardDecimal;
+    historical_sales_cogs?: DashboardDecimal;
+    historical_consumption_cogs?: DashboardDecimal;
+    commission?: DashboardDecimal;
+    operating_expenses?: DashboardDecimal;
+    fixed_cost?: DashboardDecimal;
   };
 }
 export interface ReportUserGroup {

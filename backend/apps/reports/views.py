@@ -21,7 +21,11 @@ from apps.base.export_labels import (
     promotion_discount_value_label,
 )
 from apps.base.audit import audit_log
-from apps.base.cost_visibility import can_view_branch_costs, redact_cost_payload
+from apps.base.cost_visibility import (
+    can_view_branch_commissions,
+    can_view_branch_costs,
+    redact_cost_payload,
+)
 from apps.base.models import AuditLog
 from apps.base.report_exports import render_report_export, report_key_value_rows
 from apps.base.pagination import StandardPagination
@@ -153,7 +157,16 @@ def payment_distribution(rows, total_received):
     return result
 
 
-def overview_comparison_data(request, *, start, end, filters):
+def overview_comparison_data(
+    request, *, start, end, filters, include_received=True,
+    include_result=True, current_values=None,
+):
+    """Return the selected interval against the immediately preceding interval.
+
+    The public API uses inclusive end datetimes. Internally both intervals are
+    half-open, so the previous end is the instant immediately before `start`.
+    `current_values` lets the dashboard reuse aggregates it has already made.
+    """
     def numeric_decimal(value):
         if isinstance(value, bool) or not isinstance(value, (Decimal, int, float)):
             return None
@@ -175,11 +188,17 @@ def overview_comparison_data(request, *, start, end, filters):
             'net_revenue': commercial['sales_revenue'],
             'sales_count': Decimal(commercial['count']),
             'ticket_average': commercial['average'],
-            'total_received': commercial['total_received'],
             'discounts': commercial['total_discount'],
             'service_fee': commercial['service_fee'],
             'cancellations': cancellations['value'],
         }
+        if include_received:
+            receipts = receipt_summary(
+                branch=request.branch_context, start=period_start, end=period_end,
+                filters=filters, inflow_sales=sales,
+                operation_types=(OperationType.SALE,),
+            )
+            values['total_received'] = receipts['total_received']
         if (
             branch_feature_enabled(request.branch_context, 'consumption')
             and any(user_has_code(request, code) for code in (
@@ -194,12 +213,12 @@ def overview_comparison_data(request, *, start, end, filters):
                 consumptions, filters=filters, reversals=consumption_reversals,
             )
             values['consumptions_courtesies'] = consumption['subsidy']
-        can_view_result = all((
+        can_view_result = include_result and all((
             branch_feature_enabled(request.branch_context, 'financial'),
             branch_feature_enabled(request.branch_context, 'inventory'),
             user_has_code(request, 'reports.view_operational_result'),
-            user_has_code(request, 'inventory.view_stock_costs'),
-            user_has_code(request, 'commissions.view'),
+            can_view_branch_costs(request, request.branch_context.pk),
+            can_view_branch_commissions(request, request.branch_context.pk),
         ))
         if can_view_result:
             result_sales = filtered_sales(
@@ -224,7 +243,7 @@ def overview_comparison_data(request, *, start, end, filters):
     duration = current_end - start
     previous_start = start - duration
     previous_end = start - timedelta(microseconds=1)
-    current = period_values(start, end)
+    current = current_values if current_values is not None else period_values(start, end)
     previous = period_values(previous_start, previous_end)
     deltas = {}
     for key, current_value in current.items():
@@ -237,18 +256,28 @@ def overview_comparison_data(request, *, start, end, filters):
                 'percentage': None,
                 'direction': None,
                 'comparable': False,
+                'unavailable_reason': 'missing_value',
             }
             continue
         difference = current_number - previous_number
+        if previous_number == 0:
+            deltas[key] = {
+                'amount': decimal_string(difference),
+                'percentage': None,
+                'direction': None,
+                'comparable': False,
+                'unavailable_reason': 'zero_prior',
+            }
+            continue
         percentage = (
             difference * Decimal('100') / abs(previous_number)
-            if previous_number else None
         )
         deltas[key] = {
             'amount': decimal_string(difference),
-            'percentage': decimal_string(percentage) if percentage is not None else None,
+            'percentage': decimal_string(percentage),
             'direction': 'up' if difference > 0 else 'down' if difference < 0 else 'stable',
             'comparable': True,
+            'unavailable_reason': None,
         }
 
     def serialize(values):
@@ -265,6 +294,8 @@ def overview_comparison_data(request, *, start, end, filters):
     return {
         'current_period': canonical_datetime_range(start, end),
         'previous_period': canonical_datetime_range(previous_start, previous_end),
+        'basis': 'contiguous_equivalent_period',
+        'timezone': timezone.get_default_timezone_name(),
         'current': serialize(current),
         'previous': serialize(previous),
         'deltas': deltas,
@@ -301,10 +332,12 @@ def operational_result_data(request, summary, *, extra_keys=()):
     ):
         if key in summary and (has_consumption or key not in consumption_keys):
             data[key] = summary[key]
-    can_view_commission = user_has_code(request, 'commissions.view')
+    can_view_commission = can_view_branch_commissions(
+        request, request.branch_context.pk,
+    )
     can_view_costs = (
         branch_feature_enabled(request.branch_context, 'inventory')
-        and user_has_code(request, 'inventory.view_stock_costs')
+        and can_view_branch_costs(request, request.branch_context.pk)
     )
     if can_view_commission and 'commission' in summary:
         for key in ('commission', 'commission_inflows', 'commission_reversals'):
@@ -338,6 +371,27 @@ def user_has_code(request, code):
     return request.user.is_superuser or code in branch_permission_codes(
         request.user, request.branch_context.pk
     )
+
+
+def redact_commission_payload(value, *, include_commissions):
+    """Remove commission values from dashboard data assembled outside serializers."""
+    if include_commissions:
+        return value
+    if isinstance(value, dict):
+        return {
+            key: redact_commission_payload(item, include_commissions=False)
+            for key, item in value.items()
+            if (
+                'commission' not in str(key).lower()
+                or str(key).lower() == 'commissions'
+            )
+        }
+    if isinstance(value, list):
+        return [
+            redact_commission_payload(item, include_commissions=False)
+            for item in value
+        ]
+    return value
 
 
 def safe_csv_cell(value):
@@ -715,6 +769,23 @@ class DashboardView(APIView):
         branch = request.branch_context
         has_feature = lambda feature: branch_feature_enabled(branch, feature)
         response = {'period': canonical_datetime_range(start, end)}
+        can_view_sales = user_has_code(request, 'sales.view')
+        can_view_costs = (
+            has_feature('inventory')
+            and can_view_branch_costs(request, branch.pk)
+        )
+        can_view_commissions = can_view_branch_commissions(request, branch.pk)
+        can_view_result = all((
+            can_view_sales,
+            has_feature('financial'),
+            has_feature('inventory'),
+            user_has_code(request, 'reports.view_operational_result'),
+            can_view_costs,
+            can_view_commissions,
+        ))
+        dashboard_summary = None
+        dashboard_cancellations = None
+        dashboard_receipts = None
         try:
             latest_sales_page = int(request.query_params.get('latest_sales_page', 1))
         except (TypeError, ValueError):
@@ -745,7 +816,7 @@ class DashboardView(APIView):
         sales = None
         dashboard_consumption_graph = None
         dashboard_consumption_reversals = None
-        if user_has_code(request, 'sales.view'):
+        if can_view_sales:
             sales = filtered_sales(
                 branch=branch,
                 start=start,
@@ -760,9 +831,15 @@ class DashboardView(APIView):
             summary, _ = commercial_summary(
                 sales_graph, item_filters, reversals=sales_reversals,
             )
+            dashboard_summary = summary
             products, categories = sale_rankings(
                 sales_graph, limit=10, filters=item_filters,
                 reversals=sales_reversals, product_order='revenue',
+            )
+            consumption_rows = (
+                product_consumption_breakdown(
+                    sales_graph, item_filters, sales_reversals,
+                ) if has_feature('products') else []
             )
             can_view_team = user_has_code(request, 'reports.view_team')
             operator_groups = (
@@ -780,6 +857,7 @@ class DashboardView(APIView):
             _cancelled_rows, cancellations = cancellation_summary(
                 branch=branch, start=start, end=end, filters=item_filters,
             )
+            dashboard_cancellations = cancellations
             discount_count = summary['manual_discount_count']
             heatmap, current_comparison, previous_comparison = dashboard_time_analysis(
                 sales_graph, branch=branch, start=start, end=end, filters=item_filters,
@@ -886,6 +964,22 @@ class DashboardView(APIView):
                     }
                     for row in categories
                 ],
+                'product_consumption': [
+                    {
+                        **row,
+                        **{
+                            key: decimal_string(row[key], 3)
+                            for key in (
+                                'direct_quantity', 'modifier_quantity',
+                                'consolidated_quantity',
+                            )
+                        },
+                    }
+                    for row in consumption_rows
+                ],
+                # Filters select the historical product/category of the sold
+                # line. Eligible modifier stock products follow that line.
+                'product_consumption_filter_basis': 'originating_sale_item',
                 'top_sellers': [_group_json(row) for row in seller_groups[:10]],
                 'top_operators': [_group_json(row) for row in operator_groups[:10]],
                 'heatmap': [
@@ -933,7 +1027,9 @@ class DashboardView(APIView):
             if not has_feature('products'):
                 response['sales'].pop('top_products', None)
                 response['sales'].pop('top_categories', None)
-            if not user_has_code(request, 'commissions.view'):
+                response['sales'].pop('product_consumption', None)
+                response['sales'].pop('product_consumption_filter_basis', None)
+            if not can_view_commissions:
                 response['sales'].pop('commission', None)
                 for group in response['sales']['top_sellers'] + response['sales']['top_operators']:
                     for key in ('commission', 'commission_sale_count'):
@@ -1016,21 +1112,15 @@ class DashboardView(APIView):
             and user_has_code(request, 'inventory.view_stock_kpis')
             and has_feature('inventory')
         ):
-            include_value = user_has_code(request, 'inventory.view_stock_costs')
+            include_value = can_view_costs
             stock = inventory_kpis(
                 branch, include_value=include_value, category=category,
             )
             if include_value:
                 stock['inventory_value'] = decimal_string(stock['inventory_value'])
             response['inventory'] = stock
-        if has_feature('financial') and user_has_code(request, 'reports.view_operational_result'):
-            result_sales = sales if sales is not None else filtered_sales(
-                branch=branch,
-                start=start,
-                end=end,
-                operation_type=OperationType.SALE,
-                filters=item_filters,
-            )
+        if can_view_result:
+            result_sales = sales
             result = operational_result(
                 branch=branch, start=start, end=end, sales=result_sales,
                 filters=item_filters,
@@ -1050,6 +1140,92 @@ class DashboardView(APIView):
                     'operating_expenses', 'fixed_cost',
                 ):
                     response['operational_result'].pop(key, None)
+        if sales is not None:
+            comparison_current = {
+                'gross_revenue': dashboard_summary['gross'],
+                'net_revenue': dashboard_summary['sales_revenue'],
+                'sales_count': Decimal(dashboard_summary['count']),
+                'ticket_average': dashboard_summary['average'],
+                'discounts': dashboard_summary['total_discount'],
+                'service_fee': dashboard_summary['service_fee'],
+                'cancellations': dashboard_cancellations['value'],
+            }
+            if has_feature('financial'):
+                comparison_current['total_received'] = dashboard_receipts['total_received']
+            if can_view_result:
+                comparison_current['estimated_result'] = result['estimated_result']
+                comparison_current['estimated_margin'] = result['margin']
+            response['sales']['period_comparison'] = overview_comparison_data(
+                request,
+                start=start,
+                end=end,
+                filters=item_filters,
+                include_received=has_feature('financial'),
+                include_result=can_view_result,
+                current_values=comparison_current,
+            )
+        response['availability'] = {
+            'sales': 'available' if can_view_sales else 'restricted',
+            'consumptions': (
+                'available' if can_view_consumptions else
+                'unavailable' if not has_feature('consumption') else 'restricted'
+            ),
+            'financial_receipts': (
+                'available' if can_view_sales and has_feature('financial') else
+                'unavailable' if not has_feature('financial') else 'restricted'
+            ),
+            'operational_result': (
+                'available' if can_view_result else
+                'unavailable' if not has_feature('financial') or not has_feature('inventory')
+                else 'restricted'
+            ),
+            'inventory': (
+                'available'
+                if 'inventory' in response else
+                'unavailable' if not has_feature('inventory') else 'restricted'
+            ),
+            'team': (
+                'available' if can_view_sales and user_has_code(request, 'reports.view_team')
+                else 'restricted'
+            ),
+            'costs': (
+                'available' if can_view_costs and has_feature('inventory') else
+                'unavailable' if not has_feature('inventory') else 'restricted'
+            ),
+            'commissions': 'available' if can_view_commissions else 'restricted',
+        }
+        response['metadata'] = {
+            'period_metrics': {
+                'reference': 'selected_period',
+                'period': response['period'],
+                'timezone': timezone.get_default_timezone_name(),
+                'sections': [
+                    section for section in (
+                        'sales' if 'sales' in response else None,
+                        'consumptions' if 'consumptions' in response else None,
+                        'withdrawals' if 'withdrawals' in response else None,
+                        'operational_result' if 'operational_result' in response else None,
+                    ) if section is not None
+                ],
+            },
+            'operational_state': {
+                'reference': 'current_at_response',
+                'as_of': timezone.localtime(timezone.now()).isoformat(),
+                'sections': [
+                    section for section in (
+                        'commands' if 'commands' in response else None,
+                        'current_cash' if 'current_cash' in response else None,
+                        'inventory' if 'inventory' in response else None,
+                    ) if section is not None
+                ],
+            },
+        }
+        # Data assembled by dashboard helpers bypass serializers. Redact last so
+        # every nested response and the dashboard export share the same boundary.
+        response = redact_cost_payload(response, include_costs=can_view_costs)
+        response = redact_commission_payload(
+            response, include_commissions=can_view_commissions,
+        )
         if request.query_params.get('export') in ('csv', 'xlsx', 'pdf'):
             export = render_report_export(
                 request, filename='dashboard.csv', title='Dashboard',

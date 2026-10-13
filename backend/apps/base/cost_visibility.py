@@ -11,6 +11,8 @@ _COST_KEYS = frozenset({
     'component_cost_snapshot', 'cost_total', 'total_cost', 'cost_impact',
     'inventory_cost_impact', 'estimated_cost', 'estimated_value',
     'inventory_value', 'margin_amount', 'margin_percentage',
+    'historical_cost', 'historical_sales_cogs', 'historical_consumption_cogs',
+    'estimated_margin', 'costs_and_expenses',
 })
 
 
