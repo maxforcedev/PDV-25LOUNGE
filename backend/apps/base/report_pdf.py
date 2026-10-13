@@ -5,20 +5,22 @@ period rules, calculations, redaction and tenant/branch authorization.
 """
 import html
 import io
+import logging
+from collections.abc import Mapping
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from django.http import HttpResponse
 from django.utils import timezone
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import APIException, ValidationError
 from reportlab.graphics.shapes import Drawing, Line, Rect, String
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape, portrait
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.pdfgen import canvas
-from reportlab.platypus import Flowable, LongTable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Flowable, KeepTogether, LongTable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .export_labels import export_label, export_value
 
@@ -33,6 +35,7 @@ CORE_SUCCESS = colors.HexColor('#17C666')
 CORE_WARNING = colors.HexColor('#FFA21D')
 CORE_DANGER = colors.HexColor('#EA4D4D')
 CORE_LOGO = Path(__file__).parent / 'assets' / 'core-logo-compact-light.png'
+logger = logging.getLogger(__name__)
 
 # ``value`` is intentionally absent. A presentation column must retain the
 # source key in ``__report_key`` instead of becoming currency by its own name.
@@ -217,7 +220,7 @@ def _paragraph(value, style):
 def _styles():
     source = getSampleStyleSheet()
     return {
-        'title': ParagraphStyle('CoreReportTitle', parent=source['Title'], fontName='Helvetica-Bold', fontSize=21, leading=25, textColor=CORE_DARK, spaceAfter=2),
+        'title': ParagraphStyle('CoreReportTitle', parent=source['Title'], fontName='Helvetica-Bold', fontSize=21, leading=25, textColor=CORE_DARK, alignment=0, spaceAfter=2),
         'subtitle': ParagraphStyle('CoreReportSubtitle', parent=source['Normal'], fontSize=9, leading=13, textColor=CORE_MUTED, spaceAfter=12),
         'section': ParagraphStyle('CoreReportSection', parent=source['Heading2'], fontName='Helvetica-Bold', fontSize=12, leading=16, textColor=CORE_DARK, spaceBefore=15, spaceAfter=7, keepWithNext=True),
         'section_note': ParagraphStyle('CoreReportSectionNote', parent=source['Normal'], fontSize=8, leading=10, textColor=CORE_MUTED, alignment=2),
@@ -225,6 +228,7 @@ def _styles():
         'small': ParagraphStyle('CoreReportSmall', parent=source['BodyText'], fontSize=7.5, leading=9.5, textColor=CORE_DARK, wordWrap='CJK', splitLongWords=1),
         'right': ParagraphStyle('CoreReportRight', parent=source['BodyText'], fontSize=8.6, leading=11.5, textColor=CORE_DARK, alignment=2, wordWrap='CJK', splitLongWords=1),
         'table_header': ParagraphStyle('CoreReportTableHeader', parent=source['BodyText'], fontName='Helvetica-Bold', fontSize=7.5, leading=9, textColor=CORE_DARK),
+        'table_header_light': ParagraphStyle('CoreReportTableHeaderLight', parent=source['BodyText'], fontName='Helvetica-Bold', fontSize=7.5, leading=9, textColor=colors.white),
         'card_label': ParagraphStyle('CoreReportCardLabel', parent=source['BodyText'], fontName='Helvetica-Bold', fontSize=7.2, leading=9, textColor=CORE_MUTED),
         'card_value': ParagraphStyle('CoreReportCardValue', parent=source['BodyText'], fontName='Helvetica-Bold', fontSize=15, leading=18, textColor=CORE_DARK),
         'card_note': ParagraphStyle('CoreReportCardNote', parent=source['BodyText'], fontSize=7.3, leading=9, textColor=CORE_MUTED),
@@ -236,9 +240,9 @@ def _summary_scalars(summary):
 
 
 def _flatten_row(row, prefix=''):
-    """Expand nested records only in detailed tables, retaining every leaf field."""
+    """Expand a previously authorized record while retaining its relationship path."""
     flattened = {}
-    for key, value in (row or {}).items():
+    for key, value in (row or {}).items() if isinstance(row, Mapping) else ():
         if str(key).startswith('__'):
             continue
         field = f'{prefix}.{key}' if prefix else str(key)
@@ -252,16 +256,16 @@ def _flatten_row(row, prefix=''):
 
 
 def _expanded_table_data(headers, rows):
-    expanded_rows = [_flatten_row(row) for row in rows]
+    roots = tuple(dict.fromkeys(str(header).split('.', 1)[0] for header in headers))
+    expanded_rows = [
+        _flatten_row({root: row[root] for root in roots if isinstance(row, Mapping) and root in row})
+        for row in rows
+    ]
     expanded_headers = []
-    for header in headers:
+    for header in roots:
         matches = [key for row in expanded_rows for key in row if key == header or key.startswith(f'{header}.')]
         for key in matches or [header]:
             if key not in expanded_headers:
-                expanded_headers.append(key)
-    for row in expanded_rows:
-        for key in row:
-            if key not in expanded_headers and not isinstance(row[key], (list, tuple)):
                 expanded_headers.append(key)
     return tuple(
         key for key in expanded_headers
@@ -378,10 +382,17 @@ def _metric_cards(document, metrics, styles):
     columns = 3 if count == 3 else 4 if count >= 4 else count
     cards = []
     for label, key, value, note in metrics:
+        decimal_value = _decimal(value)
+        accent = (
+            CORE_DANGER if decimal_value is not None and decimal_value < 0
+            else CORE_DANGER if 'negative' in key
+            else CORE_SUCCESS if key in ('estimated_result', 'result')
+            else CORE_WARNING if key in ('total_discount', 'below_minimum', 'zero', 'zero_count')
+            else CORE_BLUE
+        )
         cards.append(Table([[_MetricCard(
             document.width / columns - 10, label, pdf_value(value, key), note,
-            CORE_DANGER if 'negative' in key or key in ('difference', 'total_discount')
-            else CORE_WARNING if key in ('below_minimum', 'zero', 'zero_count') else CORE_BLUE,
+            accent,
         )]], colWidths=[document.width / columns - 10], rowHeights=[_MetricCard.height], style=TableStyle([
             ('LEFTPADDING', (0, 0), (-1, -1), 0), ('RIGHTPADDING', (0, 0), (-1, -1), 0),
             ('TOPPADDING', (0, 0), (-1, -1), 0), ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
@@ -405,7 +416,7 @@ def _card_text(value, maximum=38):
 class _MetricCard(Flowable):
     """Compact metric block matching the rounded, colored-side treatment in the approved layout."""
 
-    height = 50
+    height = 58
 
     def __init__(self, width, label, value, note, accent):
         super().__init__()
@@ -423,20 +434,47 @@ class _MetricCard(Flowable):
         canvas_object = self.canv
         canvas_object.saveState()
         canvas_object.setFillColor(colors.white)
-        canvas_object.setStrokeColor(CORE_BORDER)
-        canvas_object.setLineWidth(.45)
-        canvas_object.roundRect(0, 0, self.width, self.height, 5, fill=1, stroke=1)
+        canvas_object.setStrokeColor(colors.HexColor('#CBD5E1'))
+        canvas_object.setLineWidth(.7)
+        canvas_object.roundRect(0, 0, self.width, self.height, 6, fill=1, stroke=1)
         canvas_object.setFillColor(self.accent)
-        canvas_object.roundRect(0, 0, 4, self.height, 2, fill=1, stroke=0)
+        canvas_object.roundRect(0, 0, 5, self.height, 2.5, fill=1, stroke=0)
         canvas_object.setFillColor(CORE_MUTED)
-        canvas_object.setFont('Helvetica-Bold', 6.8)
-        canvas_object.drawString(10, 38, self.label)
+        canvas_object.setFont('Helvetica-Bold', 7)
+        canvas_object.drawString(12, 43, self.label)
         canvas_object.setFillColor(CORE_DARK)
-        canvas_object.setFont('Helvetica-Bold', 13.5)
-        canvas_object.drawString(10, 21, self.value)
+        canvas_object.setFont('Helvetica-Bold', 14.5)
+        canvas_object.drawString(12, 24, self.value)
         canvas_object.setFillColor(CORE_MUTED)
         canvas_object.setFont('Helvetica', 6.7)
-        canvas_object.drawString(10, 9, self.note)
+        canvas_object.drawString(12, 10, self.note)
+        canvas_object.restoreState()
+
+
+class _RoundedPanel(Flowable):
+    """Draw a compact visual container around a non-splitting report section."""
+
+    def __init__(self, content, width, *, padding=8):
+        super().__init__()
+        self.content = content
+        self.width = width
+        self.padding = padding
+        self.height = 0
+
+    def wrap(self, available_width, available_height):
+        self.width = min(self.width, available_width)
+        _, content_height = self.content.wrap(self.width - self.padding * 2, available_height)
+        self.height = content_height + self.padding * 2
+        return self.width, self.height
+
+    def draw(self):
+        canvas_object = self.canv
+        canvas_object.saveState()
+        canvas_object.setFillColor(colors.white)
+        canvas_object.setStrokeColor(colors.HexColor('#CBD5E1'))
+        canvas_object.setLineWidth(.65)
+        canvas_object.roundRect(0, 0, self.width, self.height, 7, fill=1, stroke=1)
+        self.content.drawOn(canvas_object, self.padding, self.padding)
         canvas_object.restoreState()
 
 
@@ -452,22 +490,29 @@ def _table_widths(document, headers, rows):
     return [document.width * weight / total for weight in weights]
 
 
-def report_table(document, headers, rows, styles, *, status_column=None, emphasize_last=False):
+def report_table(document, headers, rows, styles, *, status_column=None, emphasize_last=False,
+                 dark_header=False, quantity_units=None):
     if not headers:
         return None
-    content = [[_paragraph(_label(key).upper(), styles['table_header']) for key in headers]]
+    header_style = styles['table_header_light'] if dark_header else styles['table_header']
+    quantity_units = quantity_units or {}
+    content = [[_paragraph(_label(key).upper(), header_style) for key in headers]]
     numeric = {
         index for index, key in enumerate(headers)
         if _is_currency(key) or _is_percent(key) or any(term in key.casefold() for term in QUANTITY_TERMS)
     }
     for row in rows:
-        content.append([
-            _paragraph(pdf_value(row.get(key), key, row=row), styles['right'] if index in numeric else styles['body'])
-            for index, key in enumerate(headers)
-        ])
+        cells = []
+        for index, key in enumerate(headers):
+            value = pdf_value(row.get(key), key, row=row)
+            unit_key = quantity_units.get(key)
+            if unit_key and row.get(unit_key) not in (None, '') and value != 'Não disponível':
+                value = f'{value} {pdf_value(row[unit_key], unit_key, row=row)}'
+            cells.append(_paragraph(value, styles['right'] if index in numeric else styles['body']))
+        content.append(cells)
     table = LongTable(content, colWidths=_table_widths(document, headers, rows), repeatRows=1, splitByRow=1, splitInRow=1, hAlign='LEFT')
     commands = [
-        ('BACKGROUND', (0, 0), (-1, 0), CORE_PALE),
+        ('BACKGROUND', (0, 0), (-1, 0), CORE_DARK if dark_header else CORE_PALE),
         ('LINEBELOW', (0, 0), (-1, 0), .65, CORE_BORDER),
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#FAFBFE')]),
         ('LINEBELOW', (0, 1), (-1, -1), .25, CORE_BORDER),
@@ -478,7 +523,7 @@ def report_table(document, headers, rows, styles, *, status_column=None, emphasi
         ('RIGHTPADDING', (0, 0), (-1, -1), 6),
     ]
     if emphasize_last and len(content) > 1:
-        commands.extend([('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#E8EEFF')), ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold')])
+        commands.extend([('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#DCFCE7')), ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold')])
     if status_column is not None:
         index = headers.index(status_column)
         for row_number, row in enumerate(rows, 1):
@@ -491,14 +536,18 @@ def report_table(document, headers, rows, styles, *, status_column=None, emphasi
     return table
 
 
-def _section_heading(story, title, styles, note=None):
+def _section_heading(story, title, styles, note=None, minimum_following_height=0):
     if note:
-        story.append(Table([[_paragraph(title, styles['section']), _paragraph(note, styles['section_note'])]], colWidths=[None, 3.2 * cm], style=TableStyle([
+        heading = Table([[_paragraph(title, styles['section']), _paragraph(note, styles['section_note'])]], colWidths=[None, 3.2 * cm], style=TableStyle([
             ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'), ('LEFTPADDING', (0, 0), (-1, -1), 0),
             ('RIGHTPADDING', (0, 0), (-1, -1), 0), ('TOPPADDING', (0, 0), (-1, -1), 0), ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
-        ])))
+        ]))
     else:
-        story.append(_paragraph(title, styles['section']))
+        heading = _paragraph(title, styles['section'])
+    if minimum_following_height:
+        story.append(KeepTogether([heading, Spacer(1, minimum_following_height)]))
+    else:
+        story.append(heading)
 
 
 def _bar_chart(values, *, width, title_key, value_key, max_items=7, colorset=None, percent_key=None):
@@ -508,19 +557,22 @@ def _bar_chart(values, *, width, title_key, value_key, max_items=7, colorset=Non
     height = 98
     drawing = Drawing(width, height)
     amounts = [_decimal(item.get(value_key)) or Decimal('0') for item in values]
-    maximum = max(amounts) or Decimal('1')
+    participations = [_decimal(item.get(percent_key)) or Decimal('0') for item in values] if percent_key else amounts
+    maximum = Decimal('100') if percent_key and all(value <= 100 for value in participations) else max(participations) or Decimal('1')
     label_width = min(width * .3, 116)
     value_width = min(width * .36, 92)
     chart_width = max(width - label_width - value_width - 8, 24)
     row_height = (height - 10) / len(values)
     palette = colorset or (CORE_BLUE, colors.HexColor('#6D83E4'), colors.HexColor('#AAB8F2'))
-    for index, (item, amount) in enumerate(zip(values, amounts)):
+    for index, (item, amount, participation) in enumerate(zip(values, amounts, participations)):
         y = height - (index + 1) * row_height + 3
         label = pdf_value(item.get(title_key) or item.get('name') or item.get('product_name') or 'Não informado', title_key, row=item)[:24]
         drawing.add(String(0, y + 3, label, fontName='Helvetica', fontSize=7.4, fillColor=CORE_DARK))
         drawing.add(Rect(label_width, y, chart_width, 8, fillColor=CORE_PALE, strokeColor=None))
-        drawing.add(Rect(label_width, y, float(Decimal(str(chart_width)) * amount / maximum), 8, fillColor=palette[index % len(palette)], strokeColor=None))
+        drawing.add(Rect(label_width, y, float(Decimal(str(chart_width)) * participation / maximum), 8, fillColor=palette[index % len(palette)], strokeColor=None))
         text = pdf_value(item.get(value_key), value_key, row=item)
+        if value_key == 'quantity' and item.get('unit') not in (None, ''):
+            text = f'{text} {pdf_value(item["unit"], "unit", row=item)}'
         if percent_key and item.get(percent_key) is not None:
             text = f'{text} · {pdf_value(item.get(percent_key), percent_key, row=item)}'
         drawing.add(String(width - 1, y + 2, text, textAnchor='end', fontName='Helvetica-Bold', fontSize=6.5, fillColor=CORE_DARK))
@@ -616,10 +668,13 @@ def _financial_statement(document, summary, styles, kind, width=None):
     if not rows:
         return None
     width = width or document.width
+    result_value = _decimal(summary.get('estimated_result', summary.get('result')))
+    result_background = CORE_SUCCESS if result_value is None or result_value >= 0 else colors.HexColor('#FEE2E2')
     return Table(rows, colWidths=[width * .62, width * .38], style=TableStyle([
         ('LINEBELOW', (0, 0), (-1, -1), .3, CORE_BORDER), ('TOPPADDING', (0, 0), (-1, -1), 5),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 5), ('LEFTPADDING', (0, 0), (-1, -1), 8), ('RIGHTPADDING', (0, 0), (-1, -1), 8),
-        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#E8EEFF')), ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('BACKGROUND', (0, -1), (-1, -1), result_background), ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('TEXTCOLOR', (0, -1), (-1, -1), colors.white if result_background == CORE_SUCCESS else CORE_DANGER),
     ]))
 
 
@@ -658,20 +713,26 @@ def _executive_story(story, document, styles, kind, summary, rows):
         story.extend([cards, Spacer(1, 5)])
     if kind in ('sales', 'dashboard'):
         sales = _nested(summary, 'sales') if kind == 'dashboard' else summary
-        statement = _financial_statement(document, sales, styles, 'sales', document.width * .52)
+        left_width = document.width * .54
+        right_width = document.width * .43
+        statement = _financial_statement(document, sales, styles, 'sales', left_width - 16)
         payments = _payment_rows(sales)
         if statement or payments:
             _section_heading(story, 'Composição financeira', styles)
-            left = [statement] if statement else [_paragraph('Sem composição financeira autorizada.', styles['body'])]
+            left = statement or _paragraph('Sem composição financeira autorizada.', styles['body'])
             right = [_paragraph('Recebimentos por forma', styles['body'])]
             payment_value = next((key for key in ('payment_total', 'received_total', 'applied_total', 'amount') if any(key in row for row in payments)), 'amount')
             chart = _bar_chart(
-                payments, width=document.width * .40, title_key='name', value_key=payment_value,
+                payments, width=right_width - 16, title_key='name', value_key=payment_value,
                 percent_key='percentage' if any('percentage' in row for row in payments) else None,
             ) if payments else None
             right.append(chart or _paragraph('Sem distribuição disponível.', styles['body']))
-            story.append(Table([[left, right]], colWidths=[document.width * .55, document.width * .45], style=TableStyle([
-                ('VALIGN', (0, 0), (-1, -1), 'TOP'), ('LEFTPADDING', (0, 0), (-1, -1), 0), ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+            right_panel = Table([[item] for item in right], colWidths=[right_width - 16], style=TableStyle([
+                ('LEFTPADDING', (0, 0), (-1, -1), 0), ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                ('TOPPADDING', (0, 0), (-1, -1), 0), ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ]))
+            story.append(Table([[_RoundedPanel(left, left_width), _RoundedPanel(right_panel, right_width)]], colWidths=[left_width, right_width], style=TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'), ('LEFTPADDING', (0, 0), (-1, -1), 0), ('RIGHTPADDING', (0, 0), (-1, -1), 8),
                 ('TOPPADDING', (0, 0), (-1, -1), 0), ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
             ])))
         weekly_comparison = _nested(sales, 'weekly_comparison')
@@ -683,37 +744,49 @@ def _executive_story(story, document, styles, kind, summary, rows):
                 story, 'Vendas por horário' if timeline_key == 'hourly_sales' else 'Evolução de vendas', styles,
                 'Atual e período anterior' if has_comparison else 'Horários registrados no período' if timeline_key == 'hourly_sales' else 'Dias registrados no período',
             )
-            story.append(_timeline_chart(timeline, document.width, weekly_comparison.get('previous')))
+            story.append(_RoundedPanel(
+                _timeline_chart(timeline, document.width - 16, weekly_comparison.get('previous')),
+                document.width,
+            ))
         ranking_key, ranking = _ranking_rows(sales)
         if ranking:
             _section_heading(story, 'Produtos em destaque' if 'product' in ranking_key else _label(ranking_key), styles)
             value_key = 'quantity' if any('quantity' in row for row in ranking) else 'sales_revenue'
-            story.append(_bar_chart(ranking, width=document.width, title_key='product_name' if 'product' in ranking_key else 'name', value_key=value_key, max_items=5))
+            story.append(_RoundedPanel(
+                _bar_chart(ranking, width=document.width - 16, title_key='product_name' if 'product' in ranking_key else 'name', value_key=value_key, max_items=5),
+                document.width,
+            ))
         return
     if kind == 'result':
         statement = _financial_statement(document, summary, styles, kind)
         if statement:
             _section_heading(story, 'Composição do resultado', styles)
-            story.append(statement)
+            story.append(_RoundedPanel(statement, document.width))
         if 'margin' in summary or 'notice' in summary:
             _section_heading(story, 'Leitura gerencial', styles)
             margin = pdf_value(summary.get('margin'), 'margin_percent') if 'margin' in summary else 'Não disponível'
             notice = str(summary.get('notice') or 'Estimativa gerencial baseada nos dados autorizados. Não substitui demonstração contábil.')
-            story.append(Table([[
+            insight = Table([[
                 [_paragraph('MARGEM ESTIMADA', styles['card_label']), _paragraph(margin, styles['card_value'])],
                 [_paragraph(notice, styles['body'])],
             ]], colWidths=[document.width * .3, document.width * .7], style=TableStyle([
-                ('BACKGROUND', (0, 0), (0, 0), CORE_PALE), ('BOX', (0, 0), (-1, -1), .4, CORE_BORDER),
+                ('BACKGROUND', (0, 0), (0, 0), CORE_PALE),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'), ('TOPPADDING', (0, 0), (-1, -1), 11), ('BOTTOMPADDING', (0, 0), (-1, -1), 11),
                 ('LEFTPADDING', (0, 0), (-1, -1), 10), ('RIGHTPADDING', (0, 0), (-1, -1), 10),
-            ])))
+            ]))
+            story.append(_RoundedPanel(insight, document.width))
         return
     if kind == 'stock':
         attention = _stock_attention(rows)
         if attention:
             _section_heading(story, 'Produtos que precisam de atenção', styles, 'Prioridades da filial')
-            headers = tuple(key for key in ('product', 'current_quantity', 'minimum_quantity', 'unit', 'state') if any(key in row for row in attention))
-            story.append(report_table(document, headers, attention, styles, status_column='state' if 'state' in headers else None))
+            headers = tuple(key for key in ('product', 'current_quantity', 'minimum_quantity', 'state') if any(key in row for row in attention))
+            story.append(report_table(
+                document, headers, attention, styles,
+                status_column='state' if 'state' in headers else None,
+                dark_header=True,
+                quantity_units={key: 'unit' for key in ('current_quantity', 'minimum_quantity')},
+            ))
         _section_heading(story, 'Nota de gestão', styles)
         story.append(_paragraph('Verifique itens críticos e planeje reposições conforme os movimentos registrados.', styles['body']))
         return
@@ -722,17 +795,19 @@ def _executive_story(story, document, styles, kind, summary, rows):
         _section_heading(story, _label(ranking_key), styles)
         value_key = next((key for key in ('amount', 'sales_revenue', 'net_revenue', 'quantity', 'count') if any(key in row for row in ranking)), 'count')
         name_key = next((key for key in ('name', 'product_name', 'category_name', 'supplier_name') if any(key in row for row in ranking)), 'name')
-        story.append(_bar_chart(ranking, width=document.width, title_key=name_key, value_key=value_key, max_items=6))
+        story.append(_RoundedPanel(_bar_chart(ranking, width=document.width - 16, title_key=name_key, value_key=value_key, max_items=6), document.width))
     elif rows:
         _section_heading(story, 'Leitura operacional', styles)
         story.append(_paragraph('Consulte o PDF detalhado para os registros autorizados do período.', styles['body']))
 
 
-def _related_details(story, document, styles, rows):
-    """Keep every nested child field in consolidated, relationship-preserving tables."""
+def _related_details(story, document, styles, headers, rows):
+    """Render nested lists only for relationships authorized by a root header."""
     grouped = {}
 
     def collect(row, identity, prefix=''):
+        if not isinstance(row, Mapping):
+            return
         for key, values in row.items():
             if str(key).startswith('__'):
                 continue
@@ -752,9 +827,12 @@ def _related_details(story, document, styles, rows):
                         for item in values
                     )
 
+    authorized_roots = tuple(dict.fromkeys(str(header).split('.', 1)[0] for header in headers))
     for row in rows:
+        if not isinstance(row, Mapping):
+            continue
         identity = row.get('sale_number') or row.get('operation_id') or row.get('id') or 'Registro'
-        collect(row, identity)
+        collect({key: row[key] for key in authorized_roots if key in row}, identity)
     for key, values in grouped.items():
         headers = ('record',) + tuple(dict.fromkeys(
             field for item in values for field in item if not field.startswith('__') and field != 'record'
@@ -765,7 +843,7 @@ def _related_details(story, document, styles, rows):
     return bool(grouped)
 
 
-def _detailed_story(story, document, styles, summary, headers, rows):
+def _detailed_story(story, document, styles, summary, headers, rows, sample_label=''):
     metrics = _metrics(_profile('', '', summary), summary)[:4]
     cards = _metric_cards(document, metrics, styles)
     if cards:
@@ -780,16 +858,25 @@ def _detailed_story(story, document, styles, summary, headers, rows):
     # executive editorial limits.
     for key, section_headers, section_rows in _structured_sections(summary):
         section_headers, section_rows = _expanded_table_data(section_headers, section_rows)
-        _section_heading(story, _label(key), styles)
+        _section_heading(story, _label(key), styles, minimum_following_height=26)
         story.append(report_table(document, section_headers, section_rows, styles))
-    _section_heading(story, 'Movimentações individualizadas', styles, 'Registros autorizados')
-    visible_headers = tuple(key for key in headers if not any(isinstance(row.get(key), (list, tuple)) for row in rows))
+    _section_heading(
+        story, 'Movimentações individualizadas', styles,
+        sample_label or 'Registros autorizados', minimum_following_height=34,
+    )
+    visible_headers = tuple(
+        key for key in headers
+        if not any(
+            isinstance(row, Mapping) and isinstance(row.get(key), (list, tuple))
+            for row in rows
+        )
+    )
     visible_headers, visible_rows = _expanded_table_data(visible_headers, rows)
     if rows and visible_headers:
         story.append(report_table(document, visible_headers, visible_rows, styles))
     elif not rows:
         story.append(_paragraph('Sem registros para os filtros selecionados.', styles['body']))
-    _related_details(story, document, styles, rows)
+    _related_details(story, document, styles, headers, rows)
 
 
 class _ReportCanvas(canvas.Canvas):
@@ -826,14 +913,14 @@ def _header(company, branch, mode):
         x = 1.5 * cm
         if CORE_LOGO.is_file():
             # This compact official mark already contains the wordmark and slogan.
-            page.drawImage(str(CORE_LOGO), x, height - 1.48 * cm, width=1.08 * cm, height=1.08 * cm, mask='auto', preserveAspectRatio=True, anchor='c')
-            x += 1.25 * cm
+            page.drawImage(str(CORE_LOGO), x, height - 1.62 * cm, width=1.32 * cm, height=1.32 * cm, mask='auto', preserveAspectRatio=True, anchor='c')
+            x += 1.5 * cm
         page.setFillColor(CORE_DARK)
-        page.setFont('Helvetica-Bold', 8.2)
-        page.drawString(x, height - .78 * cm, company)
-        page.setFont('Helvetica-Bold', 7.2)
+        page.setFont('Helvetica-Bold', 8.8)
+        page.drawString(x, height - .82 * cm, company)
+        page.setFont('Helvetica', 7.4)
         page.setFillColor(CORE_MUTED)
-        page.drawString(x, height - 1.06 * cm, branch)
+        page.drawString(x, height - 1.13 * cm, branch)
         page.drawRightString(width - 1.5 * cm, height - .8 * cm, mode.upper())
         page.setStrokeColor(CORE_BORDER)
         page.setLineWidth(.35)
@@ -850,10 +937,10 @@ def _metadata(document, styles, company, branch, period, generated_at, filters):
         [_paragraph(period_label(period), styles['body']), _paragraph(generated_at, styles['body'])],
     ]
     blocks = [Table(data, colWidths=[document.width / 2] * 2, style=TableStyle([
-        ('BACKGROUND', (0, 0), (-1, -1), colors.white), ('BOX', (0, 0), (-1, -1), .4, CORE_BORDER),
-        ('INNERGRID', (0, 0), (-1, -1), .25, CORE_BORDER), ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('TOPPADDING', (0, 0), (-1, -1), 5), ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-        ('LEFTPADDING', (0, 0), (-1, -1), 8), ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+        ('BACKGROUND', (0, 0), (-1, -1), colors.white), ('LINEBELOW', (0, 1), (-1, 1), .35, CORE_BORDER),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('TOPPADDING', (0, 0), (-1, -1), 3), ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0), ('RIGHTPADDING', (0, 0), (-1, -1), 14),
     ]))]
     if filters and filters != 'Sem filtros adicionais':
         blocks.extend([Spacer(1, 5), _paragraph(f'FILTROS APLICADOS · {filters}', styles['small'])])
@@ -866,7 +953,7 @@ def _needs_landscape(headers, rows):
     return len(headers) > 4 and sum(len(export_label(key)) for key in headers) > 70
 
 
-def render_pdf_export(request, *, filename, title, headers, rows, period=None, summary=None, filters=''):
+def render_pdf_export(request, *, filename, title, headers, rows, period=None, summary=None, filters='', sample_label=''):
     mode = request.query_params.get('pdf_mode', 'executive')
     if mode not in PDF_MODES:
         raise ValidationError({'pdf_mode': 'Informe "executive" ou "detailed".'})
@@ -892,12 +979,21 @@ def render_pdf_export(request, *, filename, title, headers, rows, period=None, s
         subtitle = 'Analítico · Registros para conferência e auditoria'
     story = [_paragraph(title, styles['title']), _paragraph(subtitle, styles['subtitle'])]
     story.extend(_metadata(document, styles, company, branch, period, generated_at, filters))
-    if mode == 'executive':
-        _executive_story(story, document, styles, kind, summary, rows)
-    else:
-        _detailed_story(story, document, styles, summary, headers, rows)
-    footer = f'CORE PDV · {mode_label} · Gerado em {generated_at}'
-    document.build(story, onFirstPage=_header(company, branch, mode_label), onLaterPages=_header(company, branch, mode_label), canvasmaker=lambda *args, **kwargs: _ReportCanvas(*args, footer=footer, **kwargs))
+    try:
+        if mode == 'executive':
+            _executive_story(story, document, styles, kind, summary, rows)
+        else:
+            _detailed_story(story, document, styles, summary, headers, rows, sample_label)
+        footer = f'CORE PDV · {mode_label} · Gerado em {generated_at}'
+        document.build(story, onFirstPage=_header(company, branch, mode_label), onLaterPages=_header(company, branch, mode_label), canvasmaker=lambda *args, **kwargs: _ReportCanvas(*args, footer=footer, **kwargs))
+    except Exception as exc:
+        logger.exception(
+            'Report PDF rendering failed title=%r mode=%s headers=%s row_count=%d',
+            title, mode, headers, len(rows),
+        )
+        raise APIException(
+            'Não foi possível gerar o PDF. Tente novamente ou contate o suporte.'
+        ) from exc
     response = HttpResponse(output.getvalue(), content_type='application/pdf')
     response['Content-Disposition'] = f'attachment; filename="{filename}"'
     return response

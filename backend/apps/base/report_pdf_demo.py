@@ -42,7 +42,7 @@ def _sales_rows():
             'event_at': f'2026-10-13T{21 - index // 3:02d}:{36 - (index % 3) * 11:02d}:00-03:00',
             'sale_number': f'#{number}', 'status': 'finalized', 'payment_method_name': payment,
             'total_received': amount, 'operator': 'Equipe Centro',
-            'items': [{'product_name': 'Heineken Long Neck', 'quantity': '2', 'unit_price': '12.00', 'net_subtotal': '24.00'}],
+            'items': [{'product_name': 'Heineken Long Neck', 'quantity': '2', 'unit': 'un.', 'unit_price': '12.00', 'net_subtotal': '24.00'}],
             'payments': [{'payment_method_name': payment, 'applied_amount': amount, 'received_amount': amount, 'change_amount': '0.00'}],
         })
     return rows
@@ -64,16 +64,16 @@ SALES_SUMMARY = {
         {'hour': '23:00', 'sales_revenue': '4190.00'},
     ],
     'product_ranking': [
-        {'product_name': 'Heineken Long Neck', 'quantity': '94'}, {'product_name': 'Red Bull Tradicional', 'quantity': '58'},
-        {'product_name': 'Combo Gin', 'quantity': '32'}, {'product_name': 'Água sem gás', 'quantity': '29'},
+        {'product_name': 'Heineken Long Neck', 'quantity': '94', 'unit': 'un.'}, {'product_name': 'Red Bull Tradicional', 'quantity': '58', 'unit': 'un.'},
+        {'product_name': 'Combo Gin', 'quantity': '32', 'unit': 'un.'}, {'product_name': 'Água sem gás', 'quantity': '29', 'unit': 'un.'},
     ],
 }
 
 
 RESULT_SUMMARY = {
     'effective_revenue': '23720.00', 'historical_sales_cogs': '11850.00',
-    'commission': '480.00', 'operating_expenses': '2850.00', 'costs_and_expenses': '15980.00',
-    'estimated_result': '7740.00', 'margin': '32.63',
+    'commission': '480.00', 'operating_expenses': '2850.00', 'costs_and_expenses': '15180.00',
+    'estimated_result': '8540.00', 'margin': '36.00',
     'notice': 'O resultado é uma estimativa gerencial baseada nos dados demonstrativos disponíveis no CORE PDV; não constitui DRE contábil.',
 }
 
@@ -90,10 +90,11 @@ STOCK_ROWS = [
 STOCK_SUMMARY = {'product_count': 248, 'below_minimum': 12, 'zero': 6, 'negative': 2, 'inventory_value': '52610.00'}
 
 
-def _write(name, title, mode, headers, rows, summary, period=PERIOD):
+def _write(name, title, mode, headers, rows, summary, period=PERIOD, sample_label=''):
     response = render_pdf_export(
         DemoRequest(mode), filename=name, title=title, headers=headers, rows=rows,
         period=period, summary=summary, filters='DADOS DEMONSTRATIVOS',
+        sample_label=sample_label,
     )
     (OUTPUT / name).write_bytes(response.content)
 
@@ -103,7 +104,11 @@ def main():
     sale_headers = ('event_at', 'sale_number', 'status', 'payment_method_name', 'total_received', 'operator', 'items', 'payments')
     sales_rows = _sales_rows()
     _write('vendas-executivo-demo.pdf', 'Relatório de Vendas', 'executive', sale_headers, sales_rows, SALES_SUMMARY)
-    _write('vendas-detalhado-demo.pdf', 'Relatório de Vendas', 'detailed', sale_headers, sales_rows, SALES_SUMMARY)
+    _write(
+        'vendas-detalhado-demo.pdf', 'Relatório de Vendas', 'detailed', sale_headers,
+        sales_rows, SALES_SUMMARY,
+        sample_label='Amostra demonstrativa: 12 de 162 vendas consolidadas',
+    )
     _write('resultado-operacional-demo.pdf', 'Resultado Operacional', 'executive', ('statement', 'value'), [], RESULT_SUMMARY)
     _write('posicao-estoque-demo.pdf', 'Posição de Estoque', 'executive', ('product', 'current_quantity', 'minimum_quantity', 'unit', 'state'), STOCK_ROWS, STOCK_SUMMARY, {'as_of': '2026-10-13T11:40:00-03:00'})
     dashboard = {'sales': SALES_SUMMARY, 'inventory': STOCK_SUMMARY, 'commands': {'open_count': 4}}
