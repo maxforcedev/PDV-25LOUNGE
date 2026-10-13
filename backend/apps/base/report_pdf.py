@@ -18,7 +18,7 @@ from reportlab.lib.pagesizes import A4, landscape, portrait
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.pdfgen import canvas
-from reportlab.platypus import LongTable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Flowable, LongTable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .export_labels import export_label, export_value
 
@@ -51,6 +51,7 @@ CURRENCY_KEYS = {
 PERCENT_TERMS = ('percent', 'percentage', 'participation', 'rate')
 PERCENT_KEYS = {'margin_percent', 'margin_percentage', 'commission_rate'}
 QUANTITY_TERMS = ('count', 'quantity', 'uses', 'products', 'records', 'items')
+ENTITY_NAME_KEYS = ('name', 'display_name', 'full_name', 'title', 'label', 'description')
 
 
 def _decimal(value):
@@ -70,6 +71,8 @@ def _semantic_key(row, key):
 
 
 def _label(key):
+    if '.' in str(key):
+        return ' · '.join(_label(part) for part in str(key).split('.'))
     special = {
         'record': 'Registro',
         'indicator': 'Indicador',
@@ -109,11 +112,30 @@ def _is_percent(key):
     return key in PERCENT_KEYS or any(term in key for term in PERCENT_TERMS)
 
 
-def _number(value, *, currency=False, percent=False, places=2):
+def _is_identifier(key):
+    key = str(key).casefold()
+    return key == 'id' or key.endswith(('_id', '_ids', '_number', '_code', '_reference'))
+
+
+def _number(value, *, currency=False, percent=False):
     value = _decimal(value)
     if value is None:
         return 'Não disponível'
-    text = f'{value:,.{places}f}'.replace(',', '_').replace('.', ',').replace('_', '.')
+    if currency:
+        text = f'{value:,.2f}'
+    else:
+        text = format(value.normalize(), 'f')
+        if '.' in text:
+            text = text.rstrip('0').rstrip('.')
+        if text in ('', '-0'):
+            text = '0'
+        whole, dot, fraction = text.partition('.')
+        negative = whole.startswith('-')
+        whole = f'{abs(int(whole)):,}'
+        if negative:
+            whole = f'-{whole}'
+        text = f'{whole}{dot}{fraction}' if dot else whole
+    text = text.replace(',', '_').replace('.', ',').replace('_', '.')
     if percent:
         return f'{text}%'
     return f'R$ {text}' if currency else text
@@ -139,11 +161,20 @@ def pdf_value(value, key='', *, row=None):
     if value is None or value == '':
         return 'Não disponível'
     source_key = _semantic_key(row or {}, key)
+    if _is_identifier(source_key):
+        return str(export_value(value))
     if isinstance(value, (datetime, date)) or source_key.endswith(('_at', '_date')) or source_key == 'as_of' or 'datetime' in source_key:
         formatted = _date_value(value, source_key)
         if formatted is not None:
             return formatted
-    if isinstance(value, (dict, list, tuple)):
+    if isinstance(value, dict):
+        for name_key in ENTITY_NAME_KEYS:
+            if value.get(name_key) not in (None, '') and not isinstance(value[name_key], (dict, list, tuple)):
+                return pdf_value(value[name_key], name_key)
+        if value.get('id') not in (None, ''):
+            return pdf_value(value['id'], 'id')
+        return 'Não disponível'
+    if isinstance(value, (list, tuple)):
         return 'Ver detalhamento'
     value = export_value(value)
     if source_key == 'state':
@@ -161,7 +192,7 @@ def pdf_value(value, key='', *, row=None):
     if _decimal(value) is not None and (
         isinstance(value, Decimal) or any(term in source_key.casefold() for term in QUANTITY_TERMS)
     ):
-        return _number(value, places=3 if 'quantity' in source_key.casefold() else 0)
+        return _number(value)
     return str(value)
 
 
@@ -204,20 +235,58 @@ def _summary_scalars(summary):
     return [(key, value) for key, value in (summary or {}).items() if not isinstance(value, (dict, list))]
 
 
-def _structured_sections(summary):
+def _flatten_row(row, prefix=''):
+    """Expand nested records only in detailed tables, retaining every leaf field."""
+    flattened = {}
+    for key, value in (row or {}).items():
+        if str(key).startswith('__'):
+            continue
+        field = f'{prefix}.{key}' if prefix else str(key)
+        if isinstance(value, dict):
+            flattened.update(_flatten_row(value, field))
+        elif isinstance(value, (list, tuple)):
+            flattened[field] = value
+        else:
+            flattened[field] = value
+    return flattened
+
+
+def _expanded_table_data(headers, rows):
+    expanded_rows = [_flatten_row(row) for row in rows]
+    expanded_headers = []
+    for header in headers:
+        matches = [key for row in expanded_rows for key in row if key == header or key.startswith(f'{header}.')]
+        for key in matches or [header]:
+            if key not in expanded_headers:
+                expanded_headers.append(key)
+    for row in expanded_rows:
+        for key in row:
+            if key not in expanded_headers and not isinstance(row[key], (list, tuple)):
+                expanded_headers.append(key)
+    return tuple(
+        key for key in expanded_headers
+        if not any(isinstance(row.get(key), (list, tuple)) for row in expanded_rows)
+    ), expanded_rows
+
+
+def _structured_sections(summary, prefix=''):
     sections = []
     for key, value in (summary or {}).items():
+        title = f'{prefix}.{key}' if prefix else key
         if isinstance(value, list) and value and all(isinstance(item, dict) for item in value):
             headers = tuple(dict.fromkeys(field for row in value for field in row if not field.startswith('__')))
             if headers:
-                sections.append((key, headers, value))
+                sections.append((title, headers, value))
+        elif isinstance(value, (list, tuple)) and value:
+            sections.append((title, ('value',), [{'value': item, '__report_key': key} for item in value]))
         elif isinstance(value, dict) and value:
             rows = [
                 {'indicator': _label(item_key), 'value': item_value, '__report_key': item_key}
                 for item_key, item_value in value.items() if not isinstance(item_value, (dict, list))
             ]
             if rows:
-                sections.append((key, ('indicator', 'value'), rows))
+                sections.append((title, ('indicator', 'value'), rows))
+            sections.extend(_structured_sections(value, title))
     return sections
 
 
@@ -309,18 +378,13 @@ def _metric_cards(document, metrics, styles):
     columns = 3 if count == 3 else 4 if count >= 4 else count
     cards = []
     for label, key, value, note in metrics:
-        cards.append(Table([
-            [_paragraph(label, styles['card_label'])],
-            [_paragraph(pdf_value(value, key), styles['card_value'])],
-            [_paragraph(note, styles['card_note'])],
-        ], colWidths=[document.width / columns - 10], style=TableStyle([
-            ('BACKGROUND', (0, 0), (-1, -1), colors.white),
-            ('BOX', (0, 0), (-1, -1), .45, CORE_BORDER),
-            ('LINEABOVE', (0, 0), (-1, 0), 2, CORE_BLUE),
-            ('TOPPADDING', (0, 0), (-1, -1), 7),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 7),
-            ('LEFTPADDING', (0, 0), (-1, -1), 9),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 9),
+        cards.append(Table([[_MetricCard(
+            document.width / columns - 10, label, pdf_value(value, key), note,
+            CORE_DANGER if 'negative' in key or key in ('difference', 'total_discount')
+            else CORE_WARNING if key in ('below_minimum', 'zero', 'zero_count') else CORE_BLUE,
+        )]], colWidths=[document.width / columns - 10], rowHeights=[_MetricCard.height], style=TableStyle([
+            ('LEFTPADDING', (0, 0), (-1, -1), 0), ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+            ('TOPPADDING', (0, 0), (-1, -1), 0), ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
         ])))
     while len(cards) % columns:
         cards.append('')
@@ -331,6 +395,49 @@ def _metric_cards(document, metrics, styles):
         ('TOPPADDING', (0, 0), (-1, -1), 0),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
     ]))
+
+
+def _card_text(value, maximum=38):
+    text = str(value).replace('\n', ' ')
+    return f'{text[:maximum - 3]}...' if len(text) > maximum else text
+
+
+class _MetricCard(Flowable):
+    """Compact metric block matching the rounded, colored-side treatment in the approved layout."""
+
+    height = 50
+
+    def __init__(self, width, label, value, note, accent):
+        super().__init__()
+        self.width = width
+        self.label = _card_text(label, 28)
+        self.value = _card_text(value, 24)
+        self.note = _card_text(note, 48)
+        self.accent = accent
+
+    def wrap(self, available_width, available_height):
+        self.width = min(self.width, available_width)
+        return self.width, self.height
+
+    def draw(self):
+        canvas_object = self.canv
+        canvas_object.saveState()
+        canvas_object.setFillColor(colors.white)
+        canvas_object.setStrokeColor(CORE_BORDER)
+        canvas_object.setLineWidth(.45)
+        canvas_object.roundRect(0, 0, self.width, self.height, 5, fill=1, stroke=1)
+        canvas_object.setFillColor(self.accent)
+        canvas_object.roundRect(0, 0, 4, self.height, 2, fill=1, stroke=0)
+        canvas_object.setFillColor(CORE_MUTED)
+        canvas_object.setFont('Helvetica-Bold', 6.8)
+        canvas_object.drawString(10, 38, self.label)
+        canvas_object.setFillColor(CORE_DARK)
+        canvas_object.setFont('Helvetica-Bold', 13.5)
+        canvas_object.drawString(10, 21, self.value)
+        canvas_object.setFillColor(CORE_MUTED)
+        canvas_object.setFont('Helvetica', 6.7)
+        canvas_object.drawString(10, 9, self.note)
+        canvas_object.restoreState()
 
 
 def _table_widths(document, headers, rows):
@@ -409,7 +516,7 @@ def _bar_chart(values, *, width, title_key, value_key, max_items=7, colorset=Non
     palette = colorset or (CORE_BLUE, colors.HexColor('#6D83E4'), colors.HexColor('#AAB8F2'))
     for index, (item, amount) in enumerate(zip(values, amounts)):
         y = height - (index + 1) * row_height + 3
-        label = str(item.get(title_key) or item.get('name') or item.get('product_name') or 'Não informado')[:24]
+        label = pdf_value(item.get(title_key) or item.get('name') or item.get('product_name') or 'Não informado', title_key, row=item)[:24]
         drawing.add(String(0, y + 3, label, fontName='Helvetica', fontSize=7.4, fillColor=CORE_DARK))
         drawing.add(Rect(label_width, y, chart_width, 8, fillColor=CORE_PALE, strokeColor=None))
         drawing.add(Rect(label_width, y, float(Decimal(str(chart_width)) * amount / maximum), 8, fillColor=palette[index % len(palette)], strokeColor=None))
@@ -420,26 +527,55 @@ def _bar_chart(values, *, width, title_key, value_key, max_items=7, colorset=Non
     return drawing
 
 
+def _chart_value_key(values):
+    return next(
+        (key for key in ('sales_revenue', 'effective_revenue', 'total_received', 'payment_total', 'count')
+         if any(row.get(key) is not None for row in values)),
+        'count',
+    )
+
+
+def _timeline_label(value, key, index):
+    if value in (None, ''):
+        return str(index + 1)
+    text = str(value)
+    if key == 'hour':
+        try:
+            parsed = datetime.fromisoformat(text.replace('Z', '+00:00'))
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            if timezone.is_aware(parsed):
+                parsed = timezone.localtime(parsed)
+            return parsed.strftime('%H:%M')
+        if text.isdigit():
+            return f'{int(text):02d}h'
+        return text[:5] if ':' in text else text[:9]
+    formatted = _date_value(value, key)
+    if formatted:
+        return formatted[:5] if key in ('date', 'day') else formatted
+    return text[:9]
+
+
 def _timeline_chart(values, width, previous=None):
     values = values[-7:]
     if not values:
         return None
     previous = (previous or [])[-len(values):]
-    height = 116
+    value_key = _chart_value_key(values + previous)
+    label_key = next((key for key in ('date', 'day', 'hour') if any(key in row for row in values)), 'day')
+    height = 134
     drawing = Drawing(width, height)
-    amounts = [_decimal(row.get('sales_revenue') or row.get('effective_revenue') or row.get('total_received') or row.get('count')) or Decimal('0') for row in values]
-    previous_amounts = [
-        _decimal(row.get('sales_revenue') or row.get('effective_revenue') or row.get('total_received') or row.get('count')) or Decimal('0')
-        for row in previous
-    ]
+    amounts = [_decimal(row.get(value_key)) or Decimal('0') for row in values]
+    previous_amounts = [_decimal(row.get(value_key)) or Decimal('0') for row in previous]
     maximum = max(amounts + previous_amounts) or Decimal('1')
-    chart_height, left, bottom = 62, 15, 22
+    chart_height, left, bottom = 76, 15, 29
     drawing.add(Line(left, bottom, width - 8, bottom, strokeColor=CORE_BORDER, strokeWidth=.6))
     if previous:
-        drawing.add(Rect(width - 104, 99, 7, 7, fillColor=CORE_BLUE, strokeColor=None))
-        drawing.add(String(width - 94, 99, 'Atual', fontName='Helvetica', fontSize=6.8, fillColor=CORE_MUTED))
-        drawing.add(Rect(width - 55, 99, 7, 7, fillColor=colors.HexColor('#AAB8F2'), strokeColor=None))
-        drawing.add(String(width - 45, 99, 'Anterior', fontName='Helvetica', fontSize=6.8, fillColor=CORE_MUTED))
+        drawing.add(Rect(width - 104, 118, 7, 7, fillColor=CORE_BLUE, strokeColor=None))
+        drawing.add(String(width - 94, 118, 'Atual', fontName='Helvetica', fontSize=6.8, fillColor=CORE_MUTED))
+        drawing.add(Rect(width - 55, 118, 7, 7, fillColor=colors.HexColor('#AAB8F2'), strokeColor=None))
+        drawing.add(String(width - 45, 118, 'Anterior', fontName='Helvetica', fontSize=6.8, fillColor=CORE_MUTED))
     gap = (width - left - 12) / max(len(values), 1)
     for index, (row, amount) in enumerate(zip(values, amounts)):
         bar_width = min(18, gap * (.3 if previous else .55))
@@ -450,8 +586,9 @@ def _timeline_chart(values, width, previous=None):
             x += bar_width + 2
         bar_height = float(Decimal(str(chart_height)) * amount / maximum)
         drawing.add(Rect(x, bottom, bar_width, bar_height, fillColor=CORE_BLUE, strokeColor=None))
-        label = str(row.get('date') or row.get('day') or row.get('hour') or index + 1)
-        drawing.add(String(x + bar_width / 2, 8, label[:9], textAnchor='middle', fontName='Helvetica', fontSize=6.8, fillColor=CORE_MUTED))
+        drawing.add(String(x + bar_width / 2, bottom + bar_height + 4, pdf_value(row.get(value_key), value_key, row=row), textAnchor='middle', fontName='Helvetica-Bold', fontSize=5.7, fillColor=CORE_DARK))
+        label = _timeline_label(row.get(label_key), label_key, index)
+        drawing.add(String(x + bar_width / 2, 11, label, textAnchor='middle', fontName='Helvetica', fontSize=6.8, fillColor=CORE_MUTED))
     return drawing
 
 
@@ -507,6 +644,13 @@ def _stock_attention(rows):
 
 
 def _executive_story(story, document, styles, kind, summary, rows):
+    if not summary:
+        _section_heading(story, 'Sem dados consolidados', styles)
+        story.append(_paragraph(
+            'Não há indicadores autorizados para os filtros selecionados. O relatório executivo não inclui automaticamente registros individuais; use o modo detalhado para conferência.',
+            styles['body'],
+        ))
+        return
     metrics = _metrics(kind, summary)
     cards = _metric_cards(document, metrics, styles)
     if cards:
@@ -531,12 +675,13 @@ def _executive_story(story, document, styles, kind, summary, rows):
                 ('TOPPADDING', (0, 0), (-1, -1), 0), ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
             ])))
         weekly_comparison = _nested(sales, 'weekly_comparison')
+        timeline_key = 'hourly_sales' if sales.get('hourly_sales') else 'weekly_comparison'
         timeline = sales.get('hourly_sales') or weekly_comparison.get('current')
         if isinstance(timeline, list) and timeline:
             has_comparison = isinstance(weekly_comparison.get('previous'), list) and weekly_comparison['previous']
             _section_heading(
-                story, 'Evolução de vendas', styles,
-                'Atual e período anterior' if has_comparison else 'Distribuição disponível no período',
+                story, 'Vendas por horário' if timeline_key == 'hourly_sales' else 'Evolução de vendas', styles,
+                'Atual e período anterior' if has_comparison else 'Horários registrados no período' if timeline_key == 'hourly_sales' else 'Dias registrados no período',
             )
             story.append(_timeline_chart(timeline, document.width, weekly_comparison.get('previous')))
         ranking_key, ranking = _ranking_rows(sales)
@@ -584,19 +729,37 @@ def _executive_story(story, document, styles, kind, summary, rows):
 
 
 def _related_details(story, document, styles, rows):
-    """Keep child records complete without creating a near-empty page per sale."""
+    """Keep every nested child field in consolidated, relationship-preserving tables."""
     grouped = {}
+
+    def collect(row, identity, prefix=''):
+        for key, values in row.items():
+            if str(key).startswith('__'):
+                continue
+            section_key = f'{prefix}.{key}' if prefix else key
+            if isinstance(values, dict):
+                collect(values, identity, section_key)
+            elif isinstance(values, (list, tuple)) and values:
+                grouped.setdefault(section_key, [])
+                if all(isinstance(item, dict) for item in values):
+                    children = [{'record': identity, **item} for item in values]
+                    grouped[section_key].extend(children)
+                    for child in children:
+                        collect(child, identity, section_key)
+                else:
+                    grouped[section_key].extend(
+                        {'record': identity, 'value': item, '__report_key': key}
+                        for item in values
+                    )
+
     for row in rows:
         identity = row.get('sale_number') or row.get('operation_id') or row.get('id') or 'Registro'
-        for key, values in row.items():
-            if not (isinstance(values, list) and values and all(isinstance(item, dict) for item in values)):
-                continue
-            grouped.setdefault(key, [])
-            grouped[key].extend({'record': identity, **item} for item in values)
+        collect(row, identity)
     for key, values in grouped.items():
         headers = ('record',) + tuple(dict.fromkeys(
             field for item in values for field in item if not field.startswith('__') and field != 'record'
         ))
+        headers, values = _expanded_table_data(headers, values)
         _section_heading(story, f'{_label(key)} por registro', styles)
         story.append(report_table(document, headers, values, styles))
     return bool(grouped)
@@ -616,12 +779,14 @@ def _detailed_story(story, document, styles, summary, headers, rows):
     # Detailed exports retain every authorized aggregate rather than applying the
     # executive editorial limits.
     for key, section_headers, section_rows in _structured_sections(summary):
+        section_headers, section_rows = _expanded_table_data(section_headers, section_rows)
         _section_heading(story, _label(key), styles)
         story.append(report_table(document, section_headers, section_rows, styles))
     _section_heading(story, 'Movimentações individualizadas', styles, 'Registros autorizados')
-    visible_headers = tuple(key for key in headers if not any(isinstance(row.get(key), (dict, list, tuple)) for row in rows))
+    visible_headers = tuple(key for key in headers if not any(isinstance(row.get(key), (list, tuple)) for row in rows))
+    visible_headers, visible_rows = _expanded_table_data(visible_headers, rows)
     if rows and visible_headers:
-        story.append(report_table(document, visible_headers, rows, styles))
+        story.append(report_table(document, visible_headers, visible_rows, styles))
     elif not rows:
         story.append(_paragraph('Sem registros para os filtros selecionados.', styles['body']))
     _related_details(story, document, styles, rows)
@@ -660,20 +825,19 @@ def _header(company, branch, mode):
         page.rect(0, height - .18 * cm, width, .18 * cm, fill=1, stroke=0)
         x = 1.5 * cm
         if CORE_LOGO.is_file():
-            page.drawImage(str(CORE_LOGO), x, height - 1.35 * cm, width=.62 * cm, height=.62 * cm, mask='auto', preserveAspectRatio=True, anchor='c')
-            x += .78 * cm
+            # This compact official mark already contains the wordmark and slogan.
+            page.drawImage(str(CORE_LOGO), x, height - 1.48 * cm, width=1.08 * cm, height=1.08 * cm, mask='auto', preserveAspectRatio=True, anchor='c')
+            x += 1.25 * cm
         page.setFillColor(CORE_DARK)
-        page.setFont('Helvetica-Bold', 10)
-        page.drawString(x, height - .78 * cm, 'CORE PDV')
-        page.setFillColor(CORE_MUTED)
-        page.setFont('Helvetica', 6.8)
-        page.drawString(x, height - 1.06 * cm, 'O CORAÇÃO DO SEU NEGÓCIO')
+        page.setFont('Helvetica-Bold', 8.2)
+        page.drawString(x, height - .78 * cm, company)
         page.setFont('Helvetica-Bold', 7.2)
         page.setFillColor(CORE_MUTED)
+        page.drawString(x, height - 1.06 * cm, branch)
         page.drawRightString(width - 1.5 * cm, height - .8 * cm, mode.upper())
         page.setStrokeColor(CORE_BORDER)
         page.setLineWidth(.35)
-        page.line(1.5 * cm, height - 1.35 * cm, width - 1.5 * cm, height - 1.35 * cm)
+        page.line(1.5 * cm, height - 1.58 * cm, width - 1.5 * cm, height - 1.58 * cm)
         page.restoreState()
     return decorate
 

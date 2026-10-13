@@ -58,10 +58,10 @@ SALES_SUMMARY = {
         {'name': 'Dinheiro', 'payment_total': '3320.80', 'percentage': '14.00'},
     ],
     'hourly_sales': [
-        {'hour': '07/10', 'sales_revenue': '2510.00'}, {'hour': '08/10', 'sales_revenue': '2980.00'},
-        {'hour': '09/10', 'sales_revenue': '3370.00'}, {'hour': '10/10', 'sales_revenue': '3100.00'},
-        {'hour': '11/10', 'sales_revenue': '4020.00'}, {'hour': '12/10', 'sales_revenue': '3550.00'},
-        {'hour': '13/10', 'sales_revenue': '4190.00'},
+        {'hour': '17:00', 'sales_revenue': '2510.00'}, {'hour': '18:00', 'sales_revenue': '2980.00'},
+        {'hour': '19:00', 'sales_revenue': '3370.00'}, {'hour': '20:00', 'sales_revenue': '3100.00'},
+        {'hour': '21:00', 'sales_revenue': '4020.00'}, {'hour': '22:00', 'sales_revenue': '3550.00'},
+        {'hour': '23:00', 'sales_revenue': '4190.00'},
     ],
     'product_ranking': [
         {'product_name': 'Heineken Long Neck', 'quantity': '94'}, {'product_name': 'Red Bull Tradicional', 'quantity': '58'},
@@ -79,13 +79,13 @@ RESULT_SUMMARY = {
 
 
 STOCK_ROWS = [
-    {'product': 'Heineken Long Neck', 'current_quantity': '8', 'minimum_quantity': '30', 'unit': 'un.', 'state': 'below_minimum'},
-    {'product': 'Red Bull Melancia', 'current_quantity': '0', 'minimum_quantity': '15', 'unit': 'un.', 'state': 'zero'},
-    {'product': 'Gelo em cubos', 'current_quantity': '2', 'minimum_quantity': '10', 'unit': 'sacos', 'state': 'below_minimum'},
-    {'product': 'Água sem gás', 'current_quantity': '-2', 'minimum_quantity': '20', 'unit': 'un.', 'state': 'negative'},
-    {'product': 'Coca-Cola lata', 'current_quantity': '4', 'minimum_quantity': '24', 'unit': 'un.', 'state': 'below_minimum'},
-    {'product': 'Tônica lata', 'current_quantity': '0', 'minimum_quantity': '12', 'unit': 'un.', 'state': 'zero'},
-    {'product': 'Whisky 12 anos', 'current_quantity': '1', 'minimum_quantity': '4', 'unit': 'un.', 'state': 'below_minimum'},
+    {'product': {'id': 1, 'name': 'Heineken Long Neck', 'internal_code': 'HEI-LN'}, 'current_quantity': '8.000', 'minimum_quantity': '30.000', 'unit': 'un.', 'state': 'below_minimum'},
+    {'product': {'id': 2, 'name': 'Red Bull Melancia', 'internal_code': 'RED-MEL'}, 'current_quantity': '0.000', 'minimum_quantity': '15.000', 'unit': 'un.', 'state': 'zero'},
+    {'product': {'id': 3, 'name': 'Gelo em cubos', 'internal_code': 'GEL-CUB'}, 'current_quantity': '2.000', 'minimum_quantity': '10.000', 'unit': 'sacos', 'state': 'below_minimum'},
+    {'product': {'id': 4, 'name': 'Água sem gás', 'internal_code': 'AGU-SG'}, 'current_quantity': '-2.000', 'minimum_quantity': '20.000', 'unit': 'un.', 'state': 'negative'},
+    {'product': {'id': 5, 'name': 'Coca-Cola lata', 'internal_code': 'COC-LAT'}, 'current_quantity': '4.000', 'minimum_quantity': '24.000', 'unit': 'un.', 'state': 'below_minimum'},
+    {'product': {'id': 6, 'name': 'Tônica lata', 'internal_code': 'TON-LAT'}, 'current_quantity': '0.000', 'minimum_quantity': '12.000', 'unit': 'un.', 'state': 'zero'},
+    {'product': {'id': 7, 'name': 'Whisky 12 anos', 'internal_code': 'WHI-12'}, 'current_quantity': '1.000', 'minimum_quantity': '4.000', 'unit': 'un.', 'state': 'below_minimum'},
 ]
 STOCK_SUMMARY = {'product_count': 248, 'below_minimum': 12, 'zero': 6, 'negative': 2, 'inventory_value': '52610.00'}
 
@@ -100,7 +100,7 @@ def _write(name, title, mode, headers, rows, summary, period=PERIOD):
 
 def main():
     OUTPUT.mkdir(parents=True, exist_ok=True)
-    sale_headers = ('event_at', 'sale_number', 'status', 'total_received', 'operator', 'items', 'payments')
+    sale_headers = ('event_at', 'sale_number', 'status', 'payment_method_name', 'total_received', 'operator', 'items', 'payments')
     sales_rows = _sales_rows()
     _write('vendas-executivo-demo.pdf', 'Relatório de Vendas', 'executive', sale_headers, sales_rows, SALES_SUMMARY)
     _write('vendas-detalhado-demo.pdf', 'Relatório de Vendas', 'detailed', sale_headers, sales_rows, SALES_SUMMARY)
