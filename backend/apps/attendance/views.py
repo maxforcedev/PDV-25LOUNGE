@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.commands.permissions import CommandFunctionalPermission
+from apps.companies.selectors import user_has_branch_permission
 
 from .models import AttendanceCommand, AttendanceCommandStatus, AttendanceOrderItem, AttendanceOrderItemStatus, AttendancePaymentStatus
 from .serializers import (
@@ -39,7 +40,7 @@ class AttendanceLegacyServiceFeeRegularizationsView(APIView):
         data = []
         for command in commands:
             financial_status = command_financial_status(command)
-            if financial_status['state'] == 'NORMAL':
+            if financial_status['state'] != 'REGULARIZATION_REQUIRED':
                 continue
             data.append({**AttendanceLegacyServiceFeeRegularizationSerializer(command).data, 'financial_status': financial_status})
         return Response(data)
@@ -84,7 +85,7 @@ class AttendanceCommandFinancialRegularizationView(APIView):
             'financial_status': command_financial_status(command, confirmed),
             'service_fee_rate_regularization_required': command.service_fee_rate_snapshot is None,
             'items': [{'id': item.pk, 'product_name': item.product_name, 'quantity': str(item.quantity), 'unit_price': str(item.unit_price), 'confirmed_at': item.confirmed_at, 'created_at': item.created_at, 'financial_snapshot': item.financial_snapshot, 'issue': 'inconsistent' if item.financial_snapshot else 'missing'} for item in affected],
-            'payments': list(command.payments.select_related('payment_method').values('id', 'amount', 'status', 'payment_method__name', 'created_at', 'reversal_of_id')),
+            'payments': list(command.payments.select_related('payment_method').values('id', 'amount', 'status', 'payment_method__name', 'created_at', 'reversal_of_id')) if request.user.is_superuser or user_has_branch_permission(request.user, branch.pk, 'commands.payments.view') else [],
         })
 
 

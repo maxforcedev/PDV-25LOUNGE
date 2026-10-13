@@ -229,6 +229,14 @@ def regularize_command_item_financials(*, command, user, items, justification, e
     command = AttendanceCommand.objects.select_for_update().select_related('branch__company').get(pk=command.pk)
     if command.status != AttendanceCommandStatus.OPEN:
         raise AttendanceConflict('command_closed', 'A regularização exige comanda aberta.')
+    if not preview:
+        operation, replayed = _operation(
+            branch=command.branch, operation_type=AttendanceOperationType.REGULARIZE_COMMAND_ITEM_FINANCIALS,
+            idempotency_key=idempotency_key,
+            payload={'command': command.pk, 'items': items, 'justification': justification, 'evidence_reference': evidence_reference},
+        )
+        if replayed:
+            return operation.result, True
     confirmed = list(AttendanceOrderItem.objects.select_for_update().filter(
         order__command=command, status=AttendanceOrderItemStatus.CONFIRMED,
     ).select_related('product__category').order_by('id'))
@@ -244,14 +252,11 @@ def regularize_command_item_financials(*, command, user, items, justification, e
         item.financial_snapshot = _snapshot_payload(normalized[item.pk])
     _assert_command_financial_snapshot_integrity(command, confirmed)
     if preview:
-        return {'preview_available': False, 'reason': 'A prévia consolidada será confirmada após persistir os snapshots comprovados.'}, False
-    operation, replayed = _operation(
-        branch=command.branch, operation_type=AttendanceOperationType.REGULARIZE_COMMAND_ITEM_FINANCIALS,
-        idempotency_key=idempotency_key,
-        payload={'command': command.pk, 'items': {key: _snapshot_payload(value) for key, value in normalized.items()}, 'justification': justification, 'evidence_reference': evidence_reference},
-    )
-    if replayed:
-        return operation.result, True
+        if _has_unknown_legacy_service_fee_rate(command):
+            return {'preview_available': False, 'reason': 'A taxa de serviço histórica ainda precisa de regularização.'}, False
+        preview_data = calculate_command_preview(branch=command.branch, order_items=confirmed, discount=command.checkout_discount, service_fee_waived=command.checkout_service_fee_waived, seller_user=command.seller_user, include_internal_snapshots=True, item_financials_frozen=True, service_fee_rate_snapshot=command.service_fee_rate_snapshot, commission_rate_snapshot=command.commission_rate_snapshot)
+        paid = AttendancePayment.objects.filter(command=command, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True).aggregate(total=Coalesce(Sum('amount'), Value(Decimal('0.00'), output_field=DecimalField(max_digits=14, decimal_places=2))))['total']
+        return {'preview_available': True, 'subtotal': str(preview_data['subtotal']), 'promotion_discount': str(preview_data['promotion_discount_total']), 'manual_discount': str(preview_data['discount']), 'service_fee_rate': str(preview_data['service_fee_rate']), 'service_fee': str(preview_data['service_fee_amount']), 'commission_rate': str(preview_data['commission_rate']), 'commission_amount': str(preview_data['commission_amount']), 'total_due': str(preview_data['total']), 'paid_total': str(paid), 'remaining_balance': str(max(preview_data['total'] - paid, Decimal('0.00'))), 'payment_exceeds_total': paid > preview_data['total']}, False
     for item in affected:
         item.save(update_fields=('financial_snapshot', 'updated_at'))
     if not _has_unknown_legacy_service_fee_rate(command):
