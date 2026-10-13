@@ -49,7 +49,8 @@ CURRENCY_KEYS = {
     'historical_cost', 'historical_sales_cogs', 'historical_consumption_cogs',
     'operating_expenses', 'fixed_cost', 'applied_amount', 'received_amount',
     'change_amount', 'applied_total', 'received_total', 'change_total',
-    'net_subtotal', 'subtotal', 'unit_price', 'average_unit_cost', 'last_unit_cost',
+    'net_subtotal', 'subtotal', 'unit_price', 'modifier_unit_total', 'contribution',
+    'average_unit_cost', 'last_unit_cost',
 }
 PERCENT_TERMS = ('percent', 'percentage', 'participation', 'rate')
 PERCENT_KEYS = {'margin_percent', 'margin_percentage', 'commission_rate'}
@@ -59,40 +60,67 @@ ENTITY_NAME_KEYS = ('name', 'display_name', 'full_name', 'title', 'label', 'desc
 # Nested records are presentation contracts, not an invitation to serialize every
 # attribute of an already-authorized root object. The profiles mirror the report
 # domains and deliberately exclude personal, cost and administrative attributes.
+SALES_NESTED_FIELDS = {
+    'operator': ('id', 'name'), 'seller': ('id', 'name'),
+    'discount_approved_by': ('id', 'name'), 'beneficiary': ('id', 'name', 'user_type'),
+    'cancelled_by': ('id', 'name'), 'service_fee_waived_by': ('id', 'name'),
+    'customer': ('id', 'name'),
+    'cash_session': ('id', 'status', 'register.id', 'register.name'),
+    'user': ('id', 'name'), 'product': ('id', 'name', 'internal_code'),
+    'category': ('id', 'name'),
+    'items': (
+        'id', 'product', 'product_name', 'internal_code', 'unit', 'quantity', 'unit_price',
+        'base_unit_price', 'modifier_unit_total', 'category', 'subtotal', 'promotion_name',
+        'promotion_discount_type', 'promotion_discount_value', 'promotion_benefit',
+        'manual_discount', 'discount_approved_by', 'commercial_value', 'charged_value',
+        'subsidy_value', 'commission_amount', 'net_subtotal', 'unit_cost', 'cost_total',
+        'margin_amount', 'margin_percentage', 'participates_in_service_fee',
+        'participates_in_commission', 'modifier_snapshot',
+    ),
+    # This is a deliberately commercial projection of the immutable sale-item
+    # snapshot. Cost and stock/configuration internals remain serializer-redacted.
+    'items.modifier_snapshot': (
+        'group_name', 'option_name', 'selected_quantity', 'additional_price',
+        'contribution',
+    ),
+    'payments': (
+        'payment_method_name', 'payment_method_code', 'amount', 'applied_amount',
+        'received_amount', 'change_amount', 'occurred_at', 'origin', 'operator', 'status',
+    ),
+    'payment_method': ('id', 'name', 'code'),
+}
+
+
 NESTED_FIELD_ALLOWLISTS = {
-    'sales': {
-        'operator': ('id', 'name'), 'seller': ('id', 'name'),
-        'discount_approved_by': ('id', 'name'), 'beneficiary': ('id', 'name', 'user_type'),
-        'cancelled_by': ('id', 'name'), 'service_fee_waived_by': ('id', 'name'),
-        'customer': ('id', 'name'),
-        'cash_session': ('id', 'status', 'register.id', 'register.name'),
-        'user': ('id', 'name'), 'product': ('id', 'name', 'internal_code'),
-        'category': ('id', 'name'),
-        'items': (
-            'id', 'product', 'product_name', 'internal_code', 'unit', 'quantity', 'unit_price',
-            'base_unit_price', 'modifier_unit_total', 'category', 'subtotal', 'promotion_name',
-            'promotion_discount_type', 'promotion_discount_value', 'promotion_benefit',
-            'manual_discount', 'discount_approved_by', 'commercial_value', 'charged_value',
-            'subsidy_value', 'commission_amount', 'net_subtotal', 'unit_cost', 'cost_total',
-            'margin_amount', 'margin_percentage', 'participates_in_service_fee',
-            'participates_in_commission',
-        ),
-        'payments': (
-            'payment_method_name', 'payment_method_code', 'amount', 'applied_amount',
-            'received_amount', 'change_amount', 'occurred_at', 'origin', 'operator', 'status',
-        ),
-        'payment_method': ('id', 'name', 'code'),
-    },
+    'sales': SALES_NESTED_FIELDS,
+    # Operational-result rows use ReportSaleSerializer too; retaining this separate
+    # profile keeps its contract explicit instead of falling back to a broad default.
+    'result': SALES_NESTED_FIELDS,
     'finance': {
         'operator': ('id', 'name'), 'beneficiary': ('id', 'name'),
         'cash_register': ('id', 'name'), 'cash_session': ('id', 'status', 'register.id', 'register.name'),
         'payment_method': ('id', 'name', 'code'), 'sale': ('id', 'sale_number', 'operation_key'),
         'command': ('id', 'number', 'reference'), 'operators': ('id', 'name'),
+        'period_payment_totals': (
+            'code', 'name', 'commercial_received', 'consumption_received',
+            'gross_received', 'reversals', 'net_received', 'sales_payment_total',
+            'consumption_payment_total', 'payment_total_before_reversals',
+            'reversal_payment_total', 'payment_total',
+        ),
+        'complete_session_payment_totals': (
+            'code', 'name', 'commercial_received', 'consumption_received',
+            'gross_received', 'reversals', 'net_received', 'sales_payment_total',
+            'consumption_payment_total', 'payment_total_before_reversals',
+            'reversal_payment_total', 'payment_total',
+        ),
     },
     'stock': {'product': ('id', 'name', 'internal_code')},
     'inventory': {
-        'product': ('id', 'name', 'internal_code'), 'category': ('id', 'name'),
-        'operator': ('id', 'name'), 'supplier': ('id', 'name'),
+        'product': ('id', 'name', 'internal_code', 'category.id', 'category.name'),
+        'category': ('id', 'name'), 'operator': ('id', 'name'), 'user': ('id', 'name'),
+        'responsible': ('id', 'name'), 'supplier': ('id', 'name'),
+        'branch': ('id', 'name'), 'origin': ('id', 'name'), 'destination': ('id', 'name'),
+        'sale': ('id', 'number', 'sale_number'),
         'items': (
             'id', 'product', 'unit', 'expected_quantity', 'counted_quantity',
             'difference_quantity', 'type', 'theoretical_content', 'counted_content',
@@ -150,6 +178,12 @@ def _label(key):
         'applied_amount': 'Valor aplicado',
         'received_amount': 'Valor recebido',
         'change_amount': 'Troco',
+        'item': 'Item vendido',
+        'group_name': 'Grupo',
+        'option_name': 'Opção',
+        'additional_price': 'Adicional unitário',
+        'selected_quantity': 'Quantidade selecionada',
+        'contribution': 'Valor adicional',
     }
     if key in special:
         return special[key]
@@ -915,7 +949,16 @@ def _related_details(story, document, styles, headers, rows, kind):
     grouped = {}
     allowlist = NESTED_FIELD_ALLOWLISTS.get(kind, {})
 
-    def collect(row, identity, prefix=''):
+    def item_label(item):
+        if not isinstance(item, Mapping):
+            return 'Item não identificado'
+        product = item.get('product_name') or item.get('name')
+        if not product and isinstance(item.get('product'), Mapping):
+            product = item['product'].get('name')
+        quantity = item.get('quantity')
+        return f'{product or "Item não identificado"} · {_number(quantity) if quantity is not None else "Quantidade não disponível"}'
+
+    def collect(row, identity, prefix='', owner_item=None):
         if not isinstance(row, Mapping):
             return
         for key, values in row.items():
@@ -933,17 +976,25 @@ def _related_details(story, document, styles, headers, rows, kind):
                     continue
                 grouped.setdefault(section_key, [])
                 if all(isinstance(item, dict) for item in values):
-                    children = [
-                        {
+                    children = []
+                    for item in values:
+                        child = {
                             'record': identity,
+                            **({'item': owner_item} if owner_item else {}),
                             **{
                                 child_key: child_value for child_key, child_value in item.items()
                                 if child_key in child_fields
                                 or any(path.startswith(f'{child_key}.') for path in child_fields)
                             },
                         }
-                        for item in values
-                    ]
+                        children.append(child)
+                        # A nested list is rendered only when its full dotted path
+                        # has a dedicated contract. For sale modifiers, retain the
+                        # parent item label instead of producing an orphan table.
+                        collect(
+                            item, identity, section_key,
+                            item_label(item) if section_key == 'items' else owner_item,
+                        )
                     grouped[section_key].extend(children)
                 else:
                     grouped[section_key].extend(
@@ -962,9 +1013,8 @@ def _related_details(story, document, styles, headers, rows, kind):
             field for item in values for field in item if not field.startswith('__') and field != 'record'
         ))
         headers, values = _expanded_table_data(headers, values, kind)
-        _table_section(
-            story, document, styles, f'{_label(key)} por registro', headers, values,
-        )
+        title = 'Modificadores por item vendido' if key == 'items.modifier_snapshot' else f'{_label(key)} por registro'
+        _table_section(story, document, styles, title, headers, values)
     return bool(grouped)
 
 
