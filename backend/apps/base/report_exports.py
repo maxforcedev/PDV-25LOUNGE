@@ -22,11 +22,13 @@ from reportlab.pdfgen import canvas
 from reportlab.platypus import LongTable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .export_labels import export_label, export_value
+from .report_pdf import render_pdf_export
 
 FORMULA_PREFIXES = ('=', '+', '-', '@')
 CURRENCY_FIELDS = (
-    'amount', 'price', 'cost', 'value', 'revenue', 'received', 'ordered_total', 'payment',
+    'amount', 'price', 'cost', 'revenue', 'received', 'ordered_total', 'payment',
     'commission', 'discount', 'fee', 'opening', 'expected', 'informed', 'difference', 'result',
+    'gross', 'average',
 )
 PDF_MODES = ('executive', 'detailed')
 PDF_SECTION_KEYS = {
@@ -218,7 +220,9 @@ def report_key_value_rows(data, prefix=''):
         if isinstance(value, dict):
             rows.extend(report_key_value_rows(value, label))
         else:
-            rows.append({'indicator': label, 'value': value})
+            # Keep the leaf key so presentation can distinguish a count from a
+            # monetary amount after this generic two-column representation.
+            rows.append({'indicator': label, 'value': value, '__report_key': key})
     return rows
 
 
@@ -492,71 +496,10 @@ def _page_header(company_name, branch_name, title, period, mode):
 
 
 def _render_pdf(request, *, filename, title, headers, rows, period, summary):
-    mode = _pdf_mode(request)
-    page_size = landscape(A4) if _needs_landscape(headers, rows) else portrait(A4)
-    output = io.BytesIO()
-    company_name = _company_name(request.branch_context)
-    branch_name = request.branch_context.name
-    mode_label = 'Relatório detalhado' if mode == 'detailed' else 'Resumo executivo'
-    document = SimpleDocTemplate(
-        output, pagesize=page_size, leftMargin=1.5 * cm, rightMargin=1.5 * cm,
-        topMargin=3.6 * cm, bottomMargin=1.7 * cm, title=title, author='CORE PDV',
-        allowSplitting=1,
+    return render_pdf_export(
+        request, filename=filename, title=title, headers=headers, rows=rows,
+        period=period, summary=summary, filters=_filters(request),
     )
-    styles = _pdf_styles()
-    generated_at = timezone.localtime().strftime('%d/%m/%Y às %H:%M')
-    metadata = Table([
-        [_paragraph('EMPRESA', styles['card_label']), _paragraph('FILIAL', styles['card_label'])],
-        [_paragraph(company_name, styles['body']), _paragraph(branch_name, styles['body'])],
-        [_paragraph('PERÍODO', styles['card_label']), _paragraph('GERADO EM', styles['card_label'])],
-        [_paragraph(_period_label(period), styles['body']), _paragraph(generated_at, styles['body'])],
-    ], colWidths=[document.width / 2] * 2, style=TableStyle([
-        ('BACKGROUND', (0, 0), (-1, -1), CORE_PALE),
-        ('BOX', (0, 0), (-1, -1), .4, CORE_BORDER),
-        ('INNERGRID', (0, 0), (-1, -1), .25, CORE_BORDER),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('TOPPADDING', (0, 0), (-1, -1), 5),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-        ('LEFTPADDING', (0, 0), (-1, -1), 8),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
-    ]))
-    story = [
-        _paragraph(title, styles['title']),
-        _paragraph(mode_label + ' · Indicadores e informações autorizadas para o período selecionado.', styles['subtitle']),
-        metadata,
-    ]
-    summary_rows = _pdf_summary_rows(summary, mode)
-    cards = _metric_cards(document, summary_rows, styles)
-    if cards and mode == 'executive':
-        story.extend([Spacer(1, 10), _paragraph('Indicadores do período', styles['section']), cards])
-    if mode == 'detailed' and summary_rows:
-        table = _report_table(
-            document, ('indicator', 'value'),
-            [{'indicator': label, 'value': value} for _key, label, value in summary_rows], styles,
-        )
-        story.extend([Spacer(1, 4), _paragraph('Resumo consolidado', styles['section']), table])
-    for key, section_headers, section_rows in _pdf_sections(summary):
-        table = _report_table(document, section_headers, section_rows, styles)
-        if table:
-            story.extend([_paragraph(export_label(key), styles['section']), table])
-    if mode == 'detailed':
-        story.append(_paragraph('Registros detalhados', styles['section']))
-        if rows and headers:
-            story.append(_report_table(document, headers, rows, styles))
-        else:
-            story.append(_paragraph('Sem registros para os filtros selecionados.', styles['body']))
-    elif not summary_rows and not _pdf_sections(summary):
-        story.extend([_paragraph('Sem dados consolidados para os filtros selecionados.', styles['section']), _paragraph('O modo executivo não inclui automaticamente os registros individuais. Exporte o relatório detalhado para conferência completa.', styles['body'])])
-    footer = f'CORE PDV · {mode_label} · Gerado em {generated_at}'
-    document.build(
-        story,
-        onFirstPage=_page_header(company_name, branch_name, title, _period_label(period), mode_label.upper()),
-        onLaterPages=_page_header(company_name, branch_name, title, _period_label(period), mode_label.upper()),
-        canvasmaker=lambda *args, **kwargs: _ReportCanvas(*args, footer_text=footer, **kwargs),
-    )
-    response = HttpResponse(output.getvalue(), content_type='application/pdf')
-    response['Content-Disposition'] = f'attachment; filename="{filename}"'
-    return response
 
 
 def render_report_export(request, *, filename, title, headers, rows, period=None, summary=None):

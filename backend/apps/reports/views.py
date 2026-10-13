@@ -1052,7 +1052,9 @@ class DashboardView(APIView):
             export = render_report_export(
                 request, filename='dashboard.csv', title='Dashboard',
                 headers=('indicator', 'value'), rows=report_key_value_rows(response),
-                period=response['period'], summary=None,
+                # The dashboard has already assembled and redacted these official
+                # KPIs. Pass that same contract to the executive renderer.
+                period=response['period'], summary=response,
             )
             audit_log(actor=request.user, action='report.export', company=branch.company, branch=branch,
                       metadata={'report': 'DashboardView', 'format': request.query_params['export']})
@@ -1942,10 +1944,10 @@ class OperationalResultReportView(BaseReportView):
                 'margin': 'Margem estimada (%)',
             }
             rows = [
-                {'statement': label, 'value': data[key]}
+                {'statement': label, 'value': data[key], '__report_key': key}
                 for key, label in labels.items() if key in data
             ]
-            rows.append({'statement': 'Observação', 'value': data['notice']})
+            rows.append({'statement': 'Observação', 'value': data['notice'], '__report_key': 'notice'})
             return self.export_response(
                 request, headers=('statement', 'value'), rows=rows,
                 period=canonical_datetime_range(start, end), summary=data,
