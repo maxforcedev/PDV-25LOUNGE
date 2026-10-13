@@ -109,6 +109,15 @@ def _is_legacy_unassigned_command(command):
     return command.seller_user_id is None and command.commission_rate_snapshot is None
 
 
+def _has_unknown_legacy_service_fee_rate(command):
+    return (
+        command.service_fee_rate_snapshot is None
+        and AttendancePayment.objects.filter(
+            command=command, status=AttendancePaymentStatus.APPLIED,
+        ).exists()
+    )
+
+
 def _freeze_command_item_financials(command, financial_snapshots):
     items = list(AttendanceOrderItem.objects.select_for_update().filter(
         order__command=command, status=AttendanceOrderItemStatus.CONFIRMED,
@@ -688,6 +697,11 @@ def record_payment(*, command, user, payment_method_id, amount, idempotency_key,
         ):
             return existing
         raise AttendanceConflict('idempotency_key_conflict', 'A chave de idempotência já foi usada com outros dados.')
+    if _has_unknown_legacy_service_fee_rate(command):
+        raise AttendanceConflict(
+            'legacy_service_fee_rate_unknown',
+            'A taxa de serviço histórica não foi registrada; regularize financeiramente antes de novo pagamento.',
+        )
     paid_rows = AttendancePayment.objects.select_for_update(of=('self',)).filter(
         command=command, status=AttendancePaymentStatus.APPLIED, reversal__isnull=True,
     )
@@ -788,6 +802,11 @@ def finalize_command(*, command, user, cash_session_id, payments, idempotency_ke
         raise AttendanceConflict('command_closed', 'Esta comanda já foi finalizada.')
     if command.status != AttendanceCommandStatus.OPEN:
         raise AttendanceConflict('command_closed', 'A comanda deve estar aberta.')
+    if _has_unknown_legacy_service_fee_rate(command):
+        raise AttendanceConflict(
+            'legacy_service_fee_rate_unknown',
+            'A taxa de serviço histórica não foi registrada; regularize financeiramente antes do fechamento.',
+        )
     if AttendanceOrderItem.objects.filter(order__command=command, status=AttendanceOrderItemStatus.PENDING).exists():
         raise ValidationError({'items': 'Confirme ou cancele todos os itens pendentes antes de fechar a comanda.'})
     confirmed = list(AttendanceOrderItem.objects.filter(

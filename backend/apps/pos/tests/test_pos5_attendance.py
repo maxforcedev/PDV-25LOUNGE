@@ -490,25 +490,37 @@ class POS5AttendanceTests(TestCase):
     def test_historical_paid_command_does_not_invent_service_fee_snapshot(self):
         command, _ = self.open_standalone(identifier='Historical service fee')
         self.add_confirmed_item(command)
+        key = uuid4()
         payment = record_payment(
             command=command, user=self.owner, payment_method_id=self.cash_method.pk,
             amount='4.00', received_amount='4.00', cash_session_id=self.cash_session.pk,
-            idempotency_key=uuid4(),
+            idempotency_key=key,
         )
         type(command).objects.filter(pk=command.pk).update(service_fee_rate_snapshot=None)
         command.refresh_from_db()
+        self.assertEqual(
+            record_payment(
+                command=command, user=self.owner, payment_method_id=self.cash_method.pk,
+                amount='4.00', received_amount='4.00', cash_session_id=self.cash_session.pk,
+                idempotency_key=key,
+            ).pk,
+            payment.pk,
+        )
         reverse_payment(
             payment=payment, user=self.owner, reason='Teste de legado', idempotency_key=uuid4(),
         )
 
-        record_payment(
-            command=command, user=self.owner, payment_method_id=self.cash_method.pk,
-            amount='2.00', received_amount='2.00', cash_session_id=self.cash_session.pk,
-            idempotency_key=uuid4(),
-        )
-        command.refresh_from_db()
+        with self.assertRaises(AttendanceConflict) as payment_error:
+            record_payment(
+                command=command, user=self.owner, payment_method_id=self.cash_method.pk,
+                amount='2.00', received_amount='2.00', cash_session_id=self.cash_session.pk,
+                idempotency_key=uuid4(),
+            )
+        with self.assertRaises(AttendanceConflict) as close_error:
+            self.close(command)
 
-        self.assertIsNone(command.service_fee_rate_snapshot)
+        self.assertEqual(payment_error.exception.code, 'legacy_service_fee_rate_unknown')
+        self.assertEqual(close_error.exception.code, 'legacy_service_fee_rate_unknown')
 
     def test_item_transfers_keep_history_between_standalone_commands(self):
         source, _ = self.open_standalone(identifier='Source')
