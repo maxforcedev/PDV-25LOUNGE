@@ -2325,7 +2325,7 @@ export interface LegacyServiceFeeRegularizationCommand {
   status: "open";
   created_at: string;
   service_fee_rate_snapshot: string | null;
-  payment_count: number;
+  payment_count?: number;
   financial_status: FinancialRegularizationStatus;
 }
 

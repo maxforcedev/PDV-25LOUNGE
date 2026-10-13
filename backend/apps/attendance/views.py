@@ -60,12 +60,16 @@ class AttendanceLegacyServiceFeeRegularizationsView(APIView):
         ).annotate(payment_count=Count('payments', filter=Q(
             payments__status=AttendancePaymentStatus.APPLIED,
         ))).order_by('-created_at', '-id')
+        payments_visible = _can_view_command_payments(request, branch)
         data = []
         for command in commands:
             financial_status = command_financial_status(command)
             if financial_status['state'] != 'REGULARIZATION_REQUIRED':
                 continue
-            data.append({**AttendanceLegacyServiceFeeRegularizationSerializer(command).data, 'financial_status': financial_status})
+            command_data = AttendanceLegacyServiceFeeRegularizationSerializer(command).data
+            if not payments_visible:
+                command_data.pop('payment_count', None)
+            data.append({**command_data, 'financial_status': financial_status})
         return Response(data)
 
 
