@@ -11,6 +11,7 @@ from .views import (
     InventoryMovementsReportView,
     InventoryCountsReportView,
     OperationalResultReportView,
+    OperationalAttentionView,
     CustomersReportView,
     PayablesReportView,
     PhaseThreeReportOptionsView,
@@ -32,6 +33,7 @@ from .views import (
 
 urlpatterns = [
     path('dashboard/', DashboardView.as_view(), name='dashboard'),
+    path('operational-attention/', OperationalAttentionView.as_view(), name='operational-attention'),
     path('reports/sales/', SalesReportView.as_view(), name='report-sales'),
     path('reports/cancellations/', CancellationsReportView.as_view(), name='report-cancellations'),
     path(

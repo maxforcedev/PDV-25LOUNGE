@@ -4,7 +4,6 @@ import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { AdminGuard } from "@/components/admin-guard";
 import { PageHeader } from "@/components/page-header";
 import { Button, EmptyState } from "@/components/ui";
-import { decimalIsZero, formatDecimalBRL as formatBRL } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { businessPeriod, dashboardAnalysisPeriods, dashboardQuery, validDashboardPeriod, type PeriodValue } from "@/lib/period";
 import { permissions } from "@/lib/permissions";
@@ -12,7 +11,7 @@ import { useAuth } from "@/providers/auth-provider";
 import type { DashboardData } from "@/types";
 import { CommercialOverview } from "./commercial-overview";
 import { DashboardToolbar } from "./dashboard-toolbar";
-import { OperationalAttention, type OperationalAlert, type OperationalCoverage } from "./operational-attention";
+import { OperationalAttention } from "./operational-attention";
 
 function updateDashboardUrl(next: PeriodValue, category: string) {
   const params = new URLSearchParams({ start_datetime: next.start, end_datetime: next.end });
@@ -204,35 +203,9 @@ function DashboardPage() {
   const canViewReceiptsReport = hasFeature("financial") && hasPermission(permissions.viewReceiptsReport);
   const canViewProductsReport = hasFeature("products") && hasPermission(permissions.viewProductsReport);
   const canViewResultReport = hasFeature("financial") && hasPermission(permissions.viewOperationalResult);
-  const canViewInventory = hasFeature("inventory") && hasPermission(permissions.viewInventory);
-  const canViewCash = hasFeature("cash_register") && hasPermission(permissions.viewCashRegister);
-  const canViewCommands = hasFeature("commands") && hasPermission(permissions.viewCommands);
   const canViewSaleDetail = hasFeature("counter") && hasAnyPermission([permissions.viewSale, permissions.cancelSale]);
-  const sales = data?.sales;
-  const operationalSections = data?.metadata.operational_state.sections ?? [];
-  const hasInventoryIndicator = hasFeature("inventory");
-  const hasCommandsIndicator = hasFeature("commands") || hasFeature("tables");
-  const hasCashIndicator = hasFeature("cash_register");
-  const configuredOperationalIndicators = [hasInventoryIndicator, hasCommandsIndicator, hasCashIndicator].filter(Boolean).length;
-  const availableOperationalIndicators = [
-    hasInventoryIndicator && data?.availability.inventory === "available" && operationalSections.includes("inventory"),
-    hasCommandsIndicator && operationalSections.includes("commands"),
-    hasCashIndicator && operationalSections.includes("current_cash"),
-  ].filter(Boolean).length;
-  const operationalCoverage: OperationalCoverage =
-    !availableOperationalIndicators
-      ? "none"
-      : availableOperationalIndicators === configuredOperationalIndicators
-        ? "full"
-        : "partial";
-  const operationalAlerts: OperationalAlert[] = [];
-  if (data?.availability.inventory === "available" && data.inventory?.negative_count) operationalAlerts.push({ key: "negative-stock", title: `${data.inventory.negative_count} produto(s) com estoque negativo`, detail: "Revise as movimentações e faça o ajuste necessário.", href: canViewInventory ? "/estoque?state=negative" : undefined, tone: "danger", reference: "current" });
-  if (data?.availability.financial_receipts === "available" && sales?.reconciliation_delta && !decimalIsZero(sales.reconciliation_delta)) operationalAlerts.push({ key: "reconciliation", title: `${formatBRL(sales.reconciliation_delta.replace(/^-/, ""))} de divergência de pagamentos`, detail: "Revise a reconciliação do período.", href: canViewReceiptsReport ? report("recebimentos") : undefined, tone: "danger", reference: "period" });
-  if (data?.availability.inventory === "available" && data.inventory?.zero_count) operationalAlerts.push({ key: "zero-stock", title: `${data.inventory.zero_count} produto(s) com estoque zerado`, detail: "Avalie a necessidade de reposição.", href: canViewInventory ? "/estoque?state=zero" : undefined, tone: "warning", reference: "current" });
-  if (data?.availability.inventory === "available" && data.inventory?.below_minimum_count) operationalAlerts.push({ key: "minimum-stock", title: `${data.inventory.below_minimum_count} produto(s) abaixo do mínimo`, detail: "Avalie a necessidade de reposição.", href: canViewInventory ? "/estoque?state=below_minimum" : undefined, tone: "warning", reference: "current" });
-  if (operationalSections.includes("commands") && data?.commands?.open_table_count && hasFeature("tables")) operationalAlerts.push({ key: "open-tables", title: `${data.commands.open_table_count} mesa(s) aberta(s)`, detail: "Mesas com atendimento em andamento.", href: canViewCommands ? "/mesas" : undefined, tone: "info", reference: "current" });
-  if (operationalSections.includes("commands") && data?.commands?.open_count && hasFeature("commands")) operationalAlerts.push({ key: "open-commands", title: `${data.commands.open_count} comanda(s) aberta(s)`, detail: "Comandas em andamento na filial.", href: canViewCommands ? "/comandas" : undefined, tone: "info", reference: "current" });
-  if (operationalSections.includes("current_cash") && data?.current_cash?.length && hasFeature("cash_register")) operationalAlerts.push({ key: "open-cash", title: `${data.current_cash.length} caixa(s) aberto(s)`, detail: "Sessões de caixa em andamento.", href: canViewCash ? `/caixas/sessoes/${data.current_cash[0].id}` : undefined, tone: "info", reference: "current" });
+  const operationalAlerts = data?.operational_attention;
+  const operationalCoverage = "full";
   const branchTransitioning = loadedBranch.current !== null && loadedBranch.current !== branchId;
   const visibleData = branchTransitioning ? null : data;
   const categories =

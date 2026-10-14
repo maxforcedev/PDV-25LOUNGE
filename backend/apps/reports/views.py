@@ -34,7 +34,7 @@ from apps.cash.models import (
 )
 from apps.cash.services import build_session_operational_summary
 from apps.companies.models import Customer
-from apps.companies.features import branch_feature_enabled
+from apps.companies.features import branch_feature_enabled, require_branch_feature
 from apps.companies.rbac import OPERATING_PERMISSION_CODES
 from apps.companies.selectors import branch_permission_codes, eligible_branch_users, user_has_company_permission
 from apps.attendance.models import TableAttendance, TableAttendanceStatus
@@ -67,6 +67,14 @@ from apps.suppliers.models import Supplier
 
 from .permissions import ReportsPermission
 from .financials import FinancialAggregator
+from .operational_attention import (
+    VALID_CATEGORIES,
+    VALID_SEVERITIES,
+    active_attention,
+    attention_summary,
+    available_attention_categories,
+    dashboard_attention_summary,
+)
 from .selectors import (
     _financial_sales,
     _scoped_sale_values,
@@ -1240,6 +1248,33 @@ class DashboardView(APIView):
                 ],
             },
         }
+        attention_inventory = response.get('inventory')
+        if category is not None and attention_inventory is not None:
+            # Attention is always branch-wide; a product filter must not make
+            # its count diverge from the central view.
+            attention_inventory = inventory_kpis(branch, include_value=False)
+        attention_delta = (
+            dashboard_receipts['reconciliation_delta']
+            if dashboard_receipts is not None else None
+        )
+        if (
+            has_feature('financial')
+            and user_has_code(request, 'reports.view_receipts')
+            and (attention_delta is None or category is not None)
+        ):
+            attention_delta = receipt_summary(
+                branch=branch, start=start, end=end, filters={},
+                operation_types=(
+                    (OperationType.SALE, OperationType.CONSUMPTION)
+                    if can_view_consumptions else (OperationType.SALE,)
+                ),
+            )['reconciliation_delta']
+        response['operational_attention'] = dashboard_attention_summary(
+            branch=branch,
+            user=request.user,
+            inventory=attention_inventory,
+            reconciliation_delta=attention_delta,
+        )
         # Data assembled by dashboard helpers bypass serializers. Redact last so
         # every nested response and the dashboard export share the same boundary.
         response = redact_cost_payload(response, include_costs=can_view_costs)
@@ -1258,6 +1293,53 @@ class DashboardView(APIView):
                       metadata={'report': 'DashboardView', 'format': request.query_params['export']})
             return export
         return Response(response)
+
+
+class OperationalAttentionView(APIView):
+    """Active, branch-scoped operational exceptions with no alert persistence."""
+    permission_classes = (ReportsPermission,)
+    required_permissions = ('dashboard.view',)
+
+    def get(self, request):
+        require_branch_feature(request.branch_context, 'reports')
+        start, end = parse_datetime_range(request.query_params, default_today=True)
+        categories = set(filter(None, request.query_params.getlist('category')))
+        severities = set(filter(None, request.query_params.getlist('severity')))
+        invalid_categories = categories - VALID_CATEGORIES
+        invalid_severities = severities - VALID_SEVERITIES
+        if invalid_categories or invalid_severities:
+            errors = {}
+            if invalid_categories:
+                errors['category'] = 'Informe uma categoria de atencao valida.'
+            if invalid_severities:
+                errors['severity'] = 'Informe uma gravidade valida.'
+            raise ValidationError(errors)
+        alerts = active_attention(
+            branch=request.branch_context,
+            user=request.user,
+            start=start,
+            end=end,
+            categories=categories or None,
+            severities=severities or None,
+        )
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(alerts, request, view=self)
+        return Response({
+            'period': canonical_datetime_range(start, end),
+            'as_of': timezone.localtime(timezone.now()).isoformat(),
+            'filters': {
+                'categories': sorted(categories),
+                'severities': sorted(severities),
+            },
+            'available_categories': available_attention_categories(
+                branch=request.branch_context, user=request.user,
+            ),
+            'summary': attention_summary(alerts),
+            'count': paginator.page.paginator.count,
+            'next': paginator.get_next_link(),
+            'previous': paginator.get_previous_link(),
+            'results': page,
+        })
 
 
 class SalesReportView(BaseReportView):

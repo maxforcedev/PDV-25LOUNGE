@@ -2063,6 +2063,11 @@ export interface DashboardData {
       sections: string[];
     };
   };
+  operational_attention?: {
+    active_count: number;
+    by_severity: { critical: number; attention: number; informational: number };
+    by_category: { inventory: number; financial: number; commands: number; printing: number };
+  };
   sales?: {
     event_accounting: {
       basis: string;

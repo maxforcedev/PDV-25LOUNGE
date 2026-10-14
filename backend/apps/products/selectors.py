@@ -89,6 +89,7 @@ def inventory_products(branch):
         archived_at__isnull=True,
         inventory_behavior=InventoryBehavior.DIRECT,
         branch_configs__branch=branch,
+        branch_configs__is_available=True,
         branch_configs__branch__status=Status.ACTIVE,
         branch_configs__branch__company__status=Status.ACTIVE,
     ).distinct()
