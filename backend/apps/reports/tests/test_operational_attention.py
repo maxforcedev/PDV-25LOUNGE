@@ -5,8 +5,11 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from apps.accounts.models import User
 from apps.cash.models import CashRegister, CashSession, CashSessionStatus
-from apps.companies.models import AccessProfile, Branch, FunctionalPermission, UserBranchAccess
+from apps.companies.models import (
+    AccessProfile, Branch, FunctionalPermission, UserBranchAccess, UserCompanyAccess,
+)
 from apps.production.models import PrintJob, PrintJobStatus, PrinterDevice
 from apps.products.models import Category, Product, ProductBranchConfig
 from apps.inventory.models import Stock
@@ -219,6 +222,27 @@ class OperationalAttentionTests(TestCase):
         self.assertEqual(
             dashboard.data['operational_attention']['by_category']['cash'], 1,
         )
+
+    def test_non_owner_administrator_uses_the_selected_branch_permissions(self):
+        administrator = User.objects.create_user(
+            email='attention-administrator@example.com', password='password-123',
+        )
+        profile = AccessProfile.objects.get(company=self.company, name='Administrador')
+        company_access = UserCompanyAccess(
+            user=administrator, company=self.company, access_profile=profile,
+        )
+        company_access.save(enforce_saas_limit=False)
+        UserBranchAccess.objects.create(
+            user=administrator, branch=self.branch, access_profile=profile,
+        )
+        client = APIClient()
+        client.force_authenticate(administrator)
+        client.defaults['HTTP_X_BRANCH_ID'] = str(self.branch.pk)
+
+        response = client.get('/api/v1/operational-attention/')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIn('inventory', response.data['available_categories'])
 
     def test_access_is_limited_to_the_selected_tenant_and_branch_permissions(self):
         self.user.is_superuser = False
