@@ -104,6 +104,7 @@ export function DashboardToolbar({
             <Select
               aria-label="Filtrar por categoria"
               value={category}
+              disabled={loading}
               onChange={(event) => onCategoryChange(event.target.value)}
             >
               <option value="">Todas as categorias</option>

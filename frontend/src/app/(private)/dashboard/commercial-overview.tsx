@@ -453,7 +453,40 @@ function PaymentPanel({
     sales.payment_distribution_scope === "operational"
       ? "Recebimentos operacionais"
       : "Recebimentos vinculados somente a vendas";
-  const total = sales.payment_total;
+  const hasOfficialTotals =
+    sales.payment_total !== undefined ||
+    sales.total_received !== undefined ||
+    sales.reconciliation_delta !== undefined;
+  const financialSummary = hasOfficialTotals ? (
+    <div className="mt-4 space-y-1 rounded-md bg-surface-muted px-3 py-2 text-xs">
+      {sales.payment_total !== undefined && (
+        <p className="flex flex-wrap justify-between gap-x-3">
+          <span className="text-muted">Total registrado em pagamentos</span>
+          <strong>{formatBRL(sales.payment_total)}</strong>
+        </p>
+      )}
+      {sales.total_received !== undefined && (
+        <p className="flex flex-wrap justify-between gap-x-3">
+          <span className="text-muted">Valor financeiro esperado</span>
+          <strong>{formatBRL(sales.total_received)}</strong>
+        </p>
+      )}
+      {sales.reconciliation_delta !== undefined && (
+        <p className="flex flex-wrap justify-between gap-x-3">
+          <span className="text-muted">Diferença de conciliação</span>
+          <strong
+            className={
+              decimalIsZero(sales.reconciliation_delta)
+                ? undefined
+                : "text-danger-strong"
+            }
+          >
+            {formatBRL(sales.reconciliation_delta)}
+          </strong>
+        </p>
+      )}
+    </div>
+  ) : null;
   const selectedHref =
     selected && href
       ? `${href}&payment_method_code=${encodeURIComponent(selected.code)}`
@@ -488,18 +521,15 @@ function PaymentPanel({
           }
         />
       ) : sales.payment_distribution === undefined ? (
-        <EmptyState
-          title="Cálculo de recebimentos indisponível"
-          description="A distribuição de pagamentos não foi apurada para este período."
-        />
+        <>
+          <EmptyState
+            title="Cálculo de recebimentos indisponível"
+            description="A distribuição de pagamentos não foi apurada para este período."
+          />
+          {financialSummary && <div className="px-5 pb-5">{financialSummary}</div>}
+        </>
       ) : rows.length ? (
         <div className="px-5 pb-5">
-          <p className="py-3 text-xs text-muted">
-            Total registrado em pagamentos:{" "}
-            <strong className="text-fg">
-              {total === undefined ? "Não apurado" : formatBRL(total)}
-            </strong>
-          </p>
           <div className="space-y-3">
             {rows.map((row) => {
               const percentage = Number(row.visualPercentage);
@@ -559,26 +589,16 @@ function PaymentPanel({
               "Selecione uma forma de pagamento para ver os detalhes."
             )}
           </div>
-          <div className="mt-4 space-y-1 rounded-md bg-surface-muted px-3 py-2 text-xs">
-            {sales.total_received !== undefined && (
-              <p className="flex flex-wrap justify-between gap-x-3">
-                <span className="text-muted">Financeiro esperado</span>
-                <strong>{formatBRL(sales.total_received)}</strong>
-              </p>
-            )}
-            {!decimalIsZero(sales.reconciliation_delta) && (
-              <p className="flex flex-wrap justify-between gap-x-3">
-                <span className="text-muted">Diferença de conciliação</span>
-                <strong>{formatBRL(sales.reconciliation_delta)}</strong>
-              </p>
-            )}
-          </div>
+          {financialSummary}
         </div>
       ) : (
-        <EmptyState
-          title="Sem recebimentos"
-          description="Nenhuma forma de pagamento no período."
-        />
+        <div className="px-5 pb-5">
+          <EmptyState
+            title="Sem recebimentos"
+            description="Nenhum pagamento foi registrado no período."
+          />
+          {financialSummary}
+        </div>
       )}
     </section>
   );
@@ -764,7 +784,7 @@ function TimeAnalysis({ sales }: { sales: Sales }) {
   const heatmap = sales.heatmap;
   const hourlyIntervals = hourly.map((row) => businessHour(row.hour));
   const multipleDates = new Set(hourlyIntervals.map((interval) => interval?.date).filter(Boolean)).size > 1;
-  const fewData = hourly.length <= 2 && heatmap.length <= 2;
+  const limitedData = hourly.length <= 2 && heatmap.length <= 2;
   const maximum = hourly.reduce((largest, row) => {
     const value =
       metric === "revenue" ? moneyCents(row.sales_revenue) : BigInt(row.count);
@@ -796,15 +816,15 @@ function TimeAnalysis({ sales }: { sales: Sales }) {
       {!hourly.length && !heatmap.length ? (
         <EmptyState
           title="Sem dados de horário no período"
-          description="Nenhuma venda foi registrada com horário para este recorte."
-        />
-      ) : fewData ? (
-        <EmptyState
-          title="Dados insuficientes para análise por horário"
-          description="Registre mais vendas no período para identificar padrões de movimento."
+          description="Nenhuma venda com horário disponível neste período."
         />
       ) : (
         <div className="grid gap-5 p-5 lg:grid-cols-2">
+          {limitedData && (
+            <p className="lg:col-span-2 text-xs text-muted">
+              Dados limitados: ainda não é possível identificar um padrão consistente de movimento.
+            </p>
+          )}
           <div>
             <div className="mb-3 flex gap-2" aria-label="Métrica por horário">
               <button
@@ -863,7 +883,9 @@ function TimeAnalysis({ sales }: { sales: Sales }) {
             </div>
           </div>
           <div>
-            <h3 className="text-xs font-bold">Picos por dia e horário</h3>
+            <h3 className="text-xs font-bold">
+              {limitedData ? "Registros por dia e horário" : "Picos por dia e horário"}
+            </h3>
             <ul className="mt-3 grid gap-2 sm:grid-cols-2">
               {busiest.map((row) => (
                 <li

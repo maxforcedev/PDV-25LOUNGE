@@ -34,6 +34,8 @@ type DashboardErrorState = {
   retryable: boolean;
 };
 
+type DashboardCategory = { id: number; name: string };
+
 function dashboardError(caught: unknown): DashboardErrorState {
   if (!(caught instanceof ApiError) || caught.status === 0)
     return { title: "Falha de rede", message: "Não foi possível conectar ao servidor. Verifique sua conexão e tente novamente.", retryable: true };
@@ -84,6 +86,10 @@ function DashboardPage() {
   const [period, setPeriod] = useState<PeriodValue>(() => businessPeriod());
   const [draftPeriod, setDraftPeriod] = useState<PeriodValue>(() => businessPeriod());
   const [category, setCategory] = useState("");
+  const [categoryOptions, setCategoryOptions] = useState<{
+    branchId: number;
+    categories: DashboardCategory[];
+  } | null>(null);
   const [customOpen, setCustomOpen] = useState(false);
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<DashboardErrorState | null>(null);
@@ -115,6 +121,10 @@ function DashboardPage() {
           return;
         }
         setData(result);
+        setCategoryOptions({
+          branchId: token,
+          categories: result.filters?.categories ?? [],
+        });
         setUpdatedAt(new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short", timeZone: "America/Sao_Paulo" }).format(new Date()));
       }
     } catch (caught) {
@@ -148,7 +158,11 @@ function DashboardPage() {
   }
 
   function applyCategory(nextCategory: string) {
-    if (nextCategory && !data?.filters?.categories.some((item) => String(item.id) === nextCategory)) {
+    const categories =
+      categoryOptions?.branchId === context.current
+        ? categoryOptions.categories
+        : [];
+    if (nextCategory && !categories.some((item) => String(item.id) === nextCategory)) {
       setCategory("");
       setFilterNotice("A categoria selecionada não está disponível para a filial atual.");
       updateDashboardUrl(period, "");
@@ -163,6 +177,7 @@ function DashboardPage() {
   useEffect(() => {
     requestSequence.current += 1;
     setData(null);
+    setCategoryOptions(null);
     setError(null);
     setFilterNotice("");
     setUpdatedAt(undefined);
@@ -220,8 +235,10 @@ function DashboardPage() {
   if (operationalSections.includes("current_cash") && data?.current_cash?.length && hasFeature("cash_register")) operationalAlerts.push({ key: "open-cash", title: `${data.current_cash.length} caixa(s) aberto(s)`, detail: "Sessões de caixa em andamento.", href: canViewCash ? `/caixas/sessoes/${data.current_cash[0].id}` : undefined, tone: "info", reference: "current" });
   const branchTransitioning = loadedBranch.current !== null && loadedBranch.current !== branchId;
   const visibleData = branchTransitioning ? null : data;
+  const categories =
+    categoryOptions?.branchId === branchId ? categoryOptions.categories : [];
 
-  return <><PageHeader title="Visão geral" description={currentBranch ? `Acompanhe a operação comercial da filial ${currentBranch.name}.` : "Acompanhe a operação comercial da sua filial."} /><main className="space-y-5 p-4 sm:p-6 lg:p-8"><DashboardToolbar period={period} draftPeriod={draftPeriod} presets={dashboardAnalysisPeriods()} customOpen={customOpen} category={category} categories={visibleData?.filters?.categories ?? []} showCategory={hasFeature("products") && Boolean(visibleData?.filters?.categories.length)} loading={loading || branchTransitioning} updatedAt={updatedAt} onPreset={apply} onToggleCustom={() => setCustomOpen((open) => !open)} onDraftChange={setDraftPeriod} onApplyCustom={() => apply(draftPeriod)} onCategoryChange={applyCategory} onRefresh={() => void load(period, context.current, category)} />{filterNotice && <p className="rounded-md border border-warning/30 bg-warning/10 px-3.5 py-3 text-sm text-warning-strong" role="status">{filterNotice}</p>}{error && <section className="card flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between" role="alert"><div><h2 className="text-sm font-bold text-fg">{error.title}</h2><p className="mt-1 text-sm text-muted">{error.message}</p></div>{error.retryable && <Button type="button" variant="secondary" onClick={() => void load(period, context.current, category)}>Tentar novamente</Button>}</section>}{loading || branchTransitioning ? <DashboardLoading /> : visibleData ? <><CommercialOverview data={visibleData} salesReportHref={canViewSalesReport ? report("vendas") : undefined} receiptsReportHref={canViewReceiptsReport ? report("recebimentos") : undefined} productsReportHref={canViewProductsReport ? report("produtos") : undefined} resultReportHref={canViewResultReport ? report("resultado") : undefined} canViewSaleDetail={canViewSaleDetail} /><OperationalAttention alerts={operationalAlerts} asOf={visibleData.metadata.operational_state.as_of} coverage={operationalCoverage} /></> : !error ? <section className="card"><EmptyState title="Dashboard indisponível" description="Selecione uma filial para carregar os indicadores." /></section> : null}</main></>;
+  return <><PageHeader title="Visão geral" description={currentBranch ? `Acompanhe a operação comercial da filial ${currentBranch.name}.` : "Acompanhe a operação comercial da sua filial."} /><main className="space-y-5 p-4 sm:p-6 lg:p-8"><DashboardToolbar period={period} draftPeriod={draftPeriod} presets={dashboardAnalysisPeriods()} customOpen={customOpen} category={category} categories={categories} showCategory={hasFeature("products") && Boolean(categories.length)} loading={loading || branchTransitioning} updatedAt={updatedAt} onPreset={apply} onToggleCustom={() => setCustomOpen((open) => !open)} onDraftChange={setDraftPeriod} onApplyCustom={() => apply(draftPeriod)} onCategoryChange={applyCategory} onRefresh={() => void load(period, context.current, category)} />{filterNotice && <p className="rounded-md border border-warning/30 bg-warning/10 px-3.5 py-3 text-sm text-warning-strong" role="status">{filterNotice}</p>}{error && <section className="card flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between" role="alert"><div><h2 className="text-sm font-bold text-fg">{error.title}</h2><p className="mt-1 text-sm text-muted">{error.message}</p></div>{error.retryable && <Button type="button" variant="secondary" onClick={() => void load(period, context.current, category)}>Tentar novamente</Button>}</section>}{loading || branchTransitioning ? <DashboardLoading /> : visibleData ? <><CommercialOverview data={visibleData} salesReportHref={canViewSalesReport ? report("vendas") : undefined} receiptsReportHref={canViewReceiptsReport ? report("recebimentos") : undefined} productsReportHref={canViewProductsReport ? report("produtos") : undefined} resultReportHref={canViewResultReport ? report("resultado") : undefined} canViewSaleDetail={canViewSaleDetail} /><OperationalAttention alerts={operationalAlerts} asOf={visibleData.metadata.operational_state.as_of} coverage={operationalCoverage} /></> : !error ? <section className="card"><EmptyState title="Dashboard indisponível" description="Selecione uma filial para carregar os indicadores." /></section> : null}</main></>;
 }
 
 export default function DashboardRoute() {
