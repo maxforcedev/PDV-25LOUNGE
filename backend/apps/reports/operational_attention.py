@@ -5,18 +5,19 @@ from urllib.parse import urlencode
 from django.utils import timezone
 
 from apps.attendance.models import AttendanceCommand, AttendanceCommandStatus, AttendancePaymentStatus
+from apps.cash.models import CashSession, CashSessionStatus
 from apps.attendance.services import command_financial_status
 from apps.companies.features import branch_feature_enabled
 from apps.companies.selectors import user_has_branch_permission
 from apps.inventory.models import Stock
-from apps.products.selectors import inventory_products
+from apps.products.selectors import attention_inventory_products
 from apps.production.models import PrintJob, PrintJobStatus
 
 from .selectors import receipt_summary
 
 
 SEVERITY_ORDER = {'critical': 0, 'attention': 1, 'informational': 2}
-VALID_CATEGORIES = {'inventory', 'financial', 'commands', 'printing'}
+VALID_CATEGORIES = {'inventory', 'financial', 'commands', 'printing', 'cash'}
 VALID_SEVERITIES = set(SEVERITY_ORDER)
 
 
@@ -52,7 +53,7 @@ def _alert(*, branch, identity, category, title, description, severity, referenc
 def inventory_attention(branch):
     stocks = Stock.objects.select_related('product', 'product__fraction_config').filter(
         branch=branch,
-        product_id__in=inventory_products(branch).values('pk'),
+        product_id__in=attention_inventory_products(branch).values('pk'),
     ).order_by('product__name', 'pk')
     alerts = []
     for stock in stocks:
@@ -122,11 +123,28 @@ def command_attention(branch):
 
 
 def printing_attention(branch):
-    jobs = PrintJob.objects.select_related('printer_device').filter(
+    failed_jobs = list(PrintJob.objects.select_related('printer_device').filter(
         branch=branch, status=PrintJobStatus.FAILED,
-    ).order_by('-updated_at', '-id')
+    ).order_by('-updated_at', '-id'))
+    roots = {job.reprint_of_id for job in failed_jobs if job.reprint_of_id}
+    latest_reprints = {}
+    if roots:
+        for root_id, number in PrintJob.objects.filter(
+            branch=branch, reprint_of_id__in=roots,
+        ).values_list('reprint_of_id', 'reprint_number'):
+            latest_reprints[root_id] = max(latest_reprints.get(root_id, 0), number)
+
     alerts = []
-    for job in jobs:
+    handled_batches = set()
+    for job in failed_jobs:
+        # A newer reprint is the current operational attempt for this original
+        # ticket. Historical failures must not remain active beside it.
+        if job.reprint_of_id and latest_reprints[job.reprint_of_id] > job.reprint_number:
+            continue
+        batch_identity = job.batch_key or job.pk
+        if batch_identity in handled_batches:
+            continue
+        handled_batches.add(batch_identity)
         retryable = job.physical_dispatch_started_at is None
         alerts.append(_alert(
             branch=branch, identity=f'printing:failed:{job.pk}', category='printing',
@@ -144,6 +162,33 @@ def printing_attention(branch):
             route='/producao/falhas',
         ))
     return alerts
+
+
+def cash_attention(branch):
+    sessions = CashSession.objects.select_related('cash_register').filter(
+        branch=branch,
+        status=CashSessionStatus.CLOSED,
+        closing_difference__isnull=False,
+    ).exclude(closing_difference=Decimal('0.00')).order_by('-closed_at', '-id')
+    return [_alert(
+        branch=branch,
+        identity=f'cash:closing_difference:{session.pk}',
+        category='cash',
+        title=f'Divergencia no fechamento: {session.cash_register.name}',
+        description=(
+            f'Diferenca confirmada de {abs(session.closing_difference):.2f} '
+            'entre o valor esperado e o informado no fechamento.'
+        ),
+        severity='attention',
+        reference='current',
+        occurred_at=session.closed_at,
+        entity={
+            'type': 'cash_session', 'id': session.pk,
+            'name': session.cash_register.name, 'branch_id': branch.pk,
+        },
+        recommended_action='Revise o fechamento documentado e registre a tratativa financeira cabivel.',
+        route=f'/caixas/sessoes/{session.pk}',
+    ) for session in sessions]
 
 
 def financial_attention(branch, start, end, *, include_consumptions=False):
@@ -186,7 +231,10 @@ def active_attention(*, branch, user, start, end, categories=None, severities=No
     ):
         alerts.extend(financial_attention(
             branch, start, end,
-            include_consumptions=_can(user, branch, 'sales.view_consumption'),
+            include_consumptions=(
+                branch_feature_enabled(branch, 'consumption')
+                and _can(user, branch, 'sales.view_consumption')
+            ),
         ))
     if (
         'commands' in categories
@@ -200,6 +248,12 @@ def active_attention(*, branch, user, start, end, categories=None, severities=No
         and _can(user, branch, 'print_jobs.view')
     ):
         alerts.extend(printing_attention(branch))
+    if (
+        'cash' in categories
+        and branch_feature_enabled(branch, 'cash_register')
+        and _can(user, branch, 'cash_registers.view')
+    ):
+        alerts.extend(cash_attention(branch))
     alerts = [alert for alert in alerts if alert['severity'] in severities]
     # Every source has a stable identity. Keep it as a last tie-breaker so a
     # refresh cannot move equal alerts between pages.
@@ -263,6 +317,11 @@ def dashboard_attention_summary(*, branch, user, inventory=None, reconciliation_
             'identity': f'printing:failed:{alert["entity"]["id"]}',
             'category': 'printing', 'severity': 'attention',
         } for alert in printing_attention(branch))
+    if branch_feature_enabled(branch, 'cash_register') and _can(user, branch, 'cash_registers.view'):
+        alerts.extend({
+            'identity': alert['identity'],
+            'category': 'cash', 'severity': 'attention',
+        } for alert in cash_attention(branch))
     return attention_summary(alerts)
 
 
@@ -283,4 +342,6 @@ def available_attention_categories(*, branch, user):
         categories.append('commands')
     if branch_feature_enabled(branch, 'production') and _can(user, branch, 'print_jobs.view'):
         categories.append('printing')
+    if branch_feature_enabled(branch, 'cash_register') and _can(user, branch, 'cash_registers.view'):
+        categories.append('cash')
     return categories

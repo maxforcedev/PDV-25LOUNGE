@@ -2066,7 +2066,8 @@ export interface DashboardData {
   operational_attention?: {
     active_count: number;
     by_severity: { critical: number; attention: number; informational: number };
-    by_category: { inventory: number; financial: number; commands: number; printing: number };
+    by_category: { inventory: number; financial: number; commands: number; printing: number; cash: number };
+    available_categories: Array<"inventory" | "financial" | "commands" | "printing" | "cash">;
   };
   sales?: {
     event_accounting: {

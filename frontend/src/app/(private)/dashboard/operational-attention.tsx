@@ -17,6 +17,7 @@ export function OperationalAttention({
   const active = summaryValue?.active_count ?? 0;
   const critical = summaryValue?.by_severity.critical ?? 0;
   const attention = summaryValue?.by_severity.attention ?? 0;
+  const availableCategories = summaryValue?.available_categories ?? [];
   const period = new URLSearchParams();
   for (const key of ["start_datetime", "end_datetime"]) {
     const value = query.get(key);
@@ -39,6 +40,11 @@ export function OperationalAttention({
         <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-wrap gap-2 text-xs"><span className="rounded-full bg-danger/10 px-2.5 py-1 font-bold text-danger-strong">{critical} crítico(s)</span><span className="rounded-full bg-warning/10 px-2.5 py-1 font-bold text-warning-strong">{attention} em atenção</span></div>
           <Link href={href} className="btn btn-secondary self-start text-xs sm:self-auto"><CircleAlert className="size-4" />Abrir central</Link>
+        </div>
+      ) : !availableCategories.length ? (
+        <div className="flex items-start gap-3 px-5 py-4 text-sm text-muted">
+          <CircleAlert className="mt-0.5 size-5 shrink-0" />
+          <span><strong className="block">Indicadores operacionais indisponíveis para este perfil.</strong><small className="mt-1 block text-xs text-muted">A Central não confirma normalidade quando os módulos necessários não estão acessíveis.</small></span>
         </div>
       ) : (
         <div className="flex items-start gap-3 px-5 py-4 text-sm text-success-strong">

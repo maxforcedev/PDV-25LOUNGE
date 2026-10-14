@@ -96,6 +96,7 @@ from .selectors import (
     stock_position_report,
     filtered_withdrawals,
     inventory_kpis,
+    inventory_attention_kpis,
     hourly_sales,
     operational_result,
     period_end_exclusive,
@@ -1248,19 +1249,17 @@ class DashboardView(APIView):
                 ],
             },
         }
-        attention_inventory = response.get('inventory')
-        if category is not None and attention_inventory is not None:
-            # Attention is always branch-wide; a product filter must not make
-            # its count diverge from the central view.
-            attention_inventory = inventory_kpis(branch, include_value=False)
-        attention_delta = (
-            dashboard_receipts['reconciliation_delta']
-            if dashboard_receipts is not None else None
-        )
+        attention_inventory = None
+        if (
+            has_feature('inventory')
+            and user_has_code(request, 'inventory.view')
+            and user_has_code(request, 'inventory.view_stock_kpis')
+        ):
+            attention_inventory = inventory_attention_kpis(branch)
+        attention_delta = None
         if (
             has_feature('financial')
             and user_has_code(request, 'reports.view_receipts')
-            and (attention_delta is None or category is not None)
         ):
             attention_delta = receipt_summary(
                 branch=branch, start=start, end=end, filters={},
@@ -1274,6 +1273,9 @@ class DashboardView(APIView):
             user=request.user,
             inventory=attention_inventory,
             reconciliation_delta=attention_delta,
+        )
+        response['operational_attention']['available_categories'] = (
+            available_attention_categories(branch=branch, user=request.user)
         )
         # Data assembled by dashboard helpers bypass serializers. Redact last so
         # every nested response and the dashboard export share the same boundary.

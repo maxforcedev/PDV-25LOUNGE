@@ -1,12 +1,16 @@
 from decimal import Decimal
+import uuid
 
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
+from apps.cash.models import CashRegister, CashSession, CashSessionStatus
 from apps.companies.models import AccessProfile, Branch, FunctionalPermission, UserBranchAccess
 from apps.production.models import PrintJob, PrintJobStatus, PrinterDevice
 from apps.products.models import Category, Product, ProductBranchConfig
 from apps.inventory.models import Stock
+from apps.reports.selectors import inventory_kpis, stock_position_report
 from apps.saas.tests.helpers import create_complete_test_plan, create_operational_test_tenant
 
 
@@ -16,6 +20,7 @@ class OperationalAttentionTests(TestCase):
             'operational-attention',
             enabled_features=(
                 'reports', 'products', 'inventory', 'financial', 'commands', 'production',
+                'cash_register',
             ),
         )
         self.user, self.company, _subscription = create_operational_test_tenant(
@@ -107,6 +112,37 @@ class OperationalAttentionTests(TestCase):
         self.assertEqual(unavailable.data['summary']['active_count'], 1)
         self.assertEqual(unavailable.data['results'][0]['identity'], f'inventory:negative:{second.pk}')
 
+    def test_inventory_attention_excludes_unavailable_and_archived_without_changing_stock_position(self):
+        unavailable = self._stock(self.product, self.branch, Decimal('-2'))
+        config = ProductBranchConfig.objects.get(product=self.product, branch=self.branch)
+        config.is_available = False
+        config.save(update_fields=('is_available', 'updated_at'))
+
+        response = self.client.get('/api/v1/operational-attention/?category=inventory')
+        dashboard = self.client.get('/api/v1/dashboard/')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['summary']['active_count'], 0)
+        self.assertEqual(inventory_kpis(self.branch)['negative_count'], 1)
+        self.assertEqual(dashboard.data['operational_attention']['active_count'], 0)
+
+        Product.objects.filter(pk=self.product.pk).update(archived_at=timezone.now())
+        self.assertIn(
+            unavailable.pk,
+            stock_position_report(branch=self.branch, filters={}).values_list('pk', flat=True),
+        )
+        unavailable.current_quantity = Decimal('0')
+        unavailable.save(update_fields=('current_quantity', 'updated_at'))
+        self.assertNotIn(
+            unavailable.pk,
+            stock_position_report(branch=self.branch, filters={}).values_list('pk', flat=True),
+        )
+        self.assertIn(
+            unavailable.pk,
+            stock_position_report(
+                branch=self.branch, filters={'lifecycle': 'archived'},
+            ).values_list('pk', flat=True),
+        )
+
     def test_print_failures_are_active_and_disappear_when_resolved(self):
         printer = PrinterDevice.objects.create(branch=self.branch, name='Cozinha')
         job = PrintJob.objects.create(
@@ -135,10 +171,65 @@ class OperationalAttentionTests(TestCase):
         self.assertEqual(resolved.status_code, 200, resolved.data)
         self.assertEqual(resolved.data['summary']['active_count'], 0)
 
+    def test_print_attention_uses_only_the_current_reprint_and_one_physical_batch(self):
+        printer = PrinterDevice.objects.create(branch=self.branch, name='Bar')
+        root = PrintJob.objects.create(
+            company=self.company, branch=self.branch, printer_device=printer,
+            is_test=True, status=PrintJobStatus.PRINTED,
+        )
+        PrintJob.objects.create(
+            company=self.company, branch=self.branch, printer_device=printer,
+            is_test=True, status=PrintJobStatus.FAILED, reprint_of=root, reprint_number=1,
+        )
+        PrintJob.objects.create(
+            company=self.company, branch=self.branch, printer_device=printer,
+            is_test=True, status=PrintJobStatus.PRINTED, reprint_of=root, reprint_number=2,
+        )
+        batch_key = uuid.uuid4()
+        first = PrintJob.objects.create(
+            company=self.company, branch=self.branch, printer_device=printer,
+            is_test=True, status=PrintJobStatus.FAILED, batch_key=batch_key,
+        )
+        second = PrintJob.objects.create(
+            company=self.company, branch=self.branch, printer_device=printer,
+            is_test=True, status=PrintJobStatus.FAILED, batch_key=batch_key,
+        )
+
+        response = self.client.get('/api/v1/operational-attention/?category=printing')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['summary']['active_count'], 1)
+        self.assertIn(response.data['results'][0]['entity']['id'], {first.pk, second.pk})
+
+    def test_confirmed_cash_closing_difference_is_visible_to_dashboard_and_central(self):
+        register = CashRegister.objects.create(branch=self.branch, name='Principal')
+        session = CashSession.objects.create(
+            cash_register=register, branch=self.branch, opened_by=self.user,
+            opened_at=timezone.now(), opening_amount=Decimal('0.00'),
+            status=CashSessionStatus.CLOSED, closed_by=self.user,
+            closed_at=timezone.now(), closing_expected_amount=Decimal('100.00'),
+            closing_amount_informed=Decimal('90.00'), closing_difference=Decimal('-10.00'),
+        )
+
+        central = self.client.get('/api/v1/operational-attention/?category=cash')
+        dashboard = self.client.get('/api/v1/dashboard/')
+
+        self.assertEqual(central.status_code, 200, central.data)
+        self.assertEqual(central.data['results'][0]['identity'], f'cash:closing_difference:{session.pk}')
+        self.assertEqual(
+            dashboard.data['operational_attention']['by_category']['cash'], 1,
+        )
+
     def test_access_is_limited_to_the_selected_tenant_and_branch_permissions(self):
         self.user.is_superuser = False
         self.user.is_staff = False
         self.user.save(update_fields=('is_superuser', 'is_staff'))
+        owner_access = self.client.get('/api/v1/operational-attention/')
+        self.assertEqual(owner_access.status_code, 200, owner_access.data)
+        same_tenant_other_branch = self.client.get(
+            '/api/v1/operational-attention/', HTTP_X_BRANCH_ID=str(self.other_branch.pk),
+        )
+        self.assertEqual(same_tenant_other_branch.status_code, 403)
         foreign_owner, foreign_company, _ = create_operational_test_tenant(
             code='operational-attention-foreign', email='foreign-attention@example.com',
             trade_name='Foreign attention', legal_name='Foreign attention Ltda',

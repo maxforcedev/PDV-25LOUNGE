@@ -34,7 +34,7 @@ from apps.inventory.models import (
     StockTransferItem,
 )
 from apps.products.models import InventoryBehavior, ProductBranchConfig
-from apps.products.selectors import inventory_products
+from apps.products.selectors import attention_inventory_products, inventory_products
 from apps.sales.models import OperationType, Payment, PaymentMethod, PaymentMethodCode, Sale, SaleItem, SaleStatus
 
 from .financials import FinancialAggregator, allocate_money
@@ -1470,8 +1470,8 @@ def stock_consumption_report(*, branch, start, end, filters):
     return rows.order_by('-created_at', '-id'), summary_rows
 
 
-def inventory_kpis(branch, *, include_value=False, category=None):
-    products = inventory_products(branch)
+def inventory_kpis(branch, *, include_value=False, category=None, products=None):
+    products = inventory_products(branch) if products is None else products
     if category:
         products = products.filter(branch_configs__category_id=category)
     stocks = Stock.objects.select_related(
@@ -1502,6 +1502,14 @@ def inventory_kpis(branch, *, include_value=False, category=None):
             for stock, quantity in zip(stocks, quantities)
         ).quantize(CENT, rounding=ROUND_HALF_UP)
     return result
+
+
+def inventory_attention_kpis(branch):
+    """Dashboard attention counts use the Central's current-product scope."""
+    return inventory_kpis(
+        branch,
+        products=attention_inventory_products(branch),
+    )
 
 
 def stock_position_report(*, branch, filters):

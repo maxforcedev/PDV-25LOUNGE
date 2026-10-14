@@ -83,16 +83,24 @@ def sellable_products_for_branch(branch, channel, *, search=None, barcode=None):
 
 
 def inventory_products(branch):
+    """Products configured for physical stock, independently of sale availability."""
     return Product.objects.filter(
         company_id=branch.company_id,
         status=Status.ACTIVE,
         archived_at__isnull=True,
         inventory_behavior=InventoryBehavior.DIRECT,
         branch_configs__branch=branch,
-        branch_configs__is_available=True,
         branch_configs__branch__status=Status.ACTIVE,
         branch_configs__branch__company__status=Status.ACTIVE,
     ).distinct()
+
+
+def attention_inventory_products(branch):
+    """Current commercially available stock that can require replenishment action."""
+    return inventory_products(branch).filter(
+        branch_configs__branch=branch,
+        branch_configs__is_available=True,
+    )
 
 
 def countable_products(branch):

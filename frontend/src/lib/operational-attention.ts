@@ -1,4 +1,4 @@
-export type AttentionCategory = "inventory" | "financial" | "commands" | "printing";
+export type AttentionCategory = "inventory" | "financial" | "commands" | "printing" | "cash";
 export type AttentionSeverity = "critical" | "attention" | "informational";
 
 export type OperationalAttentionAlert = {
@@ -20,6 +20,7 @@ export type OperationalAttentionSummary = {
   active_count: number;
   by_severity: Record<AttentionSeverity, number>;
   by_category: Record<AttentionCategory, number>;
+  available_categories?: AttentionCategory[];
 };
 
 export type OperationalAttentionResponse = {

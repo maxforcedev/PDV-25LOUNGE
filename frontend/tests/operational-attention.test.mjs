@@ -15,3 +15,9 @@ test("builds repeatable attention filters without a branch query", () => {
   assert.equal(query.get("end_datetime"), "2026-10-14T23:59:59-03:00");
   assert.equal(query.has("branch"), false);
 });
+
+test("keeps a category filter branch-context independent", () => {
+  const query = operationalAttentionQuery({ categories: ["cash"], page: 1 });
+  assert.deepEqual(query.getAll("category"), ["cash"]);
+  assert.equal(query.has("branch"), false);
+});
