@@ -11,8 +11,8 @@ import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
 import type { DashboardData } from "@/types";
 import { CommercialOverview } from "./commercial-overview";
-import { OperationalAttention, type OperationalAlert } from "./operational-attention";
 import { DashboardToolbar } from "./dashboard-toolbar";
+import { OperationalAttention, type OperationalAlert } from "./operational-attention";
 
 function updateDashboardUrl(next: PeriodValue, category: string) {
   const params = new URLSearchParams({ start_datetime: next.start, end_datetime: next.end });
@@ -20,10 +20,24 @@ function updateDashboardUrl(next: PeriodValue, category: string) {
   window.history.replaceState(window.history.state, "", `${window.location.pathname}?${params}`);
 }
 
+function requestedDashboardState(keepCategory: boolean) {
+  const params = new URLSearchParams(window.location.search);
+  const requested = { start: params.get("start_datetime") || "", end: params.get("end_datetime") || "" };
+  const dateTimePattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/;
+  const period = dateTimePattern.test(requested.start) && dateTimePattern.test(requested.end) && requested.start <= requested.end
+    ? requested
+    : businessPeriod();
+  const requestedCategory = params.get("category") || "";
+  return { period, category: keepCategory && /^\d+$/.test(requestedCategory) ? requestedCategory : "" };
+}
+
 function DashboardPage() {
   const { currentBranch, hasAnyPermission, hasFeature, hasPermission } = useAuth();
-  const context = useRef(currentBranch?.id || 0);
-  context.current = currentBranch?.id || 0;
+  const branchId = currentBranch?.id || 0;
+  const context = useRef(branchId);
+  const loadedBranch = useRef<number | null>(null);
+  const requestSequence = useRef(0);
+  context.current = branchId;
   const [period, setPeriod] = useState<PeriodValue>(() => businessPeriod());
   const [draftPeriod, setDraftPeriod] = useState<PeriodValue>(() => businessPeriod());
   const [category, setCategory] = useState("");
@@ -31,10 +45,10 @@ function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-  const requestSequence = useRef(0);
+  const [updatedAt, setUpdatedAt] = useState<string>();
 
   async function load(next: PeriodValue, token = context.current, nextCategory = category) {
-    if (!currentBranch) {
+    if (!token) {
       setLoading(false);
       return;
     }
@@ -46,7 +60,10 @@ function DashboardPage() {
     if (nextCategory) params.set("category", nextCategory);
     try {
       const result = await http.get<DashboardData>(`dashboard/?${params}`);
-      if (context.current === token && requestSequence.current === request) setData(result);
+      if (context.current === token && requestSequence.current === request) {
+        setData(result);
+        setUpdatedAt(new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short", timeZone: "America/Sao_Paulo" }).format(new Date()));
+      }
     } catch (caught) {
       if (context.current !== token || requestSequence.current !== request) return;
       setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar o Dashboard.");
@@ -66,7 +83,7 @@ function DashboardPage() {
     setDraftPeriod(next);
     setCustomOpen(false);
     updateDashboardUrl(next, category);
-    void load(next, context.current);
+    void load(next, context.current, category);
   }
 
   function applyCategory(nextCategory: string) {
@@ -79,22 +96,21 @@ function DashboardPage() {
     requestSequence.current += 1;
     setData(null);
     setError("");
-    if (!currentBranch) {
+    setUpdatedAt(undefined);
+    if (!branchId) {
       setLoading(false);
+      loadedBranch.current = null;
       return;
     }
-    const params = new URLSearchParams(window.location.search);
-    const requested = { start: params.get("start_datetime") || "", end: params.get("end_datetime") || "" };
-    const requestedCategory = params.get("category") || "";
-    const dateTimePattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/;
-    const next = dateTimePattern.test(requested.start) && dateTimePattern.test(requested.end) && requested.start <= requested.end ? requested : businessPeriod();
-    const nextCategory = /^\d+$/.test(requestedCategory) ? requestedCategory : "";
-    setPeriod(next);
-    setDraftPeriod(next);
-    setCategory(nextCategory);
-    updateDashboardUrl(next, nextCategory);
-    void loadDashboard(next, currentBranch.id, nextCategory);
-  }, [currentBranch]);
+    const branchChanged = loadedBranch.current !== null && loadedBranch.current !== branchId;
+    const next = requestedDashboardState(!branchChanged);
+    loadedBranch.current = branchId;
+    setPeriod(next.period);
+    setDraftPeriod(next.period);
+    setCategory(next.category);
+    updateDashboardUrl(next.period, next.category);
+    void loadDashboard(next.period, branchId, next.category);
+  }, [branchId]);
 
   const query = new URLSearchParams({ start_datetime: period.start, end_datetime: period.end });
   if (category) query.set("category", category);
@@ -117,7 +133,7 @@ function DashboardPage() {
   if (data?.commands?.open_count && hasFeature("commands")) operationalAlerts.push({ key: "open-commands", title: `${data.commands.open_count} comanda(s) aberta(s)`, detail: "Comandas em andamento na filial.", href: canViewCommands ? "/comandas" : undefined, tone: "info" });
   if (data?.current_cash?.length && hasFeature("cash_register")) operationalAlerts.push({ key: "open-cash", title: `${data.current_cash.length} caixa(s) aberto(s)`, detail: "Sessões de caixa em andamento.", href: canViewCash ? `/caixas/sessoes/${data.current_cash[0].id}` : undefined, tone: "info" });
 
-  return <><PageHeader title="Visão geral" description={currentBranch ? `Acompanhe a operação comercial da filial ${currentBranch.name}.` : "Acompanhe a operação comercial da sua filial."} /><main className="space-y-5 p-4 sm:p-6 lg:p-8"><DashboardToolbar period={period} draftPeriod={draftPeriod} presets={dashboardPeriods()} customOpen={customOpen} category={category} categories={data?.filters?.categories ?? []} loading={loading} updatedAt={data?.metadata.operational_state.as_of ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short", timeZone: "America/Sao_Paulo" }).format(new Date(data.metadata.operational_state.as_of)) : undefined} onPreset={apply} onToggleCustom={() => setCustomOpen((open) => !open)} onDraftChange={setDraftPeriod} onApplyCustom={() => apply(draftPeriod)} onCategoryChange={applyCategory} onRefresh={() => void load(period, context.current)} />{error && <Alert message={error} />}{loading ? <section className="card"><TableLoading columns={4} /></section> : data ? <><CommercialOverview data={data} salesReportHref={canViewSalesReport ? report("vendas") : undefined} receiptsReportHref={canViewReceiptsReport ? report("recebimentos") : undefined} productsReportHref={canViewProductsReport ? report("produtos") : undefined} resultReportHref={canViewResultReport ? report("resultado") : undefined} canViewSaleDetail={canViewSaleDetail} /><OperationalAttention alerts={operationalAlerts} asOf={data.metadata.operational_state.as_of} /></> : !error ? <section className="card"><EmptyState title="Dashboard indisponível" description="Selecione uma filial para carregar os indicadores." /></section> : null}</main></>;
+  return <><PageHeader title="Visão geral" description={currentBranch ? `Acompanhe a operação comercial da filial ${currentBranch.name}.` : "Acompanhe a operação comercial da sua filial."} /><main className="space-y-5 p-4 sm:p-6 lg:p-8"><DashboardToolbar period={period} draftPeriod={draftPeriod} presets={dashboardPeriods()} customOpen={customOpen} category={category} categories={data?.filters?.categories ?? []} showCategory={hasFeature("products") && Boolean(data?.filters?.categories.length)} loading={loading} updatedAt={updatedAt} onPreset={apply} onToggleCustom={() => setCustomOpen((open) => !open)} onDraftChange={setDraftPeriod} onApplyCustom={() => apply(draftPeriod)} onCategoryChange={applyCategory} onRefresh={() => void load(period, context.current, category)} />{error && <Alert message={error} />}{loading ? <section className="card"><TableLoading columns={4} /></section> : data ? <><CommercialOverview data={data} salesReportHref={canViewSalesReport ? report("vendas") : undefined} receiptsReportHref={canViewReceiptsReport ? report("recebimentos") : undefined} productsReportHref={canViewProductsReport ? report("produtos") : undefined} resultReportHref={canViewResultReport ? report("resultado") : undefined} canViewSaleDetail={canViewSaleDetail} /><OperationalAttention alerts={operationalAlerts} asOf={data.metadata.operational_state.as_of} /></> : !error ? <section className="card"><EmptyState title="Dashboard indisponível" description="Selecione uma filial para carregar os indicadores." /></section> : null}</main></>;
 }
 
 export default function DashboardRoute() {

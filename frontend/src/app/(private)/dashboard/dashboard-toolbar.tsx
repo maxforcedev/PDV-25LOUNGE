@@ -13,6 +13,7 @@ export function DashboardToolbar({
   customOpen,
   category,
   categories,
+  showCategory,
   loading,
   updatedAt,
   onPreset,
@@ -28,6 +29,7 @@ export function DashboardToolbar({
   customOpen: boolean;
   category: string;
   categories: Category[];
+  showCategory: boolean;
   loading: boolean;
   updatedAt?: string;
   onPreset: (value: PeriodValue) => void;
@@ -64,6 +66,7 @@ export function DashboardToolbar({
             className="rounded-full border border-subtle bg-surface-muted px-3 py-2 text-xs font-bold text-muted transition hover:border-focus/40 hover:text-link focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-focus/20"
             onClick={onToggleCustom}
             aria-expanded={customOpen}
+            aria-controls="dashboard-custom-period"
           >
             Personalizar período
           </button>
@@ -97,7 +100,7 @@ export function DashboardToolbar({
           >
             Personalizado
           </button>
-          <div className="ml-auto min-w-48 max-sm:w-full">
+          {showCategory && <div className="ml-auto min-w-48 max-sm:w-full">
             <Select
               aria-label="Filtrar por categoria"
               value={category}
@@ -110,17 +113,17 @@ export function DashboardToolbar({
                 </option>
               ))}
             </Select>
-          </div>
+          </div>}
         </div>
         {customOpen && (
-          <div className="mt-4 grid gap-3 border-t border-subtle pt-4 md:grid-cols-[1fr_1fr_auto] md:items-end">
+          <div id="dashboard-custom-period" className="mt-4 grid gap-3 border-t border-subtle pt-4 md:grid-cols-[1fr_1fr_auto] md:items-end">
             <Field label="Data/hora inicial">
               <input className="input" step="1" type="datetime-local" value={draftPeriod.start} onChange={(event) => onDraftChange({ ...draftPeriod, start: event.target.value })} />
             </Field>
             <Field label="Data/hora final">
               <input className="input" step="1" type="datetime-local" value={draftPeriod.end} onChange={(event) => onDraftChange({ ...draftPeriod, end: event.target.value })} />
             </Field>
-            <Button onClick={onApplyCustom}>Aplicar período</Button>
+            <Button type="button" onClick={onApplyCustom}>Aplicar período</Button>
           </div>
         )}
       </div>

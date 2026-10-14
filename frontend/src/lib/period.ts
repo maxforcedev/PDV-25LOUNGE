@@ -77,8 +77,10 @@ export function businessPeriodPreset(
 export function dashboardPeriods(now = new Date()) {
   return [
     ["Hoje", businessPeriod(0, 0, now)],
+    ["Ontem", businessPeriod(0, -1, now)],
     ["7 dias", businessPeriod(6, 0, now)],
     ["30 dias", businessPeriod(29, 0, now)],
+    ["Este mês", businessMonthToDate(now)],
   ] as const;
 }
 
