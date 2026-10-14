@@ -5,6 +5,15 @@ export interface PeriodValue {
   end: string;
 }
 
+export interface BusinessHour {
+  date: string;
+  hour: number;
+  label: string;
+  detailLabel: string;
+  start: string;
+  end: string;
+}
+
 export type PeriodPreset =
   | "today"
   | "yesterday"
@@ -77,6 +86,14 @@ export function businessPeriodPreset(
 export function dashboardPeriods(now = new Date()) {
   return [
     ["Hoje", businessPeriod(0, 0, now)],
+    ["7 dias", businessPeriod(6, 0, now)],
+    ["30 dias", businessPeriod(29, 0, now)],
+  ] as const;
+}
+
+export function dashboardAnalysisPeriods(now = new Date()) {
+  return [
+    ["Hoje", businessPeriod(0, 0, now)],
     ["Ontem", businessPeriod(0, -1, now)],
     ["7 dias", businessPeriod(6, 0, now)],
     ["30 dias", businessPeriod(29, 0, now)],
@@ -109,4 +126,37 @@ export function toBusinessDateTimeLocal(value: string | Date) {
   if (Number.isNaN(date.getTime())) return "";
   const dateTime = parts(businessDateTimeFormatter, date);
   return `${dateTime.year}-${dateTime.month}-${dateTime.day}T${dateTime.hour}:${dateTime.minute}:${dateTime.second}`;
+}
+
+function validBusinessDate(value?: string) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+    ? value
+    : undefined;
+}
+
+/** Normalizes API hour buckets to the operation's commercial timezone. */
+export function businessHour(value: string, fallbackDate?: string): BusinessHour | undefined {
+  const raw = value.trim();
+  let local = "";
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw)) local = toBusinessDateTimeLocal(raw);
+  else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(raw)) local = raw.slice(0, 19);
+
+  const dateTime = local.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):\d{2}(?::\d{2})?$/);
+  const time = raw.match(/^(\d{1,2})(?::\d{2}(?::\d{2})?)?$/);
+  const date = validBusinessDate(dateTime?.[1] || fallbackDate);
+  const hour = Number(dateTime?.[2] || time?.[1]);
+  if (!date || !Number.isInteger(hour) || hour < 0 || hour > 23) return undefined;
+
+  const hourLabel = `${String(hour).padStart(2, "0")}h`;
+  return {
+    date,
+    hour,
+    label: hourLabel,
+    detailLabel: `${date.slice(8, 10)}/${date.slice(5, 7)} — ${hourLabel}`,
+    start: `${date}T${String(hour).padStart(2, "0")}:00:00`,
+    end: `${date}T${String(hour).padStart(2, "0")}:59:59`,
+  };
 }

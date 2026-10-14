@@ -6,7 +6,7 @@ import { PageHeader } from "@/components/page-header";
 import { Alert, EmptyState, TableLoading } from "@/components/ui";
 import { decimalIsZero, formatDecimalBRL as formatBRL } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
-import { businessPeriod, dashboardPeriods, dashboardQuery, validDashboardPeriod, type PeriodValue } from "@/lib/period";
+import { businessPeriod, dashboardAnalysisPeriods, dashboardQuery, validDashboardPeriod, type PeriodValue } from "@/lib/period";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
 import type { DashboardData } from "@/types";
@@ -113,7 +113,8 @@ function DashboardPage() {
   }, [branchId]);
 
   const query = new URLSearchParams({ start_datetime: period.start, end_datetime: period.end });
-  if (category) query.set("category", category);
+  const appliedCategory = data?.filters?.category;
+  if (appliedCategory) query.set("category", String(appliedCategory));
   const report = (slug: string) => `/relatorios/${slug}?${query}`;
   const canViewSalesReport = hasFeature("reports") && hasPermission(permissions.viewSalesReport);
   const canViewReceiptsReport = hasFeature("financial") && hasPermission(permissions.viewReceiptsReport);
@@ -133,7 +134,7 @@ function DashboardPage() {
   if (data?.commands?.open_count && hasFeature("commands")) operationalAlerts.push({ key: "open-commands", title: `${data.commands.open_count} comanda(s) aberta(s)`, detail: "Comandas em andamento na filial.", href: canViewCommands ? "/comandas" : undefined, tone: "info" });
   if (data?.current_cash?.length && hasFeature("cash_register")) operationalAlerts.push({ key: "open-cash", title: `${data.current_cash.length} caixa(s) aberto(s)`, detail: "Sessões de caixa em andamento.", href: canViewCash ? `/caixas/sessoes/${data.current_cash[0].id}` : undefined, tone: "info" });
 
-  return <><PageHeader title="Visão geral" description={currentBranch ? `Acompanhe a operação comercial da filial ${currentBranch.name}.` : "Acompanhe a operação comercial da sua filial."} /><main className="space-y-5 p-4 sm:p-6 lg:p-8"><DashboardToolbar period={period} draftPeriod={draftPeriod} presets={dashboardPeriods()} customOpen={customOpen} category={category} categories={data?.filters?.categories ?? []} showCategory={hasFeature("products") && Boolean(data?.filters?.categories.length)} loading={loading} updatedAt={updatedAt} onPreset={apply} onToggleCustom={() => setCustomOpen((open) => !open)} onDraftChange={setDraftPeriod} onApplyCustom={() => apply(draftPeriod)} onCategoryChange={applyCategory} onRefresh={() => void load(period, context.current, category)} />{error && <Alert message={error} />}{loading ? <section className="card"><TableLoading columns={4} /></section> : data ? <><CommercialOverview data={data} salesReportHref={canViewSalesReport ? report("vendas") : undefined} receiptsReportHref={canViewReceiptsReport ? report("recebimentos") : undefined} productsReportHref={canViewProductsReport ? report("produtos") : undefined} resultReportHref={canViewResultReport ? report("resultado") : undefined} canViewSaleDetail={canViewSaleDetail} /><OperationalAttention alerts={operationalAlerts} asOf={data.metadata.operational_state.as_of} /></> : !error ? <section className="card"><EmptyState title="Dashboard indisponível" description="Selecione uma filial para carregar os indicadores." /></section> : null}</main></>;
+  return <><PageHeader title="Visão geral" description={currentBranch ? `Acompanhe a operação comercial da filial ${currentBranch.name}.` : "Acompanhe a operação comercial da sua filial."} /><main className="space-y-5 p-4 sm:p-6 lg:p-8"><DashboardToolbar period={period} draftPeriod={draftPeriod} presets={dashboardAnalysisPeriods()} customOpen={customOpen} category={category} categories={data?.filters?.categories ?? []} showCategory={hasFeature("products") && Boolean(data?.filters?.categories.length)} loading={loading} updatedAt={updatedAt} onPreset={apply} onToggleCustom={() => setCustomOpen((open) => !open)} onDraftChange={setDraftPeriod} onApplyCustom={() => apply(draftPeriod)} onCategoryChange={applyCategory} onRefresh={() => void load(period, context.current, category)} />{error && <Alert message={error} />}{loading ? <section className="card"><TableLoading columns={4} /></section> : data ? <><CommercialOverview data={data} salesReportHref={canViewSalesReport ? report("vendas") : undefined} receiptsReportHref={canViewReceiptsReport ? report("recebimentos") : undefined} productsReportHref={canViewProductsReport ? report("produtos") : undefined} resultReportHref={canViewResultReport ? report("resultado") : undefined} canViewSaleDetail={canViewSaleDetail} /><OperationalAttention alerts={operationalAlerts} asOf={data.metadata.operational_state.as_of} /></> : !error ? <section className="card"><EmptyState title="Dashboard indisponível" description="Selecione uma filial para carregar os indicadores." /></section> : null}</main></>;
 }
 
 export default function DashboardRoute() {
