@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { CheckCircle2, CircleAlert, Radio } from "lucide-react";
+import { CheckCircle2, CircleAlert, Info, Radio } from "lucide-react";
 
 export type OperationalAlert = {
   key: string;
@@ -10,14 +10,40 @@ export type OperationalAlert = {
   reference?: "current" | "period";
 };
 
+export type OperationalCoverage = "full" | "partial" | "none";
+
 export function OperationalAttention({
   alerts,
   asOf,
+  coverage,
 }: {
   alerts: OperationalAlert[];
   asOf?: string;
+  coverage: OperationalCoverage;
 }) {
   const timestamp = asOf ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short", timeZone: "America/Sao_Paulo" }).format(new Date(asOf)) : null;
+  const emptyState =
+    coverage === "full"
+      ? {
+          icon: CheckCircle2,
+          title: "Nenhuma ocorrência identificada nos indicadores monitorados.",
+          description: "Estado atual e período selecionado verificados conforme cada indicador.",
+          className: "text-success-strong",
+        }
+      : coverage === "partial"
+        ? {
+            icon: Info,
+            title: "Nenhuma ocorrência identificada nos indicadores disponíveis para seu perfil.",
+            description: "Alguns indicadores podem estar ocultos por configuração ou permissão.",
+            className: "text-muted",
+          }
+        : {
+            icon: Info,
+            title: "Indicadores operacionais indisponíveis para este perfil.",
+            description: "A configuração da filial ou suas permissões não disponibilizam indicadores operacionais.",
+            className: "text-muted",
+          };
+  const EmptyIcon = emptyState.icon;
   return (
     <section className="card overflow-hidden">
       <div className="card-header">
@@ -38,15 +64,15 @@ export function OperationalAttention({
               warning: "border-warning/30 bg-warning/10 text-warning-strong",
               info: "border-primary/25 bg-primary/5 text-primary",
             };
-            const content = <><CircleAlert className="mt-0.5 size-4 shrink-0" /><span className="min-w-0"><strong className="block text-xs">{alert.title}</strong><small className="mt-1 block text-[11px] leading-4 opacity-85">{alert.detail}</small>{alert.reference === "period" && <small className="mt-1 block text-[10px] font-bold uppercase tracking-wide opacity-75">Período selecionado</small>}</span></>;
+            const content = <><CircleAlert className="mt-0.5 size-4 shrink-0" /><span className="min-w-0"><strong className="block text-xs">{alert.title}</strong><small className="mt-1 block text-[11px] leading-4 opacity-85">{alert.detail}</small><small className="mt-1 block text-[10px] font-bold uppercase tracking-wide opacity-75">{alert.reference === "period" ? "Período selecionado" : "Estado atual"}</small></span></>;
             const className = `flex gap-2.5 rounded-lg border p-3 transition ${tones[alert.tone]} ${alert.href ? "hover:brightness-95 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-focus/20" : ""}`;
             return alert.href ? <Link key={alert.key} href={alert.href} className={className}>{content}</Link> : <div key={alert.key} className={className}>{content}</div>;
           })}
         </div>
       ) : (
-        <div className="flex items-center gap-3 px-5 py-4 text-sm text-success-strong">
-          <CheckCircle2 className="size-5" />
-          <span><strong>Nenhuma exceção operacional</strong><small className="ml-2 text-xs text-muted">A filial está sem alertas ativos neste momento.</small></span>
+        <div className={`flex items-start gap-3 px-5 py-4 text-sm ${emptyState.className}`}>
+          <EmptyIcon className="mt-0.5 size-5 shrink-0" />
+          <span><strong className="block">{emptyState.title}</strong><small className="mt-1 block text-xs text-muted">{emptyState.description}</small></span>
         </div>
       )}
     </section>

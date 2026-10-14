@@ -17,7 +17,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { EmptyState } from "@/components/ui";
-import { centsToDecimal, signedMoneyToCents } from "@/lib/cash";
+import { signedMoneyToCents } from "@/lib/cash";
 import {
   decimalCompare,
   decimalIsZero,
@@ -123,13 +123,15 @@ function MetricCard({
       </div>
       <div className="mt-5 border-t border-subtle pt-3">
         <p className="text-[11px] text-muted">{note}</p>
-        <p
-          className={`mt-1 flex items-start gap-1 text-[11px] font-semibold ${trendTone}`}
-          title="Comparação entre o período selecionado e o período anterior equivalente"
-        >
-          <TrendIcon className="mt-0.5 size-3.5 shrink-0" />
-          {comparisonText(trend)}
-        </p>
+        {trend && (
+          <p
+            className={`mt-1 flex items-start gap-1 text-[11px] font-semibold ${trendTone}`}
+            title="Comparação entre o período selecionado e o período anterior equivalente"
+          >
+            <TrendIcon className="mt-0.5 size-3.5 shrink-0" />
+            {comparisonText(trend)}
+          </p>
+        )}
       </div>
     </div>
   );
@@ -451,7 +453,7 @@ function PaymentPanel({
     sales.payment_distribution_scope === "operational"
       ? "Recebimentos operacionais"
       : "Recebimentos vinculados somente a vendas";
-  const total = sales.payment_total ?? centsToDecimal(rowsTotal);
+  const total = sales.payment_total;
   const selectedHref =
     selected && href
       ? `${href}&payment_method_code=${encodeURIComponent(selected.code)}`
@@ -485,12 +487,17 @@ function PaymentPanel({
               : "O recurso financeiro não está disponível para esta filial."
           }
         />
+      ) : sales.payment_distribution === undefined ? (
+        <EmptyState
+          title="Cálculo de recebimentos indisponível"
+          description="A distribuição de pagamentos não foi apurada para este período."
+        />
       ) : rows.length ? (
         <div className="px-5 pb-5">
           <p className="py-3 text-xs text-muted">
             Total registrado em pagamentos:{" "}
             <strong className="text-fg">
-              {total === undefined ? "-" : formatBRL(total)}
+              {total === undefined ? "Não apurado" : formatBRL(total)}
             </strong>
           </p>
           <div className="space-y-3">
@@ -654,8 +661,8 @@ function ProductPerformance({
       >
         {unavailable ? (
           <EmptyState
-            title="Produtos indisponíveis"
-            description="Este recurso não está disponível para esta filial."
+            title={view === "commercial" ? "Ranking de produtos indisponível" : "Consumo consolidado indisponível"}
+            description="Este painel não está disponível na configuração atual da filial."
           />
         ) : view === "commercial" ? (
           products.length ? (
@@ -755,6 +762,8 @@ function TimeAnalysis({ sales }: { sales: Sales }) {
   const [metric, setMetric] = useState<"revenue" | "count">("revenue");
   const hourly = sales.hourly_sales;
   const heatmap = sales.heatmap;
+  const hourlyIntervals = hourly.map((row) => businessHour(row.hour));
+  const multipleDates = new Set(hourlyIntervals.map((interval) => interval?.date).filter(Boolean)).size > 1;
   const fewData = hourly.length <= 2 && heatmap.length <= 2;
   const maximum = hourly.reduce((largest, row) => {
     const value =
@@ -784,7 +793,12 @@ function TimeAnalysis({ sales }: { sales: Sales }) {
           </p>
         </div>
       </div>
-      {fewData ? (
+      {!hourly.length && !heatmap.length ? (
+        <EmptyState
+          title="Sem dados de horário no período"
+          description="Nenhuma venda foi registrada com horário para este recorte."
+        />
+      ) : fewData ? (
         <EmptyState
           title="Dados insuficientes para análise por horário"
           description="Registre mais vendas no período para identificar padrões de movimento."
@@ -811,7 +825,7 @@ function TimeAnalysis({ sales }: { sales: Sales }) {
               </button>
             </div>
             <div className="space-y-2">
-              {hourly.map((row) => {
+              {hourly.map((row, index) => {
                 const amount =
                   metric === "revenue"
                     ? moneyCents(row.sales_revenue)
@@ -822,11 +836,15 @@ function TimeAnalysis({ sales }: { sales: Sales }) {
                     : 0;
                 return (
                   <div
-                    key={row.hour}
-                    className="grid grid-cols-[3rem_1fr_auto] items-center gap-2 text-xs"
+                    key={`${row.hour}-${index}`}
+                    className="grid grid-cols-[minmax(3rem,5.5rem)_1fr_auto] items-center gap-2 text-xs"
                   >
                     <strong>
-                      {businessHour(row.hour)?.label ?? "Horário indisponível"}
+                      {hourlyIntervals[index]
+                        ? multipleDates
+                          ? hourlyIntervals[index]!.detailLabel
+                          : hourlyIntervals[index]!.label
+                        : "Horário indisponível"}
                     </strong>
                     <span className="h-3 overflow-hidden rounded-full bg-surface-muted">
                       <span
@@ -1028,46 +1046,55 @@ export function CommercialOverview({
       </section>
     );
   const comparison = sales.period_comparison;
+  const operationalResultAvailable =
+    data.availability.operational_result === "available" && result !== undefined;
+  const operationalResultState =
+    data.availability.operational_result === "restricted"
+      ? { value: "Acesso restrito", note: "Seu perfil não possui acesso ao resultado operacional." }
+      : data.availability.operational_result === "unavailable"
+        ? { value: "Recurso indisponível", note: "O resultado operacional não está disponível para esta filial ou plano." }
+        : result === undefined
+          ? { value: "Cálculo indisponível", note: "O resultado operacional não pôde ser apurado para este período." }
+          : { value: formatBRL(result), note: "Estimativa financeira para o período" };
+  const hasRevenue = sales.sales_revenue !== undefined;
+  const hasCount = Number.isFinite(sales.count);
+  const hasTicket = sales.ticket_average !== undefined;
   return (
     <>
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           label="Faturamento de vendas"
-          value={formatBRL(sales.sales_revenue)}
-          note={`${sales.count} operações realizadas`}
+          value={hasRevenue ? formatBRL(sales.sales_revenue) : "Não apurado"}
+          note={hasRevenue && hasCount ? `${sales.count} operações realizadas` : hasRevenue ? "Faturamento apurado, sem quantidade de operações disponível." : "O faturamento não foi apurado para este período."}
           icon={TrendingUp}
           href={salesReportHref}
-          trend={comparison.deltas.net_revenue}
+          trend={hasRevenue ? comparison.deltas.net_revenue : undefined}
         />
         <MetricCard
           label="Quantidade de vendas"
-          value={String(sales.count)}
-          note="Operações registradas no período"
+          value={hasCount ? String(sales.count) : "Não apurado"}
+          note={hasCount ? "Operações registradas no período" : "A quantidade de vendas não foi apurada para este período."}
           icon={ShoppingBasket}
           href={salesReportHref}
-          trend={comparison.deltas.sales_count}
+          trend={hasCount ? comparison.deltas.sales_count : undefined}
         />
         <MetricCard
           label="Ticket médio"
-          value={formatBRL(sales.ticket_average)}
-          note="Média por operação de venda"
+          value={hasTicket ? formatBRL(sales.ticket_average) : "Não apurado"}
+          note={hasTicket ? "Média por operação de venda" : "O ticket médio não foi apurado para este período."}
           icon={ReceiptText}
           href={salesReportHref}
-          trend={comparison.deltas.ticket_average}
+          trend={hasTicket ? comparison.deltas.ticket_average : undefined}
           favorable={false}
         />
         <MetricCard
           label="Resultado operacional estimado"
-          value={result === undefined ? "Sem permissão" : formatBRL(result)}
-          note={
-            result === undefined
-              ? "Disponível com acesso financeiro autorizado"
-              : "Estimativa financeira para o período"
-          }
+          value={operationalResultState.value}
+          note={operationalResultState.note}
           icon={CircleDollarSign}
-          href={result !== undefined ? resultReportHref : undefined}
+          href={operationalResultAvailable ? resultReportHref : undefined}
           tone={
-            result === undefined
+            !operationalResultAvailable
               ? "muted"
               : decimalCompare(result, "0") === -1
                 ? "danger"
@@ -1075,7 +1102,7 @@ export function CommercialOverview({
                   ? "success"
                   : "primary"
           }
-          trend={comparison.deltas.estimated_result}
+          trend={operationalResultAvailable ? comparison.deltas.estimated_result : undefined}
         />
       </section>
       <section className="grid gap-5 xl:grid-cols-3">

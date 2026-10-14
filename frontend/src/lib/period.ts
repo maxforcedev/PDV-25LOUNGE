@@ -102,7 +102,32 @@ export function dashboardAnalysisPeriods(now = new Date()) {
 }
 
 export function validDashboardPeriod(period: PeriodValue) {
-  return Boolean(period.start && period.end && period.start <= period.end);
+  function localDateTime(value: string) {
+    const match = value.match(
+      /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/,
+    );
+    if (!match) return undefined;
+    const [, yearText, monthText, dayText, hourText, minuteText, secondText] = match;
+    const year = Number(yearText);
+    const month = Number(monthText);
+    const day = Number(dayText);
+    const hour = Number(hourText);
+    const minute = Number(minuteText);
+    const second = Number(secondText || 0);
+    if (hour > 23 || minute > 59 || second > 59) return undefined;
+    const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+    if (
+      date.getUTCFullYear() !== year ||
+      date.getUTCMonth() !== month - 1 ||
+      date.getUTCDate() !== day
+    )
+      return undefined;
+    return date.getTime();
+  }
+
+  const start = localDateTime(period.start);
+  const end = localDateTime(period.end);
+  return start !== undefined && end !== undefined && start <= end;
 }
 
 export function dashboardQuery(period: PeriodValue) {
