@@ -1,21 +1,36 @@
 from decimal import Decimal
+from concurrent.futures import ThreadPoolExecutor
 import uuid
 
-from django.test import TestCase
+from django.core.exceptions import ValidationError
+from django.db import close_old_connections
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
+from apps.attendance.models import (
+    AttendanceCommand,
+    AttendanceOrder,
+    AttendanceOrderItem,
+    AttendanceOrderItemStatus,
+    AttendancePayment,
+    AttendancePaymentStatus,
+)
+from apps.attendance.services import command_financial_status
 from apps.base.models import AuditLog
 from apps.cash.models import CashDiscrepancyResolution, CashRegister, CashSession, CashSessionStatus
+from apps.cash.services import address_closing_difference
 from apps.companies.models import (
     AccessProfile, Branch, FunctionalPermission, UserBranchAccess, UserCompanyAccess,
 )
+from apps.companies.services import create_company_with_matrix
 from apps.production.models import PrintDocument, PrintJob, PrintJobStatus, PrinterDevice
 from apps.products.models import Category, Product, ProductBranchConfig
 from apps.inventory.models import Stock
 from apps.reports.selectors import inventory_kpis, stock_position_report
 from apps.saas.tests.helpers import create_complete_test_plan, create_operational_test_tenant
+from apps.sales.services import ensure_default_payment_methods
 
 
 class OperationalAttentionTests(TestCase):
@@ -81,6 +96,29 @@ class OperationalAttentionTests(TestCase):
             closing_difference=difference,
         )
 
+    def _attention_command(self, *, service_fee_rate=None, financial_snapshot=None):
+        ensure_default_payment_methods(self.company)
+        command = AttendanceCommand.objects.create(
+            company=self.company, branch=self.branch, number=f'ATT-{uuid.uuid4()}',
+            opened_by=self.user, service_fee_rate_snapshot=service_fee_rate,
+        )
+        order = AttendanceOrder.objects.create(command=command, created_by=self.user)
+        item = AttendanceOrderItem.objects.create(
+            order=order, product=self.product, quantity=Decimal('1.000'),
+            product_name=self.product.name, internal_code=self.product.internal_code,
+            unit='un', unit_price=Decimal('2.00'),
+            status=AttendanceOrderItemStatus.CONFIRMED,
+            confirmed_at=timezone.now(), confirmed_by=self.user,
+            financial_snapshot={} if financial_snapshot is None else financial_snapshot,
+        )
+        method = self.company.payment_methods.exclude(code='cash').first()
+        AttendancePayment.objects.create(
+            company=self.company, branch=self.branch, command=command,
+            payment_method=method, amount=Decimal('1.00'), operator=self.user,
+            status=AttendancePaymentStatus.APPLIED,
+        )
+        return command, item
+
     def test_inventory_alerts_are_active_unique_and_branch_scoped(self):
         negative = self._stock(self.product, self.branch, Decimal('-1'))
         self._stock(self.other_product, self.other_branch, Decimal('-3'))
@@ -135,6 +173,8 @@ class OperationalAttentionTests(TestCase):
         config = ProductBranchConfig.objects.get(product=self.product, branch=self.branch)
         config.is_available = False
         config.save(update_fields=('is_available', 'updated_at'))
+        first.current_quantity = Decimal('0')
+        first.save(update_fields=('current_quantity', 'updated_at'))
         unavailable = self.client.get('/api/v1/operational-attention/?category=inventory')
         self.assertEqual(unavailable.status_code, 200, unavailable.data)
         self.assertEqual(unavailable.data['summary']['active_count'], 2)
@@ -245,6 +285,36 @@ class OperationalAttentionTests(TestCase):
         self.assertIn('reimpressao explícita', response.data['results'][0]['recommended_action'])
         self.assertEqual(PrintJob.objects.filter(pk=job.pk).count(), 1)
 
+    def test_dashboard_keeps_all_enabled_attention_categories_consistent_with_central(self):
+        self.branch.settings.uses_commands = True
+        self.branch.settings.uses_cash_register = True
+        self.branch.settings.save(update_fields=(
+            'uses_commands', 'uses_cash_register', 'updated_at',
+        ))
+        self._stock(self.product, self.branch, Decimal('-1.000'))
+        self._closed_difference()
+        printer = PrinterDevice.objects.create(branch=self.branch, name='Dashboard printer')
+        self._production_print_job(printer, status=PrintJobStatus.FAILED)
+        self._attention_command()
+
+        dashboard = self.client.get('/api/v1/dashboard/')
+        central = self.client.get('/api/v1/operational-attention/')
+
+        self.assertEqual(dashboard.status_code, 200, dashboard.data)
+        self.assertEqual(central.status_code, 200, central.data)
+        self.assertEqual(
+            dashboard.data['operational_attention']['active_count'],
+            central.data['summary']['active_count'],
+        )
+        self.assertEqual(
+            dashboard.data['operational_attention']['by_category'],
+            central.data['summary']['by_category'],
+        )
+        self.assertEqual(
+            dashboard.data['operational_attention']['available_categories'],
+            ['inventory', 'financial', 'commands', 'printing', 'cash'],
+        )
+
     def test_confirmed_cash_closing_difference_is_visible_to_dashboard_and_central(self):
         session = self._closed_difference()
 
@@ -292,6 +362,43 @@ class OperationalAttentionTests(TestCase):
         dashboard = self.client.get('/api/v1/dashboard/')
         self.assertEqual(central.data['summary']['active_count'], 0)
         self.assertEqual(dashboard.data['operational_attention']['by_category']['cash'], 0)
+
+    def test_cash_difference_resolution_is_immutable_and_cannot_be_recorded_twice(self):
+        session = self._closed_difference()
+        resolution = address_closing_difference(
+            session, 'Diferença conferida.', self.user, self.branch,
+        )
+
+        with self.assertRaises(ValidationError):
+            resolution.delete()
+        with self.assertRaises(ValidationError):
+            address_closing_difference(
+                session, 'Tentativa simultânea posterior.', self.user, self.branch,
+            )
+
+        self.assertEqual(CashDiscrepancyResolution.objects.filter(cash_session=session).count(), 1)
+
+    def test_cash_difference_resolution_rejects_a_closed_session_without_difference(self):
+        session = self._closed_difference(difference=Decimal('0.00'))
+
+        with self.assertRaises(ValidationError):
+            address_closing_difference(
+                session, 'Não há diferença para tratar.', self.user, self.branch,
+            )
+
+        self.assertFalse(CashDiscrepancyResolution.objects.filter(cash_session=session).exists())
+
+    def test_command_financial_status_prefetch_matches_database_lookup(self):
+        command, item = self._attention_command()
+        direct = command_financial_status(command)
+        prefetched = command_financial_status(
+            command,
+            items=[item],
+            payments=list(command.payments.filter(status=AttendancePaymentStatus.APPLIED)),
+        )
+
+        self.assertEqual(direct, prefetched)
+        self.assertEqual(direct['state'], 'REGULARIZATION_REQUIRED')
 
     def test_cash_difference_resolution_requires_justification_and_close_permission(self):
         session = self._closed_difference()
@@ -409,10 +516,63 @@ class OperationalAttentionTests(TestCase):
 
     def test_attention_rejects_unknown_filters_and_paginates(self):
         self._stock(self.product, self.branch, Decimal('0'))
-        invalid = self.client.get('/api/v1/operational-attention/?category=cash')
+        invalid = self.client.get('/api/v1/operational-attention/?category=unknown')
         self.assertEqual(invalid.status_code, 400)
 
         response = self.client.get('/api/v1/operational-attention/?category=inventory&page_size=1')
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data['count'], 1)
         self.assertEqual(len(response.data['results']), 1)
+
+
+class CashDifferenceConcurrencyTests(TransactionTestCase):
+    reset_sequences = True
+
+    def setUp(self):
+        self.user = User.objects.create_superuser(
+            email='cash-concurrency@example.com', password='password-123',
+        )
+        self.company = create_company_with_matrix(
+            creator=self.user, trade_name='Cash concurrency',
+            legal_name='Cash concurrency Ltda', enforce_saas_limits=False,
+        )
+        self.branch = self.company.branches.get(is_matrix=True)
+        register = CashRegister.objects.create(branch=self.branch, name='Concurrent cash')
+        self.session = CashSession.objects.create(
+            cash_register=register, branch=self.branch, opened_by=self.user,
+            opened_at=timezone.now(), opening_amount=Decimal('0.00'),
+            status=CashSessionStatus.CLOSED, closed_by=self.user,
+            closed_at=timezone.now(), closing_expected_amount=Decimal('100.00'),
+            closing_amount_informed=Decimal('90.00'), closing_difference=Decimal('-10.00'),
+        )
+
+    def _address(self, justification):
+        close_old_connections()
+        try:
+            address_closing_difference(
+                self.session.pk, justification,
+                User.objects.get(pk=self.user.pk), Branch.objects.get(pk=self.branch.pk),
+            )
+            return True
+        except ValidationError:
+            return False
+        finally:
+            close_old_connections()
+
+    def test_simultaneous_resolution_attempts_create_exactly_one_audited_record(self):
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes = list(executor.map(
+                self._address, ('Primeira conferência.', 'Segunda conferência.'),
+            ))
+
+        self.assertEqual(sorted(outcomes), [False, True])
+        self.assertEqual(
+            CashDiscrepancyResolution.objects.filter(cash_session=self.session).count(), 1,
+        )
+        self.assertEqual(
+            AuditLog.objects.filter(
+                action='cash_session.closing_difference_addressed',
+                metadata__cash_session_id=self.session.pk,
+            ).count(),
+            1,
+        )

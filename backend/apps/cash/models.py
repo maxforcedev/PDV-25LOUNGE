@@ -261,6 +261,9 @@ class CashDiscrepancyResolution(BaseModel):
         self.full_clean()
         return super().save(*args, **kwargs)
 
+    def delete(self, *args, **kwargs):
+        raise ValidationError('Tratativas de divergência são imutáveis.')
+
 
 class CashMovement(BaseModel):
     cash_session = models.ForeignKey(

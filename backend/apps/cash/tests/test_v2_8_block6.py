@@ -33,6 +33,7 @@ from apps.commands.services import create_table, open_command
 from apps.products.models import Category, Product, Unit, InventoryBehavior, SalesChannel
 from apps.sales.models import OperationType
 from apps.sales.services import calculate_preview, ensure_default_payment_methods
+from apps.suppliers.models import Supplier
 
 PASSWORD = 'Block6-feat-password-123!'
 
@@ -179,16 +180,19 @@ class FeatureGateTests(TestCase):
         self.assertEqual(withdrawal.validated_data['reason'], '')
         self.assertNotIn('result_effect', withdrawal.validated_data)
 
-    def test_withdrawal_result_effect_is_derived_from_category(self):
+    def test_new_withdrawals_require_supplier_and_remain_unclassified(self):
         register = CashRegister.objects.create(branch=self.branch, name='Canonical effect')
         session = open_session(
             cash_register=register, opening_amount=Decimal('0.00'),
             user=self.owner, current_branch=self.branch,
         )
+        supplier_record = Supplier.objects.create(
+            company=self.company, branch=self.branch, trade_name='Fornecedor teste',
+        )
         supplier = record_withdrawal(
             cash_session=session, amount='5.00', user=self.owner,
             current_branch=self.branch, idempotency_key=uuid.uuid4(),
-            category='supplier',
+            category='supplier', beneficiary_supplier=supplier_record,
         )
         other = record_withdrawal(
             cash_session=session, amount='1.00', user=self.owner,
@@ -196,8 +200,8 @@ class FeatureGateTests(TestCase):
             category='other',
         )
 
-        self.assertEqual(supplier.result_effect, ResultEffect.OPERATING_EXPENSE)
-        self.assertEqual(other.result_effect, ResultEffect.NEUTRAL)
+        self.assertEqual(supplier.result_effect, ResultEffect.UNCLASSIFIED)
+        self.assertEqual(other.result_effect, ResultEffect.UNCLASSIFIED)
 
     def test_cash_entry_api_accepts_an_omitted_reason(self):
         register = CashRegister.objects.create(branch=self.branch, name='API blank reason')
