@@ -26,7 +26,7 @@ const severities: Array<[AttentionSeverity, string]> = [
 function attentionError(caught: unknown) {
   if (!(caught instanceof ApiError) || caught.status === 0) return "Não foi possível conectar ao servidor. Tente novamente.";
   if (caught.status === 403) return "Seu perfil não possui acesso às ocorrências disponíveis nesta filial.";
-  return caught.message || "Não foi possível carregar a Central de Atenção Operacional.";
+  return caught.message || "Não foi possível carregar a Central de Atenção.";
 }
 
 function initialPeriod() {
@@ -82,7 +82,7 @@ function AttentionPage() {
   const summary = data?.summary;
   const hasCoverage = (data?.available_categories.length ?? 0) > 0;
   return <>
-    <PageHeader title="Atenção operacional" description="Situações ativas que exigem intervenção na filial selecionada." action={<Button variant="secondary" onClick={() => void load()} disabled={loading}><RefreshCw className="size-4" />Atualizar</Button>} />
+    <PageHeader title="Central de Atenção" description="Situações ativas que exigem intervenção na filial selecionada." action={<Button variant="secondary" onClick={() => void load()} disabled={loading}><RefreshCw className="size-4" />Atualizar</Button>} />
     <main className="space-y-5 p-4 sm:p-6 lg:p-8">
       <section className="card grid gap-3 p-4 sm:grid-cols-[minmax(0,1fr)_12rem_12rem] sm:items-end">
         <div><strong className="text-sm">{hasCoverage ? `${summary?.active_count ?? 0} ocorrência(s) ativa(s)` : "Cobertura operacional indisponível"}</strong><p className="mt-1 text-xs text-muted">Condições são avaliadas ao consultar. Alertas corrigidos deixam de aparecer.</p></div>
@@ -96,7 +96,7 @@ function AttentionPage() {
         const categoryLabel = categories.find(([value]) => value === alert.category)?.[1] || alert.category;
         const occurredAt = alert.occurred_at ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(alert.occurred_at)) : null;
         return <article key={alert.identity} className={`card border p-4 ${tone}`}><div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-surface px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide">{severityLabel}</span><span className="text-[11px] font-semibold text-muted">{categoryLabel} · {alert.reference === "period" ? "Período selecionado" : "Estado atual"}</span></div><h2 className="mt-2 text-sm font-bold">{alert.title}</h2><p className="mt-1 text-sm text-muted">{alert.description}</p><p className="mt-3 text-xs"><strong>Filial:</strong> {alert.context.branch_name}{occurredAt ? <> · <strong>Referência:</strong> {occurredAt}</> : null}</p><p className="mt-1 text-xs"><strong>Entidade:</strong> {alert.entity.name} · <strong>Ação recomendada:</strong> {alert.recommended_action}</p></div>{alert.route && <Link href={alert.route} className="btn btn-secondary shrink-0 text-xs">Ver contexto<ExternalLink className="size-3.5" /></Link>}</div></article>;
-      })}</section> : !error && !hasCoverage ? <section className="card"><EmptyState title="Indicadores indisponíveis" description="Seu perfil ou a configuração da filial não permite avaliar situações operacionais nesta central." /></section> : !error ? <section className="card"><EmptyState title="Nenhuma situação ativa" description="Não há exceções ativas dentro dos filtros e permissões disponíveis." /></section> : null}
+      })}</section> : !error && !hasCoverage ? <section className="card"><EmptyState title="Indicadores indisponíveis" description="Seu perfil ou a configuração da filial não permite avaliar situações operacionais nesta central." /></section> : !error ? <section className="card"><EmptyState title={category || severity ? "Nenhuma ocorrência nos filtros" : "Nenhuma situação ativa"} description={category || severity ? "Não há ocorrências ativas correspondentes aos filtros aplicados." : "Não há exceções ativas dentro dos filtros e permissões disponíveis."} /></section> : null}
       {data && (data.previous || data.next) && <div className="flex items-center justify-between"><Button variant="secondary" disabled={!data.previous || loading} onClick={() => { const next = Math.max(1, page - 1); setPage(next); void load(next); }}>Anterior</Button><span className="text-xs text-muted">Página {page}</span><Button variant="secondary" disabled={!data.next || loading} onClick={() => { const next = page + 1; setPage(next); void load(next); }}>Próxima</Button></div>}
     </main>
   </>;

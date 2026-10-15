@@ -3,8 +3,18 @@ from datetime import datetime
 from urllib.parse import urlencode
 
 from django.utils import timezone
+from django.db.models import Prefetch, Q
 
-from apps.attendance.models import AttendanceCommand, AttendanceCommandStatus, AttendancePaymentStatus
+from apps.attendance.models import (
+    AttendanceCommand,
+    AttendanceCommandStatus,
+    AttendanceOperation,
+    AttendanceOperationType,
+    AttendanceOrderItem,
+    AttendanceOrderItemStatus,
+    AttendancePayment,
+    AttendancePaymentStatus,
+)
 from apps.cash.models import CashSession, CashSessionStatus
 from apps.attendance.services import command_financial_status
 from apps.companies.features import branch_feature_enabled
@@ -96,14 +106,46 @@ def inventory_attention(branch):
 
 
 def command_attention(branch):
-    commands = AttendanceCommand.objects.filter(
+    commands = list(AttendanceCommand.objects.filter(
         branch=branch,
         status=AttendanceCommandStatus.OPEN,
         payments__status=AttendancePaymentStatus.APPLIED,
-    ).distinct().order_by('-created_at', '-id')
+    ).distinct().prefetch_related(
+        Prefetch(
+            'orders__items',
+            queryset=AttendanceOrderItem.objects.filter(
+                status=AttendanceOrderItemStatus.CONFIRMED,
+            ).order_by('id'),
+            to_attr='attention_confirmed_items',
+        ),
+        Prefetch(
+            'payments',
+            queryset=AttendancePayment.objects.filter(
+                status=AttendancePaymentStatus.APPLIED,
+            ).only('id', 'command_id', 'created_at').order_by('created_at', 'id'),
+            to_attr='attention_applied_payments',
+        ),
+    ).order_by('-created_at', '-id'))
+    regularized_ids = {
+        str(command_id)
+        for command_id in AttendanceOperation.objects.filter(
+            branch=branch,
+            operation_type=AttendanceOperationType.REGULARIZE_COMMAND_ITEM_FINANCIALS,
+            result__command_id__in=[command.pk for command in commands],
+        ).values_list('result__command_id', flat=True)
+    } if commands else set()
     alerts = []
     for command in commands:
-        status = command_financial_status(command)
+        items = [
+            item for order in command.orders.all()
+            for item in order.attention_confirmed_items
+        ]
+        status = command_financial_status(
+            command,
+            items=items,
+            payments=command.attention_applied_payments,
+            is_regularized=str(command.pk) in regularized_ids,
+        )
         if status['state'] != 'REGULARIZATION_REQUIRED':
             continue
         label = command.identifier or command.number
@@ -124,22 +166,28 @@ def command_attention(branch):
 
 def printing_attention(branch):
     failed_jobs = list(PrintJob.objects.select_related('printer_device').filter(
-        branch=branch, status=PrintJobStatus.FAILED,
+        branch=branch, is_test=False, status=PrintJobStatus.FAILED,
     ).order_by('-updated_at', '-id'))
-    roots = {job.reprint_of_id for job in failed_jobs if job.reprint_of_id}
-    latest_reprints = {}
-    if roots:
-        for root_id, number in PrintJob.objects.filter(
-            branch=branch, reprint_of_id__in=roots,
-        ).values_list('reprint_of_id', 'reprint_number'):
-            latest_reprints[root_id] = max(latest_reprints.get(root_id, 0), number)
+    root_ids = {job.reprint_of_id or job.pk for job in failed_jobs}
+    current_attempts = {}
+    if root_ids:
+        attempts = PrintJob.objects.select_related('printer_device').filter(
+            branch=branch, is_test=False,
+        ).filter(Q(pk__in=root_ids) | Q(reprint_of_id__in=root_ids))
+        for attempt in attempts:
+            root_id = attempt.reprint_of_id or attempt.pk
+            rank = (attempt.reprint_number if attempt.reprint_of_id else 0, attempt.pk)
+            if root_id not in current_attempts or rank > current_attempts[root_id][0]:
+                current_attempts[root_id] = (rank, attempt)
 
     alerts = []
     handled_batches = set()
-    for job in failed_jobs:
-        # A newer reprint is the current operational attempt for this original
-        # ticket. Historical failures must not remain active beside it.
-        if job.reprint_of_id and latest_reprints[job.reprint_of_id] > job.reprint_number:
+    for _rank, job in sorted(
+        current_attempts.values(), key=lambda item: (-item[1].updated_at.timestamp(), -item[1].pk),
+    ):
+        # A failed original or reprint is active only while it remains the latest
+        # production attempt for that physical document.
+        if job.status != PrintJobStatus.FAILED:
             continue
         batch_identity = job.batch_key or job.pk
         if batch_identity in handled_batches:
@@ -169,6 +217,7 @@ def cash_attention(branch):
         branch=branch,
         status=CashSessionStatus.CLOSED,
         closing_difference__isnull=False,
+        cash_discrepancy_resolution__isnull=True,
     ).exclude(closing_difference=Decimal('0.00')).order_by('-closed_at', '-id')
     return [_alert(
         branch=branch,

@@ -29,6 +29,7 @@ from .serializers import (
     CashBeneficiarySerializer,
     CashRegisterSerializer,
     CashSessionSerializer,
+    AddressClosingDifferenceSerializer,
     CancelSessionSerializer,
     CloseSessionSerializer,
     ManualEntryRequestSerializer,
@@ -40,6 +41,7 @@ from .services import (
     cash_beneficiaries,
     close_session,
     cancel_session,
+    address_closing_difference,
     movement_totals,
     open_session,
     record_manual_entry,
@@ -137,6 +139,7 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
         'withdrawal': 'cash_registers.withdraw',
         'close': 'cash_registers.close',
         'cancel': 'cash_registers.close',
+        'address_difference': 'cash_registers.close',
         'summary': ('cash_registers.view', 'cash_registers.close'),
         'timeline': ('cash_registers.view', 'cash_registers.close'),
     }
@@ -145,7 +148,8 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
         code = self.permission_codes.get(self.action, 'cash_registers.view')
         money = DecimalField(max_digits=20, decimal_places=2)
         queryset = CashSession.objects.select_related(
-            'cash_register', 'branch', 'branch__company', 'opened_by', 'closed_by'
+            'cash_register', 'branch', 'branch__company', 'opened_by', 'closed_by',
+            'cash_discrepancy_resolution__addressed_by',
         ).annotate(
             manual_entries_total=Coalesce(
                 Sum(
@@ -185,7 +189,8 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
 
     def _serialize_session(self, session, response_status=status.HTTP_200_OK):
         session = CashSession.objects.select_related(
-            'cash_register', 'branch', 'branch__company', 'opened_by', 'closed_by'
+            'cash_register', 'branch', 'branch__company', 'opened_by', 'closed_by',
+            'cash_discrepancy_resolution__addressed_by',
         ).get(pk=session.pk)
         return Response(self.get_serializer(session).data, status=response_status)
 
@@ -255,6 +260,16 @@ class CashSessionViewSet(CurrentBranchQuerysetMixin, viewsets.ReadOnlyModelViewS
             getattr(request, 'branch_context', None),
         )
         return self._serialize_session(session)
+
+    @action(detail=True, methods=('post',), url_path='address-difference')
+    def address_difference(self, request, pk=None):
+        serializer = AddressClosingDifferenceSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        address_closing_difference(
+            self.get_object(), serializer.validated_data['justification'], request.user,
+            getattr(request, 'branch_context', None),
+        )
+        return self._serialize_session(self.get_object())
 
     @action(detail=True, methods=('get',))
     def summary(self, request, pk=None):

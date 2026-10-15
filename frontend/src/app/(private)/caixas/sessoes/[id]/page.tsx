@@ -164,6 +164,8 @@ function SessionDetail() {
   const [saving, setSaving] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancellationReason, setCancellationReason] = useState("");
+  const [addressDifferenceOpen, setAddressDifferenceOpen] = useState(false);
+  const [differenceJustification, setDifferenceJustification] = useState("");
   const [period, setPeriod] = useState<PeriodValue>({ start: "", end: "" });
   const movementIdempotencyKey = useRef("");
 
@@ -397,7 +399,32 @@ function SessionDetail() {
     }
   }
 
+  async function addressDifference(event: React.FormEvent) {
+    event.preventDefault();
+    if (!differenceJustification.trim()) {
+      setError("Informe a justificativa da tratativa.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await http.post(`cash-sessions/${id}/address-difference/`, {
+        justification: differenceJustification.trim(),
+      });
+      setAddressDifferenceOpen(false);
+      setSuccess("Divergência marcada como tratada. Os valores do fechamento foram preservados.");
+      await load();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Não foi possível registrar a tratativa.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const isOpen = session?.status === "open";
+  const closingDifferenceCents = signedMoneyToCents(session?.closing_difference || "0");
+  const hasClosingDifference = closingDifferenceCents !== null && closingDifferenceCents !== BigInt(0);
+  const canAddressDifference = !!session && !isOpen && hasClosingDifference && !session.discrepancy_resolution && canClose;
   const canOperateSession = !!session && (session.opened_by === user?.id || canAdministerOthers);
   return (
     <>
@@ -437,6 +464,11 @@ function SessionDetail() {
                 <LockKeyhole className="size-4" />
                 Fechar caixa
               </Link>
+            )}
+            {canAddressDifference && (
+              <Button variant="secondary" onClick={() => { setDifferenceJustification(""); setAddressDifferenceOpen(true); }}>
+                Registrar tratativa
+              </Button>
             )}
             {isOpen && canOperateSession && canClose && (
               <Button variant="secondary" onClick={() => { setCancellationReason(""); setCancelOpen(true); }}>
@@ -535,6 +567,13 @@ function SessionDetail() {
                     </span>
                   </div>
                 </div>
+                {session.discrepancy_resolution && (
+                  <div className="border-t border-subtle bg-success/5 p-5 text-xs sm:px-6">
+                    <strong className="text-success-strong">Divergência tratada</strong>
+                    <p className="mt-1 text-muted">{session.discrepancy_resolution.justification}</p>
+                    <p className="mt-2 text-muted">Por {session.discrepancy_resolution.addressed_by_name} em {formatDate(session.discrepancy_resolution.addressed_at)}.</p>
+                  </div>
+                )}
               </section>
             )}
             
@@ -830,6 +869,20 @@ function SessionDetail() {
           <div className="flex justify-end gap-2 border-t border-subtle px-5 py-4">
             <Button type="button" variant="secondary" onClick={() => setCancelOpen(false)} disabled={saving}>Cancelar</Button>
             <Button type="submit" variant="danger" loading={saving}>Anular sessão</Button>
+          </div>
+        </form>
+      </Modal>
+      <Modal open={addressDifferenceOpen} title="Registrar tratativa da divergência" description="Esta ação remove o alerta ativo, preservando integralmente os valores e o histórico do fechamento." onClose={() => !saving && setAddressDifferenceOpen(false)}>
+        <form onSubmit={addressDifference}>
+          <div className="space-y-4 p-5">
+            {error && <Alert message={error} />}
+            <Field label="Justificativa">
+              <Textarea autoFocus required maxLength={2000} value={differenceJustification} onChange={(event) => setDifferenceJustification(event.target.value)} disabled={saving} />
+            </Field>
+          </div>
+          <div className="flex justify-end gap-2 border-t border-subtle px-5 py-4">
+            <Button type="button" variant="secondary" onClick={() => setAddressDifferenceOpen(false)} disabled={saving}>Cancelar</Button>
+            <Button type="submit" loading={saving}>Confirmar tratativa</Button>
           </div>
         </form>
       </Modal>

@@ -16,6 +16,7 @@ from apps.suppliers.models import Supplier
 from apps.companies.selectors import user_has_branch_permission
 
 from .models import (
+    CashDiscrepancyResolution,
     CashMovement,
     CashMovementType,
     CashRegister,
@@ -819,6 +820,47 @@ def close_session(
             f'({len(blocked_payment_ids) + len(blocked_attendance_payment_ids) + len(blocked_table_payment_ids) + len(blocked_quick_checkout_ids) + len(blocking_quick_sale_intent_ids) + len(blocking_quick_sale_reversal_ids)} pendência(s), incluindo comandas, Mesas ou Venda Rápida).'
         )
     })
+
+
+@transaction.atomic
+def address_closing_difference(cash_session, justification, user, current_branch):
+    justification = (justification or '').strip()
+    if not justification:
+        raise ValidationError({'justification': 'Informe a justificativa da tratativa.'})
+    try:
+        session = CashSession.objects.select_for_update().select_related(
+            'cash_register', 'branch', 'branch__company'
+        ).get(pk=_pk(cash_session))
+    except (CashSession.DoesNotExist, TypeError, ValueError):
+        raise ValidationError({'cash_session': 'Sessão de caixa inválida.'})
+    _validate_current_branch(
+        current_branch, session.branch, user, 'cash_registers.close',
+    )
+    if session.status != CashSessionStatus.CLOSED:
+        raise ValidationError({'cash_session': 'Somente sessões fechadas podem ser tratadas.'})
+    if session.closing_difference in (None, Decimal('0.00')):
+        raise ValidationError({'cash_session': 'A sessão não possui divergência de fechamento.'})
+    if CashDiscrepancyResolution.objects.filter(cash_session=session).exists():
+        raise ValidationError({'cash_session': 'A divergência desta sessão já foi tratada.'})
+    resolution = CashDiscrepancyResolution.objects.create(
+        cash_session=session,
+        addressed_by=user,
+        addressed_at=timezone.now(),
+        justification=justification,
+    )
+    audit_log(
+        actor=user, action='cash_session.closing_difference_addressed', obj=resolution,
+        company=session.branch.company, branch=session.branch,
+        after=model_snapshot(
+            resolution,
+            ('cash_session_id', 'addressed_by_id', 'addressed_at', 'justification'),
+        ),
+        metadata={
+            'cash_session_id': session.pk,
+            'closing_difference': str(session.closing_difference),
+        },
+    )
+    return resolution
 
 
 def cancel_session(cash_session, reason, user, current_branch):

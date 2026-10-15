@@ -59,7 +59,7 @@ const mainNavigation: NavItem[] = [
   },
   {
     href: "/atencao-operacional",
-    label: "Atenção operacional",
+    label: "Central de Atenção",
     icon: CircleAlert,
     requiredPermissions: [permissions.viewDashboard],
     requiredFeatures: ["reports"],

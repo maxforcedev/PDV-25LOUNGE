@@ -94,6 +94,7 @@ class CashSessionSerializer(serializers.ModelSerializer):
     expected_amount = serializers.SerializerMethodField()
     manual_entries = serializers.SerializerMethodField()
     withdrawals = serializers.SerializerMethodField()
+    discrepancy_resolution = serializers.SerializerMethodField()
 
     class Meta:
         model = CashSession
@@ -103,6 +104,7 @@ class CashSessionSerializer(serializers.ModelSerializer):
             'opened_at', 'opening_amount', 'status', 'closed_by', 'closed_by_name',
             'closed_at', 'closing_expected_amount', 'closing_amount_informed',
             'closing_difference', 'cancelled_by', 'cancelled_at', 'cancellation_reason',
+            'discrepancy_resolution',
             'expected_amount', 'manual_entries', 'withdrawals',
             'created_at', 'updated_at',
         )
@@ -148,6 +150,21 @@ class CashSessionSerializer(serializers.ModelSerializer):
 
     def get_withdrawals(self, obj):
         return f'{self._totals(obj)[1]:.2f}'
+
+    def get_discrepancy_resolution(self, obj):
+        try:
+            resolution = obj.cash_discrepancy_resolution
+        except obj.__class__.cash_discrepancy_resolution.RelatedObjectDoesNotExist:
+            return None
+        return {
+            'addressed_by': resolution.addressed_by_id,
+            'addressed_by_name': (
+                resolution.addressed_by.get_full_name().strip()
+                or resolution.addressed_by.email
+            ),
+            'addressed_at': resolution.addressed_at,
+            'justification': resolution.justification,
+        }
 
 
 class CashMovementSerializer(serializers.ModelSerializer):
@@ -267,3 +284,12 @@ class CancelSessionSerializer(serializers.Serializer):
         required=False, allow_blank=True, default='', max_length=2000,
         trim_whitespace=True,
     )
+
+
+class AddressClosingDifferenceSerializer(serializers.Serializer):
+    justification = serializers.CharField(max_length=2000, trim_whitespace=True)
+
+    def validate_justification(self, value):
+        if not value:
+            raise serializers.ValidationError('Informe a justificativa da tratativa.')
+        return value

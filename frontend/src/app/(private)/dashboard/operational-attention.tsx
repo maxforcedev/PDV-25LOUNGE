@@ -30,7 +30,7 @@ export function OperationalAttention({
         <div>
           <div className="flex items-center gap-2">
             <Radio className="size-4 text-primary" />
-            <h2 className="text-sm font-bold">Atenção operacional</h2>
+            <h2 className="text-sm font-bold">Central de Atenção</h2>
           </div>
           <p className="mt-1 text-xs text-muted">Exceções ativas de estoque, recebimentos, comandas e impressão. Operações abertas normais não geram alerta.</p>
         </div>

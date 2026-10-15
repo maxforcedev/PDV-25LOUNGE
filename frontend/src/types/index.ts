@@ -1373,6 +1373,12 @@ export interface CashSession {
   closing_expected_amount: string | null;
   closing_amount_informed: string | null;
   closing_difference: string | null;
+  discrepancy_resolution: {
+    addressed_by: number;
+    addressed_by_name: string;
+    addressed_at: string;
+    justification: string;
+  } | null;
   expected_amount: string;
   manual_entries: string;
   withdrawals: string;

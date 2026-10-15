@@ -128,6 +128,12 @@ class CashSession(BaseModel):
 
     class Meta:
         ordering = ('-opened_at', '-pk')
+        indexes = [
+            models.Index(
+                fields=('branch', 'status', 'closed_at'),
+                name='cash_session_attention_idx',
+            ),
+        ]
         constraints = [
             models.CheckConstraint(
                 condition=Q(opening_amount__gte=0),
@@ -218,6 +224,42 @@ class CashSession(BaseModel):
 
     def __str__(self):
         return f'{self.cash_register} - {self.opened_at:%d/%m/%Y %H:%M}'
+
+
+class CashDiscrepancyResolution(BaseModel):
+    """Immutable acknowledgement of a reviewed closed-session difference."""
+
+    cash_session = models.OneToOneField(
+        CashSession, on_delete=models.PROTECT,
+        related_name='cash_discrepancy_resolution',
+    )
+    addressed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='addressed_cash_discrepancies',
+    )
+    addressed_at = models.DateTimeField()
+    justification = models.TextField()
+
+    class Meta:
+        ordering = ('-addressed_at', '-pk')
+
+    def clean(self):
+        super().clean()
+        self.justification = (self.justification or '').strip()
+        if not self.justification:
+            raise ValidationError({'justification': 'Informe a justificativa da tratativa.'})
+        if self.cash_session_id:
+            session = self.cash_session
+            if session.status != CashSessionStatus.CLOSED:
+                raise ValidationError({'cash_session': 'A tratativa exige uma sessão fechada.'})
+            if session.closing_difference in (None, Decimal('0.00')):
+                raise ValidationError({'cash_session': 'A sessão não possui divergência de fechamento.'})
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError('Tratativas de divergência são imutáveis.')
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
 
 class CashMovement(BaseModel):

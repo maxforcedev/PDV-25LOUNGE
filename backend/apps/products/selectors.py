@@ -96,11 +96,13 @@ def inventory_products(branch):
 
 
 def attention_inventory_products(branch):
-    """Current commercially available stock that can require replenishment action."""
-    return inventory_products(branch).filter(
-        branch_configs__branch=branch,
-        branch_configs__is_available=True,
-    )
+    """Active direct-stock products, including unavailable configurations.
+
+    ProductBranchConfig records commercial availability but not whether its
+    absence is temporary or an intentional deactivation. Excluding it would
+    hide shortages that still require a physical-stock decision.
+    """
+    return inventory_products(branch)
 
 
 def countable_products(branch):

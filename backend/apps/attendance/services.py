@@ -189,11 +189,12 @@ def _has_complete_item_financial_snapshot(item):
     return True
 
 
-def _legacy_unfrozen_command_items(command, items):
+def _legacy_unfrozen_command_items(command, items, *, first_payment_at=None):
     """Return pre-payment confirmed items whose original financial conditions are unknown."""
-    first_payment_at = AttendancePayment.objects.filter(command=command).order_by(
-        'created_at', 'id',
-    ).values_list('created_at', flat=True).first()
+    if first_payment_at is None:
+        first_payment_at = AttendancePayment.objects.filter(command=command).order_by(
+            'created_at', 'id',
+        ).values_list('created_at', flat=True).first()
     if first_payment_at is None:
         return []
     return [
@@ -211,18 +212,32 @@ def _assert_command_financial_snapshot_integrity(command, items):
         )
 
 
-def command_financial_status(command, items=None):
+def command_financial_status(
+    command, items=None, *, payments=None, is_regularized=None,
+):
     if items is None:
         items = list(AttendanceOrderItem.objects.filter(order__command=command, status=AttendanceOrderItemStatus.CONFIRMED).order_by('id'))
-    issues = _legacy_unfrozen_command_items(command, items)
+    first_payment_at = None
+    if payments is not None:
+        first_payment_at = next((payment.created_at for payment in payments), None)
+    issues = _legacy_unfrozen_command_items(
+        command, items, first_payment_at=first_payment_at,
+    )
     if issues:
         return {'state': 'REGULARIZATION_REQUIRED', 'code': 'legacy_item_financial_snapshot_unknown', 'message': 'Itens históricos sem condições financeiras comprovadas exigem regularização administrativa.', 'summary_available': False, 'item_ids': [item.pk for item in issues]}
-    if _has_unknown_legacy_service_fee_rate(command):
+    has_applied_payment = (
+        bool(payments) if payments is not None
+        else _has_unknown_legacy_service_fee_rate(command)
+    )
+    if command.service_fee_rate_snapshot is None and has_applied_payment:
         return {'state': 'REGULARIZATION_REQUIRED', 'code': 'legacy_service_fee_rate_unknown', 'message': 'A taxa de serviço histórica exige regularização administrativa.', 'summary_available': False, 'item_ids': []}
-    if AttendanceOperation.objects.filter(
-        branch=command.branch, operation_type=AttendanceOperationType.REGULARIZE_COMMAND_ITEM_FINANCIALS,
-        result__command_id=command.pk,
-    ).exists():
+    if is_regularized is None:
+        is_regularized = AttendanceOperation.objects.filter(
+            branch=command.branch,
+            operation_type=AttendanceOperationType.REGULARIZE_COMMAND_ITEM_FINANCIALS,
+            result__command_id=command.pk,
+        ).exists()
+    if is_regularized:
         return {'state': 'REGULARIZED', 'code': None, 'message': '', 'summary_available': True, 'item_ids': []}
     return {'state': 'NORMAL', 'code': None, 'message': '', 'summary_available': True, 'item_ids': []}
 

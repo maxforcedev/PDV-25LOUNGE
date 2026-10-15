@@ -6,11 +6,12 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
-from apps.cash.models import CashRegister, CashSession, CashSessionStatus
+from apps.base.models import AuditLog
+from apps.cash.models import CashDiscrepancyResolution, CashRegister, CashSession, CashSessionStatus
 from apps.companies.models import (
     AccessProfile, Branch, FunctionalPermission, UserBranchAccess, UserCompanyAccess,
 )
-from apps.production.models import PrintJob, PrintJobStatus, PrinterDevice
+from apps.production.models import PrintDocument, PrintJob, PrintJobStatus, PrinterDevice
 from apps.products.models import Category, Product, ProductBranchConfig
 from apps.inventory.models import Stock
 from apps.reports.selectors import inventory_kpis, stock_position_report
@@ -56,6 +57,30 @@ class OperationalAttentionTests(TestCase):
         stock.save(update_fields=('current_quantity', 'updated_at'))
         return stock
 
+    def _production_print_job(self, printer, **kwargs):
+        document = PrintDocument.objects.create(
+            company=self.company, branch=self.branch, document_type='ticket',
+            source_type='operational-attention-test', source_id=str(uuid.uuid4()),
+            snapshot={}, snapshot_hash=uuid.uuid4().hex,
+        )
+        return PrintJob.objects.create(
+            company=self.company, branch=self.branch, printer_device=printer,
+            print_document=document, **kwargs,
+        )
+
+    def _closed_difference(self, *, branch=None, difference=Decimal('-10.00')):
+        branch = branch or self.branch
+        register = CashRegister.objects.create(branch=branch, name=f'Caixa {uuid.uuid4()}')
+        expected = Decimal('100.00')
+        return CashSession.objects.create(
+            cash_register=register, branch=branch, opened_by=self.user,
+            opened_at=timezone.now(), opening_amount=Decimal('0.00'),
+            status=CashSessionStatus.CLOSED, closed_by=self.user,
+            closed_at=timezone.now(), closing_expected_amount=expected,
+            closing_amount_informed=expected + difference,
+            closing_difference=difference,
+        )
+
     def test_inventory_alerts_are_active_unique_and_branch_scoped(self):
         negative = self._stock(self.product, self.branch, Decimal('-1'))
         self._stock(self.other_product, self.other_branch, Decimal('-3'))
@@ -81,7 +106,7 @@ class OperationalAttentionTests(TestCase):
         self.assertEqual(recovered.status_code, 200, recovered.data)
         self.assertEqual(recovered.data['summary']['active_count'], 0)
 
-    def test_inventory_alerts_ignore_unavailable_products_and_paginate_without_duplicates(self):
+    def test_inventory_alerts_include_active_unavailable_products_and_paginate_without_duplicates(self):
         first = self._stock(self.product, self.branch, Decimal('0'))
         second_product = self._product(self.branch, 'Segundo produto')
         second = self._stock(second_product, self.branch, Decimal('-1'))
@@ -112,10 +137,13 @@ class OperationalAttentionTests(TestCase):
         config.save(update_fields=('is_available', 'updated_at'))
         unavailable = self.client.get('/api/v1/operational-attention/?category=inventory')
         self.assertEqual(unavailable.status_code, 200, unavailable.data)
-        self.assertEqual(unavailable.data['summary']['active_count'], 1)
-        self.assertEqual(unavailable.data['results'][0]['identity'], f'inventory:negative:{second.pk}')
+        self.assertEqual(unavailable.data['summary']['active_count'], 2)
+        self.assertEqual(
+            {alert['identity'] for alert in unavailable.data['results']},
+            {f'inventory:zero:{first.pk}', f'inventory:negative:{second.pk}'},
+        )
 
-    def test_inventory_attention_excludes_unavailable_and_archived_without_changing_stock_position(self):
+    def test_inventory_attention_includes_unavailable_but_excludes_archived_without_changing_stock_position(self):
         unavailable = self._stock(self.product, self.branch, Decimal('-2'))
         config = ProductBranchConfig.objects.get(product=self.product, branch=self.branch)
         config.is_available = False
@@ -124,9 +152,9 @@ class OperationalAttentionTests(TestCase):
         response = self.client.get('/api/v1/operational-attention/?category=inventory')
         dashboard = self.client.get('/api/v1/dashboard/')
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(response.data['summary']['active_count'], 0)
+        self.assertEqual(response.data['summary']['active_count'], 1)
         self.assertEqual(inventory_kpis(self.branch)['negative_count'], 1)
-        self.assertEqual(dashboard.data['operational_attention']['active_count'], 0)
+        self.assertEqual(dashboard.data['operational_attention']['active_count'], 1)
 
         Product.objects.filter(pk=self.product.pk).update(archived_at=timezone.now())
         self.assertIn(
@@ -148,9 +176,12 @@ class OperationalAttentionTests(TestCase):
 
     def test_print_failures_are_active_and_disappear_when_resolved(self):
         printer = PrinterDevice.objects.create(branch=self.branch, name='Cozinha')
-        job = PrintJob.objects.create(
+        PrintJob.objects.create(
             company=self.company, branch=self.branch, printer_device=printer,
             is_test=True, status=PrintJobStatus.FAILED, last_error='Sem conexão',
+        )
+        job = self._production_print_job(
+            printer, status=PrintJobStatus.FAILED, last_error='Sem conexão',
         )
 
         response = self.client.get('/api/v1/operational-attention/?category=printing')
@@ -168,7 +199,7 @@ class OperationalAttentionTests(TestCase):
             central.data['summary']['active_count'],
         )
 
-        job.status = PrintJobStatus.PENDING
+        job.status = PrintJobStatus.PRINTED
         job.save(update_fields=('status', 'updated_at'))
         resolved = self.client.get('/api/v1/operational-attention/?category=printing')
         self.assertEqual(resolved.status_code, 200, resolved.data)
@@ -176,26 +207,19 @@ class OperationalAttentionTests(TestCase):
 
     def test_print_attention_uses_only_the_current_reprint_and_one_physical_batch(self):
         printer = PrinterDevice.objects.create(branch=self.branch, name='Bar')
-        root = PrintJob.objects.create(
-            company=self.company, branch=self.branch, printer_device=printer,
-            is_test=True, status=PrintJobStatus.PRINTED,
+        root = self._production_print_job(printer, status=PrintJobStatus.FAILED)
+        failed_reprint = self._production_print_job(
+            printer, status=PrintJobStatus.FAILED, reprint_of=root, reprint_number=1,
         )
-        PrintJob.objects.create(
-            company=self.company, branch=self.branch, printer_device=printer,
-            is_test=True, status=PrintJobStatus.FAILED, reprint_of=root, reprint_number=1,
-        )
-        PrintJob.objects.create(
-            company=self.company, branch=self.branch, printer_device=printer,
-            is_test=True, status=PrintJobStatus.PRINTED, reprint_of=root, reprint_number=2,
+        self._production_print_job(
+            printer, status=PrintJobStatus.PRINTED, reprint_of=root, reprint_number=2,
         )
         batch_key = uuid.uuid4()
-        first = PrintJob.objects.create(
-            company=self.company, branch=self.branch, printer_device=printer,
-            is_test=True, status=PrintJobStatus.FAILED, batch_key=batch_key,
+        first = self._production_print_job(
+            printer, status=PrintJobStatus.FAILED, batch_key=batch_key,
         )
-        second = PrintJob.objects.create(
-            company=self.company, branch=self.branch, printer_device=printer,
-            is_test=True, status=PrintJobStatus.FAILED, batch_key=batch_key,
+        second = self._production_print_job(
+            printer, status=PrintJobStatus.FAILED, batch_key=batch_key,
         )
 
         response = self.client.get('/api/v1/operational-attention/?category=printing')
@@ -203,16 +227,26 @@ class OperationalAttentionTests(TestCase):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data['summary']['active_count'], 1)
         self.assertIn(response.data['results'][0]['entity']['id'], {first.pk, second.pk})
+        self.assertNotIn(f'printing:failed:{failed_reprint.pk}', {
+            alert['identity'] for alert in response.data['results']
+        })
+
+    def test_print_failure_after_dispatch_requires_review_without_retrying(self):
+        printer = PrinterDevice.objects.create(branch=self.branch, name='Expedição')
+        job = self._production_print_job(
+            printer, status=PrintJobStatus.FAILED,
+            physical_dispatch_started_at=timezone.now(),
+        )
+
+        response = self.client.get('/api/v1/operational-attention/?category=printing')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['results'][0]['identity'], f'printing:failed:{job.pk}')
+        self.assertIn('reimpressao explícita', response.data['results'][0]['recommended_action'])
+        self.assertEqual(PrintJob.objects.filter(pk=job.pk).count(), 1)
 
     def test_confirmed_cash_closing_difference_is_visible_to_dashboard_and_central(self):
-        register = CashRegister.objects.create(branch=self.branch, name='Principal')
-        session = CashSession.objects.create(
-            cash_register=register, branch=self.branch, opened_by=self.user,
-            opened_at=timezone.now(), opening_amount=Decimal('0.00'),
-            status=CashSessionStatus.CLOSED, closed_by=self.user,
-            closed_at=timezone.now(), closing_expected_amount=Decimal('100.00'),
-            closing_amount_informed=Decimal('90.00'), closing_difference=Decimal('-10.00'),
-        )
+        session = self._closed_difference()
 
         central = self.client.get('/api/v1/operational-attention/?category=cash')
         dashboard = self.client.get('/api/v1/dashboard/')
@@ -222,6 +256,85 @@ class OperationalAttentionTests(TestCase):
         self.assertEqual(
             dashboard.data['operational_attention']['by_category']['cash'], 1,
         )
+
+    def test_cash_difference_resolution_preserves_closing_and_audits_actor(self):
+        session = self._closed_difference(difference=Decimal('10.00'))
+        original = (
+            session.closing_expected_amount, session.closing_amount_informed,
+            session.closing_difference,
+        )
+
+        response = self.client.post(
+            f'/api/v1/cash-sessions/{session.pk}/address-difference/',
+            {'justification': 'Conferido o numerário e a ocorrência foi registrada.'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['discrepancy_resolution']['addressed_by'], self.user.pk)
+        self.assertEqual(
+            response.data['discrepancy_resolution']['justification'],
+            'Conferido o numerário e a ocorrência foi registrada.',
+        )
+        session.refresh_from_db()
+        self.assertEqual(
+            (session.closing_expected_amount, session.closing_amount_informed, session.closing_difference),
+            original,
+        )
+        resolution = CashDiscrepancyResolution.objects.get(cash_session=session)
+        self.assertEqual(resolution.addressed_by, self.user)
+        self.assertTrue(resolution.addressed_at)
+        audit = AuditLog.objects.get(action='cash_session.closing_difference_addressed')
+        self.assertEqual(audit.actor, self.user)
+        self.assertEqual(audit.branch, self.branch)
+        self.assertEqual(audit.metadata['cash_session_id'], session.pk)
+        central = self.client.get('/api/v1/operational-attention/?category=cash')
+        dashboard = self.client.get('/api/v1/dashboard/')
+        self.assertEqual(central.data['summary']['active_count'], 0)
+        self.assertEqual(dashboard.data['operational_attention']['by_category']['cash'], 0)
+
+    def test_cash_difference_resolution_requires_justification_and_close_permission(self):
+        session = self._closed_difference()
+        missing = self.client.post(
+            f'/api/v1/cash-sessions/{session.pk}/address-difference/',
+            {'justification': ' '}, format='json',
+        )
+        self.assertEqual(missing.status_code, 400)
+
+        restricted_user = User.objects.create_user(
+            email='cash-viewer@example.com', password='password-123',
+        )
+        profile = AccessProfile.objects.create(company=self.company, name='Somente consulta de caixa')
+        profile.permissions.add(FunctionalPermission.objects.get(code='cash_registers.view'))
+        company_access = UserCompanyAccess(
+            user=restricted_user, company=self.company, access_profile=profile,
+        )
+        company_access.save(enforce_saas_limit=False)
+        UserBranchAccess.objects.create(
+            user=restricted_user, branch=self.branch, access_profile=profile,
+        )
+        restricted = APIClient()
+        restricted.force_authenticate(restricted_user)
+        restricted.defaults['HTTP_X_BRANCH_ID'] = str(self.branch.pk)
+
+        denied = restricted.post(
+            f'/api/v1/cash-sessions/{session.pk}/address-difference/',
+            {'justification': 'Tentativa sem autorização.'}, format='json',
+        )
+        self.assertEqual(denied.status_code, 403)
+        foreign_owner, _foreign_company, _subscription = create_operational_test_tenant(
+            code='cash-difference-foreign', email='cash-difference-foreign@example.com',
+            trade_name='Foreign cash', legal_name='Foreign cash Ltda',
+        )
+        foreign = APIClient()
+        foreign.force_authenticate(foreign_owner)
+        foreign.defaults['HTTP_X_BRANCH_ID'] = str(self.branch.pk)
+        foreign_denied = foreign.post(
+            f'/api/v1/cash-sessions/{session.pk}/address-difference/',
+            {'justification': 'Tentativa de outro tenant.'}, format='json',
+        )
+        self.assertEqual(foreign_denied.status_code, 403)
+        self.assertFalse(CashDiscrepancyResolution.objects.filter(cash_session=session).exists())
 
     def test_non_owner_administrator_uses_the_selected_branch_permissions(self):
         administrator = User.objects.create_user(
