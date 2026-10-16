@@ -11,6 +11,7 @@ from .permissions import ProductionFunctionalPermission
 from .serializers import (
     PrintDocumentIssueSerializer, PrintDocumentResultSerializer, PrintDocumentSerializer, PrintJobSerializer,
     PrintRouteOverrideSerializer, PrintRouteSerializer, PrinterDeviceSerializer,
+    PrinterRouteDeviceSerializer,
     ProductionJobSerializer, ReprintSerializer, TicketSerializer,
 )
 from .services import (
@@ -24,10 +25,27 @@ from .services import (
 class PrinterDeviceViewSet(viewsets.ModelViewSet):
     serializer_class = PrinterDeviceSerializer
     permission_classes = (ProductionFunctionalPermission,)
-    permission_codes = {action: 'printers.manage' for action in ('list', 'retrieve', 'create', 'update', 'partial_update', 'destroy', 'test', 'history')}
+    permission_codes = {
+        **{action: 'printers.manage' for action in (
+            'list', 'retrieve', 'create', 'update', 'partial_update', 'destroy',
+            'test', 'history',
+        )},
+        'route_options': ('printers.manage', 'print_routes.manage'),
+    }
+    permission_code_mode = {'route_options': 'any'}
 
     def get_queryset(self):
         return PrinterDevice.objects.filter(branch=self.request.branch_context).prefetch_related('destinations')
+
+    @action(detail=False, methods=('get',), url_path='route-options')
+    def route_options(self, request):
+        """Expose no technical configuration to route-only administrators."""
+        queryset = PrinterDevice.objects.filter(
+            branch=self.request.branch_context,
+        ).only('id', 'name', 'status', 'connection_type')
+        page = self.paginate_queryset(queryset)
+        serializer = PrinterRouteDeviceSerializer(page, many=True)
+        return self.get_paginated_response(serializer.data)
 
     @transaction.atomic
     def perform_create(self, serializer):

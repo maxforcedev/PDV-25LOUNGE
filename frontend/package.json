@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev -H 0.0.0.0 -p 3000",
-    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs && npm run test:components",
+    "test:components": "tsx --test tests/*.component.test.tsx",
     "lint": "eslint .",
     "build": "next build",
     "start": "next start -H 0.0.0.0 -p 3000"
@@ -18,12 +19,16 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.3.3",
+    "@testing-library/react": "16.3.0",
+    "@types/jsdom": "21.1.7",
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.3",
     "@types/react-dom": "^19.0.2",
     "eslint": "^9.39.5",
     "eslint-config-next": "16.3.8",
     "tailwindcss": "4.3.3",
-    "typescript": "^5.7.2"
+    "tsx": "4.20.6",
+    "typescript": "^5.7.2",
+    "jsdom": "26.1.0"
   }
 }

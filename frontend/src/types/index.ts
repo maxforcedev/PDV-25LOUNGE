@@ -2001,6 +2001,13 @@ export interface DashboardComparisonValues {
   estimated_margin?: DashboardDecimal;
 }
 
+export interface PrinterRouteDevice {
+  id: number;
+  name: string;
+  status: Status;
+  connection_type: PrinterTransport;
+}
+
 export interface DashboardComparisonDelta {
   /** Absolute difference is still valid when percentage comparison is unavailable. */
   amount: DashboardDecimal | null;

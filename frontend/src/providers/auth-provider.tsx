@@ -64,7 +64,7 @@ function rememberBranch(companyId: number, branchId: number) {
   }
 }
 
-interface AuthContextValue {
+export interface AuthContextValue {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<User>;
@@ -83,7 +83,7 @@ interface AuthContextValue {
   featureState: (feature: BranchFeature) => BranchFeatureState | null;
 }
 
-const AuthContext = createContext<AuthContextValue | null>(null);
+export const AuthContext = createContext<AuthContextValue | null>(null);
 function isReadPermission(permission: string) {
   return permission.includes(".view") || permission.endsWith(".report.view");
 }

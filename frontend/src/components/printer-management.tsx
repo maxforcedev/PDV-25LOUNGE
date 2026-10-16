@@ -34,7 +34,9 @@ export function PrinterManagement({ embedded = false, branchId, branchName, bran
   const canHistory = hasBranchPermission(permissions.viewPrintJobs);
   const canRetry = hasBranchPermission(permissions.retryPrintJobs) && !readOnly;
   const canReprint = hasBranchPermission(permissions.reprintPrintJobs) && !readOnly;
-  const requestRef = useRef(0);
+  const equipmentRequestRef = useRef(0);
+  const historyRequestRef = useRef(0);
+  const saveRequestRef = useRef(0);
   const [tab, setTab] = useState<Tab>("equipment");
   const [routesDirty, setRoutesDirty] = useState(false);
   const [devices, setDevices] = useState<PrinterDevice[]>([]);
@@ -67,21 +69,28 @@ export function PrinterManagement({ embedded = false, branchId, branchName, bran
 
   const options = selectedBranchId ? { branchId: selectedBranchId } : undefined;
   async function load() {
-    if (!selectedBranchId) { setDevices([]); setDestinations([]); setLoading(false); return; }
-    const token = ++requestRef.current;
+    if (!selectedBranchId || !canManage) { setDevices([]); setDestinations([]); setLoading(false); return; }
+    const token = ++equipmentRequestRef.current;
     setLoading(true); setError("");
     try {
       const [items, availableDestinations] = await Promise.all([
         http.getAll<PrinterDevice>("printer-devices/", { branchId: selectedBranchId }),
         http.getAll<ProductionDestination>("production-destinations/", { branchId: selectedBranchId }).catch(() => []),
       ]);
-      if (isCurrentPrintAdministrationRequest(token, requestRef.current)) { setDevices(items); setDestinations(availableDestinations); }
+      if (isCurrentPrintAdministrationRequest(token, equipmentRequestRef.current)) { setDevices(items); setDestinations(availableDestinations); }
     } catch (caught) {
-      if (isCurrentPrintAdministrationRequest(token, requestRef.current)) setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar as impressoras.");
-    } finally { if (isCurrentPrintAdministrationRequest(token, requestRef.current)) setLoading(false); }
+      if (isCurrentPrintAdministrationRequest(token, equipmentRequestRef.current)) setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar as impressoras.");
+    } finally { if (isCurrentPrintAdministrationRequest(token, equipmentRequestRef.current)) setLoading(false); }
   }
   const loadCurrent = useEffectEvent(() => { void load(); });
-  useEffect(() => { requestRef.current += 1; setEditorOpen(false); setHistory(null); loadCurrent(); }, [selectedBranchId]);
+  useEffect(() => {
+    equipmentRequestRef.current += 1;
+    historyRequestRef.current += 1;
+    saveRequestRef.current += 1;
+    setEditorOpen(false);
+    setHistory(null);
+    if (canManage) loadCurrent(); else setLoading(false);
+  }, [selectedBranchId, canManage]);
 
   function show(device?: PrinterDevice) {
     const config = device?.technical_configuration || {};
@@ -95,43 +104,50 @@ export function PrinterManagement({ embedded = false, branchId, branchName, bran
     const technical_configuration = connectionType === "network" ? { host: host.trim(), port: Number(port), timeout: Number(timeout), paper_width: Number(paperWidth), cut: true }
       : connectionType === "usb" ? { vendor_id: vendorId.trim(), product_id: productId.trim(), serial: serial.trim(), identifier: serial.trim() || `${vendorId.trim()}:${productId.trim()}` }
       : connectionType === "bluetooth" ? { device_name: deviceName.trim(), identifier: identifier.trim() } : editing?.technical_configuration || {};
+    const token = ++saveRequestRef.current;
     setSaving(true); setError(""); setFields({});
     try {
       const body = { name, connection_type: connectionType, status: deviceStatus, destination_ids: destinationIds, technical_configuration };
       if (editing) await http.patch(`printer-devices/${editing.id}/`, body, options); else await http.post("printer-devices/", body, options);
+      if (token !== saveRequestRef.current) return;
       setEditorOpen(false); setSuccess(editing ? "Impressora atualizada." : "Impressora cadastrada."); await load();
-    } catch (caught) { if (caught instanceof ApiError) { setError(caught.message); setFields(caught.fields); } else setError("Não foi possível salvar a impressora."); } finally { setSaving(false); }
+    } catch (caught) { if (token === saveRequestRef.current) { if (caught instanceof ApiError) { setError(caught.message); setFields(caught.fields); } else setError("Não foi possível salvar a impressora."); } } finally { if (token === saveRequestRef.current) setSaving(false); }
   }
   async function testPrinter(device: PrinterDevice) {
+    const token = ++saveRequestRef.current;
     setBusy(device.id); setError(""); setSuccess("");
-    try { await http.post<PrintJob>(`printer-devices/${device.id}/test/`, {}, options); setSuccess("Teste solicitado. Aguardando confirmação do CORE POS local."); await load(); }
-    catch (caught) { setError(caught instanceof ApiError ? caught.message : "Não foi possível solicitar o teste."); } finally { setBusy(null); }
+    try { await http.post<PrintJob>(`printer-devices/${device.id}/test/`, {}, options); if (token !== saveRequestRef.current) return; setSuccess("Teste solicitado. Aguardando confirmação do CORE POS local."); await load(); }
+    catch (caught) { if (token === saveRequestRef.current) setError(caught instanceof ApiError ? caught.message : "Não foi possível solicitar o teste."); } finally { if (token === saveRequestRef.current) setBusy(null); }
   }
   async function toggle(device: PrinterDevice) {
+    const token = ++saveRequestRef.current;
     setBusy(device.id); setError("");
     try {
       await http.patch(`printer-devices/${device.id}/`, { status: device.status === "active" ? "inactive" : "active" }, options);
+      if (token !== saveRequestRef.current) return;
       setSuccess(device.status === "active" ? "Impressora arquivada. Os vínculos com setores e o histórico foram preservados; novos jobs não serão encaminhados a ela." : "Impressora ativada."); await load();
-    } catch (caught) { setError(caught instanceof ApiError ? caught.message : "Não foi possível alterar a impressora."); } finally { setBusy(null); }
+    } catch (caught) { if (token === saveRequestRef.current) setError(caught instanceof ApiError ? caught.message : "Não foi possível alterar a impressora."); } finally { if (token === saveRequestRef.current) setBusy(null); }
   }
   async function loadHistory(path?: string, status = historyStatus) {
     if (!selectedBranchId) return;
-    const token = ++requestRef.current; setHistoryLoading(true); setError("");
+    const token = ++historyRequestRef.current; setHistoryLoading(true); setError("");
     const params = new URLSearchParams();
     if (status) params.set("status", status);
     if (historyOrigin) params.set("origin", historyOrigin);
     const query = `print-jobs/${params.size ? `?${params}` : ""}`;
-    try { const result = await http.get<Paginated<PrintJob>>(path || query, { branchId: selectedBranchId }); if (isCurrentPrintAdministrationRequest(token, requestRef.current)) setHistory(result); }
-    catch (caught) { if (isCurrentPrintAdministrationRequest(token, requestRef.current)) setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar o histórico."); }
-    finally { if (isCurrentPrintAdministrationRequest(token, requestRef.current)) setHistoryLoading(false); }
+    try { const result = await http.get<Paginated<PrintJob>>(path || query, { branchId: selectedBranchId }); if (isCurrentPrintAdministrationRequest(token, historyRequestRef.current)) setHistory(result); }
+    catch (caught) { if (isCurrentPrintAdministrationRequest(token, historyRequestRef.current)) setError(caught instanceof ApiError ? caught.message : "Não foi possível carregar o histórico."); }
+    finally { if (isCurrentPrintAdministrationRequest(token, historyRequestRef.current)) setHistoryLoading(false); }
   }
   useEffect(() => { if (tab === "history" && canHistory) void loadHistory(); }, [tab, selectedBranchId, historyStatus, historyOrigin]);
   async function action(job: PrintJob, name: "retry" | "reprint") {
+    const token = ++saveRequestRef.current;
     setBusy(job.id); setError("");
     try {
       await http.post(`print-jobs/${job.id}/${name}/`, name === "reprint" ? { reason: "Reimpressão solicitada pela administração da filial." } : {}, options);
+      if (token !== saveRequestRef.current) return;
       setSuccess(name === "retry" ? "Retry técnico solicitado para o CORE POS local." : "Reimpressão explícita criada na fila."); await loadHistory();
-    } catch (caught) { setError(caught instanceof ApiError ? caught.message : "Não foi possível concluir a ação."); } finally { setBusy(null); }
+    } catch (caught) { if (token === saveRequestRef.current) setError(caught instanceof ApiError ? caught.message : "Não foi possível concluir a ação."); } finally { if (token === saveRequestRef.current) setBusy(null); }
   }
   function changeTab(next: Tab) {
     if (routesDirty && next !== "routes" && !window.confirm("Há alterações de rotas não salvas. Deseja descartá-las?")) return;

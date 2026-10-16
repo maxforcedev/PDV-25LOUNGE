@@ -15,7 +15,10 @@ class InventoryFunctionalPermission(BasePermission):
 
     def get_codes(self, view):
         code = self.get_code(view)
-        return code if isinstance(code, tuple) else (code,)
+        return code if isinstance(code, (tuple, list, set, frozenset)) else (code,)
+
+    def requires_any_code(self, view):
+        return getattr(view, 'permission_code_mode', {}).get(view.action) == 'any'
 
     def has_permission(self, request, view):
         user = request.user
@@ -40,8 +43,11 @@ class InventoryFunctionalPermission(BasePermission):
         except (Branch.DoesNotExist, TypeError, ValueError):
             return False
         require_branch_feature(request.branch_context, self.required_feature)
-        return user.is_superuser or any(
+        matches = (
             user_has_branch_permission(user, branch_id, code) for code in codes
+        )
+        return user.is_superuser or (
+            any(matches) if self.requires_any_code(view) else all(matches)
         )
 
     def has_object_permission(self, request, view, obj):
@@ -68,11 +74,10 @@ class InventoryFunctionalPermission(BasePermission):
             require_branch_feature(branch, self.required_feature)
         if request.user.is_superuser:
             return branch is None or branch.pk in branch_ids
-        return bool(
-            branch
-            and branch.pk in branch_ids
-            and any(
-                user_has_branch_permission(request.user, branch.pk, code)
-                for code in self.get_codes(view)
-            )
+        if not branch or branch.pk not in branch_ids:
+            return False
+        matches = (
+            user_has_branch_permission(request.user, branch.pk, code)
+            for code in self.get_codes(view)
         )
+        return any(matches) if self.requires_any_code(view) else all(matches)

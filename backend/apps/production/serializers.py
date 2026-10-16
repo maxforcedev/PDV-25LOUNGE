@@ -134,6 +134,14 @@ class PrinterDeviceSerializer(serializers.ModelSerializer):
         return configuration.get('device_name') or configuration.get('identifier') or 'Bluetooth configurada'
 
 
+class PrinterRouteDeviceSerializer(serializers.ModelSerializer):
+    """Safe catalog used exclusively to choose printers for document routes."""
+
+    class Meta:
+        model = PrinterDevice
+        fields = ('id', 'name', 'status', 'connection_type')
+
+
 class ProductionJobSerializer(serializers.ModelSerializer):
     payload_snapshot = serializers.SerializerMethodField()
 
