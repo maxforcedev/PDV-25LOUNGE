@@ -116,7 +116,11 @@ function BranchesAdministration() {
   const canAdd = hasPermission(permissions.addBranch);
   const canChange = hasPermission(permissions.changeBranch);
   const canSettings = hasPermission(permissions.changeBranchSettings);
-  const canManagePrinters = hasFeature("production") && hasPermission(permissions.managePrinters);
+  const canOpenPrinterAdministration = hasFeature("production") && [
+    permissions.managePrinters,
+    permissions.managePrintRoutes,
+    permissions.viewPrintJobs,
+  ].some(hasPermission);
   const canChangeCommission = hasPermission(permissions.changeBranchCommission);
   const planAllows = (feature: Parameters<typeof featureState>[0]) =>
     Boolean(featureState(feature)?.plan_allowed);
@@ -504,7 +508,11 @@ function BranchesAdministration() {
       branch.status !== "active" ||
       !targetAccess ||
       !targetAccess.features.production?.enabled ||
-      !targetAccess.permissions.includes(permissions.managePrinters)
+      ![
+        permissions.managePrinters,
+        permissions.managePrintRoutes,
+        permissions.viewPrintJobs,
+      ].some((permission) => targetAccess.permissions.includes(permission))
     ) return;
     setPrinterRoutesDirty(false);
     setPrintersBranch(branch);
@@ -604,12 +612,12 @@ function BranchesAdministration() {
                               disabled={
                                 branch.company !== currentCompany?.id ||
                                  branch.status !== "active" ||
-                                 !user?.branches.some((item) => item.id === branch.id && item.features.production?.enabled && item.permissions.includes(permissions.managePrinters))
+                                  !user?.branches.some((item) => item.id === branch.id && item.features.production?.enabled && [permissions.managePrinters, permissions.managePrintRoutes, permissions.viewPrintJobs].some((permission) => item.permissions.includes(permission)))
                               }
                               title={
-                                canManagePrinters
-                                  ? "Configurar impressoras desta filial"
-                                  : "Sem permissão para gerenciar impressoras"
+                                 canOpenPrinterAdministration
+                                   ? "Administrar impressão desta filial"
+                                   : "Sem permissão para administrar impressão"
                               }
                               onClick={() => openPrinters(branch)}
                             >
@@ -972,7 +980,7 @@ function BranchesAdministration() {
         tall
       >
         <div className="p-5 sm:p-6">
-          {printersBranch && <PrinterManagement embedded branchId={printersBranch.id} branchName={printersBranch.name} onRouteChanges={setPrinterRoutesDirty} />}
+          {printersBranch && <PrinterManagement embedded branchId={printersBranch.id} branchName={printersBranch.name} branchPermissions={user?.branches.find((branch) => branch.id === printersBranch.id)?.permissions} onRouteChanges={setPrinterRoutesDirty} />}
         </div>
       </Modal>
       <ConfirmDialog

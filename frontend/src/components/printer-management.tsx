@@ -16,21 +16,24 @@ const operationalLabels = { not_tested: "Não testada", online: "Online", offlin
 const jobStatusLabels: Record<PrintJobStatus, string> = { pending: "Pendente", processing: "Processando", printed: "Impresso", failed: "Falhou", uncertain: "Resultado incerto", cancelled: "Cancelado" };
 type Tab = "equipment" | "routes" | "history" | "diagnostic";
 
-export function PrinterManagement({ embedded = false, branchId, branchName, onRouteChanges }: {
+export function PrinterManagement({ embedded = false, branchId, branchName, branchPermissions, onRouteChanges }: {
   embedded?: boolean;
   branchId?: number;
   branchName?: string;
+  branchPermissions?: readonly string[];
   onRouteChanges?: (dirty: boolean) => void;
 }) {
-  const { currentBranch, supportSession, hasPermission } = useAuth();
+  const { currentBranch, supportSession, user } = useAuth();
   const selectedBranchId = branchId ?? currentBranch?.id;
   const selectedBranchName = branchName ?? currentBranch?.name ?? "filial selecionada";
+  const selectedPermissions = branchPermissions ?? currentBranch?.permissions ?? [];
+  const hasBranchPermission = (permission: string) => Boolean(user?.is_superuser || selectedPermissions.includes(permission));
   const readOnly = supportSession?.mode === "READ_ONLY";
-  const canManage = hasPermission(permissions.managePrinters) && !readOnly;
-  const canRoutes = hasPermission(permissions.managePrintRoutes) && !readOnly;
-  const canHistory = hasPermission(permissions.viewPrintJobs);
-  const canRetry = hasPermission(permissions.retryPrintJobs) && !readOnly;
-  const canReprint = hasPermission(permissions.reprintPrintJobs) && !readOnly;
+  const canManage = hasBranchPermission(permissions.managePrinters) && !readOnly;
+  const canRoutes = hasBranchPermission(permissions.managePrintRoutes) && !readOnly;
+  const canHistory = hasBranchPermission(permissions.viewPrintJobs);
+  const canRetry = hasBranchPermission(permissions.retryPrintJobs) && !readOnly;
+  const canReprint = hasBranchPermission(permissions.reprintPrintJobs) && !readOnly;
   const requestRef = useRef(0);
   const [tab, setTab] = useState<Tab>("equipment");
   const [routesDirty, setRoutesDirty] = useState(false);
@@ -135,7 +138,10 @@ export function PrinterManagement({ embedded = false, branchId, branchName, onRo
     if (routesDirty && next !== "routes") setRoutesDirty(false);
     setTab(next);
   }
-  const tabs: Array<[Tab, string, boolean]> = [["equipment", "Equipamentos", true], ["routes", "Rotas", hasPermission(permissions.managePrintRoutes)], ["history", "Histórico", canHistory], ["diagnostic", "Diagnóstico", hasPermission(permissions.managePrinters)]];
+  useEffect(() => {
+    if (tab === "equipment" && !canManage) setTab(canRoutes ? "routes" : "history");
+  }, [tab, canManage, canRoutes]);
+  const tabs: Array<[Tab, string, boolean]> = [["equipment", "Equipamentos", canManage], ["routes", "Rotas", canRoutes], ["history", "Histórico", canHistory], ["diagnostic", "Diagnóstico", canManage]];
   const shell = <div className={embedded ? "space-y-4" : "space-y-4 p-4 sm:p-6 lg:p-8"}>
     {error && !editorOpen && <Alert message={error} />}{success && <Alert type="success" message={success} />}
     <div className="flex flex-wrap gap-1 rounded-lg border border-subtle bg-surface-muted p-1" role="tablist" aria-label="Administração de impressão">
