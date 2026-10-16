@@ -75,7 +75,7 @@ class MissionM8PrinterTests(TestCase):
         self.assertEqual(item['connection_summary'], '192.168.1.50:9100')
         self.assertEqual(item['operational_status'], 'not_tested')
 
-    def test_destinations_are_writable_and_shared_destination_stays_active_until_last_printer(self):
+    def test_destinations_are_writable_and_archiving_never_disables_them(self):
         destination = self.create_destination()
         first = self.create_printer(destination_ids=[destination.pk])
         second = self.create_printer('Bar', destination_ids=[destination.pk])
@@ -94,7 +94,7 @@ class MissionM8PrinterTests(TestCase):
 
         self.client.delete(f'/api/v1/printer-devices/{second.pk}/')
         destination.refresh_from_db()
-        self.assertEqual(destination.status, 'inactive')
+        self.assertEqual(destination.status, 'active')
 
     @patch('apps.production.adapters.socket.create_connection')
     def test_network_test_enqueues_for_local_pos_without_server_socket(self, connect):
@@ -152,8 +152,85 @@ class MissionM8PrinterTests(TestCase):
         printer.refresh_from_db()
         self.assertEqual(printer.status, 'inactive')
         destination.refresh_from_db()
-        self.assertEqual(destination.status, 'inactive')
+        self.assertEqual(destination.status, 'active')
         self.assertEqual(printer.print_jobs.count(), 1)
+
+    def test_bulk_routes_are_transactional_and_preserve_device_overrides(self):
+        first = self.create_printer('Cozinha')
+        second = self.create_printer('Caixa')
+        response = self.client.post('/api/v1/print-routes/bulk-update/', {
+            'routes': [
+                {
+                    'document_type': 'ticket', 'mode': 'automatic',
+                    'printer_device_ids': [first.pk, second.pk], 'copies': 2,
+                    'document_format': 'detailed',
+                },
+                {
+                    'document_type': 'payment_receipt', 'mode': 'manual',
+                    'printer_device_ids': [second.pk], 'copies': 1,
+                    'document_format': 'simplified',
+                },
+            ],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        ticket = self.branch.print_routes.get(document_type='ticket')
+        self.assertEqual(ticket.mode, 'automatic')
+        self.assertEqual(ticket.copies, 2)
+        self.assertEqual(set(ticket.printer_devices.values_list('pk', flat=True)), {first.pk, second.pk})
+        self.assertTrue(AuditLog.objects.filter(action='print_route.bulk_update', object_id=str(ticket.pk)).exists())
+
+        before = self.branch.print_routes.get(document_type='ticket').copies
+        response = self.client.post('/api/v1/print-routes/bulk-update/', {
+            'routes': [
+                {
+                    'document_type': 'ticket', 'mode': 'automatic',
+                    'printer_device_ids': [first.pk], 'copies': 3,
+                    'document_format': 'detailed',
+                },
+                {
+                    'document_type': 'payment_receipt', 'mode': 'automatic',
+                    'printer_device_ids': [], 'copies': 1,
+                    'document_format': 'detailed',
+                },
+            ],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(self.branch.print_routes.get(document_type='ticket').copies, before)
+
+        operator = User.objects.create_user(
+            email='routes.operator@example.com', password='Mission-M8-Operator-123!',
+        )
+        profile = self.company.access_profiles.get(name='Operador de Estoque')
+        UserCompanyAccess.objects.create(
+            user=operator, company=self.company, access_profile=profile,
+        )
+        UserBranchAccess.objects.create(
+            user=operator, branch=self.branch, access_profile=profile,
+        )
+        client = APIClient()
+        client.force_authenticate(operator)
+        response = client.post('/api/v1/print-routes/bulk-update/', {
+            'routes': [{'document_type': 'ticket', 'mode': 'disabled'}],
+        }, format='json', HTTP_X_BRANCH_ID=str(self.branch.pk))
+        self.assertEqual(response.status_code, 403, response.data)
+
+    def test_history_filters_are_paginated(self):
+        printer = self.create_printer()
+        self.client.post(f'/api/v1/printer-devices/{printer.pk}/test/')
+        PrintJob.objects.create(
+            company=self.company, branch=self.branch, printer_device=printer,
+            is_test=True, status=PrintJobStatus.FAILED,
+        )
+
+        response = self.client.get(
+            f'/api/v1/printer-devices/{printer.pk}/history/?status=failed&origin=test&page_size=1',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['count'], 1)
+        self.assertEqual(response.data['results'][0]['status'], PrintJobStatus.FAILED)
 
     def test_product_selects_printers_without_exposing_destination_management(self):
         printer_destination = self.create_destination()

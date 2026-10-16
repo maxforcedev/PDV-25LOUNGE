@@ -16,7 +16,8 @@ from .serializers import (
 from .services import (
     effective_print_route, enqueue_print_document, ensure_print_routes,
     expire_abandoned_print_dispatches, issue_print_document, manual_dispatch_print_job,
-    reprint_print_document, reprint_print_job, retry_print_job, test_printer_device,
+    normalize_print_document_type, reprint_print_document, reprint_print_job,
+    retry_print_job, test_printer_device,
 )
 
 
@@ -44,11 +45,6 @@ class PrinterDeviceViewSet(viewsets.ModelViewSet):
         before = model_snapshot(instance, ('name', 'device_type', 'status'))
         instance.status = 'inactive'
         instance.save(update_fields=('status', 'updated_at'))
-        for destination in instance.destinations.all():
-            # Destinations remain operational while another active printer serves them.
-            if not destination.printer_devices.exclude(pk=instance.pk).filter(status='active').exists():
-                destination.status = 'inactive'
-                destination.save(update_fields=('status', 'updated_at'))
         audit_log(actor=self.request.user, action='printer_device.deactivate', obj=instance, company=instance.branch.company, branch=instance.branch, before=before, after=model_snapshot(instance, ('name', 'device_type', 'status')))
 
     @action(detail=True, methods=('post',))
@@ -66,6 +62,16 @@ class PrinterDeviceViewSet(viewsets.ModelViewSet):
             'production_job', 'production_job__sale_item__sale',
             'destination', 'printer_device',
         ).order_by('-created_at', '-id')
+        job_status = request.query_params.get('status')
+        origin = request.query_params.get('origin')
+        if job_status:
+            queryset = queryset.filter(status=job_status)
+        if origin == 'test':
+            queryset = queryset.filter(is_test=True)
+        elif origin == 'document':
+            queryset = queryset.filter(is_test=False, print_document__isnull=False)
+        elif origin == 'production':
+            queryset = queryset.filter(is_test=False, production_job__isnull=False)
         page = self.paginate_queryset(queryset)
         serializer = PrintJobSerializer(page, many=True)
         return self.get_paginated_response(serializer.data)
@@ -121,10 +127,17 @@ class PrintJobViewSet(viewsets.ReadOnlyModelViewSet):
         ).order_by('-created_at', '-id')
         job_status = self.request.query_params.get('status')
         printer_id = self.request.query_params.get('printer_device')
+        origin = self.request.query_params.get('origin')
         if job_status:
             queryset = queryset.filter(status=job_status)
         if printer_id:
             queryset = queryset.filter(printer_device_id=printer_id)
+        if origin == 'test':
+            queryset = queryset.filter(is_test=True)
+        elif origin == 'document':
+            queryset = queryset.filter(is_test=False, print_document__isnull=False)
+        elif origin == 'production':
+            queryset = queryset.filter(is_test=False, production_job__isnull=False)
         return queryset
 
     @action(detail=True, methods=('post',))
@@ -160,7 +173,7 @@ class PrintJobViewSet(viewsets.ReadOnlyModelViewSet):
 class PrintRouteViewSet(viewsets.ModelViewSet):
     serializer_class = PrintRouteSerializer
     permission_classes = (ProductionFunctionalPermission,)
-    permission_codes = {action: 'print_routes.manage' for action in ('list', 'retrieve', 'create', 'update', 'partial_update', 'destroy')}
+    permission_codes = {action: 'print_routes.manage' for action in ('list', 'retrieve', 'create', 'update', 'partial_update', 'destroy', 'bulk_update')}
 
     def get_queryset(self):
         ensure_print_routes(self.request.branch_context)
@@ -189,6 +202,64 @@ class PrintRouteViewSet(viewsets.ModelViewSet):
                   company=instance.branch.company, branch=instance.branch,
                   before=model_snapshot(instance, ('document_type', 'mode', 'copies', 'document_format')))
         instance.delete()
+
+    @action(detail=False, methods=('post',), url_path='bulk-update')
+    @transaction.atomic
+    def bulk_update(self, request):
+        """Validate the entire branch policy before changing any route."""
+        rows = request.data.get('routes')
+        if not isinstance(rows, list) or not rows:
+            raise ValidationError({'routes': 'Informe ao menos uma rota para salvar.'})
+
+        ensure_print_routes(request.branch_context)
+        routes = {
+            route.document_type: route
+            for route in PrintRoute.objects.select_for_update().filter(
+                branch=request.branch_context,
+            ).prefetch_related('printer_devices')
+        }
+        serializers = []
+        errors = {}
+        seen = set()
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                errors[str(index)] = {'detail': 'Cada rota deve ser um objeto.'}
+                continue
+            try:
+                document_type = normalize_print_document_type(row.get('document_type'))
+            except ValueError as error:
+                errors[str(index)] = {'document_type': str(error)}
+                continue
+            if document_type in seen:
+                errors[str(index)] = {'document_type': 'Cada tipo de documento pode ser enviado apenas uma vez.'}
+                continue
+            seen.add(document_type)
+            route = routes.get(document_type)
+            if route is None:
+                errors[str(index)] = {'document_type': 'A rota não pertence à filial atual.'}
+                continue
+            serializer = self.get_serializer(
+                route, data={**row, 'document_type': document_type}, partial=True,
+            )
+            if not serializer.is_valid():
+                errors[str(index)] = serializer.errors
+                continue
+            serializers.append(serializer)
+        if errors:
+            raise ValidationError({'routes': errors})
+
+        saved = []
+        for serializer in serializers:
+            before = model_snapshot(serializer.instance, ('document_type', 'mode', 'copies', 'document_format'))
+            route = serializer.save()
+            audit_log(
+                actor=request.user, action='print_route.bulk_update', obj=route,
+                company=route.branch.company, branch=route.branch, before=before,
+                after=model_snapshot(route, ('document_type', 'mode', 'copies', 'document_format')),
+                metadata={'printer_device_ids': list(route.printer_devices.values_list('id', flat=True))},
+            )
+            saved.append(route)
+        return Response(self.get_serializer(saved, many=True).data)
 
 
 class PrintRouteOverrideViewSet(viewsets.ModelViewSet):

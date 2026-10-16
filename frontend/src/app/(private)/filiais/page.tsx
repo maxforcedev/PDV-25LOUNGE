@@ -139,6 +139,7 @@ function BranchesAdministration() {
   const [zipLookupEnabled, setZipLookupEnabled] = useState(false);
   const [settingsBranch, setSettingsBranch] = useState<Branch | null>(null);
   const [printersBranch, setPrintersBranch] = useState<Branch | null>(null);
+  const [printerRoutesDirty, setPrinterRoutesDirty] = useState(false);
   const [settings, setSettings] = useState<BranchSettings | null>(null);
   const [settingsFields, setSettingsFields] = useState<
     Record<string, string[]>
@@ -505,7 +506,7 @@ function BranchesAdministration() {
       !targetAccess.features.production?.enabled ||
       !targetAccess.permissions.includes(permissions.managePrinters)
     ) return;
-    setCurrentBranchId(branch.id);
+    setPrinterRoutesDirty(false);
     setPrintersBranch(branch);
   }
 
@@ -962,12 +963,16 @@ function BranchesAdministration() {
         open={!!printersBranch}
         title={`Impressoras · ${printersBranch?.name || "filial"}`}
         description="Cadastre os setores de impressão desta filial sem precisar selecionar a unidade novamente."
-        onClose={() => setPrintersBranch(null)}
+        onClose={() => {
+          if (printerRoutesDirty && !window.confirm("Há alterações de rotas não salvas. Deseja descartá-las?")) return;
+          setPrinterRoutesDirty(false);
+          setPrintersBranch(null);
+        }}
         size="xxl"
         tall
       >
         <div className="p-5 sm:p-6">
-          {printersBranch && <PrinterManagement embedded />}
+          {printersBranch && <PrinterManagement embedded branchId={printersBranch.id} branchName={printersBranch.name} onRouteChanges={setPrinterRoutesDirty} />}
         </div>
       </Modal>
       <ConfirmDialog

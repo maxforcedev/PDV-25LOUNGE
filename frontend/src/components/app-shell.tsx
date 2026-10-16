@@ -26,7 +26,6 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   ShieldCheck,
-  Printer,
   Sun,
   Tags,
   Layers,
@@ -72,13 +71,6 @@ const operationNavigation: NavItem[] = [
   { href: "/caixas", label: "Caixa", icon: Banknote, requiredPermissions: [permissions.viewCashRegister], requiredFeatures: ["cash_register"] },
 ];
 
-const productionNavigation: NavItem[] = [
-  { href: "/producao/rotas-impressao", label: "Rotas de impressao", icon: Printer, requiredPermissions: [permissions.managePrintRoutes], requiredFeatures: ["production"] },
-  { href: "/producao/impressoras", label: "Impressoras", icon: Printer, requiredPermissions: [permissions.viewProduction, permissions.managePrinters], requiredFeatures: ["production"] },
-  { href: "/producao/fila", label: "Fila de impressao", icon: Printer, requiredPermissions: [permissions.viewPrintJobs], requiredFeatures: ["production"] },
-  { href: "/producao/falhas", label: "Falhas de impressao", icon: Printer, requiredPermissions: [permissions.viewPrintJobs], requiredFeatures: ["production"] },
-];
-
 const cadastrosNavigation: NavItem[] = [
   { href: "/produtos", label: "Produtos", icon: Package, requiredPermissions: [permissions.viewProduct], requiredFeatures: ["products"] },
   { href: "/categorias", label: "Categorias", icon: Tags, requiredPermissions: [permissions.viewCategory], requiredFeatures: ["products"] },
@@ -110,7 +102,6 @@ type NavSection = { title: string; items: NavItem[] };
 
 const navSections: NavSection[] = [
   { title: "Operação", items: operationNavigation },
-  { title: "Produção", items: productionNavigation },
   { title: "Cadastros", items: cadastrosNavigation },
   { title: "Suprimentos", items: suprimentosNavigation },
   { title: "Gestão", items: gestaoNavigation },
@@ -119,7 +110,6 @@ const navSections: NavSection[] = [
 
 const adminNavigation: NavItem[] = [
   ...operationNavigation,
-  ...productionNavigation,
   ...cadastrosNavigation,
   ...suprimentosNavigation,
   ...gestaoNavigation,

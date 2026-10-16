@@ -5,8 +5,6 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
   ExternalLink,
-  Pencil,
-  Plus,
   RotateCcw,
   Printer,
 } from "lucide-react";
@@ -15,27 +13,20 @@ import {
   Alert,
   Button,
   EmptyState,
-  Field,
-  Input,
-  Modal,
   Pagination,
   Select,
-  StatusBadge,
   TableLoading,
-  Textarea,
 } from "@/components/ui";
-import { formatDate, fieldError, formatQuantity } from "@/lib/format";
+import { formatDate, formatQuantity } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
 import { permissions } from "@/lib/permissions";
 import { useAuth } from "@/providers/auth-provider";
 import type {
   Paginated,
-  PrinterDevice,
   PrintJob,
   PrintJobStatus,
   ProductionDestination,
 } from "@/types";
-export { PrinterManagement as Printers } from "@/components/printer-management";
 
 const statusLabels: Record<PrintJobStatus, string> = {
   pending: "Pendente",
@@ -387,7 +378,7 @@ export function PrintQueue({
   );
 }
 
-export function LegacyPrinterDiagnostics() {
+/* Retired duplicate diagnostics UI, replaced by the branch-scoped PrinterManagement modal.
   const { currentBranch, currentCompany, supportSession } = useAuth();
   const readOnly = supportSession?.mode === "READ_ONLY";
   const contextRef = useRef("");
@@ -687,7 +678,7 @@ export function LegacyPrinterDiagnostics() {
       </Modal>
     </>
   );
-}
+} */
 
 export function PrintJobDetail({ id }: { id: string }) {
   const router = useRouter();

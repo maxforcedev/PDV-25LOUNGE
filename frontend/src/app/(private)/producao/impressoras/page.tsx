@@ -1,5 +1,3 @@
-"use client";
-import { AdminGuard } from "@/components/admin-guard";
-import { Printers } from "@/components/production-ui";
-import { permissions } from "@/lib/permissions";
-export default function PrintersPage() { return <AdminGuard requiredPermissions={[permissions.managePrinters]} requiredFeatures={["production"]}><Printers /></AdminGuard>; }
+import { redirect } from "next/navigation";
+
+export default function PrintersPage() { redirect("/filiais"); }
