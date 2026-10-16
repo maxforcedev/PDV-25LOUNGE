@@ -3,7 +3,9 @@ from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
 
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.test import APIClient
@@ -113,6 +115,23 @@ class CapabilityResolutionTests(TestCase):
     def test_company_without_subscription_has_no_features_and_cannot_operate(self):
         self.assertEqual(get_entitled_features(self.company), set())
         self.assertFalse(resolve_effective_status(self.company)['can_operate'])
+
+    def test_branch_feature_states_batches_feature_entitlements(self):
+        map_existing_company(
+            company=self.company,
+            plan_version=self._plan('feature-state-query-count', tables=True),
+            billing_mode=Subscription.BillingMode.PAID,
+        )
+
+        with CaptureQueriesContext(connection) as queries:
+            states = branch_feature_states(self.branch)
+
+        self.assertTrue(states['tables']['plan_allowed'])
+        self.assertLessEqual(len(queries), 5)
+        self.assertLessEqual(
+            sum('saas_planentitlement' in query['sql'] for query in queries.captured_queries),
+            2,
+        )
 
     def test_expired_subscription_cannot_operate(self):
         subscription, _ = map_existing_company(

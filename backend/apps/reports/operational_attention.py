@@ -16,7 +16,10 @@ from apps.attendance.models import (
     AttendancePaymentStatus,
 )
 from apps.cash.models import CashSession, CashSessionStatus
-from apps.attendance.services import command_financial_status
+from apps.attendance.services import (
+    command_financial_status,
+    effective_command_payment_queryset,
+)
 from apps.companies.features import branch_feature_enabled
 from apps.companies.selectors import user_has_branch_permission
 from apps.inventory.models import Stock
@@ -120,9 +123,9 @@ def command_attention(branch):
         ),
         Prefetch(
             'payments',
-            queryset=AttendancePayment.objects.filter(
-                status=AttendancePaymentStatus.APPLIED,
-            ).only('id', 'command_id', 'created_at').order_by('created_at', 'id'),
+            queryset=effective_command_payment_queryset().only(
+                'id', 'command_id', 'created_at', 'status',
+            ),
             to_attr='attention_applied_payments',
         ),
     ).order_by('-created_at', '-id'))

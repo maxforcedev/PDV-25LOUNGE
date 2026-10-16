@@ -297,6 +297,20 @@ def effective_entitlement(company, code):
     ).select_related('capability').first()
 
 
+def effective_entitlements(company, codes, *, subscription=None):
+    subscription = subscription or current_subscription(company)
+    if not subscription:
+        return {}
+    return {
+        entitlement.capability.code: entitlement
+        for entitlement in PlanEntitlement.objects.filter(
+            plan_version=subscription.plan_version,
+            capability__code__in=codes,
+            capability__is_active=True,
+        ).select_related('capability')
+    }
+
+
 def get_entitled_features(company):
     subscription = current_subscription(company)
     if not _is_valid_current_subscription(subscription):

@@ -1,9 +1,11 @@
 from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 import uuid
 
 from django.core.exceptions import ValidationError
-from django.db import close_old_connections
+from django.db import close_old_connections, connection
+from django.test.utils import CaptureQueriesContext
 from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -14,10 +16,15 @@ from apps.attendance.models import (
     AttendanceOrder,
     AttendanceOrderItem,
     AttendanceOrderItemStatus,
+    AttendanceOperation,
+    AttendanceOperationType,
     AttendancePayment,
     AttendancePaymentStatus,
 )
-from apps.attendance.services import command_financial_status
+from apps.attendance.services import (
+    command_financial_status,
+    effective_command_payment_queryset,
+)
 from apps.base.models import AuditLog
 from apps.cash.models import CashDiscrepancyResolution, CashRegister, CashSession, CashSessionStatus
 from apps.cash.services import address_closing_difference
@@ -29,6 +36,7 @@ from apps.production.models import PrintDocument, PrintJob, PrintJobStatus, Prin
 from apps.products.models import Category, Product, ProductBranchConfig
 from apps.inventory.models import Stock
 from apps.reports.selectors import inventory_kpis, stock_position_report
+from apps.reports.operational_attention import command_attention
 from apps.saas.tests.helpers import create_complete_test_plan, create_operational_test_tenant
 from apps.sales.services import ensure_default_payment_methods
 
@@ -118,6 +126,47 @@ class OperationalAttentionTests(TestCase):
             status=AttendancePaymentStatus.APPLIED,
         )
         return command, item
+
+    def _financial_status_command(self, *, confirmed_at, service_fee_rate='10.00',
+                                  financial_snapshot=None):
+        ensure_default_payment_methods(self.company)
+        command = AttendanceCommand.objects.create(
+            company=self.company, branch=self.branch, number=f'FIN-{uuid.uuid4()}',
+            opened_by=self.user, service_fee_rate_snapshot=service_fee_rate,
+        )
+        order = AttendanceOrder.objects.create(command=command, created_by=self.user)
+        item = AttendanceOrderItem.objects.create(
+            order=order, product=self.product, quantity=Decimal('1.000'),
+            product_name=self.product.name, internal_code=self.product.internal_code,
+            unit='un', unit_price=Decimal('2.00'),
+            status=AttendanceOrderItemStatus.CONFIRMED, confirmed_at=confirmed_at,
+            confirmed_by=self.user,
+            financial_snapshot={} if financial_snapshot is None else financial_snapshot,
+        )
+        return command, item
+
+    def _historical_payment(self, command, *, created_at, status=AttendancePaymentStatus.APPLIED,
+                            amount=Decimal('1.00'), reversal_of=None):
+        payment = AttendancePayment.objects.create(
+            company=self.company, branch=self.branch, command=command,
+            payment_method=self.company.payment_methods.exclude(code='cash').first(),
+            amount=amount, operator=self.user, status=status, reversal_of=reversal_of,
+        )
+        AttendancePayment.objects.filter(pk=payment.pk).update(created_at=created_at)
+        payment.created_at = created_at
+        return payment
+
+    @staticmethod
+    def _complete_financial_snapshot():
+        return {
+            'promotion': None, 'promotion_name': None,
+            'promotion_discount_type': None, 'promotion_discount_value': None,
+            'promotion_benefit': '0.00',
+            'manual_discount_intent': {'type': 'amount', 'value': '0.00'},
+            'manual_discount': '0.00', 'net_subtotal': '2.00',
+            'participates_in_service_fee': True,
+            'participates_in_commission': True,
+        }
 
     def test_inventory_alerts_are_active_unique_and_branch_scoped(self):
         negative = self._stock(self.product, self.branch, Decimal('-1'))
@@ -399,6 +448,113 @@ class OperationalAttentionTests(TestCase):
 
         self.assertEqual(direct, prefetched)
         self.assertEqual(direct['state'], 'REGULARIZATION_REQUIRED')
+
+    def test_command_financial_status_uses_one_historical_payment_rule_in_both_paths(self):
+        base = timezone.now()
+        complete = self._complete_financial_snapshot()
+        cases = []
+
+        command, item = self._financial_status_command(confirmed_at=base)
+        cases.append(('no payments', command, item, 'NORMAL'))
+
+        command, item = self._financial_status_command(
+            confirmed_at=base, financial_snapshot=complete,
+        )
+        self._historical_payment(command, created_at=base)
+        cases.append(('applied payment', command, item, 'NORMAL'))
+
+        command, item = self._financial_status_command(confirmed_at=base)
+        self._historical_payment(command, created_at=base, amount=Decimal('1.00'))
+        cases.append(('partial payment', command, item, 'REGULARIZATION_REQUIRED'))
+
+        command, item = self._financial_status_command(confirmed_at=base + timedelta(minutes=15))
+        self._historical_payment(
+            command, created_at=base + timedelta(minutes=10),
+            status=AttendancePaymentStatus.REVERSED,
+        )
+        self._historical_payment(command, created_at=base + timedelta(minutes=20))
+        cases.append(('reversed payment before first applied payment', command, item, 'REGULARIZATION_REQUIRED'))
+
+        command, item = self._financial_status_command(confirmed_at=base + timedelta(minutes=15))
+        pending = self._historical_payment(command, created_at=base + timedelta(minutes=10))
+        AttendancePayment.objects.filter(pk=pending.pk).update(status='pending')
+        self._historical_payment(command, created_at=base + timedelta(minutes=20))
+        cases.append(('legacy pending payment before first applied payment', command, item, 'REGULARIZATION_REQUIRED'))
+
+        command, item = self._financial_status_command(confirmed_at=base + timedelta(minutes=15))
+        applied = self._historical_payment(command, created_at=base + timedelta(minutes=10))
+        self._historical_payment(
+            command, created_at=base + timedelta(minutes=20),
+            status=AttendancePaymentStatus.REVERSED, reversal_of=applied,
+        )
+        cases.append(('applied payment subsequently reversed', command, item, 'NORMAL'))
+
+        command, item = self._financial_status_command(confirmed_at=base + timedelta(minutes=15))
+        self._historical_payment(command, created_at=base + timedelta(minutes=20))
+        self._historical_payment(command, created_at=base + timedelta(minutes=10))
+        cases.append(('multiple historical payments in date order', command, item, 'NORMAL'))
+
+        command, item = self._financial_status_command(
+            confirmed_at=base, financial_snapshot=complete,
+        )
+        self._historical_payment(command, created_at=base)
+        cases.append(('complete financial snapshots', command, item, 'NORMAL'))
+
+        command, item = self._financial_status_command(confirmed_at=base)
+        self._historical_payment(command, created_at=base)
+        cases.append(('incomplete financial snapshots', command, item, 'REGULARIZATION_REQUIRED'))
+
+        command, item = self._financial_status_command(
+            confirmed_at=base, service_fee_rate=None, financial_snapshot=complete,
+        )
+        self._historical_payment(command, created_at=base)
+        cases.append(('unknown historical service fee', command, item, 'REGULARIZATION_REQUIRED'))
+
+        command, item = self._financial_status_command(
+            confirmed_at=base, financial_snapshot=complete,
+        )
+        self._historical_payment(command, created_at=base)
+        AttendanceOperation.objects.create(
+            company=self.company, branch=self.branch,
+            operation_type=AttendanceOperationType.REGULARIZE_COMMAND_ITEM_FINANCIALS,
+            idempotency_key=uuid.uuid4(), payload_fingerprint=uuid.uuid4().hex * 2,
+            result={'command_id': command.pk},
+        )
+        cases.append(('already regularized command', command, item, 'REGULARIZED'))
+
+        for label, command, item, expected_state in cases:
+            with self.subTest(label=label):
+                direct = command_financial_status(command)
+                preloaded = command_financial_status(
+                    command,
+                    items=[item],
+                    payments=list(effective_command_payment_queryset().filter(command=command)),
+                )
+                self.assertEqual(direct, preloaded)
+                self.assertEqual(direct['state'], expected_state)
+
+    def test_command_attention_query_count_does_not_grow_per_command(self):
+        self._attention_command()
+
+        def query_count():
+            branch = Branch.objects.get(pk=self.branch.pk)
+            with CaptureQueriesContext(connection) as queries:
+                command_attention(branch)
+            return len(queries)
+
+        one_command_queries = query_count()
+        self._attention_command()
+        self.assertEqual(query_count(), one_command_queries)
+
+    def test_dashboard_accepts_the_reported_period_and_no_filter_for_an_authorized_branch(self):
+        dated = self.client.get('/api/v1/dashboard/', {
+            'start_datetime': '2026-10-15T00:00:00',
+            'end_datetime': '2026-10-15T23:59:59',
+        })
+        unfiltered = self.client.get('/api/v1/dashboard/')
+
+        self.assertEqual(dated.status_code, 200, dated.data)
+        self.assertEqual(unfiltered.status_code, 200, unfiltered.data)
 
     def test_cash_difference_resolution_requires_justification_and_close_permission(self):
         session = self._closed_difference()
