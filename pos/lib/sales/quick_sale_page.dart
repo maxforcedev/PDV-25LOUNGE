@@ -162,8 +162,13 @@ class _QuickSalePageState extends State<QuickSalePage> {
   }
 
   Future<void> _loadInitial() async {
-    await widget.controller.startNewQuickSale();
+    final recovery = widget.controller.startNewQuickSale();
     await Future.wait([_loadCatalog(), _loadCheckoutOptions()]);
+    final checkout = await recovery;
+    final options = _checkoutOptions;
+    if (mounted && checkout != null && options != null) {
+      await _openPayment(checkout, options);
+    }
   }
 
   Future<void> _openPayment(

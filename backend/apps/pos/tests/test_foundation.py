@@ -1371,6 +1371,39 @@ class POSFoundationIntegrationTests(TestCase):
             opened.data['id'],
         )
 
+    def test_quick_checkout_recovery_is_scoped_to_the_original_operator_and_device(self):
+        operator, paired = self.login_pos_operator()
+        register = CashRegister.objects.create(branch=self.branch, name='Recovery scope cash')
+        session = open_session(register, '0.00', operator, self.branch, allow_pos_only=True)
+        device = POSDevice.objects.get(pk=paired.data['device']['id'])
+        device.active_cash_session = session
+        device.save(update_fields=('active_cash_session', 'updated_at'))
+        payload = self.pos_sale_payload(session)
+        created = self.client.post(
+            reverse('pos:quick-checkout-create'),
+            {key: value for key, value in payload.items() if key not in {'cash_session', 'payments'}},
+            format='json',
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+
+        other_device, _ = self.pair_device(name='Recovery scope terminal B')
+        self.client.credentials(HTTP_X_POS_DEVICE_CREDENTIAL=other_device.data['device_credential'])
+        other_login = self.client.post(
+            reverse('pos:operator-login'),
+            {'operator_id': operator.pk, 'pin': '123456'}, format='json',
+        )
+        self.assertEqual(other_login.status_code, 200, other_login.data)
+        self.client.credentials(
+            HTTP_X_POS_DEVICE_CREDENTIAL=other_device.data['device_credential'],
+            HTTP_X_POS_OPERATOR_SESSION=other_login.data['operator_session']['token'],
+        )
+
+        recovered = self.client.get(
+            reverse('pos:quick-checkout-recover', args=[payload['idempotency_key']]),
+        )
+
+        self.assertEqual(recovered.status_code, 404, recovered.data)
+
     def test_quick_checkout_payment_rejects_changed_cash_context(self):
         operator, paired = self.login_pos_operator()
         first = CashRegister.objects.create(branch=self.branch, name='Checkout context A')

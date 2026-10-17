@@ -1,12 +1,77 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:core_pos/network/pos_api.dart';
+import 'package:core_pos/network/pos_api_error.dart';
 import 'package:core_pos/storage/secret_store.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
+  test('maps transport, malformed, and proxy responses to typed safe errors',
+      () async {
+    Future<Object> operatorsFor(
+        Future<http.Response> Function() response) async {
+      final api = HttpPosApi(
+        baseUrl: 'https://core.example',
+        secrets: _MemorySecretStore(),
+        client: MockClient((_) => response()),
+      );
+      try {
+        await api.operators();
+        throw StateError('Expected a POS error');
+      } catch (error) {
+        return error;
+      }
+    }
+
+    final timeout = await operatorsFor(
+        () => Future<http.Response>.error(TimeoutException('slow')));
+    expect(timeout, isA<PosNetworkException>());
+    expect((timeout as PosNetworkException).kind, PosNetworkErrorKind.timeout);
+
+    final dns = await operatorsFor(() => Future<http.Response>.error(
+        http.ClientException('Failed host lookup: core.example')));
+    expect(dns, isA<PosNetworkException>());
+    expect((dns as PosNetworkException).kind, PosNetworkErrorKind.dns);
+
+    for (final response in [
+      http.Response('', 200),
+      http.Response('{', 200),
+      http.Response('<html>gateway</html>', 502),
+    ]) {
+      final error = await operatorsFor(() async => response);
+      expect(error, isA<PosApiException>());
+      expect((error as PosApiException).kind, PosApiErrorKind.invalidResponse);
+    }
+  });
+
+  test('maps checkout HTTP statuses without exposing proxy or server details',
+      () async {
+    final expected = <int, PosApiErrorKind>{
+      401: PosApiErrorKind.authentication,
+      403: PosApiErrorKind.authorization,
+      409: PosApiErrorKind.conflict,
+      422: PosApiErrorKind.validation,
+      429: PosApiErrorKind.rateLimit,
+      503: PosApiErrorKind.unavailable,
+    };
+    for (final entry in expected.entries) {
+      final api = HttpPosApi(
+        baseUrl: 'https://core.example',
+        secrets: _MemorySecretStore(),
+        client: MockClient((_) async => http.Response(
+            jsonEncode({'detail': 'internal detail'}), entry.key)),
+      );
+      await expectLater(
+        api.operators(),
+        throwsA(isA<PosApiException>()
+            .having((error) => error.kind, 'kind', entry.value)),
+      );
+    }
+  });
+
   test('adds device and operator credentials outside widgets', () async {
     final secrets = _MemorySecretStore(
       deviceCredential: 'device-secret',

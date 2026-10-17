@@ -132,6 +132,38 @@ jobs:
       - name: Build Platform Admin
         run: npm run build
 
+  flutter:
+    name: Flutter POS checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pos
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: subosito/flutter-action@v2.21.0
+        with:
+          flutter-version: '3.29.3'
+          channel: stable
+          cache: true
+      - uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: flutter-gradle-${{ runner.os }}-${{ hashFiles('pos/android/**/*.gradle*', 'pos/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: flutter-gradle-${{ runner.os }}-
+      - name: Verify Android toolchain
+        run: flutter doctor --verbose
+      - name: Get Flutter dependencies
+        run: flutter pub get
+      - name: Analyze Flutter POS
+        # Existing lint debt remains visible, while analyzer errors remain blocking.
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+      - name: Run Flutter tests
+        run: flutter test
+      - name: Build Android validation APK
+        run: flutter build apk --debug
+
   containers:
     name: Production container builds
     runs-on: ubuntu-latest
@@ -139,6 +171,7 @@ jobs:
       - backend
       - frontend
       - platform-admin
+      - flutter
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Prepare release metadata

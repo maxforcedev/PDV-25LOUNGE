@@ -6,6 +6,7 @@ import 'package:core_pos/bootstrap/bootstrap_models.dart';
 import 'package:core_pos/cash/cash_models.dart';
 import 'package:core_pos/core/app_controller.dart';
 import 'package:core_pos/network/pos_api.dart';
+import 'package:core_pos/network/pos_api_error.dart';
 import 'package:core_pos/pairing/pairing_models.dart';
 import 'package:core_pos/sales/quick_sale_page.dart';
 import 'package:core_pos/sales/sale_models.dart';
@@ -233,7 +234,7 @@ void main() {
     expect(find.text('Qtd. 2'), findsOneWidget);
   });
 
-  testWidgets('starts clean instead of restoring a prior checkout',
+  testWidgets('clears a prior checkout only after an authoritative 404',
       (tester) async {
     final storage = _MemorySecretStore()
       ..quickSaleCheckoutState = jsonEncode({
@@ -247,6 +248,11 @@ void main() {
         enforced: true,
         shortages: [],
       ),
+      recoveryError: const PosApiException(
+        statusCode: 404,
+        code: 'not_found',
+        message: 'Ausente',
+      ),
     );
     final restored = controller(api, storage)
       ..selectedOperator = const PosOperator(
@@ -256,6 +262,7 @@ void main() {
 
     expect(find.text('Qtd. 1'), findsNothing);
     expect(jsonDecode(storage.quickSaleCheckoutState!), isEmpty);
+    await tester.pump(const Duration(seconds: 5));
   });
 
   testWidgets('shows the official completed-sale confirmation', (tester) async {
@@ -280,7 +287,8 @@ void main() {
 }
 
 class _QuickSaleApi implements PosApi {
-  _QuickSaleApi(this.availability, {List<QuickSaleProduct>? catalog})
+  _QuickSaleApi(this.availability,
+      {List<QuickSaleProduct>? catalog, this.recoveryError})
       : catalog = catalog ??
             const [
               QuickSaleProduct(
@@ -296,6 +304,7 @@ class _QuickSaleApi implements PosApi {
   final Future<QuickSaleStockAvailability> Function(List<Map<String, dynamic>>)
       availability;
   final List<QuickSaleProduct> catalog;
+  final PosApiException? recoveryError;
   var previewCalls = 0;
 
   @override
@@ -336,6 +345,12 @@ class _QuickSaleApi implements PosApi {
       serviceFeeAmount: '0.00',
       total: '0.00',
     );
+  }
+
+  @override
+  Future<QuickSaleCheckout> getQuickSaleCheckout(String checkoutId) async {
+    if (recoveryError != null) throw recoveryError!;
+    throw UnimplementedError();
   }
 
   @override

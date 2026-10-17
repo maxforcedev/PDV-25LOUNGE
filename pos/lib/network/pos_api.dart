@@ -521,10 +521,21 @@ class HttpPosApi implements PosApi, PosCredentialCache {
       };
       logPosDebugTiming('$method http_received');
     } on http.ClientException catch (error) {
-      throw PosNetworkException(error.message);
+      final normalized = error.message.toLowerCase();
+      final isDns = normalized.contains('failed host lookup') ||
+          normalized.contains('host lookup') ||
+          normalized.contains('dns');
+      throw PosNetworkException(
+        isDns
+            ? 'Não foi possível localizar o servidor do CORE PDV. Verifique a conexão e tente novamente.'
+            : 'Não foi possível conectar ao CORE PDV. Verifique a internet e tente novamente.',
+        kind: isDns ? PosNetworkErrorKind.dns : PosNetworkErrorKind.connection,
+      );
     } on TimeoutException {
       throw const PosNetworkException(
-          'A conexão demorou demais. Verifique a internet e tente novamente.');
+        'A conexão demorou demais. Verifique a internet e tente novamente.',
+        kind: PosNetworkErrorKind.timeout,
+      );
     }
     if (kDebugMode && response.statusCode >= 400) {
       debugPrint(
@@ -532,15 +543,94 @@ class HttpPosApi implements PosApi, PosCredentialCache {
         'status=${response.statusCode} body=${sensitiveResponse ? '[redacted]' : response.body}',
       );
     }
-    final decoded =
-        response.body.isEmpty ? <String, dynamic>{} : jsonDecode(response.body);
-    final payload =
-        decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+    final responseBody = response.body.trim();
+    if (responseBody.isEmpty) {
+      if (response.statusCode >= 200 &&
+          response.statusCode < 300 &&
+          response.statusCode != 204) {
+        throw const PosApiException(
+          statusCode: 200,
+          code: 'empty_response',
+          message:
+              'O CORE PDV enviou uma resposta incompleta. Tente novamente.',
+          kind: PosApiErrorKind.invalidResponse,
+        );
+      }
+      if (response.statusCode == 204) return <String, dynamic>{};
+    }
+    if (responseBody.startsWith('<!DOCTYPE') ||
+        responseBody.startsWith('<html') ||
+        responseBody.startsWith('<HTML')) {
+      throw PosApiException(
+        statusCode: response.statusCode,
+        code: 'proxy_response',
+        message:
+            'O CORE PDV recebeu uma resposta inválida da rede. Tente novamente.',
+        kind: PosApiErrorKind.invalidResponse,
+      );
+    }
+    dynamic decoded;
+    try {
+      decoded =
+          responseBody.isEmpty ? <String, dynamic>{} : jsonDecode(responseBody);
+    } on FormatException {
+      throw PosApiException(
+        statusCode: response.statusCode,
+        code: 'invalid_json_response',
+        message: 'O CORE PDV enviou uma resposta inválida. Tente novamente.',
+        kind: PosApiErrorKind.invalidResponse,
+      );
+    }
+    if (decoded is! Map && decoded is! List) {
+      throw PosApiException(
+        statusCode: response.statusCode,
+        code: 'unexpected_response',
+        message: 'O CORE PDV enviou uma resposta inesperada. Tente novamente.',
+        kind: PosApiErrorKind.invalidResponse,
+      );
+    }
+    final payload = decoded is Map
+        ? Map<String, dynamic>.from(decoded)
+        : <String, dynamic>{};
     if (response.statusCode >= 200 && response.statusCode < 300) return decoded;
-    final code = payload['code'] as String? ??
-        (response.statusCode == 401
-            ? 'authentication_failed'
-            : 'request_failed');
+    final defaultError = switch (response.statusCode) {
+      401 => (
+          'authentication_failed',
+          'Sua sessão expirou. Entre novamente.',
+          PosApiErrorKind.authentication
+        ),
+      403 => (
+          'access_denied',
+          'Você não possui acesso a esta operação.',
+          PosApiErrorKind.authorization
+        ),
+      409 => (
+          'operation_conflict',
+          'A operação mudou no servidor. Atualize e confira antes de continuar.',
+          PosApiErrorKind.conflict
+        ),
+      422 => (
+          'validation_failed',
+          'Confira os dados informados e tente novamente.',
+          PosApiErrorKind.validation
+        ),
+      429 => (
+          'rate_limited',
+          'Muitas tentativas. Aguarde alguns instantes e tente novamente.',
+          PosApiErrorKind.rateLimit
+        ),
+      >= 500 => (
+          'service_unavailable',
+          'O CORE PDV está indisponível no momento. Tente novamente em breve.',
+          PosApiErrorKind.unavailable
+        ),
+      _ => (
+          'request_failed',
+          'Não foi possível concluir a solicitação. Tente novamente.',
+          PosApiErrorKind.request
+        ),
+    };
+    final code = payload['code'] as String? ?? defaultError.$1;
     final details = payload['details'] is Map<String, dynamic>
         ? payload['details'] as Map<String, dynamic>
         : Map<String, dynamic>.fromEntries(payload.entries.where((entry) =>
@@ -559,11 +649,14 @@ class HttpPosApi implements PosApi, PosCredentialCache {
     throw PosApiException(
       statusCode: response.statusCode,
       code: code,
-      message: payload['message'] as String? ??
-          payload['detail'] as String? ??
-          validationMessage ??
-          'Falha ao comunicar com o CORE.',
+      message: response.statusCode == 422
+          ? payload['message'] as String? ??
+              payload['detail'] as String? ??
+              validationMessage ??
+              defaultError.$2
+          : defaultError.$2,
       details: details,
+      kind: defaultError.$3,
     );
   }
 

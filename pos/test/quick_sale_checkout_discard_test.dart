@@ -75,6 +75,37 @@ void main() {
         'reverse-key');
   });
 
+  test(
+      'starting a new sale reopens an uncertain checkout instead of erasing it',
+      () async {
+    final storage = _MemorySecretStore.forCheckout('checkout-a', pending: {
+      'finalize': 'finalize-key',
+    });
+    final api = _CheckoutApi(_checkout());
+
+    final recovered = await controller(api, storage).startNewQuickSale();
+
+    expect(recovered?.id, 'checkout-a');
+    final state =
+        jsonDecode(storage.quickSaleCheckoutState!) as Map<String, dynamic>;
+    expect(state['operators']['operator-1']['pending']['finalize'],
+        'finalize-key');
+    expect(api.cancelledCheckoutId, isNull);
+  });
+
+  test(
+      'server-finalized recovery clears local state without replaying finalization',
+      () async {
+    final storage = _MemorySecretStore.forCheckout('checkout-a', pending: {
+      'finalize': 'finalize-key',
+    });
+    final api = _CheckoutApi(_checkout(status: 'finalized', saleId: 1));
+
+    expect(await controller(api, storage).recoverQuickSaleCheckout(), isNull);
+    expect(jsonDecode(storage.quickSaleCheckoutState!), isEmpty);
+    expect(api.finalizeCalls, 0);
+  });
+
   test('keeps storage when cancellation is not confirmed as cancelled',
       () async {
     final storage = _MemorySecretStore.forCheckout('checkout-a');
@@ -130,6 +161,7 @@ void main() {
 QuickSaleCheckout _checkout({
   List<QuickSaleCheckoutPayment> payments = const [],
   String status = 'editing',
+  int? saleId,
 }) =>
     QuickSaleCheckout(
       id: 'checkout-a',
@@ -156,6 +188,7 @@ QuickSaleCheckout _checkout({
       canPayByItems: false,
       canFinalize: false,
       canReversePayment: true,
+      saleId: saleId,
     );
 
 QuickSaleCheckoutPayment _payment({
@@ -217,6 +250,7 @@ class _CheckoutApi implements PosApi {
   final QuickSaleCheckout? cancelResponse;
   final PosApiException? recoveryError;
   String? cancelledCheckoutId;
+  var finalizeCalls = 0;
 
   @override
   Future<QuickSaleCheckout> cancelQuickSaleCheckout({
@@ -231,6 +265,15 @@ class _CheckoutApi implements PosApi {
   Future<QuickSaleCheckout> getQuickSaleCheckout(String checkoutId) async {
     if (recoveryError != null) throw recoveryError!;
     return checkout;
+  }
+
+  @override
+  Future<QuickSaleResult> finalizeQuickSaleCheckout({
+    required String checkoutId,
+    required String idempotencyKey,
+  }) async {
+    finalizeCalls++;
+    throw UnimplementedError();
   }
 
   @override
