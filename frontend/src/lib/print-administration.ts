@@ -1,3 +1,28 @@
+import type { User, UserBranch } from "@/types";
+
+export const printAdministrationPermissions = [
+  "printers.manage",
+  "print_routes.manage",
+  "print_jobs.view",
+] as const;
+
+export function authorizedPrinterBranches(
+  user: User | null,
+  companyId: number | undefined,
+  readOnly = false,
+): UserBranch[] {
+  if (!user || !companyId) return [];
+  const allowed = readOnly
+    ? ["print_jobs.view"]
+    : printAdministrationPermissions;
+  return user.branches.filter((branch) =>
+    branch.company_id === companyId
+    && branch.status === "active"
+    && branch.features.production?.enabled
+    && (user.is_superuser || allowed.some((permission) => branch.permissions.includes(permission))),
+  );
+}
+
 export type PrintRouteDraft = {
   document_type: string;
   mode: string;

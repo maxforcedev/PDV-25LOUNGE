@@ -100,3 +100,56 @@ test("equipment and history retain independent delayed loads", async () => {
   await screen.findByText("Cozinha");
   rendered.unmount();
 });
+
+test("route saves lock editing and defer a branch switch until the response is current", async () => {
+  const { DocumentPrintRoutes, AuthContext, fireEvent, render, screen, waitFor } = await components();
+  const save = deferred<Response>();
+  let saves = 0;
+  globalThis.fetch = (input: URL | RequestInfo) => {
+    const url = String(input);
+    if (url.includes("auth/csrf")) return Promise.resolve(json({ csrf_token: "test" }));
+    if (url.includes("bulk-update/")) { saves += 1; return save.promise; }
+    if (url.includes("print-routes/")) return Promise.resolve(json({ results: [{ id: 1, branch: 1, document_type: "ticket", mode: "automatic", printer_device_ids: [7], copies: 1, document_format: "detailed", created_at: "", updated_at: "" }], next: null }));
+    if (url.includes("route-options/")) return Promise.resolve(json({ results: [{ id: 7, name: "Cozinha", status: "active", connection_type: "network" }], next: null }));
+    throw new Error(`Unexpected request ${url}`);
+  };
+
+  const rendered = render(withAuth(AuthContext, <DocumentPrintRoutes branchId={1} branchName="Filial A" />));
+  const ticket = (await screen.findByText("Ticket")).closest("article")!;
+  const copies = ticket.querySelector("input")!;
+  fireEvent.change(copies, { target: { value: "2" } });
+  fireEvent.click(screen.getByRole("button", { name: /Salvar alterações/ }));
+  await waitFor(() => assert.equal(saves, 1));
+  assert.equal((copies as HTMLInputElement).disabled, true);
+  fireEvent.change(copies, { target: { value: "3" } });
+  assert.equal((copies as HTMLInputElement).value, "2");
+  fireEvent.click(screen.getByRole("button", { name: /Salvar alterações/ }));
+  assert.equal(saves, 1);
+
+  rendered.rerender(withAuth(AuthContext, <DocumentPrintRoutes branchId={2} branchName="Filial B" />));
+  assert.match(screen.getByText(/Filial: Filial A/).textContent || "", /Filial A/);
+  save.resolve(json([{ id: 1, branch: 1, document_type: "ticket", mode: "automatic", printer_device_ids: [7], copies: 2, document_format: "detailed", created_at: "", updated_at: "" }]));
+  await screen.findByText(/Filial: Filial B/);
+  rendered.unmount();
+});
+
+test("route save errors keep the local draft available for retry", async () => {
+  const { DocumentPrintRoutes, AuthContext, fireEvent, render, screen, waitFor } = await components();
+  globalThis.fetch = (input: URL | RequestInfo) => {
+    const url = String(input);
+    if (url.includes("auth/csrf")) return Promise.resolve(json({ csrf_token: "test" }));
+    if (url.includes("bulk-update/")) return Promise.resolve(new Response(JSON.stringify({ detail: "Configuração inválida" }), { status: 400, headers: { "content-type": "application/json" } }));
+    if (url.includes("print-routes/")) return Promise.resolve(json({ results: [{ id: 1, branch: 1, document_type: "ticket", mode: "automatic", printer_device_ids: [7], copies: 1, document_format: "detailed", created_at: "", updated_at: "" }], next: null }));
+    if (url.includes("route-options/")) return Promise.resolve(json({ results: [{ id: 7, name: "Cozinha", status: "active", connection_type: "network" }], next: null }));
+    throw new Error(`Unexpected request ${url}`);
+  };
+  const rendered = render(withAuth(AuthContext, <DocumentPrintRoutes branchId={1} branchName="Filial A" />));
+  const ticket = (await screen.findByText("Ticket")).closest("article")!;
+  const copies = ticket.querySelector("input")!;
+  fireEvent.change(copies, { target: { value: "2" } });
+  fireEvent.click(screen.getByRole("button", { name: /Salvar alterações/ }));
+  await waitFor(() => assert.match(screen.getByText("Configuração inválida").textContent || "", /inválida/));
+  assert.equal((copies as HTMLInputElement).value, "2");
+  assert.equal((copies as HTMLInputElement).disabled, false);
+  rendered.unmount();
+});

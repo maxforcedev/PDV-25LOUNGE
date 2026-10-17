@@ -53,7 +53,7 @@ function routePayload(route: Route) {
   };
 }
 
-export function DocumentPrintRoutes({ posDeviceId, branchId, branchName, onDirtyChange }: { posDeviceId?: string; branchId?: number | string; branchName?: string; onDirtyChange?: (dirty: boolean) => void }) {
+export function DocumentPrintRoutes({ posDeviceId, branchId, branchName, onDirtyChange, onSavingChange }: { posDeviceId?: string; branchId?: number | string; branchName?: string; onDirtyChange?: (dirty: boolean) => void; onSavingChange?: (saving: boolean) => void }) {
   const { currentBranch, supportSession, user } = useAuth();
   const selectedBranchId = branchId ?? currentBranch?.id;
   const selectedBranchName = branchName ?? user?.branches.find((branch) => String(branch.id) === String(selectedBranchId))?.name ?? currentBranch?.name ?? "nenhuma";
@@ -75,6 +75,7 @@ export function DocumentPrintRoutes({ posDeviceId, branchId, branchName, onDirty
   const dirty = !posDeviceId && !!baseline && baseline !== comparable(routes);
 
   useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => { onSavingChange?.(saving); }, [saving, onSavingChange]);
   useEffect(() => {
     if (!dirty) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
@@ -129,6 +130,9 @@ export function DocumentPrintRoutes({ posDeviceId, branchId, branchName, onDirty
   const loadCurrent = useEffectEvent(() => { void load(); });
   useEffect(() => {
     if (String(selectedBranchId) === String(activeBranchId)) return;
+    // A parent may propose a new branch while a save is in flight. Keep the
+    // current context until it completes so its response cannot target another branch.
+    if (saving) return;
     if (dirty && !window.confirm("Há alterações de rotas não salvas. Deseja descartá-las ao trocar de filial?")) return;
     revision.current += 1;
     activeBranchName.current = selectedBranchName;
@@ -144,6 +148,7 @@ export function DocumentPrintRoutes({ posDeviceId, branchId, branchName, onDirty
   }, [activeBranchId, posDeviceId]);
 
   function update(type: PrintDocumentType, changes: Changes, inherited?: PrintRoute) {
+    if (saving || readOnly) return;
     revision.current += 1;
     setRoutes((items) => {
       const existing = items.find((item) => item.document_type === type);
@@ -154,13 +159,14 @@ export function DocumentPrintRoutes({ posDeviceId, branchId, branchName, onDirty
   }
 
   function refresh() {
+    if (saving) return;
     if (dirty && !window.confirm("Há alterações de rotas não salvas. Deseja descartá-las e atualizar?")) return;
     revision.current += 1;
     void load();
   }
 
   async function saveAll() {
-    if (!activeBranchId || readOnly) return;
+    if (!activeBranchId || readOnly || saving) return;
     const changed = documentTypes.map((definition) => valueFor(definition.value).value).filter((route) => {
       const original = baselineRoutes.current.find((item) => item.document_type === route.document_type);
       return !original || routeSnapshot(route) !== routeSnapshot(original);
@@ -172,12 +178,14 @@ export function DocumentPrintRoutes({ posDeviceId, branchId, branchName, onDirty
     }
     if (!changed.length) return;
     const token = ++saveRequest.current;
+    const savingBranchId = activeBranchId;
+    const savingRevision = revision.current;
     setSaving(true);
     setError("");
     setSuccess("");
     try {
-      const saved = await http.post<PrintRoute[]>("print-routes/bulk-update/", { routes: changed.map(routePayload) }, { branchId: activeBranchId });
-      if (token !== saveRequest.current) return;
+      const saved = await http.post<PrintRoute[]>("print-routes/bulk-update/", { routes: changed.map(routePayload) }, { branchId: savingBranchId });
+      if (token !== saveRequest.current || savingBranchId !== activeBranchId || savingRevision !== revision.current) return;
       const savedByType = new Map(saved.map((route) => [route.document_type, route]));
       const next = routes.map((route) => savedByType.get(route.document_type) || route);
       baselineRoutes.current = next;
@@ -185,14 +193,14 @@ export function DocumentPrintRoutes({ posDeviceId, branchId, branchName, onDirty
       setBaseline(comparable(next));
       setSuccess("Alterações de rotas salvas.");
     } catch (caught) {
-      if (token === saveRequest.current) setError(message(caught, "Nenhuma rota foi salva. Revise as configurações destacadas."));
+      if (token === saveRequest.current && savingBranchId === activeBranchId) setError(message(caught, "Nenhuma rota foi salva. Revise as configurações destacadas."));
     } finally {
       if (token === saveRequest.current) setSaving(false);
     }
   }
 
   async function saveOverride(type: PrintDocumentType) {
-    if (!activeBranchId || !posDeviceId || readOnly) return;
+    if (!activeBranchId || !posDeviceId || readOnly || saving) return;
     const { route, value } = valueFor(type);
     const invalid = value.mode !== "disabled" && (!value.printer_device_ids.length || invalidPrinterNames(value).length);
     if (invalid) { setError("Rotas ativas precisam usar ao menos uma impressora NETWORK ativa."); return; }
@@ -215,7 +223,7 @@ export function DocumentPrintRoutes({ posDeviceId, branchId, branchName, onDirty
 
   async function inherit(type: PrintDocumentType) {
     const route = routes.find((item) => item.document_type === type);
-    if (!route || !activeBranchId) return;
+    if (!route || !activeBranchId || saving) return;
     const token = ++saveRequest.current;
     setSaving(true);
     setError("");
@@ -243,8 +251,8 @@ export function DocumentPrintRoutes({ posDeviceId, branchId, branchName, onDirty
       return <article key={definition.value} className={`rounded-lg border p-4 ${invalid ? "border-danger/50" : "border-subtle"}`}>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><strong className="text-sm">{definition.label}</strong>{isInherited && <span className="ml-2 rounded-full bg-surface-muted px-2 py-1 text-[11px] font-semibold text-muted">Herdando da filial</span>}</div><span className="text-xs text-muted">{modeLabels[value.mode]}</span></div>
         {invalidNames.length > 0 && <Alert message={`Associação indisponível: ${invalidNames.join(", ")}. Remova ou substitua a impressora para ativar esta rota.`} />}
-        <div className="grid gap-3 md:grid-cols-3"><Field label="Modo"><Select value={value.mode} disabled={readOnly} onChange={(event) => update(definition.value, { mode: event.target.value as PrintRouteMode }, inherited)}>{Object.entries(modeLabels).map(([mode, label]) => <option key={mode} value={mode}>{label}</option>)}</Select></Field><Field label="Cópias"><Input type="number" min="1" max="10" value={value.copies} disabled={readOnly} onChange={(event) => update(definition.value, { copies: Number(event.target.value) || 1 }, inherited)} /></Field>{definition.format && <Field label="Formato"><Select value={value.document_format} disabled={readOnly} onChange={(event) => update(definition.value, { document_format: event.target.value as PrintDocumentFormat }, inherited)}><option value="detailed">Detalhado</option><option value="simplified">Simplificado</option></Select></Field>}</div>
-        <Field label="Impressoras NETWORK"><select multiple className="input mt-1 min-h-28 w-full" value={value.printer_device_ids.map(String)} disabled={readOnly} onChange={(event) => update(definition.value, { printer_device_ids: Array.from(event.currentTarget.selectedOptions, (option) => Number(option.value)) }, inherited)}>{printers.map((device) => <option key={device.id} value={device.id} disabled={!eligible(device)}>{device.name}{eligible(device) ? "" : device.status === "inactive" ? " (arquivada)" : " (transporte incompatível)"}</option>)}</select></Field>
+        <div className="grid gap-3 md:grid-cols-3"><Field label="Modo"><Select value={value.mode} disabled={readOnly || saving} onChange={(event) => update(definition.value, { mode: event.target.value as PrintRouteMode }, inherited)}>{Object.entries(modeLabels).map(([mode, label]) => <option key={mode} value={mode}>{label}</option>)}</Select></Field><Field label="Cópias"><Input type="number" min="1" max="10" value={value.copies} disabled={readOnly || saving} onChange={(event) => update(definition.value, { copies: Number(event.target.value) || 1 }, inherited)} /></Field>{definition.format && <Field label="Formato"><Select value={value.document_format} disabled={readOnly || saving} onChange={(event) => update(definition.value, { document_format: event.target.value as PrintDocumentFormat }, inherited)}><option value="detailed">Detalhado</option><option value="simplified">Simplificado</option></Select></Field>}</div>
+        <Field label="Impressoras NETWORK"><select multiple className="input mt-1 min-h-28 w-full" value={value.printer_device_ids.map(String)} disabled={readOnly || saving} onChange={(event) => update(definition.value, { printer_device_ids: Array.from(event.currentTarget.selectedOptions, (option) => Number(option.value)) }, inherited)}>{printers.map((device) => <option key={device.id} value={device.id} disabled={!eligible(device)}>{device.name}{eligible(device) ? "" : device.status === "inactive" ? " (arquivada)" : " (transporte incompatível)"}</option>)}</select></Field>
         {value.mode !== "disabled" && !printers.some(eligible) && <p className="mt-2 text-xs text-danger-strong">Não há impressora NETWORK ativa elegível nesta filial. Esta rota não pode ser ativada.</p>}
         {posDeviceId && <div className="mt-3 flex gap-2"><Button disabled={readOnly || saving} loading={saving} onClick={() => void saveOverride(definition.value)}>Salvar override</Button>{route && !isInherited && <Button variant="secondary" disabled={saving} onClick={() => void inherit(definition.value)}>Voltar a herdar</Button>}</div>}
       </article>;

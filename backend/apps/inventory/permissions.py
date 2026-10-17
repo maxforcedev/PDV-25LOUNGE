@@ -17,8 +17,9 @@ class InventoryFunctionalPermission(BasePermission):
         code = self.get_code(view)
         return code if isinstance(code, (tuple, list, set, frozenset)) else (code,)
 
-    def requires_any_code(self, view):
-        return getattr(view, 'permission_code_mode', {}).get(view.action) == 'any'
+    def requires_all_codes(self, view):
+        """Multiple codes are alternatives unless an action opts into conjunction."""
+        return getattr(view, 'permission_code_mode', {}).get(view.action) == 'all'
 
     def has_permission(self, request, view):
         user = request.user
@@ -47,7 +48,7 @@ class InventoryFunctionalPermission(BasePermission):
             user_has_branch_permission(user, branch_id, code) for code in codes
         )
         return user.is_superuser or (
-            any(matches) if self.requires_any_code(view) else all(matches)
+            all(matches) if self.requires_all_codes(view) else any(matches)
         )
 
     def has_object_permission(self, request, view, obj):
@@ -80,4 +81,4 @@ class InventoryFunctionalPermission(BasePermission):
             user_has_branch_permission(request.user, branch.pk, code)
             for code in self.get_codes(view)
         )
-        return any(matches) if self.requires_any_code(view) else all(matches)
+        return all(matches) if self.requires_all_codes(view) else any(matches)

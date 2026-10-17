@@ -39,6 +39,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/providers/auth-provider";
 import { permissions, reportMenuPermissions } from "@/lib/permissions";
+import { authorizedPrinterBranches } from "@/lib/print-administration";
 import { release } from "@/lib/release";
 import { Alert, Spinner } from "@/components/ui";
 import { useBranding } from "@/providers/branding-provider";
@@ -46,7 +47,7 @@ import { BrandWordmark } from "@/components/marketing/brand-wordmark";
 import { UserAvatar } from "@/components/user-avatar";
 import type { BranchFeature, FeaturePermissionAlternative } from "@/types";
 
-type NavItem = { href: string; label: string; icon: typeof LayoutDashboard; requiredPermissions: readonly string[]; requiredFeatures?: readonly BranchFeature[]; anyFeature?: boolean; alternatives?: readonly FeaturePermissionAlternative[] };
+type NavItem = { href: string; label: string; icon: typeof LayoutDashboard; requiredPermissions: readonly string[]; requiredFeatures?: readonly BranchFeature[]; anyFeature?: boolean; alternatives?: readonly FeaturePermissionAlternative[]; printerAdministration?: boolean };
 
 const mainNavigation: NavItem[] = [
   {
@@ -90,7 +91,7 @@ const suprimentosNavigation: NavItem[] = [
 const gestaoNavigation: NavItem[] = [
   { href: "/usuarios", label: "Usuários", icon: Users, requiredPermissions: [permissions.viewUser] },
   { href: "/perfis", label: "Perfis de acesso", icon: ShieldCheck, requiredPermissions: [permissions.viewAccessProfile] },
-  { href: "/filiais", label: "Meu negócio", icon: GitBranch, requiredPermissions: [permissions.viewBranch, permissions.addBranch, permissions.changeBranch] },
+  { href: "/filiais", label: "Meu negócio", icon: GitBranch, requiredPermissions: [permissions.viewBranch, permissions.addBranch, permissions.changeBranch], printerAdministration: true },
   { href: "/pos-dispositivos", label: "Dispositivos POS", icon: MonitorSmartphone, requiredPermissions: [permissions.viewPosDevices, permissions.managePosDevices], requiredFeatures: ["pos"] },
 ];
 
@@ -124,7 +125,7 @@ function Sidebar({
   collapsed?: boolean;
 }) {
   const pathname = usePathname();
-  const { hasAnyPermission, hasFeature, hasPermission, currentCompany } = useAuth();
+  const { hasAnyPermission, hasFeature, hasPermission, currentCompany, supportSession, user } = useAuth();
   const restrictedOwner = Boolean(currentCompany?.is_owner && !currentCompany.can_operate);
   const navigation = restrictedOwner ? [{
     href: "/assinatura",
@@ -152,9 +153,14 @@ function Sidebar({
       const alternativesAllowed = item.alternatives?.some(({ permission, features }) =>
         hasPermission(permission) && features.every(hasFeature)
       );
+      const printerAllowed = item.printerAdministration && authorizedPrinterBranches(
+        user,
+        currentCompany?.id,
+        supportSession?.mode === "READ_ONLY",
+      ).length > 0;
       return item.alternatives
         ? alternativesAllowed
-        : featuresAllowed && hasAnyPermission(item.requiredPermissions);
+        : printerAllowed || (featuresAllowed && hasAnyPermission(item.requiredPermissions));
     }),
   ];
   const activeHref = navigation

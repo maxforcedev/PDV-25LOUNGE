@@ -1,4 +1,5 @@
 import { permissions, reportMenuPermissions } from "@/lib/permissions";
+import { authorizedPrinterBranches } from "@/lib/print-administration";
 import type { BranchFeature, FeaturePermissionAlternative, User, UserBranch, UserCompany } from "@/types";
 
 const routes: Array<{
@@ -7,6 +8,7 @@ const routes: Array<{
   features?: readonly BranchFeature[];
   anyFeature?: boolean;
   alternatives?: readonly FeaturePermissionAlternative[];
+  printerAdministration?: boolean;
 }> = [
   { href: "/dashboard", permissions: [permissions.viewDashboard], features: ["reports"] },
   { href: "/atencao-operacional", permissions: [permissions.viewDashboard], features: ["reports"] },
@@ -29,7 +31,7 @@ const routes: Array<{
   { href: "/estoque", permissions: [permissions.viewInventory], features: ["inventory"] },
   { href: "/usuarios", permissions: [permissions.viewUser] },
   { href: "/perfis", permissions: [permissions.viewAccessProfile] },
-  { href: "/filiais", permissions: [permissions.viewBranch, permissions.addBranch, permissions.changeBranch] },
+  { href: "/filiais", permissions: [permissions.viewBranch, permissions.addBranch, permissions.changeBranch], printerAdministration: true },
   { href: "/pos-dispositivos", permissions: [permissions.viewPosDevices, permissions.managePosDevices], features: ["pos"] },
   { href: "/relatorios", permissions: reportMenuPermissions, features: ["reports"] },
 ];
@@ -60,7 +62,12 @@ export function firstAuthorizedRoute(
     const alternativeAllowed = route.alternatives?.some(({ permission, features }) =>
       branch?.permissions.includes(permission) && features.every((feature) => branch.features?.[feature]?.enabled)
     );
-    if (route.alternatives ? alternativeAllowed : permitted && featureAllowed) return route.href;
+    const printerAllowed = route.printerAdministration && authorizedPrinterBranches(
+      user,
+      company?.id,
+      user.support_session?.mode === "READ_ONLY",
+    ).length > 0;
+    if (route.alternatives ? alternativeAllowed : printerAllowed || permitted && featureAllowed) return route.href;
   }
   return company?.is_owner ? "/assinatura" : "/perfil";
 }

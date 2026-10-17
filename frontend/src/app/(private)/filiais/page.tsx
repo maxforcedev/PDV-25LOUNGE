@@ -31,6 +31,7 @@ import {
 } from "@/components/ui";
 import { fieldError, formatDate, formatEditableDecimal } from "@/lib/format";
 import { ApiError, http } from "@/lib/http";
+import { authorizedPrinterBranches } from "@/lib/print-administration";
 import { permissions } from "@/lib/permissions";
 import {
   formatZipCode,
@@ -144,6 +145,7 @@ function BranchesAdministration() {
   const [settingsBranch, setSettingsBranch] = useState<Branch | null>(null);
   const [printersBranch, setPrintersBranch] = useState<Branch | null>(null);
   const [printerRoutesDirty, setPrinterRoutesDirty] = useState(false);
+  const [printerRoutesSaving, setPrinterRoutesSaving] = useState(false);
   const [settings, setSettings] = useState<BranchSettings | null>(null);
   const [settingsFields, setSettingsFields] = useState<
     Record<string, string[]>
@@ -515,6 +517,7 @@ function BranchesAdministration() {
       ].some((permission) => targetAccess.permissions.includes(permission))
     ) return;
     setPrinterRoutesDirty(false);
+    setPrinterRoutesSaving(false);
     setPrintersBranch(branch);
   }
 
@@ -972,6 +975,7 @@ function BranchesAdministration() {
         title={`Impressoras · ${printersBranch?.name || "filial"}`}
         description="Cadastre os setores de impressão desta filial sem precisar selecionar a unidade novamente."
         onClose={() => {
+          if (printerRoutesSaving) return;
           if (printerRoutesDirty && !window.confirm("Há alterações de rotas não salvas. Deseja descartá-las?")) return;
           setPrinterRoutesDirty(false);
           setPrintersBranch(null);
@@ -980,7 +984,7 @@ function BranchesAdministration() {
         tall
       >
         <div className="p-5 sm:p-6">
-          {printersBranch && <PrinterManagement embedded branchId={printersBranch.id} branchName={printersBranch.name} branchPermissions={user?.branches.find((branch) => branch.id === printersBranch.id)?.permissions} onRouteChanges={setPrinterRoutesDirty} />}
+          {printersBranch && <PrinterManagement embedded branchId={printersBranch.id} branchName={printersBranch.name} branchPermissions={user?.branches.find((branch) => branch.id === printersBranch.id)?.permissions} onRouteChanges={setPrinterRoutesDirty} onRouteSavingChange={setPrinterRoutesSaving} />}
         </div>
       </Modal>
       <ConfirmDialog
@@ -997,14 +1001,69 @@ function BranchesAdministration() {
   );
 }
 
+function LimitedPrinterAdministration() {
+  const { currentCompany, supportSession, user } = useAuth();
+  const branches = authorizedPrinterBranches(
+    user,
+    currentCompany?.id,
+    supportSession?.mode === "READ_ONLY",
+  );
+  const [branchId, setBranchId] = useState<number | null>(branches[0]?.id ?? null);
+  const [routesSaving, setRoutesSaving] = useState(false);
+  const selected = branches.find((branch) => branch.id === branchId) ?? branches[0] ?? null;
+
+  useEffect(() => {
+    if (!branches.some((branch) => branch.id === branchId)) setBranchId(branches[0]?.id ?? null);
+  }, [branchId, branches]);
+
+  return <>
+    <PageHeader
+      title="Meu negócio"
+      description="Administração de impressão nas filiais autorizadas."
+    />
+    <div className="space-y-4 p-4 sm:p-6 lg:p-8">
+      <section className="card max-w-3xl p-5">
+        <Field label="Filial autorizada">
+          <Select
+            value={selected?.id ?? ""}
+            disabled={routesSaving || branches.length < 2}
+            onChange={(event) => setBranchId(Number(event.target.value))}
+          >
+            {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+          </Select>
+        </Field>
+        <p className="mt-2 text-xs text-muted">Esta visão não concede acesso a cadastro ou configurações administrativas de filiais.</p>
+      </section>
+      {selected && <PrinterManagement
+        embedded
+        branchId={selected.id}
+        branchName={selected.name}
+        branchPermissions={selected.permissions}
+        onRouteSavingChange={setRoutesSaving}
+      />}
+    </div>
+  </>;
+}
+
 export default function BranchesPage() {
-  const { currentCompany } = useAuth();
+  const { currentCompany, hasAnyPermission, supportSession, user } = useAuth();
   if (!currentCompany) {
     return <>
       <PageHeader title="Meu negócio" description="Selecione uma empresa para consultar suas unidades." />
       <div className="p-4 sm:p-6 lg:p-8"><section className="card"><EmptyState title="Nenhuma empresa selecionada" description="Use o seletor no topo para escolher a empresa que deseja administrar." /></section></div>
     </>;
   }
+  const canAdministerBranches = hasAnyPermission([
+    permissions.viewBranch,
+    permissions.addBranch,
+    permissions.changeBranch,
+  ]);
+  const printerBranches = authorizedPrinterBranches(
+    user,
+    currentCompany.id,
+    supportSession?.mode === "READ_ONLY",
+  );
+  if (!canAdministerBranches && printerBranches.length) return <LimitedPrinterAdministration />;
   return (
     <AdminGuard
       requiredPermissions={[
