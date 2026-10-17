@@ -2469,6 +2469,25 @@ class POSQuickCheckoutRecoveryView(POSQuickSaleView):
         return Response(_quick_checkout_payload(checkout, permissions=permissions))
 
 
+class POSQuickCheckoutReconciliationView(POSQuickSaleView):
+    """Authoritative recovery inventory for the current operator and paired POS."""
+
+    def get(self, request):
+        device, operator, permissions, _ = self.context(request)
+        self._require(permissions, 'sales.create', 'Você não possui permissão para realizar vendas nesta filial.')
+        checkouts = QuickSaleCheckout.objects.select_related(
+            'sale', 'customer', 'cash_session',
+        ).prefetch_related(
+            'items__product', 'payments__payment_method', 'payments__allocations',
+        ).filter(
+            branch=device.branch, pos_device=device, operator=operator,
+            status__in=(QuickSaleCheckoutStatus.OPEN, QuickSaleCheckoutStatus.PAID),
+        ).order_by('-updated_at')
+        return Response({
+            'checkouts': [_quick_checkout_payload(checkout, permissions=permissions) for checkout in checkouts],
+        })
+
+
 class POSQuickCheckoutPaymentView(POSQuickCheckoutView):
     def post(self, request, checkout_id):
         device, operator, permissions, operator_session = self.context(request)
@@ -2953,6 +2972,49 @@ class POSQuickCheckoutFinalizeView(POSQuickCheckoutView):
         if replayed:
             response['Idempotency-Replayed'] = 'true'
         return response
+
+
+class POSQuickCheckoutResultView(POSQuickCheckoutView):
+    """Read a finalized sale result without replaying finalization or printing."""
+
+    def get(self, request, checkout_id):
+        device, operator, permissions, _ = self.context(request)
+        self._require(permissions, 'sales.create', 'Você não possui permissão para realizar vendas nesta filial.')
+        checkout = self._checkout(device, operator, checkout_id)
+        if checkout.status != QuickSaleCheckoutStatus.FINALIZED or not checkout.sale_id:
+            _quick_checkout_conflict(QuickCheckoutConflict(
+                'checkout_not_finalized', 'A venda ainda não foi finalizada no servidor.',
+            ))
+        request.branch_context = device.branch
+        sale = Sale.objects.select_related(
+            'company', 'branch', 'cash_session', 'created_by', 'seller_user', 'pos_device',
+        ).prefetch_related('items__product', 'payments__payment_method').get(pk=checkout.sale_id)
+        payment_documents = {
+            document.source_id: document
+            for document in PrintDocument.objects.filter(
+                branch=device.branch, document_type=PrintDocumentType.PAYMENT_RECEIPT,
+                source_type='quick_sale_payment',
+                source_id__in=[str(payment.pk) for payment in checkout.payments.all()],
+            )
+        }
+        receipt_document = PrintDocument.objects.filter(
+            branch=device.branch, document_type=PrintDocumentType.QUICK_SALE_RECEIPT,
+            source_type='sale', source_id=str(sale.pk),
+        ).order_by('-created_at').first()
+        return Response({
+            'sale': SaleSerializer(sale, context={'request': request}).data,
+            'cash_state': cash_state_for_device(device, permissions, operator),
+            'effects': {
+                'tickets': _ticket_print_effects(sale),
+                'production_job_count': sum(item.production_jobs.filter(event='new').count() for item in sale.items.all()),
+                # A result lookup never creates a new receipt document. Existing
+                # payment documents remain discoverable through checkout detail.
+                'print_documents': [
+                    _print_document_effect(document) for document in payment_documents.values()
+                ],
+                'print_document': _print_document_effect(receipt_document) if receipt_document else None,
+            },
+        })
 
 
 class POSQuickCheckoutCancelView(POSQuickCheckoutView):

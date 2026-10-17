@@ -39,8 +39,11 @@ void main() {
     );
     controller.bootstrapSnapshot = const BootstrapSnapshot(
       companyName: 'Empresa',
+      companyId: 'company-1',
       branchName: 'Filial',
+      branchId: 'branch-1',
       deviceName: 'Test',
+      deviceId: 'device-1',
       operatorName: 'Operador',
       release: ReleaseInfo(
         currentVersion: '1.0.0',
@@ -238,8 +241,12 @@ void main() {
       (tester) async {
     final storage = _MemorySecretStore()
       ..quickSaleCheckoutState = jsonEncode({
-        'operators': {
-          'operator-1': {'checkout_id': 'checkout-a'},
+        'scopes': {
+          'company-1:branch-1:device-1': {
+            'operators': {
+              'operator-1': {'checkout_id': 'checkout-a'},
+            },
+          },
         },
       });
     final api = _QuickSaleApi(

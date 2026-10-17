@@ -26,7 +26,8 @@ class ReleaseInfo {
 }
 
 class HeartbeatResult {
-  const HeartbeatResult({required this.release, this.deviceStatus = ''});
+  const HeartbeatResult(
+      {required this.release, this.deviceStatus = '', this.deviceId = ''});
 
   factory HeartbeatResult.fromJson(Map<String, dynamic> json) =>
       HeartbeatResult(
@@ -34,10 +35,13 @@ class HeartbeatResult {
         deviceStatus:
             (json['device'] as Map<String, dynamic>?)?['status'] as String? ??
                 '',
+        deviceId:
+            (json['device'] as Map<String, dynamic>?)?['id']?.toString() ?? '',
       );
 
   final ReleaseInfo release;
   final String deviceStatus;
+  final String deviceId;
 }
 
 class HomeModule {
@@ -59,6 +63,9 @@ class BootstrapSnapshot {
     required this.modules,
     this.permissions = const {},
     this.cash = const CashOverview(mode: 'FLEXIBLE', enabled: false),
+    this.companyId = '',
+    this.branchId = '',
+    this.deviceId = '',
   });
 
   factory BootstrapSnapshot.fromJson(Map<String, dynamic> json) {
@@ -77,8 +84,11 @@ class BootstrapSnapshot {
     }).toList(growable: false);
     return BootstrapSnapshot(
       companyName: company['trade_name'] as String,
+      companyId: company['id']?.toString() ?? '',
       branchName: branch['name'] as String,
+      branchId: branch['id']?.toString() ?? '',
       deviceName: device['name'] as String,
+      deviceId: device['id']?.toString() ?? '',
       deviceStatus: device['status'] as String? ?? '',
       operatorName: operator['display_name'] as String,
       release: ReleaseInfo.fromJson(json['release'] as Map<String, dynamic>),
@@ -92,8 +102,11 @@ class BootstrapSnapshot {
   }
 
   final String companyName;
+  final String companyId;
   final String branchName;
+  final String branchId;
   final String deviceName;
+  final String deviceId;
   final String deviceStatus;
   final String operatorName;
   final ReleaseInfo release;

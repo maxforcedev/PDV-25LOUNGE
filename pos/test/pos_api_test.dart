@@ -72,6 +72,48 @@ void main() {
     }
   });
 
+  test('preserves safe domain errors and rejects malformed successful checkout',
+      () async {
+    final domainApi = HttpPosApi(
+      baseUrl: 'https://core.example',
+      secrets: _MemorySecretStore(),
+      client: MockClient((_) async => http.Response(
+          jsonEncode({
+            'code': 'cash_closed',
+            'detail': 'O caixa selecionado está fechado.',
+          }),
+          409)),
+    );
+    await expectLater(
+      domainApi.operators(),
+      throwsA(isA<PosApiException>()
+          .having((error) => error.code, 'code', 'cash_closed')
+          .having((error) => error.message, 'message',
+              'O caixa selecionado está fechado.')),
+    );
+
+    final malformedApi = HttpPosApi(
+      baseUrl: 'https://core.example',
+      secrets: _MemorySecretStore(),
+      client: MockClient((_) async => http.Response(jsonEncode({}), 200)),
+    );
+    await expectLater(
+      malformedApi.getQuickSaleCheckout('checkout-1'),
+      throwsA(isA<PosApiException>().having(
+          (error) => error.kind, 'kind', PosApiErrorKind.invalidResponse)),
+    );
+  });
+
+  test('accepts expected HTTP 204 responses', () async {
+    final api = HttpPosApi(
+      baseUrl: 'https://core.example',
+      secrets: _MemorySecretStore(),
+      client: MockClient((_) async => http.Response('', 204)),
+    );
+
+    await api.logout();
+  });
+
   test('adds device and operator credentials outside widgets', () async {
     final secrets = _MemorySecretStore(
       deviceCredential: 'device-secret',
@@ -457,7 +499,6 @@ class _MemorySecretStore implements SecretStore {
 
   String? deviceCredential;
   String? operatorSession;
-  String? pendingSaleIntents;
 
   @override
   Future<void> clearDeviceCredential() async => deviceCredential = null;
@@ -472,9 +513,6 @@ class _MemorySecretStore implements SecretStore {
   Future<String?> readOperatorSession() async => operatorSession;
 
   @override
-  Future<String?> readPendingSaleIntents() async => pendingSaleIntents;
-
-  @override
   Future<void> writeDeviceCredential(String credential) async =>
       deviceCredential = credential;
 
@@ -482,7 +520,4 @@ class _MemorySecretStore implements SecretStore {
   Future<void> writeOperatorSession(String token) async =>
       operatorSession = token;
 
-  @override
-  Future<void> writePendingSaleIntents(String value) async =>
-      pendingSaleIntents = value;
 }

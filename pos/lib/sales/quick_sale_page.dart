@@ -122,16 +122,8 @@ class _QuickSalePageState extends State<QuickSalePage> {
   }
 
   bool get _serviceFeeWaived => _draft.serviceFeeWaived;
-  set _serviceFeeWaived(bool value) {
-    _draft.serviceFeeWaived = value;
-    _draft.changed();
-  }
 
   QuickSaleDiscountIntent get _discount => _draft.discount;
-  set _discount(QuickSaleDiscountIntent value) {
-    _draft.discount = value;
-    _draft.changed();
-  }
 
   bool get _cashReady =>
       _checkoutOptions != null && _checkoutOptions!.cashReady;
@@ -164,10 +156,18 @@ class _QuickSalePageState extends State<QuickSalePage> {
   Future<void> _loadInitial() async {
     final recovery = widget.controller.startNewQuickSale();
     await Future.wait([_loadCatalog(), _loadCheckoutOptions()]);
-    final checkout = await recovery;
+    final recovered = await recovery;
     final options = _checkoutOptions;
-    if (mounted && checkout != null && options != null) {
-      await _openPayment(checkout, options);
+    if (!mounted) return;
+    if (recovered.saleResult != null) {
+      await Navigator.of(context).push<void>(MaterialPageRoute(
+        builder: (_) => QuickSaleCompletedPage(
+            controller: widget.controller, result: recovered.saleResult!),
+      ));
+      return;
+    }
+    if (recovered.checkout != null && options != null) {
+      await _openPayment(recovered.checkout!, options);
     }
   }
 
@@ -1007,11 +1007,9 @@ class _QuickSaleCompletedPageState extends State<QuickSaleCompletedPage> {
       return;
     }
     setState(() => _printingTickets = true);
-    var queued = true;
     for (final ticketId in widget.result.ticketIds) {
       final document = _ticketDocuments[ticketId];
       if (document?.awaitingInitialPrint == true) {
-        queued = false;
         continue;
       }
       final result = document?.canReprint == true
@@ -1031,7 +1029,6 @@ class _QuickSaleCompletedPageState extends State<QuickSaleCompletedPage> {
               ),
             );
       if (result != null) _ticketDocuments[ticketId] = result;
-      if (result == null) queued = false;
     }
     if (!mounted) return;
     setState(() {

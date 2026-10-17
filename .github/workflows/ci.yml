@@ -162,7 +162,8 @@ jobs:
       - name: Run Flutter tests
         run: flutter test
       - name: Build Android validation APK
-        run: flutter build apk --debug
+        # Deliberately invalid documentation host; no environment credential is used.
+        run: flutter build apk --debug --dart-define=POS_API_BASE_URL=https://api.example.invalid
 
   containers:
     name: Production container builds

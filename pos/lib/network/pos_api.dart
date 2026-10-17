@@ -282,6 +282,8 @@ abstract class PosApi {
   Future<QuickSaleCheckout> recoverQuickSaleCheckout(
           String creationIdempotencyKey) =>
       throw UnimplementedError();
+  Future<List<QuickSaleCheckout>> reconcileQuickSaleCheckouts() =>
+      throw UnimplementedError();
   Future<QuickSaleCheckout> updateQuickSaleCheckout({
     required String checkoutId,
     required List<Map<String, dynamic>> items,
@@ -382,6 +384,8 @@ abstract class PosApi {
     required String idempotencyKey,
   }) =>
       throw UnimplementedError();
+  Future<QuickSaleResult> quickSaleCheckoutResult(String checkoutId) =>
+      throw UnimplementedError();
   Future<TicketValidationResult> lookupTicket(
       {String? validationCode, int? ticketNumber});
   Future<TicketValidationResult> validateTicket(
@@ -434,6 +438,45 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   bool _credentialsWarmed = false;
 
   Uri _uri(String path) => _baseUri.resolve('api/v1/pos/$path');
+
+  T _contract<T>(String operation, T Function() parse) {
+    try {
+      return parse();
+    } on FormatException catch (_) {
+      throw PosApiException(
+        statusCode: 200,
+        code: 'invalid_contract',
+        message:
+            'O CORE PDV enviou dados incompletos para $operation. Tente novamente.',
+        kind: PosApiErrorKind.invalidResponse,
+      );
+    } on TypeError catch (_) {
+      throw PosApiException(
+        statusCode: 200,
+        code: 'invalid_contract',
+        message:
+            'O CORE PDV enviou dados incompletos para $operation. Tente novamente.',
+        kind: PosApiErrorKind.invalidResponse,
+      );
+    }
+  }
+
+  String? _safeDomainMessage(Map<String, dynamic> payload) {
+    final candidate = payload['message'] ?? payload['detail'];
+    if (candidate is! String) return null;
+    final message = candidate.trim();
+    if (message.isEmpty || message.length > 500) return null;
+    final normalized = message.toLowerCase();
+    if (message.contains('<') ||
+        normalized.contains('traceback') ||
+        normalized.contains('stack trace') ||
+        normalized.contains('exception') ||
+        normalized.contains('password') ||
+        normalized.contains('token')) {
+      return null;
+    }
+    return message;
+  }
 
   CashOverview _cashState(Map<String, dynamic> payload) {
     final state = payload['cash_state'];
@@ -649,11 +692,8 @@ class HttpPosApi implements PosApi, PosCredentialCache {
     throw PosApiException(
       statusCode: response.statusCode,
       code: code,
-      message: response.statusCode == 422
-          ? payload['message'] as String? ??
-              payload['detail'] as String? ??
-              validationMessage ??
-              defaultError.$2
+      message: response.statusCode >= 400 && response.statusCode < 500
+          ? _safeDomainMessage(payload) ?? validationMessage ?? defaultError.$2
           : defaultError.$2,
       details: details,
       kind: defaultError.$3,
@@ -1545,32 +1585,56 @@ class HttpPosApi implements PosApi, PosCredentialCache {
     Map<String, dynamic>? discountAuthorization,
     Map<String, dynamic>? itemDiscountAuthorization,
     Map<String, dynamic>? serviceFeeAuthorization,
-  }) async =>
-      QuickSaleCheckout.fromJson(
-          await _request('POST', 'sales/checkouts/', body: {
-        'items': items,
-        'discount': discount,
-        'service_fee_waived': serviceFeeWaived,
-        'idempotency_key': idempotencyKey,
-        if (customerId != null) 'customer': customerId,
-        if (discountAuthorization != null)
-          'discount_authorization': discountAuthorization,
-        if (itemDiscountAuthorization != null)
-          'item_discount_authorization': itemDiscountAuthorization,
-        if (serviceFeeAuthorization != null)
-          'service_fee_authorization': serviceFeeAuthorization,
-      }));
+  }) async {
+    final payload = await _request('POST', 'sales/checkouts/', body: {
+      'items': items,
+      'discount': discount,
+      'service_fee_waived': serviceFeeWaived,
+      'idempotency_key': idempotencyKey,
+      if (customerId != null) 'customer': customerId,
+      if (discountAuthorization != null)
+        'discount_authorization': discountAuthorization,
+      if (itemDiscountAuthorization != null)
+        'item_discount_authorization': itemDiscountAuthorization,
+      if (serviceFeeAuthorization != null)
+        'service_fee_authorization': serviceFeeAuthorization,
+    });
+    return _contract(
+        'o checkout', () => QuickSaleCheckout.fromJson(_asMap(payload)));
+  }
 
   @override
-  Future<QuickSaleCheckout> getQuickSaleCheckout(String checkoutId) async =>
-      QuickSaleCheckout.fromJson(
-          await _request('GET', 'sales/checkouts/$checkoutId/'));
+  Future<QuickSaleCheckout> getQuickSaleCheckout(String checkoutId) async {
+    final payload = await _request('GET', 'sales/checkouts/$checkoutId/');
+    return _contract(
+        'o checkout', () => QuickSaleCheckout.fromJson(_asMap(payload)));
+  }
 
   @override
   Future<QuickSaleCheckout> recoverQuickSaleCheckout(
-          String creationIdempotencyKey) async =>
-      QuickSaleCheckout.fromJson(await _request(
-          'GET', 'sales/checkouts/recover/$creationIdempotencyKey/'));
+      String creationIdempotencyKey) async {
+    final payload = await _request(
+        'GET', 'sales/checkouts/recover/$creationIdempotencyKey/');
+    return _contract(
+        'o checkout', () => QuickSaleCheckout.fromJson(_asMap(payload)));
+  }
+
+  Map<String, dynamic> _asMap(dynamic payload) => payload is Map
+      ? Map<String, dynamic>.from(payload)
+      : throw const FormatException('Expected object response.');
+
+  @override
+  Future<List<QuickSaleCheckout>> reconcileQuickSaleCheckouts() async {
+    final payload =
+        _asMap(await _request('GET', 'sales/checkouts/reconciliation/'));
+    return _contract('a reconciliação financeira', () {
+      final checkouts = payload['checkouts'];
+      if (checkouts is! List) throw const FormatException('Missing checkouts.');
+      return checkouts
+          .map((item) => QuickSaleCheckout.fromJson(_asMap(item)))
+          .toList(growable: false);
+    });
+  }
 
   @override
   Future<QuickSaleCheckout> updateQuickSaleCheckout({
@@ -1784,10 +1848,21 @@ class HttpPosApi implements PosApi, PosCredentialCache {
   Future<QuickSaleResult> finalizeQuickSaleCheckout({
     required String checkoutId,
     required String idempotencyKey,
-  }) async =>
-      QuickSaleResult.fromJson(await _request(
-          'POST', 'sales/checkouts/$checkoutId/finalize/',
-          body: {'idempotency_key': idempotencyKey}));
+  }) async {
+    final payload = await _request(
+        'POST', 'sales/checkouts/$checkoutId/finalize/',
+        body: {'idempotency_key': idempotencyKey});
+    return _contract('a confirmação da venda',
+        () => QuickSaleResult.fromJson(_asMap(payload)));
+  }
+
+  @override
+  Future<QuickSaleResult> quickSaleCheckoutResult(String checkoutId) async {
+    final payload =
+        await _request('GET', 'sales/checkouts/$checkoutId/result/');
+    return _contract('a confirmação da venda',
+        () => QuickSaleResult.fromJson(_asMap(payload)));
+  }
 
   @override
   Future<TicketValidationResult> lookupTicket(

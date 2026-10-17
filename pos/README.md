@@ -10,7 +10,7 @@ flutter test
 flutter run --dart-define=POS_API_BASE_URL=http://10.0.2.2:18000
 ```
 
-`POS_API_BASE_URL` e obrigatorio em todo build e deve apontar para a API publica do ambiente. Nao ha endpoint padrao no aplicativo: isso evita distribuir builds de producao apontando para localhost ou para o emulador.
+`POS_API_BASE_URL` e obrigatorio em todo build e deve apontar para a API publica do ambiente. Nao ha endpoint padrao no aplicativo: isso evita distribuir builds de producao apontando para localhost ou para o emulador. A CI valida o APK com `https://api.example.invalid`; esse valor e deliberadamente invalido e nao deve ser usado para distribuir o aplicativo.
 
 ```text
 flutter build apk --release --dart-define=POS_API_BASE_URL=https://api.seudominio.com

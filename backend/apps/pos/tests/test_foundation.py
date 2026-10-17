@@ -31,6 +31,7 @@ from apps.pos.models import (
     AuthenticationChallenge, BranchPOSSettings, POSDevice, POSDeviceSettings,
     POSOperatorPinAttempt, POSOperatorSession, POSRequestRateLimit, QuickSaleCheckout, QuickSalePayment,
 )
+from apps.production.models import PrintDocument, PrintDocumentType
 from apps.payment_integrations.models import (
     PaymentAttempt, PaymentAttemptStatus, PaymentIntent, PaymentProvider, PaymentProviderConnection,
     PaymentProviderConnectionEnvironment, PaymentTerminal, ProviderReversalOperation,
@@ -1867,6 +1868,30 @@ class POSFoundationIntegrationTests(TestCase):
         self.assertIsNotNone(ticket['id'])
         self.assertIsNotNone(ticket['print_document_id'])
         self.assertIn('reprint_eligible', ticket['print_document'])
+        documents_before_result = PrintDocument.objects.filter(
+            branch=self.branch,
+            document_type=PrintDocumentType.QUICK_SALE_RECEIPT,
+            source_type='sale',
+            source_id=str(finalized.data['sale']['id']),
+        ).count()
+        recovered = self.client.get(
+            reverse('pos:quick-checkout-result', args=[checkout.data['id']]),
+        )
+        self.assertEqual(recovered.status_code, 200, recovered.data)
+        self.assertEqual(recovered.data['sale']['id'], finalized.data['sale']['id'])
+        self.assertEqual(
+            recovered.data['effects']['print_document']['id'],
+            finalized.data['effects']['print_document']['id'],
+        )
+        self.assertEqual(
+            PrintDocument.objects.filter(
+                branch=self.branch,
+                document_type=PrintDocumentType.QUICK_SALE_RECEIPT,
+                source_type='sale',
+                source_id=str(finalized.data['sale']['id']),
+            ).count(),
+            documents_before_result,
+        )
 
     def test_pos_superuser_without_effective_sales_create_cannot_start_sale(self):
         operator, _ = self.login_pos_operator()

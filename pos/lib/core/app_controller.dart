@@ -29,6 +29,35 @@ enum AppPhase {
   error,
 }
 
+enum QuickSaleRecoveryStatus { none, checkoutRecovered, saleRecovered, blocked }
+
+class QuickSaleRecoveryResult {
+  const QuickSaleRecoveryResult._(this.status,
+      {this.checkout, this.saleResult});
+
+  const QuickSaleRecoveryResult.none() : this._(QuickSaleRecoveryStatus.none);
+  const QuickSaleRecoveryResult.checkout(QuickSaleCheckout value)
+      : this._(QuickSaleRecoveryStatus.checkoutRecovered, checkout: value);
+  const QuickSaleRecoveryResult.sale(QuickSaleResult value)
+      : this._(QuickSaleRecoveryStatus.saleRecovered, saleResult: value);
+  const QuickSaleRecoveryResult.blocked()
+      : this._(QuickSaleRecoveryStatus.blocked);
+
+  final QuickSaleRecoveryStatus status;
+  final QuickSaleCheckout? checkout;
+  final QuickSaleResult? saleResult;
+}
+
+enum _QuickCheckoutStorageStatus { ready, unreadable, unavailable }
+
+class _QuickCheckoutStorage {
+  const _QuickCheckoutStorage(this.status, {this.value = const {}, this.raw});
+
+  final _QuickCheckoutStorageStatus status;
+  final Map<String, dynamic> value;
+  final String? raw;
+}
+
 class AppController extends ChangeNotifier {
   AppController({
     required PosApi api,
@@ -45,118 +74,187 @@ class AppController extends ChangeNotifier {
   final Map<String, String> _uncertainCashOperationKeys = {};
 
   String? get _quickCheckoutOperatorId => selectedOperator?.id;
-  String get _quickCheckoutDeviceKey =>
-      '${_device.type}:${_device.name}:${_device.model}';
+  String? get _quickCheckoutScope {
+    final snapshot = bootstrapSnapshot;
+    if (snapshot == null ||
+        snapshot.companyId.isEmpty ||
+        snapshot.branchId.isEmpty ||
+        snapshot.deviceId.isEmpty) {
+      return null;
+    }
+    return '${snapshot.companyId}:${snapshot.branchId}:${snapshot.deviceId}';
+  }
 
-  Future<Map<String, dynamic>> _quickCheckoutStorage() async {
-    final encoded = await _secrets.readQuickSaleCheckoutState();
-    if (encoded == null || encoded.isEmpty) return <String, dynamic>{};
+  Future<_QuickCheckoutStorage> _quickCheckoutStorage() async {
+    String? encoded;
     try {
-      return Map<String, dynamic>.from(jsonDecode(encoded) as Map);
+      encoded = await _secrets.readQuickSaleCheckoutState();
+      if (encoded == null || encoded.isEmpty) {
+        return const _QuickCheckoutStorage(_QuickCheckoutStorageStatus.ready);
+      }
+      final decoded = jsonDecode(encoded);
+      if (decoded is! Map) {
+        throw const FormatException('Expected storage object');
+      }
+      return _QuickCheckoutStorage(
+        _QuickCheckoutStorageStatus.ready,
+        value: Map<String, dynamic>.from(decoded),
+      );
     } catch (_) {
-      // Never overwrite an unreadable financial recovery record. It needs support
-      // reconciliation rather than being silently discarded by the POS.
-      return <String, dynamic>{'_invalid': true};
+      // Keep the original bytes as evidence. A later authoritative reconciliation
+      // may wrap them in a readable record but never silently discard them.
+      return _QuickCheckoutStorage(
+        encoded == null
+            ? _QuickCheckoutStorageStatus.unavailable
+            : _QuickCheckoutStorageStatus.unreadable,
+        raw: encoded,
+      );
     }
   }
 
   Future<Map<String, dynamic>> _quickCheckoutState() async {
     final operatorId = _quickCheckoutOperatorId;
+    final scope = _quickCheckoutScope;
     if (operatorId == null) return <String, dynamic>{};
+    if (scope == null) {
+      return <String, dynamic>{'_storage_unavailable': true};
+    }
     final storage = await _quickCheckoutStorage();
-    if (storage['_invalid'] == true) return storage;
-    final devices = storage['devices'];
-    final device = devices is Map ? devices[_quickCheckoutDeviceKey] : null;
-    final states = device is Map ? device['operators'] : null;
+    if (storage.status != _QuickCheckoutStorageStatus.ready) {
+      return <String, dynamic>{
+        if (storage.status == _QuickCheckoutStorageStatus.unreadable)
+          '_storage_unreadable': true
+        else
+          '_storage_unavailable': true,
+      };
+    }
+    final scopes = storage.value['scopes'];
+    final scoped = scopes is Map ? scopes[scope] : null;
+    final states = scoped is Map ? scoped['operators'] : null;
     if (states is Map && states[operatorId] is Map) {
       return Map<String, dynamic>.from(states[operatorId] as Map);
     }
-
-    // Migrate the previous operator-only namespace on first authoritative read.
-    final legacyStates = storage['operators'];
-    if (legacyStates is Map && legacyStates[operatorId] is Map) {
-      return Map<String, dynamic>.from(legacyStates[operatorId] as Map);
+    // Earlier namespaces have no trustworthy device scope unless a release
+    // explicitly recorded all backend identities. Leave any other legacy bytes
+    // untouched for support rather than associating them with this POS.
+    final legacy = storage.value['legacy_recovery'];
+    if (legacy is Map &&
+        legacy['operator_id'] == operatorId &&
+        legacy['scope'] == scope &&
+        legacy['state'] is Map) {
+      final migrated = Map<String, dynamic>.from(legacy['state'] as Map);
+      if (await _writeQuickCheckoutState(migrated, current: storage)) {
+        return migrated;
+      }
+      return <String, dynamic>{'_storage_unavailable': true};
     }
-
-    // A legacy record can only be recovered when it explicitly names its owner.
-    if (storage['operator_id'] == operatorId) {
-      return Map<String, dynamic>.from(storage)
+    // POS 1.0/1.1 used descriptive device buckets. Do not associate a bucket
+    // merely because its label resembles this device: the following recovery
+    // request is still scoped by the backend to operator, branch, and device.
+    // The state is only moved into this stable namespace after that succeeds.
+    final candidates = <Map<String, dynamic>>[];
+    final legacyDevices = storage.value['devices'];
+    if (legacyDevices is Map) {
+      for (final rawDevice in legacyDevices.values) {
+        final operators = rawDevice is Map ? rawDevice['operators'] : null;
+        final rawState = operators is Map ? operators[operatorId] : null;
+        if (rawState is Map) {
+          candidates.add(Map<String, dynamic>.from(rawState));
+        }
+      }
+    }
+    final legacyOperators = storage.value['operators'];
+    final legacyState =
+        legacyOperators is Map ? legacyOperators[operatorId] : null;
+    if (legacyState is Map) {
+      candidates.add(Map<String, dynamic>.from(legacyState));
+    }
+    if (storage.value['operator_id'] == operatorId) {
+      candidates.add(Map<String, dynamic>.from(storage.value)
         ..remove('operator_id')
-        ..remove('operators');
+        ..remove('operators'));
+    }
+    if (candidates.length == 1) {
+      return candidates.single..['_legacy_candidate'] = true;
     }
     return <String, dynamic>{};
   }
 
-  Future<void> _writeQuickCheckoutState(Map<String, dynamic> state) async {
+  Future<bool> _writeQuickCheckoutState(Map<String, dynamic> state,
+      {_QuickCheckoutStorage? current}) async {
     final operatorId = _quickCheckoutOperatorId;
-    if (operatorId == null) return;
-    final storage = await _quickCheckoutStorage();
-    if (storage['_invalid'] == true) return;
-    final devices =
-        Map<String, dynamic>.from(storage['devices'] as Map? ?? const {});
-    final device = Map<String, dynamic>.from(
-        devices[_quickCheckoutDeviceKey] as Map? ?? const {});
+    final scope = _quickCheckoutScope;
+    if (operatorId == null || scope == null) return _storageWriteFailure();
+    final storage = current ?? await _quickCheckoutStorage();
+    if (storage.status != _QuickCheckoutStorageStatus.ready) {
+      return _storageWriteFailure();
+    }
+    final root = Map<String, dynamic>.from(storage.value);
+    final scopes =
+        Map<String, dynamic>.from(root['scopes'] as Map? ?? const {});
+    final scoped = Map<String, dynamic>.from(scopes[scope] as Map? ?? const {});
     final states =
-        Map<String, dynamic>.from(device['operators'] as Map? ?? const {});
+        Map<String, dynamic>.from(scoped['operators'] as Map? ?? const {});
     if (state.isEmpty) {
       states.remove(operatorId);
     } else {
       states[operatorId] = state;
     }
     if (states.isEmpty) {
-      device.remove('operators');
+      scoped.remove('operators');
     } else {
-      device['operators'] = states;
+      scoped['operators'] = states;
     }
-    if (device.isEmpty) {
-      devices.remove(_quickCheckoutDeviceKey);
+    if (scoped.isEmpty) {
+      scopes.remove(scope);
     } else {
-      devices[_quickCheckoutDeviceKey] = device;
+      scopes[scope] = scoped;
     }
-    if (devices.isEmpty) {
-      storage.remove('devices');
+    if (scopes.isEmpty) {
+      root.remove('scopes');
     } else {
-      storage['devices'] = devices;
+      root['scopes'] = scopes;
     }
-    if (storage['operator_id'] == operatorId) {
-      for (final key in [
-        'operator_id',
-        'checkout_id',
-        'creation_idempotency_key',
-        'creation_request',
-        'pending',
-      ]) {
-        storage.remove(key);
-      }
+    try {
+      await _secrets.writeQuickSaleCheckoutState(jsonEncode(root));
+      return true;
+    } catch (_) {
+      return _storageWriteFailure();
     }
-    final legacyStates =
-        Map<String, dynamic>.from(storage['operators'] as Map? ?? const {});
-    legacyStates.remove(operatorId);
-    if (legacyStates.isEmpty) {
-      storage.remove('operators');
-    } else {
-      storage['operators'] = legacyStates;
-    }
-    await _secrets.writeQuickSaleCheckoutState(jsonEncode(storage));
   }
+
+  bool _storageWriteFailure() {
+    _showTransientMessage(
+        'Não foi possível proteger a recuperação financeira neste dispositivo. Nenhuma cobrança ou venda será iniciada.');
+    return false;
+  }
+
+  bool _isStorageBlocked(Map<String, dynamic> state) =>
+      state['_storage_unreadable'] == true ||
+      state['_storage_unavailable'] == true;
 
   /// Reopen a persisted checkout only after the server confirms its state.
   /// A new sale must never erase an operation whose financial result is unknown.
-  Future<QuickSaleCheckout?> startNewQuickSale() async {
+  Future<QuickSaleRecoveryResult> startNewQuickSale() async {
     final state = await _quickCheckoutState();
-    if (state.isEmpty) return null;
-    if (state['_invalid'] == true) {
+    if (_isStorageBlocked(state)) {
       _showTransientMessage(
-          'Há uma recuperação financeira local inválida. Não inicie outra venda; solicite conferência.');
-      return null;
+          'A recuperação financeira local está indisponível. O POS consultará o servidor antes de liberar novas operações.');
+      return _reconcileBlockedQuickSaleStorage();
     }
+    if (state.isEmpty) return const QuickSaleRecoveryResult.none();
     final checkout = await recoverQuickSaleCheckout();
     if (checkout != null) {
       _showTransientMessage(
           'Venda anterior recuperada. Confira os pagamentos antes de continuar.',
           tone: TransientAlertTone.success);
+      return QuickSaleRecoveryResult.checkout(checkout);
     }
-    return checkout;
+    final result =
+        takeRecoveredQuickSaleResult(state['checkout_id'] as String? ?? '');
+    return result == null
+        ? const QuickSaleRecoveryResult.none()
+        : QuickSaleRecoveryResult.sale(result);
   }
 
   bool _isTerminalQuickSaleCheckout(QuickSaleCheckout checkout) =>
@@ -213,12 +311,70 @@ class AppController extends ChangeNotifier {
 
   Future<QuickSaleResult?> _recoverFinalizedQuickSale(
       String checkoutId, Map<String, dynamic> state) async {
-    // The server has already finalized the sale. Do not replay a financial
-    // operation merely to reconstruct a response that Android did not receive.
-    await _writeQuickCheckoutState({});
-    _showTransientMessage('A venda anterior já foi finalizada pelo servidor.',
-        tone: TransientAlertTone.success);
+    // The server has already finalized the sale. Rebuild the normal confirmation
+    // from its read-only result endpoint; never replay finalization or printing.
+    try {
+      final result = await _api.quickSaleCheckoutResult(checkoutId);
+      if (!await _writeQuickCheckoutState({})) return null;
+      _showTransientMessage('A venda anterior foi confirmada pelo servidor.',
+          tone: TransientAlertTone.success);
+      return result;
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
     return null;
+  }
+
+  Future<QuickSaleRecoveryResult> _reconcileBlockedQuickSaleStorage() async {
+    final storage = await _quickCheckoutStorage();
+    try {
+      final checkouts = await _api.reconcileQuickSaleCheckouts();
+      if (checkouts.length > 1) {
+        _showTransientMessage(
+            'O servidor encontrou mais de uma venda pendente neste POS. Solicite conferência antes de continuar.');
+        return const QuickSaleRecoveryResult.blocked();
+      }
+      if (storage.status == _QuickCheckoutStorageStatus.unreadable) {
+        final root = <String, dynamic>{
+          'recovery_evidence': [
+            {
+              'captured_at': DateTime.now().toUtc().toIso8601String(),
+              'raw_state': storage.raw,
+              'reason': 'unreadable_financial_recovery',
+            }
+          ],
+        };
+        final wrapped = _QuickCheckoutStorage(_QuickCheckoutStorageStatus.ready,
+            value: root);
+        if (checkouts.isEmpty) {
+          if (!await _writeQuickCheckoutState({}, current: wrapped)) {
+            return const QuickSaleRecoveryResult.blocked();
+          }
+          _showTransientMessage(
+              'O servidor não encontrou venda pendente. O registro local foi preservado para auditoria.',
+              tone: TransientAlertTone.success);
+          return const QuickSaleRecoveryResult.none();
+        }
+        if (!await _writeQuickCheckoutState(
+            {'checkout_id': checkouts.single.id},
+            current: wrapped)) {
+          return const QuickSaleRecoveryResult.blocked();
+        }
+        _showTransientMessage(
+            'A venda pendente foi recuperada pelo servidor; o registro local original foi preservado para auditoria.',
+            tone: TransientAlertTone.success);
+        return QuickSaleRecoveryResult.checkout(checkouts.single);
+      }
+      _showTransientMessage(
+          'Não foi possível gravar a reconciliação financeira neste dispositivo. Nenhuma nova operação será iniciada.');
+    } on PosApiException catch (error) {
+      _handleApiError(error);
+    } on PosNetworkException catch (error) {
+      _showTransientMessage(error.message);
+    }
+    return const QuickSaleRecoveryResult.blocked();
   }
 
   bool _hasPendingQuickSaleFinalization(Map<String, dynamic> state) =>
@@ -226,6 +382,10 @@ class AppController extends ChangeNotifier {
 
   Future<QuickSaleCheckout?> _resolveRecoveredQuickSaleCheckout(
       QuickSaleCheckout checkout, Map<String, dynamic> state) async {
+    if (state.remove('_legacy_candidate') == true &&
+        !await _writeQuickCheckoutState(state)) {
+      return null;
+    }
     if (checkout.status == 'finalized' && checkout.saleId != null) {
       final result = await _recoverFinalizedQuickSale(checkout.id, state);
       if (result != null) {
@@ -245,9 +405,9 @@ class AppController extends ChangeNotifier {
 
   Future<QuickSaleCheckout?> recoverQuickSaleCheckout() async {
     final state = await _quickCheckoutState();
-    if (state['_invalid'] == true) {
+    if (_isStorageBlocked(state)) {
       _showTransientMessage(
-          'Não foi possível ler a recuperação financeira local. Não inicie outra venda; solicite conferência.');
+          'Não foi possível ler a recuperação financeira local. Faça a reconciliação com o servidor antes de continuar.');
       return null;
     }
     final id = state['checkout_id'] as String?;
@@ -331,6 +491,10 @@ class AppController extends ChangeNotifier {
       serviceFeeAuthorization: serviceFeeAuthorization,
     );
     var state = await _quickCheckoutState();
+    if (_isStorageBlocked(state)) {
+      _storageWriteFailure();
+      return null;
+    }
     final existing = state['checkout_id'] as String?;
     if (existing != null) {
       final checkout = await recoverQuickSaleCheckout();
@@ -359,7 +523,7 @@ class AppController extends ChangeNotifier {
           _handleApiError(error);
           return null;
         }
-        await _writeQuickCheckoutState({});
+        if (!await _writeQuickCheckoutState({})) return null;
         state = <String, dynamic>{};
         key = null;
       } on PosNetworkException catch (error) {
@@ -373,8 +537,9 @@ class AppController extends ChangeNotifier {
       'creation_idempotency_key': creationKey,
       'creation_request': request,
     };
-    await _writeQuickCheckoutState(
-        state); // Preserve the immutable request before an uncertain create.
+    if (!await _writeQuickCheckoutState(state)) {
+      return null; // Preserve the immutable request before an uncertain create.
+    }
     try {
       final checkout = await _api.createQuickSaleCheckout(
         items: items,
@@ -386,7 +551,9 @@ class AppController extends ChangeNotifier {
         itemDiscountAuthorization: itemDiscountAuthorization?.toJson(),
         serviceFeeAuthorization: serviceFeeAuthorization?.toJson(),
       );
-      await _writeQuickCheckoutState({'checkout_id': checkout.id});
+      if (!await _writeQuickCheckoutState({'checkout_id': checkout.id})) {
+        return null;
+      }
       return checkout;
     } on PosApiException catch (error) {
       if (error.statusCode >= 400 && error.statusCode < 500) {
@@ -456,6 +623,10 @@ class AppController extends ChangeNotifier {
     List<Map<String, dynamic>> allocations = const [],
   }) async {
     final state = await _quickCheckoutState();
+    if (_isStorageBlocked(state)) {
+      _storageWriteFailure();
+      return null;
+    }
     final attempts = Map<String, dynamic>.from(
         state['payment_attempts'] as Map? ?? const {});
     final stored = attempts[paymentIntentId];
@@ -473,7 +644,7 @@ class AppController extends ChangeNotifier {
     state['checkout_id'] = checkoutId;
     state['payment_attempts'] = attempts;
     // A payment intent is an operator action, not a fingerprint of its value.
-    await _writeQuickCheckoutState(state);
+    if (!await _writeQuickCheckoutState(state)) return null;
     try {
       final checkout = await _api.recordQuickSalePayment(
         checkoutId: checkoutId,
@@ -520,6 +691,13 @@ class AppController extends ChangeNotifier {
     String? amount,
     List<Map<String, dynamic>> allocations = const [],
   }) async {
+    final state = await _quickCheckoutState();
+    if (_isStorageBlocked(state) ||
+        !await _writeQuickCheckoutState(
+            {...state, 'checkout_id': checkoutId})) {
+      _storageWriteFailure();
+      return null;
+    }
     try {
       return await _api.startQuickSaleProviderPayment(
         checkoutId: checkoutId,
@@ -544,6 +722,10 @@ class AppController extends ChangeNotifier {
     required String response,
     String? responseCode,
   }) async {
+    if (_isStorageBlocked(await _quickCheckoutState())) {
+      _storageWriteFailure();
+      return null;
+    }
     try {
       return await _api.resolveQuickSaleProviderPayment(
         checkoutId: checkoutId,
@@ -567,6 +749,13 @@ class AppController extends ChangeNotifier {
     String reason = '',
     QuickSaleAuthorization? authorization,
   }) async {
+    final state = await _quickCheckoutState();
+    if (_isStorageBlocked(state) ||
+        !await _writeQuickCheckoutState(
+            {...state, 'checkout_id': checkoutId})) {
+      _storageWriteFailure();
+      return null;
+    }
     try {
       return await _api.startQuickSaleProviderReversal(
         checkoutId: checkoutId,
@@ -589,6 +778,10 @@ class AppController extends ChangeNotifier {
     required String response,
     String? responseCode,
   }) async {
+    if (_isStorageBlocked(await _quickCheckoutState())) {
+      _storageWriteFailure();
+      return null;
+    }
     try {
       return await _api.resolveQuickSaleProviderReversal(
         checkoutId: checkoutId,
@@ -713,6 +906,10 @@ class AppController extends ChangeNotifier {
     QuickSaleAuthorization? serviceFeeAuthorization,
   }) async {
     var state = await _quickCheckoutState();
+    if (_isStorageBlocked(state)) {
+      _storageWriteFailure();
+      return null;
+    }
     if (state.isNotEmpty && state['checkout_id'] != checkoutId) {
       _showTransientMessage(
           'Resolva a venda anterior antes de alterar esta operação.');
@@ -728,6 +925,12 @@ class AppController extends ChangeNotifier {
             'Resolva a operação financeira pendente antes de alterar esta venda.');
         return null;
       }
+    }
+    if (!await _writeQuickCheckoutState({
+      ...state,
+      'checkout_id': checkoutId,
+    })) {
+      return null;
     }
     try {
       return await _api.updateQuickSaleCheckout(
@@ -768,6 +971,12 @@ class AppController extends ChangeNotifier {
 
   Future<bool> cancelQuickSaleCheckout(String checkoutId) async {
     final state = await _quickCheckoutState();
+    if (_isStorageBlocked(state) ||
+        !await _writeQuickCheckoutState(
+            {...state, 'checkout_id': checkoutId})) {
+      _storageWriteFailure();
+      return false;
+    }
     if (state['checkout_id'] == checkoutId &&
         _hasUncertainQuickCheckoutOperation(state)) {
       _showTransientMessage(
@@ -819,13 +1028,17 @@ class AppController extends ChangeNotifier {
     required Future<QuickSaleCheckout> Function(String key) call,
   }) async {
     final state = await _quickCheckoutState();
+    if (_isStorageBlocked(state)) {
+      _storageWriteFailure();
+      return null;
+    }
     final pending =
         Map<String, dynamic>.from(state['pending'] as Map? ?? const {});
     final key = pending[operation] as String? ?? createIdempotencyKey();
     pending[operation] = key;
     state['checkout_id'] = checkoutId;
     state['pending'] = pending;
-    await _writeQuickCheckoutState(state);
+    if (!await _writeQuickCheckoutState(state)) return null;
     try {
       final checkout = await call(key);
       pending.remove(operation);
@@ -878,13 +1091,19 @@ class AppController extends ChangeNotifier {
 
   Future<QuickSaleResult?> finalizeQuickSaleCheckout(String checkoutId) async {
     final state = await _quickCheckoutState();
+    if (_isStorageBlocked(state)) {
+      _storageWriteFailure();
+      return null;
+    }
     final pending =
         Map<String, dynamic>.from(state['pending'] as Map? ?? const {});
     const operation = 'finalize';
     final key = pending[operation] as String? ?? createIdempotencyKey();
     pending[operation] = key;
-    await _writeQuickCheckoutState(
-        {'checkout_id': checkoutId, 'pending': pending});
+    if (!await _writeQuickCheckoutState(
+        {'checkout_id': checkoutId, 'pending': pending})) {
+      return null;
+    }
     try {
       final result = await _api.finalizeQuickSaleCheckout(
           checkoutId: checkoutId, idempotencyKey: key);
@@ -1412,10 +1631,11 @@ class AppController extends ChangeNotifier {
     } else {
       operator['$attendanceId'] = value;
     }
-    if (operator.isEmpty)
+    if (operator.isEmpty) {
       root.remove(selectedOperator!.id);
-    else
+    } else {
       root[selectedOperator!.id] = operator;
+    }
     await _secrets.writeTablePaymentState(jsonEncode(root));
   }
 

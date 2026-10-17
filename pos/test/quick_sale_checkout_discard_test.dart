@@ -1,6 +1,8 @@
 import 'dart:convert';
 
 import 'package:core_pos/auth/auth_models.dart';
+import 'package:core_pos/bootstrap/bootstrap_models.dart';
+import 'package:core_pos/cash/cash_models.dart';
 import 'package:core_pos/core/app_controller.dart';
 import 'package:core_pos/network/pos_api.dart';
 import 'package:core_pos/network/pos_api_error.dart';
@@ -24,6 +26,23 @@ void main() {
     final controller =
         AppController(api: api, secrets: storage, device: device);
     controller.selectedOperator = operator;
+    controller.bootstrapSnapshot = const BootstrapSnapshot(
+      companyName: 'Empresa',
+      companyId: 'company-1',
+      branchName: 'Filial',
+      branchId: 'branch-1',
+      deviceName: 'Terminal',
+      deviceId: 'device-1',
+      operatorName: 'Operador',
+      release: ReleaseInfo(
+        currentVersion: '1.0.0',
+        latestVersion: '1.0.0',
+        minimumSupportedVersion: '1.0.0',
+        updateAvailable: false,
+        updateRequired: false,
+      ),
+      modules: [],
+    );
     return controller;
   }
 
@@ -44,7 +63,8 @@ void main() {
     expect(await controller(api, storage).discardQuickSaleCheckout(), isFalse);
     expect(api.cancelledCheckoutId, isNull);
     expect(
-        jsonDecode(storage.quickSaleCheckoutState!)['operators']['operator-1']
+        jsonDecode(storage.quickSaleCheckoutState!)['scopes']
+                ['company-1:branch-1:device-1']['operators']['operator-1']
             ['checkout_id'],
         'checkout-a');
   });
@@ -71,7 +91,9 @@ void main() {
     expect(api.cancelledCheckoutId, isNull);
     final state =
         jsonDecode(storage.quickSaleCheckoutState!) as Map<String, dynamic>;
-    expect(state['operators']['operator-1']['pending']['reverse:payment-a:'],
+    expect(
+        state['scopes']['company-1:branch-1:device-1']['operators']
+            ['operator-1']['pending']['reverse:payment-a:'],
         'reverse-key');
   });
 
@@ -85,10 +107,12 @@ void main() {
 
     final recovered = await controller(api, storage).startNewQuickSale();
 
-    expect(recovered?.id, 'checkout-a');
+    expect(recovered.checkout?.id, 'checkout-a');
     final state =
         jsonDecode(storage.quickSaleCheckoutState!) as Map<String, dynamic>;
-    expect(state['operators']['operator-1']['pending']['finalize'],
+    expect(
+        state['scopes']['company-1:branch-1:device-1']['operators']
+            ['operator-1']['pending']['finalize'],
         'finalize-key');
     expect(api.cancelledCheckoutId, isNull);
   });
@@ -104,6 +128,7 @@ void main() {
     expect(await controller(api, storage).recoverQuickSaleCheckout(), isNull);
     expect(jsonDecode(storage.quickSaleCheckoutState!), isEmpty);
     expect(api.finalizeCalls, 0);
+    expect(api.resultCalls, 1);
   });
 
   test('keeps storage when cancellation is not confirmed as cancelled',
@@ -113,7 +138,8 @@ void main() {
 
     expect(await controller(api, storage).discardQuickSaleCheckout(), isFalse);
     expect(
-        jsonDecode(storage.quickSaleCheckoutState!)['operators']['operator-1']
+        jsonDecode(storage.quickSaleCheckoutState!)['scopes']
+                ['company-1:branch-1:device-1']['operators']['operator-1']
             ['checkout_id'],
         'checkout-a');
   });
@@ -129,7 +155,8 @@ void main() {
 
       expect(await controller(api, storage).recoverQuickSaleCheckout(), isNull);
       expect(
-          jsonDecode(storage.quickSaleCheckoutState!)['operators']['operator-1']
+          jsonDecode(storage.quickSaleCheckoutState!)['scopes']
+                  ['company-1:branch-1:device-1']['operators']['operator-1']
               ['checkout_id'],
           'checkout-a');
     });
@@ -155,6 +182,124 @@ void main() {
             .recoverQuickSaleCheckout(),
         isNull);
     expect(jsonDecode(terminalStorage.quickSaleCheckoutState!), isEmpty);
+  });
+
+  test(
+      'preserves corrupted financial evidence until authoritative reconciliation',
+      () async {
+    final storage = _MemorySecretStore()..quickSaleCheckoutState = '{broken';
+    final api = _CheckoutApi(_checkout(), reconciliation: const []);
+
+    final recovery = await controller(api, storage).startNewQuickSale();
+
+    expect(recovery.status, QuickSaleRecoveryStatus.none);
+    final root =
+        jsonDecode(storage.quickSaleCheckoutState!) as Map<String, dynamic>;
+    expect(root['recovery_evidence'].single['raw_state'], '{broken');
+    expect(api.reconciliationCalls, 1);
+  });
+
+  test(
+      'recovers the sole authoritative checkout without discarding corrupt bytes',
+      () async {
+    final storage = _MemorySecretStore()..quickSaleCheckoutState = '{broken';
+    final api = _CheckoutApi(_checkout(), reconciliation: [_checkout()]);
+
+    final recovery = await controller(api, storage).startNewQuickSale();
+
+    expect(recovery.checkout?.id, 'checkout-a');
+    final root =
+        jsonDecode(storage.quickSaleCheckoutState!) as Map<String, dynamic>;
+    expect(root['recovery_evidence'].single['raw_state'], '{broken');
+    expect(
+        root['scopes']['company-1:branch-1:device-1']['operators']['operator-1']
+            ['checkout_id'],
+        'checkout-a');
+  });
+
+  test('read or write storage failure blocks checkout creation before the API',
+      () async {
+    final readFailure = _MemorySecretStore()..failRead = true;
+    final readApi = _CheckoutApi(_checkout());
+    expect(
+        await controller(readApi, readFailure).createQuickSaleCheckout(
+            items: const [], discount: const {}, serviceFeeWaived: false),
+        isNull);
+    expect(readApi.createCalls, 0);
+
+    final writeFailure = _MemorySecretStore()..failWrite = true;
+    final writeApi = _CheckoutApi(_checkout());
+    expect(
+        await controller(writeApi, writeFailure).createQuickSaleCheckout(
+            items: const [], discount: const {}, serviceFeeWaived: false),
+        isNull);
+    expect(writeApi.createCalls, 0);
+  });
+
+  test(
+      'unproven legacy namespaces are preserved and never attached to this POS',
+      () async {
+    final storage = _MemorySecretStore()
+      ..quickSaleCheckoutState = jsonEncode({
+        'operators': {
+          'operator-1': {'checkout_id': 'other-device-checkout'},
+        },
+      });
+
+    final recovery = await controller(
+      _CheckoutApi(
+        _checkout(),
+        recoveryError: const PosApiException(
+            statusCode: 404, code: 'not_found', message: 'Ausente'),
+      ),
+      storage,
+    ).startNewQuickSale();
+
+    expect(recovery.status, QuickSaleRecoveryStatus.none);
+    expect(
+        jsonDecode(storage.quickSaleCheckoutState!)['operators']['operator-1']
+            ['checkout_id'],
+        'other-device-checkout');
+  });
+
+  test('returns the normal sale result after a lost finalization response',
+      () async {
+    final storage = _MemorySecretStore.forCheckout('checkout-a', pending: {
+      'finalize': 'finalize-key',
+    });
+    final api = _CheckoutApi(_checkout(status: 'finalized', saleId: 1));
+
+    final recovery = await controller(api, storage).startNewQuickSale();
+
+    expect(recovery.saleResult?.saleNumber, 'V000001');
+    expect(api.finalizeCalls, 0);
+    expect(api.resultCalls, 1);
+  });
+
+  test('migrates a renamed legacy device only after backend scope confirmation',
+      () async {
+    final storage = _MemorySecretStore()
+      ..quickSaleCheckoutState = jsonEncode({
+        'devices': {
+          'POS:Old terminal:old model': {
+            'operators': {
+              'operator-1': {'checkout_id': 'checkout-a'},
+            },
+          },
+        },
+      });
+
+    final recovery = await controller(_CheckoutApi(_checkout()), storage)
+        .startNewQuickSale();
+
+    expect(recovery.checkout?.id, 'checkout-a');
+    final root =
+        jsonDecode(storage.quickSaleCheckoutState!) as Map<String, dynamic>;
+    expect(
+        root['scopes']['company-1:branch-1:device-1']['operators']['operator-1']
+            ['checkout_id'],
+        'checkout-a');
+    expect(root['devices']['POS:Old terminal:old model'], isNotNull);
   });
 }
 
@@ -210,15 +355,21 @@ class _MemorySecretStore implements SecretStore, QuickSaleCheckoutStateStore {
   _MemorySecretStore.forCheckout(String checkoutId,
       {Map<String, dynamic>? pending})
       : quickSaleCheckoutState = jsonEncode({
-          'operators': {
-            'operator-1': {
-              'checkout_id': checkoutId,
-              if (pending != null) 'pending': pending,
+          'scopes': {
+            'company-1:branch-1:device-1': {
+              'operators': {
+                'operator-1': {
+                  'checkout_id': checkoutId,
+                  if (pending != null) 'pending': pending,
+                },
+              },
             },
           },
         });
 
   String? quickSaleCheckoutState;
+  bool failRead = false;
+  bool failWrite = false;
 
   @override
   Future<void> clearDeviceCredential() async {}
@@ -229,28 +380,50 @@ class _MemorySecretStore implements SecretStore, QuickSaleCheckoutStateStore {
   @override
   Future<String?> readOperatorSession() async => null;
   @override
-  Future<String?> readPendingSaleIntents() async => null;
-  @override
-  Future<String?> readQuickSaleCheckoutState() async => quickSaleCheckoutState;
+  Future<String?> readQuickSaleCheckoutState() async {
+    if (failRead) throw StateError('secure storage unavailable');
+    return quickSaleCheckoutState;
+  }
+
   @override
   Future<void> writeDeviceCredential(String credential) async {}
   @override
   Future<void> writeOperatorSession(String token) async {}
   @override
-  Future<void> writePendingSaleIntents(String value) async {}
-  @override
-  Future<void> writeQuickSaleCheckoutState(String value) async =>
-      quickSaleCheckoutState = value;
+  Future<void> writeQuickSaleCheckoutState(String value) async {
+    if (failWrite) throw StateError('secure storage unavailable');
+    quickSaleCheckoutState = value;
+  }
 }
 
 class _CheckoutApi implements PosApi {
-  _CheckoutApi(this.checkout, {this.cancelResponse, this.recoveryError});
+  _CheckoutApi(this.checkout,
+      {this.cancelResponse, this.recoveryError, this.reconciliation});
 
   final QuickSaleCheckout checkout;
   final QuickSaleCheckout? cancelResponse;
   final PosApiException? recoveryError;
+  final List<QuickSaleCheckout>? reconciliation;
   String? cancelledCheckoutId;
   var finalizeCalls = 0;
+  var resultCalls = 0;
+  var reconciliationCalls = 0;
+  var createCalls = 0;
+
+  @override
+  Future<QuickSaleCheckout> createQuickSaleCheckout({
+    required List<Map<String, dynamic>> items,
+    required Map<String, dynamic> discount,
+    required bool serviceFeeWaived,
+    required String idempotencyKey,
+    int? customerId,
+    Map<String, dynamic>? discountAuthorization,
+    Map<String, dynamic>? itemDiscountAuthorization,
+    Map<String, dynamic>? serviceFeeAuthorization,
+  }) async {
+    createCalls++;
+    return checkout;
+  }
 
   @override
   Future<QuickSaleCheckout> cancelQuickSaleCheckout({
@@ -274,6 +447,22 @@ class _CheckoutApi implements PosApi {
   }) async {
     finalizeCalls++;
     throw UnimplementedError();
+  }
+
+  @override
+  Future<QuickSaleResult> quickSaleCheckoutResult(String checkoutId) async {
+    resultCalls++;
+    return const QuickSaleResult(
+      saleNumber: 'V000001',
+      total: '10.00',
+      cash: CashOverview(mode: 'FLEXIBLE', enabled: true),
+    );
+  }
+
+  @override
+  Future<List<QuickSaleCheckout>> reconcileQuickSaleCheckouts() async {
+    reconciliationCalls++;
+    return reconciliation ?? const [];
   }
 
   @override
